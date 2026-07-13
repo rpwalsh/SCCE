@@ -110,10 +110,17 @@ review evidence.
 
 ## Server, VS Code, And Tooling
 
-- `packages/server/src/routes.ts`: API routes, including the strict but incomplete
-  coding-request boundary, exact-byte planning, and separately authorized
-  `POST /api/workspace/patch`. The generic existing-module coding request fails closed
-  with `422` because its generated ProgramGraph lacks verified repair lineage.
+- `packages/server/src/routes.ts`: API routes, including strict non-mutating coding
+  planning, exact-byte proposal planning, and separately authorized
+  `POST /api/workspace/patch`. Coding planning supports source-proven unused type-only
+  import removal and one official TypeScript LanguageService fix for an existing
+  requested file. It uses exact durable snapshot bytes plus the TypeScript standard
+  library and requires an exact snapshot project config resolved from the
+  source-observed direct `tsc` invocation. An explicit exact `TS####`, `fixName:<id>`,
+  or canonical `codeFixIdentity:<id>` selector must resolve to one candidate; no
+  candidate is selected implicitly. The route returns an unauthorized, unexecuted
+  plan with compiler/typecheck/test validation.
+  Arbitrary feature synthesis and multi-file compiler fixes are outside this boundary.
 - `packages/vscode/src/extension.ts`: readiness, ingest, question, project, status,
   task timeline, explicit approvals, reviewed patch application, and receipt checks.
 - `tools/scce-dev-mcp`: bounded repository, test, and trace inspection helpers.

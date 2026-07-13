@@ -66,7 +66,7 @@
   },
   "connectors": {
     "web": {
-      "enabled": true,
+      "enabled": false,
       "allowedHosts": ["html.duckduckgo.com"],
       "maxBytes": 2000000,
       "search": { "provider": "duckduckgo", "apiKey": "", "endpoint": "" }

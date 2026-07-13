@@ -1,4 +1,5 @@
 .vscodeignore
+!LICENSE
 src/**
 test/**
 scripts/**

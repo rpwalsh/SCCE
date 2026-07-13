@@ -415,12 +415,17 @@ Remaining engineering work includes:
 - Fitting representative relation-potential, PowerWalk, truth, contradiction, and
   selector calibration on immutable disjoint splits.
 - Persisting and validating durable incremental PowerWalk state across real imports.
-- Completing the production coding-request bridge. The exported structural primitive
-  accepts only a trusted internal hydrated full-file ProgramGraph with exact-base
-  repair lineage, current live absence observations, and a linked candidate test; it
-  cannot authenticate caller metadata or claim test execution, and the current generic
-  existing-module route request fails closed with `422`. `regressionProtection`
-  remains `0` until execution evidence exists.
+- Extending the coding-request bridge beyond its two tested TypeScript repair paths.
+  Current support is limited to source-proven unused type-only import removal and one
+  official TypeScript LanguageService fix for an existing requested file. An explicit
+  exact `TS####`, `fixName:<id>`, or canonical `codeFixIdentity:<id>` selector must
+  resolve to one candidate; no candidate is selected implicitly. The compiler sees
+  durable snapshot files plus the TypeScript standard library and requires an exact
+  project config resolved from the source-observed direct `tsc` invocation. The
+  requested file must belong to that parsed project. Source-observed build/test
+  commands are required, and the returned plan is unauthorized and unexecuted.
+  Arbitrary feature synthesis and multi-file compiler fixes remain unsupported;
+  `regressionProtection` remains `0` until execution evidence exists.
 - Reviewing the optional Docker validator's daemon, operator, image-supply-chain, and
   host-kernel trust boundary for each deployment. Trusted-host staging is not an OS
   sandbox, and the passing local Docker smoke test is not attestation.

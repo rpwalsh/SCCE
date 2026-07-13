@@ -49,7 +49,7 @@ describe("YoppClient HTTP boundary", () => {
       if (input.includes("/api/project/summary?")) {
         return jsonResponse({ schema: "scce.project.summary.v1", workspace: {}, summary: {} });
       }
-      if (input.endsWith("/api/workspace/sources")) return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\My Repo" }, sources: [] });
+      if (input.endsWith("/api/workspace/sources")) return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\My Repo", updatedAt: 10 }, sources: [] });
       throw new Error(`unexpected request ${input}`);
     };
     const client = new YoppClient(
@@ -90,7 +90,7 @@ describe("YoppClient HTTP boundary", () => {
     let observedHeaders: RequestInit["headers"];
     const client = new YoppClient({ serverUrl: "http://localhost:3873", timeoutMs: 1_000 }, async (_input, init) => {
       observedHeaders = init.headers;
-      return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\repo" }, sources: [] });
+      return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\repo", updatedAt: 10 }, sources: [] });
     });
 
     await client.workspaceStatus();
@@ -106,6 +106,20 @@ describe("YoppClient HTTP boundary", () => {
     expect(() => client.workspaceIngest("\t")).toThrow("a local workspace path is required");
     expect(() => client.workspaceAsk("C:\\repo", "  ")).toThrow("workspace question must not be empty");
     expect(() => client.projectSummary("\n")).toThrow("a local workspace path is required");
+    expect(() => client.workspaceCodingPatchPlan({
+      workspaceId: "workspace-1",
+      expectedWorkspaceUpdatedAt: 1,
+      requestId: "request-1",
+      requestText: "  ",
+      requestedPaths: ["src/a.ts"]
+    })).toThrow("coding request text must be non-empty");
+    expect(() => client.workspaceCodingPatchPlan({
+      workspaceId: "workspace-1",
+      expectedWorkspaceUpdatedAt: 1,
+      requestId: "request-1",
+      requestText: "change it",
+      requestedPaths: ["../outside.ts"]
+    })).toThrow("unsafe segment");
     expect(transport).not.toHaveBeenCalled();
   });
 
@@ -155,6 +169,68 @@ describe("YoppClient HTTP boundary", () => {
       "http://127.0.0.1:3873/api/session/approve",
       "http://127.0.0.1:3873/api/workspace/patch"
     ]);
+  });
+
+  it("submits a bounded coding request and verifies the returned content-addressed plan trace", async () => {
+    const requests: RecordedRequest[] = [];
+    const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));
+    const transport: HttpTransport = async (input, init) => {
+      requests.push({ input, init });
+      const request = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return jsonResponse(fixtureCodingGeneration(plan, request));
+    };
+    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
+
+    const result = await client.workspaceCodingPatchPlan({
+      workspaceId: "workspace-1",
+      expectedWorkspaceUpdatedAt: 10,
+      requestId: "request-1",
+      requestText: "  Add the verified value export.  ",
+      requestedPaths: ["src/new.ts", "package.json"]
+    });
+
+    expect(result.plan.planHash).toBe(plan.planHash);
+    expect(result.authorization).toEqual({ required: true, granted: false, capabilityId: "workspace.patch.apply" });
+    expect(result.execution).toEqual({ state: "not_executed", receipt: null });
+    expect(requests.map(request => [request.init.method, request.input])).toEqual([
+      ["POST", "http://127.0.0.1:3873/api/workspace/patch/plan/request"]
+    ]);
+    const body = JSON.parse(String(requests[0]?.init.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      schemaVersion: "scce.workspace-coding-patch-plan-request.v1",
+      workspaceId: "workspace-1",
+      expectedWorkspaceUpdatedAt: 10,
+      requestId: "request-1",
+      requestText: "Add the verified value export.",
+      requestedPaths: ["package.json", "src/new.ts"],
+      validationPlan: {
+        validatorId: "trusted-host-pnpm-validate.v1",
+        checks: ["compiler", "typecheck", "tests"]
+      }
+    });
+    expect(body).not.toHaveProperty("workspaceRoot");
+    expect(body).not.toHaveProperty("proposedFiles");
+    expect(body).not.toHaveProperty("command");
+    expect(body).not.toHaveProperty("authorization");
+    expect(body).not.toHaveProperty("execution");
+  });
+
+  it("rejects a coding plan whose request trace does not match the submitted scope", async () => {
+    const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));
+    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async (_input, init) => {
+      const request = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const generation = fixtureCodingGeneration(plan, request);
+      generation.programProposalTrace.requestedPaths = ["src/other.ts"];
+      return jsonResponse(generation);
+    });
+
+    await expect(client.workspaceCodingPatchPlan({
+      workspaceId: "workspace-1",
+      expectedWorkspaceUpdatedAt: 10,
+      requestId: "request-1",
+      requestText: "Add the verified value export.",
+      requestedPaths: ["src/new.ts"]
+    })).rejects.toThrow("coding plan requested paths do not match the submitted scope");
   });
 
   it("rejects a declared response length above the limit before reading the body", async () => {
@@ -261,6 +337,55 @@ function fixtureReceipt(plan: ReturnType<typeof parseReviewedPatchPlan>): unknow
     mutations
   };
   return { ...payload, receiptHash: sha256(JSON.stringify(canonical(payload))) };
+}
+
+function fixtureCodingGeneration(plan: ReturnType<typeof parseReviewedPatchPlan>, request: Record<string, unknown>) {
+  const revisionId = "revision-1";
+  const revisionHash = sha256("revision-1");
+  const evidenceIds = ["evidence-1"];
+  const requestId = String(request.requestId);
+  const requestText = String(request.requestText);
+  const requestedPaths = [...(request.requestedPaths as string[])];
+  const requestHash = sha256(JSON.stringify(canonical({
+    requestId,
+    text: requestText,
+    requestedPaths,
+    evidenceIds,
+    revisionId,
+    revisionHash
+  })));
+  return {
+    schemaVersion: "yopp.workspace-plan-generation.v1",
+    workspaceId: String(request.workspaceId),
+    revisionId,
+    revisionHash,
+    plan,
+    scoreTrace: { schemaVersion: "yopp.workspace-patch-score.v1" },
+    safety: { snapshotComplete: true },
+    validationPlan: {
+      validatorId: "trusted-host-pnpm-validate.v1",
+      checks: ["compiler", "tests", "typecheck"]
+    },
+    authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
+    execution: { state: "not_executed", receipt: null },
+    rollbackScope: "atomic-per-file-with-verified-transaction-rollback",
+    programProposalTrace: {
+      schemaVersion: "scce.workspace-program-proposal.trace.v1",
+      source: "program-graph-full-file",
+      requestId,
+      requestHash,
+      programId: "program-1",
+      sourcePlanIds: ["source-plan-1"],
+      evidenceIds,
+      requestedPaths,
+      derivedDependencyPaths: [],
+      selectedArtifactPaths: plan.operations.map(operation => operation.path),
+      regressionTestPaths: [],
+      verifiedParentDirectoryPaths: ["src"],
+      hydrationValidated: true,
+      fullFileMaterialized: true
+    }
+  };
 }
 
 function canonical(value: unknown): unknown {

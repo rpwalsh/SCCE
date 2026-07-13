@@ -10,12 +10,18 @@ import {
   type WorkspaceIngestResponse
 } from "./protocol.js";
 import {
+  DEFAULT_PATCH_VALIDATION_CHECKS,
   DEFAULT_PATCH_VALIDATION_POLICY_ID,
+  WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
   WORKSPACE_PATCH_REQUEST_SCHEMA,
   parseSessionApproval,
+  parseWorkspaceCodingPatchPlanGeneration,
   parseWorkspacePatchAttempt,
   parseWorkspaceStatus,
+  verifyWorkspaceCodingPatchPlanGeneration,
   type ReviewedPatchPlan,
+  type WorkspaceCodingPatchPlanGeneration,
+  type WorkspaceCodingPatchPlanRequest,
   type WorkspacePatchAttempt,
   type WorkspaceStatusResponse
 } from "./patch-protocol.js";
@@ -75,6 +81,19 @@ export class YoppClient {
     return this.request("GET", "/api/workspace/sources", undefined, parseWorkspaceStatus);
   }
 
+  workspaceCodingPatchPlan(input: {
+    workspaceId: string;
+    expectedWorkspaceUpdatedAt: number;
+    requestId: string;
+    requestText: string;
+    requestedPaths: readonly string[];
+  }): Promise<WorkspaceCodingPatchPlanGeneration> {
+    const request = codingPatchPlanRequest(input);
+    return this.request("POST", "/api/workspace/patch/plan/request", request, value => (
+      verifyWorkspaceCodingPatchPlanGeneration(parseWorkspaceCodingPatchPlanGeneration(value), request)
+    ));
+  }
+
   workspacePatch(workspaceId: string, plan: ReviewedPatchPlan): Promise<WorkspacePatchAttempt> {
     return this.request("POST", "/api/workspace/patch", {
       schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
@@ -124,6 +143,57 @@ function requireNonEmpty(value: string, label: string): string {
   const normalized = value.trim();
   if (!normalized) throw new Error(`${label} must not be empty`);
   return normalized;
+}
+
+function codingPatchPlanRequest(input: {
+  workspaceId: string;
+  expectedWorkspaceUpdatedAt: number;
+  requestId: string;
+  requestText: string;
+  requestedPaths: readonly string[];
+}): WorkspaceCodingPatchPlanRequest {
+  const workspaceId = requireBoundedId(input.workspaceId, "workspace id");
+  const requestId = requireBoundedId(input.requestId, "coding request id");
+  if (!Number.isSafeInteger(input.expectedWorkspaceUpdatedAt) || input.expectedWorkspaceUpdatedAt < 0) {
+    throw new Error("expected workspace updatedAt must be a non-negative safe integer");
+  }
+  const requestText = input.requestText.trim();
+  if (!requestText || requestText.includes("\0")) throw new Error("coding request text must be non-empty UTF-8 text without NUL bytes");
+  if (Buffer.byteLength(requestText, "utf8") > 20_000) throw new Error("coding request text exceeds 20000 UTF-8 bytes");
+  if (input.requestedPaths.length < 1 || input.requestedPaths.length > 256) throw new Error("coding request scope must contain 1 through 256 paths");
+  const requestedPaths = [...input.requestedPaths].map((path, index) => requireWorkspaceRelativePath(path, `coding request path ${index}`));
+  if (new Set(requestedPaths).size !== requestedPaths.length) throw new Error("coding request scope contains duplicate paths");
+  requestedPaths.sort(compareCanonical);
+  return {
+    schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+    workspaceId,
+    expectedWorkspaceUpdatedAt: input.expectedWorkspaceUpdatedAt,
+    requestId,
+    requestText,
+    requestedPaths,
+    validationPlan: {
+      validatorId: DEFAULT_PATCH_VALIDATION_POLICY_ID,
+      checks: [...DEFAULT_PATCH_VALIDATION_CHECKS]
+    }
+  };
+}
+
+function requireBoundedId(value: string, label: string): string {
+  const normalized = requireNonEmpty(value, label);
+  if (normalized.includes("\0") || [...normalized].length > 256) throw new Error(`${label} must contain at most 256 characters without NUL bytes`);
+  return normalized;
+}
+
+function requireWorkspaceRelativePath(value: string, label: string): string {
+  if (!value || value !== value.trim() || value.includes("\0") || value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/u.test(value)) {
+    throw new Error(`${label} must be a normalized workspace-relative path`);
+  }
+  if (value.split("/").some(part => !part || part === "." || part === "..") || value.normalize("NFC") !== value) throw new Error(`${label} contains an unsafe segment`);
+  return value;
+}
+
+function compareCanonical(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function parseJson(text: string): unknown {

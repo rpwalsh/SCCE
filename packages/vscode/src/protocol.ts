@@ -32,6 +32,7 @@ export type YoppEndpoint =
   | "workspace.initialize"
   | "workspace.ingest"
   | "workspace.ask"
+  | "workspace.patch.plan.request"
   | "workspace.patch"
   | "project.summary"
   | "workspace.status";
@@ -151,7 +152,7 @@ export function parseProjectSummaryResponse(value: unknown): ProjectSummaryRespo
 }
 
 function endpoint(value: unknown): YoppEndpoint {
-  if (value === "ready" || value === "workspace.initialize" || value === "workspace.ingest" || value === "workspace.ask" || value === "workspace.patch" || value === "project.summary" || value === "workspace.status") return value;
+  if (value === "ready" || value === "workspace.initialize" || value === "workspace.ingest" || value === "workspace.ask" || value === "workspace.patch.plan.request" || value === "workspace.patch" || value === "project.summary" || value === "workspace.status") return value;
   throw new Error("unsupported Yopp endpoint");
 }
 

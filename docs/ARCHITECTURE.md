@@ -107,14 +107,25 @@ workspace identity and every ingested file against current filesystem bytes, the
 returns a reviewable plan with authorization false and execution not run. The endpoint
 does not accept a root, command, approval, authorization, or execution state.
 
-`POST /api/workspace/patch/plan/request` is strict and non-mutating, but no successful
-production coding family is demonstrated. A generic existing-module request fails
-closed with `422` because its generated ProgramGraph lacks verified repair lineage.
-The exported kernel primitive can structurally convert a trusted internal hydrated
-full-file ProgramGraph only when it carries exact-base repair lineage, current live
-absence observations, and a linked candidate test. It cannot authenticate
-caller-supplied lineage or evidence metadata, prove semantic correctness, or claim
-test execution. `regressionProtection` remains `0` until execution evidence exists.
+`POST /api/workspace/patch/plan/request` is strict and non-mutating. Its tested coding
+families remove a source-proven unused binding from a type-only import or apply one
+official TypeScript LanguageService code fix to one existing requested file. The
+adapter builds the LanguageService from exact durable snapshot bytes and the
+TypeScript standard library; it does not read unrecorded workspace or dependency
+source. The source-observed direct `tsc` invocation resolves either its explicit
+`-p`/`--project` target or an exact upward `tsconfig.json`; the config and content hash
+must be present in the durable snapshot, and the requested file must belong to its
+parsed file set. Every compiler request must include an explicit exact `TS####`,
+`fixName:<id>`, or canonical `codeFixIdentity:<id>` selector that resolves to one
+candidate; there is no implicit candidate selection. The resulting plan remains
+unauthorized and unexecuted and requires source-observed compiler/typecheck/test
+validation before application.
+
+This path does not synthesize arbitrary features, create targets, or accept multi-file
+compiler actions. Other internal ProgramGraph conversion still requires exact-base
+repair lineage, current live absence observations where relevant, and linked
+validation evidence; caller-supplied metadata cannot establish semantic correctness
+or executed tests. `regressionProtection` remains `0` until execution evidence exists.
 
 `POST /api/workspace/patch` is the separate mutation boundary. The Node adapter
 performs containment, symlink, compare-and-swap, staging, verification,

@@ -16,13 +16,25 @@ The build creates `tools/scce-dev-mcp/dist/` locally. That generated directory i
 
 ## Client configuration
 
+For a global Codex registration, use an absolute path so startup does not depend on
+the directory from which Codex was launched:
+
+```powershell
+codex mcp add scce-dev -- node <absolute-repository-path>\tools\scce-dev-mcp\dist\index.js
+codex mcp list
+```
+
+Equivalent `config.toml`:
+
 ```toml
 [mcp_servers.scce-dev]
 command = "node"
-args = ["tools/scce-dev-mcp/dist/index.js"]
+args = ["<absolute-repository-path>/tools/scce-dev-mcp/dist/index.js"]
+cwd = "<absolute-repository-path>"
 ```
 
-Adapt the configuration shape to the MCP client in use.
+Restart the Codex client after changing MCP configuration. The server treats its
+configured working directory as the repository root.
 
 ## Tools
 

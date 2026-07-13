@@ -47,6 +47,47 @@ pnpm scce project tasks
 
 The commands produce cited summaries, module maps, symbol indexes, missing-support findings, doc/code contradictions, and prioritized engineering tasks.
 
+## Plan a Coding Change
+
+Build the repository and initialize and ingest the workspace before planning. `plan-code` is the canonical command; `code` is a compatibility alias.
+
+```bash
+pnpm scce workspace plan-code \
+  --path=src/types.ts \
+  --checks=typecheck \
+  "Remove unused type import ExampleType from src/types.ts."
+```
+
+The command prints an unauthorized, unexecuted `yopp.workspace-plan-generation.v1` result. It does not edit workspace files, approve or apply the returned transaction, or execute compiler, typecheck, or test commands. Before planning it analyzes the selected workspace and persists the normal project/workspace report metadata. Exact-byte planning still uses the previously ingested durable source records; run `pnpm scce workspace ingest` after local edits or the stale-byte check rejects the request.
+
+The request surface is bounded:
+
+- The request schema accepts one through 256 unique `--path=` values. The current
+  TypeScript repair families require exactly one existing target. Paths must be
+  NFC-normalized, slash-separated, workspace-relative paths of at most 1,024
+  characters.
+- Request text is limited to 20,000 UTF-8 bytes. Use `--` before the text when the request itself contains tokens beginning with `--`.
+- `--checks=` accepts a non-empty subset of `compiler,typecheck,tests`. The default is all three. These values describe the plan's required validation; they do not run validation during planning. The narrow unused type-only import repair may explicitly use `--checks=typecheck`.
+- `--validator=` accepts `trusted-host-pnpm-validate.v1` or `docker-pnpm-validate.v1` and defaults to trusted-host. It labels the validation plan only; request data does not select or configure an execution provider.
+- Optional `--request-id=` values are limited to 256 characters. Without one, the CLI derives a deterministic ID from the workspace revision and complete request.
+- `--root=` selects an allowed local workspace root. Project-analysis overrides are also bounded: `--max-files=` is 1 through 100,000, `--max-file-bytes=` is 1,024 through 67,108,864, `--max-depth=` is 0 through 256, and `--max-document-bytes=` is 4,096 through 67,108,864. `--no-unsupported` is also accepted.
+
+Two TypeScript repair paths are tested: removing one source-proven unused binding from
+a type-only import, and applying one official TypeScript LanguageService code fix to
+one existing requested file. Every compiler-action request must include a literal
+`TS####`, `fixName:<id>`, or canonical
+`codeFixIdentity:<typescript.code_fix:...>` selector that resolves to one candidate;
+the planner never selects a candidate implicitly. LanguageService input is limited to
+exact durable snapshot files plus the TypeScript standard library. Its source-observed
+direct `tsc` invocation must resolve either an explicit `-p`/`--project` target or an
+exact upward `tsconfig.json` from the command working directory. The config must be in
+the snapshot and include the requested file. Source-observed build and test commands
+are required.
+Plans remain unauthorized and unexecuted and require compiler, typecheck, and tests
+unless the narrow unused-import contract explicitly requires typecheck only. The
+command does not synthesize arbitrary features, create target files, or apply
+multi-file compiler fixes.
+
 ## Reports
 
 ```bash
@@ -114,17 +155,21 @@ authorization required by the application endpoint.
 ### Coding-request boundary
 
 `POST /api/workspace/patch/plan/request` accepts a strict coding-request schema and is
-non-mutating. No successful production coding family is currently demonstrated. A
-generic existing-module request fails closed with `422` because the generated
-ProgramGraph lacks verified repair lineage.
+non-mutating. It supports source-proven unused type-only import removal and official
+TypeScript LanguageService fixes for one existing requested target. Fix derivation is
+bound to exact durable snapshot bytes; compiler context includes only those snapshot
+files and the TypeScript standard library. The source-observed direct `tsc` invocation
+must resolve an exact snapshot project config whose parsed file set includes the
+requested target. An explicit exact `TS####`, `fixName:<id>`, or canonical
+`codeFixIdentity:<typescript.code_fix:...>` selector must resolve to one action; there
+is no implicit selection. Command-bearing, new-file, unrequested-path, overlapping,
+and multi-file actions are rejected.
 
-The exported kernel primitive can structurally convert a trusted internal hydrated
-full-file ProgramGraph only when it includes exact-base repair lineage, current live
-absence observations, and a linked candidate test. It cannot authenticate
-caller-supplied lineage or evidence metadata, establish semantic correctness, or
-claim that the candidate test ran. `regressionProtection` remains `0` until execution
-evidence is attached. The HTTP route does not close those production provenance and
-execution gaps.
+The route requires source-observed build and test commands and emits an unauthorized,
+unexecuted plan whose validation contract requires compiler, typecheck, and tests.
+Planning does not establish semantic correctness or claim that validation ran.
+Requests for arbitrary feature synthesis or repairs outside the supported families
+are rejected; `regressionProtection` remains `0` until execution evidence is attached.
 
 ### Reviewed patch application
 
@@ -163,9 +208,10 @@ events
 The contradiction finder is structural and source-bound. It can catch missing documented commands/routes, conflicting document values, missing script paths, undocumented exports, missing test support, and likely unused exports. It is not a compiler, package resolver, or full formal verifier yet.
 
 Markdown reports, line-oriented repair patches, and `safeToApplyInTemp` markers are not
-content-addressed filesystem transactions. The exported ProgramGraph converter is a
-structural primitive for trusted internal inputs, not a completed production coding
-path. The HTTP coding-request route has not demonstrated successful repair planning
-for a generic existing module, and neither boundary proves semantic correctness.
+content-addressed filesystem transactions. The exported ProgramGraph converter remains
+a structural primitive for trusted internal inputs. The HTTP coding-request route has
+tested exact-byte planning for unused type-only import removal and official
+single-file TypeScript LanguageService fixes; it is not an arbitrary feature or
+multi-file synthesis path. Neither boundary proves semantic correctness.
 
 Large files are bounded by configured byte limits. The runtime is designed for normal local repositories and document folders on consumer hardware; internet-scale streams still belong to the dedicated SCCE2/wiki ingestion paths.

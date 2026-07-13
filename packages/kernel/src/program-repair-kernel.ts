@@ -5,6 +5,55 @@ import { createProgramHydrationContract, hydrationSummary, validateProgramGraphH
 export type DiagnosticClass = "syntax" | "type" | "dependency" | "runtime" | "contract" | "security" | "unknown";
 export type RepairOperationKind = "insert" | "replace" | "delete" | "move" | "dependency" | "config" | "repair.op.diagnostic_note";
 
+export const UNUSED_TYPE_IMPORT_REPAIR_FAMILY = "repair.family.typescript.unused_type_import.v1" as const;
+export const TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY = "repair.family.typescript.code_action.v1" as const;
+export type ProgramRepairFamilyId = typeof UNUSED_TYPE_IMPORT_REPAIR_FAMILY | typeof TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY;
+export interface SupportedProgramRepairFamilyDescriptor {
+  id: ProgramRepairFamilyId;
+  requestSyntax: string;
+  sourceLanguages: readonly string[];
+  mutationClass: "program.mutation.type_only_compile_hygiene" | "program.mutation.compiler_diagnostic_repair";
+  requiredValidationChecks: readonly ("compiler" | "typecheck" | "tests")[];
+  limitations: readonly string[];
+}
+export const SUPPORTED_PROGRAM_REPAIR_FAMILIES: readonly SupportedProgramRepairFamilyDescriptor[] = Object.freeze([{
+  id: UNUSED_TYPE_IMPORT_REPAIR_FAMILY,
+  requestSyntax: "remove unused type import <local-binding>",
+  sourceLanguages: Object.freeze(["typescript"]),
+  mutationClass: "program.mutation.type_only_compile_hygiene",
+  requiredValidationChecks: Object.freeze(["typecheck"] as const),
+  limitations: Object.freeze([
+    "one requested existing module",
+    "one single-line type-only import declaration",
+    "the request must name the local binding",
+    "the binding must have no other source occurrence",
+    "runtime imports and mixed import declarations are unsupported"
+  ])
+}, {
+  id: TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY,
+  requestSyntax: "a request selecting one official TypeScript code fix for one existing requested module",
+  sourceLanguages: Object.freeze(["typescript"]),
+  mutationClass: "program.mutation.compiler_diagnostic_repair",
+  requiredValidationChecks: Object.freeze(["compiler", "typecheck", "tests"] as const),
+  limitations: Object.freeze([
+    "one requested existing module",
+    "one compiler diagnostic with one official single-file TypeScript CodeFixAction",
+    "multi-file and ambiguous code actions are unsupported",
+    "the output is recomputed from exact text spans and remains unexecuted"
+  ])
+}]);
+const UNUSED_TYPE_IMPORT_DIAGNOSTIC_PATTERN_ID = "diagnostic.typescript.unused_type_import.v1";
+const UNUSED_TYPE_IMPORT_PRECONDITION_IDS = [
+  "repair.precondition.exact_source_content_hash",
+  "repair.precondition.exact_type_import_declaration_hash",
+  "repair.precondition.local_binding_unreferenced"
+] as const;
+const UNUSED_TYPE_IMPORT_POSTCONDITION_IDS = [
+  "repair.postcondition.type_import_declaration_absent",
+  "repair.postcondition.all_unrelated_bytes_preserved",
+  "repair.postcondition.typecheck_required"
+] as const;
+
 export interface DiagnosticPattern {
   id: string;
   class: DiagnosticClass;
@@ -24,6 +73,7 @@ export interface ProgramDiagnostic {
   message: string;
   raw: string;
   confidence: number;
+  confidenceStatus?: "compiler-observation-identity-not-patch-success-probability" | "provisional-uncalibrated";
 }
 
 export interface RepairOperation {
@@ -36,6 +86,78 @@ export interface RepairOperation {
   packageName?: string;
   reason: string;
   risk: number;
+  riskStatus?: "provisional-uncalibrated";
+  repairFamilyId?: ProgramRepairFamilyId;
+  preconditions?: Array<{ id: string; value: string }>;
+  postconditions?: Array<{ id: string; value: string }>;
+  textChanges?: ExactProgramTextChange[];
+  diagnosticEvidence?: TypeScriptCodeActionDiagnosticEvidence;
+  codeFixEvidence?: TypeScriptCodeActionFixEvidence;
+  compilerContext?: TypeScriptCodeActionCompilerContext;
+}
+
+export interface ExactProgramTextChange {
+  start: number;
+  length: number;
+  newText: string;
+}
+
+export interface TypeScriptCodeActionDiagnosticEvidence {
+  code: number;
+  category: string;
+  start: number;
+  length: number;
+  message: string;
+  diagnosticIdentity: string;
+}
+
+export interface TypeScriptCodeActionFixEvidence {
+  fixName: string;
+  description: string;
+  fixId?: string;
+  codeFixIdentity: string;
+}
+
+export interface TypeScriptCodeActionCompilerContext {
+  version: string;
+  tsconfigPath: string;
+  tsconfigContentHash: string;
+  compilerOptionsHash: string;
+  compilerOptionsSource: string;
+  configDiagnosticCodes: number[];
+  sourceFileBoundary?: "workspace_snapshot_and_typescript_standard_library";
+  compilerCommand: {
+    executable: string;
+    args: string[];
+    cwd: string;
+    sourcePath: string;
+    sourceContentHash: string;
+  };
+}
+
+export interface TypeScriptCodeActionRepairTransformation {
+  path: string;
+  baseArtifactId: string;
+  baseContentHash: string;
+  diagnostic: TypeScriptCodeActionDiagnosticEvidence;
+  codeFix: {
+    fixName: string;
+    description: string;
+    fixId?: string;
+    codeFixIdentity: string;
+    textChanges: ExactProgramTextChange[];
+  };
+  compiler: TypeScriptCodeActionCompilerContext;
+}
+
+export interface VerifiedUnusedTypeImportRemoval {
+  familyId: typeof UNUSED_TYPE_IMPORT_REPAIR_FAMILY;
+  binding: string;
+  moduleSpecifier: string;
+  line: number;
+  declarationHash: string;
+  preconditionIds: string[];
+  postconditionIds: string[];
 }
 
 export interface RepairPatchSet {
@@ -114,6 +236,170 @@ export function materializeProgramRepair(input: {
       ? "program repair patch set is not part of the internally recomputed repair plan"
       : "program repair plan has no selected patch set");
   }
+  return materializeSelectedRepairPatchSet({
+    program: input.program,
+    repairPlan,
+    patchSet,
+    hasher
+  });
+}
+
+/**
+ * Materializes one compiler-produced TypeScript CodeFixAction. Complete output
+ * bytes are never accepted: they are recomputed here from exact base artifacts
+ * and bounded, non-overlapping text spans before entering the common repair lane.
+ */
+export function materializeTypeScriptCodeActionRepair(input: {
+  program: ProgramGraph;
+  transformations: readonly TypeScriptCodeActionRepairTransformation[];
+  requestText: string;
+  hasher?: Hasher;
+}): MaterializedProgramRepair {
+  const hasher = input.hasher ?? createHasher();
+  if (input.transformations.length !== 1) {
+    throw new Error("TypeScript code-action repair requires exactly one single-file transformation");
+  }
+  const transformation = input.transformations[0]!;
+  const artifact = input.program.files.find(file => file.path === transformation.path);
+  if (!artifact
+    || String(artifact.artifactId) !== transformation.baseArtifactId
+    || String(artifact.contentHash) !== transformation.baseContentHash
+    || String(artifact.contentHash) !== `sha256_${hasher.digestHex(artifact.content)}`) {
+    throw new Error(`TypeScript code-action repair base artifact is stale: ${transformation.path}`);
+  }
+  if (!isTypeScriptSource(artifact)) {
+    throw new Error(`TypeScript code-action repair requires an owned TypeScript source artifact: ${transformation.path}`);
+  }
+  const diagnostic = validateTypeScriptDiagnostic(transformation.diagnostic, artifact.content);
+  const compiler = validateTypeScriptCompilerContext(transformation.compiler, input.program, hasher);
+  const textChanges = normalizeExactTextChanges(transformation.codeFix.textChanges, artifact.content.length);
+  const afterContent = applyExactTextChanges(artifact.content, textChanges);
+  if (afterContent === artifact.content) throw new Error("TypeScript code-action repair produced no exact byte-level change");
+  const diagnosticIdentity = canonicalTypeScriptDiagnosticIdentity({
+    path: artifact.path,
+    diagnostic,
+    compilerVersion: compiler.version,
+    compilerOptionsHash: compiler.compilerOptionsHash
+  }, hasher);
+  if (diagnostic.diagnosticIdentity !== diagnosticIdentity) {
+    throw new Error("TypeScript code-action diagnostic identity is not canonical for its exact source span");
+  }
+  const codeFix = {
+    fixName: requiredRepairString(transformation.codeFix.fixName, "TypeScript code-fix name"),
+    description: requiredRepairString(transformation.codeFix.description, "TypeScript code-fix description"),
+    ...(transformation.codeFix.fixId ? { fixId: transformation.codeFix.fixId } : {}),
+    textChanges
+  };
+  const codeFixIdentity = canonicalTypeScriptCodeFixIdentity({
+    diagnosticIdentity,
+    codeFix
+  }, hasher);
+  if (transformation.codeFix.codeFixIdentity !== codeFixIdentity) {
+    throw new Error("TypeScript code-action identity is not canonical for its diagnostic and exact text changes");
+  }
+  const textChangeHash = `sha256_${hasher.digestHex(canonicalStringify(textChanges))}`;
+  const compilerCommandIdentity = canonicalTypeScriptCompilerCommandIdentity(compiler.compilerCommand, hasher);
+  const repairOperation = operation(
+    "replace",
+    artifact.path,
+    undefined,
+    undefined,
+    undefined,
+    `Apply official TypeScript code fix ${transformation.codeFix.fixName} for diagnostic TS${diagnostic.code}.`,
+    0.14,
+    hasher,
+    undefined,
+    {
+      repairFamilyId: TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY,
+      textChanges,
+      diagnosticEvidence: { ...diagnostic, diagnosticIdentity },
+      codeFixEvidence: {
+        fixName: codeFix.fixName,
+        description: codeFix.description,
+        ...(codeFix.fixId ? { fixId: codeFix.fixId } : {}),
+        codeFixIdentity
+      },
+      compilerContext: compiler,
+      preconditions: [
+        { id: "repair.precondition.exact_source_content_hash", value: String(artifact.contentHash) },
+        { id: "repair.precondition.typescript_diagnostic_identity", value: diagnosticIdentity },
+        { id: "repair.precondition.typescript_code_fix_identity", value: codeFixIdentity },
+        { id: "repair.precondition.compiler_options_hash", value: compiler.compilerOptionsHash },
+        { id: "repair.precondition.tsconfig_content_hash", value: compiler.tsconfigContentHash },
+        { id: "repair.precondition.compiler_command_identity", value: compilerCommandIdentity },
+        { id: "repair.precondition.compiler_command_source_content_hash", value: compiler.compilerCommand.sourceContentHash }
+      ],
+      postconditions: [
+        { id: "repair.postcondition.exact_text_changes_applied", value: textChangeHash },
+        { id: "repair.postcondition.compiler_diagnostic_recheck_required", value: `TS${diagnostic.code}` },
+        { id: "repair.postcondition.typecheck_required", value: "typecheck" },
+        { id: "repair.postcondition.tests_required", value: "tests" }
+      ]
+    }
+  );
+  const programDiagnostic: ProgramDiagnostic = {
+    id: diagnosticIdentity,
+    class: "type",
+    patternId: "diagnostic.typescript.language_service.v1",
+    path: artifact.path,
+    line: lineForOffset(artifact.content, diagnostic.start),
+    column: columnForOffset(artifact.content, diagnostic.start),
+    message: diagnostic.message,
+    raw: `TS${diagnostic.code}: ${diagnostic.message}`,
+    confidence: 1,
+    confidenceStatus: "compiler-observation-identity-not-patch-success-probability"
+  };
+  const patchSet = patchSetFor(input.program, [programDiagnostic], [repairOperation], hasher);
+  const repairPlanId = `repair_plan_${hasher.digestHex(canonicalStringify({
+    programId: input.program.id,
+    requestText: input.requestText,
+    diagnosticIdentity,
+    codeFixIdentity,
+    patchSetId: patchSet.id
+  })).slice(0, 32)}`;
+  const repairPlan: RepairPlan = {
+    id: repairPlanId,
+    programId: input.program.id,
+    attemptsAllowed: 1,
+    selectedPatchSet: patchSet,
+    patchSets: [patchSet],
+    buildCommand: input.program.build,
+    testCommand: input.program.test,
+    validationPlan: validationPlanFor(input.program),
+    riskList: riskListFor(patchSet),
+    dryRunPatchArtifact: dryRunPatchArtifactFor(input.program, patchSet),
+    transaction: {
+      reads: ["blobs", "construct_graphs", "typescript_language_service"],
+      writes: ["blobs", "construct_graphs", "self_rewrite_episodes", "self_rewrite_patches", "events"],
+      approvalGate: true
+    },
+    audit: toJsonValue({
+      schema: "scce.program_repair.typescript_code_action.v1",
+      requestText: input.requestText,
+      diagnosticIdentity,
+      codeFixIdentity,
+      compiler,
+      patchSetId: patchSet.id,
+      scoringStatus: "provisional-uncalibrated",
+      operationRisk: { value: repairOperation.risk, status: repairOperation.riskStatus },
+      diagnosticConfidence: {
+        value: programDiagnostic.confidence,
+        status: programDiagnostic.confidenceStatus,
+        patchSuccessProbability: null
+      },
+      validationState: "not_executed"
+    })
+  };
+  return materializeSelectedRepairPatchSet({ program: input.program, repairPlan, patchSet, hasher });
+}
+
+function materializeSelectedRepairPatchSet(input: {
+  program: ProgramGraph;
+  repairPlan: RepairPlan;
+  patchSet: RepairPatchSet;
+  hasher: Hasher;
+}): MaterializedProgramRepair {
+  const { repairPlan, patchSet, hasher } = input;
   const sourceHydration = input.program.hydration;
   if (!sourceHydration) throw new Error("program repair materialization requires a hydrated ProgramGraph");
   const hydrationCheck = validateProgramGraphHydration(input.program);
@@ -163,6 +449,11 @@ export function materializeProgramRepair(input: {
 
   const materialized = applyVirtualRepair(input.program.files, patchSet);
   const materializedByPath = new Map(materialized.files.map(file => [file.path, file]));
+  for (const operation of patchSet.operations) {
+    const before = byPath.get(operation.path);
+    const after = materializedByPath.get(operation.path);
+    if (before && after) assertRepairOperationPostconditions(before, after, operation, hasher);
+  }
   const materiallyChanged = materialized.changed.filter(path => materializedByPath.get(path)?.content !== byPath.get(path)?.content);
   if (materiallyChanged.length === 0 || materiallyChanged.length !== affectedPaths.length) {
     throw new Error("program repair produced no complete byte-level change for every affected path");
@@ -220,6 +511,21 @@ export function materializeProgramRepair(input: {
               outputArtifactId: after.artifactId,
               outputContentHash: after.contentHash,
               operationIds: patchSet.operations.filter(operation => operation.path === path).map(operation => operation.id),
+              operations: patchSet.operations.filter(operation => operation.path === path).map(operation => ({
+                id: operation.id,
+                kind: operation.kind,
+                startLine: operation.startLine ?? null,
+                endLine: operation.endLine ?? null,
+                risk: operation.risk,
+                riskStatus: operation.riskStatus ?? "provisional-uncalibrated",
+                repairFamilyId: operation.repairFamilyId ?? null,
+                preconditions: operation.preconditions ?? [],
+                postconditions: operation.postconditions ?? [],
+                textChanges: operation.textChanges ?? [],
+                diagnosticEvidence: operation.diagnosticEvidence ?? null,
+                codeFixEvidence: operation.codeFixEvidence ?? null,
+                compilerContext: operation.compilerContext ?? null
+              })),
               evidence: patchSet.sourceEvidence.filter(source => source.path === path)
             };
           })
@@ -270,14 +576,25 @@ export function materializeProgramRepair(input: {
 export function createProgramRepairKernel(options: { hasher?: Hasher; maxAttempts?: number; diagnosticPatterns?: readonly DiagnosticPattern[] } = {}) {
   const hasher = options.hasher ?? createHasher();
   const maxAttempts = Math.max(1, options.maxAttempts ?? 2);
-  const diagnosticPatterns = options.diagnosticPatterns ?? [];
+  const diagnosticPatterns = [unusedTypeImportDiagnosticPattern(), ...(options.diagnosticPatterns ?? [])];
   return {
     parseDiagnostics(input: { stdout?: string; stderr?: string; artifacts?: FileArtifact[] }): ProgramDiagnostic[] {
       return parseDiagnostics(input.stdout ?? "", input.stderr ?? "", input.artifacts ?? [], hasher, diagnosticPatterns);
     },
 
     plan(input: { program: ProgramGraph; build?: BuildTestResult; stdout?: string; stderr?: string; requestText?: string }): RepairPlan {
-      const diagnostics = parseDiagnostics(input.stdout ?? input.build?.build.stdout ?? "", input.stderr ?? input.build?.build.stderr ?? "", input.program.files, hasher, diagnosticPatterns);
+      const observedStdout = input.stdout ?? input.build?.build.stdout ?? "";
+      const observedStderr = input.stderr ?? input.build?.build.stderr ?? "";
+      const derivedDiagnostic = `${observedStdout}\n${observedStderr}`.trim()
+        ? undefined
+        : deriveUnusedTypeImportDiagnostic(input.program, input.requestText ?? "", hasher);
+      const diagnostics = parseDiagnostics(
+        derivedDiagnostic ?? observedStdout,
+        observedStderr,
+        input.program.files,
+        hasher,
+        diagnosticPatterns
+      );
       const patchSets = buildPatchSets({ program: input.program, diagnostics, requestText: input.requestText ?? "", hasher });
       const selectedPatchSet = patchSets.sort((a, b) => b.confidence - a.confidence || a.estimatedRisk - b.estimatedRisk)[0];
       return {
@@ -321,13 +638,16 @@ function applyVirtualRepair(files: readonly FileArtifact[], patchSet: RepairPatc
     const file = byPath.get(op.path);
     if (!file && op.kind !== "dependency" && op.kind !== "config") continue;
     if (op.kind === "replace" && file) {
-      byPath.set(op.path, { ...file, content: replaceLines(file.content, op.startLine ?? 1, op.endLine ?? op.startLine ?? 1, op.content ?? "") });
+      const content = op.textChanges
+        ? applyExactTextChanges(file.content, normalizeExactTextChanges(op.textChanges, file.content.length))
+        : replaceLines(file.content, op.startLine ?? 1, op.endLine ?? op.startLine ?? 1, op.content ?? "");
+      byPath.set(op.path, { ...file, content });
       changed.add(op.path);
     } else if (op.kind === "insert" && file) {
       byPath.set(op.path, { ...file, content: insertAtLine(file.content, op.startLine ?? 1, op.content ?? "") });
       changed.add(op.path);
     } else if (op.kind === "delete" && file) {
-      byPath.set(op.path, { ...file, content: replaceLines(file.content, op.startLine ?? 1, op.endLine ?? op.startLine ?? 1, "") });
+      byPath.set(op.path, { ...file, content: deleteLinesExact(file.content, op.startLine ?? 1, op.endLine ?? op.startLine ?? 1) });
       changed.add(op.path);
     } else if ((op.kind === "dependency" || op.kind === "config") && file) {
       byPath.set(op.path, { ...file, content: op.content ?? file.content });
@@ -409,12 +729,46 @@ function buildPatchSets(input: { program: ProgramGraph; diagnostics: ProgramDiag
 }
 
 function operationForDiagnostic(file: FileArtifact, diag: ProgramDiagnostic, requestText: string, hasher: Hasher): RepairOperation[] {
+  if (diag.patternId === UNUSED_TYPE_IMPORT_DIAGNOSTIC_PATTERN_ID) {
+    return unusedTypeImportRepair(file, diag, requestText, hasher);
+  }
   if (diag.class === "syntax") return syntaxRepair(file, diag, hasher);
   if (diag.class === "type") return typeRepair(file, diag, requestText, hasher);
   if (diag.class === "contract") return contractRepair(file, diag, hasher);
   if (diag.class === "runtime") return runtimeRepair(file, diag, hasher);
   if (diag.class === "security") return securityRepair(file, diag, hasher);
   return [];
+}
+
+function unusedTypeImportRepair(file: FileArtifact, diag: ProgramDiagnostic, requestText: string, hasher: Hasher): RepairOperation[] {
+  if (!isTypeScriptSource(file) || !diag.symbol || !isUnusedTypeImportRemovalRequest(requestText, diag.symbol)) return [];
+  const candidate = unusedTypeImportCandidates(file.content, hasher)
+    .find(item => item.line === diag.line && item.binding === diag.symbol);
+  if (!candidate) return [];
+  return [operation(
+    "delete",
+    file.path,
+    candidate.line,
+    candidate.line,
+    undefined,
+    `Remove source-proven unreferenced type-only import ${candidate.binding} from ${candidate.moduleSpecifier}.`,
+    0.04,
+    hasher,
+    undefined,
+    {
+      repairFamilyId: UNUSED_TYPE_IMPORT_REPAIR_FAMILY,
+      preconditions: [
+        { id: UNUSED_TYPE_IMPORT_PRECONDITION_IDS[0], value: String(file.contentHash) },
+        { id: UNUSED_TYPE_IMPORT_PRECONDITION_IDS[1], value: candidate.declarationHash },
+        { id: UNUSED_TYPE_IMPORT_PRECONDITION_IDS[2], value: candidate.binding }
+      ],
+      postconditions: [
+        { id: UNUSED_TYPE_IMPORT_POSTCONDITION_IDS[0], value: candidate.declarationHash },
+        { id: UNUSED_TYPE_IMPORT_POSTCONDITION_IDS[1], value: "exact_single_line_deletion" },
+        { id: UNUSED_TYPE_IMPORT_POSTCONDITION_IDS[2], value: "typecheck" }
+      ]
+    }
+  )];
 }
 
 function syntaxRepair(file: FileArtifact, diag: ProgramDiagnostic, hasher: Hasher): RepairOperation[] {
@@ -523,10 +877,19 @@ function patchSetFor(program: ProgramGraph, diagnostics: ProgramDiagnostic[], op
     explanation: [
       `${diagnostics.length} diagnostics mapped to ${affectedFiles.length} owned files`,
       `${operations.length} repair operations prepared`,
-      `confidence=${confidence.toFixed(3)}`,
-      `risk=${estimatedRisk.toFixed(3)}`
+      `provisional_uncalibrated_confidence=${confidence.toFixed(3)}`,
+      `provisional_uncalibrated_risk=${estimatedRisk.toFixed(3)}`
     ],
-    audit: toJsonValue({ affectedFiles, sourceEvidence, rollbackPlan, unsupportedFields, diagnostics: diagnostics.map(d => ({ id: d.id, class: d.class, path: d.path, line: d.line })), operations })
+    audit: toJsonValue({
+      scoringStatus: "provisional-uncalibrated",
+      confidenceMeaning: "routing heuristic, not patch-success probability",
+      affectedFiles,
+      sourceEvidence,
+      rollbackPlan,
+      unsupportedFields,
+      diagnostics: diagnostics.map(d => ({ id: d.id, class: d.class, path: d.path, line: d.line, confidenceStatus: d.confidenceStatus ?? "provisional-uncalibrated" })),
+      operations
+    })
   };
 }
 
@@ -557,7 +920,23 @@ function dryRunPatchArtifactFor(program: ProgramGraph, patchSet: RepairPatchSet 
     programId: program.id,
     patchSetId: patchSet?.id ?? null,
     affectedFiles: patchSet?.affectedFiles ?? [],
-    operations: patchSet?.operations.map(op => ({ id: op.id, kind: op.kind, path: op.path, startLine: op.startLine ?? null, endLine: op.endLine ?? null, reason: op.reason, risk: op.risk })) ?? [],
+    operations: patchSet?.operations.map(op => ({
+      id: op.id,
+      kind: op.kind,
+      path: op.path,
+      startLine: op.startLine ?? null,
+      endLine: op.endLine ?? null,
+      reason: op.reason,
+      risk: op.risk,
+      riskStatus: op.riskStatus ?? "provisional-uncalibrated",
+      repairFamilyId: op.repairFamilyId ?? null,
+      preconditions: op.preconditions ?? [],
+      postconditions: op.postconditions ?? [],
+      textChanges: op.textChanges ?? [],
+      diagnosticEvidence: op.diagnosticEvidence ?? null,
+      codeFixEvidence: op.codeFixEvidence ?? null,
+      compilerContext: op.compilerContext ?? null
+    })) ?? [],
     rollbackPlan: patchSet?.rollbackPlan ?? [],
     sourceEvidence: patchSet?.sourceEvidence ?? [],
     mutatesRealWorkspace: false
@@ -570,9 +949,21 @@ function diagnosticNotePatch(program: ProgramGraph, reason: string, hasher: Hash
   return patchSetFor(program, diagnostics, operations, hasher);
 }
 
-function operation(kind: RepairOperationKind, path: string, startLine: number | undefined, endLine: number | undefined, content: string | undefined, reason: string, risk: number, hasher: Hasher, packageName?: string): RepairOperation {
+function operation(
+  kind: RepairOperationKind,
+  path: string,
+  startLine: number | undefined,
+  endLine: number | undefined,
+  content: string | undefined,
+  reason: string,
+  risk: number,
+  hasher: Hasher,
+  packageName?: string,
+  contract?: Pick<RepairOperation,
+    "repairFamilyId" | "preconditions" | "postconditions" | "textChanges" | "diagnosticEvidence" | "codeFixEvidence" | "compilerContext">
+): RepairOperation {
   return {
-    id: `repair_op_${hasher.digestHex(`${kind}:${path}:${startLine}:${endLine}:${content}:${reason}`).slice(0, 24)}`,
+    id: `repair_op_${hasher.digestHex(canonicalStringify({ kind, path, startLine, endLine, content, reason, packageName, contract })).slice(0, 24)}`,
     kind,
     path,
     startLine,
@@ -580,8 +971,456 @@ function operation(kind: RepairOperationKind, path: string, startLine: number | 
     content,
     packageName,
     reason,
-    risk: clamp01(risk)
+    risk: clamp01(risk),
+    riskStatus: "provisional-uncalibrated",
+    ...contract
   };
+}
+
+interface UnusedTypeImportCandidate {
+  binding: string;
+  moduleSpecifier: string;
+  line: number;
+  declaration: string;
+  declarationHash: string;
+}
+
+interface ExactLineRange {
+  line: number;
+  start: number;
+  textEnd: number;
+  end: number;
+}
+
+export function canonicalTypeScriptDiagnosticIdentity(input: {
+  path: string;
+  diagnostic: Pick<TypeScriptCodeActionDiagnosticEvidence, "code" | "category" | "start" | "length" | "message">;
+  compilerVersion: string;
+  compilerOptionsHash: string;
+}, hasher: Hasher = createHasher()): string {
+  return `typescript.diagnostic:${hasher.digestHex(stableIdentitySerialize({
+    path: input.path,
+    diagnostic: {
+      code: input.diagnostic.code,
+      category: input.diagnostic.category,
+      start: input.diagnostic.start,
+      length: input.diagnostic.length,
+      message: input.diagnostic.message
+    },
+    compilerVersion: input.compilerVersion,
+    compilerOptionsHash: input.compilerOptionsHash
+  }))}`;
+}
+
+export function canonicalTypeScriptCodeFixIdentity(input: {
+  diagnosticIdentity: string;
+  codeFix: {
+    fixName: string;
+    description: string;
+    fixId?: string;
+    textChanges: readonly ExactProgramTextChange[];
+  };
+}, hasher: Hasher = createHasher()): string {
+  return `typescript.code_fix:${hasher.digestHex(stableIdentitySerialize({
+    diagnosticIdentity: input.diagnosticIdentity,
+    codeFix: input.codeFix
+  }))}`;
+}
+
+export function canonicalTypeScriptCompilerCommandIdentity(input: TypeScriptCodeActionCompilerContext["compilerCommand"], hasher: Hasher = createHasher()): string {
+  return `typescript.compiler_command:${hasher.digestHex(stableIdentitySerialize(input))}`;
+}
+
+export function canonicalTypeScriptCompilerOptionsHash(options: unknown, hasher: Hasher = createHasher()): string {
+  return `sha256:${hasher.digestHex(stableIdentitySerialize(options))}`;
+}
+
+function stableIdentitySerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableIdentitySerialize).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .filter(key => record[key] !== undefined)
+    .map(key => `${JSON.stringify(key)}:${stableIdentitySerialize(record[key])}`)
+    .join(",")}}`;
+}
+
+function validateTypeScriptDiagnostic(
+  value: TypeScriptCodeActionDiagnosticEvidence,
+  source: string
+): TypeScriptCodeActionDiagnosticEvidence {
+  if (!Number.isSafeInteger(value.code) || value.code <= 0
+    || !Number.isSafeInteger(value.start) || value.start < 0
+    || !Number.isSafeInteger(value.length) || value.length < 0
+    || value.start + value.length > source.length) {
+    throw new Error("TypeScript code-action diagnostic span is outside the exact source artifact");
+  }
+  return {
+    code: value.code,
+    category: requiredRepairString(value.category, "TypeScript diagnostic category"),
+    start: value.start,
+    length: value.length,
+    message: requiredRepairString(value.message, "TypeScript diagnostic message"),
+    diagnosticIdentity: requiredRepairString(value.diagnosticIdentity, "TypeScript diagnostic identity")
+  };
+}
+
+function validateTypeScriptCompilerContext(
+  value: TypeScriptCodeActionCompilerContext,
+  program: ProgramGraph,
+  hasher: Hasher
+): TypeScriptCodeActionCompilerContext {
+  const compilerCommand = {
+    executable: requiredRepairString(value.compilerCommand?.executable, "TypeScript compiler command executable"),
+    args: [...(value.compilerCommand?.args ?? [])].map((arg, index) => requiredRepairString(arg, `TypeScript compiler command argument ${index}`)),
+    cwd: requiredRepairString(value.compilerCommand?.cwd, "TypeScript compiler command cwd"),
+    sourcePath: requiredRepairString(value.compilerCommand?.sourcePath, "TypeScript compiler command source path"),
+    sourceContentHash: requiredRepairString(value.compilerCommand?.sourceContentHash, "TypeScript compiler command source content hash")
+  };
+  const tsconfigPath = requiredRepairString(value.tsconfigPath, "TypeScript config path");
+  const tsconfigContentHash = requiredRepairString(value.tsconfigContentHash, "TypeScript config content hash");
+  const context: TypeScriptCodeActionCompilerContext = {
+    version: requiredRepairString(value.version, "TypeScript compiler version"),
+    tsconfigPath,
+    tsconfigContentHash,
+    compilerOptionsHash: requiredRepairString(value.compilerOptionsHash, "TypeScript compiler-options hash"),
+    compilerOptionsSource: requiredRepairString(value.compilerOptionsSource, "TypeScript compiler-options source"),
+    configDiagnosticCodes: [...value.configDiagnosticCodes],
+    sourceFileBoundary: value.sourceFileBoundary,
+    compilerCommand
+  };
+  if (!/^sha256:[0-9a-f]{64}$/u.test(context.compilerOptionsHash)) {
+    throw new Error("TypeScript compiler-options hash is not canonical SHA-256");
+  }
+  if (context.configDiagnosticCodes.some(code => !Number.isSafeInteger(code) || code <= 0)) {
+    throw new Error("TypeScript code-action compiler context contains an invalid configuration diagnostic");
+  }
+  if (context.sourceFileBoundary !== "workspace_snapshot_and_typescript_standard_library") {
+    throw new Error("TypeScript code-action compiler source boundary is not the exact workspace snapshot");
+  }
+  if (context.configDiagnosticCodes.length > 0) {
+    throw new Error(`TypeScript code-action repair requires a valid compiler configuration: ${context.configDiagnosticCodes.join(", ")}`);
+  }
+  if (context.compilerOptionsSource !== "source_observed_tsc_project") {
+    throw new Error("TypeScript code-action compiler options are not bound to a source-observed tsc project");
+  }
+  if (program.build.command !== compilerCommand.executable
+    || program.build.cwd !== compilerCommand.cwd
+    || program.build.args.length !== compilerCommand.args.length
+    || program.build.args.some((arg, index) => arg !== compilerCommand.args[index])) {
+    throw new Error("TypeScript code-action compiler command does not match the source-observed ProgramGraph build lane");
+  }
+  const commandSourceArtifact = program.files.find(file => file.path === compilerCommand.sourcePath);
+  const commandSourceDirectory = compilerCommand.sourcePath.includes("/")
+    ? compilerCommand.sourcePath.slice(0, compilerCommand.sourcePath.lastIndexOf("/"))
+    : ".";
+  if (!commandSourceArtifact
+    || String(commandSourceArtifact.contentHash) !== compilerCommand.sourceContentHash
+    || compilerCommand.sourceContentHash !== `sha256_${hasher.digestHex(commandSourceArtifact.content)}`
+    || compilerCommand.cwd !== commandSourceDirectory) {
+    throw new Error(`TypeScript code-action compiler command is not bound to an exact ProgramGraph artifact: ${compilerCommand.sourcePath}`);
+  }
+  const configArtifact = program.files.find(file => file.path === tsconfigPath);
+  if (!configArtifact
+    || String(configArtifact.contentHash) !== tsconfigContentHash
+    || tsconfigContentHash !== `sha256_${hasher.digestHex(configArtifact.content)}`) {
+    throw new Error(`TypeScript code-action compiler config is not bound to an exact ProgramGraph artifact: ${tsconfigPath}`);
+  }
+  return context;
+}
+
+function normalizeExactTextChanges(changes: readonly ExactProgramTextChange[], sourceLength: number): ExactProgramTextChange[] {
+  if (changes.length === 0 || changes.length > 128) {
+    throw new Error("TypeScript code-action repair requires between 1 and 128 exact text changes");
+  }
+  const normalized = changes.map(change => {
+    if (!Number.isSafeInteger(change.start) || change.start < 0
+      || !Number.isSafeInteger(change.length) || change.length < 0
+      || change.start + change.length > sourceLength
+      || typeof change.newText !== "string") {
+      throw new Error("TypeScript code-action text change is outside the exact source artifact");
+    }
+    return { start: change.start, length: change.length, newText: change.newText };
+  }).sort((left, right) => left.start - right.start || left.length - right.length || left.newText.localeCompare(right.newText));
+  for (let index = 1; index < normalized.length; index += 1) {
+    const previous = normalized[index - 1]!;
+    const current = normalized[index]!;
+    if (current.start < previous.start + previous.length || current.start === previous.start) {
+      throw new Error("TypeScript code-action text changes overlap or have ambiguous ordering");
+    }
+  }
+  return normalized;
+}
+
+function applyExactTextChanges(source: string, changes: readonly ExactProgramTextChange[]): string {
+  let output = source;
+  for (const change of [...changes].sort((left, right) => right.start - left.start)) {
+    output = output.slice(0, change.start) + change.newText + output.slice(change.start + change.length);
+  }
+  return output;
+}
+
+export function verifyExactTypeScriptCodeActionTransformation(input: {
+  before: string;
+  after: string;
+  textChanges: readonly ExactProgramTextChange[];
+}): boolean {
+  try {
+    const normalized = normalizeExactTextChanges(input.textChanges, input.before.length);
+    return applyExactTextChanges(input.before, normalized) === input.after;
+  } catch {
+    return false;
+  }
+}
+
+function requiredRepairString(value: string | undefined, label: string): string {
+  if (!value || value !== value.trim() || value.includes("\u0000")) throw new Error(`${label} is required`);
+  return value;
+}
+
+function lineForOffset(source: string, offset: number): number {
+  let line = 1;
+  for (let index = 0; index < offset; index += 1) if (source[index] === "\n") line += 1;
+  return line;
+}
+
+function columnForOffset(source: string, offset: number): number {
+  const previousNewline = source.lastIndexOf("\n", Math.max(0, offset - 1));
+  return offset - previousNewline;
+}
+
+export function isUnusedTypeImportRemovalRequest(requestText: string, binding?: string): boolean {
+  const family = /\b(?:remove|delete)\s+(?:the\s+)?unused\s+(?:(?:type\s+import)|(?:import\s+type))\b/iu.test(requestText);
+  return family && (!binding || containsIdentifier(requestText, binding));
+}
+
+/**
+ * Verifies the complete before/after transform independently of repair metadata.
+ * Only a single-line, type-only import whose local binding has no other source
+ * occurrence is admitted; all bytes outside that exact line must be identical.
+ */
+export function verifyExactUnusedTypeImportRemoval(input: {
+  before: string;
+  after: string;
+  binding?: string;
+  line?: number;
+  declarationHash?: string;
+  hasher?: Hasher;
+}): VerifiedUnusedTypeImportRemoval | undefined {
+  const hasher = input.hasher ?? createHasher();
+  const matches = unusedTypeImportCandidates(input.before, hasher).filter(candidate =>
+    (!input.binding || candidate.binding === input.binding)
+    && (!input.line || candidate.line === input.line)
+    && (!input.declarationHash || candidate.declarationHash === input.declarationHash)
+    && deleteLinesExact(input.before, candidate.line, candidate.line) === input.after
+  );
+  if (matches.length !== 1) return undefined;
+  const match = matches[0]!;
+  return {
+    familyId: UNUSED_TYPE_IMPORT_REPAIR_FAMILY,
+    binding: match.binding,
+    moduleSpecifier: match.moduleSpecifier,
+    line: match.line,
+    declarationHash: match.declarationHash,
+    preconditionIds: [...UNUSED_TYPE_IMPORT_PRECONDITION_IDS],
+    postconditionIds: [...UNUSED_TYPE_IMPORT_POSTCONDITION_IDS]
+  };
+}
+
+function deriveUnusedTypeImportDiagnostic(program: ProgramGraph, requestText: string, hasher: Hasher): string | undefined {
+  if (!isUnusedTypeImportRemovalRequest(requestText)) return undefined;
+  const matches = program.files.flatMap(file => {
+    if (!isTypeScriptSource(file)) return [];
+    return unusedTypeImportCandidates(file.content, hasher)
+      .filter(candidate => isUnusedTypeImportRemovalRequest(requestText, candidate.binding))
+      .map(candidate => ({ file, candidate }));
+  });
+  if (matches.length !== 1) return undefined;
+  const { file, candidate } = matches[0]!;
+  return `${file.path}:${candidate.line}:1 type scce.diagnostic.typescript.unused_type_import binding=${candidate.binding}`;
+}
+
+function unusedTypeImportDiagnosticPattern(): DiagnosticPattern {
+  return {
+    id: UNUSED_TYPE_IMPORT_DIAGNOSTIC_PATTERN_ID,
+    class: "type",
+    pattern: /scce\.diagnostic\.typescript\.unused_type_import\s+binding=([A-Za-z_$][\w$]*)/u,
+    confidence: 0.99,
+    symbolGroup: 1
+  };
+}
+
+function unusedTypeImportCandidates(content: string, hasher: Hasher): UnusedTypeImportCandidate[] {
+  const candidates: UnusedTypeImportCandidate[] = [];
+  for (const range of exactLineRanges(content)) {
+    const declaration = content.slice(range.start, range.textEnd);
+    const parsed = parseTypeOnlyImportDeclaration(declaration);
+    if (!parsed) continue;
+    const withoutDeclaration = content.slice(0, range.start) + content.slice(range.end);
+    if (containsIdentifier(withoutDeclaration, parsed.binding)) continue;
+    candidates.push({
+      ...parsed,
+      line: range.line,
+      declaration,
+      declarationHash: `sha256_${hasher.digestHex(declaration)}`
+    });
+  }
+  return candidates;
+}
+
+function parseTypeOnlyImportDeclaration(declaration: string): { binding: string; moduleSpecifier: string } | undefined {
+  const defaultImport = /^\s*import\s+type\s+([A-Za-z_$][\w$]*)\s+from\s+(["'])([^"']+)\2\s*;?\s*$/u.exec(declaration);
+  if (defaultImport) return { binding: defaultImport[1]!, moduleSpecifier: defaultImport[3]! };
+  const namespaceImport = /^\s*import\s+type\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+(["'])([^"']+)\2\s*;?\s*$/u.exec(declaration);
+  if (namespaceImport) return { binding: namespaceImport[1]!, moduleSpecifier: namespaceImport[3]! };
+  const namedImport = /^\s*import\s+type\s+\{\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*,?\s*\}\s+from\s+(["'])([^"']+)\3\s*;?\s*$/u.exec(declaration);
+  if (namedImport) return { binding: namedImport[2] ?? namedImport[1]!, moduleSpecifier: namedImport[4]! };
+  const inlineTypeImport = /^\s*import\s+\{\s*type\s+([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*,?\s*\}\s+from\s+(["'])([^"']+)\3\s*;?\s*$/u.exec(declaration);
+  if (inlineTypeImport) return { binding: inlineTypeImport[2] ?? inlineTypeImport[1]!, moduleSpecifier: inlineTypeImport[4]! };
+  return undefined;
+}
+
+function assertRepairOperationPostconditions(before: FileArtifact, after: FileArtifact, operation: RepairOperation, hasher: Hasher): void {
+  if (!operation.repairFamilyId) return;
+  if (operation.repairFamilyId === TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY) {
+    const textChanges = normalizeExactTextChanges(operation.textChanges ?? [], before.content.length);
+    const sourceHash = contractValue(operation.preconditions, "repair.precondition.exact_source_content_hash");
+    const textChangeHash = `sha256_${hasher.digestHex(canonicalStringify(textChanges))}`;
+    const diagnostic = operation.diagnosticEvidence;
+    const codeFix = operation.codeFixEvidence;
+    const compiler = operation.compilerContext;
+    if (!diagnostic || !codeFix || !compiler) {
+      throw new Error(`program repair postconditions failed for ${operation.path}: compiler evidence is incomplete`);
+    }
+    const diagnosticIdentity = canonicalTypeScriptDiagnosticIdentity({
+      path: operation.path,
+      diagnostic,
+      compilerVersion: compiler.version,
+      compilerOptionsHash: compiler.compilerOptionsHash
+    }, hasher);
+    const codeFixIdentity = canonicalTypeScriptCodeFixIdentity({
+      diagnosticIdentity,
+      codeFix: {
+        fixName: codeFix.fixName,
+        description: codeFix.description,
+        ...(codeFix.fixId ? { fixId: codeFix.fixId } : {}),
+        textChanges
+      }
+    }, hasher);
+    const compilerCommandIdentity = canonicalTypeScriptCompilerCommandIdentity(compiler.compilerCommand, hasher);
+    const carriesConfigPath = Boolean(compiler.tsconfigPath);
+    const carriesConfigHash = Boolean(compiler.tsconfigContentHash);
+    const expectedConfigHash = compiler.tsconfigContentHash;
+    const commandSourceDirectory = compiler.compilerCommand.sourcePath.includes("/")
+      ? compiler.compilerCommand.sourcePath.slice(0, compiler.compilerCommand.sourcePath.lastIndexOf("/"))
+      : ".";
+    if (operation.kind !== "replace"
+      || diagnostic.diagnosticIdentity !== diagnosticIdentity
+      || codeFix.codeFixIdentity !== codeFixIdentity
+      || !carriesConfigPath
+      || !carriesConfigHash
+      || compiler.compilerOptionsSource !== "source_observed_tsc_project"
+      || compiler.compilerCommand.cwd !== commandSourceDirectory
+      || !/^sha256_[0-9a-f]{64}$/u.test(compiler.compilerCommand.sourceContentHash)
+      || sourceHash !== String(before.contentHash)
+      || sourceHash !== `sha256_${hasher.digestHex(before.content)}`
+      || !hasOperationContract(operation.preconditions, "repair.precondition.exact_source_content_hash", String(before.contentHash))
+      || applyExactTextChanges(before.content, textChanges) !== after.content
+      || !hasOperationContract(operation.preconditions, "repair.precondition.typescript_diagnostic_identity", diagnosticIdentity)
+      || !hasOperationContract(operation.preconditions, "repair.precondition.typescript_code_fix_identity", codeFixIdentity)
+      || !hasOperationContract(operation.preconditions, "repair.precondition.compiler_options_hash", compiler.compilerOptionsHash)
+      || !hasOperationContract(operation.preconditions, "repair.precondition.tsconfig_content_hash", expectedConfigHash)
+      || !hasOperationContract(operation.preconditions, "repair.precondition.compiler_command_identity", compilerCommandIdentity)
+      || !hasOperationContract(operation.preconditions, "repair.precondition.compiler_command_source_content_hash", compiler.compilerCommand.sourceContentHash)
+      || !hasOperationContract(operation.postconditions, "repair.postcondition.exact_text_changes_applied", textChangeHash)
+      || !hasOperationContract(operation.postconditions, "repair.postcondition.compiler_diagnostic_recheck_required", `TS${diagnostic.code}`)
+      || !hasOperationContract(operation.postconditions, "repair.postcondition.typecheck_required", "typecheck")
+      || !hasOperationContract(operation.postconditions, "repair.postcondition.tests_required", "tests")) {
+      throw new Error(`program repair postconditions failed for ${operation.path}`);
+    }
+    return;
+  }
+  if (operation.repairFamilyId !== UNUSED_TYPE_IMPORT_REPAIR_FAMILY) {
+    throw new Error(`program repair operation has an unsupported repair family: ${operation.repairFamilyId}`);
+  }
+  const declarationHash = contractValue(operation.preconditions, UNUSED_TYPE_IMPORT_PRECONDITION_IDS[1]);
+  const binding = contractValue(operation.preconditions, UNUSED_TYPE_IMPORT_PRECONDITION_IDS[2]);
+  const sourceHash = contractValue(operation.preconditions, UNUSED_TYPE_IMPORT_PRECONDITION_IDS[0]);
+  if (sourceHash !== String(before.contentHash)
+    || sourceHash !== `sha256_${hasher.digestHex(before.content)}`
+    || operation.kind !== "delete"
+    || operation.startLine !== operation.endLine
+    || !declarationHash
+    || !binding) {
+    throw new Error(`program repair preconditions are invalid for ${operation.path}`);
+  }
+  const verified = verifyExactUnusedTypeImportRemoval({
+    before: before.content,
+    after: after.content,
+    binding,
+    line: operation.startLine,
+    declarationHash,
+    hasher
+  });
+  if (!verified
+    || !UNUSED_TYPE_IMPORT_PRECONDITION_IDS.every(id => contractValue(operation.preconditions, id) !== undefined)
+    || !UNUSED_TYPE_IMPORT_POSTCONDITION_IDS.every(id => contractValue(operation.postconditions, id) !== undefined)) {
+    throw new Error(`program repair postconditions failed for ${operation.path}`);
+  }
+}
+
+function hasOperationContract(items: readonly { id: string; value: string }[] | undefined, id: string, value: string): boolean {
+  const matches = items?.filter(item => item.id === id) ?? [];
+  return matches.length === 1 && matches[0]?.value === value;
+}
+
+function contractValue(items: readonly { id: string; value: string }[] | undefined, id: string): string | undefined {
+  return items?.find(item => item.id === id)?.value;
+}
+
+function isTypeScriptSource(file: FileArtifact): boolean {
+  return file.role === "source"
+    && (file.mediaType.includes("typescript") || /\.(?:ts|tsx|mts|cts)$/iu.test(file.path));
+}
+
+function containsIdentifier(text: string, identifier: string): boolean {
+  let offset = text.indexOf(identifier);
+  while (offset >= 0) {
+    const before = offset > 0 ? text[offset - 1]! : "";
+    const after = text[offset + identifier.length] ?? "";
+    if (!isIdentifierPart(before) && !isIdentifierPart(after)) return true;
+    offset = text.indexOf(identifier, offset + identifier.length);
+  }
+  return false;
+}
+
+function isIdentifierPart(value: string): boolean {
+  return Boolean(value) && /[\p{Letter}\p{Number}_$]/u.test(value);
+}
+
+function exactLineRanges(content: string): ExactLineRange[] {
+  if (!content) return [];
+  const ranges: ExactLineRange[] = [];
+  let start = 0;
+  let line = 1;
+  while (start < content.length) {
+    const newline = content.indexOf("\n", start);
+    const end = newline < 0 ? content.length : newline + 1;
+    const textEnd = newline < 0 ? content.length : newline > start && content[newline - 1] === "\r" ? newline - 1 : newline;
+    ranges.push({ line, start, textEnd, end });
+    start = end;
+    line += 1;
+  }
+  return ranges;
+}
+
+function deleteLinesExact(content: string, startLine: number, endLine: number): string {
+  const ranges = exactLineRanges(content);
+  const first = ranges[Math.max(0, startLine - 1)];
+  const last = ranges[Math.max(0, endLine - 1)];
+  if (!first || !last || last.line < first.line) return content;
+  return content.slice(0, first.start) + content.slice(last.end);
 }
 
 function matchDiagnosticPattern(raw: string, patterns: readonly DiagnosticPattern[]): { class: DiagnosticClass; patternId: string; symbol?: string; confidence?: number } | undefined {

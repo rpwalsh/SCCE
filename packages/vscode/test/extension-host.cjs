@@ -9,6 +9,7 @@ const REQUIRED_COMMANDS = [
   "yopp.setServerToken",
   "yopp.workspace.initialize",
   "yopp.workspace.ingest",
+  "yopp.workspace.codingRequest",
   "yopp.workspace.applyPatchPlan",
   "yopp.project.summary",
   "yopp.workspace.ask",

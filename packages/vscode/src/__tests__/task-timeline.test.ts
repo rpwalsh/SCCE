@@ -30,6 +30,16 @@ describe("persisted extension task metadata", () => {
     expect(restored.list()[0]).toMatchObject({ state: "interrupted", recoveredAt: 20 });
   });
 
+  it("restores coding-plan and patch-application endpoint records", async () => {
+    const storage = new MemoryMemento();
+    const first = new TaskTimeline(storage, () => 10);
+    await first.start("workspace.patch.plan.request", "Plan coding request", false);
+    await first.start("workspace.patch", "Apply patch", true);
+
+    const endpoints = new TaskTimeline(storage, () => 20).list().map(task => task.endpoint);
+    expect(new Set(endpoints)).toEqual(new Set(["workspace.patch.plan.request", "workspace.patch"]));
+  });
+
   it("drops malformed or wrong-version persisted metadata", () => {
     const storage = new MemoryMemento();
     storage.values.set(TASK_STORAGE_KEY, { schema: "yopp.vscode.task_timeline.v2", tasks: [{ id: "bad" }] });

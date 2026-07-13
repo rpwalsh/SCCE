@@ -1,0 +1,6 @@
+SCCE is proprietary software. The package manifests intentionally use
+`"private": true` and `"license": "UNLICENSED"`.
+
+Third-party dependencies and vendored materials are not relicensed by the SCCE
+proprietary notice. Their names and resolved versions are recorded in the package
+manifests and `pnpm-lock.yaml`; vendored material is documented under `vendor/`.

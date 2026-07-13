@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
+import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
 import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, traceEvent } from "@scce/kernel";
 
 interface Parsed {
@@ -90,7 +91,7 @@ async function main(): Promise<void> {
           traceEvent(trace, { stage: "turn.runtime.start", label: "cli.turn" });
           const conversationId = turnArgs.conversationId ?? turnArgs.sessionId ?? "conversation.cli";
           const learnedDialogueProfile = await latestDialogueStyleProfile(runtime.storage.dialogueMemory, conversationId);
-          const turnInput = { text, metadata: { runtimePath: { hydratedRuntime: true, serverPath: false, sourceOnlySimulation: false }, activeBrainVersion: active.activeBrainVersion, activeImportRunIds: active.activeImportRunIds, conversationId, sessionId: turnArgs.sessionId ?? conversationId } };
+          const turnInput = { text, metadata: { runtimePath: { hydratedRuntime: true, serverPath: false, sourceOnlySimulation: false }, activeBrainVersion: active.activeBrainVersion, activeImportRunIds: active.activeImportRunIds, conversationId, sessionId: turnArgs.sessionId ?? conversationId, ...(turnArgs.detailProfileId ? { detailProfileId: turnArgs.detailProfileId } : {}) } };
           const result = await runtime.kernel.turn(turnInput);
           const calibrationModels = await loadCalibrationModelSet({
             store: runtime.storage.dialogueMemory,
@@ -430,6 +431,29 @@ async function workspace(runtime: ReturnType<typeof createWorkspaceRuntime>, arg
     printJson(await runtime.answer(question, undefined, parseWorkspaceOptions(args.slice(1))));
     return;
   }
+  if (sub === "code" || sub === "plan-code") {
+    const request = parseWorkspaceCodingRequest(args.slice(1));
+    if (!request) return usage(WORKSPACE_CODE_USAGE);
+    const options = parseWorkspaceOptions(request.workspaceOptionArgs);
+    const project = await runtime.project(request.rootPath, options);
+    const requestId = request.requestId ?? defaultWorkspaceCodingRequestId({
+      workspaceId: project.workspace.id,
+      expectedWorkspaceUpdatedAt: project.workspace.updatedAt,
+      request
+    });
+    printJson(await runtime.planCodingPatch({
+      workspaceId: project.workspace.id,
+      expectedWorkspaceUpdatedAt: project.workspace.updatedAt,
+      requestId,
+      requestText: request.text,
+      requestedPaths: request.requestedPaths,
+      validationPlan: {
+        validatorId: request.validatorId,
+        checks: request.checks
+      }
+    }, request.rootPath, options));
+    return;
+  }
   if (sub === "outcome") {
     const status = args[1];
     if (status !== "accepted" && status !== "rejected" && status !== "corrected") return usage("scce workspace outcome <accepted|rejected|corrected> [--correction-text=...] [--report-id=...]");
@@ -442,7 +466,7 @@ async function workspace(runtime: ReturnType<typeof createWorkspaceRuntime>, arg
     }, undefined, parseWorkspaceOptions(args.slice(2))));
     return;
   }
-  return usage("scce workspace <init|ingest|ask|outcome> ...");
+  return usage("scce workspace <init|ingest|ask|plan-code|outcome> ... (workspace code is an alias for plan-code)");
 }
 
 async function project(runtime: ReturnType<typeof createWorkspaceRuntime>, args: string[]): Promise<void> {
@@ -962,12 +986,13 @@ function parseArgs(argv: string[]): Parsed {
   return { configPath, command: args.shift(), args };
 }
 
-function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; sessionId?: string; conversationId?: string; targetLanguage?: string } {
+function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; sessionId?: string; conversationId?: string; targetLanguage?: string; detailProfileId?: string } {
   const textParts: string[] = [];
   let webRequested = false;
   let sessionId: string | undefined;
   let conversationId: string | undefined;
   let targetLanguage: string | undefined;
+  let detailProfileId: string | undefined;
   for (const arg of args) {
     if (arg === "--web") {
       webRequested = true;
@@ -983,6 +1008,22 @@ function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; s
     }
     if (arg.startsWith("--target-language=")) {
       targetLanguage = requiredStringFlag(arg, "--target-language=");
+      continue;
+    }
+    if (arg.startsWith("--detail=")) {
+      const detail = requiredStringFlag(arg, "--detail=").toLocaleLowerCase();
+      const profile = {
+        brief: "surface.detail.profile.0",
+        normal: "surface.detail.profile.1",
+        detailed: "surface.detail.profile.2",
+        stepwise: "surface.detail.profile.3"
+      }[detail];
+      if (!profile) throw new Error("turn detail must be brief, normal, detailed, or stepwise");
+      detailProfileId = profile;
+      continue;
+    }
+    if (arg.startsWith("--detail-profile=")) {
+      detailProfileId = requiredStringFlag(arg, "--detail-profile=");
       continue;
     }
     if (arg.startsWith("--web-limit=")) {
@@ -1012,7 +1053,7 @@ function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; s
     }
     textParts.push(arg);
   }
-  return { text: textParts.join(" ").trim(), webRequested, sessionId, conversationId, targetLanguage };
+  return { text: textParts.join(" ").trim(), webRequested, sessionId, conversationId, targetLanguage, detailProfileId };
 }
 
 function parseCorpusTrainOptions(args: string[]): {
@@ -1092,6 +1133,8 @@ function usage(error?: string): void {
     "  pnpm scce workspace init <path>",
     "  pnpm scce workspace ingest [path]",
     "  pnpm scce workspace ask <question>",
+    `  pnpm ${WORKSPACE_CODE_USAGE}`,
+    "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
     "  pnpm scce project summary [path]",
     "  pnpm scce project map [path]",
     "  pnpm scce project symbols [path]",
@@ -1116,7 +1159,7 @@ function usage(error?: string): void {
     "  pnpm scce repo diagnostics --fixture <path>",
     "  pnpm scce repo plan --dry-run <path>",
     "  pnpm scce train <config>",
-    "  pnpm scce turn <prompt>",
+    "  pnpm scce turn <prompt> [--detail=brief|normal|detailed|stepwise]",
     "  pnpm scce inspect last",
     "  pnpm scce inspect brain",
     "  pnpm scce inspect brain --import <id>",

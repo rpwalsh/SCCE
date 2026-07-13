@@ -168,14 +168,21 @@ are implemented and covered by targeted tests. The server's non-mutating plannin
 boundary verifies the latest durable workspace revision, reads bounded exact current
 bytes, and converts a strict structured full-file proposal into a content-addressed
 plan. The extension and server can apply that reviewed plan when mutation is enabled.
-`POST /api/workspace/patch/plan/request` is strict and non-mutating, but no successful
-production coding family is demonstrated. A generic existing-module request fails
-closed with `422` because its generated ProgramGraph lacks verified repair lineage.
-The exported kernel conversion primitive operates only on a trusted internal hydrated
-full-file ProgramGraph with exact-base repair lineage, current live absence
-observations, and a linked candidate test. It cannot authenticate caller-supplied
-lineage or evidence metadata, prove semantic correctness, or claim test execution.
-`regressionProtection` remains `0` without execution evidence.
+`POST /api/workspace/patch/plan/request` is strict and non-mutating. Targeted tests
+cover source-proven unused type-only import removal and official TypeScript
+LanguageService fixes for one existing requested file. Compiler actions are derived
+from exact durable snapshot bytes plus the TypeScript standard library. The
+source-observed direct `tsc` invocation must resolve an exact snapshot project config,
+and the requested file must belong to its parsed file set. An explicit exact `TS####`,
+`fixName:<id>`, or canonical `codeFixIdentity:<id>` selector must resolve to one
+candidate; the route does not select a candidate implicitly. Command-bearing,
+new-file, unrequested-path, overlapping, and multi-file actions are rejected. The
+route also requires source-observed build and test commands.
+
+The response remains an unauthorized, unexecuted review plan. Its validation contract
+requires compiler, typecheck, and tests; planning does not claim that any command ran
+or that the repair is semantically correct. Other ProgramGraph conversion remains
+lineage-bound, and `regressionProtection` remains `0` without execution evidence.
 
 Normal unit tests verify provider selection, invocation construction, bounds,
 failure behavior, and the distinction between trusted-host and OS-sandbox

@@ -45,6 +45,7 @@
     "onCommand:yopp.setServerToken",
     "onCommand:yopp.workspace.initialize",
     "onCommand:yopp.workspace.ingest",
+    "onCommand:yopp.workspace.codingRequest",
     "onCommand:yopp.workspace.applyPatchPlan",
     "onCommand:yopp.project.summary",
     "onCommand:yopp.workspace.ask",
@@ -79,6 +80,10 @@
       {
         "command": "yopp.workspace.status",
         "title": "Yopp: Show Read-Only Workspace Status"
+      },
+      {
+        "command": "yopp.workspace.codingRequest",
+        "title": "Yopp: Plan and Apply Coding Request"
       },
       {
         "command": "yopp.workspace.applyPatchPlan",

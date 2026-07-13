@@ -38,9 +38,16 @@ Important limits:
 - A packaged VSIX has been installed in an isolated VS Code 1.96.4 profile; the host
   activated it, observed its registered commands, and reached `GET /api/ready`. That
   smoke test does not cover visual layout, restart recovery, or a live patch round trip.
-- `POST /api/workspace/patch/plan/request` is strict and non-mutating, but no successful
-  production coding family is demonstrated. A generic existing-module request fails
-  closed with `422` because its generated ProgramGraph lacks verified repair lineage.
+- `POST /api/workspace/patch/plan/request` has two tested TypeScript repair paths: a
+  source-proven unused type-only import removal and official TypeScript LanguageService
+  code fixes for one existing requested file. The planner uses exact durable snapshot
+  bytes and requires an explicit compiler diagnostic or exact action selector that
+  resolves to one candidate; there is no unique-candidate fallback. It returns an
+  unauthorized, unexecuted plan requiring compiler, typecheck, and test validation.
+  Compiler context is limited to the durable snapshot plus the TypeScript standard
+  library and must resolve an exact project config from the source-observed direct
+  `tsc` invocation. Arbitrary feature synthesis, new-file repair, and multi-file fixes
+  are not supported, and source-observed build and test commands are required.
 - Formula cells retain source formulas and cached values when present; SCCE does not calculate workbook formulas.
 
 ## Workspace
@@ -127,4 +134,5 @@ Coding agents should read [`AGENTS.md`](AGENTS.md) before modifying the reposito
 
 ## License
 
-This repository is marked `UNLICENSED` in `package.json`.
+SCCE is proprietary software. Workspace packages are marked `private` and
+`UNLICENSED`; see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

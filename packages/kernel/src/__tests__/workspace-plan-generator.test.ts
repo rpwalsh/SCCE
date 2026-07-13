@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { createHasher } from "../primitives.js";
+import { createHasher, toJsonValue } from "../primitives.js";
 import { hashPatchContent } from "../patch-transaction.js";
 import { createProgramHydrationContract } from "../program-runtime.js";
+import {
+  canonicalTypeScriptCodeFixIdentity,
+  canonicalTypeScriptCompilerCommandIdentity,
+  canonicalTypeScriptCompilerOptionsHash,
+  canonicalTypeScriptDiagnosticIdentity,
+  materializeTypeScriptCodeActionRepair
+} from "../program-repair-kernel.js";
 import type { ArtifactId, ContentHash, FileArtifact, ProgramGraph } from "../types.js";
 import {
   createWorkspaceRevisionSnapshot,
@@ -145,6 +152,74 @@ describe("workspace exact-byte plan generation", () => {
       ...base,
       request: { requestId: "request.value", text: "Add value.", requestedPaths: ["src/missing.ts"], evidenceIds: ["evidence.bound"] }
     })).toThrow(/did not materialize requested full-file artifacts/u);
+  });
+
+  it("rejects tampered compiler-repair identities and tsconfig contracts after rehydration", () => {
+    const fixture = compilerRepairPlanningFixture();
+    expect(generateWorkspacePatchPlanFromProgramGraph(fixture.input).plan.operations)
+      .toEqual([expect.objectContaining({ kind: "replace", path: "src/value.ts", content: fixture.after })]);
+
+    const missingCodeFixIdentity = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      operation.preconditions = contractRecordsForTest(operation.preconditions)
+        .filter(contract => contract.id !== "repair.precondition.typescript_code_fix_identity");
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: missingCodeFixIdentity }))
+      .toThrow(/code-fix identity is missing, stale, or non-canonical/u);
+
+    const tamperedFix = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      const codeFix = recordForTest(operation.codeFixEvidence, "code-fix evidence");
+      codeFix.description = "tampered compiler fix description";
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: tamperedFix }))
+      .toThrow(/code-fix identity is missing, stale, or non-canonical/u);
+
+    const missingConfigContract = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      operation.preconditions = contractRecordsForTest(operation.preconditions)
+        .filter(contract => contract.id !== "repair.precondition.tsconfig_content_hash");
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: missingConfigContract }))
+      .toThrow(/tsconfig content-hash precondition is missing or stale/u);
+
+    const staleConfigContract = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      const staleHash = artifactHash("stale compiler configuration\n");
+      const compiler = recordForTest(operation.compilerContext, "compiler context");
+      compiler.tsconfigContentHash = staleHash;
+      operation.preconditions = contractRecordsForTest(operation.preconditions).map(contract =>
+        contract.id === "repair.precondition.tsconfig_content_hash"
+          ? { ...contract, value: staleHash }
+          : contract
+      );
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: staleConfigContract }))
+      .toThrow(/tsconfig content hash is stale/u);
+
+    const missingCommandIdentity = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      operation.preconditions = contractRecordsForTest(operation.preconditions)
+        .filter(contract => contract.id !== "repair.precondition.compiler_command_identity");
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: missingCommandIdentity }))
+      .toThrow(/compiler-command identity or source-content precondition is missing or stale/u);
+
+    const staleCommandSource = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      const compiler = recordForTest(operation.compilerContext, "compiler context");
+      const command = recordForTest(compiler.compilerCommand, "compiler command");
+      const staleHash = artifactHash("stale command source\n");
+      command.sourceContentHash = staleHash;
+      const commandIdentity = canonicalTypeScriptCompilerCommandIdentity({
+        executable: String(command.executable),
+        args: Array.isArray(command.args) ? command.args.map(String) : [],
+        cwd: String(command.cwd),
+        sourcePath: String(command.sourcePath),
+        sourceContentHash: staleHash
+      });
+      operation.preconditions = contractRecordsForTest(operation.preconditions).map(contract => {
+        if (contract.id === "repair.precondition.compiler_command_identity") return { ...contract, value: commandIdentity };
+        if (contract.id === "repair.precondition.compiler_command_source_content_hash") return { ...contract, value: staleHash };
+        return contract;
+      });
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: staleCommandSource }))
+      .toThrow(/source-observed compiler command is stale or not bound/u);
   });
 
   it("fails closed when the ProgramGraph leaves every requested file unchanged", () => {
@@ -405,6 +480,171 @@ function proposed(path: string, content: string, role: FileArtifact["role"], exp
 
 function artifactHash(content: string): string {
   return `sha256_${createHasher().digestHex(content)}`;
+}
+
+function compilerRepairPlanningFixture(): {
+  input: Parameters<typeof generateWorkspacePatchPlanFromProgramGraph>[0];
+  after: string;
+} {
+  const hasher = createHasher();
+  const before = "const count = 1;\nexport const value = coutn;\n";
+  const after = "const count = 1;\nexport const value = count;\n";
+  const configContent = "{\"compilerOptions\":{\"strict\":true,\"noEmit\":true},\"include\":[\"src/**/*.ts\"]}\n";
+  const commandSourceContent = "{\"scripts\":{\"typecheck\":\"tsc -p tsconfig.json\",\"test\":\"vitest run\"}}\n";
+  const source = proposed("src/value.ts", before, "source", null).artifact;
+  const config = proposed("tsconfig.json", configContent, "config", null).artifact;
+  const commandSource = proposed("package.json", commandSourceContent, "config", null).artifact;
+  const evidenceIds = ["evidence.compiler-repair.fixture"];
+  const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
+    id: "program.workspace.compiler-repair",
+    language: "typescript",
+    packageManager: "pnpm",
+    entrypoint: source.path,
+    nodes: [
+      {
+        id: "blueprint.workspace.compiler-repair",
+        kind: "implementation_blueprint",
+        label: "compiler-owned repair",
+        metadata: { sourceCoupling: 1, unbackedSynthesisRisk: 0 }
+      },
+      ...[source, config, commandSource].map(file => ({
+        id: `artifact:${file.path}`,
+        kind: `artifact:${file.role}`,
+        label: file.path,
+        metadata: { contentHash: file.contentHash }
+      }))
+    ],
+    edges: [],
+    files: [source, config, commandSource],
+    build: { command: "tsc", args: ["-p", "tsconfig.json"], cwd: "." },
+    test: { command: "vitest", args: ["run"], cwd: "." }
+  };
+  const baseProgram: ProgramGraph = {
+    ...graphWithoutHydration,
+    hydration: createProgramHydrationContract({
+      program: graphWithoutHydration,
+      sourcePlanId: "program-plan.compiler-repair.fixture",
+      evidenceIds
+    })
+  };
+  const diagnostic = {
+    code: 2552,
+    category: "error",
+    start: before.indexOf("coutn"),
+    length: "coutn".length,
+    message: "Cannot find name 'coutn'. Did you mean 'count'?"
+  };
+  const compilerOptionsHash = canonicalTypeScriptCompilerOptionsHash({ noEmit: true, strict: true }, hasher);
+  const diagnosticIdentity = canonicalTypeScriptDiagnosticIdentity({
+    path: source.path,
+    diagnostic,
+    compilerVersion: "5.9.3",
+    compilerOptionsHash
+  }, hasher);
+  const textChanges = [{ start: diagnostic.start, length: diagnostic.length, newText: "count" }];
+  const fixName = "spelling";
+  const description = "Change spelling to 'count'";
+  const codeFixIdentity = canonicalTypeScriptCodeFixIdentity({
+    diagnosticIdentity,
+    codeFix: { fixName, description, textChanges }
+  }, hasher);
+  const repaired = materializeTypeScriptCodeActionRepair({
+    program: baseProgram,
+    requestText: "Apply the compiler-owned fix for TS2552 in src/value.ts.",
+    transformations: [{
+      path: source.path,
+      baseArtifactId: String(source.artifactId),
+      baseContentHash: String(source.contentHash),
+      diagnostic: { ...diagnostic, diagnosticIdentity },
+      codeFix: { fixName, description, codeFixIdentity, textChanges },
+      compiler: {
+        version: "5.9.3",
+        tsconfigPath: config.path,
+        tsconfigContentHash: String(config.contentHash),
+        compilerOptionsHash,
+        compilerOptionsSource: "source_observed_tsc_project",
+        configDiagnosticCodes: [],
+        sourceFileBoundary: "workspace_snapshot_and_typescript_standard_library",
+        compilerCommand: {
+          executable: "tsc",
+          args: ["-p", "tsconfig.json"],
+          cwd: ".",
+          sourcePath: commandSource.path,
+          sourceContentHash: String(commandSource.contentHash)
+        }
+      }
+    }],
+    hasher
+  });
+  const snapshot = revision([
+    current(source.path, before, "source"),
+    current(config.path, configContent, "config"),
+    current(commandSource.path, commandSourceContent, "config")
+  ]);
+  const input: Parameters<typeof generateWorkspacePatchPlanFromProgramGraph>[0] = {
+    snapshot,
+    expectedRevisionId: snapshot.revisionId,
+    expectedRevisionHash: snapshot.revisionHash,
+    request: {
+      requestId: "request.compiler-repair.fixture",
+      text: "Apply the compiler-owned fix for TS2552 in src/value.ts.",
+      requestedPaths: [source.path],
+      evidenceIds
+    },
+    program: repaired.program,
+    existingDirectoryPaths: ["", "src"],
+    verifiedAbsentPaths: [],
+    validationPlan: {
+      validatorId: "trusted-host-pnpm-validate.v1",
+      checks: ["compiler", "typecheck", "tests"]
+    }
+  };
+  return { input, after };
+}
+
+function tamperCompilerRepairLineage(
+  program: ProgramGraph,
+  mutate: (operation: Record<string, unknown>) => void
+): ProgramGraph {
+  let changed = false;
+  const nodes = program.nodes
+    .filter(node => node.kind !== "program_hydration_contract")
+    .map(node => {
+      if (node.kind !== "program_repair_full_file_materialization") return node;
+      const metadata = recordForTest(JSON.parse(JSON.stringify(node.metadata)), "repair lineage metadata");
+      const transformations = Array.isArray(metadata.transformations) ? metadata.transformations : [];
+      const transformation = recordForTest(transformations[0], "repair transformation");
+      const operations = Array.isArray(transformation.operations) ? transformation.operations : [];
+      const operation = recordForTest(operations[0], "repair operation");
+      mutate(operation);
+      changed = true;
+      return { ...node, metadata: toJsonValue(metadata) };
+    });
+  if (!changed) throw new Error("compiler repair fixture has no repair lineage operation");
+  const { hydration: _hydration, ...programWithoutHydration } = program;
+  const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
+    ...programWithoutHydration,
+    nodes,
+    edges: program.edges.filter(edge => edge.relation !== "hydrates_as")
+  };
+  return {
+    ...graphWithoutHydration,
+    hydration: createProgramHydrationContract({
+      program: graphWithoutHydration,
+      sourcePlanId: "program-plan.compiler-repair.tampered",
+      evidenceIds: program.hydration?.program.provenanceEvidenceIds ?? []
+    })
+  };
+}
+
+function recordForTest(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is missing`);
+  return value as Record<string, unknown>;
+}
+
+function contractRecordsForTest(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) throw new Error("repair contracts are missing");
+  return value.map((item, index) => recordForTest(item, `repair contract ${index}`));
 }
 
 function validInput(

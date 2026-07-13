@@ -12,6 +12,17 @@ describe("VS Code protocol validation", () => {
     });
   });
 
+  it("accepts coding-plan results on the fixed internal endpoint", () => {
+    expect(parseExtensionMessage({
+      schema: EXTENSION_PROTOCOL_SCHEMA,
+      kind: "result",
+      taskId: "task-1",
+      endpoint: "workspace.patch.plan.request",
+      payload: {},
+      observedAt: 2
+    })).toMatchObject({ kind: "result", endpoint: "workspace.patch.plan.request" });
+  });
+
   it("rejects wrong versions and unknown message kinds", () => {
     expect(() => parseExtensionMessage({ schema: "yopp.vscode.message.v2", kind: "readiness", ready: true, serverUrl: "local", observedAt: 1 })).toThrow(/schema/);
     expect(() => parseExtensionMessage({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "secret", observedAt: 1 })).toThrow(/kind/);

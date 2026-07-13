@@ -850,12 +850,22 @@ function buildSurfacePlan(input: SpeakInput, correctionInfluence: CorrectionStyl
   const meterPattern = correctionInfluence.meterPattern ?? input.meterPattern;
   const meterPatternId = input.meterPatternId ?? meterPattern?.id;
   const semanticAnswerConstruct = semanticAnswerConstructState(input.construct);
+  const explicitDetailProfileId = input.detailProfileId ?? correctionInfluence.detailProfileId;
+  const requirementDetailProfileId = explicitDetailProfileId ? undefined : detailProfileFromRequirementField(input.requirementField);
+  let detailSelectionSource = explicitDetailProfileId
+    ? "explicit"
+    : requirementDetailProfileId
+      ? "turn_requirement_field"
+      : "style_register";
   let detailProfileId = resolveDetailProfileId({
-    explicitProfileId: input.detailProfileId ?? correctionInfluence.detailProfileId,
+    explicitProfileId: explicitDetailProfileId ?? requirementDetailProfileId,
     styleDensity: style.density,
     registerVector
   });
-  if (!input.detailProfileId && !correctionInfluence.detailProfileId && semanticAnswerConstruct && semanticAnswerConstruct.selectedFacts.length >= 2) detailProfileId = DETAIL_PROFILE_IDS[2]!;
+  if (!explicitDetailProfileId && !requirementDetailProfileId && semanticAnswerConstruct && semanticAnswerConstruct.selectedFacts.length >= 2) {
+    detailProfileId = DETAIL_PROFILE_IDS[2]!;
+    detailSelectionSource = "semantic_answer_extent";
+  }
   const detailPolicy = detailPolicyForProfile(detailProfileId, registerVector);
   const boundaryProfile = boundaryProfileFor({ scriptId: targetScript, metadata: input.languageProfile.ngramProfile });
   const constructForceInference = inferConstructForces(input);
@@ -906,6 +916,13 @@ function buildSurfacePlan(input: SpeakInput, correctionInfluence: CorrectionStyl
       styleProfileId,
       registerId: registerId ?? null,
       detailProfileId,
+      detailSelectionSource,
+      detailRequirement: input.requirementField ? {
+        brevityDetailBalance: input.requirementField.brevityDetailBalance,
+        formatConstraintStrength: input.requirementField.formatConstraintStrength,
+        inferentialDepth: input.requirementField.inferentialDepth,
+        confidence: input.requirementField.confidence
+      } : null,
       boundaryProfile: { id: boundaryProfile.id, scriptId: boundaryProfile.scriptId ?? null, boundarySource: boundaryProfile.boundarySource },
       meterPatternId: meterPatternId ?? null,
       detailPolicy: detailPolicy.audit,
@@ -934,6 +951,16 @@ function buildSurfacePlan(input: SpeakInput, correctionInfluence: CorrectionStyl
     })
   };
   return { ...plan, realizationFrames: realizationFramesForPlan(plan, hashText) };
+}
+
+function detailProfileFromRequirementField(requirement: TurnRequirementField | undefined): DetailProfileId | undefined {
+  if (!requirement) return undefined;
+  const detail = clamp01(requirement.brevityDetailBalance);
+  const sequence = Math.max(clamp01(requirement.formatConstraintStrength), clamp01(requirement.inferentialDepth) * 0.72);
+  if (detail >= 0.58 && sequence >= 0.68) return DETAIL_PROFILE_IDS[3]!;
+  if (detail >= 0.68) return DETAIL_PROFILE_IDS[2]!;
+  if (detail <= 0.32) return DETAIL_PROFILE_IDS[0]!;
+  return undefined;
 }
 
 function buildDiscoursePlan(plan: SurfacePlan, hashText: (text: string) => string): DiscoursePlan {

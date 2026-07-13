@@ -180,7 +180,214 @@ describe("workspace patch planning API contract", () => {
     expect(await readFile(filePath, "utf8")).toBe(before);
   });
 
-  it("fails closed instead of replacing an existing module with a generic generated scaffold", async () => {
+  it("plans an exact unused type-import repair from durable source bytes without fabricating a test", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scce-type-import-repair-"));
+    roots.push(root);
+    const before = "import type { Legacy } from \"./legacy.js\";\r\nconst count = 1;\r\nexport const value = coutn;\r\n";
+    const after = "const count = 1;\r\nexport const value = coutn;\r\n";
+    const files = new Map([
+      ["package.json", `${JSON.stringify({ name: "fixture", type: "module", scripts: { build: "tsc -p tsconfig.json", test: "vitest run" } }, null, 2)}\n`],
+      ["tsconfig.json", `${JSON.stringify({ compilerOptions: { strict: true, module: "NodeNext", moduleResolution: "NodeNext" }, include: ["src"] }, null, 2)}\n`],
+      ["src/index.ts", before],
+      ["src/legacy.ts", "export interface Legacy { value: number; }\r\n"]
+    ]);
+    await mkdir(join(root, "src"), { recursive: true });
+    for (const [relative, content] of files) await writeFile(join(root, relative), content, "utf8");
+    const updatedAt = 1_700_000_000_200;
+    const workspace = {
+      id: "workspace-type-import",
+      rootPath: root,
+      rootUri: `file://${root.replaceAll("\\", "/")}`,
+      corpusId: "corpus-type-import",
+      status: "active",
+      createdAt: updatedAt,
+      updatedAt,
+      metadata: {}
+    };
+    const sources = [...files].map(([relative, content]) => ({
+      workspaceId: workspace.id,
+      corpusId: workspace.corpusId,
+      path: relative,
+      absolutePath: join(root, relative),
+      mediaType: relative.endsWith(".json") ? "application/json" : "text/typescript",
+      contentHash: durableHash(content),
+      modifiedTime: updatedAt,
+      byteLength: Buffer.byteLength(content),
+      ingestionStatus: "ingested",
+      evidenceIds: [],
+      symbolIds: [],
+      conceptIds: [],
+      warnings: [],
+      errors: [],
+      metadata: {},
+      updatedAt
+    }));
+    const context = {
+      runtime: { storage: { workspace: { latestWorkspace: async () => workspace, listSourceFiles: async () => sources } } },
+      config: {
+        runtime: {
+          workspaceRoot: root,
+          tempRoot: join(root, ".tmp"),
+          maxFileBytes: 1024 * 1024,
+          maxChunkBytes: 64 * 1024,
+          allowedRoots: [root],
+          excludedPaths: [],
+          tools: {}
+        }
+      }
+    } as unknown as Parameters<typeof planWorkspaceCodingPatchApiRequest>[0];
+    const request = parseWorkspaceCodingPatchPlanRequest({
+      schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+      workspaceId: workspace.id,
+      expectedWorkspaceUpdatedAt: updatedAt,
+      requestId: "request.remove-legacy-type",
+      requestText: "Remove unused type import Legacy from src/index.ts.",
+      requestedPaths: ["src/index.ts"],
+      validationPlan: {
+        validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        checks: ["typecheck"]
+      }
+    });
+
+    const result = await planWorkspaceCodingPatchApiRequest(context, request);
+
+    expect(result.plan.operations).toEqual([expect.objectContaining({
+      kind: "replace",
+      path: "src/index.ts",
+      content: after
+    })]);
+    expect(result.authorization).toEqual({ required: true, granted: false, capabilityId: "workspace.patch.apply" });
+    expect(result.execution).toEqual({ state: "not_executed", receipt: null });
+    expect(result.safety.regressionTestPaths).toEqual([]);
+    expect(result.scoreTrace.features.regressionProtection).toBe(0);
+    expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
+
+    const compilerRequest = parseWorkspaceCodingPatchPlanRequest({
+      schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+      workspaceId: workspace.id,
+      expectedWorkspaceUpdatedAt: updatedAt,
+      requestId: "request.fix-ts2552",
+      requestText: "Apply the compiler-owned fix for TS2552 in src/index.ts.",
+      requestedPaths: ["src/index.ts"],
+      validationPlan: {
+        validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        checks: ["compiler", "typecheck", "tests"]
+      }
+    });
+    const compilerResult = await planWorkspaceCodingPatchApiRequest(context, compilerRequest);
+    expect(compilerResult.plan.operations).toEqual([expect.objectContaining({
+      kind: "replace",
+      path: "src/index.ts",
+      content: "import type { Legacy } from \"./legacy.js\";\r\nconst count = 1;\r\nexport const value = count;\r\n"
+    })]);
+    expect(compilerResult.authorization.granted).toBe(false);
+    expect(compilerResult.execution.state).toBe("not_executed");
+    expect(compilerResult.safety.regressionTestPaths).toEqual([]);
+    expect(compilerResult.scoreTrace.features.regressionProtection).toBe(0);
+    expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
+
+    const unrelatedRequest = parseWorkspaceCodingPatchPlanRequest({
+      schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+      workspaceId: workspace.id,
+      expectedWorkspaceUpdatedAt: updatedAt,
+      requestId: "request.unrelated-to-diagnostic",
+      requestText: "Add a descriptive comment to src/index.ts.",
+      requestedPaths: ["src/index.ts"],
+      validationPlan: {
+        validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        checks: ["compiler", "typecheck", "tests"]
+      }
+    });
+    await expect(planWorkspaceCodingPatchApiRequest(context, unrelatedRequest)).rejects.toThrow(
+      /exact TS####.*selection=unselected_candidates.*codeFixIdentity:/u
+    );
+    expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
+  }, 30_000);
+
+  it("binds compiler repair to the source-observed non-default tsc project", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scce-non-default-tsconfig-repair-"));
+    roots.push(root);
+    const before = "const unused = 1;\r\nexport const value = 2;\r\n";
+    const after = "export const value = 2;\r\n";
+    const files = new Map([
+      ["package.json", `${JSON.stringify({ name: "fixture", type: "module", scripts: { build: "tsc --project tsconfig.build.json", test: "vitest run" } }, null, 2)}\n`],
+      ["tsconfig.json", `${JSON.stringify({ compilerOptions: { noUnusedLocals: false }, include: ["other/**/*.ts"] }, null, 2)}\n`],
+      ["tsconfig.build.json", `${JSON.stringify({ compilerOptions: { noUnusedLocals: true }, include: ["src/**/*.ts"] }, null, 2)}\n`],
+      ["src/index.ts", before],
+      ["other/decoy.ts", "export const decoy = 1;\n"]
+    ]);
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(join(root, "other"), { recursive: true });
+    for (const [relative, content] of files) await writeFile(join(root, relative), content, "utf8");
+    const updatedAt = 1_700_000_000_300;
+    const workspace = {
+      id: "workspace-non-default-tsconfig",
+      rootPath: root,
+      rootUri: `file://${root.replaceAll("\\", "/")}`,
+      corpusId: "corpus-non-default-tsconfig",
+      status: "active",
+      createdAt: updatedAt,
+      updatedAt,
+      metadata: {}
+    };
+    const sources = [...files].map(([relative, content]) => ({
+      workspaceId: workspace.id,
+      corpusId: workspace.corpusId,
+      path: relative,
+      absolutePath: join(root, relative),
+      mediaType: relative.endsWith(".json") ? "application/json" : "text/typescript",
+      contentHash: durableHash(content),
+      modifiedTime: updatedAt,
+      byteLength: Buffer.byteLength(content),
+      ingestionStatus: "ingested",
+      evidenceIds: [],
+      symbolIds: [],
+      conceptIds: [],
+      warnings: [],
+      errors: [],
+      metadata: {},
+      updatedAt
+    }));
+    const context = {
+      runtime: { storage: { workspace: { latestWorkspace: async () => workspace, listSourceFiles: async () => sources } } },
+      config: {
+        runtime: {
+          workspaceRoot: root,
+          tempRoot: join(root, ".tmp"),
+          maxFileBytes: 1024 * 1024,
+          maxChunkBytes: 64 * 1024,
+          allowedRoots: [root],
+          excludedPaths: [],
+          tools: {}
+        }
+      }
+    } as unknown as Parameters<typeof planWorkspaceCodingPatchApiRequest>[0];
+    const request = parseWorkspaceCodingPatchPlanRequest({
+      schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+      workspaceId: workspace.id,
+      expectedWorkspaceUpdatedAt: updatedAt,
+      requestId: "request.fix-non-default-project",
+      requestText: "Apply the compiler-owned fix for TS6133 in src/index.ts.",
+      requestedPaths: ["src/index.ts"],
+      validationPlan: {
+        validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        checks: ["compiler", "typecheck", "tests"]
+      }
+    });
+
+    const result = await planWorkspaceCodingPatchApiRequest(context, request);
+
+    expect(result.plan.operations).toEqual([expect.objectContaining({
+      kind: "replace",
+      path: "src/index.ts",
+      content: after
+    })]);
+    expect(result.authorization.granted).toBe(false);
+    expect(result.execution.state).toBe("not_executed");
+    expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
+  }, 30_000);
+
+  it("rejects a generic generated scaffold without verified repair lineage", async () => {
     const root = await mkdtemp(join(tmpdir(), "scce-coding-plan-api-"));
     roots.push(root);
     const files = new Map([

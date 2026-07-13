@@ -26,6 +26,7 @@ const server = new Server(
     version: '0.1.0',
   },
   {
+    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, repo_search, and git_diff_summary before opening source files. Keep every result bounded. Test tools run only allowlisted commands; PostgreSQL tools are read-only; trace tools report only events that exist. This server exposes no arbitrary shell or repository write operation.",
     capabilities: {
       tools: {},
     },

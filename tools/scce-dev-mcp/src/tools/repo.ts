@@ -1,9 +1,9 @@
 import { run } from '../lib/run.js';
 import { limitLength } from '../lib/limit.js';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 
-const EXCLUDED_WALK_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.scce', '.tmp']);
+const EXCLUDED_WALK_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.scce', '.tmp', '.vscode-test']);
 const MAX_REPO_SHAPE_FILES = 20_000;
 
 export async function handleRepoShape(): Promise<string> {
@@ -27,8 +27,10 @@ export async function handleRepoShape(): Promise<string> {
     result.packagesPath = join(root, 'pnpm-workspace.yaml');
     const text = readFileSync(result.packagesPath as string, 'utf8');
     result.packages = text.split(/\r?\n/).flatMap((line) => {
-      const m = line.match(/^-\s+(.+)$/);
-      return m && m[1] ? [m[1].trim().replace(/\/package\.json$/, '')] : [];
+      const m = line.match(/^\s*-\s+(.+?)\s*$/);
+      if (!m?.[1]) return [];
+      const value = m[1].trim().replace(/^(['"])(.*)\1$/u, '$2');
+      return value ? [value.replace(/\/package\.json$/, '')] : [];
     });
   } catch {}
 
@@ -184,9 +186,4 @@ function allFiles(dir: string, maxFiles: number): { files: string[]; truncated: 
     }
   }
   return { files: out, truncated };
-}
-
-function extname(file: string): string {
-  const idx = file.lastIndexOf('.');
-  return idx > -1 ? file.slice(idx + 1).toLowerCase() : '';
 }

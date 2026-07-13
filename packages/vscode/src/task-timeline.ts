@@ -112,7 +112,14 @@ function parseTask(value: unknown): ExtensionTaskRecord[] {
 }
 
 function isEndpoint(value: unknown): value is YoppEndpoint {
-  return value === "ready" || value === "workspace.initialize" || value === "workspace.ingest" || value === "workspace.ask" || value === "project.summary" || value === "workspace.status";
+  return value === "ready"
+    || value === "workspace.initialize"
+    || value === "workspace.ingest"
+    || value === "workspace.ask"
+    || value === "workspace.patch.plan.request"
+    || value === "workspace.patch"
+    || value === "project.summary"
+    || value === "workspace.status";
 }
 
 function isState(value: unknown): value is ExtensionTaskState {
