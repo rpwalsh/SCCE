@@ -1,0 +1,9 @@
+.vscodeignore
+src/**
+test/**
+scripts/**
+tsconfig.json
+dist/**/*.d.ts
+dist/**/*.js.map
+dist/**/__tests__/**
+dist/tsconfig.tsbuildinfo

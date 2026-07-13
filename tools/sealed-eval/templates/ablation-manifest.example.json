@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "1.0",
+  "fullConditionId": "full",
+  "conditions": [
+    {
+      "conditionId": "full",
+      "disabledComponents": [],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "full"
+      },
+      "cacheNamespace": "eval-full",
+      "requiredTraceAssertions": []
+    },
+    {
+      "conditionId": "no_relation_potential",
+      "disabledComponents": [
+        "relation-potential"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_relation_potential"
+      },
+      "cacheNamespace": "eval-no-relation-potential",
+      "requiredTraceAssertions": [
+        {
+          "component": "relation-potential",
+          "expected": "not-entered"
+        },
+        {
+          "component": "relation-potential",
+          "expected": "no-cache-read"
+        }
+      ]
+    },
+    {
+      "conditionId": "no_query_diffusion",
+      "disabledComponents": [
+        "query-diffusion"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_query_diffusion"
+      },
+      "cacheNamespace": "eval-no-query-diffusion",
+      "requiredTraceAssertions": [
+        {
+          "component": "query-diffusion",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "no_powerwalk",
+      "disabledComponents": [
+        "powerwalk"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_powerwalk"
+      },
+      "cacheNamespace": "eval-no-powerwalk",
+      "requiredTraceAssertions": [
+        {
+          "component": "powerwalk",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "no_graph",
+      "disabledComponents": [
+        "graph"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_graph"
+      },
+      "cacheNamespace": "eval-no-graph",
+      "requiredTraceAssertions": [
+        {
+          "component": "graph",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "lexical_only",
+      "disabledComponents": [
+        "graph",
+        "learned-semantics",
+        "query-diffusion",
+        "powerwalk"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "lexical_only"
+      },
+      "cacheNamespace": "eval-lexical-only",
+      "requiredTraceAssertions": [
+        {
+          "component": "learned-semantics",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "no_support_engine",
+      "disabledComponents": [
+        "support-engine"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_support_engine"
+      },
+      "cacheNamespace": "eval-no-support",
+      "requiredTraceAssertions": [
+        {
+          "component": "support-engine",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "deterministic_mouth",
+      "disabledComponents": [
+        "learned-mouth"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "deterministic_mouth"
+      },
+      "cacheNamespace": "eval-template-mouth",
+      "requiredTraceAssertions": [
+        {
+          "component": "learned-mouth",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "no_language_memory",
+      "disabledComponents": [
+        "language-memory"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_language_memory"
+      },
+      "cacheNamespace": "eval-no-language-memory",
+      "requiredTraceAssertions": [
+        {
+          "component": "language-memory",
+          "expected": "not-entered"
+        }
+      ]
+    },
+    {
+      "conditionId": "no_incremental_learning",
+      "disabledComponents": [
+        "incremental-learning"
+      ],
+      "environment": {
+        "YOPP_EVAL_CONDITION": "no_incremental_learning"
+      },
+      "cacheNamespace": "eval-no-learning",
+      "requiredTraceAssertions": [
+        {
+          "component": "incremental-learning",
+          "expected": "not-entered"
+        }
+      ]
+    }
+  ]
+}

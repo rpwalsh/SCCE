@@ -1,0 +1,18 @@
+{
+  "name": "workspace-runtime-fixture",
+  "version": "1.2.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run tests/widget.test.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@example/http": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

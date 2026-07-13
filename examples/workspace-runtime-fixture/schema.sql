@@ -1,0 +1,4 @@
+CREATE TABLE widgets (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL
+);

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0",
+  "systems": [
+    {
+      "systemId": "reference.bm25",
+      "conditionId": "baseline",
+      "displayName": "Independent BM25 reference",
+      "mode": "jsonl-stdio",
+      "command": [
+        "node",
+        "harness/adapters/reference-bm25.mjs",
+        "--corpus-manifest=templates/corpus-manifest.example.json"
+      ],
+      "cwd": ".",
+      "env": {},
+      "timeoutMs": 60000,
+      "networkPolicy": "disabled",
+      "assistance": "none"
+    },
+    {
+      "systemId": "yopp",
+      "conditionId": "full",
+      "displayName": "Yopp full",
+      "mode": "jsonl-stdio",
+      "command": [
+        "node",
+        "integration/yopp-jsonl-adapter.mjs"
+      ],
+      "cwd": ".",
+      "env": {
+        "YOPP_EVAL_CONDITION": "full"
+      },
+      "timeoutMs": 120000,
+      "networkPolicy": "disabled",
+      "assistance": "none"
+    }
+  ]
+}

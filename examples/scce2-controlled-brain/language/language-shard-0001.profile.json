@@ -1,0 +1,48 @@
+{
+  "schema": "scce.learnedLanguageProfileShard.v1",
+  "sourceId": "controlled-hydration-fixture",
+  "shardId": "language-shard-0001",
+  "languageId": "controlled-fixture-language",
+  "script": "Latn",
+  "confidence": 0.94,
+  "tokenizationProfile": {
+    "observedSymbols": [
+      { "value": "azurite", "count": 9 },
+      { "value": "operator", "count": 8 },
+      { "value": "stabilizes", "count": 7 },
+      { "value": "cyan", "count": 6 },
+      { "value": "surface", "count": 6 }
+    ],
+    "observedTitleTokens": [
+      { "value": "azurite operator", "count": 8 },
+      { "value": "cyan surface", "count": 6 }
+    ],
+    "codepointBuckets": [
+      { "value": "Latn", "count": 64 }
+    ]
+  },
+  "syntaxProfile": {
+    "punctuation": [
+      { "value": ".", "count": 5 }
+    ],
+    "linePatterns": [
+      { "value": "subject relation object", "count": 4 }
+    ]
+  },
+  "fileEvidence": [
+    {
+      "id": "controlled-direct-evidence",
+      "title": "Controlled external source",
+      "excerpt": "The azurite operator stabilizes the cyan surface.",
+      "originalSourceUri": "fixture://controlled-hydration/direct",
+      "originalSourceVersionId": "controlled-hydration-source-version-1",
+      "originalByteRange": [0, 50],
+      "originalCharRange": [0, 50]
+    },
+    {
+      "id": "controlled-profile-excerpt",
+      "title": "Profile-only excerpt",
+      "excerpt": "The profile-only azurite note is not external factual proof."
+    }
+  ]
+}

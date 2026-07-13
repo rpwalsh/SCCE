@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunPlan",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "evaluationId",
+    "corpusManifest",
+    "questionsPath",
+    "systemManifest",
+    "outputDirectory",
+    "seed",
+    "clock"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "evaluationId": {
+      "type": "string"
+    },
+    "corpusManifest": {
+      "type": "string"
+    },
+    "questionsPath": {
+      "type": "string"
+    },
+    "systemManifest": {
+      "type": "string"
+    },
+    "ablationManifest": {
+      "type": "string"
+    },
+    "outputDirectory": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "string"
+    },
+    "clock": {
+      "type": "string"
+    },
+    "questionOrder": {
+      "enum": [
+        "source",
+        "seeded-random"
+      ]
+    },
+    "conditionOrder": {
+      "enum": [
+        "source",
+        "seeded-random"
+      ]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "service": "widgets",
+  "route": "/api/widgets",
+  "retries": 2
+}

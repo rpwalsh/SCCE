@@ -1,0 +1,9 @@
+{
+  "name": "SCCE Public Review Kit",
+  "version": "1.0.0",
+  "generatedAt": "2026-07-13",
+  "runtimeDependencies": [],
+  "thirdPartySourceIncluded": false,
+  "purpose": "Reproducible public review with sealed inputs, blind scoring, citation verification, and component ablations.",
+  "status": "toolkit-and-integration-specification-not-evaluation-results"
+}

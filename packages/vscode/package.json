@@ -1,0 +1,155 @@
+{
+  "name": "yopp-vscode",
+  "displayName": "Yopp",
+  "description": "Local VS Code surface for the Yopp cognitive runtime.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "yopp-local",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rpwalsh/SCCE.git",
+    "directory": "packages/vscode"
+  },
+  "homepage": "https://github.com/rpwalsh/SCCE/tree/main/packages/vscode#readme",
+  "bugs": {
+    "url": "https://github.com/rpwalsh/SCCE/issues"
+  },
+  "type": "commonjs",
+  "main": "./dist/extension.js",
+  "types": "./dist/extension.d.ts",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "cognitive engine",
+    "local",
+    "graph",
+    "SCCE"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Workspace ingestion and reviewed patch transactions require a trusted local workspace."
+    }
+  },
+  "activationEvents": [
+    "onView:yopp.taskTimeline",
+    "onCommand:yopp.checkReadiness",
+    "onCommand:yopp.setServerToken",
+    "onCommand:yopp.workspace.initialize",
+    "onCommand:yopp.workspace.ingest",
+    "onCommand:yopp.workspace.applyPatchPlan",
+    "onCommand:yopp.project.summary",
+    "onCommand:yopp.workspace.ask",
+    "onCommand:yopp.workspace.status"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "yopp.checkReadiness",
+        "title": "Yopp: Check Readiness"
+      },
+      {
+        "command": "yopp.setServerToken",
+        "title": "Yopp: Set Local Server Token"
+      },
+      {
+        "command": "yopp.workspace.initialize",
+        "title": "Yopp: Initialize Workspace"
+      },
+      {
+        "command": "yopp.workspace.ingest",
+        "title": "Yopp: Ingest Workspace"
+      },
+      {
+        "command": "yopp.project.summary",
+        "title": "Yopp: Show Project Summary"
+      },
+      {
+        "command": "yopp.workspace.ask",
+        "title": "Yopp: Ask About Workspace"
+      },
+      {
+        "command": "yopp.workspace.status",
+        "title": "Yopp: Show Read-Only Workspace Status"
+      },
+      {
+        "command": "yopp.workspace.applyPatchPlan",
+        "title": "Yopp: Apply Reviewed Patch Transaction"
+      },
+      {
+        "command": "yopp.tasks.clear",
+        "title": "Yopp: Clear Task Timeline"
+      }
+    ],
+    "configuration": {
+      "title": "Yopp",
+      "properties": {
+        "yopp.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3873",
+          "description": "Local Yopp server origin. Only localhost, 127.0.0.0/8, and ::1 are accepted."
+        },
+        "yopp.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Maximum duration for one Yopp HTTP request."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "yopp",
+          "title": "Yopp",
+          "icon": "media/yopp.svg"
+        }
+      ]
+    },
+    "views": {
+      "yopp": [
+        {
+          "id": "yopp.taskTimeline",
+          "name": "Task Timeline"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "yopp.checkReadiness",
+          "when": "view == yopp.taskTimeline",
+          "group": "navigation"
+        },
+        {
+          "command": "yopp.tasks.clear",
+          "when": "view == yopp.taskTimeline",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. packages/vscode/src/__tests__",
+    "test:host": "pnpm package && node ./test/run-extension-host.cjs",
+    "vscode:prepublish": "pnpm build",
+    "package": "node ./scripts/package-extension.cjs",
+    "package:list": "pnpm build && vsce ls --tree"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2",
+    "@types/vscode": "^1.96.0",
+    "tslib": "^2.8.1"
+  }
+}

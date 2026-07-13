@@ -1,0 +1,16 @@
+{
+  "name": "@scce/cli",
+  "version": "3.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@scce/adapters-node": "workspace:*",
+    "@scce/kernel": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

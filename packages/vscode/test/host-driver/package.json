@@ -1,0 +1,11 @@
+{
+  "name": "scce-vscode-host-test-driver",
+  "displayName": "SCCE VS Code Host Test Driver",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "scce-local-tests",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "main": "./extension.cjs"
+}

@@ -1,0 +1,9 @@
+import { bootstrapMean, mean, readJson, readJsonl, writeJson } from "./util.mjs";
+export async function aggregate({ judgmentsPath, objectivePath, mapPath, out, seed="aggregate" }) {
+  const judgments=await readJsonl(judgmentsPath); const mapping=mapPath?(await readJson(mapPath)).mapping:{}; const reverse=Object.fromEntries(Object.entries(mapping).map(([id,alias])=>[alias,id])); const obj=objectivePath?await readJsonl(objectivePath):[];
+  const groups=new Map();
+  for(const j of judgments){const identity=reverse[j.answerAlias]??j.answerAlias;const [systemId,conditionId="unknown"]=identity.split("::");const key=identity;if(!groups.has(key))groups.set(key,{systemId,conditionId,human:[],dimensions:{correctness:[],completeness:[],evidence:[],uncertainty:[],fluency:[]}});const g=groups.get(key);const vals=Object.values(j.scores);g.human.push(mean(vals));for(const [k,v]of Object.entries(j.scores))g.dimensions[k]?.push(v);}
+  for(const o of obj){const key=`${o.systemId}::${o.conditionId}`;if(!groups.has(key))groups.set(key,{systemId:o.systemId,conditionId:o.conditionId,human:[],dimensions:{correctness:[],completeness:[],evidence:[],uncertainty:[],fluency:[]}});const g=groups.get(key);(g.objective??=[]).push(o.exactScore);}
+  const systems=[...groups.values()].map(g=>({systemId:g.systemId,conditionId:g.conditionId,humanComposite:bootstrapMean(g.human,`${seed}:${g.systemId}:${g.conditionId}:human`),dimensions:Object.fromEntries(Object.entries(g.dimensions).map(([k,v])=>[k,bootstrapMean(v,`${seed}:${g.systemId}:${g.conditionId}:${k}`)])),objectiveExact:bootstrapMean((g.objective??[]).filter(v=>v!==null),`${seed}:${g.systemId}:${g.conditionId}:objective`)}));
+  const report={schemaVersion:"1.0",generatedAt:new Date().toISOString(),systems};await writeJson(out,report);return report;
+}

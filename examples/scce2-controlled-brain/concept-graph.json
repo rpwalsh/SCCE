@@ -1,0 +1,24 @@
+{
+  "concepts": [
+    {
+      "id": "azurite-operator",
+      "names": ["azurite operator"],
+      "type": "process",
+      "domain": "controlled-hydration"
+    },
+    {
+      "id": "cyan-surface",
+      "names": ["cyan surface"],
+      "type": "artifact",
+      "domain": "controlled-hydration"
+    }
+  ],
+  "relations": [
+    {
+      "subject": "azurite-operator",
+      "predicate": "stabilizes",
+      "object": "cyan-surface",
+      "confidence": 0.93
+    }
+  ]
+}
