@@ -230,6 +230,57 @@ describe("TypeScript compiler code actions", () => {
     expect(selected?.selection.mode).toBe("selected");
     expect(selected?.transformations[0]?.codeFixIdentity).toBe(identity);
   });
+
+  it("preserves an official cross-file CodeFixAction as one exact atomic candidate", () => {
+    const declaration = "const hidden = 1;\nexport const visible = 2;\n";
+    const diagnosticSource = "import { hidden } from \"./a\";\nexport const value = hidden;\n";
+    const files = projectFiles({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { strict: true, module: "ESNext", moduleResolution: "Bundler" },
+        include: ["src/**/*.ts"]
+      }),
+      "src/a.ts": declaration,
+      "src/b.ts": diagnosticSource
+    });
+    const listed = deriveTypeScriptCodeActionRepair({
+      rootPath: "C:/virtual/cross-file",
+      requestedPaths: ["src/b.ts"],
+      requestText: "Inspect the compiler diagnostic.",
+      files,
+      compilerCommand: compilerCommand()
+    });
+
+    const candidate = listed?.selection.candidates.find(item => item.diagnosticCode === 2459);
+    expect(candidate).toMatchObject({
+      path: "src/b.ts",
+      fixName: "fixImportNonExportedMember",
+      affectedPaths: ["src/a.ts"],
+      createPaths: []
+    });
+    const selected = deriveTypeScriptCodeActionRepair({
+      rootPath: "C:/virtual/cross-file",
+      requestedPaths: ["src/b.ts"],
+      requestText: `Apply codeFixIdentity:${candidate?.codeFixIdentity}.`,
+      files,
+      compilerCommand: compilerCommand()
+    });
+
+    expect(selected?.selection.mode).toBe("selected");
+    expect(selected?.transformations).toHaveLength(1);
+    const transformation = selected!.transformations[0]!;
+    expect(transformation.path).toBe("src/b.ts");
+    expect(transformation.afterContent).toBe(diagnosticSource);
+    expect(transformation.codeFix.fileChanges).toEqual([expect.objectContaining({
+      path: "src/a.ts",
+      isNewFile: false,
+      baseContentHash: hash(declaration),
+      afterContent: "export const hidden = 1;\nexport const visible = 2;\n"
+    })]);
+    expect(transformation.codeFixIdentity).toBe(typescriptCodeFixIdentity({
+      diagnosticIdentity: transformation.diagnosticIdentity,
+      codeFix: transformation.codeFix
+    }));
+  });
 });
 
 const PACKAGE_MANIFEST = JSON.stringify({ name: "fixture", scripts: { build: "tsc -p tsconfig.json" } });

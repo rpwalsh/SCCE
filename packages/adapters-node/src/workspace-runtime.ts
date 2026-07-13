@@ -1438,7 +1438,7 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
         },
         program: repair.program,
         existingDirectoryPaths: await verifiedProgramArtifactDirectories(args.root, repair.program.files.map(file => file.path)),
-        verifiedAbsentPaths: [],
+        verifiedAbsentPaths: await verifiedProgramArtifactAbsences(args.root, repair.program.files.map(file => file.path), confirmedRevision.snapshot),
         validationPlan: args.input.validationPlan
       });
     }
@@ -1567,12 +1567,16 @@ function materializeWorkspaceTypeScriptCodeActionRepair(args: {
     : undefined;
   if (!selected) {
     const candidates = derived.selection.candidates
-      .map(candidate => `TS${candidate.diagnosticCode}:fixName:${candidate.fixName}:codeFixIdentity:${candidate.codeFixIdentity}@${candidate.path}:${candidate.diagnosticStart}`);
+      .map(candidate => `TS${candidate.diagnosticCode}:fixName:${candidate.fixName}:codeFixIdentity:${candidate.codeFixIdentity}@${candidate.path}:${candidate.diagnosticStart};affected=${candidate.affectedPaths.join("|")};creates=${candidate.createPaths.join("|") || "none"}`);
     throw new Error(`TypeScript diagnostics require an exact TS####, fixName:<id>, or codeFixIdentity:<id> selector resolving to one candidate; selection=${derived.selection.mode}; candidates=${candidates.join(",") || "none"}; truncated=${derived.selection.truncated}`);
   }
   const packagePath = nearestPackageManifestPath(requestedPath, args.snapshot.files.map(file => file.path));
+  const existingChangedPaths = selected.codeFix.fileChanges
+    .filter(change => !change.isNewFile)
+    .map(change => change.path);
   const artifactPaths = [
     requestedPath,
+    ...existingChangedPaths,
     selected.compiler.tsconfigPath,
     selected.compiler.compilerCommand.sourcePath,
     ...(packagePath ? [packagePath] : [])
@@ -1590,8 +1594,10 @@ function materializeWorkspaceTypeScriptCodeActionRepair(args: {
   if (!baseArtifact || hashDigest(String(baseArtifact.contentHash)) !== hashDigest(selected.baseContentHash)) {
     throw new Error(`TypeScript code action is stale for ${selected.path}`);
   }
-  if (sha256Colon(selected.afterContent) !== selected.afterContentHash) {
-    throw new Error(`TypeScript code action emitted an invalid after-content hash for ${selected.path}`);
+  for (const change of selected.codeFix.fileChanges) {
+    if (sha256Colon(change.afterContent) !== change.afterContentHash) {
+      throw new Error(`TypeScript code action emitted an invalid after-content hash for ${change.path}`);
+    }
   }
   const repaired = materializeTypeScriptCodeActionRepair({
     program: base.program,
@@ -1600,17 +1606,57 @@ function materializeWorkspaceTypeScriptCodeActionRepair(args: {
       path: selected.path,
       baseArtifactId: String(baseArtifact.artifactId),
       baseContentHash: String(baseArtifact.contentHash),
+      snapshotHash: derived.snapshotHash,
       diagnostic: { ...selected.diagnostic, diagnosticIdentity: selected.diagnosticIdentity },
-      codeFix: { ...selected.codeFix, codeFixIdentity: selected.codeFixIdentity },
+      codeFix: {
+        fixName: selected.codeFix.fixName,
+        description: selected.codeFix.description,
+        ...(selected.codeFix.fixId ? { fixId: selected.codeFix.fixId } : {}),
+        codeFixIdentity: selected.codeFixIdentity,
+        fileChanges: selected.codeFix.fileChanges.map(change => {
+          const existing = base.program.files.find(file => file.path === change.path);
+          if (change.isNewFile) {
+            if (existing || change.baseContentHash !== null) {
+              throw new Error(`TypeScript code-action create base is incoherent for ${change.path}`);
+            }
+            return {
+              path: change.path,
+              isNewFile: true,
+              baseArtifactId: null,
+              baseContentHash: null,
+              textChanges: change.textChanges,
+              mediaType: /\.(?:[cm]?ts|tsx)$/iu.test(change.path) ? "text/typescript" : "text/javascript",
+              role: "source" as const
+            };
+          }
+          if (!existing || !change.baseContentHash
+            || hashDigest(String(existing.contentHash)) !== hashDigest(change.baseContentHash)) {
+            throw new Error(`TypeScript code-action replacement base is stale for ${change.path}`);
+          }
+          return {
+            path: change.path,
+            isNewFile: false,
+            baseArtifactId: String(existing.artifactId),
+            baseContentHash: String(existing.contentHash),
+            textChanges: change.textChanges,
+            mediaType: existing.mediaType,
+            role: existing.role
+          };
+        })
+      },
       compiler: selected.compiler
     }]
   });
-  const output = repaired.program.files.find(file => file.path === requestedPath);
-  if (repaired.changedPaths.length !== 1
-    || repaired.changedPaths[0] !== requestedPath
-    || output?.content !== selected.afterContent
-    || hashDigest(String(output.contentHash)) !== hashDigest(selected.afterContentHash)) {
-    throw new Error("TypeScript code-action repair did not reproduce the compiler-owned exact output");
+  const expectedChangedPaths = selected.codeFix.fileChanges.map(change => change.path).sort();
+  if (JSON.stringify(repaired.changedPaths) !== JSON.stringify(expectedChangedPaths)) {
+    throw new Error("TypeScript code-action repair did not preserve the compiler-owned atomic file set");
+  }
+  for (const change of selected.codeFix.fileChanges) {
+    const output = repaired.program.files.find(file => file.path === change.path);
+    if (output?.content !== change.afterContent
+      || hashDigest(String(output.contentHash)) !== hashDigest(change.afterContentHash)) {
+      throw new Error(`TypeScript code-action repair did not reproduce the compiler-owned exact output for ${change.path}`);
+    }
   }
   return { program: repaired.program, evidenceIds: base.evidenceIds };
 }

@@ -222,6 +222,33 @@ describe("workspace exact-byte plan generation", () => {
       .toThrow(/source-observed compiler command is stale or not bound/u);
   });
 
+  it("plans the complete atomic compiler-action closure including a live-proven create", () => {
+    const fixture = atomicCompilerRepairPlanningFixture();
+    const result = generateWorkspacePatchPlanFromProgramGraph(fixture.input);
+
+    expect(result.plan.operations).toEqual([
+      expect.objectContaining({ kind: "replace", path: "src/a.ts", content: fixture.afterPeer }),
+      expect.objectContaining({ kind: "create", path: "src/generated.ts", content: fixture.created })
+    ]);
+    expect(result.authorization).toEqual({ required: true, granted: false, capabilityId: "workspace.patch.apply" });
+    expect(result.execution).toEqual({ state: "not_executed", receipt: null });
+    expect(result.programProposalTrace.requestedPaths).toEqual(["src/b.ts"]);
+    expect(result.programProposalTrace.selectedArtifactPaths).toEqual(expect.arrayContaining([
+      "src/a.ts",
+      "src/b.ts",
+      "src/generated.ts"
+    ]));
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, verifiedAbsentPaths: [] }))
+      .toThrow(/create target lacks live absence proof/u);
+    const truncatedAction = tamperCompilerRepairLineage(fixture.input.program, operation => {
+      const codeFix = recordForTest(operation.codeFixEvidence, "atomic code-fix evidence");
+      codeFix.fileChanges = (Array.isArray(codeFix.fileChanges) ? codeFix.fileChanges : [])
+        .filter(change => recordForTest(change, "atomic file change").path !== "src/generated.ts");
+    });
+    expect(() => generateWorkspacePatchPlanFromProgramGraph({ ...fixture.input, program: truncatedAction }))
+      .toThrow(/atomic code-fix file set|code-fix identity/u);
+  });
+
   it("fails closed when the ProgramGraph leaves every requested file unchanged", () => {
     const snapshot = revision([current("src/value.ts", "export const value = 1;\n", "source")]);
     const source = proposed("src/value.ts", "export const value = 1;\n", "source", snapshot.files[0]!.contentHash).artifact;
@@ -480,6 +507,152 @@ function proposed(path: string, content: string, role: FileArtifact["role"], exp
 
 function artifactHash(content: string): string {
   return `sha256_${createHasher().digestHex(content)}`;
+}
+
+function atomicCompilerRepairPlanningFixture(): {
+  input: Parameters<typeof generateWorkspacePatchPlanFromProgramGraph>[0];
+  afterPeer: string;
+  created: string;
+} {
+  const hasher = createHasher();
+  const diagnosticContent = "import { hidden } from \"./a\";\nexport const value = hidden;\n";
+  const peerBefore = "const hidden = 1;\n";
+  const afterPeer = "export const hidden = 1;\n";
+  const created = "export const generated = true;\n";
+  const configContent = "{\"compilerOptions\":{\"strict\":true,\"noEmit\":true},\"include\":[\"src/**/*.ts\"]}\n";
+  const commandSourceContent = "{\"scripts\":{\"typecheck\":\"tsc -p tsconfig.json\",\"test\":\"vitest run\"}}\n";
+  const diagnosticSource = proposed("src/b.ts", diagnosticContent, "source", null).artifact;
+  const peer = proposed("src/a.ts", peerBefore, "source", null).artifact;
+  const config = proposed("tsconfig.json", configContent, "config", null).artifact;
+  const commandSource = proposed("package.json", commandSourceContent, "config", null).artifact;
+  const files = [diagnosticSource, peer, config, commandSource];
+  const evidenceIds = ["evidence.atomic-compiler-repair.fixture"];
+  const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
+    id: "program.workspace.atomic-compiler-repair",
+    language: "typescript",
+    packageManager: "pnpm",
+    entrypoint: diagnosticSource.path,
+    nodes: [
+      {
+        id: "blueprint.workspace.atomic-compiler-repair",
+        kind: "implementation_blueprint",
+        label: "atomic compiler-owned repair",
+        metadata: { sourceCoupling: 1, unbackedSynthesisRisk: 0 }
+      },
+      ...files.map(file => ({
+        id: `artifact:${file.path}`,
+        kind: `artifact:${file.role}`,
+        label: file.path,
+        metadata: { contentHash: file.contentHash }
+      }))
+    ],
+    edges: [],
+    files,
+    build: { command: "tsc", args: ["-p", "tsconfig.json"], cwd: "." },
+    test: { command: "vitest", args: ["run"], cwd: "." }
+  };
+  const baseProgram: ProgramGraph = {
+    ...graphWithoutHydration,
+    hydration: createProgramHydrationContract({
+      program: graphWithoutHydration,
+      sourcePlanId: "program-plan.atomic-compiler-repair.fixture",
+      evidenceIds
+    })
+  };
+  const diagnostic = {
+    code: 2459,
+    category: "error",
+    start: diagnosticContent.indexOf("hidden"),
+    length: "hidden".length,
+    message: "Module './a' declares 'hidden' locally, but it is not exported."
+  };
+  const compilerOptionsHash = canonicalTypeScriptCompilerOptionsHash({ noEmit: true, strict: true }, hasher);
+  const diagnosticIdentity = canonicalTypeScriptDiagnosticIdentity({
+    path: diagnosticSource.path,
+    diagnostic,
+    compilerVersion: "5.9.3",
+    compilerOptionsHash
+  }, hasher);
+  const fileChanges = [{
+    path: peer.path,
+    isNewFile: false,
+    baseArtifactId: String(peer.artifactId),
+    baseContentHash: String(peer.contentHash),
+    textChanges: [{ start: 0, length: 0, newText: "export " }],
+    mediaType: peer.mediaType,
+    role: peer.role
+  }, {
+    path: "src/generated.ts",
+    isNewFile: true,
+    baseArtifactId: null,
+    baseContentHash: null,
+    textChanges: [{ start: 0, length: 0, newText: created }],
+    mediaType: "text/typescript",
+    role: "source" as const
+  }];
+  const fixName = "atomicCompilerAction";
+  const description = "Export the local and create the compiler-requested source";
+  const codeFixIdentity = canonicalTypeScriptCodeFixIdentity({
+    diagnosticIdentity,
+    codeFix: { fixName, description, fileChanges }
+  }, hasher);
+  const repaired = materializeTypeScriptCodeActionRepair({
+    program: baseProgram,
+    requestText: "Apply the selected compiler action for TS2459 in src/b.ts.",
+    transformations: [{
+      path: diagnosticSource.path,
+      baseArtifactId: String(diagnosticSource.artifactId),
+      baseContentHash: String(diagnosticSource.contentHash),
+      snapshotHash: `sha256:${hasher.digestHex("atomic compiler snapshot")}`,
+      diagnostic: { ...diagnostic, diagnosticIdentity },
+      codeFix: { fixName, description, codeFixIdentity, fileChanges },
+      compiler: {
+        version: "5.9.3",
+        tsconfigPath: config.path,
+        tsconfigContentHash: String(config.contentHash),
+        compilerOptionsHash,
+        compilerOptionsSource: "source_observed_tsc_project",
+        configDiagnosticCodes: [],
+        sourceFileBoundary: "workspace_snapshot_and_typescript_standard_library",
+        compilerCommand: {
+          executable: "tsc",
+          args: ["-p", "tsconfig.json"],
+          cwd: ".",
+          sourcePath: commandSource.path,
+          sourceContentHash: String(commandSource.contentHash)
+        }
+      }
+    }],
+    hasher
+  });
+  const snapshot = revision([
+    current(diagnosticSource.path, diagnosticContent, "source"),
+    current(peer.path, peerBefore, "source"),
+    current(config.path, configContent, "config"),
+    current(commandSource.path, commandSourceContent, "config")
+  ]);
+  return {
+    afterPeer,
+    created,
+    input: {
+      snapshot,
+      expectedRevisionId: snapshot.revisionId,
+      expectedRevisionHash: snapshot.revisionHash,
+      request: {
+        requestId: "request.atomic-compiler-repair.fixture",
+        text: "Apply the selected compiler action for TS2459 in src/b.ts.",
+        requestedPaths: [diagnosticSource.path],
+        evidenceIds
+      },
+      program: repaired.program,
+      existingDirectoryPaths: ["", "src"],
+      verifiedAbsentPaths: ["src/generated.ts"],
+      validationPlan: {
+        validatorId: "trusted-host-pnpm-validate.v1",
+        checks: ["compiler", "typecheck", "tests"]
+      }
+    }
+  };
 }
 
 function compilerRepairPlanningFixture(): {

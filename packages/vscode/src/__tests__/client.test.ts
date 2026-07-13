@@ -171,6 +171,19 @@ describe("YoppClient HTTP boundary", () => {
     ]);
   });
 
+  it("rejects internally valid patch receipts that are partial or do not match the reviewed operation", async () => {
+    const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export {};\n"));
+    const response = (receipt: unknown) => jsonResponse({
+      schemaVersion: "yopp.workspace-patch-response.v1",
+      workspaceId: "workspace-1",
+      validationPolicyId: "trusted-host-pnpm-validate.v1",
+      receipt
+    });
+
+    await expect(clientWithResponse(response(fixtureReceipt(plan, { omitMutation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/mutation count/u);
+    await expect(clientWithResponse(response(fixtureReceipt(plan, { mutationPath: "src/other.ts" }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/path does not match/u);
+  });
+
   it("submits a bounded coding request and verifies the returned content-addressed plan trace", async () => {
     const requests: RecordedRequest[] = [];
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));
@@ -317,18 +330,21 @@ function fixturePlan(path: string, content: string): unknown {
   return { schemaVersion: "yopp.patch-transaction-plan.v1", operations, planHash: sha256(JSON.stringify(canonical({ schemaVersion: "yopp.patch-transaction-plan.v1", operations }))) };
 }
 
-function fixtureReceipt(plan: ReturnType<typeof parseReviewedPatchPlan>): unknown {
+function fixtureReceipt(
+  plan: ReturnType<typeof parseReviewedPatchPlan>,
+  options: { mutationPath?: string; omitMutation?: boolean } = {}
+): unknown {
   const operation = plan.operations[0]!;
   const mutationPayload = {
     schemaVersion: "yopp.patch-mutation-receipt.v1",
     planHash: plan.planHash,
     operationIndex: 0,
     kind: operation.kind,
-    path: operation.path,
+    path: options.mutationPath ?? operation.path,
     beforeContentHash: operation.beforeContentHash,
     afterContentHash: operation.afterContentHash
   };
-  const mutations = [{ ...mutationPayload, mutationHash: sha256(JSON.stringify(canonical(mutationPayload))) }];
+  const mutations = options.omitMutation ? [] : [{ ...mutationPayload, mutationHash: sha256(JSON.stringify(canonical(mutationPayload))) }];
   const payload = {
     schemaVersion: "yopp.patch-transaction-receipt.v1",
     transactionScope: "atomic-per-file-with-verified-transaction-rollback",

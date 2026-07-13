@@ -71,6 +71,36 @@ describe("kernel local evidence source anchoring", () => {
     expect(JSON.stringify(result.actionGraph)).toContain("ada lovelace");
   });
 
+  it("preserves both requested answer parts from one exact-title evidence span", async () => {
+    const clock = createClock({ fixedTime: 6_500, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-multipart",
+      sourceVersionId: "source:ada-multipart:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was an English mathematician. She published an algorithm intended for Charles Babbage's Analytical Engine.",
+      alpha: 0.94
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Who was Ada Lovelace, and what did she contribute?" });
+
+    expect(result.answer).toContain("English mathematician");
+    expect(result.answer).toContain("published an algorithm");
+    expect(result.evidence.map(span => String(span.id))).toEqual([String(ada.id)]);
+    expect(result.assistantForce).toBe("source_grounded_answer");
+    expect(result.guardFlags.sourceBacked).toBe(true);
+  });
+
   it("resolves source titles stored in normal ingest provenance metadata", async () => {
     const nested = evidenceSpan({
       id: "evidence:nested-title",

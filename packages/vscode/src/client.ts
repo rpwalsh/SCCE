@@ -25,6 +25,7 @@ import {
   type WorkspacePatchAttempt,
   type WorkspaceStatusResponse
 } from "./patch-protocol.js";
+import { verifyAppliedPatchMatchesPlan } from "./patch-integrity.js";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -100,7 +101,10 @@ export class YoppClient {
       workspaceId: requireNonEmpty(workspaceId, "workspace id"),
       plan,
       validationPolicyId: DEFAULT_PATCH_VALIDATION_POLICY_ID
-    }, parseWorkspacePatchAttempt);
+    }, value => {
+      const attempt = parseWorkspacePatchAttempt(value);
+      return "pendingApproval" in attempt ? attempt : verifyAppliedPatchMatchesPlan(attempt, plan);
+    });
   }
 
   approveWorkspacePatch(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {

@@ -260,12 +260,129 @@ describe("program repair full-file materialization", () => {
       hasher
     })).toThrow(/overlap/u);
   });
+
+  it("materializes one canonical atomic action across replacements and an absent new source", () => {
+    const hasher = createHasher();
+    const diagnosticSource = artifact("src/index.ts", "export const value: string = 1;\n", hasher);
+    const peer = artifact("src/peer.ts", "export const peer = 1;\n", hasher);
+    const program = hydratedProgram(diagnosticSource, hasher, [peer]);
+    const config = program.files.find(file => file.path === "tsconfig.json")!;
+    const commandSource = program.files.find(file => file.path === "package.json")!;
+    const diagnostic = {
+      code: 2322,
+      category: "error",
+      start: diagnosticSource.content.indexOf("string"),
+      length: "string".length,
+      message: "Type 'number' is not assignable to type 'string'."
+    };
+    const compilerOptionsHash = canonicalTypeScriptCompilerOptionsHash({ noEmit: true, strict: true }, hasher);
+    const diagnosticIdentity = canonicalTypeScriptDiagnosticIdentity({
+      path: diagnosticSource.path,
+      diagnostic,
+      compilerVersion: "5.9.3",
+      compilerOptionsHash
+    }, hasher);
+    const fileChanges = [{
+      path: diagnosticSource.path,
+      isNewFile: false,
+      baseArtifactId: String(diagnosticSource.artifactId),
+      baseContentHash: String(diagnosticSource.contentHash),
+      textChanges: [{ start: diagnostic.start, length: diagnostic.length, newText: "number" }],
+      mediaType: diagnosticSource.mediaType,
+      role: diagnosticSource.role
+    }, {
+      path: peer.path,
+      isNewFile: false,
+      baseArtifactId: String(peer.artifactId),
+      baseContentHash: String(peer.contentHash),
+      textChanges: [{ start: peer.content.length, length: 0, newText: "export const repaired = true;\n" }],
+      mediaType: peer.mediaType,
+      role: peer.role
+    }, {
+      path: "src/generated.ts",
+      isNewFile: true,
+      baseArtifactId: null,
+      baseContentHash: null,
+      textChanges: [{ start: 0, length: 0, newText: "export const generated = true;\n" }],
+      mediaType: "text/typescript",
+      role: "source" as const
+    }];
+    const fixName = "atomicCompilerAction";
+    const description = "Apply the compiler-owned atomic repair";
+    const codeFixIdentity = canonicalTypeScriptCodeFixIdentity({
+      diagnosticIdentity,
+      codeFix: { fixName, description, fileChanges }
+    }, hasher);
+    const transformation = {
+      path: diagnosticSource.path,
+      baseArtifactId: String(diagnosticSource.artifactId),
+      baseContentHash: String(diagnosticSource.contentHash),
+      snapshotHash: `sha256:${hasher.digestHex("exact compiler snapshot")}`,
+      diagnostic: { ...diagnostic, diagnosticIdentity },
+      codeFix: { fixName, description, codeFixIdentity, fileChanges },
+      compiler: {
+        version: "5.9.3",
+        tsconfigPath: config.path,
+        tsconfigContentHash: String(config.contentHash),
+        compilerOptionsHash,
+        compilerOptionsSource: "source_observed_tsc_project",
+        configDiagnosticCodes: [],
+        sourceFileBoundary: "workspace_snapshot_and_typescript_standard_library" as const,
+        compilerCommand: {
+          executable: "tsc",
+          args: ["-p", "tsconfig.json"],
+          cwd: ".",
+          sourcePath: commandSource.path,
+          sourceContentHash: String(commandSource.contentHash)
+        }
+      }
+    };
+
+    const result = materializeTypeScriptCodeActionRepair({
+      program,
+      transformations: [transformation],
+      requestText: "Apply the selected atomic TypeScript compiler action.",
+      hasher
+    });
+
+    expect(result.changedPaths).toEqual(["src/generated.ts", "src/index.ts", "src/peer.ts"]);
+    expect(result.program.files.find(file => file.path === "src/index.ts")?.content)
+      .toBe("export const value: number = 1;\n");
+    expect(result.program.files.find(file => file.path === "src/peer.ts")?.content)
+      .toBe("export const peer = 1;\nexport const repaired = true;\n");
+    expect(result.program.files.find(file => file.path === "src/generated.ts"))
+      .toMatchObject({ role: "source", mediaType: "text/typescript", content: "export const generated = true;\n" });
+    const repairNode = result.program.nodes.find(node => node.kind === "program_repair_full_file_materialization");
+    const transformations = (repairNode?.metadata as { transformations?: Array<{ operations?: Array<{ codeFixEvidence?: { codeFixIdentity?: string } }> }> })?.transformations ?? [];
+    expect(transformations).toHaveLength(3);
+    expect(transformations.flatMap(item => item.operations ?? []).every(operation =>
+      operation.codeFixEvidence?.codeFixIdentity === codeFixIdentity)).toBe(true);
+
+    expect(() => materializeTypeScriptCodeActionRepair({
+      program,
+      transformations: [{
+        ...transformation,
+        codeFix: {
+          ...transformation.codeFix,
+          fileChanges: transformation.codeFix.fileChanges.map(change => change.path === "src/generated.ts"
+            ? { ...change, baseContentHash: String(peer.contentHash) }
+            : change)
+        }
+      }],
+      requestText: "Apply the selected atomic TypeScript compiler action.",
+      hasher
+    })).toThrow(/create must carry a null base identity/u);
+  });
 });
 
-function hydratedProgram(source: FileArtifact, hasher: ReturnType<typeof createHasher>): ProgramGraph {
+function hydratedProgram(
+  source: FileArtifact,
+  hasher: ReturnType<typeof createHasher>,
+  additionalFiles: readonly FileArtifact[] = []
+): ProgramGraph {
   const config = artifact("tsconfig.json", "{\"compilerOptions\":{\"strict\":true,\"noEmit\":true},\"include\":[\"src/**/*.ts\"]}\n", hasher, "config");
   const commandSource = artifact("package.json", "{\"scripts\":{\"typecheck\":\"tsc -p tsconfig.json\",\"test\":\"vitest run\"}}\n", hasher, "config");
-  const files = [source, config, commandSource];
+  const files = [source, ...additionalFiles, config, commandSource];
   const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
     id: `program.repair.${hasher.digestHex(source.content).slice(0, 16)}`,
     language: "typescript",

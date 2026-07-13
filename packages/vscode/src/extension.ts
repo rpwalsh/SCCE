@@ -7,12 +7,22 @@ import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
 import type { YoppEndpoint } from "./protocol.js";
 import {
+  reviewedPatchIntegritySummary,
+  verifyAppliedPatchMatchesPlan,
+  verifyAppliedWorkspaceState
+} from "./patch-integrity.js";
+import {
   DEFAULT_PATCH_VALIDATION_POLICY_ID,
   parseReviewedPatchPlan,
   type AppliedWorkspacePatch,
   type ReviewedPatchPlan,
   type WorkspaceCodingPatchPlanGeneration
 } from "./patch-protocol.js";
+import {
+  sameFileSystemPath,
+  selectServerBoundWorkspaceFolder,
+  type WorkspaceFolderIdentity
+} from "./workspace-binding.js";
 
 const TOKEN_SECRET_KEY = "yopp.serverToken.v1";
 const MAX_PATCH_PLAN_BYTES = 8 * 1024 * 1024;
@@ -144,18 +154,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       else await context.secrets.delete(TOKEN_SECRET_KEY);
       void vscode.window.showInformationMessage(normalized ? "Yopp token stored in VS Code SecretStorage." : "Yopp token removed.");
     }),
-    vscode.commands.registerCommand("yopp.workspace.initialize", () => run("workspace.initialize", "Initialize workspace", true, activeClient => activeClient.workspaceInitialize(localWorkspacePath()))),
-    vscode.commands.registerCommand("yopp.workspace.ingest", () => run("workspace.ingest", "Ingest workspace", true, activeClient => activeClient.workspaceIngest(localWorkspacePath()))),
-    vscode.commands.registerCommand("yopp.project.summary", () => run("project.summary", "Generate project summary", true, activeClient => activeClient.projectSummary(localWorkspacePath()))),
+    vscode.commands.registerCommand("yopp.workspace.initialize", async () => {
+      const workspacePath = await chooseLocalWorkspacePathForInitialization();
+      if (!workspacePath) return;
+      return run("workspace.initialize", "Initialize workspace", true, activeClient => activeClient.workspaceInitialize(workspacePath));
+    }),
+    vscode.commands.registerCommand("yopp.workspace.ingest", () => run("workspace.ingest", "Ingest workspace", true, async activeClient => {
+      const { binding } = await serverBoundWorkspace(activeClient);
+      return activeClient.workspaceIngest(binding.resolvedRoot);
+    })),
+    vscode.commands.registerCommand("yopp.project.summary", () => run("project.summary", "Generate project summary", true, async activeClient => {
+      const { binding } = await serverBoundWorkspace(activeClient);
+      return activeClient.projectSummary(binding.resolvedRoot);
+    })),
     vscode.commands.registerCommand("yopp.workspace.ask", async () => {
       const question = await vscode.window.showInputBox({ title: "Ask Yopp about this workspace", prompt: "The question and answer will be persisted by the local Yopp runtime.", ignoreFocusOut: true });
       if (!question?.trim()) return;
-      const answer = await run("workspace.ask", "Ask workspace question", true, activeClient => activeClient.workspaceAsk(localWorkspacePath(), question));
+      const answer = await run("workspace.ask", "Ask workspace question", true, async activeClient => {
+        const { binding } = await serverBoundWorkspace(activeClient);
+        return activeClient.workspaceAsk(binding.resolvedRoot, question);
+      });
       if (answer && typeof answer === "object" && "answer" in answer && typeof answer.answer === "string") {
         void vscode.window.showInformationMessage(answer.answer.slice(0, 500));
       }
     }),
-    vscode.commands.registerCommand("yopp.workspace.status", () => run("workspace.status", "Load read-only workspace status", false, activeClient => activeClient.workspaceStatus())),
+    vscode.commands.registerCommand("yopp.workspace.status", () => run("workspace.status", "Load read-only workspace status", false, async activeClient => {
+      const { status: workspaceStatus } = await serverBoundWorkspace(activeClient);
+      return workspaceStatus;
+    })),
     vscode.commands.registerCommand("yopp.workspace.codingRequest", async () => {
       const requestText = await vscode.window.showInputBox({
         title: "Plan a bounded coding request with Yopp",
@@ -171,12 +197,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       });
       if (!requestText?.trim()) return;
-      let statusResult = await run("workspace.status", "Load coding-request scope", false, async activeClient => {
-        const workspaceStatus = await activeClient.workspaceStatus();
-        await assertServerWorkspaceMatchesOpenFolder(workspaceStatus.workspace.rootPath);
-        return workspaceStatus;
-      });
-      if (!statusResult) return;
+      let scopedStatus = await run("workspace.status", "Load coding-request scope", false, activeClient => serverBoundWorkspace(activeClient));
+      if (!scopedStatus) return;
+      let statusResult = scopedStatus.status;
+      let codingWorkspace = scopedStatus.binding;
       const refreshChoice = await vscode.window.showQuickPick([
         {
           label: "$(refresh) Refresh durable workspace first",
@@ -195,14 +219,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       if (!refreshChoice) return;
       if (refreshChoice.refresh) {
-        const refreshed = await run("workspace.ingest", "Refresh durable workspace for coding request", true, activeClient => activeClient.workspaceIngest(localWorkspacePath()));
+        const refreshed = await run("workspace.ingest", "Refresh durable workspace for coding request", true, activeClient => activeClient.workspaceIngest(codingWorkspace.resolvedRoot));
         if (!refreshed) return;
-        statusResult = await run("workspace.status", "Reload coding-request scope", false, async activeClient => {
-          const workspaceStatus = await activeClient.workspaceStatus();
-          await assertServerWorkspaceMatchesOpenFolder(workspaceStatus.workspace.rootPath);
-          return workspaceStatus;
-        });
-        if (!statusResult) return;
+        scopedStatus = await run("workspace.status", "Reload coding-request scope", false, activeClient => serverBoundWorkspace(activeClient));
+        if (!scopedStatus) return;
+        statusResult = scopedStatus.status;
+        codingWorkspace = scopedStatus.binding;
       }
       if (statusResult.sources.length === 0) {
         void vscode.window.showInformationMessage("Yopp has no durable source files to scope. Initialize and ingest the workspace first.");
@@ -264,7 +286,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const currentStatus = await activeClient.workspaceStatus();
           if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("the server's active workspace changed after coding-plan review");
           await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
-          return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, generation.plan);
+          return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, currentStatus.workspace.rootPath, generation.plan);
         },
         {
           message: `Apply ${generation.plan.operations.length} verified coding-request file operation(s) to this workspace?`,
@@ -301,7 +323,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const currentStatus = await activeClient.workspaceStatus();
         if (currentStatus.workspace.id !== boundStatus.workspace.id) throw new Error("the server's active workspace changed after patch-plan review");
         await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
-        return applyReviewedWorkspacePatch(activeClient, boundStatus.workspace.id, plan);
+        return applyReviewedWorkspacePatch(activeClient, boundStatus.workspace.id, currentStatus.workspace.rootPath, plan);
       }, {
         message: `Apply ${plan.operations.length} reviewed file operation(s) to this workspace?`,
         detail: `${patchPlanSummary(plan)}\n\nThe server will verify all content hashes, stage the workspace, run ${DEFAULT_PATCH_VALIDATION_POLICY_ID}, require a second capability authorization, and commit only after validation passes. This trusted-host policy is not an OS sandbox; use it only for repository code you trust to run with the server process's authority.`
@@ -329,16 +351,31 @@ function configuredTimeout(): number {
   return normalizeRequestTimeout(vscode.workspace.getConfiguration("yopp").get<number>("requestTimeoutMs"));
 }
 
-function localWorkspacePath(): string {
-  return localWorkspaceFolder().uri.fsPath;
+async function chooseLocalWorkspacePathForInitialization(): Promise<string | undefined> {
+  const folders = (vscode.workspace.workspaceFolders ?? []).filter(folder => folder.uri.scheme === "file");
+  if (folders.length === 0) {
+    void vscode.window.showErrorMessage("Yopp initialization requires an open local file-system workspace folder.");
+    return undefined;
+  }
+  if (folders.length === 1) return folders[0]!.uri.fsPath;
+  const selected = await vscode.window.showQuickPick(
+    folders.map(folder => ({ label: folder.name, description: folder.uri.fsPath, folder })),
+    {
+      title: "Select the local workspace folder to initialize",
+      placeHolder: "Yopp will initialize only the explicitly selected folder",
+      ignoreFocusOut: true
+    }
+  );
+  return selected?.folder.uri.fsPath;
 }
 
-function localWorkspaceFolder(): vscode.WorkspaceFolder {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length !== 1 || folders[0]?.uri.scheme !== "file") {
-    throw new Error("Yopp requires exactly one open local file-system workspace folder");
-  }
-  return folders[0];
+async function serverBoundWorkspace(activeClient: YoppClient): Promise<{
+  status: Awaited<ReturnType<YoppClient["workspaceStatus"]>>;
+  binding: BoundOpenWorkspace;
+}> {
+  const status = await activeClient.workspaceStatus();
+  const binding = await assertServerWorkspaceMatchesOpenFolder(status.workspace.rootPath);
+  return { status, binding };
 }
 
 function iconFor(state: ExtensionTaskRecord["state"]): string {
@@ -387,10 +424,11 @@ function patchPlanSummary(plan: ReviewedPatchPlan): string {
     return `${operation.kind} ${operation.path} ${before} -> ${after}`;
   });
   if (plan.operations.length > rows.length) rows.push(`...and ${plan.operations.length - rows.length} more operation(s)`);
-  return [`Plan ${plan.planHash}`, ...rows].join("\n");
+  return [`Plan ${plan.planHash}`, reviewedPatchIntegritySummary(plan), ...rows].join("\n");
 }
 
 interface BoundOpenWorkspace {
+  folder: vscode.WorkspaceFolder;
   resolvedRoot: string;
   realRoot: string;
 }
@@ -402,15 +440,17 @@ interface PatchPreviewEntry {
 }
 
 async function assertServerWorkspaceMatchesOpenFolder(serverRootPath: string): Promise<BoundOpenWorkspace> {
-  const folder = localWorkspaceFolder();
-  const resolvedRoot = resolve(folder.uri.fsPath);
   const resolvedServerRoot = resolve(serverRootPath);
-  if (!sameFileSystemPath(resolvedRoot, resolvedServerRoot)) {
-    throw new Error(`the server workspace does not match the open VS Code folder (${resolvedServerRoot} != ${resolvedRoot})`);
+  const realServerRoot = await realpath(resolvedServerRoot);
+  const candidates: Array<WorkspaceFolderIdentity<vscode.WorkspaceFolder>> = [];
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const resolvedRoot = resolve(folder.uri.fsPath);
+    const realRoot = folder.uri.scheme === "file" && sameFileSystemPath(resolvedRoot, resolvedServerRoot)
+      ? await realpath(resolvedRoot)
+      : null;
+    candidates.push({ folder, scheme: folder.uri.scheme, resolvedRoot, realRoot });
   }
-  const [realRoot, realServerRoot] = await Promise.all([realpath(resolvedRoot), realpath(resolvedServerRoot)]);
-  if (!sameFileSystemPath(realRoot, realServerRoot)) throw new Error("the server workspace and open VS Code folder resolve to different locations");
-  return { resolvedRoot, realRoot };
+  return selectServerBoundWorkspaceFolder(resolvedServerRoot, realServerRoot, candidates);
 }
 
 async function openPatchPlanPreview(
@@ -508,14 +548,6 @@ function combinedPatchPreview(entries: readonly PatchPreviewEntry[], side: "befo
   }).join("\n\n");
 }
 
-function sameFileSystemPath(left: string, right: string): boolean {
-  const normalizedLeft = resolve(left);
-  const normalizedRight = resolve(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US")
-    : normalizedLeft === normalizedRight;
-}
-
 function isSameOrInside(root: string, candidate: string): boolean {
   const relativePath = relative(root, candidate);
   return relativePath === "" || (!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith("../") && !relativePath.startsWith("..\\"));
@@ -525,7 +557,12 @@ function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoE
   return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
 }
 
-async function applyReviewedWorkspacePatch(activeClient: YoppClient, workspaceId: string, plan: ReviewedPatchPlan): Promise<AppliedWorkspacePatch> {
+async function applyReviewedWorkspacePatch(
+  activeClient: YoppClient,
+  workspaceId: string,
+  workspaceRootPath: string,
+  plan: ReviewedPatchPlan
+): Promise<AppliedWorkspacePatch> {
   let attempt = await activeClient.workspacePatch(workspaceId, plan);
   if ("pendingApproval" in attempt) {
     const pending = attempt.pendingApproval;
@@ -546,7 +583,10 @@ async function applyReviewedWorkspacePatch(activeClient: YoppClient, workspaceId
   if (attempt.workspaceId !== workspaceId || attempt.validationPolicyId !== DEFAULT_PATCH_VALIDATION_POLICY_ID || attempt.receipt.planHash !== plan.planHash) {
     throw new Error("patch receipt does not match the reviewed request");
   }
-  return attempt;
+  const applied = verifyAppliedPatchMatchesPlan(attempt, plan);
+  const workspace = await assertServerWorkspaceMatchesOpenFolder(workspaceRootPath);
+  await verifyAppliedWorkspaceState(workspace.resolvedRoot, plan);
+  return applied;
 }
 
 function codingPlanReviewSummary(generation: WorkspaceCodingPatchPlanGeneration): string {

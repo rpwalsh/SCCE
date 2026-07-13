@@ -10,6 +10,8 @@ import ts from "typescript";
 const FAMILY_ID = "repair.family.typescript.code_action.v1" as const;
 const DEFAULT_MAX_EDITS = 32;
 const MAX_EDITS = 128;
+const MAX_ACTION_FILES = 32;
+const MAX_ACTION_TEXT_CHANGES = 128;
 const REQUESTED_TYPESCRIPT_EXTENSIONS = /\.(?:[cm]?ts|tsx)$/iu;
 const PROJECT_SOURCE_EXTENSIONS = /\.(?:[cm]?[jt]s|[jt]sx)$/iu;
 
@@ -53,7 +55,18 @@ export interface TypeScriptCodeActionFix {
   fixName: string;
   description: string;
   fixId?: string;
+  /** Single-target compatibility view; empty for atomic multi-target actions. */
   textChanges: TypeScriptCodeActionTextChange[];
+  fileChanges: TypeScriptCodeActionFileChange[];
+}
+
+export interface TypeScriptCodeActionFileChange {
+  path: string;
+  isNewFile: boolean;
+  baseContentHash: string | null;
+  textChanges: TypeScriptCodeActionTextChange[];
+  afterContent: string;
+  afterContentHash: `sha256:${string}`;
 }
 
 export interface TypeScriptCodeActionCompilerProvenance {
@@ -109,6 +122,8 @@ export interface TypeScriptCodeActionCandidateSummary {
   diagnosticStart: number;
   fixName: string;
   codeFixIdentity: `typescript.code_fix:${string}`;
+  affectedPaths: string[];
+  createPaths: string[];
 }
 
 export function typescriptCompilerOptionsHash(compilerOptions: unknown): `sha256:${string}` {
@@ -183,7 +198,7 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
           {}
         );
         for (const fix of fixes) {
-          const transformation = materializeSingleFileFix({ file, diagnostic, fix, snapshot, compiler: project.provenance });
+          const transformation = materializeAtomicCodeFix({ file, diagnostic, fix, snapshot, compiler: project.provenance });
           if (!transformation || seenFixes.has(transformation.codeFixIdentity)) continue;
           seenFixes.add(transformation.codeFixIdentity);
           transformations.push(transformation);
@@ -243,7 +258,9 @@ function candidateSummary(transformation: TypeScriptCodeActionTransformation): T
     diagnosticCode: transformation.diagnostic.code,
     diagnosticStart: transformation.diagnostic.start,
     fixName: transformation.codeFix.fixName,
-    codeFixIdentity: transformation.codeFixIdentity
+    codeFixIdentity: transformation.codeFixIdentity,
+    affectedPaths: transformation.codeFix.fileChanges.map(change => change.path),
+    createPaths: transformation.codeFix.fileChanges.filter(change => change.isNewFile).map(change => change.path)
   };
 }
 
@@ -447,22 +464,51 @@ function compilerDiagnostics(service: ts.LanguageService, file: SnapshotFile): A
   return [...out.values()].sort((left, right) => left.start - right.start || left.code - right.code || left.message.localeCompare(right.message));
 }
 
-function materializeSingleFileFix(input: {
+function materializeAtomicCodeFix(input: {
   file: SnapshotFile;
   diagnostic: TypeScriptCodeActionDiagnostic & { source: ts.Diagnostic };
   fix: ts.CodeFixAction;
   snapshot: ExactSnapshot;
   compiler: TypeScriptCodeActionCompilerProvenance;
 }): TypeScriptCodeActionTransformation | undefined {
-  if ((input.fix.commands?.length ?? 0) > 0 || input.fix.changes.length !== 1) return undefined;
-  const fileChanges = input.fix.changes[0];
-  if (!fileChanges || fileChanges.isNewFile) return undefined;
-  const target = input.snapshot.byAbsolutePath.get(canonicalAbsolute(fileChanges.fileName));
-  if (!target || target.path !== input.file.path || target.canonicalAbsolutePath !== input.file.canonicalAbsolutePath) return undefined;
-  const changes = orderedNonOverlappingChanges(input.file.content, fileChanges.textChanges);
-  if (!changes || changes.length === 0) return undefined;
-  const afterContent = applyTextChanges(input.file.content, changes);
-  if (afterContent === input.file.content) return undefined;
+  if ((input.fix.commands?.length ?? 0) > 0
+    || input.fix.changes.length === 0
+    || input.fix.changes.length > MAX_ACTION_FILES) return undefined;
+  const materializedChanges: TypeScriptCodeActionFileChange[] = [];
+  const seenPaths = new Set<string>();
+  let totalTextChanges = 0;
+  for (const fileChange of input.fix.changes) {
+    const candidatePath = workspacePathForCompilerChange(input.snapshot, fileChange.fileName);
+    if (!candidatePath) return undefined;
+    const candidateAbsolute = workspaceAbsolutePath(input.snapshot.rootPath, candidatePath);
+    const target = input.snapshot.byAbsolutePath.get(canonicalAbsolute(candidateAbsolute));
+    const workspacePath = target?.path ?? candidatePath;
+    if (seenPaths.has(workspacePath)) return undefined;
+    seenPaths.add(workspacePath);
+    const isNewFile = fileChange.isNewFile === true;
+    if (isNewFile === Boolean(target)) return undefined;
+    if (isNewFile) {
+      if (!PROJECT_SOURCE_EXTENSIONS.test(workspacePath)) return undefined;
+      const parent = path.dirname(workspaceAbsolutePath(input.snapshot.rootPath, workspacePath));
+      if (!input.snapshot.directoryPaths.has(canonicalAbsolute(parent))) return undefined;
+    }
+    const baseContent = target?.content ?? "";
+    const changes = orderedNonOverlappingChanges(baseContent, fileChange.textChanges);
+    if (!changes || changes.length === 0) return undefined;
+    totalTextChanges += changes.length;
+    if (totalTextChanges > MAX_ACTION_TEXT_CHANGES) return undefined;
+    const afterContent = applyTextChanges(baseContent, changes);
+    if (afterContent === baseContent) return undefined;
+    materializedChanges.push({
+      path: workspacePath,
+      isNewFile,
+      baseContentHash: target?.contentHash ?? null,
+      textChanges: changes,
+      afterContent,
+      afterContentHash: sha256(afterContent)
+    });
+  }
+  materializedChanges.sort((left, right) => left.path.localeCompare(right.path));
   const diagnostic: TypeScriptCodeActionDiagnostic = {
     code: input.diagnostic.code,
     category: input.diagnostic.category,
@@ -481,7 +527,10 @@ function materializeSingleFileFix(input: {
     fixName: input.fix.fixName,
     description: input.fix.description,
     ...(fixId ? { fixId } : {}),
-    textChanges: changes
+    textChanges: materializedChanges.length === 1 && materializedChanges[0]!.path === input.file.path
+      ? [...materializedChanges[0]!.textChanges]
+      : [],
+    fileChanges: materializedChanges
   };
   const codeFixIdentity = typescriptCodeFixIdentity({
     diagnosticIdentity,
@@ -494,15 +543,28 @@ function materializeSingleFileFix(input: {
     codeFix,
     diagnosticIdentity,
     codeFixIdentity,
-    afterContent,
-    afterContentHash: sha256(afterContent),
+    afterContent: materializedChanges.find(change => change.path === input.file.path)?.afterContent ?? input.file.content,
+    afterContentHash: materializedChanges.find(change => change.path === input.file.path)?.afterContentHash ?? sha256(input.file.content),
     compiler: input.compiler,
     postconditionIds: [
       `typescript.diagnostic.${diagnostic.code}.code_fix_applied`,
       "workspace.requested_path.bound",
-      "workspace.after_bytes.exact"
+      "workspace.after_bytes.exact",
+      "workspace.atomic_action.file_set_bound"
     ]
   };
+}
+
+function workspacePathForCompilerChange(snapshot: ExactSnapshot, fileName: string): string | undefined {
+  if (!fileName || fileName.includes("\0")) return undefined;
+  const absolute = path.resolve(fileName);
+  if (!isWithinDirectory(absolute, snapshot.rootPath)) return undefined;
+  const relative = path.relative(snapshot.rootPath, absolute).replace(/\\/gu, "/");
+  try {
+    return normalizeWorkspacePath(relative);
+  } catch {
+    return undefined;
+  }
 }
 
 function orderedNonOverlappingChanges(content: string, input: readonly ts.TextChange[]): TypeScriptCodeActionTextChange[] | undefined {

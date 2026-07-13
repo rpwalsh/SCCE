@@ -6037,7 +6037,6 @@ function evidenceAnswerSentenceLimit(requestText: string, evidence: readonly Evi
   if (sessionContextEvidence && !namedSubjectAnchors(requestText).length) return 1;
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   if (!anchors.length && evidence.some(promotedSessionEvidence)) return 1;
-  if (evidence.length === 1 && anchors.length && evidenceExactSourceAnchorMatches(evidence[0]!, anchors)) return 1;
   return anchors.length ? 2 : 1;
 }
 

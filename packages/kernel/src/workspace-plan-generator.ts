@@ -488,8 +488,9 @@ export function generateWorkspacePatchPlanFromProgramGraph(
   const snapshotPaths = new Set(snapshot.files.map(file => file.path));
   const programByPath = new Map(input.program.files.map(artifact => [artifact.path, artifact]));
   const dependencyPaths = programArtifactDependencyClosure(requestedPaths, programByPath, hydrationFiles);
+  const repairActionPaths = programRepairActionClosure(input.program, requestedPaths);
   const selectedArtifacts = input.program.files.filter(artifact =>
-    dependencyPaths.has(artifact.path) || isLinkedProgramRegressionTest({
+    dependencyPaths.has(artifact.path) || repairActionPaths.has(artifact.path) || isLinkedProgramRegressionTest({
       artifact,
       snapshotPaths,
       dependencyPaths,
@@ -525,7 +526,7 @@ export function generateWorkspacePatchPlanFromProgramGraph(
     if (!artifact || !current) return false;
     const currentText = decodeExactUtf8(current.bytes, path, current.mediaType);
     const proposedText = validateProposedText(path, artifact.content, artifact.mediaType);
-    return proposedText === currentText;
+    return proposedText === currentText && !isCompilerRepairDiagnosticRequest(input.program, path, repairActionPaths);
   });
   if (unchangedRequestedPaths.length > 0) {
     throw new Error(`program graph did not materially change requested full-file artifacts: ${unchangedRequestedPaths.join(", ")}`);
@@ -672,11 +673,9 @@ function assertRepairLineageForSelectedArtifacts(
   for (const artifact of artifacts) {
     if (artifact.role === "test") continue;
     const current = snapshotByPath.get(artifact.path);
-    if (!current) {
-      throw new Error(`program graph source create lacks an internally recomputed exact transformation: ${artifact.path}`);
-    }
-    const baseText = decodeExactUtf8(current.bytes, artifact.path, current.mediaType);
-    const baseArtifactHash = `sha256_${hasher.digestHex(baseText)}`;
+    const baseText = current ? decodeExactUtf8(current.bytes, artifact.path, current.mediaType) : undefined;
+    if (baseText === artifact.content) continue;
+    const baseArtifactHash = baseText === undefined ? null : `sha256_${hasher.digestHex(baseText)}`;
     const lineage = transformations.find(record => record.path === artifact.path
       && record.baseContentHash === baseArtifactHash
       && record.outputArtifactId === artifact.artifactId
@@ -689,9 +688,20 @@ function assertRepairLineageForSelectedArtifacts(
       || lineage.operationIds.some(id => typeof id !== "string" || !id.trim())) {
       throw new Error(`program graph repair lineage has no canonical operations: ${artifact.path}`);
     }
-    const evidence = Array.isArray(lineage.evidence) ? lineage.evidence.filter(isRecord) : [];
-    if (!evidence.some(record => record.path === artifact.path && record.contentHash === baseArtifactHash)) {
-      throw new Error(`program graph repair lineage is not bound to source evidence: ${artifact.path}`);
+    if (current) {
+      const evidence = Array.isArray(lineage.evidence) ? lineage.evidence.filter(isRecord) : [];
+      if (!evidence.some(record => record.path === artifact.path && record.contentHash === baseArtifactHash)) {
+        throw new Error(`program graph repair lineage is not bound to source evidence: ${artifact.path}`);
+      }
+    } else {
+      const creation = lineage.creation;
+      if (!isRecord(creation)
+        || creation.baseState !== "absent"
+        || typeof creation.absencePrecondition !== "string"
+        || !creation.absencePrecondition.endsWith(`:${artifact.path}`)
+        || !/^sha256:[0-9a-f]{64}:/u.test(creation.absencePrecondition)) {
+        throw new Error(`program graph source create lacks compiler-snapshot absence lineage: ${artifact.path}`);
+      }
     }
   }
 }
@@ -707,11 +717,9 @@ function verifiedNonBehavioralProgramRepairPaths(
   const typeOnly = new Set<string>();
   const compilerDiagnostic = new Set<string>();
   for (const artifact of artifacts) {
-    if (artifact.role !== "source") continue;
     const current = snapshotByPath.get(artifact.path);
-    if (!current) continue;
-    const before = decodeExactUtf8(current.bytes, artifact.path, current.mediaType);
-    const sourceArtifactHash = `sha256_${hasher.digestHex(before)}`;
+    const before = current ? decodeExactUtf8(current.bytes, artifact.path, current.mediaType) : "";
+    const sourceArtifactHash = current ? `sha256_${hasher.digestHex(before)}` : null;
     const transformation = transformations.find(record => record.path === artifact.path
       && record.baseContentHash === sourceArtifactHash
       && record.outputArtifactId === artifact.artifactId
@@ -722,6 +730,7 @@ function verifiedNonBehavioralProgramRepairPaths(
     const preconditions = contractRecords(repairOperation.preconditions);
     const postconditions = contractRecords(repairOperation.postconditions);
     if (repairOperation.repairFamilyId === UNUSED_TYPE_IMPORT_REPAIR_FAMILY) {
+      if (artifact.role !== "source" || !current || sourceArtifactHash === null) continue;
       const verified = verifyExactUnusedTypeImportRemoval({ before, after: artifact.content, hasher });
       if (!verified
         || !isUnusedTypeImportRemovalRequest(requestText, verified.binding)
@@ -743,6 +752,7 @@ function verifiedNonBehavioralProgramRepairPaths(
         artifact,
         before,
         sourceArtifactHash,
+        snapshotByPath,
         repairOperation,
         preconditions,
         postconditions,
@@ -768,6 +778,49 @@ function programRepairTransformations(program: ProgramGraph): Record<string, unk
   return transformations;
 }
 
+function programRepairActionClosure(program: ProgramGraph, requestedPaths: readonly string[]): Set<string> {
+  const requested = new Set(requestedPaths);
+  const transformations = programRepairTransformations(program);
+  const selectedActionIds = new Set<string>();
+  for (const transformation of transformations) {
+    const operations = Array.isArray(transformation.operations) ? transformation.operations.filter(isRecord) : [];
+    for (const operation of operations) {
+      if (operation.repairFamilyId !== TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY) continue;
+      const diagnostic = operation.diagnosticEvidence;
+      const codeFix = operation.codeFixEvidence;
+      const diagnosticPath = isRecord(diagnostic) && typeof diagnostic.path === "string" ? diagnostic.path : transformation.path;
+      if (requested.has(String(diagnosticPath)) || requested.has(String(transformation.path))) {
+        if (isRecord(codeFix) && typeof codeFix.codeFixIdentity === "string") selectedActionIds.add(codeFix.codeFixIdentity);
+      }
+    }
+  }
+  const paths = new Set<string>();
+  for (const transformation of transformations) {
+    const operations = Array.isArray(transformation.operations) ? transformation.operations.filter(isRecord) : [];
+    if (operations.some(operation => {
+      const codeFix = operation.codeFixEvidence;
+      return operation.repairFamilyId === TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY
+        && isRecord(codeFix)
+        && typeof codeFix.codeFixIdentity === "string"
+        && selectedActionIds.has(codeFix.codeFixIdentity);
+    }) && typeof transformation.path === "string") paths.add(transformation.path);
+  }
+  return paths;
+}
+
+function isCompilerRepairDiagnosticRequest(program: ProgramGraph, requestPath: string, actionPaths: ReadonlySet<string>): boolean {
+  if (actionPaths.size === 0) return false;
+  return programRepairTransformations(program).some(transformation => {
+    if (typeof transformation.path !== "string" || !actionPaths.has(transformation.path)) return false;
+    const operations = Array.isArray(transformation.operations) ? transformation.operations.filter(isRecord) : [];
+    return operations.some(operation => {
+      if (operation.repairFamilyId !== TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY) return false;
+      const diagnostic = operation.diagnosticEvidence;
+      return isRecord(diagnostic) && diagnostic.path === requestPath;
+    });
+  });
+}
+
 function contractRecords(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -785,7 +838,8 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
   program: ProgramGraph;
   artifact: FileArtifact;
   before: string;
-  sourceArtifactHash: string;
+  sourceArtifactHash: string | null;
+  snapshotByPath: ReadonlyMap<string, WorkspaceRevisionFile>;
   repairOperation: Record<string, unknown>;
   preconditions: readonly Record<string, unknown>[];
   postconditions: readonly Record<string, unknown>[];
@@ -795,7 +849,8 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
     throw new Error(`program graph compiler repair lineage is invalid for ${input.artifact.path}: ${reason}`);
   };
   const textChanges = exactTextChanges(input.repairOperation.textChanges);
-  if (!textChanges || input.repairOperation.kind !== "replace") {
+  const isCreate = input.sourceArtifactHash === null;
+  if (!textChanges || input.repairOperation.kind !== (isCreate ? "create" : "replace")) {
     return reject("exact replacement text-change evidence is missing");
   }
   const diagnostic = input.repairOperation.diagnosticEvidence;
@@ -806,10 +861,14 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
   const diagnosticCategory = diagnostic.category;
   const diagnosticMessage = diagnostic.message;
   const carriedDiagnosticIdentity = diagnostic.diagnosticIdentity;
+  const diagnosticPath = typeof diagnostic.path === "string" ? diagnostic.path : input.artifact.path;
+  const diagnosticSnapshot = input.snapshotByPath.get(diagnosticPath);
+  if (!diagnosticSnapshot) return reject("diagnostic source artifact is absent from the exact workspace revision");
+  const diagnosticBefore = decodeExactUtf8(diagnosticSnapshot.bytes, diagnosticPath, diagnosticSnapshot.mediaType);
   if (typeof diagnosticCode !== "number" || !Number.isSafeInteger(diagnosticCode) || diagnosticCode <= 0
     || typeof diagnosticStart !== "number" || !Number.isSafeInteger(diagnosticStart) || diagnosticStart < 0
     || typeof diagnosticLength !== "number" || !Number.isSafeInteger(diagnosticLength) || diagnosticLength < 0
-    || diagnosticStart + diagnosticLength > input.before.length
+    || diagnosticStart + diagnosticLength > diagnosticBefore.length
     || typeof diagnosticCategory !== "string" || !diagnosticCategory.trim()
     || typeof diagnosticMessage !== "string" || !diagnosticMessage.trim()
     || typeof carriedDiagnosticIdentity !== "string" || !carriedDiagnosticIdentity.trim()) {
@@ -839,6 +898,28 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
     || typeof carriedCodeFixIdentity !== "string" || !carriedCodeFixIdentity.trim()
     || fixId !== undefined && (typeof fixId !== "string" || !fixId.trim())) {
     reject("code-fix evidence is malformed");
+  }
+  const actionFileChanges = exactActionFileChanges(codeFix.fileChanges);
+  const actionFileChange = actionFileChanges?.find(change => change.path === input.artifact.path);
+  if (actionFileChanges && (!actionFileChange
+    || actionFileChange.isNewFile !== isCreate
+    || actionFileChange.baseContentHash !== input.sourceArtifactHash
+    || canonicalStringify(actionFileChange.textChanges) !== canonicalStringify(textChanges))) {
+    reject("atomic code-fix file-change evidence is missing or inconsistent");
+  }
+  if (actionFileChanges) {
+    for (const fileChange of actionFileChanges) {
+      const current = input.snapshotByPath.get(fileChange.path);
+      const before = current ? decodeExactUtf8(current.bytes, fileChange.path, current.mediaType) : "";
+      const baseHash = current ? `sha256_${input.hasher.digestHex(before)}` : null;
+      const output = input.program.files.find(file => file.path === fileChange.path);
+      if (fileChange.isNewFile === Boolean(current)
+        || fileChange.baseContentHash !== baseHash
+        || !output
+        || !verifyExactTypeScriptCodeActionTransformation({ before, after: output.content, textChanges: fileChange.textChanges })) {
+        reject(`atomic code-fix file set is stale or incomplete at ${fileChange.path}`);
+      }
+    }
   }
   if (!verifyExactTypeScriptCodeActionTransformation({ before: input.before, after: input.artifact.content, textChanges })) {
     reject("exact text changes do not reproduce the proposed artifact");
@@ -895,7 +976,7 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
   }
 
   const diagnosticIdentity = canonicalTypeScriptDiagnosticIdentity({
-    path: input.artifact.path,
+    path: diagnosticPath,
     diagnostic: {
       code: verifiedDiagnosticCode,
       category: verifiedDiagnosticCategory,
@@ -916,7 +997,7 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
       fixName: verifiedFixName,
       description: verifiedFixDescription,
       ...(typeof fixId === "string" ? { fixId } : {}),
-      textChanges
+      ...(actionFileChanges ? { fileChanges: actionFileChanges } : { textChanges })
     }
   }, input.hasher);
   if (carriedCodeFixIdentity !== codeFixIdentity
@@ -943,9 +1024,24 @@ function assertVerifiedTypeScriptCodeActionLineage(input: {
   }
 
   const textChangeHash = `sha256_${input.hasher.digestHex(canonicalStringify(textChanges))}`;
-  if (!hasSingleContract(input.preconditions, "repair.precondition.exact_source_content_hash", input.sourceArtifactHash)
+  const outputContentHash = `sha256_${input.hasher.digestHex(input.artifact.content)}`;
+  const exactBaseContract = input.sourceArtifactHash === null
+    ? input.preconditions.filter(record => record.id === "repair.precondition.target_absent_in_compiler_snapshot"
+      && typeof record.value === "string"
+      && record.value.endsWith(`:${input.artifact.path}`)
+      && /^sha256:[0-9a-f]{64}:/u.test(record.value)).length === 1
+    : hasSingleContract(input.preconditions, "repair.precondition.exact_source_content_hash", input.sourceArtifactHash);
+  const createdArtifact = input.repairOperation.createdArtifact;
+  const classificationValid = input.sourceArtifactHash !== null
+    ? createdArtifact === undefined || createdArtifact === null
+    : isRecord(createdArtifact)
+      && createdArtifact.mediaType === input.artifact.mediaType
+      && createdArtifact.role === input.artifact.role;
+  if (!exactBaseContract
+    || !classificationValid
     || !hasSingleContract(input.preconditions, "repair.precondition.compiler_options_hash", verifiedCompilerOptionsHash)
     || !hasSingleContract(input.postconditions, "repair.postcondition.exact_text_changes_applied", textChangeHash)
+    || !hasSingleContract(input.postconditions, "repair.postcondition.exact_output_content_hash", outputContentHash)
     || !hasSingleContract(input.postconditions, "repair.postcondition.compiler_diagnostic_recheck_required", `TS${verifiedDiagnosticCode}`)
     || !hasSingleContract(input.postconditions, "repair.postcondition.typecheck_required", "typecheck")
     || !hasSingleContract(input.postconditions, "repair.postcondition.tests_required", "tests")) {
@@ -964,6 +1060,34 @@ function exactTextChanges(value: unknown): ExactProgramTextChange[] | undefined 
     changes.push({ start: item.start, length: item.length, newText: item.newText });
   }
   return changes;
+}
+
+function exactActionFileChanges(value: unknown): Array<{
+  path: string;
+  isNewFile: boolean;
+  baseContentHash: string | null;
+  textChanges: ExactProgramTextChange[];
+}> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return undefined;
+  const changes: Array<{
+    path: string;
+    isNewFile: boolean;
+    baseContentHash: string | null;
+    textChanges: ExactProgramTextChange[];
+  }> = [];
+  const paths = new Set<string>();
+  for (const item of value) {
+    if (!isRecord(item)
+      || typeof item.path !== "string" || !item.path.trim()
+      || typeof item.isNewFile !== "boolean"
+      || item.baseContentHash !== null && (typeof item.baseContentHash !== "string" || !/^sha256_[0-9a-f]{64}$/u.test(item.baseContentHash))) return undefined;
+    const textChanges = exactTextChanges(item.textChanges);
+    if (!textChanges || paths.has(item.path)) return undefined;
+    paths.add(item.path);
+    changes.push({ path: item.path, isNewFile: item.isNewFile, baseContentHash: item.baseContentHash as string | null, textChanges });
+  }
+  return changes.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function resolveProgramImportArtifact(
