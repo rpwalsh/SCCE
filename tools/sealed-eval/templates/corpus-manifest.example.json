@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "corpusId": "sealed-corpus-example",
+  "description": "Replace with custodian-generated manifest.",
+  "documents": [
+    {
+      "documentId": "doc-001",
+      "path": "fixtures/corpus/doc-001.txt",
+      "sha256": "REPLACE_WITH_64_HEX",
+      "sizeBytes": 0,
+      "mediaType": "text/plain",
+      "normalization": "none"
+    }
+  ]
+}

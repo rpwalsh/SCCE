@@ -1,0 +1,19 @@
+{
+  "name": "@scce/adapters-node",
+  "version": "3.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@scce/kernel": "workspace:*",
+    "mammoth": "^1.8.0",
+    "pg": "^8.13.1",
+    "typescript": "^5.8.3",
+    "xlsx": "file:../../vendor/xlsx-0.20.3.tgz"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

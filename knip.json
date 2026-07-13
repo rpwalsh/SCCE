@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "ignoreBinaries": [
+    "tokei",
+    "dev"
+  ],
+  "ignoreFiles": [
+    "examples/workspace-runtime-fixture/src/**/*.ts",
+    "examples/workspace-runtime-fixture/tests/**/*.ts"
+  ],
+  "ignoreIssues": {
+    "packages/kernel/src/multilingual-translation.ts": ["exports", "types"],
+    "packages/kernel/src/retrieval.ts": ["types"],
+    "packages/kernel/src/semantic-obligations.ts": ["types"],
+    "packages/kernel/src/scce-runtime.ts": ["types"],
+    "packages/server/src/routes.ts": ["types"],
+    "packages/cli/src/scce2-options.ts": ["types"],
+    "packages/adapters-node/src/scce2/brain-bundle.ts": ["types"],
+    "packages/adapters-node/src/scce2/concept-graph-stream.ts": ["types"],
+    "packages/adapters-node/src/scce2/ngram-stream.ts": ["types"],
+    "tools/scce-dev-mcp/src/lib/run.ts": ["types"]
+  }
+}

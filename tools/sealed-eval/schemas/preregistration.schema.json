@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Preregistration",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "evaluationId",
+    "purpose",
+    "categories",
+    "systems",
+    "scoring",
+    "stoppingRules",
+    "disqualificationRules"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "evaluationId": {
+      "type": "string"
+    },
+    "purpose": {
+      "type": "string"
+    },
+    "categories": {
+      "type": "array"
+    },
+    "systems": {
+      "type": "array"
+    },
+    "scoring": {
+      "type": "object"
+    },
+    "statistics": {
+      "type": "object"
+    },
+    "stoppingRules": {
+      "type": "array"
+    },
+    "disqualificationRules": {
+      "type": "array"
+    },
+    "roleAssignments": {
+      "type": "object"
+    }
+  }
+}

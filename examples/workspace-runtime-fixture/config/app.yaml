@@ -1,0 +1,3 @@
+service: widgets
+route: /api/widgets
+assetManifest: missing-assets.json

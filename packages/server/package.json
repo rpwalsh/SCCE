@@ -1,0 +1,17 @@
+{
+  "name": "@scce/server",
+  "version": "3.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@scce/adapters-node": "workspace:*",
+    "@scce/kernel": "workspace:*",
+    "@scce/ui": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

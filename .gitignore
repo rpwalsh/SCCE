@@ -1,0 +1,84 @@
+# Dependencies and compiler output
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Runtime state, temporary workspaces, and local corpus stores
+.tmp/
+.scce/
+/corpus/
+/data/
+tmp/
+temp/
+*.tmp
+*.temp
+*.pid
+*.pid.lock
+
+# Test, coverage, and tool caches
+coverage/
+.nyc_output/
+.vitest/
+.vscode-test/
+.cache/
+.turbo/
+.nx/
+.pnpm-store/
+test-results/
+playwright-report/
+blob-report/
+.eslintcache
+
+# Local databases and database volumes
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.dump
+*.backup
+pgdata/
+postgres-data/
+.postgres/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+scce.local.json
+scce.*.local.json
+
+# Logs, editor state, and operating-system noise
+*.log
+.idea/
+.vs/
+*.iml
+*.suo
+*.user
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Generated reports and release packages
+/artifacts/
+*.zip
+*.zip.sha256
+*.tar
+*.tar.gz
+*.7z
+*.rar
+/*.tgz
+*.vsix

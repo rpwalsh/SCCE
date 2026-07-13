@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "runId": "rehearsal-001",
+  "evaluationId": "yopp-sealed-example",
+  "corpusManifest": "templates/corpus-manifest.example.json",
+  "questionsPath": "templates/questions.example.jsonl",
+  "systemManifest": "templates/system-manifest.example.json",
+  "ablationManifest": "templates/ablation-manifest.example.json",
+  "outputDirectory": "artifacts/rehearsal-001",
+  "seed": "replace-with-custodian-seed",
+  "clock": "2026-01-01T00:00:00.000Z",
+  "questionOrder": "seeded-random",
+  "conditionOrder": "seeded-random"
+}

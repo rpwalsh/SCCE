@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnswerRecord",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "systemId",
+    "conditionId",
+    "questionId",
+    "attempt",
+    "status",
+    "answer"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "systemId": {
+      "type": "string"
+    },
+    "conditionId": {
+      "type": "string"
+    },
+    "questionId": {
+      "type": "string"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "abstained",
+        "timeout",
+        "crash",
+        "malformed",
+        "error"
+      ]
+    },
+    "answer": {
+      "type": "string"
+    },
+    "elapsedMs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "documentId",
+          "startByte",
+          "endByte"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "startByte": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endByte": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "quotedText": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "support": {
+      "type": "object"
+    },
+    "trace": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "error": {
+      "type": "object"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

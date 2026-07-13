@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "1.0",
+  "evaluationId": "yopp-sealed-example",
+  "purpose": "Measure answer quality, exact support, operational cost, and component contribution on unseen corpora.",
+  "categories": [
+    {
+      "id": "direct",
+      "targetCount": 20
+    },
+    {
+      "id": "paraphrase",
+      "targetCount": 20
+    },
+    {
+      "id": "multi-hop",
+      "targetCount": 20
+    },
+    {
+      "id": "contradiction",
+      "targetCount": 15
+    },
+    {
+      "id": "unanswerable",
+      "targetCount": 15
+    },
+    {
+      "id": "temporal-update",
+      "targetCount": 10
+    }
+  ],
+  "systems": [
+    "yopp.full",
+    "reference.bm25",
+    "reference.ngram"
+  ],
+  "scoring": {
+    "humanDimensions": [
+      "correctness",
+      "completeness",
+      "evidence",
+      "uncertainty",
+      "fluency"
+    ],
+    "scale": [
+      0,
+      4
+    ],
+    "objectiveCitationVerification": true
+  },
+  "statistics": {
+    "paired": true,
+    "bootstrapIterations": 10000,
+    "confidenceLevel": 0.95,
+    "multipleComparisonMethod": "holm"
+  },
+  "stoppingRules": [
+    "Run every preregistered question once unless a system process crashes before producing a record.",
+    "Retain all retries as separate attempts."
+  ],
+  "disqualificationRules": [
+    "Hash mismatch",
+    "Question leakage",
+    "Manual answer editing",
+    "Broken blinding",
+    "Ablation trace violation"
+  ],
+  "roleAssignments": {
+    "owner": "UNASSIGNED",
+    "custodian": "UNASSIGNED",
+    "runner": "UNASSIGNED",
+    "judges": [],
+    "observer": "UNASSIGNED"
+  }
+}

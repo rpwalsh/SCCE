@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BlindJudgment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "judgeId",
+    "questionId",
+    "answerAlias",
+    "scores"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "judgeId": {
+      "type": "string"
+    },
+    "questionId": {
+      "type": "string"
+    },
+    "answerAlias": {
+      "type": "string"
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "correctness",
+        "completeness",
+        "evidence",
+        "uncertainty",
+        "fluency"
+      ],
+      "properties": {
+        "correctness": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "completeness": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "evidence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "uncertainty": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "fluency": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        }
+      }
+    },
+    "overallPreferenceGroup": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

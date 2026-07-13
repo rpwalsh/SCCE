@@ -1,0 +1,94 @@
+{
+  "schema": "scce.public_review.contract.v1",
+  "title": "SCCE Public Review Contract",
+  "reviewEvidenceAvailable": false,
+  "subjectSystemId": "scce.local.production",
+  "publicReviewStatus": "NOT_EXECUTED",
+  "allowedPublicReviewStatuses": [
+    "NOT_EXECUTED",
+    "FAILED",
+    "INCONCLUSIVE",
+    "COMPLETED_WITH_LIMITATIONS",
+    "VERIFIED"
+  ],
+  "publicReviewTracks": {
+    "knowledge_dialogue": [
+      "factual_correctness",
+      "completeness",
+      "exact_citation_validity",
+      "evidence_sufficiency",
+      "unsupported_claim_rate",
+      "contradiction_handling",
+      "correct_abstention",
+      "multi_hop_success",
+      "correction_retention",
+      "latency_ms",
+      "peak_rss_bytes"
+    ],
+    "coding_agent": [
+      "accepted_task_rate",
+      "hidden_test_pass_rate",
+      "issue_resolution_rate",
+      "regression_rate",
+      "test_preservation_rate",
+      "unauthorized_change_rate",
+      "code_citation_validity",
+      "reviewer_score",
+      "wall_time_ms",
+      "peak_rss_bytes",
+      "operator_interventions"
+    ],
+    "ide_operations": [
+      "install_success",
+      "workflow_task_success",
+      "diff_reviewability",
+      "approval_boundary_integrity",
+      "failure_recovery",
+      "audit_completeness",
+      "offline_operation"
+    ]
+  },
+  "integrityGates": [
+    "unicode_evidence_roundtrip",
+    "incomplete_brain_never_active",
+    "final_surface_valid_or_abstained",
+    "tests_never_weakened",
+    "no_hidden_network_or_model",
+    "ablation_execution_isolated",
+    "sealed_keys_unreachable",
+    "all_raw_results_retained",
+    "clean_machine_reproduction"
+  ],
+  "independentEvaluation": {
+    "paired": true,
+    "confidenceLevel": 0.95,
+    "multipleComparisonCorrection": "holm",
+    "minimumAbsoluteEffectPoints": 5,
+    "minimumRelativeEffectFraction": 0.1,
+    "requiresNoMaterialRegressionOnIntegrityEndpoints": true,
+    "requiresPositiveEffectInEveryTrack": true,
+    "comparisonSystemIdentityFields": [
+      "product",
+      "productVersion",
+      "extensionVersion",
+      "model",
+      "executableHash",
+      "configurationHash",
+      "toolPolicyHash",
+      "networkPolicy",
+      "hardwareProfile"
+    ]
+  },
+  "integrityFailures": [
+    "incomplete_brain_activated",
+    "failed_surface_emitted",
+    "unsupported_source_backed_claim",
+    "unapproved_test_weakening",
+    "ablation_component_or_cache_leak",
+    "answer_key_or_hidden_test_access",
+    "manual_output_edit",
+    "selective_unregistered_rerun",
+    "unequal_inputs_or_resources",
+    "undeclared_external_call"
+  ]
+}

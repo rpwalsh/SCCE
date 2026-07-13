@@ -1,0 +1,93 @@
+{
+  "server": {
+    "url": "http://127.0.0.1:3873",
+    "host": "127.0.0.1",
+    "port": 3873
+  },
+  "database": {
+    "url": "postgresql://localhost:5432/scce",
+    "schema": "scce3_runtime"
+  },
+  "runtime": {
+    "workspaceRoot": ".",
+    "tempRoot": ".tmp/scce-runs",
+    "maxFileBytes": 67108864,
+    "maxChunkBytes": 131072,
+    "spreadsheet": {
+      "maxSourceBytes": 67108864,
+      "maxSheets": 32,
+      "maxRowsPerSheet": 2000,
+      "maxColumnsPerSheet": 128,
+      "maxCells": 100000,
+      "maxDenseCells": 1000000,
+      "maxFormulas": 10000,
+      "maxMergedRanges": 10000,
+      "maxCellChars": 32768,
+      "maxTextChars": 8388608,
+      "maxArchiveEntries": 4096,
+      "maxArchiveEntryBytes": 134217728,
+      "maxArchiveUncompressedBytes": 268435456,
+      "maxArchiveCompressionRatio": 250,
+      "maxParseMs": 30000,
+      "maxHeapMb": 384
+    },
+    "allowedRoots": ["."],
+    "excludedPaths": ["node_modules", "dist", ".git", ".tmp"],
+    "tools": {
+      "pdftotext": "pdftotext",
+      "tesseract": "tesseract",
+      "node": "node",
+      "pnpm": "pnpm"
+    },
+    "patchValidation": {
+      "provider": "trusted-host"
+    },
+    "corpora": {
+      "wikipedia": {
+        "enabled": true,
+        "dumpPath": "data/wiki/enwiki-latest-pages-articles-multistream.xml.bz2",
+        "indexPath": "data/wiki/enwiki-multistream-index.txt.bz2",
+        "namespace": "wikipedia-enwiki",
+        "python": "python",
+        "decompressor": "bzip2",
+        "decompressorArgs": ["-dc", "{dumpPath}"],
+        "maxPagesPerRun": 2500,
+        "maxBlocksPerRun": 0,
+        "maxArticleChars": 160000,
+        "maxBlockBytes": 201326592,
+        "memorySafetyBoundMb": 8192,
+        "checkpointEveryPages": 1000,
+        "ngramMaxCountersPerOrder": 12000,
+        "ngramVocabularyLimit": 24000,
+        "skipRedirects": true,
+        "allowedNamespaces": [0]
+      }
+    }
+  },
+  "connectors": {
+    "web": {
+      "enabled": true,
+      "allowedHosts": ["html.duckduckgo.com"],
+      "maxBytes": 2000000,
+      "search": { "provider": "duckduckgo", "apiKey": "", "endpoint": "" }
+    },
+    "outlook": { "enabled": false, "tenantId": "", "clientId": "", "accessToken": "" },
+    "youtube": { "enabled": false, "apiKey": "" },
+    "telephone": { "enabled": false, "provider": "twilio", "accountSid": "", "authToken": "", "fromNumber": "" }
+  },
+  "security": {
+    "localMasterKey": "",
+    "mentalHealthRails": true,
+    "redactPublicConfig": true
+  },
+  "policy": {
+    "allowMutation": false,
+    "requireTwoPhaseCommit": true,
+    "dryRunByDefault": true,
+    "maxNetworkRequests": 12,
+    "maxToolCalls": 24,
+    "maxSpendCents": 0,
+    "alphaRiskCeiling": 0.55,
+    "encryptSecretsAtRest": true
+  }
+}

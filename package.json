@@ -1,0 +1,74 @@
+{
+  "name": "scce-v3",
+  "version": "3.0.0",
+  "private": true,
+  "description": "SCCE v3.0 greenfield Postgres-backed cognitive runtime",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rpwalsh/SCCE.git"
+  },
+  "homepage": "https://github.com/rpwalsh/SCCE#readme",
+  "bugs": {
+    "url": "https://github.com/rpwalsh/SCCE/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.28.2",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b packages/kernel packages/adapters-node packages/ui packages/server packages/cli packages/vscode",
+    "test": "pnpm build && pnpm test:unit && pnpm eval:validate && node tools/no-hidden-model-check.mjs && node tools/test-inventory.mjs",
+    "test:unit": "vitest run",
+    "test:structural": "vitest run packages/kernel/src/__tests__/runtime-coherence.test.ts packages/kernel/src/__tests__/discourse-state.test.ts packages/kernel/src/__tests__/postgres-contract.test.ts",
+    "launch:ready": "node tools/launch-ready.mjs",
+    "yopp:eval": "node tools/yopp-blind-eval/index.mjs",
+    "calibration:evaluate": "node tools/calibration-holdout.mjs",
+    "eval:kit:verify": "pnpm --dir tools/sealed-eval verify",
+    "eval:seal": "node tools/sealed-eval/harness/cli.mjs seal",
+    "eval:verify-seal": "node tools/sealed-eval/harness/cli.mjs verify-seal",
+    "eval:run": "node tools/sealed-eval/harness/cli.mjs run-systems",
+    "eval:blind": "node tools/sealed-eval/harness/cli.mjs blind",
+    "eval:verify-citations": "node tools/sealed-eval/harness/cli.mjs verify-citations",
+    "eval:score": "node tools/sealed-eval/harness/cli.mjs score-objective",
+    "eval:aggregate": "node tools/sealed-eval/harness/cli.mjs aggregate",
+    "eval:ablation": "node tools/sealed-eval/harness/cli.mjs ablation-report",
+    "eval:validate": "pnpm --dir tools/sealed-eval test",
+    "rehearsal:postgres": "node tools/live-postgres-rehearsal.mjs",
+    "rehearsal:adapter": "node tools/live-adapter-rehearsal.mjs",
+    "validate": "pnpm test && pnpm eval:kit:verify",
+    "scce": "node packages/cli/dist/index.js",
+    "hygiene:language-control": "node packages/cli/dist/index.js hygiene language-control",
+    "scce:server": "node packages/server/dist/index.js",
+    "server": "node packages/server/dist/index.js",
+    "repo:shape": "tokei . --exclude node_modules --exclude dist --exclude .git --exclude .scce --exclude .tmp",
+    "repo:search": "node tools/repo-search.mjs",
+    "repo:deps": "madge packages/kernel/src packages/adapters-node/src packages/ui/src packages/server/src packages/cli/src --extensions ts,tsx --circular --exclude dist",
+    "repo:cruise": "depcruise packages/kernel/src packages/adapters-node/src packages/ui/src packages/server/src packages/cli/src --output-type err",
+    "repo:dead": "knip",
+    "repo:exports": "ts-prune",
+    "repo:docs": "typedoc --out docs/api packages",
+    "scce:audit": "pnpm repo:shape && pnpm repo:deps && pnpm repo:dead && pnpm test",
+    "release:gate": "node tools/release-gate.mjs",
+    "load:gate": "node tools/runtime-load-gate.mjs",
+    "mcp:build": "pnpm --dir tools/scce-dev-mcp build",
+    "mcp:start": "pnpm --dir tools/scce-dev-mcp start",
+    "mcp:dev": "pnpm --dir tools/scce-dev-mcp dev",
+    "vscode:test:host": "pnpm --dir packages/vscode test:host",
+    "vscode:package": "pnpm --dir packages/vscode package"
+  },
+  "dependencies": {
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/pg": "^8.11.11",
+    "dependency-cruiser": "^17.4.3",
+    "knip": "^5.88.1",
+    "madge": "^8.0.0",
+    "ts-prune": "^0.3.5",
+    "typedoc": "^0.28.19",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.6"
+  }
+}

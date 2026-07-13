@@ -1,0 +1,16 @@
+{
+  "name": "scce-public-review-kit",
+  "version": "1.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "verify": "node harness/cli.mjs verify-kit",
+    "test": "node --test harness/tests/*.test.mjs",
+    "selftest": "npm run verify && npm test"
+  },
+  "dependencies": {}
+}

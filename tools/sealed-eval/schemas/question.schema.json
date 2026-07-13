@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yopp.local/schemas/question.schema.json",
+  "title": "EvaluationQuestion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "questionId",
+    "category",
+    "prompt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "questionId": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "conversationId": {
+      "type": "string"
+    },
+    "turnIndex": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "language": {
+      "type": "string"
+    },
+    "resourceClass": {
+      "type": "string"
+    },
+    "timeLimitMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "gold": {
+      "type": "object",
+      "properties": {
+        "acceptedAnswers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requiredStrings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbiddenStrings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unanswerable": {
+          "type": "boolean"
+        },
+        "expectedDocumentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "protectedMetadata": {
+      "type": "object"
+    }
+  }
+}

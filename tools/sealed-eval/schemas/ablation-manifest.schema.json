@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AblationManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "fullConditionId",
+    "conditions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "fullConditionId": {
+      "type": "string"
+    },
+    "conditions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conditionId",
+          "disabledComponents",
+          "requiredTraceAssertions"
+        ],
+        "properties": {
+          "conditionId": {
+            "type": "string"
+          },
+          "disabledComponents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "environment": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "cacheNamespace": {
+            "type": "string"
+          },
+          "requiredTraceAssertions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "component",
+                "expected"
+              ],
+              "properties": {
+                "component": {
+                  "type": "string"
+                },
+                "expected": {
+                  "enum": [
+                    "entered",
+                    "bypassed",
+                    "not-entered",
+                    "no-cache-read"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

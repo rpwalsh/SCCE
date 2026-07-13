@@ -1,0 +1,72 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SCCE Server",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "pnpm: build",
+      "program": "${workspaceFolder}/packages/server/dist/index.js",
+      "env": {
+        "SCCE_TRACE": "1",
+        "SCCE_TRACE_DIR": "${workspaceFolder}/.scce/traces"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "SCCE CLI",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "pnpm: build",
+      "program": "${workspaceFolder}/packages/cli/dist/index.js",
+      "args": ["turn", "${input:scceCliPrompt}"],
+      "env": {
+        "SCCE_TRACE": "1",
+        "SCCE_TRACE_DIR": "${workspaceFolder}/.scce/traces"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "SCCE Tests",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["test"],
+      "env": {
+        "SCCE_TRACE": "1",
+        "SCCE_TRACE_DIR": "${workspaceFolder}/.scce/traces"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "MCP Server",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "pnpm: mcp:build",
+      "program": "${workspaceFolder}/tools/scce-dev-mcp/dist/index.js",
+      "env": {
+        "SCCE_TRACE": "1",
+        "SCCE_TRACE_DIR": "${workspaceFolder}/.scce/traces"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Attach to Node process",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "scceCliPrompt",
+      "type": "promptString",
+      "description": "Prompt for pnpm scce turn"
+    }
+  ]
+}
