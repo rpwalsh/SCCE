@@ -4,8 +4,8 @@ import { lstat, open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   answerFromWorkspaceCoreContext,
+  buildWorkspaceTaskConstraintGraph,
   CALIBRATION_TASK_CLASS_IDS,
-  createProgramHydrationContract,
   latestDialogueStyleProfile,
   loadCalibrationModelSet,
   normalizePath,
@@ -15,38 +15,42 @@ import {
   promoteWorkspaceAnalysisToCoreRecords,
   toJsonValue,
   createWorkspaceRevisionSnapshot,
+  selectWorkspaceTransformationFamily,
+  workspaceTaskConstraintEvidenceSpanId,
   generateWorkspacePatchPlan,
-  generateWorkspacePatchPlanFromProgramGraph,
-  hydrationSummary,
-  isUnusedTypeImportRemovalRequest,
-  materializeProgramRepair,
-  materializeTypeScriptCodeActionRepair,
-  type ArtifactId,
-  type ContentHash,
   type DialoguePragmaticsResult,
   type FileArtifact,
   type IngestResult,
   type JsonValue,
-  type ProgramConstructIntent,
-  type ProgramGraph,
   type RepoSnapshot,
   type WorkspaceCorePromotionResult,
   type WorkspaceKernelAnswerResult,
   type WorkspacePatchPlanGenerationResult,
-  type WorkspaceProgramPatchPlanGenerationResult,
+  type WorkspaceTaskConstraintGraph,
+  type WorkspaceTransformationFamilySelection,
   type WorkspacePatchProposalAssessment,
   type WorkspacePatchValidationPlan,
   type WorkspaceRecord,
   type WorkspaceReportRecord,
   type WorkspaceRevisionSnapshot,
+  type WorkspaceSemanticProgramObservation,
   type WorkspaceSourceFileRecord
 } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import type { NodeScceRuntime } from "./runtime.js";
 import { analyzeDeveloperRepo, type RepoIntelligenceAnalysis, type RepoIntelligenceFolderOptions } from "./repo-intelligence-folder.js";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFileInspection, type EngineeringCorpusFolderInspection } from "./engineering-corpus-folder.js";
-import { deriveTypeScriptCodeActionRepair } from "./typescript-code-actions.js";
-import { resolvePortablePackageScriptArgv, resolveTypeScriptCommandLane } from "./typescript-command-lane.js";
+import {
+  deriveTypeScriptCodeActionCandidates,
+  type TypeScriptCodeActionCandidateSet,
+  type TypeScriptObservedCompilerCommand
+} from "./typescript-code-actions.js";
+import { resolveTypeScriptCommandLane } from "./typescript-command-lane.js";
+import {
+  buildTypeScriptSemanticProgramIndex,
+  type TypeScriptSemanticProgramBounds,
+  type TypeScriptSemanticProgramIndex
+} from "./typescript-semantic-program-index.js";
 
 export interface WorkspaceRuntimeOptions extends RepoIntelligenceFolderOptions {
   maxDocumentBytes?: number;
@@ -204,9 +208,19 @@ export interface WorkspaceRuntime {
   answer(question: string, rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceQuestionAnswer>;
   recordOutcome(input: WorkspaceAnswerOutcomeInput, rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceAnswerOutcomeResult>;
   planPatch(input: WorkspacePatchPlanningInput, rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspacePatchPlanGenerationResult>;
-  planCodingPatch(input: WorkspaceCodingPatchPlanningInput, rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceProgramPatchPlanGenerationResult>;
+  planCodingPatch(input: WorkspaceCodingPatchPlanningInput, rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceCodingPatchPlanningResult>;
+  observeTypeScript(input: WorkspaceTypeScriptSemanticObservationInput, rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceTypeScriptSemanticObservation>;
   report(kind: WorkspaceReportRecord["reportKind"], rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceReportRecord>;
 }
+
+export interface WorkspaceTypeScriptSemanticObservationInput {
+  workspaceId: string;
+  expectedWorkspaceUpdatedAt: number;
+  tsconfigPath: string;
+  bounds: TypeScriptSemanticProgramBounds;
+}
+
+export type WorkspaceTypeScriptSemanticObservation = WorkspaceSemanticProgramObservation<TypeScriptSemanticProgramIndex>;
 
 export interface WorkspacePatchPlanningInput {
   workspaceId: string;
@@ -232,6 +246,55 @@ export interface WorkspaceCodingPatchPlanningInput {
   requestedPaths: string[];
   validationPlan: WorkspacePatchValidationPlan;
 }
+
+export const WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA = "scce.workspace.compiler_patch_plan.v1" as const;
+
+export interface WorkspaceCompilerPatchPlanGenerationResult {
+  readonly schemaVersion: typeof WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA;
+  readonly statusId: "scce.workspace.compiler_patch.selected.v1";
+  readonly workspaceId: string;
+  readonly revisionId: string;
+  readonly revisionHash: string;
+  readonly constraintGraph: WorkspaceTaskConstraintGraph;
+  readonly selection: WorkspaceTransformationFamilySelection;
+  readonly plan: NonNullable<WorkspaceTransformationFamilySelection["selected"]>["patchPlan"];
+  readonly validationPlan: WorkspacePatchValidationPlan;
+  readonly authorization: {
+    readonly required: true;
+    readonly granted: false;
+    readonly capabilityId: "workspace.patch.apply";
+  };
+  readonly execution: {
+    readonly state: "not_executed";
+    readonly receipt: null;
+  };
+}
+
+export type WorkspaceCompilerPatchUnresolvedReasonId =
+  | "scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"
+  | "scce.workspace.compiler_patch.unresolved.compiler_lane_ambiguous.v1"
+  | "scce.workspace.compiler_patch.unresolved.compiler_config_absent.v1";
+
+export interface WorkspaceCompilerPatchUnresolvedResult {
+  readonly schemaVersion: typeof WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA;
+  readonly statusId: "scce.workspace.compiler_patch.unresolved.v1";
+  readonly workspaceId: string;
+  readonly revisionId: string;
+  readonly revisionHash: string;
+  readonly requestId: string;
+  readonly requestedPaths: readonly string[];
+  readonly reasonIds: readonly WorkspaceCompilerPatchUnresolvedReasonId[];
+  readonly observedCompilerLaneCount: number;
+  readonly selection: null;
+  readonly plan: null;
+  readonly execution: { readonly state: "not_executed"; readonly receipt: null };
+}
+
+/** An unresolved selector result is returned as data; request prose is never used to break ties. */
+export type WorkspaceCodingPatchPlanningResult =
+  | WorkspaceCompilerPatchPlanGenerationResult
+  | WorkspaceCompilerPatchUnresolvedResult
+  | WorkspaceTransformationFamilySelection;
 
 export interface WorkspaceAnswerOutcomeInput {
   status: "accepted" | "rejected" | "corrected";
@@ -368,6 +431,15 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       await input.runtime.storage.workspace.putWorkspace(project.workspace);
       await persistProjectReports(input.runtime, project);
       return project;
+    },
+    async observeTypeScript(observationInput, rootPath, options = {}) {
+      const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
+      return observeWorkspaceTypeScriptSemanticProgram({
+        runtime: input.runtime,
+        root,
+        input: observationInput,
+        options: normalizeOptions(options)
+      });
     },
     async answer(question, rootPath, options = {}) {
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
@@ -1404,480 +1476,479 @@ async function planWorkspacePatchFromDurableRevision(args: {
   });
 }
 
+async function observeWorkspaceTypeScriptSemanticProgram(args: {
+  runtime: NodeScceRuntime;
+  root: string;
+  input: WorkspaceTypeScriptSemanticObservationInput;
+  options: Required<WorkspaceRuntimeOptions>;
+}): Promise<WorkspaceTypeScriptSemanticObservation> {
+  if (args.input.bounds.maxFiles > args.options.maxFiles) {
+    throw new Error("typescript semantic observation maxFiles exceeds the workspace runtime bound");
+  }
+  if (args.input.bounds.maxFileBytes > args.options.maxFileBytes) {
+    throw new Error("typescript semantic observation maxFileBytes exceeds the workspace runtime bound");
+  }
+  const revisionInput = {
+    workspaceId: args.input.workspaceId,
+    expectedWorkspaceUpdatedAt: args.input.expectedWorkspaceUpdatedAt
+  };
+  const initial = await loadDurableWorkspaceRevision({
+    runtime: args.runtime,
+    root: args.root,
+    input: revisionInput,
+    options: args.options
+  });
+  const program = await buildTypeScriptSemanticProgramIndex({
+    workspaceRoot: args.root,
+    tsconfigPath: args.input.tsconfigPath,
+    bounds: args.input.bounds
+  });
+  const confirmed = await loadDurableWorkspaceRevision({
+    runtime: args.runtime,
+    root: args.root,
+    input: revisionInput,
+    options: args.options
+  });
+  if (confirmed.snapshot.revisionId !== initial.snapshot.revisionId
+    || confirmed.snapshot.revisionHash !== initial.snapshot.revisionHash) {
+    throw new Error("workspace revision changed while the TypeScript semantic observation was being built");
+  }
+  const durableByPath = new Map(confirmed.snapshot.files.map(file => [file.path, file]));
+  for (const file of program.files) {
+    const durable = durableByPath.get(file.path);
+    if (!durable || hashDigest(String(durable.contentHash)) !== hashDigest(file.contentHash)) {
+      throw new Error(`TypeScript semantic observation is not bound to the durable workspace file: ${file.path}`);
+    }
+  }
+  const requestedPaths = [...args.input.bounds.workspacePaths].sort();
+  const observedPaths = program.files.map(file => file.path).sort();
+  if (requestedPaths.length !== observedPaths.length
+    || requestedPaths.some((workspacePath, index) => workspacePath !== observedPaths[index])) {
+    throw new Error("TypeScript semantic observation paths do not match the explicit bounded request");
+  }
+  return {
+    schema: "scce.workspace_kernel.semantic_program_observation.v1",
+    id: `workspace_semantic_observation_${hashParts(
+      confirmed.workspace.id,
+      confirmed.snapshot.revisionId,
+      confirmed.snapshot.revisionHash,
+      program.revisionHash,
+      program.config.id
+    ).slice(0, 40)}`,
+    workspace: {
+      id: confirmed.workspace.id,
+      corpusId: confirmed.workspace.corpusId,
+      rootPath: confirmed.workspace.rootPath,
+      rootUri: confirmed.workspace.rootUri
+    },
+    workspaceRevision: {
+      workspaceId: confirmed.workspace.id,
+      revisionId: confirmed.snapshot.revisionId,
+      revisionHash: confirmed.snapshot.revisionHash,
+      workspaceUpdatedAt: confirmed.workspace.updatedAt
+    },
+    analyzer: {
+      id: "scce.analyzer.typescript.compiler_api.semantic_program.v1",
+      version: program.config.compilerVersion
+    },
+    semanticRevisionHash: program.revisionHash,
+    program,
+    execution: { state: "not_executed" },
+    audit: toJsonValue({
+      workspaceRevisionId: confirmed.snapshot.revisionId,
+      workspaceRevisionHash: confirmed.snapshot.revisionHash,
+      semanticRevisionHash: program.revisionHash,
+      configPath: program.config.path,
+      observedPaths,
+      counts: {
+        files: program.files.length,
+        symbols: program.symbols.length,
+        declarations: program.declarations.length,
+        references: program.references.length,
+        imports: program.imports.length,
+        calls: program.calls.length,
+        diagnostics: program.diagnostics.length,
+        commands: program.commands.length,
+        testRelations: program.testRelations.length
+      }
+    })
+  };
+}
+
 async function planWorkspaceCodingPatchFromDurableRevision(args: {
   runtime: NodeScceRuntime;
   root: string;
   input: WorkspaceCodingPatchPlanningInput;
   options: Required<WorkspaceRuntimeOptions>;
-}): Promise<WorkspaceProgramPatchPlanGenerationResult> {
-  const revision = await loadDurableWorkspaceRevision(args);
-  const project = await analyzeWorkspaceProject(args.root, args.options);
-  try {
-    const repair = isUnusedTypeImportRemovalRequest(args.input.requestText)
-      ? materializeWorkspaceUnusedTypeImportRepair({ snapshot: revision.snapshot, project, input: args.input })
-      : materializeWorkspaceTypeScriptCodeActionRepair({
-        rootPath: args.root,
-        snapshot: revision.snapshot,
-        project,
-        input: args.input
-      });
-    if (repair) {
-      const confirmedRevision = await loadDurableWorkspaceRevision(args);
-      if (confirmedRevision.snapshot.revisionId !== revision.snapshot.revisionId
-        || confirmedRevision.snapshot.revisionHash !== revision.snapshot.revisionHash) {
-        throw new Error("workspace revision changed while source evidence was being analyzed");
-      }
-      return generateWorkspacePatchPlanFromProgramGraph({
-        snapshot: confirmedRevision.snapshot,
-        expectedRevisionId: confirmedRevision.snapshot.revisionId,
-        expectedRevisionHash: confirmedRevision.snapshot.revisionHash,
-        request: {
-          requestId: args.input.requestId,
-          text: args.input.requestText,
-          requestedPaths: args.input.requestedPaths,
-          evidenceIds: repair.evidenceIds
+}): Promise<WorkspaceCodingPatchPlanningResult> {
+  const initial = await loadDurableWorkspaceRevision(args);
+  const requestedPaths = uniqueWorkspacePaths(args.input.requestedPaths);
+  const compilerLaneResolution = selectSourceObservedCompilerLane(initial.snapshot, requestedPaths);
+  if (!compilerLaneResolution.selected) {
+    return {
+      schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      workspaceId: initial.snapshot.workspaceId,
+      revisionId: initial.snapshot.revisionId,
+      revisionHash: initial.snapshot.revisionHash,
+      requestId: args.input.requestId,
+      requestedPaths,
+      reasonIds: compilerLaneResolution.reasonIds,
+      observedCompilerLaneCount: compilerLaneResolution.observedCompilerLaneCount,
+      selection: null,
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
+    };
+  }
+  const compilerLane = compilerLaneResolution.selected;
+  const semanticPaths = semanticProgramPaths(initial.snapshot, compilerLane.configPath, compilerLane.command.sourcePath);
+  const semanticProgram = await buildTypeScriptSemanticProgramIndex({
+    workspaceRoot: args.root,
+    tsconfigPath: compilerLane.configPath,
+    bounds: {
+      workspacePaths: semanticPaths,
+      observedTestPaths: initial.snapshot.files.filter(file => file.role === "test").map(file => file.path),
+      maxFiles: Math.min(args.options.maxFiles, semanticPaths.length),
+      maxFileBytes: args.options.maxFileBytes,
+      maxTotalBytes: semanticPaths.reduce((total, workspacePath) => total + initial.snapshot.files.find(file => file.path === workspacePath)!.byteLength, 0)
+    }
+  });
+  const confirmed = await loadDurableWorkspaceRevision(args);
+  assertSameWorkspaceRevision(initial.snapshot, confirmed.snapshot);
+  assertSemanticProgramRevision(semanticProgram, confirmed.snapshot, semanticPaths);
+
+  const observation = workspaceTypeScriptObservation(confirmed, semanticProgram);
+  const analyzedFiles = semanticPaths.map(workspacePath => {
+    const file = confirmed.snapshot.files.find(candidate => candidate.path === workspacePath)!;
+    return { path: file.path, content: decodeExactWorkspaceSource(file), contentHash: file.contentHash };
+  });
+  const family = deriveTypeScriptCodeActionCandidates({
+    rootPath: args.root,
+    requestedPaths,
+    files: analyzedFiles,
+    workspaceManifest: confirmed.snapshot.files.map(file => ({ path: file.path, contentHash: file.contentHash })),
+    semanticAnalyzer: {
+      analyzerId: observation.analyzer.id,
+      semanticRevisionHash: observation.semanticRevisionHash
+    },
+    compilerCommand: compilerLane.command,
+    maxEdits: 128
+  });
+  const graph = buildCompilerTaskConstraintGraph({
+    revision: confirmed.snapshot,
+    observation,
+    input: { ...args.input, requestedPaths },
+    family,
+    semanticProgram,
+    compilerLane
+  });
+  const selection = selectWorkspaceTransformationFamily({
+    graph,
+    revision: confirmed.snapshot,
+    families: family ? [family] : []
+  });
+  if (!selection.selected) return selection;
+
+  const finalRevision = await loadDurableWorkspaceRevision(args);
+  assertSameWorkspaceRevision(confirmed.snapshot, finalRevision.snapshot);
+  return {
+    schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
+    statusId: "scce.workspace.compiler_patch.selected.v1",
+    workspaceId: finalRevision.snapshot.workspaceId,
+    revisionId: finalRevision.snapshot.revisionId,
+    revisionHash: finalRevision.snapshot.revisionHash,
+    constraintGraph: graph,
+    selection,
+    plan: selection.selected.patchPlan,
+    validationPlan: args.input.validationPlan,
+    authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
+    execution: { state: "not_executed", receipt: null }
+  };
+}
+
+interface SourceObservedCompilerLane {
+  readonly command: TypeScriptObservedCompilerCommand;
+  readonly configPath: string;
+  readonly sourceSelector: string;
+  readonly rawCommand: string;
+}
+
+type SourceObservedCompilerLaneResolution =
+  | { readonly selected: SourceObservedCompilerLane; readonly reasonIds: readonly []; readonly observedCompilerLaneCount: 1 }
+  | {
+    readonly selected: null;
+    readonly reasonIds: readonly WorkspaceCompilerPatchUnresolvedReasonId[];
+    readonly observedCompilerLaneCount: number;
+  };
+
+function uniqueWorkspacePaths(values: readonly string[]): string[] {
+  const normalized = values.map(normalizePath);
+  if (normalized.length === 0 || new Set(normalized).size !== normalized.length) {
+    throw new Error("workspace compiler planning requires unique requested paths");
+  }
+  return [...normalized].sort(compareCanonicalText);
+}
+
+function selectSourceObservedCompilerLane(
+  snapshot: WorkspaceRevisionSnapshot,
+  requestedPaths: readonly string[]
+): SourceObservedCompilerLaneResolution {
+  const candidates: Array<SourceObservedCompilerLane & { contextDepth: number; configPresent: boolean }> = [];
+  for (const source of snapshot.files) {
+    if (path.posix.basename(source.path) !== "package.json") continue;
+    const cwd = path.posix.dirname(source.path) === "." ? "." : path.posix.dirname(source.path);
+    if (!requestedPaths.every(requestedPath => cwd === "." || requestedPath.startsWith(`${cwd}/`))) continue;
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(decodeExactWorkspaceSource(source)) as unknown;
+    } catch {
+      continue;
+    }
+    const scripts = manifest && typeof manifest === "object" && !Array.isArray(manifest)
+      ? (manifest as Record<string, unknown>).scripts
+      : undefined;
+    if (!scripts || typeof scripts !== "object" || Array.isArray(scripts)) continue;
+    for (const [name, rawCommand] of Object.entries(scripts as Record<string, unknown>).sort((left, right) => compareCanonicalText(left[0], right[0]))) {
+      if (typeof rawCommand !== "string") continue;
+      const sourceSelector = `scripts.${name}`;
+      const resolved = resolveTypeScriptCommandLane({ rawCommand, sourceSelector, sourcePath: source.path, cwd });
+      if (!resolved.ok || resolved.lane.wrapper !== "direct" || !resolved.lane.languageServiceCompatible) continue;
+      const configPath = compilerProjectConfigPath(resolved.lane.normalizedTscArgs, cwd);
+      if (!configPath) continue;
+      candidates.push({
+        command: {
+          executable: resolved.lane.compilerExecutable,
+          args: resolved.lane.normalizedTscArgs,
+          cwd,
+          sourcePath: source.path
         },
-        program: repair.program,
-        existingDirectoryPaths: await verifiedProgramArtifactDirectories(args.root, repair.program.files.map(file => file.path)),
-        verifiedAbsentPaths: await verifiedProgramArtifactAbsences(args.root, repair.program.files.map(file => file.path), confirmedRevision.snapshot),
-        validationPlan: args.input.validationPlan
+        configPath,
+        sourceSelector,
+        rawCommand,
+        contextDepth: cwd === "." ? 0 : cwd.split("/").length,
+        configPresent: snapshot.files.some(file => file.path === configPath)
       });
     }
-  } catch (error) {
-    throw new Error(`coding request is unsupported: ${messageOf(error)}`);
   }
-  const programIntent = codingRequestProgramIntent(project, args.input);
-  const kernel = await answerFromWorkspaceCoreContext({
-    promotion: project.coreFusion,
-    question: args.input.requestText,
-    options: {
-      programIntentOverride: programIntent
+  const deepest = candidates.reduce((depth, candidate) => Math.max(depth, candidate.contextDepth), -1);
+  const contextual = candidates.filter(candidate => candidate.contextDepth === deepest);
+  if (contextual.length === 0) {
+    return {
+      selected: null,
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"],
+      observedCompilerLaneCount: 0
+    };
+  }
+  if (contextual.length !== 1) {
+    return {
+      selected: null,
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_lane_ambiguous.v1"],
+      observedCompilerLaneCount: contextual.length
+    };
+  }
+  if (!contextual[0]!.configPresent) {
+    return {
+      selected: null,
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_config_absent.v1"],
+      observedCompilerLaneCount: 1
+    };
+  }
+  const { contextDepth: _contextDepth, configPresent: _configPresent, ...selected } = contextual[0]!;
+  return { selected, reasonIds: [], observedCompilerLaneCount: 1 };
+}
+
+function compilerProjectConfigPath(args: readonly string[], cwd: string): string | undefined {
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (value === "-p" || value === "--project") {
+      const next = args[index + 1];
+      if (!next) return undefined;
+      values.push(next);
+      index += 1;
+    } else if (value.startsWith("--project=")) {
+      values.push(value.slice("--project=".length));
     }
-  });
-  const requestEvidenceIds = programIntent.provenanceEvidenceIds ?? [];
-  assertCodingKernelAdmission(kernel, requestEvidenceIds);
-  const program = kernel.program.programGraph;
-  if (!program) {
-    throw new Error("coding request is unsupported: workspace evidence did not produce a source-bound ProgramGraph");
   }
-  if (requestEvidenceIds.length === 0) {
-    throw new Error("coding request is unsupported: request has no source-bound workspace evidence");
-  }
-  const confirmedRevision = await loadDurableWorkspaceRevision(args);
-  if (confirmedRevision.snapshot.revisionId !== revision.snapshot.revisionId
-    || confirmedRevision.snapshot.revisionHash !== revision.snapshot.revisionHash) {
-    throw new Error("coding request is unsupported: workspace revision changed while source evidence was being analyzed");
-  }
+  if (values.length > 1) return undefined;
+  const raw = values[0] ?? "tsconfig.json";
+  const joined = cwd === "." ? raw : path.posix.join(cwd, raw);
   try {
-    return generateWorkspacePatchPlanFromProgramGraph({
-      snapshot: confirmedRevision.snapshot,
-      expectedRevisionId: confirmedRevision.snapshot.revisionId,
-      expectedRevisionHash: confirmedRevision.snapshot.revisionHash,
-      request: {
-        requestId: args.input.requestId,
-        text: args.input.requestText,
-        requestedPaths: args.input.requestedPaths,
-        evidenceIds: requestEvidenceIds
-      },
-      program,
-      existingDirectoryPaths: await verifiedProgramArtifactDirectories(args.root, program.files.map(file => file.path)),
-      verifiedAbsentPaths: await verifiedProgramArtifactAbsences(args.root, program.files.map(file => file.path), confirmedRevision.snapshot),
-      validationPlan: args.input.validationPlan
-    });
-  } catch (error) {
-    throw new Error(`coding request is unsupported: ${messageOf(error)}`);
+    return normalizePath(joined);
+  } catch {
+    return undefined;
   }
 }
 
-function materializeWorkspaceUnusedTypeImportRepair(args: {
-  snapshot: WorkspaceRevisionSnapshot;
-  project: WorkspaceProjectReport;
-  input: WorkspaceCodingPatchPlanningInput;
-}): { program: ProgramGraph; evidenceIds: string[] } {
-  if (args.input.requestedPaths.length !== 1) {
-    throw new Error("unused type-import repair requires exactly one requested existing module");
+function semanticProgramPaths(
+  snapshot: WorkspaceRevisionSnapshot,
+  configPath: string,
+  commandSourcePath: string
+): string[] {
+  const supported = snapshot.files
+    .filter(file => /\.(?:[cm]?[jt]s|[jt]sx|json)$/u.test(file.path))
+    .map(file => file.path);
+  for (const requiredPath of [configPath, commandSourcePath]) {
+    if (!supported.includes(requiredPath)) supported.push(requiredPath);
   }
-  const requestedPath = normalizePath(args.input.requestedPaths[0]!);
-  const target = args.snapshot.files.find(file => file.path === requestedPath);
-  if (!target || target.role !== "source" || !/\.(?:ts|tsx|mts|cts)$/iu.test(target.path)) {
-    throw new Error("unused type-import repair requires one existing TypeScript source path");
-  }
-  const typecheck = observedTypecheckCommand(args.project.commands, requestedPath);
-  if (!typecheck) throw new Error("unused type-import repair requires a source-observed direct tsc command in the requested package context");
-  const packagePath = nearestPackageManifestPath(requestedPath, args.snapshot.files.map(file => file.path));
-  const base = sourceBoundWorkspaceRepairProgram({
-    snapshot: args.snapshot,
-    project: args.project,
-    input: args.input,
-    artifactPaths: [requestedPath, typecheck.source.sourcePath, ...(packagePath ? [packagePath] : [])],
-    mutationClass: "program.mutation.type_only_compile_hygiene",
-    validationRequirement: "typecheck",
-    typecheck
-  });
-  const repaired = materializeProgramRepair({ program: base.program, requestText: args.input.requestText });
-  if (repaired.changedPaths.length !== 1 || repaired.changedPaths[0] !== requestedPath) {
-    throw new Error("unused type-import repair did not produce exactly the requested full-file change");
-  }
-  return { program: repaired.program, evidenceIds: base.evidenceIds };
+  return [...new Set(supported)].sort(compareCanonicalText);
 }
 
-function materializeWorkspaceTypeScriptCodeActionRepair(args: {
-  rootPath: string;
-  snapshot: WorkspaceRevisionSnapshot;
-  project: WorkspaceProjectReport;
-  input: WorkspaceCodingPatchPlanningInput;
-}): { program: ProgramGraph; evidenceIds: string[] } | undefined {
-  if (args.input.requestedPaths.length !== 1) return undefined;
-  const requestedPath = normalizePath(args.input.requestedPaths[0]!);
-  const typecheck = observedTypecheckCommand(args.project.commands, requestedPath);
-  if (!typecheck) {
-    throw new Error("TypeScript code-action repair requires a source-observed direct tsc command in the requested package context");
-  }
-  const snapshotFiles = args.snapshot.files
-    .filter(file => /\.(?:[cm]?[jt]s|[jt]sx|json)$/iu.test(file.path))
-    .map(file => ({
-      path: file.path,
-      content: decodeExactWorkspaceSource(file),
-      contentHash: sha256ArtifactHash(file.bytes)
-    }));
-  let derived: ReturnType<typeof deriveTypeScriptCodeActionRepair>;
-  try {
-    derived = deriveTypeScriptCodeActionRepair({
-      rootPath: args.rootPath,
-      requestedPaths: [requestedPath],
-      requestText: args.input.requestText,
-      files: snapshotFiles,
-      compilerCommand: {
-        executable: typecheck.command.command,
-        args: typecheck.command.args,
-        cwd: typecheck.command.cwd,
-        sourcePath: typecheck.source.sourcePath
-      }
-    });
-  } catch (error) {
-    if (!hasExactTypeScriptCodeActionSelector(args.input.requestText)
-      && /source-observed tsc (?:project config|command)/u.test(messageOf(error))) return undefined;
-    throw error;
-  }
-  if (!derived) return undefined;
-  const selected = derived.selection.mode === "selected"
-    && derived.selection.admissibleCandidateCount === 1
-    && derived.transformations.length === 1
-    && normalizePath(derived.transformations[0]!.path) === requestedPath
-    ? derived.transformations[0]
-    : undefined;
-  if (!selected) {
-    const candidates = derived.selection.candidates
-      .map(candidate => `TS${candidate.diagnosticCode}:fixName:${candidate.fixName}:codeFixIdentity:${candidate.codeFixIdentity}@${candidate.path}:${candidate.diagnosticStart};affected=${candidate.affectedPaths.join("|")};creates=${candidate.createPaths.join("|") || "none"}`);
-    throw new Error(`TypeScript diagnostics require an exact TS####, fixName:<id>, or codeFixIdentity:<id> selector resolving to one candidate; selection=${derived.selection.mode}; candidates=${candidates.join(",") || "none"}; truncated=${derived.selection.truncated}`);
-  }
-  const packagePath = nearestPackageManifestPath(requestedPath, args.snapshot.files.map(file => file.path));
-  const existingChangedPaths = selected.codeFix.fileChanges
-    .filter(change => !change.isNewFile)
-    .map(change => change.path);
-  const artifactPaths = [
-    requestedPath,
-    ...existingChangedPaths,
-    selected.compiler.tsconfigPath,
-    selected.compiler.compilerCommand.sourcePath,
-    ...(packagePath ? [packagePath] : [])
-  ];
-  const base = sourceBoundWorkspaceRepairProgram({
-    snapshot: args.snapshot,
-    project: args.project,
-    input: args.input,
-    artifactPaths,
-    mutationClass: "program.mutation.compiler_diagnostic_repair",
-    validationRequirement: "compiler,typecheck,tests",
-    typecheck
-  });
-  const baseArtifact = base.program.files.find(file => file.path === selected.path);
-  if (!baseArtifact || hashDigest(String(baseArtifact.contentHash)) !== hashDigest(selected.baseContentHash)) {
-    throw new Error(`TypeScript code action is stale for ${selected.path}`);
-  }
-  for (const change of selected.codeFix.fileChanges) {
-    if (sha256Colon(change.afterContent) !== change.afterContentHash) {
-      throw new Error(`TypeScript code action emitted an invalid after-content hash for ${change.path}`);
-    }
-  }
-  const repaired = materializeTypeScriptCodeActionRepair({
-    program: base.program,
-    requestText: args.input.requestText,
-    transformations: [{
-      path: selected.path,
-      baseArtifactId: String(baseArtifact.artifactId),
-      baseContentHash: String(baseArtifact.contentHash),
-      snapshotHash: derived.snapshotHash,
-      diagnostic: { ...selected.diagnostic, diagnosticIdentity: selected.diagnosticIdentity },
-      codeFix: {
-        fixName: selected.codeFix.fixName,
-        description: selected.codeFix.description,
-        ...(selected.codeFix.fixId ? { fixId: selected.codeFix.fixId } : {}),
-        codeFixIdentity: selected.codeFixIdentity,
-        fileChanges: selected.codeFix.fileChanges.map(change => {
-          const existing = base.program.files.find(file => file.path === change.path);
-          if (change.isNewFile) {
-            if (existing || change.baseContentHash !== null) {
-              throw new Error(`TypeScript code-action create base is incoherent for ${change.path}`);
-            }
-            return {
-              path: change.path,
-              isNewFile: true,
-              baseArtifactId: null,
-              baseContentHash: null,
-              textChanges: change.textChanges,
-              mediaType: /\.(?:[cm]?ts|tsx)$/iu.test(change.path) ? "text/typescript" : "text/javascript",
-              role: "source" as const
-            };
-          }
-          if (!existing || !change.baseContentHash
-            || hashDigest(String(existing.contentHash)) !== hashDigest(change.baseContentHash)) {
-            throw new Error(`TypeScript code-action replacement base is stale for ${change.path}`);
-          }
-          return {
-            path: change.path,
-            isNewFile: false,
-            baseArtifactId: String(existing.artifactId),
-            baseContentHash: String(existing.contentHash),
-            textChanges: change.textChanges,
-            mediaType: existing.mediaType,
-            role: existing.role
-          };
-        })
-      },
-      compiler: selected.compiler
-    }]
-  });
-  const expectedChangedPaths = selected.codeFix.fileChanges.map(change => change.path).sort();
-  if (JSON.stringify(repaired.changedPaths) !== JSON.stringify(expectedChangedPaths)) {
-    throw new Error("TypeScript code-action repair did not preserve the compiler-owned atomic file set");
-  }
-  for (const change of selected.codeFix.fileChanges) {
-    const output = repaired.program.files.find(file => file.path === change.path);
-    if (output?.content !== change.afterContent
-      || hashDigest(String(output.contentHash)) !== hashDigest(change.afterContentHash)) {
-      throw new Error(`TypeScript code-action repair did not reproduce the compiler-owned exact output for ${change.path}`);
-    }
-  }
-  return { program: repaired.program, evidenceIds: base.evidenceIds };
-}
-
-function sourceBoundWorkspaceRepairProgram(args: {
-  snapshot: WorkspaceRevisionSnapshot;
-  project: WorkspaceProjectReport;
-  input: WorkspaceCodingPatchPlanningInput;
-  artifactPaths: readonly string[];
-  mutationClass: "program.mutation.type_only_compile_hygiene" | "program.mutation.compiler_diagnostic_repair";
-  validationRequirement: string;
-  typecheck: ObservedTypecheckCommand;
-}): { program: ProgramGraph; evidenceIds: string[] } {
-  const requestedPath = normalizePath(args.input.requestedPaths[0]!);
-  const typecheck = args.typecheck;
-  const validationRunner = observedValidationRunner(args.project.commands);
-  const testSummary = validationRunner
-    ? args.project.commands.find(command => command.id === validationRunner.commandId)
-    : undefined;
-  const test = testSummary ? simpleObservedCommand(testSummary) : undefined;
-  if (!typecheck || !test || !validationRunner) {
-    throw new Error("workspace compiler repair requires source-observed typecheck and test commands");
-  }
-  const selectedRevisionFiles = [...new Set(args.artifactPaths.map(normalizePath))].map(artifactPath => {
-    const file = args.snapshot.files.find(candidate => candidate.path === artifactPath);
-    if (!file) throw new Error(`workspace compiler repair artifact is absent from the exact revision: ${artifactPath}`);
-    return file;
-  });
-  const artifacts: FileArtifact[] = [];
-  const evidenceIds = new Set<string>();
-  for (const file of selectedRevisionFiles) {
-    const content = decodeExactWorkspaceSource(file);
-    const contentHash = sha256ArtifactHash(file.bytes);
-    const observed = args.project.sources.find(source => normalizePath(source.path) === file.path
-      && String(source.contentHash ?? "") === contentHash);
-    if ((!observed || observed.evidenceIds.length === 0) && file.role !== "config") {
-      throw new Error(`workspace compiler repair lacks exact source evidence for ${file.path}`);
-    }
-    for (const evidenceId of observed?.evidenceIds ?? []) evidenceIds.add(String(evidenceId));
-    artifacts.push({
-      artifactId: `workspace_source_artifact_${hashParts(file.path, contentHash).slice(0, 32)}` as ArtifactId,
-      path: file.path,
-      mediaType: file.mediaType,
-      content,
-      contentHash: contentHash as ContentHash,
-      role: file.role
-    });
-  }
-  for (const command of [typecheck.source, testSummary]) {
-    const evidenceId = command?.sourceRef?.evidenceSpanId;
-    if (!evidenceId) throw new Error("workspace compiler repair validation command lacks source evidence");
-    evidenceIds.add(evidenceId);
-  }
-  const provenanceEvidenceIds = [...evidenceIds].sort();
-  if (provenanceEvidenceIds.length === 0) {
-    throw new Error("workspace compiler repair requires source-bound evidence");
-  }
-  const sourcePlanId = `workspace-revision-repair:${hashParts(
-    args.snapshot.revisionId,
-    args.snapshot.revisionHash,
-    requestedPath,
-    artifacts.map(artifact => [artifact.path, artifact.contentHash]),
-    provenanceEvidenceIds,
-    args.mutationClass
-  ).slice(0, 40)}`;
-  const programId = `workspace_repair_program_${hashParts(
-    sourcePlanId,
-    args.input.requestId,
-    args.input.requestText,
-    typecheck.command,
-    test
-  ).slice(0, 40)}`;
-  const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
-    id: programId,
-    language: "typescript",
-    packageManager: observedPackageManager(args.project.commands) ?? "source-script",
-    entrypoint: requestedPath,
-    files: artifacts,
-    build: typecheck.command,
-    test,
-    nodes: [
-      {
-        id: sourcePlanId,
-        kind: "workspace_revision_exact_source",
-        label: requestedPath,
-        metadata: toJsonValue({
-          schema: "scce.workspace.exact_source_repair.v1",
-          revisionId: args.snapshot.revisionId,
-          revisionHash: args.snapshot.revisionHash,
-          requestedPath,
-          evidenceIds: provenanceEvidenceIds
-        })
-      },
-      {
-        id: `${sourcePlanId}:blueprint`,
-        kind: "implementation_blueprint",
-        label: "source-proven compiler repair",
-        metadata: toJsonValue({
-          sourceCoupling: 1,
-          unbackedSynthesisRisk: 0,
-          mutationClass: args.mutationClass,
-          validationRequirement: args.validationRequirement
-        })
-      },
-      ...artifacts.map(artifact => ({
-        id: `artifact:${artifact.path}`,
-        kind: `artifact:${artifact.role}`,
-        label: artifact.path,
-        metadata: toJsonValue({ contentHash: artifact.contentHash, mediaType: artifact.mediaType })
-      }))
-    ],
-    edges: artifacts.map(artifact => ({
-      source: sourcePlanId,
-      target: `artifact:${artifact.path}`,
-      relation: "materializes_full_file",
-      weight: 1
-    }))
+function workspaceTypeScriptObservation(
+  revision: Awaited<ReturnType<typeof loadDurableWorkspaceRevision>>,
+  program: TypeScriptSemanticProgramIndex
+): WorkspaceTypeScriptSemanticObservation {
+  return {
+    schema: "scce.workspace_kernel.semantic_program_observation.v1",
+    id: `workspace_semantic_observation_${hashParts(
+      revision.workspace.id,
+      revision.snapshot.revisionId,
+      revision.snapshot.revisionHash,
+      program.revisionHash,
+      program.config.id
+    ).slice(0, 40)}`,
+    workspace: {
+      id: revision.workspace.id,
+      corpusId: revision.workspace.corpusId,
+      rootPath: revision.workspace.rootPath,
+      rootUri: revision.workspace.rootUri
+    },
+    workspaceRevision: {
+      workspaceId: revision.workspace.id,
+      revisionId: revision.snapshot.revisionId,
+      revisionHash: revision.snapshot.revisionHash,
+      workspaceUpdatedAt: revision.workspace.updatedAt
+    },
+    analyzer: {
+      id: "scce.analyzer.typescript.compiler_api.semantic_program.v1",
+      version: program.config.compilerVersion
+    },
+    semanticRevisionHash: program.revisionHash,
+    program,
+    execution: { state: "not_executed" },
+    audit: toJsonValue({
+      workspaceRevisionHash: revision.snapshot.revisionHash,
+      semanticRevisionHash: program.revisionHash,
+      configPath: program.config.path,
+      observedPaths: program.files.map(file => file.path),
+      requestTextUsed: false
+    })
   };
-  const hydration = createProgramHydrationContract({
-    program: graphWithoutHydration,
-    sourcePlanId,
-    evidenceIds: provenanceEvidenceIds
+}
+
+function buildCompilerTaskConstraintGraph(args: {
+  revision: WorkspaceRevisionSnapshot;
+  observation: WorkspaceTypeScriptSemanticObservation;
+  input: WorkspaceCodingPatchPlanningInput;
+  family: TypeScriptCodeActionCandidateSet | undefined;
+  semanticProgram: TypeScriptSemanticProgramIndex;
+  compilerLane: SourceObservedCompilerLane;
+}): WorkspaceTaskConstraintGraph {
+  const transformations = args.family?.transformations ?? [];
+  const affectedPaths = [...args.input.requestedPaths].sort(compareCanonicalText);
+  const requestedPathSet = new Set(affectedPaths);
+  const candidateDiagnostics = new Set(transformations.map(transformation => [
+    transformation.path,
+    transformation.diagnostic.code,
+    transformation.diagnostic.start,
+    transformation.diagnostic.length,
+    transformation.diagnostic.message
+  ].join("\0")));
+  const diagnosticEvidenceByPath = new Map<string, string[]>();
+  for (const diagnostic of args.semanticProgram.diagnostics) {
+    if (!diagnostic.span || !candidateDiagnostics.has([
+      diagnostic.span.path,
+      diagnostic.compilerCode,
+      diagnostic.span.start,
+      diagnostic.span.length,
+      diagnostic.rawMessageEvidence
+    ].join("\0"))) continue;
+    const ids = diagnosticEvidenceByPath.get(diagnostic.span.path) ?? [];
+    ids.push(workspaceTaskConstraintEvidenceSpanId(diagnostic.span));
+    diagnosticEvidenceByPath.set(diagnostic.span.path, ids);
+  }
+  const semanticCommand = args.semanticProgram.commands.find(command => {
+    const source = args.semanticProgram.files.find(file => file.id === command.sourceFileId);
+    return source?.path === args.compilerLane.command.sourcePath
+      && `scripts.${command.sourceNameEvidence}` === args.compilerLane.sourceSelector
+      && command.rawCommandEvidence === args.compilerLane.rawCommand;
   });
-  const hydrationNodeId = `${sourcePlanId}:hydration`;
-  const program: ProgramGraph = {
-    ...graphWithoutHydration,
-    hydration,
-    nodes: [
-      ...graphWithoutHydration.nodes,
-      { id: hydrationNodeId, kind: "program_hydration_contract", label: hydration.schema, metadata: hydrationSummary(hydration) }
-    ],
-    edges: [
-      ...graphWithoutHydration.edges,
-      { source: sourcePlanId, target: hydrationNodeId, relation: "hydrates_as", weight: hydration.valid ? 1 : 0.35 }
-    ]
-  };
-  return { program, evidenceIds: provenanceEvidenceIds };
+  const evidenceIds = [...new Set([...diagnosticEvidenceByPath.values()].flat())].sort(compareCanonicalText);
+  return buildWorkspaceTaskConstraintGraph({
+    revision: args.revision,
+    observation: args.observation,
+    request: {
+      requestId: args.input.requestId,
+      text: args.input.requestText,
+      requestedPaths: args.input.requestedPaths,
+      evidenceIds
+    },
+    programContext: {
+      patchPlans: [{
+        plannerInputId: `compiler_planner_${hashParts(args.input.requestId, args.revision.revisionHash).slice(0, 32)}`,
+        workspaceTaskId: `compiler_task_${hashParts(args.input.requestId, affectedPaths).slice(0, 32)}`,
+        workspaceTaskRecordId: `compiler_task_record_${hashParts(args.input.requestId, args.observation.id).slice(0, 32)}`,
+        affectedFiles: affectedPaths,
+        evidenceSpanIds: evidenceIds
+      }]
+    },
+    preservation: {
+      protectedFilePaths: args.semanticProgram.files
+        .map(file => file.path)
+        .filter(workspacePath => !requestedPathSet.has(workspacePath)),
+      protectedSourcePaths: [],
+      protectedEvidenceSpanIds: []
+    },
+    requestedOutcomes: args.input.requestedPaths.map((requestedPath, index) => ({
+      id: `compiler_outcome_${hashParts(args.input.requestId, requestedPath, index).slice(0, 32)}`,
+      postconditionId: "workspace.requested_path.bound",
+      affectedPath: requestedPath,
+      evidenceSpanIds: [...new Set(diagnosticEvidenceByPath.get(requestedPath) ?? evidenceIds)].sort(compareCanonicalText)
+    })),
+    validationPlan: { validatorId: args.input.validationPlan.validatorId, checks: ["compiler"] },
+    validationCommandBindings: semanticCommand
+      ? [{ id: `compiler_validation_${hashParts(semanticCommand.id, args.input.requestId).slice(0, 32)}`, checkId: "compiler", commandId: semanticCommand.id }]
+      : []
+  });
+}
+
+function assertSameWorkspaceRevision(
+  expected: WorkspaceRevisionSnapshot,
+  actual: WorkspaceRevisionSnapshot
+): void {
+  if (actual.workspaceId !== expected.workspaceId
+    || actual.revisionId !== expected.revisionId
+    || actual.revisionHash !== expected.revisionHash) {
+    throw new Error("workspace revision changed while compiler evidence was being analyzed");
+  }
+}
+
+function assertSemanticProgramRevision(
+  program: TypeScriptSemanticProgramIndex,
+  revision: WorkspaceRevisionSnapshot,
+  semanticPaths: readonly string[]
+): void {
+  const revisionByPath = new Map(revision.files.map(file => [file.path, file]));
+  const observed = program.files.map(file => file.path).sort(compareCanonicalText);
+  if (observed.length !== semanticPaths.length || observed.some((workspacePath, index) => workspacePath !== semanticPaths[index])) {
+    throw new Error("TypeScript semantic observation paths changed during compiler analysis");
+  }
+  for (const file of program.files) {
+    const durable = revisionByPath.get(file.path);
+    if (!durable || hashDigest(durable.contentHash) !== hashDigest(file.contentHash)) {
+      throw new Error(`TypeScript semantic observation is stale for ${file.path}`);
+    }
+  }
+}
+
+function compareCanonicalText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function hashDigest(value: string): string {
   const match = /^(?:sha256[:_])?([0-9a-f]{64})$/iu.exec(value.trim());
   if (!match?.[1]) throw new Error(`compiler repair hash is not SHA-256: ${value}`);
   return match[1].toLocaleLowerCase();
-}
-
-function sha256Colon(content: string): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
-}
-
-interface ObservedTypecheckCommand {
-  command: ProgramGraph["build"];
-  source: WorkspaceCommandSummary;
-}
-
-function observedTypecheckCommand(commands: readonly WorkspaceCommandSummary[], requestedPath: string): ObservedTypecheckCommand | undefined {
-  const candidates = commands
-    .filter(command => command.name.toLocaleLowerCase() === "typecheck" || command.name.toLocaleLowerCase() === "build")
-    .filter(command => workspaceCommandContextContains(command.sourcePath, requestedPath))
-    .sort((left, right) => commandContextDepth(right.sourcePath) - commandContextDepth(left.sourcePath)
-      || Number(left.name.toLocaleLowerCase() !== "typecheck") - Number(right.name.toLocaleLowerCase() !== "typecheck")
-      || left.sourcePath.localeCompare(right.sourcePath)
-      || left.command.localeCompare(right.command));
-  for (const source of candidates) {
-    const cwd = commandContextDirectory(source.sourcePath);
-    const resolved = resolveTypeScriptCommandLane({
-      rawCommand: source.command,
-      sourceSelector: `scripts.${source.name}`,
-      sourcePath: source.sourcePath,
-      cwd
-    });
-    if (resolved.ok && resolved.lane.wrapper === "direct") {
-      return {
-        command: {
-          command: resolved.lane.compilerExecutable,
-          args: resolved.lane.normalizedTscArgs,
-          cwd
-        },
-        source
-      };
-    }
-  }
-  return undefined;
-}
-
-function simpleObservedCommand(source: WorkspaceCommandSummary): ProgramGraph["build"] | undefined {
-  const resolved = resolvePortablePackageScriptArgv(source.command);
-  if (!resolved.ok) return undefined;
-  return { command: resolved.executable, args: resolved.args, cwd: commandContextDirectory(source.sourcePath) };
-}
-
-function workspaceCommandContextContains(sourcePath: string, targetPath: string): boolean {
-  const directory = commandContextDirectory(sourcePath);
-  return directory === "." || targetPath === directory || targetPath.startsWith(`${directory}/`);
-}
-
-function commandContextDepth(sourcePath: string): number {
-  const directory = commandContextDirectory(sourcePath);
-  return directory === "." ? 0 : directory.split("/").length;
-}
-
-function commandContextDirectory(sourcePath: string): string {
-  const normalized = normalizePath(sourcePath);
-  const directory = path.posix.dirname(normalized);
-  return directory === "." ? "." : directory;
-}
-
-function hasExactTypeScriptCodeActionSelector(requestText: string): boolean {
-  return /\bTS\d{3,6}\b/iu.test(requestText)
-    || /\bfixName\s*[:=]\s*["']?[\w.-]+/u.test(requestText)
-    || /\bcodeFixIdentity\s*[:=]\s*["']?typescript\.code_fix:[0-9a-f]{64}\b/u.test(requestText);
-}
-
-function nearestPackageManifestPath(targetPath: string, paths: readonly string[]): string | undefined {
-  const candidates = paths.filter(candidate => candidate === "package.json" || candidate.endsWith("/package.json"))
-    .filter(candidate => {
-      const parent = candidate === "package.json" ? "" : candidate.slice(0, -"/package.json".length);
-      return !parent || targetPath.startsWith(`${parent}/`);
-    })
-    .sort((left, right) => right.length - left.length);
-  return candidates[0];
 }
 
 function decodeExactWorkspaceSource(file: WorkspaceRevisionSnapshot["files"][number]): string {
@@ -1893,74 +1964,6 @@ function decodeExactWorkspaceSource(file: WorkspaceRevisionSnapshot["files"][num
     throw new Error(`unused type-import repair source does not round-trip as exact UTF-8: ${file.path}`);
   }
   return content;
-}
-
-function assertCodingKernelAdmission(kernel: WorkspaceKernelAnswerResult, requestEvidenceIds: readonly string[]): void {
-  const entailment = kernel.entailment;
-  if (kernel.statusId !== "workspace.kernel.answer.ready"
-    || kernel.answerTrace.statusId !== "workspace.kernel.answer.ready"
-    || kernel.answerGraph.statusId !== "workspace.kernel.answer.ready"
-    || kernel.answerGraph.uncertainty.unsupported) {
-    throw new Error("coding request is unsupported: request did not couple to an admissible workspace kernel answer");
-  }
-  if (entailment.verdict !== "entailed"
-    || entailment.semanticVerdict !== "entailed"
-    || entailment.force === "unknown"
-    || entailment.force === "conjectured"
-    || entailment.force === "invented"
-    || entailment.support <= entailment.contradiction
-    || kernel.answerGraph.uncertainty.contradictionCount > 0
-    || kernel.answerTrace.contradictionRecordIds.length > 0) {
-    throw new Error("coding request is unsupported: kernel entailment did not admit a contradiction-free program proposal");
-  }
-  const activeNodeIds = new Set((kernel.graph.field?.active ?? []).map(item => String(item.nodeId)));
-  const activeEvidenceIds = new Set(kernel.graph.nodes
-    .filter(node => activeNodeIds.has(String(node.id)))
-    .flatMap(node => node.evidenceIds.map(String)));
-  if (!kernel.graph.field?.requestFeatures.length
-    || !kernel.graph.field.seeds.length
-    || !requestEvidenceIds.some(evidenceId => activeEvidenceIds.has(evidenceId))) {
-    throw new Error("coding request is unsupported: request activation is not coupled to its source evidence");
-  }
-}
-
-async function verifiedProgramArtifactDirectories(root: string, artifactPaths: readonly string[]): Promise<string[]> {
-  const resolvedRoot = path.resolve(root);
-  const directories = new Set<string>();
-  try {
-    const rootInfo = await lstat(resolvedRoot);
-    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return [];
-  } catch {
-    return [];
-  }
-  directories.add("");
-  for (const artifactPath of artifactPaths) {
-    const normalized = normalizePath(artifactPath);
-    const split = normalized.lastIndexOf("/");
-    const parent = split < 0 ? "" : normalized.slice(0, split);
-    if (directories.has(parent)) continue;
-    let current = resolvedRoot;
-    let verified = true;
-    for (const segment of parent.split("/").filter(Boolean)) {
-      current = path.resolve(current, segment);
-      if (!isWithin(current, resolvedRoot)) {
-        verified = false;
-        break;
-      }
-      try {
-        const info = await lstat(current);
-        if (!info.isDirectory() || info.isSymbolicLink()) {
-          verified = false;
-          break;
-        }
-      } catch {
-        verified = false;
-        break;
-      }
-    }
-    if (verified) directories.add(parent);
-  }
-  return [...directories].sort();
 }
 
 export async function verifiedProgramArtifactAbsences(
@@ -1983,76 +1986,6 @@ export async function verifiedProgramArtifactAbsences(
     }
   }
   return [...new Set(absent)].sort();
-}
-
-function codingRequestProgramIntent(
-  project: WorkspaceProjectReport,
-  request: WorkspaceCodingPatchPlanningInput
-): Partial<ProgramConstructIntent> {
-  const requested = new Set(request.requestedPaths.map(normalizePath));
-  const requestedModules = project.map.modules.filter(module => requested.has(module.path));
-  const requestedSymbols = project.symbols.filter(symbol => requested.has(symbol.path));
-  const languageId = requestedModules[0]?.languageId ?? project.map.modules[0]?.languageId;
-  const manager = observedPackageManager(project.commands);
-  const validationRunner = observedValidationRunner(project.commands);
-  const nodeRuntime = languageId ? /(?:typescript|javascript|\.tsx?|\.jsx?)/u.test(languageId.toLocaleLowerCase()) : false;
-  const sourceBackedModule = requestedModules.length > 0 && requestedSymbols.some(symbol => symbol.exported);
-  const provenanceEvidenceIds = [...new Set([
-    ...requestedModules.flatMap(module => module.sourceRefs.map(ref => ref.evidenceSpanId).filter((id): id is string => Boolean(id))),
-    ...requestedSymbols.map(symbol => symbol.sourceRef?.evidenceSpanId).filter((id): id is string => Boolean(id)),
-    ...(validationRunner ? [validationRunner.evidenceSpanId] : [])
-  ])].sort();
-  return {
-    artifactKindIds: sourceBackedModule ? ["program.artifact.library"] : ["program.artifact.workspace_full_file"],
-    capabilityIds: sourceBackedModule ? ["capability:pure-call"] : ["program.capability.source_edit_plan"],
-    ...(languageId ? { languageId } : {}),
-    ...(manager ? { packageManagerId: manager } : {}),
-    ...(manager ? { runtimeTargetId: `runtime.package:${manager}` } : nodeRuntime ? { runtimeTargetId: "runtime.node" } : {}),
-    entrypointPath: request.requestedPaths[0],
-    constraints: ["program.constraint.source_backed", "program.constraint.full_file_materialization"],
-    provenanceEvidenceIds,
-    metadata: toJsonValue({
-      requestId: request.requestId,
-      requestedPaths: request.requestedPaths,
-      sourceBackedModule,
-      nodeRuntime,
-      languageSource: requestedModules[0]?.path ?? null,
-      packageManagerSource: manager ? project.commands.find(command => command.command.trim().startsWith(manager))?.sourceRef ?? null : null,
-      validationRunner
-    })
-  };
-}
-
-function observedValidationRunner(commands: readonly WorkspaceCommandSummary[]): {
-  runnerId: "runtime.validation.vitest" | "runtime.validation.node-test";
-  commandId: string;
-  sourcePath: string;
-  evidenceSpanId: string;
-} | undefined {
-  for (const command of commands) {
-    const evidenceSpanId = command.sourceRef?.evidenceSpanId;
-    if (!evidenceSpanId) continue;
-    const tokens = command.command
-      .trim()
-      .split(/\s+/u)
-      .map(token => token.replace(/^["']|["']$/gu, "").toLocaleLowerCase());
-    const executableTokens = tokens.map(token => path.basename(token).replace(/\.cmd$|\.exe$/u, ""));
-    if (executableTokens[0] === "vitest") {
-      return { runnerId: "runtime.validation.vitest", commandId: command.id, sourcePath: command.sourcePath, evidenceSpanId };
-    }
-    if (executableTokens[0] === "node" && executableTokens.slice(1).includes("--test")) {
-      return { runnerId: "runtime.validation.node-test", commandId: command.id, sourcePath: command.sourcePath, evidenceSpanId };
-    }
-  }
-  return undefined;
-}
-
-function observedPackageManager(commands: readonly WorkspaceCommandSummary[]): string | undefined {
-  for (const command of commands) {
-    const executable = command.command.trim().split(/\s+/u)[0]?.toLocaleLowerCase();
-    if (executable === "pnpm" || executable === "npm" || executable === "yarn" || executable === "bun") return executable;
-  }
-  return undefined;
 }
 
 async function loadDurableWorkspaceRevision(args: {

@@ -2,6 +2,12 @@ import type { IdFactory } from "./ids.js";
 import type { EvidenceSpan, Hasher, JsonValue, LanguageProfile } from "./types.js";
 import type { SemanticFrameRecord, TranslationAlignmentRecord } from "./storage.js";
 import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
+import {
+  buildLanguageProfileClusters,
+  learnedScriptIdForCharacter,
+  selectLanguageProfileClusterForSurface,
+  type LanguageProfileCluster
+} from "./language.js";
 
 export type TranslationForce = "direct" | "approximate" | "gloss" | "unknown";
 
@@ -47,6 +53,9 @@ export interface TranslationPlan {
   id: string;
   sourceLanguage: string;
   targetLanguage: string;
+  targetProfile?: LanguageProfile;
+  targetCluster?: LanguageProfileCluster;
+  targetSelection?: TranslationTargetSelection;
   sourceFrames: TranslationSemanticFrame[];
   targetFrames: TranslationSemanticFrame[];
   alignments: TranslationFrameAlignment[];
@@ -64,6 +73,16 @@ export interface TranslationPlan {
     translationAlignments: TranslationAlignmentRecord[];
   };
   audit: JsonValue;
+}
+
+export interface TranslationTargetSelection {
+  cluster: LanguageProfileCluster;
+  profile: LanguageProfile;
+  score: number;
+  margin: number;
+  basis: "opaque_id" | "evidence_alias" | "source_alias";
+  evidenceRefs: string[];
+  sourceVersionRefs: string[];
 }
 
 export interface TranslationConstruct {
@@ -124,9 +143,13 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       priorAlignments?: TranslationAlignmentRecord[];
       createdAt: number;
     }): TranslationPlan {
-      const sourceLanguage = input.sourceLanguage ?? inferLanguageHint(input.text, input.profiles);
-      const targetProfile = selectTargetProfile(input.targetLanguage, input.profiles);
-      const targetLanguage = targetProfile ? languageHint(targetProfile) : input.targetLanguage;
+      const clusters = buildLanguageProfileClusters(input.profiles);
+      const sourceLanguage = input.sourceLanguage ?? inferLanguageHint(input.text, clusters);
+      const targetSelection = selectTargetLanguageProfileCluster(input.targetLanguage, clusters, input.evidence);
+      const targetCluster = targetSelection?.cluster;
+      const targetProfile = targetSelection?.profile;
+      const targetLanguage = canonicalTranslationTargetKey(input.targetLanguage);
+      const targetLanguageHint = targetProfile ? languageHint(targetProfile) : targetLanguage;
       const sourceFrames = framesFromText({
         text: input.text,
         languageHint: sourceLanguage,
@@ -135,15 +158,21 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         idFactory: options.idFactory,
         hasher: options.hasher
       });
-      const targetEvidence = input.evidence.filter(span => spanMatchesTarget(span, targetProfile, input.targetLanguage));
-      const targetFrames = targetEvidence.flatMap(span => framesFromText({
-        text: span.text,
-        languageHint: targetLanguage,
-        evidence: [span],
-        idPrefix: "translation_target_frame",
-        idFactory: options.idFactory,
-        hasher: options.hasher
-      }));
+      const targetEvidence = input.evidence.flatMap(span => {
+        const admitted = targetEvidenceAdmission(span, targetSelection, input.priorAlignments ?? [], targetLanguage);
+        return admitted ? [{ span, ...admitted }] : [];
+      });
+      const targetFrames = targetEvidence.flatMap(({ span, owner }) => {
+        return framesFromText({
+          text: span.text,
+          languageHint: targetLanguageHint,
+          evidence: [span],
+          ownership: { profileId: owner.id, sourceVersionId: String(span.sourceVersionId) },
+          idPrefix: "translation_target_frame",
+          idFactory: options.idFactory,
+          hasher: options.hasher
+        });
+      });
       const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile));
       const force = aggregateForce(alignments);
       const lossVector = aggregateLoss(alignments);
@@ -169,7 +198,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         sourceFrames,
         alignments,
         emission,
-        targetEvidence
+        targetEvidence: targetEvidence.map(row => row.span)
       });
       const semanticFrames = [...sourceFrames, ...targetFrames].map(frame => ({
         id: frame.id,
@@ -201,6 +230,9 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         id: options.idFactory.semanticId("translation_plan", { sourceLanguage, targetLanguage, sourceHash: options.hasher.digestHex(input.text), force, lossVector }),
         sourceLanguage,
         targetLanguage,
+        ...(targetProfile ? { targetProfile } : {}),
+        ...(targetCluster ? { targetCluster } : {}),
+        ...(targetSelection ? { targetSelection } : {}),
         sourceFrames,
         targetFrames,
         alignments,
@@ -213,6 +245,16 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         audit: toJsonValue({
           sourceLanguage,
           targetLanguage,
+          targetSelection: targetSelection ? {
+            clusterId: targetSelection.cluster.id,
+            profileId: targetSelection.profile.id,
+            score: targetSelection.score,
+            margin: targetSelection.margin,
+            basis: targetSelection.basis,
+            evidenceRefs: targetSelection.evidenceRefs,
+            sourceVersionRefs: targetSelection.sourceVersionRefs
+          } : null,
+          targetResolution: targetSelection ? "resolved" : "unresolved",
           force,
           construct,
           lossVector,
@@ -229,6 +271,7 @@ function framesFromText(input: {
   text: string;
   languageHint: string;
   evidence: EvidenceSpan[];
+  ownership?: { profileId: string; sourceVersionId: string };
   idPrefix: string;
   idFactory: IdFactory;
   hasher: Hasher;
@@ -245,10 +288,18 @@ function framesFromText(input: {
       textHash: input.hasher.digestHex(text),
       symbolCount: window.length,
       shapeSignature: roles.map(role => role.shape),
-      evidenceIds
+      evidenceIds,
+      ...(input.ownership ? { profileId: input.ownership.profileId, sourceVersionId: input.ownership.sourceVersionId } : {})
     });
     return {
-      id: input.idFactory.semanticId(input.idPrefix, { languageHint: input.languageHint, textHash: input.hasher.digestHex(text), index, evidenceIds }),
+      id: input.idFactory.semanticId(input.idPrefix, {
+        languageHint: input.languageHint,
+        profileId: input.ownership?.profileId ?? null,
+        sourceVersionId: input.ownership?.sourceVersionId ?? null,
+        textHash: input.hasher.digestHex(text),
+        index,
+        evidenceIds
+      }),
       languageHint: input.languageHint,
       text,
       symbols: window,
@@ -369,40 +420,94 @@ function profileFit(frame: TranslationSemanticFrame, profile: LanguageProfile): 
   return clamp01(0.45 * scriptMass + 0.55 * weightedJaccard(frame.features, profileFeatures));
 }
 
-function selectTargetProfile(targetLanguage: string, profiles: readonly LanguageProfile[]): LanguageProfile | undefined {
-  return profiles
-    .map(profile => ({ profile, score: targetProfileScore(targetLanguage, profile) }))
-    .sort((a, b) => b.score - a.score)[0]?.profile;
+export function selectTargetLanguageProfileCluster(
+  targetLanguage: string,
+  clusters: readonly LanguageProfileCluster[],
+  evidence: readonly EvidenceSpan[] = []
+): TranslationTargetSelection | undefined {
+  const opaqueTarget = targetLanguage.normalize("NFC").trim();
+  const nameTarget = opaqueTarget.toLowerCase();
+  if (!opaqueTarget) return undefined;
+  const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
+  const candidates = new Map<string, Omit<TranslationTargetSelection, "margin">>();
+  for (const cluster of clusters) {
+    const orderedMembers = [...cluster.members].sort((left, right) => compareCodePoint(left.id, right.id));
+    const exactProfile = orderedMembers.find(profile => profile.id === opaqueTarget);
+    if (cluster.id === opaqueTarget || exactProfile) {
+      return {
+        cluster,
+        profile: exactProfile ?? orderedMembers[0]!,
+        score: 1,
+        margin: 1,
+        basis: "opaque_id",
+        evidenceRefs: [],
+        sourceVersionRefs: []
+      };
+    }
+    const names = cluster.discoveredNames
+      .filter(name => name.surface.normalize("NFC").trim().toLowerCase() === nameTarget && name.confidence > 0)
+      .sort((left, right) => right.confidence - left.confidence || compareCodePoint(left.surface, right.surface));
+    for (const name of names) {
+      for (const owner of name.owners) {
+        const profile = orderedMembers.find(member => member.id === owner.profileId && member.sourceVersionId === owner.sourceVersionId);
+        if (!profile) continue;
+        const verifiedEvidenceRefs = owner.evidenceRefs.filter(ref => {
+          const span = evidenceById.get(ref);
+          return span?.sourceVersionId === owner.sourceVersionId;
+        }).sort(compareCodePoint);
+        const verifiedSourceVersionRefs = owner.sourceVersionRefs
+          .filter(ref => ref === owner.sourceVersionId)
+          .map(String)
+          .sort(compareCodePoint);
+        if (!verifiedEvidenceRefs.length && !verifiedSourceVersionRefs.length) continue;
+        const candidate: Omit<TranslationTargetSelection, "margin"> = {
+          cluster,
+          profile,
+          score: clamp01(owner.confidence),
+          basis: verifiedEvidenceRefs.length ? "evidence_alias" : "source_alias",
+          evidenceRefs: verifiedEvidenceRefs,
+          sourceVersionRefs: verifiedSourceVersionRefs
+        };
+        const existing = candidates.get(cluster.id);
+        if (!existing || candidate.score > existing.score
+          || candidate.score === existing.score && compareCodePoint(candidate.profile.id, existing.profile.id) < 0) {
+          candidates.set(cluster.id, candidate);
+        }
+      }
+    }
+  }
+  const ranked = [...candidates.values()]
+    .sort((left, right) => right.score - left.score || compareCodePoint(left.cluster.id, right.cluster.id));
+  const selected = ranked[0];
+  if (!selected || selected.score <= 0) return undefined;
+  const margin = selected.score - (ranked[1]?.score ?? 0);
+  if (margin < 0.12) return undefined;
+  return { ...selected, margin };
 }
 
-function targetProfileScore(targetLanguage: string, profile: LanguageProfile): number {
-  const needle = targetLanguage.toLowerCase();
-  const scriptScore = profile.scripts.some(script => needle.includes(script.script.toLowerCase())) ? 1 : 0;
-  const idScore = profile.id.toLowerCase() === needle ? 1 : profile.id.toLowerCase().includes(needle) ? 0.7 : 0;
-  return Math.max(scriptScore, idScore);
+export function canonicalTranslationTargetKey(targetLanguage: string): string {
+  return targetLanguage.normalize("NFC").trim().toLowerCase();
 }
 
-function spanMatchesTarget(span: EvidenceSpan, profile: LanguageProfile | undefined, targetLanguage: string): boolean {
-  const hints = JSON.stringify([span.languageHints, span.scriptHints]).toLowerCase();
-  if (hints.includes(targetLanguage.toLowerCase())) return true;
-  if (!profile) return false;
-  const script = profile.scripts.slice().sort((a, b) => b.mass - a.mass)[0]?.script;
-  const scriptKey = script?.toLowerCase();
-  return scriptKey ? hints.includes(scriptKey) || span.features.some(feature => feature.toLowerCase().includes(scriptKey)) : false;
+function targetEvidenceAdmission(
+  span: EvidenceSpan,
+  selection: TranslationTargetSelection | undefined,
+  priors: readonly TranslationAlignmentRecord[],
+  targetKey: string
+): { owner: LanguageProfile; basis: "profile_source" | "verified_alignment" } | undefined {
+  if (!selection) return undefined;
+  const directOwner = selection.cluster.members.find(member => member.sourceVersionId === span.sourceVersionId);
+  if (directOwner) return { owner: directOwner, basis: "profile_source" };
+  const aligned = priors.some(prior => canonicalTranslationTargetKey(prior.targetLanguage) === targetKey
+    && (prior.force === "direct" || prior.force === "approximate")
+    && prior.evidenceIds.some(evidenceId => String(evidenceId) === String(span.id)));
+  return aligned ? { owner: selection.profile, basis: "verified_alignment" } : undefined;
 }
 
-function inferLanguageHint(text: string, profiles: readonly LanguageProfile[]): string {
-  const features = featureSet(text, 256);
-  const best = profiles
-    .map(profile => ({
-      profile,
-      score: weightedJaccard(features, [
-        ...profile.charNgrams.slice(0, 128).map(item => `char:${item.ngram}`),
-        ...profile.symbolShapes.slice(0, 64).map(item => `shape:${item.shape}`)
-      ])
-    }))
-    .sort((a, b) => b.score - a.score)[0];
-  return best && best.score > 0.04 ? languageHint(best.profile) : `script:${scriptHint(text)};direction:unknown`;
+function inferLanguageHint(text: string, clusters: readonly LanguageProfileCluster[]): string {
+  const selected = selectLanguageProfileClusterForSurface(clusters, text);
+  const profile = selected?.cluster.members.slice().sort((left, right) => compareCodePoint(left.id, right.id))[0];
+  return profile ? languageHint(profile) : `script:${scriptHint(text)};direction:unknown`;
 }
 
 function languageHint(profile: LanguageProfile): string {
@@ -644,16 +749,23 @@ function shapeOf(text: string): string {
 
 function scriptHint(text: string): string {
   const chars = [...text].filter(char => !/\s/u.test(char));
-  if (chars.some(char => /\p{Script=Arabic}/u.test(char))) return "script:Arab";
-  if (chars.some(char => /\p{Script=Hebrew}/u.test(char))) return "script:Hebr";
-  if (chars.some(char => /\p{Script=Han}/u.test(char))) return "script:Hani";
-  if (chars.some(char => /\p{Script=Hiragana}/u.test(char))) return "script:Hira";
-  if (chars.some(char => /\p{Script=Katakana}/u.test(char))) return "script:Kana";
-  if (chars.some(char => /\p{Script=Cyrillic}/u.test(char))) return "script:Cyrl";
-  if (chars.some(char => /\p{Script=Devanagari}/u.test(char))) return "script:Deva";
-  if (chars.some(char => /\p{Script=Thai}/u.test(char))) return "script:Thai";
-  if (chars.some(char => /\p{Script=Greek}/u.test(char))) return "script:Greek";
-  if (chars.some(char => /\p{Script=Latin}/u.test(char))) return "script:Latn";
-  if (chars.some(char => /\p{Number}/u.test(char))) return "script:Zyyy:number";
-  return "script:Zxxx";
+  const counts = new Map<string, number>();
+  for (const char of chars) {
+    const script = learnedScriptIdForCharacter(char);
+    counts.set(script, (counts.get(script) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || compareCodePoint(left[0], right[0]))[0]?.[0] ?? "script:Zxxx";
+}
+
+function compareCodePoint(left: string, right: string): number {
+  const a = [...left];
+  const b = [...right];
+  const length = Math.min(a.length, b.length);
+  for (let index = 0; index < length; index++) {
+    const x = a[index]!.codePointAt(0)!;
+    const y = b[index]!.codePointAt(0)!;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return a.length - b.length;
 }

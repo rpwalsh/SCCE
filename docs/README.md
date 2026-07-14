@@ -13,6 +13,7 @@ Use this index to select the smallest relevant document.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): package boundaries and production runtime path.
 - [`API_SURFACE.md`](API_SURFACE.md): CLI, HTTP, kernel, adapter, and extension surfaces.
 - [`BRAIN_TO_MOUTH_PIPELINE.md`](BRAIN_TO_MOUTH_PIPELINE.md): evidence-to-answer path.
+- [`FLUENT_COGNITIVE_ENGINE_PLAN.md`](FLUENT_COGNITIVE_ENGINE_PLAN.md): delivery plan for corpus-learned conversational, multilingual, creative, and coding behavior.
 - [`WORKSPACE_RUNTIME.md`](WORKSPACE_RUNTIME.md): workspace ingestion, reports, planning, and patch application.
 - [`PATCH_TRANSACTION_CONTRACT.md`](PATCH_TRANSACTION_CONTRACT.md): exact-byte plan, authorization, validation, and receipt rules.
 - [`SPREADSHEET_INGESTION_CONTRACT.md`](SPREADSHEET_INGESTION_CONTRACT.md): workbook parsing and evidence behavior.

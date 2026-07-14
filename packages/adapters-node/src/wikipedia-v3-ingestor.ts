@@ -7,6 +7,7 @@ import {
   createHasher,
   createIdFactory,
   createLanguageAcquisitionEngine,
+  languageAliasSurfacesFromMetadata,
   createSourceAdmissionController,
   createSourceGraphBuilder,
   createTypedIngestProjector,
@@ -84,6 +85,7 @@ interface WikipediaLanguageShardSample {
   text: string;
   evidence: EvidenceSpan[];
   createdAt: number;
+  languageAliases: string[];
 }
 
 interface WikipediaPageImport {
@@ -604,7 +606,6 @@ export class WikipediaV3Ingestor {
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } }));
 
     const profile = this.language.acquire({ sourceVersionId, text: file.text, createdAt: now });
-    await this.storage.model.putLanguageProfile(profile);
     const extracted = this.evidenceExtractor.extract({
       sourceId,
       sourceVersionId,
@@ -687,7 +688,9 @@ export class WikipediaV3Ingestor {
       evidence: admittedSpans.length,
       graphNodes,
       graphEdges,
-      languageProfiles: 1,
+      // Page profiles are transient extraction aids. Only bounded, trained
+      // language-shard profiles become durable turn-time surface profiles.
+      languageProfiles: 0,
       ngramObservations: 0,
       ngramModels: 0,
       languageUnits: 0,
@@ -699,7 +702,8 @@ export class WikipediaV3Ingestor {
         sourceVersionId,
         text: file.text,
         evidence: admittedSpans,
-        createdAt: now
+        createdAt: now,
+        languageAliases: languageAliasSurfacesFromMetadata(metadata)
       },
       warnings
     };
@@ -711,7 +715,6 @@ export class WikipediaV3Ingestor {
     const text = boundedLanguageShardText(samples, 1_200_000);
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
     const profile = this.language.acquire({ sourceVersionId, text, createdAt });
-    await this.storage.model.putLanguageProfile(profile);
     const evidence = selectShardEvidence(samples, 2048);
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
@@ -725,6 +728,7 @@ export class WikipediaV3Ingestor {
       text,
       evidence,
       profile,
+      languageAliases: [...new Set(samples.flatMap(sample => sample.languageAliases))].sort(),
       createdAt,
       ngramMaxOrder,
       ngramMaxCountersPerOrder: ngramMaxCounters,

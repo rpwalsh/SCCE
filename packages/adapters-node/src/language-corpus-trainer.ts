@@ -6,6 +6,8 @@ import {
   createIdFactory,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
+  compileLanguageConstructionPattern,
+  attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
   canonicalCorpusSourceSystemId,
   corpusSourceAlias,
@@ -22,7 +24,8 @@ import {
   type ScceStorage,
   type SemanticFrameRecord,
   type SourceVersion,
-  type SourceVersionId
+  type SourceVersionId,
+  type SourceBoundLanguageConstructionTrainingSet
 } from "@scce/kernel";
 
 export interface LanguageCorpusTrainingInput {
@@ -42,6 +45,8 @@ export interface LanguageCorpusTrainingInput {
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
   corpusMetadata?: JsonValue;
+  languageAliases?: readonly string[];
+  constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   persistSource?: boolean;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
@@ -63,6 +68,7 @@ export interface LanguageCorpusTrainingReport {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  languageConstructions: number;
   eventId: string;
   warnings: string[];
 }
@@ -83,17 +89,16 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   const bytes = Buffer.from(text, "utf8");
   const sourceVersionId = input.sourceVersionId ?? ids.sourceVersionId(`${sourceUri}\u001f${hasher.digestHex(bytes)}`);
   const sourceId = ids.sourceId(namespace, sourceUri);
-  const profile = input.profile ?? language.acquire({ sourceVersionId, text, createdAt });
+  let profile = input.profile ?? language.acquire({ sourceVersionId, text, createdAt });
   const metadata = toJsonValue({
     ...jsonRecord(input.corpusMetadata),
+    ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {}),
     sourceSystem,
     sourceSystemId,
     sourceUri,
     streamUri: input.streamUri,
     provenanceClass: "learned_language_prior"
   });
-
-  await input.storage.model.putLanguageProfile(profile);
 
   let evidence = [...(input.evidence ?? [])];
   if (!evidence.length && input.persistSource !== false) {
@@ -128,6 +133,9 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     else for (const span of evidence) await input.storage.evidence.putEvidenceSpan(span);
   }
 
+  profile = attachSourceDerivedLanguageAliases({ profile, metadata, evidence });
+  await input.storage.model.putLanguageProfile(profile);
+
   const memory = languageMemory.observe({
     streamId: input.streamUri,
     profile,
@@ -143,7 +151,22 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   const observations = memory.observations.map(item => stampObservation(item, sourceSystem, sourceSystemId, metadata));
   const models = memory.models.map(item => stampModel(item, sourceSystem, sourceSystemId, metadata));
   const units = memory.units.map(item => stampUnit(item, sourceSystem, sourceSystemId, metadata));
-  const patterns = memory.patterns.map(item => stampPattern(item, sourceSystem, sourceSystemId, metadata));
+  const compiledConstructionPatterns: LanguagePatternRecord[] = [];
+  const constructionWarnings: string[] = [];
+  for (const set of input.constructionSets ?? []) {
+    const compiled = compileLanguageConstructionPattern({
+      bindingId: set.bindingId,
+      profileId: profile.id,
+      observations: set.observations,
+      evidence,
+      hasher,
+      updatedAt: createdAt
+    });
+    if (compiled.status === "compiled") compiledConstructionPatterns.push(compiled.pattern);
+    else constructionWarnings.push(...compiled.issues.map(issue => issue.code));
+  }
+  const patterns = [...memory.patterns, ...compiledConstructionPatterns]
+    .map(item => stampPattern(item, sourceSystem, sourceSystemId, metadata));
   const frames = memory.semanticFrames.map(item => stampFrame(item, sourceSystem, sourceSystemId, metadata));
 
   await input.storage.languageMemory.putNgramObservationsBatch(observations);
@@ -167,6 +190,7 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
       sourceUri,
       sourceVersionId,
       evidence: evidence.length,
+      languageConstructions: compiledConstructionPatterns.length,
       corpusMetadata: metadata
     }
   });
@@ -185,8 +209,9 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     languageUnits: units.length,
     languagePatterns: patterns.length,
     semanticFrames: frames.length,
+    languageConstructions: compiledConstructionPatterns.length,
     eventId: String(learned.id),
-    warnings: []
+    warnings: [...new Set(constructionWarnings)].sort()
   };
 }
 

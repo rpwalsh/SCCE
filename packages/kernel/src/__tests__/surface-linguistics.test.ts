@@ -19,4 +19,16 @@ describe("surface sentence boundaries", () => {
       "The next sentence is separate."
     ]);
   });
+
+  it("recognizes source sentence boundaries that are not followed by whitespace", () => {
+    expect(splitSurfaceSentences("첫째 문장이다.둘째 문장이다。第三句。")).toEqual([
+      "첫째 문장이다.",
+      "둘째 문장이다。",
+      "第三句。"
+    ]);
+    expect(splitSurfaceSentences("المقطع الأول؟المقطع الثاني!")).toEqual([
+      "المقطع الأول؟",
+      "المقطع الثاني!"
+    ]);
+  });
 });
