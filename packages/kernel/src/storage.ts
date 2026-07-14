@@ -222,6 +222,21 @@ export interface InteractionStateRecord {
   createdAt: number;
 }
 
+export interface InteractionStateCompareAndSet {
+  stateSchema: string;
+  expectedStateId: string | null;
+  expectedTurnIndex: number | null;
+  nextStateId: string;
+  nextTurnIndex: number;
+}
+
+export interface InteractionStateCompareAndSetResult {
+  stored: boolean;
+  currentStateId: string | null;
+  currentTurnIndex: number | null;
+  reason: "stored" | "state_conflict" | "turn_not_monotonic";
+}
+
 export interface DialoguePolicyDecisionRecord {
   id: string;
   conversationId: string;
@@ -641,7 +656,14 @@ export interface ModelStore {
   writeModel(model: ModelState): Promise<void>;
   putLanguageProfile(profile: LanguageProfile): Promise<void>;
   putLanguageProfiles?(profiles: readonly LanguageProfile[]): Promise<void>;
-  listLanguageProfiles(limit?: number): Promise<LanguageProfile[]>;
+  listLanguageProfiles(query?: number | LanguageProfileQuery): Promise<LanguageProfile[]>;
+}
+
+export interface LanguageProfileQuery {
+  /** Required finite turn-time bound. Legacy numeric callers remain supported. */
+  limit: number;
+  /** Retain only profiles that own at least one durable language-memory artifact. */
+  referencedByLanguageMemory?: boolean;
 }
 
 export interface LanguageMemoryStore {
@@ -656,11 +678,11 @@ export interface LanguageMemoryStore {
   putSemanticFrame(frame: SemanticFrameRecord): Promise<void>;
   putSemanticFrames?(frames: readonly SemanticFrameRecord[]): Promise<void>;
   putTranslationAlignment(alignment: TranslationAlignmentRecord): Promise<void>;
-  listNgramModels(query?: { streamId?: string; languageHint?: string; sourceSystem?: string; limit?: number }): Promise<NgramModelRecord[]>;
-  listNgramObservations(query?: { streamId?: string; languageHint?: string; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
-  listLanguageUnits(query?: { profileId?: string; script?: string; sourceSystem?: string; limit?: number }): Promise<LanguageUnitRecord[]>;
-  listLanguagePatterns(query?: { profileId?: string; sourceSystem?: string; limit?: number }): Promise<LanguagePatternRecord[]>;
-  listSemanticFrames(query?: { sourceSystem?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
+  listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramModelRecord[]>;
+  listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
+  listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number }): Promise<LanguageUnitRecord[]>;
+  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<LanguagePatternRecord[]>;
+  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
 
@@ -713,6 +735,7 @@ export interface WorkspaceStore {
 
 export interface DialogueMemoryStore {
   putInteractionState(record: InteractionStateRecord): Promise<void>;
+  compareAndPutInteractionState(record: InteractionStateRecord, condition: InteractionStateCompareAndSet): Promise<InteractionStateCompareAndSetResult>;
   putPolicyDecision(record: DialoguePolicyDecisionRecord): Promise<void>;
   putConversationOutcome(record: ConversationOutcomeRecord): Promise<void>;
   putUserCorrection(record: UserCorrectionRecord): Promise<void>;

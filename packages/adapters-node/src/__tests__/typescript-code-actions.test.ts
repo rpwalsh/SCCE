@@ -26,6 +26,7 @@ describe("TypeScript compiler code actions", () => {
       "src/types.ts": "export interface Marker { readonly id: string; }\n",
       "src/value.ts": source
     });
+    files.find(file => file.path === "src/value.ts")!.contentHash = hash(source).replace("sha256:", "sha256_");
 
     const result = deriveTypeScriptCodeActionRepair({
       rootPath: "C:/virtual/compiler-action",

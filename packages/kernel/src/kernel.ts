@@ -38,10 +38,19 @@ import { createEventFactory, extractReplayValue } from "./events.js";
 import { createEvidenceExtractor } from "./evidence.js";
 import { createSourceGraphBuilder } from "./graphbuild.js";
 import { createSourceAdmissionController } from "./admission.js";
-import { createLanguageAcquisitionEngine } from "./language.js";
+import {
+  buildLanguageProfileClusters,
+  createLanguageAcquisitionEngine,
+  languageProfileClusterCacheKey,
+  selectDominantLanguageProfileCluster,
+  selectLanguageProfileClusterForSurface,
+  selectLanguageProfileClusterForSourceVersions,
+  type LanguageProfileCluster
+} from "./language.js";
 import { createMultilingualAcquisitionEngine } from "./multilingual-acquisition.js";
-import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
-import { createTranslationEngine, type TranslationPlan } from "./translation.js";
+import { createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, scopeLanguageMemoryStateToCluster } from "./language-memory-runtime.js";
+import { isLanguageConstructionPattern } from "./language-construction-memory.js";
+import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
 import {
   createTypedTemporalWalkEngine,
   expandPowerWalkSeedAnchors,
@@ -304,7 +313,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const runtimeOrchestrator = createRuntimeOrchestrator({ hasher });
   const typedIngest = createTypedIngestProjector({ idFactory, hasher });
   const correctionMemory = createCorrectionMemory({ idFactory, hasher });
-  const mouth = createMouth({ languageMemory: languageMemoryRuntime, correctionMemory, hashText: text => hasher.digestHex(text) });
+  const mouth = createMouth({ languageMemory: languageMemoryRuntime, correctionMemory, hashText: text => hasher.digestHex(text), hasher });
   const deterministicMouth = createDeterministicMouth({ hashText: text => hasher.digestHex(text) });
   const policy: PolicyProfile = { ...DEFAULT_POLICY, ...(deps.policy ?? {}) };
   const corpusRegistry = createCorpusRegistry(deps.corpusRegistry ?? []);
@@ -327,6 +336,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);
   const activeBrainMarkerCacheMs = positiveRuntimeInt("SCCE_ACTIVE_BRAIN_MARKER_CACHE_MS", 300_000);
   const surfaceLanguageMemoryCacheMs = positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_CACHE_MS", 600_000);
+  const surfaceLanguageProfileLimit = Math.min(2048, positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_PROFILE_LIMIT", 512));
   const calibrationModelCacheMs = positiveRuntimeInt("SCCE_CALIBRATION_MODEL_CACHE_MS", 120_000);
   const graphSliceCache = new Map<string, GraphSliceCacheEntry>();
   let graphSliceCacheBytes = 0;
@@ -335,7 +345,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   let hotNeighborhood: HotGraphNeighborhood | undefined;
   let hotNeighborhoodLoad: Promise<HotGraphNeighborhood | undefined> | undefined;
   let activeBrainMarkerCache: { loadedAt: number; value: JsonValue } | undefined;
-  let surfaceProfileCache: { loadedAt: number; value: LanguageProfile | undefined } | undefined;
+  let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
   let calibrationModelCache: { loadedAt: number; value: CalibrationModelSet } | undefined;
   let correctionRuleCache: { loadedAt: number; value: Awaited<ReturnType<typeof deps.storage.corrections.listRules>> } | undefined;
 
@@ -441,8 +451,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return value;
   }
 
-  async function hydrateSurfaceLanguageMemory(limit = 36, languageHint?: string) {
+  async function hydrateSurfaceLanguageMemory(
+    limit = 36,
+    cluster?: LanguageProfileCluster,
+    unscopedReason = "no-language-cluster-selected"
+  ) {
     const boundedLimit = Math.max(1, Math.min(64, Math.floor(limit)));
+    const profileIds = cluster?.profileIds;
+    const sourceVersionIds = cluster?.sourceVersionIds.map(String);
     const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, {
       ngramModels: Math.max(12, boundedLimit * Math.max(1, corpusRegistry.length)),
       ngramObservations: Math.max(1200, boundedLimit * 320),
@@ -450,27 +466,61 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       languagePatterns: Math.max(256, boundedLimit * 64),
       semanticFrames: Math.max(512, boundedLimit * 96)
     });
+    const active = await deps.storage.brainImports.active();
+    if (!cluster) {
+      const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
+        importRunId: active.activeImportRunIds[0],
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: [],
+        constructionEvidence: []
+      });
+      return {
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: [],
+        state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
+        active,
+        corpusPlan
+      };
+    }
     const corpusQueries = corpusPlan.flatMap(item => item.querySourceSystems.map(sourceSystem => ({ ...item, sourceSystem })));
     const [modelsBySource, observationsBySource, unitsBySource, patternsBySource, semanticFramesBySource] = await Promise.all([
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, limit: Math.min(limit, item.limits.ngramModels) }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, languageHint, limit: item.limits.ngramObservations }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ sourceSystem: item.sourceSystem, script: scriptFromLanguageHint(languageHint), limit: item.limits.languageUnits }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames })))
+      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds, sourceVersionIds, limit: Math.min(limit, item.limits.ngramModels) }))),
+      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds, sourceVersionIds, limit: item.limits.ngramObservations }))),
+      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits }))),
+      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))),
+      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds, sourceVersionIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames })))
     ]);
-    const hintedModelsBySource = languageHint
-      ? await Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, languageHint, limit: Math.min(limit, item.limits.ngramModels) })))
-      : [];
-    const hintedModels = hintedModelsBySource.flat();
-    const allowGeneralModelFallback = !languageHint || scriptFromLanguageHint(languageHint) === "script:Latn";
-    const models = uniqueRecordsById(allowGeneralModelFallback ? [...hintedModels, ...modelsBySource.flat()] : hintedModels, Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
+    const models = uniqueRecordsById(modelsBySource.flat(), Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
     const observations = uniqueRecordsById(observationsBySource.flat(), Math.max(1200, boundedLimit * 320));
     const units = uniqueRecordsById(unitsBySource.flat(), Math.max(512, boundedLimit * 128));
     const patterns = uniqueRecordsById(patternsBySource.flat(), Math.max(256, boundedLimit * 64));
     const semanticFrames = uniqueRecordsById(semanticFramesBySource.flat(), Math.max(512, boundedLimit * 96));
-    const active = await deps.storage.brainImports.active();
-    const state = languageMemoryRuntime.hydrateFromImportedBrain({ importRunId: active.activeImportRunIds[0], models, observations, units, patterns, semanticFrames });
-    return { models, observations, units, patterns, semanticFrames, state, active, corpusPlan };
+    const constructionEvidenceIds = [...new Set(patterns
+      .filter(isLanguageConstructionPattern)
+      .flatMap(pattern => pattern.evidenceIds.map(String)))]
+      .sort()
+      .slice(0, 4096)
+      .map(id => id as EvidenceSpan["id"]);
+    const constructionEvidence = constructionEvidenceIds.length
+      ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds)
+      : [];
+    const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
+      importRunId: active.activeImportRunIds[0],
+      models,
+      observations,
+      units,
+      patterns,
+      semanticFrames,
+      constructionEvidence
+    });
+    const state = scopeLanguageMemoryStateToCluster(hydrated, cluster);
+    return { models, observations, units, patterns, semanticFrames, constructionEvidence, state, active, corpusPlan };
   }
 
   function uniqueRecordsById<T extends { id: string }>(records: readonly T[], limit: number): T[] {
@@ -479,63 +529,41 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return [...byId.values()].slice(0, limit);
   }
 
-  function languageHintForSurface(text: string): string | undefined {
-    const chars = [...text.normalize("NFC")].filter(char => !/\s/u.test(char));
-    if (!chars.length) return undefined;
-    const scripts = new Map<string, number>();
-    for (const char of chars) scripts.set(scriptOfSurfaceChar(char), (scripts.get(scriptOfSurfaceChar(char)) ?? 0) + 1);
-    const top = [...scripts.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (!top) return undefined;
-    const [script, count] = top;
-    if (script === "script:Zxxx" || count / Math.max(1, chars.length) < 0.25) return undefined;
-    const direction = directionForScript(script);
-    return `script:${script};direction:${direction}`;
-  }
-
-  function scriptFromLanguageHint(languageHint: string | undefined): string | undefined {
-    if (!languageHint) return undefined;
-    const match = languageHint.match(/script:(script:[A-Za-z0-9_:-]+)/);
-    return match?.[1];
-  }
-
-  function scriptOfSurfaceChar(char: string): string {
-    if (/\p{Script=Latin}/u.test(char)) return "script:Latn";
-    if (/\p{Script=Hangul}/u.test(char)) return "script:Hang";
-    if (/\p{Script=Arabic}/u.test(char)) return "script:Arab";
-    if (/\p{Script=Hebrew}/u.test(char)) return "script:Hebr";
-    if (/\p{Script=Han}/u.test(char)) return "script:Hani";
-    if (/\p{Script=Hiragana}/u.test(char)) return "script:Hira";
-    if (/\p{Script=Katakana}/u.test(char)) return "script:Kana";
-    if (/\p{Script=Cyrillic}/u.test(char)) return "script:Cyrl";
-    if (/\p{Script=Devanagari}/u.test(char)) return "script:Deva";
-    if (/\p{Script=Thai}/u.test(char)) return "script:Thai";
-    if (/\p{Script=Greek}/u.test(char)) return "script:Greek";
-    if (/\p{Number}/u.test(char)) return "script:Zyyy:number";
-    return "script:Zxxx";
-  }
-
-  function directionForScript(script: string): string {
-    return script === "script:Arab" || script === "script:Hebr" ? "rtl" : "ltr";
-  }
-
-  async function hydrateSurfaceLanguageMemoryCached(limit = 36, languageHint?: string) {
+  async function hydrateSurfaceLanguageMemoryCached(
+    limit = 36,
+    cluster?: LanguageProfileCluster,
+    unscopedReason = "no-language-cluster-selected"
+  ) {
     const now = clock.now();
-    const cacheKey = languageHint ?? "language:any";
+    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}`;
     const cached = surfaceLanguageMemoryCache.get(cacheKey);
     if (cached && cached.limit >= limit && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) {
       return cached.value;
     }
-    const value = await hydrateSurfaceLanguageMemory(limit, languageHint);
+    const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason);
     surfaceLanguageMemoryCache.set(cacheKey, { limit, loadedAt: now, value });
     return value;
   }
 
-  async function surfaceLanguageProfileCached(): Promise<LanguageProfile | undefined> {
+  async function surfaceLanguageProfilesCached(): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
     const now = clock.now();
-    if (surfaceProfileCache && now - surfaceProfileCache.loadedAt < 60_000) return surfaceProfileCache.value;
-    const value = (await deps.storage.model.listLanguageProfiles(1))[0];
-    surfaceProfileCache = { loadedAt: now, value };
-    return value;
+    if (surfaceProfileCache && now - surfaceProfileCache.loadedAt < 60_000) {
+      return { profiles: surfaceProfileCache.value, clusters: surfaceProfileCache.clusters };
+    }
+    const profiles = (await deps.storage.model.listLanguageProfiles({
+      limit: surfaceLanguageProfileLimit,
+      referencedByLanguageMemory: true
+    }))
+      .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+    const clusters = buildLanguageProfileClusters(profiles);
+    surfaceProfileCache = { loadedAt: now, value: profiles, clusters };
+    return { profiles, clusters };
+  }
+
+  async function surfaceLanguageClusterCached(surface: string): Promise<LanguageProfileCluster | undefined> {
+    const { clusters } = await surfaceLanguageProfilesCached();
+    return (surface.trim() ? selectLanguageProfileClusterForSurface(clusters, surface)?.cluster : undefined)
+      ?? selectDominantLanguageProfileCluster(clusters);
   }
 
   async function correctionRulesCached() {
@@ -1641,8 +1669,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
 
       if (input.profile ?? true) {
-        tasks.push(surfaceLanguageProfileCached()
-          .then(profile => { result.profile = { loaded: Boolean(profile) }; })
+        tasks.push(surfaceLanguageProfilesCached()
+          .then(({ profiles }) => { result.profile = { loaded: profiles.length > 0 }; })
           .catch(error => {
             failures.push(`profile warmup failed: ${error instanceof Error ? error.message : String(error)}`);
             result.profile = { loaded: false };
@@ -1953,10 +1981,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
       const locale = localeFromMetadata(input.metadata, input.text);
       const translationTarget = translationTargetFromMetadata(input.metadata);
+      const selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
+        ? undefined
+        : await surfaceLanguageClusterCached(input.text);
+      const selectedSurfaceProfile = selectedSurfaceCluster?.members[0];
       const authorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
-        () => hydrateSurfaceLanguageMemoryCached(12, languageHintForSurface(input.text)),
+        () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal"),
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
@@ -2309,15 +2341,19 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }
         });
       }
-      const surfaceLanguage = authorityLanguage;
-      const surfaceLanguageModels = surfaceLanguage.models;
-      const surfaceLanguageMemory = surfaceLanguage.state;
+      const evidenceSurfaceCluster = selectLanguageProfileClusterForSourceVersions(
+        (await surfaceLanguageProfilesCached()).clusters,
+        selectedEvidence.map(span => span.sourceVersionId)
+      );
+      let surfaceLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
+        ? await hydrateSurfaceLanguageMemoryCached(12, evidenceSurfaceCluster, "admitted-evidence-cluster-selected")
+        : authorityLanguage;
       const productionTranslationProfiles = translationTarget
-        ? await deps.storage.model.listLanguageProfiles(200)
+        ? (await surfaceLanguageProfilesCached()).profiles
         : [];
       let productionTranslationPlan: TranslationPlan | undefined;
       if (translationTarget) {
-        const priorAlignments = await deps.storage.languageMemory.listTranslationAlignments({ targetLanguage: translationTarget, limit: 500 });
+        const priorAlignments = await deps.storage.languageMemory.listTranslationAlignments({ targetLanguage: canonicalTranslationTargetKey(translationTarget), limit: 500 });
         productionTranslationPlan = translationEngine.plan({
           text: input.text,
           targetLanguage: translationTarget,
@@ -2326,7 +2362,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           priorAlignments,
           createdAt: clock.now()
         });
+        if (deps.evaluationCondition?.flags.disableLanguageMemory !== true) {
+          surfaceLanguage = productionTranslationPlan.targetCluster
+            ? await hydrateSurfaceLanguageMemoryCached(12, productionTranslationPlan.targetCluster, "translation-target-cluster-selected")
+            : await hydrateSurfaceLanguageMemoryCached(12, undefined, "translation-target-ambiguous-or-unknown");
+        }
       }
+      const surfaceLanguageModels = surfaceLanguage.models;
+      const surfaceLanguageMemory = surfaceLanguage.state;
       const brain = await activeBrainMarker();
       events.push(await append(eventFactory.create({ episodeId, typeId: "BrainInfluenceObserved", payload: { ...brain as Record<string, JsonValue>, languageMemory: surfaceLanguageMemoryProfile(surfaceLanguageMemory, deps.evaluationCondition?.flags.disableLanguageMemory === true) } })));
       const correctionRules = correctionMemory.retrieve({
@@ -2757,12 +2800,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       if (construct.program) events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramGraphBuilt", payload: construct.program })));
       if (construct.artifacts.length) events.push(await append(eventFactory.create({ episodeId, typeId: "FileGraphBuilt", payload: { files: construct.artifacts.map(file => ({ path: file.path, contentHash: file.contentHash, role: file.role })) } })));
       markTiming("planningMs");
-      const surfaceProfile = deps.evaluationCondition?.flags.disableLanguageMemory ? undefined : await surfaceLanguageProfileCached();
       const mouthStarted = Date.now();
       const speakInput = {
         construct: spokenConstructGraph,
         field,
-        languageProfile: surfaceProfile ?? runtimeLanguageProfile(clock.now()),
+        languageProfile: productionTranslationPlan?.targetProfile ?? selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()),
         evidence: selectedEvidence,
         entailment: answerEntailment,
         languageMemory: surfaceLanguageMemory,
@@ -3098,7 +3140,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const runtimeModel = await deps.storage.model.readModel();
       const profiles = translationTarget
         ? productionTranslationProfiles
-        : await deps.storage.model.listLanguageProfiles(200);
+        : (await surfaceLanguageProfilesCached()).profiles;
       const languageAcquisition = multilingual.analyze({ text: input.text, profiles, evidence: selectedEvidence });
       let translationPlan: JsonValue | undefined;
       if (productionTranslationPlan) {
@@ -4006,8 +4048,18 @@ function emptySurfaceLanguageMemory(): {
       importedPatterns: [],
       importedObservations: [],
       importedSemanticFrames: [],
+      importedConstructionBundles: [],
+      rejectedConstructionPatterns: [],
       importedLanguagePriorCount: 0,
       competenceVector,
+      scope: {
+        mode: "unscoped",
+        profileIds: [],
+        sourceVersionIds: [],
+        purityProven: false,
+        degraded: true,
+        reason: "evaluation-language-memory-bypass"
+      },
       audit: toJsonValue({ source: "evaluation.language-memory-bypass", conditionDisabled: true })
     },
     active: { activeImportRunIds: [] },
@@ -5323,7 +5375,7 @@ function sourceAnchoredEvidenceForRequest(requestText: string, evidence: readonl
     const sessionEvidence = evidence.filter(promotedSessionEvidence);
     if (sessionEvidence.length) return { required: true, anchors, evidence: sessionEvidence };
   }
-  const primaryAnchor = primarySourceAnchorForRequest(requestText);
+  const primaryAnchor = primarySourceAnchorForRequest(requestText, evidence);
   const primaryAnchorUnits = primaryAnchor ? splitPriorUnits(primaryAnchor).filter(Boolean) : [];
   const primaryEvidence = primaryAnchor
     ? primaryEvidenceForSourceAnchor(primaryAnchor, requestText, evidence)
@@ -5450,16 +5502,36 @@ function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
   return uniqueKernelStrings([...pairs, ...wider]).slice(0, 32);
 }
 
-function primarySourceAnchorForRequest(requestText: string): string | undefined {
-  const named = namedSubjectAnchors(requestText)
-    .filter(sourceAnchorSpecificEnough)
-    .sort((left, right) => splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length);
-  if (named.length) return named[0];
-  const casedSingle = casedSingleSourceAnchors(requestText);
-  if (casedSingle.length) return casedSingle[0];
-  const singleTopic = singleTopicSourceAnchors(requestText);
-  if (singleTopic.length) return singleTopic[0];
-  return derivedSourceAnchorPhrases(requestText)[0];
+function primarySourceAnchorForRequest(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined {
+  const ranked = sourceEvidenceAnchorsForRequest(requestText)
+    .map(anchor => {
+      const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+      if (!anchorUnits.length) return undefined;
+      let exactTitleMatches = 0;
+      let completeSourceMatches = 0;
+      let supportMass = 0;
+      for (const span of evidence) {
+        if (!evidenceAnchorFitForRequest(span, requestText)) continue;
+        const exactTitle = evidenceExactSourceAnchorMatches(span, [anchor]);
+        const sourceUnits = splitPriorUnits(normalizePriorKey(evidenceSourceAnchorSurface(span))).filter(Boolean);
+        const completeSourceMatch = sourceAnchorPhraseContains(sourceUnits, anchorUnits);
+        if (!exactTitle && !completeSourceMatch) continue;
+        if (exactTitle) exactTitleMatches++;
+        if (completeSourceMatch) completeSourceMatches++;
+        supportMass += kernelClamp01(span.alpha);
+      }
+      if (!exactTitleMatches && !completeSourceMatches) return undefined;
+      return { anchor, exactTitleMatches, completeSourceMatches, supportMass };
+    })
+    .filter((row): row is NonNullable<typeof row> => Boolean(row))
+    .sort((left, right) =>
+      right.exactTitleMatches - left.exactTitleMatches ||
+      right.completeSourceMatches - left.completeSourceMatches ||
+      right.supportMass - left.supportMass ||
+      sourceAnchorPhraseRank(right.anchor) - sourceAnchorPhraseRank(left.anchor) ||
+      left.anchor.localeCompare(right.anchor)
+    );
+  return ranked[0]?.anchor;
 }
 
 function casedSingleSourceAnchors(requestText: string): string[] {
@@ -8503,16 +8575,22 @@ function namedSourceAnchorSpecificEnough(anchor: string): boolean {
   return units.some(unit => [...unit].length >= 3 && !genericQuestionSignal(unit));
 }
 
-function requestContentPriorUnits(text: string): string[] {
-  const units = splitPriorUnits(normalizePriorKey(text));
-  if (text.includes("?") && units.length > 1) return units.slice(1);
-  return units;
+/**
+ * Source-neutral request units shared by graph retrieval and question-slot
+ * selection. Punctuation does not identify a language-independent question
+ * operator, so every observed unit remains available to downstream scoring.
+ *
+ * @internal Exported for focused routing-invariant tests; it is not re-exported
+ * from the package entrypoint.
+ */
+export function requestContentPriorUnits(text: string): string[] {
+  return splitPriorUnits(normalizePriorKey(text));
 }
 
-function requestContentSurface(text: string): string {
+/** @internal See {@link requestContentPriorUnits}. */
+export function requestContentSurface(text: string): string {
   const words = splitPriorSurfaceWords(text);
-  const contentWords = text.includes("?") && words.length > 1 ? words.slice(1) : words;
-  return contentWords.join(" ") || text;
+  return words.join(" ") || text;
 }
 
 function semanticAnswerSubjectAllowed(requestText: string, selectedSubject: string, gate: RelevanceGate): boolean {

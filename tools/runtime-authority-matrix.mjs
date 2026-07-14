@@ -261,18 +261,24 @@ try {
       checks: ["compiler", "typecheck", "tests"]
     }
   }, fixtureRoot, { maxFiles: 64, maxDepth: 8 });
-  verifyPatchTransactionPlan(programPlan.plan);
+  const programPlanSelected = programPlan.statusId === "scce.workspace.compiler_patch.selected.v1";
+  if (programPlanSelected) verifyPatchTransactionPlan(programPlan.plan);
   recordCheck("program.exact_repair_transaction", (
-    programPlan.plan.operations.length > 0
+    programPlanSelected
+    && programPlan.plan.operations.length > 0
     && programPlan.plan.operations.every(operation => operation.path.startsWith("src/"))
     && programPlan.authorization.granted === false
     && programPlan.execution.state === "not_executed"
     && programPlan.execution.receipt === null
-  ), {
+  ), programPlanSelected ? {
     plan: programPlan.plan,
-    safety: programPlan.safety,
+    constraintGraph: programPlan.constraintGraph,
+    selection: programPlan.selection,
     validationPlan: programPlan.validationPlan,
     authorization: programPlan.authorization,
+    execution: programPlan.execution
+  } : {
+    unresolved: programPlan,
     execution: programPlan.execution
   });
   const programRow = cases.find(row => row.id === "program");

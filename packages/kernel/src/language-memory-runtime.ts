@@ -2,9 +2,16 @@ import type { IdFactory } from "./ids.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
 import { continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
+import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import type { EvidenceSpan, Hasher, JsonValue, LanguageCompetenceVector, LanguageProfile, SourceVersionId } from "./types.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "./storage.js";
+import {
+  hydrateLanguageConstructionPatterns,
+  isLanguageConstructionPattern,
+  type DurableLanguageConstructionBundle,
+  type LanguageConstructionMemoryIssue
+} from "./language-construction-memory.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, stripTerminalSentenceBoundary } from "./surface-linguistics.js";
 import {
   ANSWER_ROLE_IDS,
@@ -27,9 +34,22 @@ export interface LanguageMemoryRuntimeState {
   importedPatterns: LanguagePatternRecord[];
   importedObservations: NgramObservation[];
   importedSemanticFrames: SemanticFrameRecord[];
+  importedConstructionBundles: DurableLanguageConstructionBundle[];
+  rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
   importedLanguagePriorCount: number;
   competenceVector: LanguageCompetenceVector;
+  scope: LanguageMemoryRuntimeScope;
   audit: JsonValue;
+}
+
+export interface LanguageMemoryRuntimeScope {
+  mode: "unscoped" | "cluster";
+  clusterId?: string;
+  profileIds: string[];
+  sourceVersionIds: string[];
+  purityProven: boolean;
+  degraded: boolean;
+  reason?: string;
 }
 
 export interface LanguageMemoryScore {
@@ -293,8 +313,8 @@ export interface LanguageMemoryCorrection {
 }
 
 export interface LanguageMemoryRuntime {
-  hydrate(input: { models: readonly NgramModelRecord[]; observations?: readonly NgramObservation[]; units?: readonly LanguageUnitRecord[]; patterns?: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; importRunId?: string }): LanguageMemoryRuntimeState;
-  hydrateFromImportedBrain(input: { importRunId?: string; models: readonly NgramModelRecord[]; observations: readonly NgramObservation[]; units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[] }): LanguageMemoryRuntimeState;
+  hydrate(input: { models: readonly NgramModelRecord[]; observations?: readonly NgramObservation[]; units?: readonly LanguageUnitRecord[]; patterns?: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; constructionEvidence?: readonly EvidenceSpan[]; importRunId?: string }): LanguageMemoryRuntimeState;
+  hydrateFromImportedBrain(input: { importRunId?: string; models: readonly NgramModelRecord[]; observations: readonly NgramObservation[]; units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; constructionEvidence?: readonly EvidenceSpan[] }): LanguageMemoryRuntimeState;
   profile(input: { state: LanguageMemoryRuntimeState }): JsonValue;
   observe(input: {
     streamId: string;
@@ -333,25 +353,30 @@ export interface LanguageMemoryRuntime {
 export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; hasher?: Hasher } = {}): LanguageMemoryRuntime {
   return {
     hydrate(input) {
-      const reconstructed = modelsFromObservations(input.observations ?? []);
-      const models = [...input.models
-        .map(record => ngramModelFromRecord(record))
-        .filter((model): model is KneserNeyModel => Boolean(model)), ...reconstructed]
-        .sort((a, b) => b.order - a.order || b.observedSymbolCount - a.observedSymbolCount)
-        .slice(0, 36);
-      const streamIds = [...new Set([...input.models.map(record => record.streamId), ...(input.observations ?? []).map(item => item.streamId)].filter(Boolean))];
-      const languageHints = [...new Set([...input.models.map(record => record.languageHint), ...(input.observations ?? []).map(item => item.languageHint)].filter(Boolean))];
+      const records = [...input.models].sort((left, right) => compareCodePoint(left.id, right.id));
+      const importedObservations = [...(input.observations ?? [])]
+        .sort((a, b) => b.count - a.count || compareCodePoint(a.symbol, b.symbol) || compareCodePoint(a.id, b.id))
+        .slice(0, 20000);
+      const reconstructed = modelsFromObservations(importedObservations);
+      const models = selectRuntimeModels(records, reconstructed);
+      const streamIds = uniqueStrings([...records.map(record => record.streamId), ...importedObservations.map(item => item.streamId)]).sort(compareCodePoint);
+      const languageHints = uniqueStrings([...records.map(record => record.languageHint), ...importedObservations.map(item => item.languageHint)]).sort(compareCodePoint);
       const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
-      const importedUnits = [...(input.units ?? [])].sort((a, b) => b.alpha - a.alpha || a.text.localeCompare(b.text)).slice(0, 4096);
-      const importedPatterns = [...(input.patterns ?? [])].sort((a, b) => b.support - a.support || a.patternKind.localeCompare(b.patternKind)).slice(0, 1024);
-      const importedObservations = [...(input.observations ?? [])].sort((a, b) => b.count - a.count || a.symbol.localeCompare(b.symbol)).slice(0, 20000);
-      const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || a.id.localeCompare(b.id)).slice(0, 2048);
+      const importedUnits = [...(input.units ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.text, b.text) || compareCodePoint(a.id, b.id)).slice(0, 4096);
+      const persistedPatterns = [...(input.patterns ?? [])].sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id)).slice(0, 1024);
+      const importedPatterns = persistedPatterns.filter(pattern => !isLanguageConstructionPattern(pattern));
+      const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.id, b.id)).slice(0, 2048);
+      const constructionMemory = hydrateLanguageConstructionPatterns({
+        patterns: persistedPatterns,
+        evidence: input.constructionEvidence ?? [],
+        hasher: options.hasher
+      });
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
-      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + input.models.filter(isImportedLanguagePriorModel).length;
-      const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames });
+      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + input.models.filter(isImportedLanguagePriorModel).length;
+      const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
       return {
         models,
-        records: [...input.models],
+        records,
         streamIds,
         languageHints,
         maxOrder: models.reduce((max, model) => Math.max(max, model.order), 0),
@@ -361,8 +386,18 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedPatterns,
         importedObservations,
         importedSemanticFrames,
+        importedConstructionBundles: constructionMemory.bundles,
+        rejectedConstructionPatterns: constructionMemory.rejected,
         importedLanguagePriorCount,
         competenceVector,
+        scope: {
+          mode: "unscoped",
+          profileIds: [],
+          sourceVersionIds: [],
+          purityProven: false,
+          degraded: false,
+          reason: "no-language-cluster-requested"
+        },
         audit: toJsonValue({
           source: "language-memory-runtime",
           importRunId: input.importRunId ?? null,
@@ -371,15 +406,19 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           usableModels: models.length,
           importedUnits: importedUnits.length,
           importedPatterns: importedPatterns.length,
+          persistedConstructionPatterns: persistedPatterns.length - importedPatterns.length,
           importedObservations: importedObservations.length,
           importedSemanticFrames: importedSemanticFrames.length,
+          importedConstructionBundles: constructionMemory.bundles.length,
+          rejectedConstructionPatterns: constructionMemory.rejected,
           importedLanguagePriorCount,
           orders: models.map(model => model.order),
           streamIds: streamIds.slice(0, 24),
           languageHints: languageHints.slice(0, 24),
           observedSymbolCount,
           vocabularySize,
-          competenceVector
+          competenceVector,
+          scope: { mode: "unscoped", purityProven: false, degraded: false }
         })
       };
     },
@@ -399,6 +438,15 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedUnits: input.state.importedUnits.slice(0, 24).map(unit => ({ profileId: unit.profileId, kind: unit.unitKind, text: unit.text, alpha: unit.alpha })),
         importedPatterns: input.state.importedPatterns.slice(0, 24).map(pattern => ({ profileId: pattern.profileId, kind: pattern.patternKind, support: pattern.support, entropy: pattern.entropy })),
         importedSemanticFrames: input.state.importedSemanticFrames.slice(0, 24).map(frame => ({ id: frame.id, alpha: frame.alpha, evidenceIds: frame.evidenceIds })),
+        importedConstructionBundles: input.state.importedConstructionBundles.slice(0, 24).map(bundle => ({
+          id: bundle.id,
+          bindingId: bundle.bindingId,
+          sourceProfileId: bundle.sourceProfileId,
+          targetProfileId: bundle.targetProfileId,
+          sourceVersionIds: bundle.sourceVersionIds,
+          evidenceIds: bundle.evidenceIds
+        })),
+        rejectedConstructionPatterns: input.state.rejectedConstructionPatterns.slice(0, 24),
         competenceVector: input.state.competenceVector,
         audit: input.state.audit
       });
@@ -1301,6 +1349,205 @@ function inverseCollectionMemberMaterial(material: SemanticFactMaterial, subject
   if (material.relationRoleId !== RELATION_ROLE_IDS.graphRequestMembership && material.graphQualityClassId !== GRAPH_QUALITY_CLASS_IDS.catalogNavigation) return false;
   if (sameSurface(material.subjectLabel, subject)) return false;
   return containsSurfaceUnits(material.objectLabel, subject);
+}
+
+export function scopeLanguageMemoryStateToProfile(
+  state: LanguageMemoryRuntimeState,
+  profile: LanguageProfile
+): LanguageMemoryRuntimeState {
+  const cluster = buildLanguageProfileClusters([profile])[0];
+  if (!cluster) return markLanguageMemoryStateUnscoped(state, "profile-cluster-unavailable");
+  const scoped = scopeLanguageMemoryStateToCluster(state, cluster);
+  return {
+    ...scoped,
+    audit: toJsonValue({
+      ...jsonRecord(scoped.audit),
+      profileId: profile.id,
+      sourceVersionId: profile.sourceVersionId
+    })
+  };
+}
+
+export function scopeLanguageMemoryStateToCluster(
+  state: LanguageMemoryRuntimeState,
+  cluster: LanguageProfileCluster
+): LanguageMemoryRuntimeState {
+  const profileIds = new Set(cluster.profileIds);
+  const sourceVersionIds = new Set(cluster.sourceVersionIds.map(String));
+  const records = state.records.filter(record => ownedLanguageArtifact(
+    modelProfileId(record),
+    modelSourceVersionId(record),
+    profileIds,
+    sourceVersionIds
+  ));
+  const importedObservations = state.importedObservations.filter(record => ownedLanguageArtifact(
+    observationProfileId(record),
+    String(record.sourceVersionId ?? ""),
+    profileIds,
+    sourceVersionIds
+  ));
+  const importedUnits = state.importedUnits.filter(record => profileIds.has(record.profileId));
+  const importedPatterns = state.importedPatterns.filter(record => profileIds.has(record.profileId));
+  const importedSemanticFrames = state.importedSemanticFrames.filter(frame => semanticFrameBelongsToCluster(frame, profileIds, sourceVersionIds));
+  const importedConstructionBundles = state.importedConstructionBundles.filter(bundle => (
+    profileIds.has(bundle.targetProfileId)
+    && profileIds.has(bundle.sourceProfileId)
+    && bundle.sourceVersionIds.length > 0
+    && bundle.sourceVersionIds.every(sourceVersionId => sourceVersionIds.has(sourceVersionId))
+    && bundle.sourceExamples.every(example => (
+      sourceVersionIds.has(example.sourceVersionId)
+      && bundle.evidenceIds.includes(example.evidenceId)
+    ))
+  ));
+  const rejectedConstructionPatterns = state.rejectedConstructionPatterns.filter(issue => (
+    issue.profileId ? profileIds.has(issue.profileId) : false
+  ));
+  const reconstructed = modelsFromObservations(importedObservations);
+  const models = selectRuntimeModels(records, reconstructed);
+  const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
+  const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
+  const languageHints = uniqueStrings([
+    ...records.map(record => record.languageHint),
+    ...importedObservations.map(record => record.languageHint)
+  ]).sort(compareCodePoint);
+  const ordinaryPatterns = importedPatterns.filter(pattern => !isLanguageConstructionPattern(pattern));
+  const importedLanguagePriorCount = importedUnits.length
+    + ordinaryPatterns.length
+    + importedObservations.length
+    + importedSemanticFrames.length
+    + importedConstructionBundles.length
+    + records.filter(isImportedLanguagePriorModel).length;
+  const competenceVector = competenceFromRuntime({
+    models,
+    observedSymbolCount,
+    vocabularySize,
+    languageHints,
+    importedUnits,
+    importedPatterns: ordinaryPatterns,
+    importedObservations,
+    importedSemanticFrames,
+    importedConstructionBundles
+  });
+  return {
+    models,
+    records,
+    streamIds: uniqueStrings([
+      ...records.map(record => record.streamId),
+      ...importedObservations.map(record => record.streamId)
+    ]).sort(compareCodePoint),
+    languageHints,
+    maxOrder: models.reduce((max, model) => Math.max(max, model.order), 0),
+    observedSymbolCount,
+    vocabularySize,
+    importedUnits,
+    importedPatterns,
+    importedObservations,
+    importedSemanticFrames,
+    importedConstructionBundles,
+    rejectedConstructionPatterns,
+    importedLanguagePriorCount,
+    competenceVector,
+    scope: {
+      mode: "cluster",
+      clusterId: cluster.id,
+      profileIds: [...cluster.profileIds].sort(compareCodePoint),
+      sourceVersionIds: cluster.sourceVersionIds.map(String).sort(compareCodePoint),
+      purityProven: profileIds.size > 0 && sourceVersionIds.size > 0,
+      degraded: importedLanguagePriorCount === 0,
+      ...(importedLanguagePriorCount === 0 ? { reason: "cluster-has-no-retained-language-memory" } : {})
+    },
+    audit: toJsonValue({
+      source: "language-memory-runtime.cluster-scope",
+      mode: "cluster",
+      clusterId: cluster.id,
+      profileIds: [...profileIds].sort(compareCodePoint),
+      sourceVersionIds: [...sourceVersionIds].sort(compareCodePoint),
+      purityProven: profileIds.size > 0 && sourceVersionIds.size > 0,
+      degraded: importedLanguagePriorCount === 0,
+      retained: {
+        modelRecords: records.length,
+        observations: importedObservations.length,
+        units: importedUnits.length,
+        patterns: importedPatterns.length,
+        semanticFrames: importedSemanticFrames.length,
+        constructionBundles: importedConstructionBundles.length
+      },
+      rejected: {
+        modelRecords: state.records.length - records.length,
+        observations: state.importedObservations.length - importedObservations.length,
+        units: state.importedUnits.length - importedUnits.length,
+        patterns: state.importedPatterns.length - importedPatterns.length,
+        semanticFrames: state.importedSemanticFrames.length - importedSemanticFrames.length,
+        constructionBundles: state.importedConstructionBundles.length - importedConstructionBundles.length
+      }
+    })
+  };
+}
+
+export function markLanguageMemoryStateUnscoped(
+  state: LanguageMemoryRuntimeState,
+  reason: string
+): LanguageMemoryRuntimeState {
+  const competenceVector = competenceFromRuntime({
+    models: [],
+    observedSymbolCount: 0,
+    vocabularySize: 0,
+    languageHints: [],
+    importedUnits: [],
+    importedPatterns: [],
+    importedObservations: [],
+    importedSemanticFrames: []
+  });
+  return {
+    models: [],
+    records: [],
+    streamIds: [],
+    languageHints: [],
+    maxOrder: 0,
+    observedSymbolCount: 0,
+    vocabularySize: 0,
+    importedUnits: [],
+    importedPatterns: [],
+    importedObservations: [],
+    importedSemanticFrames: [],
+    importedConstructionBundles: [],
+    rejectedConstructionPatterns: [],
+    importedLanguagePriorCount: 0,
+    competenceVector,
+    scope: {
+      mode: "unscoped",
+      profileIds: [],
+      sourceVersionIds: [],
+      purityProven: false,
+      degraded: true,
+      reason
+    },
+    audit: toJsonValue({
+      source: "language-memory-runtime.empty-unscoped",
+      scope: {
+        mode: "unscoped",
+        purityProven: false,
+        degraded: true,
+        reason,
+        retained: {
+          modelRecords: 0,
+          observations: 0,
+          units: 0,
+          patterns: 0,
+          semanticFrames: 0,
+          constructionBundles: 0
+        },
+        rejected: {
+          modelRecords: state.records.length,
+          observations: state.importedObservations.length,
+          units: state.importedUnits.length,
+          patterns: state.importedPatterns.length,
+          semanticFrames: state.importedSemanticFrames.length,
+          constructionBundles: state.importedConstructionBundles.length
+        }
+      }
+    })
+  };
 }
 
 function clauseLatticeEdges(clausesByPlan: readonly { sentencePlanId: string; candidates: readonly ClauseCandidate[] }[]): SentenceLattice["edges"] {
@@ -2965,6 +3212,10 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function compareCodePoint(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function trainWithOptions(input: Parameters<LanguageMemoryRuntime["train"]>[0], options: { idFactory?: IdFactory; hasher?: Hasher }): NgramMemoryCompilation {
   if (!options.idFactory || !options.hasher) {
     throw new Error("language memory training requires idFactory and hasher");
@@ -3198,6 +3449,56 @@ function modelsFromObservations(observations: readonly NgramObservation[]): Knes
   return models;
 }
 
+function selectRuntimeModels(records: readonly NgramModelRecord[], reconstructed: readonly KneserNeyModel[]): KneserNeyModel[] {
+  const candidates: Array<{ key: string; model: KneserNeyModel }> = [];
+  for (const record of [...records].sort((left, right) => compareCodePoint(left.id, right.id))) {
+    const model = ngramModelFromRecord(record);
+    if (model) candidates.push({ key: `record:${record.id}`, model });
+  }
+  for (const model of reconstructed) candidates.push({ key: `reconstructed:${model.order}`, model });
+  return candidates
+    .sort((left, right) => right.model.order - left.model.order
+      || right.model.observedSymbolCount - left.model.observedSymbolCount
+      || compareCodePoint(left.key, right.key))
+    .slice(0, 36)
+    .map(candidate => candidate.model);
+}
+
+function modelSourceVersionId(record: NgramModelRecord): string | undefined {
+  const row = jsonRecord(record.modelJson);
+  return typeof row.sourceVersionId === "string" && row.sourceVersionId ? row.sourceVersionId : undefined;
+}
+
+function modelProfileId(record: NgramModelRecord): string | undefined {
+  const row = jsonRecord(record.modelJson);
+  return typeof row.profileId === "string" && row.profileId ? row.profileId : undefined;
+}
+
+function observationProfileId(record: NgramObservation): string | undefined {
+  const row = jsonRecord(record.metadata);
+  return typeof row.profileId === "string" && row.profileId ? row.profileId : undefined;
+}
+
+function ownedLanguageArtifact(
+  profileId: string | undefined,
+  sourceVersionId: string | undefined,
+  profileIds: ReadonlySet<string>,
+  sourceVersionIds: ReadonlySet<string>
+): boolean {
+  if (profileId) return profileIds.has(profileId);
+  return Boolean(sourceVersionId) && sourceVersionIds.has(sourceVersionId!);
+}
+
+function semanticFrameBelongsToCluster(
+  frame: SemanticFrameRecord,
+  profileIds: ReadonlySet<string>,
+  sourceVersionIds: ReadonlySet<string>
+): boolean {
+  const row = jsonRecord(frame.frameJson);
+  if (typeof row.profileId === "string" && row.profileId) return profileIds.has(row.profileId);
+  return typeof row.sourceVersionId === "string" && sourceVersionIds.has(row.sourceVersionId);
+}
+
 function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {
   const json = record.modelJson;
   if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
@@ -3296,6 +3597,7 @@ function competenceFromRuntime(input: {
   importedPatterns?: readonly LanguagePatternRecord[];
   importedObservations?: readonly NgramObservation[];
   importedSemanticFrames?: readonly SemanticFrameRecord[];
+  importedConstructionBundles?: readonly DurableLanguageConstructionBundle[];
 }): LanguageCompetenceVector {
   const maxOrder = input.models.reduce((max, model) => Math.max(max, model.order), 0);
   const modelCoverage = clamp01(input.models.length / 6);
@@ -3304,13 +3606,14 @@ function competenceFromRuntime(input: {
   const phraseFluency = clamp01(Math.log2(1 + input.observedSymbolCount + importedPhraseMass) / 18 * Math.min(1, Math.max(maxOrder, 2) / 6));
   const generationReliability = clamp01(0.4 * lexicalCoverage + 0.36 * phraseFluency + 0.24 * modelCoverage);
   const patternCoverage = clamp01(Math.log2(1 + (input.importedPatterns?.length ?? 0)) / 10);
+  const constructionCoverage = clamp01(Math.log2(1 + (input.importedConstructionBundles?.length ?? 0)) / 10);
   const semanticFrameCoverage = clamp01(Math.log2(1 + (input.importedSemanticFrames?.length ?? 0)) / 10);
   return {
     scriptRecognition: clamp01(input.languageHints.length ? 0.45 + 0.1 * input.languageHints.length : modelCoverage * 0.3),
     segmentationQuality: clamp01(0.35 * modelCoverage + 0.65 * lexicalCoverage),
     lexicalCoverage,
     phraseFluency,
-    syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.72 : phraseFluency * 0.35) + patternCoverage * 0.18),
+    syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.62 : phraseFluency * 0.3) + patternCoverage * 0.18 + constructionCoverage * 0.2),
     semanticFrameCoverage,
     translationAlignment: 0,
     entailmentReliability: 0,

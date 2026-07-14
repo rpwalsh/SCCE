@@ -480,6 +480,36 @@ export function createInMemoryDialogueMemoryStore(seed?: {
   const calibrationObservations = new Map((seed?.calibrationObservations ?? []).map(record => [record.id, record]));
   return {
     putInteractionState: async record => { interactionStates.set(record.id, record); },
+    compareAndPutInteractionState: async (record, condition) => {
+      const current = [...interactionStates.values()]
+        .filter(candidate => candidate.conversationId === record.conversationId)
+        .map(candidate => ({ candidate, identity: interactionStateIdentity(candidate, condition.stateSchema) }))
+        .filter((row): row is { candidate: InteractionStateRecord; identity: { stateId: string; turnIndex: number } } => Boolean(row.identity))
+        .sort((left, right) => right.identity.turnIndex - left.identity.turnIndex
+          || right.candidate.createdAt - left.candidate.createdAt
+          || (right.candidate.id < left.candidate.id ? -1 : right.candidate.id > left.candidate.id ? 1 : 0))[0];
+      const currentStateId = current?.identity.stateId ?? null;
+      const currentTurnIndex = current?.identity.turnIndex ?? null;
+      if (currentStateId !== condition.expectedStateId || currentTurnIndex !== condition.expectedTurnIndex) {
+        return { stored: false, currentStateId, currentTurnIndex, reason: "state_conflict" as const };
+      }
+      if (condition.nextTurnIndex <= (currentTurnIndex ?? -1)) {
+        return { stored: false, currentStateId, currentTurnIndex, reason: "turn_not_monotonic" as const };
+      }
+      const nextIdentity = interactionStateIdentity(record, condition.stateSchema);
+      if (!nextIdentity
+        || nextIdentity.stateId !== condition.nextStateId
+        || nextIdentity.turnIndex !== condition.nextTurnIndex) {
+        return { stored: false, currentStateId, currentTurnIndex, reason: "state_conflict" as const };
+      }
+      interactionStates.set(record.id, record);
+      return {
+        stored: true,
+        currentStateId: condition.nextStateId,
+        currentTurnIndex: condition.nextTurnIndex,
+        reason: "stored" as const
+      };
+    },
     putPolicyDecision: async record => { policyDecisions.set(record.id, record); },
     putConversationOutcome: async record => { outcomes.set(record.id, record); },
     putUserCorrection: async record => { corrections.set(record.id, record); },
@@ -500,6 +530,18 @@ export function createInMemoryDialogueMemoryStore(seed?: {
       && (!query?.sourceRecordId || record.sourceRecordId === query.sourceRecordId)
     ), query?.limit ?? 500, record => record.createdAt)
   };
+}
+
+function interactionStateIdentity(record: InteractionStateRecord, stateSchema: string): { stateId: string; turnIndex: number } | undefined {
+  if (!record.stateJson || typeof record.stateJson !== "object" || Array.isArray(record.stateJson)) return undefined;
+  const state = record.stateJson as Record<string, JsonValue>;
+  return state.schema === stateSchema
+    && typeof state.id === "string"
+    && typeof state.turnIndex === "number"
+    && Number.isSafeInteger(state.turnIndex)
+    && state.turnIndex >= 0
+    ? { stateId: state.id, turnIndex: state.turnIndex }
+    : undefined;
 }
 
 function featureVectorFromOutcome(outcome: ConversationOutcomeRecord): Record<InteractionFeatureId, number> {

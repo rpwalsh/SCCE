@@ -37,10 +37,23 @@ export function splitSurfaceSentences(text: string): string[] {
     current += char;
     if (!isSentenceBoundarySymbol(char)) continue;
     const next = chars[index + 1] ?? "";
-    if ((!next || isSurfaceWhitespace(next)) && shouldCloseSentence(chars, index)) push();
+    if ((!next || isSurfaceWhitespace(next) || sentenceBoundaryMayOmitWhitespace(chars, index))
+      && shouldCloseSentence(chars, index)) push();
   }
   push();
   return out;
+}
+
+function sentenceBoundaryMayOmitWhitespace(chars: readonly string[], index: number): boolean {
+  const boundary = chars[index] ?? "";
+  if (!boundary) return false;
+  if (boundary !== ".") return true;
+  const previous = chars[index - 1] ?? "";
+  const next = chars[index + 1] ?? "";
+  return /\p{Letter}/u.test(previous)
+    && /\p{Letter}/u.test(next)
+    && previous.toLocaleLowerCase() === previous.toLocaleUpperCase()
+    && next.toLocaleLowerCase() === next.toLocaleUpperCase();
 }
 
 export function ensureSurfaceSentence(text: string, boundary = "."): string {

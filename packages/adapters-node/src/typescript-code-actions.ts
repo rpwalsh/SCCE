@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
+  canonicalTypeScriptCodeActionPostconditionBindingId,
+  canonicalTypeScriptCodeActionPostconditionIds,
   canonicalTypeScriptCodeFixIdentity,
   canonicalTypeScriptCompilerOptionsHash,
-  canonicalTypeScriptDiagnosticIdentity
+  canonicalTypeScriptDiagnosticIdentity,
+  canonicalWorkspaceCompilerCandidateSetId,
+  canonicalWorkspaceCompilerCommandIdentity,
+  type WorkspaceCompilerAnalyzerBinding
 } from "@scce/kernel";
 import ts from "typescript";
+import { resolveTypeScriptCommandLane } from "./typescript-command-lane.js";
 
 const FAMILY_ID = "repair.family.typescript.code_action.v1" as const;
 const DEFAULT_MAX_EDITS = 32;
@@ -21,13 +27,28 @@ export interface TypeScriptCodeActionSnapshotFile {
   contentHash: string;
 }
 
+export interface TypeScriptCodeActionSnapshotManifestFile {
+  path: string;
+  contentHash: string;
+}
+
 export interface TypeScriptCodeActionInput {
   rootPath: string;
   requestedPaths: readonly string[];
   requestText: string;
   files: readonly TypeScriptCodeActionSnapshotFile[];
+  /** Complete byte-level workspace manifest; source text may be a strict subset. */
+  workspaceManifest?: readonly TypeScriptCodeActionSnapshotManifestFile[];
   compilerCommand: TypeScriptObservedCompilerCommand;
   maxEdits?: number;
+}
+
+export interface TypeScriptCodeActionCandidateInput extends Omit<TypeScriptCodeActionInput, "requestText" | "workspaceManifest"> {
+  workspaceManifest: readonly TypeScriptCodeActionSnapshotManifestFile[];
+  semanticAnalyzer: {
+    analyzerId: string;
+    semanticRevisionHash: string;
+  };
 }
 
 export interface TypeScriptObservedCompilerCommand {
@@ -83,6 +104,9 @@ export interface TypeScriptCodeActionCompilerProvenance {
     cwd: string;
     sourcePath: string;
     sourceContentHash: string;
+    sourceSelector: string;
+    rawCommandHash: `sha256:${string}`;
+    identity: `typescript.compiler_command:${string}`;
   };
 }
 
@@ -97,6 +121,7 @@ export interface TypeScriptCodeActionTransformation {
   afterContentHash: `sha256:${string}`;
   compiler: TypeScriptCodeActionCompilerProvenance;
   postconditionIds: string[];
+  postconditionBindingId: `typescript.code_fix_postconditions:${string}`;
 }
 
 export interface TypeScriptCodeActionRepairResult {
@@ -113,6 +138,18 @@ export interface TypeScriptCodeActionRepairResult {
     truncated: boolean;
     candidates: TypeScriptCodeActionCandidateSummary[];
   };
+  transformations: TypeScriptCodeActionTransformation[];
+}
+
+export interface TypeScriptCodeActionCandidateSet {
+  familyId: typeof FAMILY_ID;
+  candidateSetId: `typescript.candidate_set:${string}`;
+  snapshotHash: `sha256:${string}`;
+  analyzedSnapshotHash: `sha256:${string}`;
+  availableCandidateCount: number;
+  truncated: boolean;
+  complete: boolean;
+  analyzer: WorkspaceCompilerAnalyzerBinding;
   transformations: TypeScriptCodeActionTransformation[];
 }
 
@@ -158,6 +195,7 @@ interface ExactSnapshot {
   byAbsolutePath: Map<string, SnapshotFile>;
   directoryPaths: Set<string>;
   hash: `sha256:${string}`;
+  workspaceHash: `sha256:${string}`;
 }
 
 interface ProjectContext {
@@ -169,6 +207,54 @@ interface ObservedCompilerProject {
   config: SnapshotFile;
   commandLineOptions: ts.CompilerOptions;
   command: TypeScriptCodeActionCompilerProvenance["compilerCommand"];
+  commandBinding: WorkspaceCompilerAnalyzerBinding["compilerCommand"];
+}
+
+interface DerivedTypeScriptCodeActions {
+  snapshotHash: `sha256:${string}`;
+  analyzedSnapshotHash: `sha256:${string}`;
+  transformations: TypeScriptCodeActionTransformation[];
+}
+
+/**
+ * Enumerates compiler-owned exact transformations without interpreting request prose.
+ * The returned candidates remain unexecuted and are bound to the complete input snapshot.
+ */
+export function deriveTypeScriptCodeActionCandidates(
+  input: TypeScriptCodeActionCandidateInput
+): TypeScriptCodeActionCandidateSet | undefined {
+  const derived = deriveCompilerCodeActions(input, true);
+  if (!derived || derived.transformations.length === 0) return undefined;
+  if (!input.semanticAnalyzer.analyzerId || input.semanticAnalyzer.analyzerId.includes("\0")
+    || !input.semanticAnalyzer.semanticRevisionHash || input.semanticAnalyzer.semanticRevisionHash.includes("\0")) {
+    throw new Error("semantic analyzer binding is invalid");
+  }
+  const limit = boundedLimit(input.maxEdits);
+  const transformations = derived.transformations.slice(0, limit);
+  const compiler = transformations[0]!.compiler;
+  const analyzer: WorkspaceCompilerAnalyzerBinding = {
+    analyzerId: input.semanticAnalyzer.analyzerId,
+    analyzerVersion: compiler.version,
+    semanticRevisionHash: input.semanticAnalyzer.semanticRevisionHash,
+    configPath: compiler.tsconfigPath,
+    configContentHash: compiler.tsconfigContentHash,
+    compilerOptionsHash: compiler.compilerOptionsHash,
+    compilerCommand: compiler.compilerCommand
+  };
+  const contract = {
+    familyId: FAMILY_ID,
+    snapshotHash: derived.snapshotHash,
+    analyzedSnapshotHash: derived.analyzedSnapshotHash,
+    availableCandidateCount: derived.transformations.length,
+    truncated: derived.transformations.length > limit,
+    complete: derived.transformations.length <= limit,
+    analyzer,
+    transformations
+  };
+  return {
+    ...contract,
+    candidateSetId: canonicalWorkspaceCompilerCandidateSetId(contract) as `typescript.candidate_set:${string}`
+  };
 }
 
 /**
@@ -176,14 +262,58 @@ interface ObservedCompilerProject {
  * The function does not execute commands or read workspace source from disk.
  */
 export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInput): TypeScriptCodeActionRepairResult | undefined {
-  const snapshot = exactSnapshot(input.rootPath, input.files);
+  const derived = deriveCompilerCodeActions(input, false);
+  if (!derived || derived.transformations.length === 0) return undefined;
+  const { transformations } = derived;
+  const limit = boundedLimit(input.maxEdits);
+  const selectors = codeActionSelectors(input);
+  const admissible = transformations.filter(transformation => {
+    if (selectors.diagnosticCodes.length > 0 && !selectors.diagnosticCodes.includes(transformation.diagnostic.code)) return false;
+    if (selectors.fixNames.length > 0 && !selectors.fixNames.includes(transformation.codeFix.fixName)) return false;
+    if (selectors.codeFixIdentities.length > 0 && !selectors.codeFixIdentities.includes(transformation.codeFixIdentity)) return false;
+    return true;
+  });
+  const hasSelector = selectors.diagnosticCodes.length > 0
+    || selectors.fixNames.length > 0
+    || selectors.codeFixIdentities.length > 0;
+  const selectionPool = hasSelector && admissible.length > 0 ? admissible : transformations;
+  const candidates = selectionPool.slice(0, limit).map(candidateSummary);
+  const mode = !hasSelector
+    ? "unselected_candidates"
+    : admissible.length === 0
+      ? "selector_not_found"
+      : admissible.length === 1
+        ? "selected"
+        : "ambiguous_candidates";
+  return {
+    familyId: FAMILY_ID,
+    snapshotHash: derived.snapshotHash,
+    requestTextHash: sha256(input.requestText),
+    selection: {
+      mode,
+      diagnosticCodes: selectors.diagnosticCodes,
+      fixNames: selectors.fixNames,
+      codeFixIdentities: selectors.codeFixIdentities,
+      admissibleCandidateCount: admissible.length,
+      availableCandidateCount: transformations.length,
+      truncated: selectionPool.length > candidates.length,
+      candidates
+    },
+    transformations: mode === "selected" ? [admissible[0]!] : []
+  };
+}
+
+function deriveCompilerCodeActions(
+  input: Omit<TypeScriptCodeActionInput, "requestText">,
+  requireExactCommandBinding: boolean
+): DerivedTypeScriptCodeActions | undefined {
+  const snapshot = exactSnapshot(input.rootPath, input.files, input.workspaceManifest ?? input.files);
   const requestedFiles = requestedSourceFiles(snapshot, input.requestedPaths);
   if (requestedFiles.length === 0) return undefined;
-  const limit = boundedLimit(input.maxEdits);
   const transformations: TypeScriptCodeActionTransformation[] = [];
   const seenFixes = new Set<string>();
 
-  const observedProject = observedCompilerProject(snapshot, input.compilerCommand);
+  const observedProject = observedCompilerProject(snapshot, input.compilerCommand, requireExactCommandBinding);
   const project = createProjectContext(snapshot, observedProject, requestedFiles);
   try {
     for (const file of requestedFiles) {
@@ -209,46 +339,16 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
     project.service.dispose();
   }
 
-  transformations.sort((left, right) => left.path.localeCompare(right.path)
+  transformations.sort((left, right) => compareCanonical(left.path, right.path)
     || left.diagnostic.start - right.diagnostic.start
     || left.diagnostic.code - right.diagnostic.code
-    || left.codeFix.fixName.localeCompare(right.codeFix.fixName)
-    || left.codeFixIdentity.localeCompare(right.codeFixIdentity));
-  const selectors = codeActionSelectors(input);
-  const admissible = transformations.filter(transformation => {
-    if (selectors.diagnosticCodes.length > 0 && !selectors.diagnosticCodes.includes(transformation.diagnostic.code)) return false;
-    if (selectors.fixNames.length > 0 && !selectors.fixNames.includes(transformation.codeFix.fixName)) return false;
-    if (selectors.codeFixIdentities.length > 0 && !selectors.codeFixIdentities.includes(transformation.codeFixIdentity)) return false;
-    return true;
-  });
+    || compareCanonical(left.codeFix.fixName, right.codeFix.fixName)
+    || compareCanonical(left.codeFixIdentity, right.codeFixIdentity));
   if (transformations.length === 0) return undefined;
-  const hasSelector = selectors.diagnosticCodes.length > 0
-    || selectors.fixNames.length > 0
-    || selectors.codeFixIdentities.length > 0;
-  const selectionPool = hasSelector && admissible.length > 0 ? admissible : transformations;
-  const candidates = selectionPool.slice(0, limit).map(candidateSummary);
-  const mode = !hasSelector
-    ? "unselected_candidates"
-    : admissible.length === 0
-      ? "selector_not_found"
-      : admissible.length === 1
-        ? "selected"
-        : "ambiguous_candidates";
   return {
-    familyId: FAMILY_ID,
-    snapshotHash: snapshot.hash,
-    requestTextHash: sha256(input.requestText),
-    selection: {
-      mode,
-      diagnosticCodes: selectors.diagnosticCodes,
-      fixNames: selectors.fixNames,
-      codeFixIdentities: selectors.codeFixIdentities,
-      admissibleCandidateCount: admissible.length,
-      availableCandidateCount: transformations.length,
-      truncated: selectionPool.length > candidates.length,
-      candidates
-    },
-    transformations: mode === "selected" ? [admissible[0]!] : []
+    snapshotHash: snapshot.workspaceHash,
+    analyzedSnapshotHash: snapshot.hash,
+    transformations
   };
 }
 
@@ -264,8 +364,24 @@ function candidateSummary(transformation: TypeScriptCodeActionTransformation): T
   };
 }
 
-function exactSnapshot(rootPath: string, inputFiles: readonly TypeScriptCodeActionSnapshotFile[]): ExactSnapshot {
+function exactSnapshot(
+  rootPath: string,
+  inputFiles: readonly TypeScriptCodeActionSnapshotFile[],
+  manifestFiles: readonly TypeScriptCodeActionSnapshotManifestFile[]
+): ExactSnapshot {
   const root = path.resolve(rootPath);
+  const manifestByPath = new Map<string, `sha256:${string}`>();
+  const manifestByAbsolutePath = new Map<string, string>();
+  for (const input of manifestFiles) {
+    const workspacePath = normalizeWorkspacePath(input.path);
+    if (manifestByPath.has(workspacePath)) throw new Error(`duplicate workspace manifest path: ${workspacePath}`);
+    const canonicalContentHash = `sha256:${canonicalHash(input.contentHash)}` as const;
+    const canonical = canonicalAbsolute(workspaceAbsolutePath(root, workspacePath));
+    if (manifestByAbsolutePath.has(canonical)) throw new Error(`case-colliding workspace manifest path: ${workspacePath}`);
+    manifestByPath.set(workspacePath, canonicalContentHash);
+    manifestByAbsolutePath.set(canonical, workspacePath);
+  }
+  if (manifestByPath.size === 0) throw new Error("workspace manifest is empty");
   const files: SnapshotFile[] = [];
   const byWorkspacePath = new Map<string, SnapshotFile>();
   const byAbsolutePath = new Map<string, SnapshotFile>();
@@ -274,23 +390,31 @@ function exactSnapshot(rootPath: string, inputFiles: readonly TypeScriptCodeActi
     const workspacePath = normalizeWorkspacePath(input.path);
     if (byWorkspacePath.has(workspacePath)) throw new Error(`duplicate workspace snapshot path: ${workspacePath}`);
     assertContentHash(workspacePath, input.content, input.contentHash);
+    const contentHash = `sha256:${canonicalHash(input.contentHash)}` as const;
+    if (manifestByPath.get(workspacePath) !== contentHash) {
+      throw new Error(`analyzed source is absent or stale in the complete workspace manifest: ${workspacePath}`);
+    }
     const absolutePath = workspaceAbsolutePath(root, workspacePath);
     const canonical = canonicalAbsolute(absolutePath);
     if (byAbsolutePath.has(canonical)) throw new Error(`case-colliding workspace snapshot path: ${workspacePath}`);
-    const file: SnapshotFile = { ...input, path: workspacePath, absolutePath, canonicalAbsolutePath: canonical };
+    const file: SnapshotFile = { ...input, path: workspacePath, contentHash, absolutePath, canonicalAbsolutePath: canonical };
     files.push(file);
     byWorkspacePath.set(workspacePath, file);
     byAbsolutePath.set(canonical, file);
     addParentDirectories(directoryPaths, root, absolutePath);
   }
-  files.sort((left, right) => left.path.localeCompare(right.path));
+  files.sort((left, right) => compareCanonical(left.path, right.path));
   return {
     rootPath: root,
     files,
     byWorkspacePath,
     byAbsolutePath,
     directoryPaths,
-    hash: sha256(files.map(file => `${file.path}\0${canonicalHash(file.contentHash)}`).join("\0"))
+    hash: sha256(files.map(file => `${file.path}\0${canonicalHash(file.contentHash)}`).join("\0")),
+    workspaceHash: sha256([...manifestByPath.entries()]
+      .sort((left, right) => compareCanonical(left[0], right[0]))
+      .map(([workspacePath, contentHash]) => `${workspacePath}\0${canonicalHash(contentHash)}`)
+      .join("\0"))
   };
 }
 
@@ -303,10 +427,14 @@ function requestedSourceFiles(snapshot: ExactSnapshot, requestedPaths: readonly 
     if (!REQUESTED_TYPESCRIPT_EXTENSIONS.test(file.path)) throw new Error(`requested path is not a TypeScript source file: ${workspacePath}`);
     out.set(file.path, file);
   }
-  return [...out.values()].sort((left, right) => left.path.localeCompare(right.path));
+  return [...out.values()].sort((left, right) => compareCanonical(left.path, right.path));
 }
 
-function observedCompilerProject(snapshot: ExactSnapshot, input: TypeScriptObservedCompilerCommand): ObservedCompilerProject {
+function observedCompilerProject(
+  snapshot: ExactSnapshot,
+  input: TypeScriptObservedCompilerCommand,
+  requireExactCommandBinding: boolean
+): ObservedCompilerProject {
   const sourcePath = normalizeWorkspacePath(input.sourcePath);
   const source = snapshot.byWorkspacePath.get(sourcePath);
   if (!source) throw new Error(`source-observed tsc command artifact is absent from the exact snapshot: ${sourcePath}`);
@@ -335,18 +463,71 @@ function observedCompilerProject(snapshot: ExactSnapshot, input: TypeScriptObser
   if (!config) {
     throw new Error("source-observed tsc project config cannot be identified and bound to the exact workspace snapshot");
   }
+  const exactCommandBinding = exactObservedCommandBinding(source, input, cwd);
+  if (requireExactCommandBinding && !exactCommandBinding) {
+    throw new Error("source-observed tsc command does not have one exact source binding");
+  }
+  const unboundBase = {
+    executable: input.executable,
+    args: [...input.args],
+    cwd,
+    sourcePath,
+    sourceContentHash: source.contentHash,
+    sourceSelector: "scce.command_source.unbound.v1",
+    rawCommandHash: sha256("")
+  };
+  const commandBinding = exactCommandBinding ?? {
+    ...unboundBase,
+    identity: canonicalWorkspaceCompilerCommandIdentity(unboundBase) as `typescript.compiler_command:${string}`
+  };
   const { project: _project, ...commandLineOptions } = commandLine.options;
   return {
     config,
     commandLineOptions,
-    command: {
-      executable: input.executable,
-      args: [...input.args],
-      cwd,
-      sourcePath,
-      sourceContentHash: source.contentHash
-    }
+    command: commandBinding,
+    commandBinding
   };
+}
+
+function exactObservedCommandBinding(
+  source: SnapshotFile,
+  input: TypeScriptObservedCompilerCommand,
+  cwd: string
+): TypeScriptCodeActionCompilerProvenance["compilerCommand"] | undefined {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(source.content);
+  } catch {
+    return undefined;
+  }
+  if (!manifest || Array.isArray(manifest) || typeof manifest !== "object") {
+    return undefined;
+  }
+  const scripts = (manifest as Record<string, unknown>).scripts;
+  if (!scripts || Array.isArray(scripts) || typeof scripts !== "object") {
+    return undefined;
+  }
+  const matches: Array<{ sourceSelector: string; rawCommandHash: `sha256:${string}` }> = [];
+  for (const [name, rawCommand] of Object.entries(scripts as Record<string, unknown>).sort((left, right) => compareCanonical(left[0], right[0]))) {
+    if (typeof rawCommand !== "string") continue;
+    const sourceSelector = `scripts.${name}`;
+    const resolved = resolveTypeScriptCommandLane({ rawCommand, sourceSelector, sourcePath: source.path, cwd });
+    if (!resolved.ok || resolved.lane.wrapper !== "direct" || !resolved.lane.languageServiceCompatible) continue;
+    if (executableName(resolved.lane.compilerExecutable) !== executableName(input.executable)
+      || stableSerialize(resolved.lane.normalizedTscArgs) !== stableSerialize(input.args)) continue;
+    matches.push({ sourceSelector, rawCommandHash: sha256(rawCommand) });
+  }
+  if (matches.length !== 1) return undefined;
+  const base = {
+    executable: input.executable,
+    args: [...input.args],
+    cwd,
+    sourcePath: source.path,
+    sourceContentHash: source.contentHash,
+    sourceSelector: matches[0]!.sourceSelector,
+    rawCommandHash: matches[0]!.rawCommandHash
+  };
+  return { ...base, identity: canonicalWorkspaceCompilerCommandIdentity(base) as `typescript.compiler_command:${string}` };
 }
 
 function exactProjectConfig(snapshot: ExactSnapshot, cwdAbsolute: string, projectValue: string): SnapshotFile | undefined {
@@ -417,7 +598,7 @@ function createProjectContext(snapshot: ExactSnapshot, observed: ObservedCompile
       version: ts.version,
       tsconfigPath: observed.config.path,
       tsconfigContentHash: observed.config.contentHash,
-      compilerOptionsHash: typescriptCompilerOptionsHash(compilerOptions),
+      compilerOptionsHash: typescriptCompilerOptionsHash(portableCompilerValue(compilerOptions, snapshot.rootPath)),
       compilerOptionsSource: "source_observed_tsc_project",
       configDiagnosticCodes,
       sourceFileBoundary: "workspace_snapshot_and_typescript_standard_library",
@@ -461,7 +642,7 @@ function compilerDiagnostics(service: ts.LanguageService, file: SnapshotFile): A
     };
     out.set(`${value.code}:${value.start}:${value.length}:${value.message}`, value);
   }
-  return [...out.values()].sort((left, right) => left.start - right.start || left.code - right.code || left.message.localeCompare(right.message));
+  return [...out.values()].sort((left, right) => left.start - right.start || left.code - right.code || compareCanonical(left.message, right.message));
 }
 
 function materializeAtomicCodeFix(input: {
@@ -508,7 +689,7 @@ function materializeAtomicCodeFix(input: {
       afterContentHash: sha256(afterContent)
     });
   }
-  materializedChanges.sort((left, right) => left.path.localeCompare(right.path));
+  materializedChanges.sort((left, right) => compareCanonical(left.path, right.path));
   const diagnostic: TypeScriptCodeActionDiagnostic = {
     code: input.diagnostic.code,
     category: input.diagnostic.category,
@@ -536,6 +717,8 @@ function materializeAtomicCodeFix(input: {
     diagnosticIdentity,
     codeFix
   });
+  const postconditionIds = canonicalTypeScriptCodeActionPostconditionIds(diagnostic.code);
+  const postconditionBindingId = canonicalTypeScriptCodeActionPostconditionBindingId(codeFixIdentity, diagnostic.code) as `typescript.code_fix_postconditions:${string}`;
   return {
     path: input.file.path,
     baseContentHash: input.file.contentHash,
@@ -546,12 +729,8 @@ function materializeAtomicCodeFix(input: {
     afterContent: materializedChanges.find(change => change.path === input.file.path)?.afterContent ?? input.file.content,
     afterContentHash: materializedChanges.find(change => change.path === input.file.path)?.afterContentHash ?? sha256(input.file.content),
     compiler: input.compiler,
-    postconditionIds: [
-      `typescript.diagnostic.${diagnostic.code}.code_fix_applied`,
-      "workspace.requested_path.bound",
-      "workspace.after_bytes.exact",
-      "workspace.atomic_action.file_set_bound"
-    ]
+    postconditionIds,
+    postconditionBindingId
   };
 }
 
@@ -569,7 +748,7 @@ function workspacePathForCompilerChange(snapshot: ExactSnapshot, fileName: strin
 
 function orderedNonOverlappingChanges(content: string, input: readonly ts.TextChange[]): TypeScriptCodeActionTextChange[] | undefined {
   const changes = input.map(change => ({ start: change.span.start, length: change.span.length, newText: change.newText }))
-    .sort((left, right) => left.start - right.start || left.length - right.length || left.newText.localeCompare(right.newText));
+    .sort((left, right) => left.start - right.start || left.length - right.length || compareCanonical(left.newText, right.newText));
   let previousStart = -1;
   let previousEnd = -1;
   for (const change of changes) {
@@ -619,7 +798,7 @@ function snapshotDirectories(snapshot: ExactSnapshot, directoryName: string): st
     const first = relative.split(path.sep)[0];
     if (first && first !== path.basename(file.absolutePath)) directories.add(path.join(root, first));
   }
-  return [...directories].sort((left, right) => left.localeCompare(right));
+  return [...directories].sort(compareCanonical);
 }
 
 function globMatches(relativePath: string, rawPattern: string): boolean {
@@ -704,8 +883,8 @@ function codeActionSelectors(input: TypeScriptCodeActionInput): { diagnosticCode
   }
   return {
     diagnosticCodes: [...diagnosticCodes].sort((left, right) => left - right),
-    fixNames: [...fixNames].sort((left, right) => left.localeCompare(right)),
-    codeFixIdentities: [...codeFixIdentities].sort((left, right) => left.localeCompare(right))
+    fixNames: [...fixNames].sort(compareCanonical),
+    codeFixIdentities: [...codeFixIdentities].sort(compareCanonical)
   };
 }
 
@@ -741,12 +920,12 @@ function isWithinDirectory(candidate: string, root: string): boolean {
 }
 
 function normalizeWorkspacePath(value: string): string {
-  if (!value || value.includes("\0") || path.isAbsolute(value)) throw new Error(`invalid workspace-relative path: ${value}`);
-  const normalized = path.posix.normalize(value.replace(/\\/gu, "/")).replace(/^\.\//u, "");
-  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../") || normalized.startsWith("/")) {
+  const portable = value.replace(/\\/gu, "/");
+  if (!value || value !== value.trim() || value.includes("\0") || value.includes("\\") || path.isAbsolute(value)
+    || value.normalize("NFC") !== value || portable.split("/").some(part => !part || part === "." || part === "..")) {
     throw new Error(`invalid workspace-relative path: ${value}`);
   }
-  return normalized;
+  return portable;
 }
 
 function normalizeWorkspaceDirectory(value: string): string {
@@ -812,10 +991,31 @@ function stableSerialize(value: unknown): string {
   return `{${Object.keys(record).sort().filter(key => record[key] !== undefined).map(key => `${JSON.stringify(key)}:${stableSerialize(record[key])}`).join(",")}}`;
 }
 
+function portableCompilerValue(value: unknown, workspaceRoot: string): unknown {
+  if (typeof value === "string") {
+    if (path.isAbsolute(value) && isWithinDirectory(value, workspaceRoot)) {
+      const relative = path.relative(workspaceRoot, value).replace(/\\/gu, "/");
+      return `<workspace>/${relative}`;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(item => portableCompilerValue(item, workspaceRoot));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .map(([key, item]) => [key, portableCompilerValue(item, workspaceRoot)]));
+  }
+  return value;
+}
+
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${sha256Hex(value)}`;
 }
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function compareCanonical(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

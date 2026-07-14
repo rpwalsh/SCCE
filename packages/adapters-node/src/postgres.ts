@@ -485,12 +485,20 @@ function schemaStatements(q: string): string[] {
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_quarantine_decision ON ${q}.quarantine_sources(decision,fetched_at)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_learning_needs_status ON ${q}.learning_needs(status,priority DESC,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_stream_order ON ${q}.ngram_observations(stream_id,language_hint,order_n,observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_version_rank ON ${q}.ngram_observations(source_version_id,count DESC,observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_profile_rank ON ${q}.ngram_observations((metadata_json->>'profileId'),count DESC,observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_system_rank ON ${q}.ngram_observations((metadata_json->>'sourceSystem'), count DESC, observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_version_updated ON ${q}.ngram_models((model_json->>'sourceVersionId'),updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_updated ON ${q}.ngram_models((model_json->>'profileId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_source_system_rank ON ${q}.language_units((metadata_json->>'sourceSystem'), alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_source_system_rank ON ${q}.language_patterns((pattern_json->>'sourceSystem'), support DESC, updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_profile_rank ON ${q}.language_patterns(profile_id,support DESC,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_system_rank ON ${q}.semantic_frames((frame_json->>'sourceSystem'), alpha DESC, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_profile_rank ON ${q}.semantic_frames((frame_json->>'profileId'),alpha DESC,created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_version_rank ON ${q}.semantic_frames((frame_json->>'sourceVersionId'),alpha DESC,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_embedding ON ${q}.semantic_frames USING ivfflat (embedding vector_cosine_ops) WITH (lists = 64)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_pair ON ${q}.translation_alignments(source_language,target_language,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_scce2_import_run ON ${q}.scce2_import_ledger(import_run_id,imported_at DESC)`,
@@ -1252,8 +1260,27 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
     async putLanguageProfiles(profiles) {
       await putLanguageProfilesBatch(storage, profiles);
     },
-    async listLanguageProfiles(limit = 100) {
-      return (await storage.query<{ profile_json: LanguageProfile }>(`SELECT profile_json FROM ${storage.table("language_profiles")} ORDER BY created_at DESC LIMIT $1`, [limit])).map(row => row.profile_json);
+    async listLanguageProfiles(query) {
+      const requestedLimit = typeof query === "number" ? query : query?.limit;
+      const boundedLimit = Math.max(1, Math.min(2048, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit!) : 512));
+      if (typeof query === "object" && query?.referencedByLanguageMemory) {
+        return (await storage.query<{ profile_json: LanguageProfile }>(
+          `SELECT lp.profile_json
+           FROM ${storage.table("language_profiles")} lp
+           WHERE EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id)
+              OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id)
+              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id)
+              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id)
+              OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id)
+           ORDER BY lp.created_at DESC, lp.id ASC
+           LIMIT $1`,
+          [boundedLimit]
+        )).map(row => row.profile_json);
+      }
+      return (await storage.query<{ profile_json: LanguageProfile }>(
+        `SELECT profile_json FROM ${storage.table("language_profiles")} ORDER BY created_at DESC, id ASC LIMIT $1`,
+        [boundedLimit]
+      )).map(row => row.profile_json);
     }
   };
 }
@@ -1376,42 +1403,89 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const where: string[] = [];
       if (query.streamId) { params.push(query.streamId); where.push(`stream_id=$${params.length}`); }
       if (query.languageHint) { params.push(query.languageHint); where.push(`language_hint=$${params.length}`); }
+      if (query.profileIds || query.sourceVersionIds) {
+        const ownership: string[] = [];
+        if (query.profileIds?.length) {
+          params.push([...query.profileIds]);
+          ownership.push(`model_json->>'profileId'=ANY($${params.length}::text[])`);
+        }
+        if (query.sourceVersionIds?.length) {
+          params.push([...query.sourceVersionIds]);
+          ownership.push(`(NULLIF(model_json->>'profileId','') IS NULL AND model_json->>'sourceVersionId'=ANY($${params.length}::text[]))`);
+        }
+        if (!ownership.length) return [];
+        where.push(`(${ownership.join(" OR ")})`);
+      }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model_json->>'sourceSystem'=$${params.length}`); }
       params.push(query.limit ?? 100);
-      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT $${params.length}`, params)).map(rowToNgramModel);
+      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramModel);
     },
     async listNgramObservations(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.streamId) { params.push(query.streamId); where.push(`stream_id=$${params.length}`); }
       if (query.languageHint) { params.push(query.languageHint); where.push(`language_hint=$${params.length}`); }
+      if (query.profileIds || query.sourceVersionIds) {
+        const ownership: string[] = [];
+        if (query.profileIds?.length) {
+          params.push([...query.profileIds]);
+          ownership.push(`metadata_json->>'profileId'=ANY($${params.length}::text[])`);
+        }
+        if (query.sourceVersionIds?.length) {
+          params.push([...query.sourceVersionIds]);
+          ownership.push(`(NULLIF(metadata_json->>'profileId','') IS NULL AND source_version_id=ANY($${params.length}::text[]))`);
+        }
+        if (!ownership.length) return [];
+        where.push(`(${ownership.join(" OR ")})`);
+      }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`metadata_json->>'sourceSystem'=$${params.length}`); }
       params.push(query.limit ?? 1000);
-      return (await storage.query<NgramObservationRow>(`SELECT * FROM ${storage.table("ngram_observations")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY count DESC, observed_at DESC LIMIT $${params.length}`, params)).map(rowToNgramObservation);
+      return (await storage.query<NgramObservationRow>(`SELECT * FROM ${storage.table("ngram_observations")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY count DESC, observed_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramObservation);
     },
     async listLanguageUnits(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
-      if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
+      if (query.profileIds) {
+        if (!query.profileIds.length) return [];
+        params.push([...query.profileIds]);
+        where.push(`profile_id=ANY($${params.length}::text[])`);
+      } else if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
       if (query.script) { params.push(query.script); where.push(`script=$${params.length}`); }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`metadata_json->>'sourceSystem'=$${params.length}`); }
       params.push(query.limit ?? 1000);
-      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC LIMIT $${params.length}`, params)).map(rowToLanguageUnit);
+      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC, id ASC LIMIT $${params.length}`, params)).map(rowToLanguageUnit);
     },
     async listLanguagePatterns(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
-      if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
+      if (query.profileIds) {
+        if (!query.profileIds.length) return [];
+        params.push([...query.profileIds]);
+        where.push(`profile_id=ANY($${params.length}::text[])`);
+      } else if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern_json->>'sourceSystem'=$${params.length}`); }
       params.push(query.limit ?? 1000);
-      return (await storage.query<LanguagePatternRow>(`SELECT * FROM ${storage.table("language_patterns")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY support DESC, updated_at DESC LIMIT $${params.length}`, params)).map(rowToLanguagePattern);
+      return (await storage.query<LanguagePatternRow>(`SELECT * FROM ${storage.table("language_patterns")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY support DESC, updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToLanguagePattern);
     },
     async listSemanticFrames(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame_json->>'sourceSystem'=$${params.length}`); }
+      if (query.profileIds || query.sourceVersionIds) {
+        const ownership: string[] = [];
+        if (query.profileIds?.length) {
+          params.push([...query.profileIds]);
+          ownership.push(`frame_json->>'profileId'=ANY($${params.length}::text[])`);
+        }
+        if (query.sourceVersionIds?.length) {
+          params.push([...query.sourceVersionIds]);
+          ownership.push(`(NULLIF(frame_json->>'profileId','') IS NULL AND frame_json->>'sourceVersionId'=ANY($${params.length}::text[]))`);
+        }
+        if (!ownership.length) return [];
+        where.push(`(${ownership.join(" OR ")})`);
+      }
       params.push(query.limit ?? 500);
-      return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at FROM ${storage.table("semantic_frames")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC, created_at DESC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
+      return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at FROM ${storage.table("semantic_frames")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
     },
     async listTranslationAlignments(query = {}) {
       const params: unknown[] = [];
@@ -1944,6 +2018,58 @@ function createDialogueMemoryStore(storage: PostgresStorageAdapter): DialogueMem
         [record.id, record.conversationId, record.turnId, JSON.stringify(record.stateJson), record.featureRefs, record.signalRefs, record.createdAt]
       );
     },
+    async compareAndPutInteractionState(record, condition) {
+      return storage.tx(async client => {
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+          [`${storage.schema}\u001f${record.conversationId}`]
+        );
+        const currentRows = await client.query<{ state_id: string; turn_index: string }>(
+          `SELECT state_json->>'id' AS state_id, (state_json->>'turnIndex')::numeric::text AS turn_index
+           FROM ${storage.table("interaction_state_records")}
+           WHERE conversation_id=$1
+             AND state_json->>'schema'=$2
+             AND jsonb_typeof(state_json->'id')='string'
+             AND jsonb_typeof(state_json->'turnIndex')='number'
+           ORDER BY (state_json->>'turnIndex')::numeric DESC, created_at DESC, id DESC
+           LIMIT 1`,
+          [record.conversationId, condition.stateSchema]
+        );
+        const currentStateId = currentRows.rows[0]?.state_id ?? null;
+        const parsedCurrentIndex = currentRows.rows[0] ? Number(currentRows.rows[0].turn_index) : null;
+        const currentTurnIndex = parsedCurrentIndex !== null && Number.isSafeInteger(parsedCurrentIndex) && parsedCurrentIndex >= 0
+          ? parsedCurrentIndex
+          : null;
+        if (currentStateId !== condition.expectedStateId || currentTurnIndex !== condition.expectedTurnIndex) {
+          return { stored: false, currentStateId, currentTurnIndex, reason: "state_conflict" as const };
+        }
+        if (condition.nextTurnIndex <= (currentTurnIndex ?? -1)) {
+          return { stored: false, currentStateId, currentTurnIndex, reason: "turn_not_monotonic" as const };
+        }
+        const nextIdentity = interactionStateJsonIdentity(record.stateJson, condition.stateSchema);
+        if (!nextIdentity
+          || nextIdentity.stateId !== condition.nextStateId
+          || nextIdentity.turnIndex !== condition.nextTurnIndex) {
+          return { stored: false, currentStateId, currentTurnIndex, reason: "state_conflict" as const };
+        }
+        const inserted = await client.query<{ id: string }>(
+          `INSERT INTO ${storage.table("interaction_state_records")}(id,conversation_id,turn_id,state_json,feature_refs,signal_refs,created_at)
+           VALUES($1,$2,$3,$4::jsonb,$5,$6,TO_TIMESTAMP($7/1000.0))
+           ON CONFLICT(id) DO NOTHING
+           RETURNING id`,
+          [record.id, record.conversationId, record.turnId, JSON.stringify(record.stateJson), record.featureRefs, record.signalRefs, record.createdAt]
+        );
+        if (!inserted.rowCount) {
+          return { stored: false, currentStateId, currentTurnIndex, reason: "state_conflict" as const };
+        }
+        return {
+          stored: true,
+          currentStateId: condition.nextStateId,
+          currentTurnIndex: condition.nextTurnIndex,
+          reason: "stored" as const
+        };
+      });
+    },
     async putPolicyDecision(record) {
       await storage.query(
         `INSERT INTO ${storage.table("dialogue_policy_decision_records")}(id,conversation_id,turn_id,decision_json,selected_action_ids,score_trace_refs,created_at)
@@ -2168,6 +2294,17 @@ function rowToWorkspaceReport(row: WorkspaceReportRow): WorkspaceReportRecord {
 }
 
 interface InteractionStateRow { id: string; conversation_id: string; turn_id: string; state_json: JsonValue; feature_refs: string[]; signal_refs: string[]; created_at: Date }
+function interactionStateJsonIdentity(value: JsonValue, stateSchema: string): { stateId: string; turnIndex: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const state = value as Record<string, JsonValue>;
+  return state.schema === stateSchema
+    && typeof state.id === "string"
+    && typeof state.turnIndex === "number"
+    && Number.isSafeInteger(state.turnIndex)
+    && state.turnIndex >= 0
+    ? { stateId: state.id, turnIndex: state.turnIndex }
+    : undefined;
+}
 function rowToInteractionState(row: InteractionStateRow): InteractionStateRecord {
   return {
     id: row.id,

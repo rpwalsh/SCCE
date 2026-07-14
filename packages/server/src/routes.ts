@@ -4,8 +4,8 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, ConversationTurnRecord, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
+import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 
 export interface ApiContext {
@@ -440,6 +440,21 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
         answerGraphHash: dialogue.answerGraphHash,
         now: Date.now()
       });
+      const cognitiveShadow = await persistDialogueCognitiveShadowV2({
+        context,
+        conversationId,
+        sessionId,
+        requestText: turn.text,
+        result,
+        now: Date.now()
+      });
+      traceEvent(trace, {
+        stage: "dialogue.shadow",
+        label: "api.turn.discourse-v2",
+        counts: cognitiveShadow.counts,
+        support: cognitiveShadow.support,
+        ...(cognitiveShadow.warning ? { warnings: [cognitiveShadow.warning] } : {})
+      });
       traceEvent(trace, {
         stage: "turn.runtime.end",
         label: "api.turn",
@@ -769,6 +784,98 @@ function conversationTurnForMetadata(record: ConversationTurnRecord): JsonValue 
     sourceVersionIds: optionalStringArray(metadata.sourceVersionIds),
     createdAt: record.createdAt
   };
+}
+
+async function persistDialogueCognitiveShadowV2(input: {
+  context: ApiContext;
+  conversationId: string;
+  sessionId?: string;
+  requestText: string;
+  result: TurnResult;
+  now: number;
+}): Promise<{ counts: Record<string, number>; support: Record<string, unknown>; warning?: string }> {
+  try {
+    const hasher = createHasher();
+    const memory = createDialogueCognitiveMemoryV2({
+      store: input.context.runtime.storage.dialogueMemory,
+      hasher
+    });
+    const previousState = await memory.latest(input.conversationId);
+    const proofEvidenceIds = uniqueServerStrings(input.result.entailment.proof.evidenceIds.map(String));
+    const graph: GraphSlice = proofEvidenceIds.length
+      ? await input.context.runtime.storage.graph.getSlice({
+        evidenceIds: input.result.entailment.proof.evidenceIds,
+        radius: 1,
+        limitNodes: 128,
+        limitEdges: 256,
+        allowLatestFallback: false
+      })
+      : { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [] } };
+    const projection = projectProofBearingDialogueTurnV2({
+      conversationId: input.conversationId,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      turnId: String(input.result.episodeId),
+      turnIndex: (previousState?.turnIndex ?? 0) + 1,
+      roleId: "session.role.owner",
+      surfaceHash: hasher.digestHex(input.requestText),
+      result: input.result,
+      graph,
+      previousState,
+      hasher
+    });
+    if (projection.status === "not_observed") {
+      return {
+        counts: { evidence: proofEvidenceIds.length, graphNodes: graph.nodes.length, persisted: 0 },
+        support: {
+          schema: projection.schema,
+          status: projection.status,
+          reasonId: projection.reasonId,
+          queryConcatenationUsed: false
+        }
+      };
+    }
+    const resolution = resolveDiscourseStateV2({
+      observation: projection.observation,
+      previousState,
+      referents: projection.referents,
+      topics: projection.topics,
+      routeSignals: projection.routeSignals,
+      provenanceBindings: projection.provenanceBindings,
+      hasher
+    });
+    const persistence = await memory.persist(resolution.state, input.now, previousState ?? null);
+    return {
+      counts: {
+        evidence: proofEvidenceIds.length,
+        graphNodes: graph.nodes.length,
+        mentions: projection.observation.mentions.length,
+        routeSignals: projection.routeSignals.length,
+        persisted: persistence.result.stored ? 1 : 0
+      },
+      support: {
+        schema: projection.schema,
+        status: persistence.result.stored ? "persisted" : "persistence_conflict",
+        stateId: resolution.state.id,
+        turnIndex: resolution.state.turnIndex,
+        expectedStateId: previousState?.id ?? null,
+        expectedTurnIndex: previousState?.turnIndex ?? null,
+        currentStateId: persistence.result.currentStateId,
+        currentTurnIndex: persistence.result.currentTurnIndex,
+        persistenceReason: persistence.result.reason,
+        queryConcatenationUsed: false
+      }
+    };
+  } catch (error) {
+    return {
+      counts: { persisted: 0 },
+      support: {
+        schema: "scce.dialogue_cognitive_shadow_projection.v2",
+        status: "shadow_error",
+        queryConcatenationUsed: false
+      },
+      warning: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 async function persistConversationTurnPair(context: ApiContext, sessionId: string, turn: OwnerInput, result: TurnResult): Promise<JsonValue> {

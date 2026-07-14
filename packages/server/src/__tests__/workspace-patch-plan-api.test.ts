@@ -180,7 +180,7 @@ describe("workspace patch planning API contract", () => {
     expect(await readFile(filePath, "utf8")).toBe(before);
   });
 
-  it("plans an exact unused type-import repair from durable source bytes without fabricating a test", async () => {
+  it("returns structured compiler ambiguity without using request prose as a selector", async () => {
     const root = await mkdtemp(join(tmpdir(), "scce-type-import-repair-"));
     roots.push(root);
     const before = "import type { Legacy } from \"./legacy.js\";\r\nconst count = 1;\r\nexport const value = coutn;\r\n";
@@ -251,15 +251,11 @@ describe("workspace patch planning API contract", () => {
 
     const result = await planWorkspaceCodingPatchApiRequest(context, request);
 
-    expect(result.plan.operations).toEqual([expect.objectContaining({
-      kind: "replace",
-      path: "src/index.ts",
-      content: after
-    })]);
-    expect(result.authorization).toEqual({ required: true, granted: false, capabilityId: "workspace.patch.apply" });
-    expect(result.execution).toEqual({ state: "not_executed", receipt: null });
-    expect(result.safety.regressionTestPaths).toEqual([]);
-    expect(result.scoreTrace.features.regressionProtection).toBe(0);
+    expect(result).toMatchObject({
+      schema: "scce.workspace.transformation_family_selection.v1",
+      selected: null,
+      execution: { state: "not_executed" }
+    });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
 
     const compilerRequest = parseWorkspaceCodingPatchPlanRequest({
@@ -275,15 +271,11 @@ describe("workspace patch planning API contract", () => {
       }
     });
     const compilerResult = await planWorkspaceCodingPatchApiRequest(context, compilerRequest);
-    expect(compilerResult.plan.operations).toEqual([expect.objectContaining({
-      kind: "replace",
-      path: "src/index.ts",
-      content: "import type { Legacy } from \"./legacy.js\";\r\nconst count = 1;\r\nexport const value = count;\r\n"
-    })]);
-    expect(compilerResult.authorization.granted).toBe(false);
-    expect(compilerResult.execution.state).toBe("not_executed");
-    expect(compilerResult.safety.regressionTestPaths).toEqual([]);
-    expect(compilerResult.scoreTrace.features.regressionProtection).toBe(0);
+    expect(compilerResult).toMatchObject({
+      schema: "scce.workspace.transformation_family_selection.v1",
+      selected: null,
+      execution: { state: "not_executed" }
+    });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
 
     const unrelatedRequest = parseWorkspaceCodingPatchPlanRequest({
@@ -298,9 +290,11 @@ describe("workspace patch planning API contract", () => {
         checks: ["compiler", "typecheck", "tests"]
       }
     });
-    await expect(planWorkspaceCodingPatchApiRequest(context, unrelatedRequest)).rejects.toThrow(
-      /exact TS####.*selection=unselected_candidates.*codeFixIdentity:/u
-    );
+    await expect(planWorkspaceCodingPatchApiRequest(context, unrelatedRequest)).resolves.toMatchObject({
+      schema: "scce.workspace.transformation_family_selection.v1",
+      selected: null,
+      execution: { state: "not_executed" }
+    });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
   }, 30_000);
 
@@ -377,6 +371,10 @@ describe("workspace patch planning API contract", () => {
 
     const result = await planWorkspaceCodingPatchApiRequest(context, request);
 
+    expect("statusId" in result && result.statusId).toBe("scce.workspace.compiler_patch.selected.v1");
+    if (!("statusId" in result) || result.statusId !== "scce.workspace.compiler_patch.selected.v1") {
+      throw new Error("compiler fixture did not select one verified transformation");
+    }
     expect(result.plan.operations).toEqual([expect.objectContaining({
       kind: "replace",
       path: "src/index.ts",
@@ -464,8 +462,12 @@ describe("workspace patch planning API contract", () => {
       }
     });
 
-    await expect(planWorkspaceCodingPatchApiRequest(context, request))
-      .rejects.toThrow(/coding request is unsupported: request did not couple to an admissible workspace kernel answer/u);
+    await expect(planWorkspaceCodingPatchApiRequest(context, request)).resolves.toMatchObject({
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_config_absent.v1"],
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
+    });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(files.get("src/index.ts"));
     await expect(readFile(join(root, "src/domain.ts"), "utf8")).rejects.toThrow();
     await expect(readFile(join(root, "test/generated-artifact.test.ts"), "utf8")).rejects.toThrow();
@@ -479,7 +481,11 @@ describe("workspace patch planning API contract", () => {
         requestedPaths: ["src/not-materialized.ts"]
       })
     });
-    await expect(planWorkspaceCodingPatchApiRequest(context, unsupported)).rejects.toThrow(/coding request is unsupported/u);
+    await expect(planWorkspaceCodingPatchApiRequest(context, unsupported)).resolves.toMatchObject({
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
+    });
     await expect(readFile(join(root, "src/not-materialized.ts"), "utf8")).rejects.toThrow();
   }, 30_000);
 });

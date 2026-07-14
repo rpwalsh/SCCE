@@ -82,6 +82,31 @@ export interface WorkspaceLearningContext {
   audit: JsonValue;
 }
 
+/**
+ * Source-neutral contract for a semantic program observation bound to one
+ * complete durable workspace revision. Adapters retain their typed program
+ * payload while the kernel owns the revision and execution-state boundary.
+ */
+export interface WorkspaceSemanticProgramObservation<TProgram = unknown> {
+  schema: "scce.workspace_kernel.semantic_program_observation.v1";
+  id: string;
+  workspace: WorkspaceCoreWorkspaceRef;
+  workspaceRevision: {
+    workspaceId: string;
+    revisionId: string;
+    revisionHash: string;
+    workspaceUpdatedAt: number;
+  };
+  analyzer: {
+    id: string;
+    version: string;
+  };
+  semanticRevisionHash: string;
+  program: TProgram;
+  execution: { state: "not_executed" };
+  audit: JsonValue;
+}
+
 export interface WorkspaceProgramContext {
   schema: "scce.workspace_kernel.program_context.v1";
   plannerInputs: WorkspaceProgramPlannerInput[];

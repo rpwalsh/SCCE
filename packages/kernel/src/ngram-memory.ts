@@ -13,6 +13,7 @@ import type {
   NgramObservation,
   SemanticFrameRecord
 } from "./storage.js";
+import { learnedScriptIdForCharacter } from "./language.js";
 import { compactKneserNeyForProfile, trainKneserNey } from "./kneser-ney.js";
 import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
 
@@ -62,7 +63,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
           const history = parts.slice(0, -1);
           const fieldWeight = clamp01((entry.count / total) * (0.35 + 0.65 * alpha));
           return {
-            id: options.idFactory.semanticId("ngram_observation", { streamId: input.streamId, languageHint, order: counter.order, parts, sourceVersionId: input.sourceVersionId }),
+            id: options.idFactory.semanticId("ngram_observation", { streamId: input.streamId, profileId: input.profile.id, languageHint, order: counter.order, parts, sourceVersionId: input.sourceVersionId }),
             streamId: input.streamId,
             languageHint,
             order: counter.order,
@@ -73,19 +74,20 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
             sourceVersionId: input.sourceVersionId,
             evidenceId: evidenceIds[0],
             observedAt: input.createdAt,
-            metadata: toJsonValue({ error: entry.error, approximate: entry.error > 0, evidenceIds: evidenceIds.slice(0, 16) })
+            metadata: toJsonValue({ profileId: input.profile.id, error: entry.error, approximate: entry.error > 0, evidenceIds: evidenceIds.slice(0, 16) })
           } satisfies NgramObservation;
         });
       });
       const kneserNeyModels = [trainKneserNey(symbols, { order: maxOrder, discount: 0.75, vocabularyLimit: input.vocabularyLimit ?? 24000 })];
       const models = kneserNeyModels.map(model => ({
-        id: options.idFactory.semanticId("ngram_model", { streamId: input.streamId, languageHint, order: model.order, sourceVersionId: input.sourceVersionId }),
+        id: options.idFactory.semanticId("ngram_model", { streamId: input.streamId, profileId: input.profile.id, languageHint, order: model.order, sourceVersionId: input.sourceVersionId }),
         streamId: input.streamId,
         languageHint,
         maxOrder: model.order,
         discount: model.discount,
         modelJson: toJsonValue({
           sourceVersionId: input.sourceVersionId,
+          profileId: input.profile.id,
           languageHint,
           model,
           compact: compactKneserNeyForProfile(model, input.text)
@@ -94,7 +96,14 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
       } satisfies NgramModelRecord));
       const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, symbols, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
       const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory });
-      const semanticFrames = input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(span, index, options.idFactory, options.hasher, input.createdAt));
+      const semanticFrames = input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
+        span,
+        index,
+        input.profile.id,
+        options.idFactory,
+        options.hasher,
+        input.createdAt
+      ));
       return {
         observations,
         models,
@@ -197,12 +206,13 @@ function compileLanguagePatterns(input: {
   }));
 }
 
-function semanticFrameForSpan(span: EvidenceSpan, index: number, idFactory: IdFactory, hasher: Hasher, createdAt: number): SemanticFrameRecord {
+function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: string, idFactory: IdFactory, hasher: Hasher, createdAt: number): SemanticFrameRecord {
   const symbols = symbolizeData(span.text).slice(0, 256);
   const features = featureSet(span.text, 256);
   const roles = syntaxSignatures(symbols).slice(0, 16);
   const frameJson = toJsonValue({
     sourceVersionId: span.sourceVersionId,
+    profileId,
     evidenceId: span.id,
     index,
     textHash: hasher.digestHex(span.text),
@@ -212,7 +222,7 @@ function semanticFrameForSpan(span: EvidenceSpan, index: number, idFactory: IdFa
     roleSignature: roles
   });
   return {
-    id: idFactory.semanticId("semantic_frame", { evidenceId: span.id, hash: hasher.digestHex(span.text) }),
+    id: idFactory.semanticId("semantic_frame", { profileId, evidenceId: span.id, hash: hasher.digestHex(span.text) }),
     frameJson,
     embedding: stableVector(features, hasher, 64),
     evidenceIds: [span.id],
@@ -304,16 +314,22 @@ function shapeOf(text: string): string {
 
 function scriptHint(text: string): string {
   const chars = [...text].filter(char => !/\s/u.test(char));
-  if (chars.some(char => /\p{Script=Arabic}/u.test(char))) return "script:Arab";
-  if (chars.some(char => /\p{Script=Hebrew}/u.test(char))) return "script:Hebr";
-  if (chars.some(char => /\p{Script=Han}/u.test(char))) return "script:Hani";
-  if (chars.some(char => /\p{Script=Hiragana}/u.test(char))) return "script:Hira";
-  if (chars.some(char => /\p{Script=Katakana}/u.test(char))) return "script:Kana";
-  if (chars.some(char => /\p{Script=Cyrillic}/u.test(char))) return "script:Cyrl";
-  if (chars.some(char => /\p{Script=Devanagari}/u.test(char))) return "script:Deva";
-  if (chars.some(char => /\p{Script=Thai}/u.test(char))) return "script:Thai";
-  if (chars.some(char => /\p{Script=Greek}/u.test(char))) return "script:Greek";
-  if (chars.some(char => /\p{Script=Latin}/u.test(char))) return "script:Latn";
-  if (chars.some(char => /\p{Number}/u.test(char))) return "script:Zyyy:number";
-  return "script:Zxxx";
+  const counts = new Map<string, number>();
+  for (const char of chars) {
+    const script = learnedScriptIdForCharacter(char);
+    counts.set(script, (counts.get(script) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || compareCodePoint(left[0], right[0]))[0]?.[0] ?? "script:Zxxx";
+}
+
+function compareCodePoint(left: string, right: string): number {
+  const a = [...left];
+  const b = [...right];
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    const x = a[index]!.codePointAt(0)!;
+    const y = b[index]!.codePointAt(0)!;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return a.length - b.length;
 }

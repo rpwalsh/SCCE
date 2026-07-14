@@ -659,7 +659,13 @@ export interface ForecastEnvelope {
 export interface LanguageProfile {
   id: string;
   sourceVersionId: SourceVersionId;
-  discoveredNames?: Array<{ surface: string; evidenceRefs: string[]; confidence: number }>;
+  discoveredNames?: Array<{
+    surface: string;
+    evidenceRefs: string[];
+    /** Source-metadata ownership; distinct from evidence proof. */
+    sourceVersionRefs?: SourceVersionId[];
+    confidence: number;
+  }>;
   scripts: Array<{ script: string; mass: number }>;
   symbolShapes: Array<{ shape: string; count: number }>;
   charNgrams: Array<{ ngram: string; count: number }>;
@@ -670,6 +676,8 @@ export interface LanguageProfile {
   updatedAt?: number;
   kneserNey?: JsonValue;
   ngramProfile?: JsonValue;
+  /** Provisional learned-artifact support used only for deterministic fallback routing. */
+  artifactSupport?: number;
 }
 
 export interface LanguageCompetenceVector {

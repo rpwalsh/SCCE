@@ -1,7 +1,7 @@
 import type { CorrectionRuleRecord } from "./storage.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
-import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
+import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import type {
@@ -52,16 +52,25 @@ import {
   type ConstructForceInferenceResult,
   type DetailProfilePolicy
 } from "./control-plane-profiles.js";
-import { clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
-import { ANSWER_SLOT_IDS, RELATION_ROLE_IDS } from "./question-routing-ids.js";
+import {
+  realizeLearnedSurface,
+  type LearnedConstruction,
+  type LearnedRealization,
+  type SurfaceMeaningPlan
+} from "./language-construction.js";
+import {
+  languageConstructionOccurrenceId,
+  languageConstructionRoleId,
+  type DurableLanguageConstructionBundle
+} from "./language-construction-memory.js";
+import { rankLanguageProfilesForSurface } from "./language.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
-  sourceQuote: "rel.1f7c4a92",
   polarityReject: "rel.8d64be21",
-  member: "rel.91db4a63",
   temporalCounterexample: "rel.7f1c2a90"
 } as const;
 
@@ -229,6 +238,8 @@ interface SurfaceCandidate {
   discoursePlan?: DiscoursePlan;
   sentenceCandidates?: SentenceCandidate[];
   boundaryDecisions?: DiscourseAssembly["boundaryDecisions"];
+  exactSurface?: boolean;
+  audit?: JsonValue;
 }
 
 interface SentenceCandidate {
@@ -271,7 +282,7 @@ export interface RealizationTrace {
   surfacePlan: JsonValue;
   discoursePlan: JsonValue;
   realizationFrames: JsonValue;
-  candidates: Array<{ id: string; style: string; path: SurfaceCandidatePath; textHash: string; score: number; changedByCorrections: number; preservation: number; forbiddenHits: number; importedPieceIds: string[] }>;
+  candidates: Array<{ id: string; style: string; path: SurfaceCandidatePath; textHash: string; score: number; changedByCorrections: number; preservation: number; forbiddenHits: number; importedPieceIds: string[]; audit?: JsonValue }>;
   selected: { id: string; path: SurfaceCandidatePath; textHash: string; languageActivation: number; semanticPreservation: number };
   languageMemory: JsonValue;
   brainInfluence: JsonValue;
@@ -353,7 +364,8 @@ export interface Mouth {
   speak(input: SpeakInput): Promise<SpokenOutput>;
 }
 
-export function createMouth(options: { languageMemory: LanguageMemoryRuntime; correctionMemory: CorrectionMemory; hashText: (text: string) => string }): Mouth {
+export function createMouth(options: { languageMemory: LanguageMemoryRuntime; correctionMemory: CorrectionMemory; hashText: (text: string) => string; hasher?: Hasher }): Mouth {
+  const constructionHasher: Hasher = options.hasher ?? { digestHex: options.hashText };
   return {
     async speak(input) {
       const correctionInfluence = options.correctionMemory.styleFromRules({
@@ -366,6 +378,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const priorPieces = importedSurfacePieces(input, plan, options.languageMemory);
       const kernelSelectedCandidate = input.selectedCandidate ? surfaceCandidateFromKernelCandidate(input.selectedCandidate, discoursePlan, input) : undefined;
       const semanticSourceCandidate = semanticSourceAnswerCandidate(input, discoursePlan);
+      const learnedConstructionCandidate = semanticLearnedConstructionCandidate(input, plan, discoursePlan, constructionHasher);
       const constructAnchored = constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
       const preserveEvidenceBackedKernelCandidate = Boolean(
         kernelSelectedCandidate &&
@@ -380,19 +393,28 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const rawCandidates = [
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(semanticSourceCandidate && semanticSourceCandidate.id !== kernelSelectedCandidate?.id ? [semanticSourceCandidate] : []),
+        ...(learnedConstructionCandidate ? [learnedConstructionCandidate] : []),
         ...(constructAnchored ? [constructAnchored] : []),
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ].filter(candidate => admissibleMouthSurface(candidate.text));
       const scoredCandidates = rawCandidates.map(candidate => {
-        const corrected = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
-        const bounded = preserveSurfaceExtent(corrected.text, input.maxLength, plan);
+        const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
+        const corrected = candidate.exactSurface
+          ? { text: candidate.text, applied: appliedCorrection.applied }
+          : appliedCorrection;
+        const bounded = candidate.exactSurface
+          ? candidate.text
+          : preserveSurfaceExtent(corrected.text, input.maxLength, plan);
         const preservation = semanticPreservation({ text: bounded, plan, entailment: input.entailment });
         const score = options.languageMemory.score({ state: input.languageMemory, text: bounded, contextText: input.entailment.claim.text });
         const workspaceAnchoredCandidate = candidate.id === "candidate:generated:construct-anchored"
           && (isWorkspaceKernelSpeakInput(input) || input.requestedAuthority === "program");
         const proofBoundaryCandidate = candidate.id === "candidate:generated:proof-boundary";
-        const semanticAnswerSlotCandidate = candidate.id === "candidate:generated:semantic-answer-slots";
+        const semanticLearnedConstructionCandidate = candidate.id.startsWith("candidate:generated:learned-construction:");
+        const exactConstraintHits = candidate.exactSurface
+          ? exactSurfaceConstraintHits(candidate.text, input, plan, appliedCorrection.applied)
+          : [];
         const conversationMemoryCandidate = candidate.id === "candidate:generated:conversation-memory";
         const conversationContextCandidate = conversationMemoryCandidate && !candidate.generation;
         const creativeSurfaceCandidate = creativeRequested || candidate.id.startsWith("candidate:generated:creative:") || candidate.style.includes("creative");
@@ -409,10 +431,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
               ...semanticAnswerDriftHits(bounded, input, priorPieces),
               ...unanchoredImportedPriorHits(candidate, input)
             ])
-          : semanticAnswerSlotCandidate
+          : semanticLearnedConstructionCandidate
             ? uniqueStrings([
               ...forbiddenSurfaceHits(bounded, plan),
-              ...questionEchoHits(bounded, input.entailment.claim.text)
+              ...semanticAnswerDriftHits(bounded, input, priorPieces),
+              ...exactConstraintHits
             ])
           : conversationMemoryCandidate
             ? uniqueStrings([
@@ -435,17 +458,24 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const validEnergyRows = energyRows.filter(row => row.result.valid);
       const correctedCandidates = energyRows.map(row => byCandidateId.get(row.candidate.id)).filter((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate));
       const selectedRow = validEnergyRows[0] ?? energyRows.find(row => !row.result.hardViolations.length);
+      const selectedKernelCandidate = input.selectedCandidate ? scoredCandidates.find(candidate => candidate.id === input.selectedCandidate?.id) : undefined;
       const semanticAnswerState = creativeRequested ? undefined : semanticAnswerConstructState(input.construct);
+      const semanticLearnedCandidate = semanticAnswerState
+        ? scoredCandidates.find(candidate => (
+          candidate.id.startsWith("candidate:generated:learned-construction:")
+          && !candidate.forbiddenHits.length
+          && selectedRow?.candidate.id === candidate.id
+          && (!selectedKernelCandidate || candidate.fit >= selectedKernelCandidate.fit)
+          && energyRows.some(row => row.candidate.id === candidate.id && row.result.valid)
+        ))
+        : undefined;
       const semanticRhetoricalCandidate = semanticAnswerState
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:rhetorical-lattice" && !candidate.forbiddenHits.length)
-        : undefined;
-      const semanticSlotCandidate = semanticAnswerState
-        ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:semantic-answer-slots" && !candidate.forbiddenHits.length)
         : undefined;
       const semanticTemporalCounterexampleCandidate = semanticAnswerState
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:semantic-temporal-counterexample" && !candidate.forbiddenHits.length)
         : undefined;
-      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticRhetoricalCandidate ?? semanticSlotCandidate ?? (semanticAnswerState
+      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
         ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
         : undefined);
       const structuredConstructCandidate = generatedConstructSurface(input.construct) && !creativeRequested
@@ -458,7 +488,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:construct-anchored" && !candidate.forbiddenHits.some(hit => hit.includes("echo")))
         : undefined;
       const energySelected = selectedRow ? byCandidateId.get(selectedRow.candidate.id) : undefined;
-      const selectedKernelCandidate = input.selectedCandidate ? scoredCandidates.find(candidate => candidate.id === input.selectedCandidate?.id) : undefined;
       const learnedCreativeCandidateAvailable = creativeRequested && scoredCandidates.some(candidate => candidate.id.startsWith("candidate:generated:creative:"));
       const selected = semanticGraphCandidate ??
         structuredConstructCandidate ??
@@ -486,6 +515,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           boundaryDecisions: selected?.boundaryDecisions ?? [],
           generatedSentences: selected?.sentenceCandidates?.map(sentence => sentenceSummary(sentence, options.hashText)) ?? [],
           generation: selected?.generation?.audit ?? null,
+          candidateAudit: selected?.audit ?? null,
           score: selected?.score.audit ?? null,
           importedNgramModelIdsUsed: uniqueStrings([...(selected?.sentenceCandidates?.flatMap(sentence => sentence.generation.importedNgramModelIdsUsed) ?? selected?.generation?.importedNgramModelIdsUsed ?? []), ...selectedImportedIds(selected, ["model:", "ngram:"])]),
           importedObservationIdsUsed: uniqueStrings([...(selected?.sentenceCandidates?.flatMap(sentence => sentence.generation.importedObservationIdsUsed) ?? selected?.generation?.importedObservationIdsUsed ?? []), ...selectedImportedIds(selected, ["obs:", "observation:"])]),
@@ -495,28 +525,41 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         })
       };
       const selectedPreservation = selected?.preservation ?? semanticPreservation({ text: realization.text, plan, entailment: input.entailment });
-      const preservationText = selectedPreservation.score < preservationFloor(plan) || Boolean(selected?.forbiddenHits.length)
+      const exactSelectedSurface = selected?.exactSurface === true;
+      const preservationText = !exactSelectedSurface && (selectedPreservation.score < preservationFloor(plan) || Boolean(selected?.forbiddenHits.length))
         ? repairPreservation({ text: realization.text, plan, preservation: selectedPreservation })
         : realization.text;
       const preservationChecked = preservationText === realization.text ? selectedPreservation : semanticPreservation({ text: preservationText, plan, entailment: input.entailment });
-      const readabilityRepair = repairSurfaceReadability({ text: preservationText, plan, discoursePlan, preservation: preservationChecked });
+      const readabilityRepair: SurfaceRepairResult = exactSelectedSurface
+        ? {
+          text: preservationText,
+          changed: false,
+          audit: toJsonValue({ skipped: true, reasonId: "surface.repair.exact_learned_construction" })
+        }
+        : repairSurfaceReadability({ text: preservationText, plan, discoursePlan, preservation: preservationChecked });
       const repairedPreservation = readabilityRepair.changed ? semanticPreservation({ text: readabilityRepair.text, plan, entailment: input.entailment }) : preservationChecked;
-      const finalText = repairedPreservation.score < preservationFloor(plan) ? preservationText : readabilityRepair.text;
+      const finalText = exactSelectedSurface
+        ? realization.text
+        : repairedPreservation.score < preservationFloor(plan) ? preservationText : readabilityRepair.text;
       const finalPreservation = finalText === preservationText ? preservationChecked : repairedPreservation;
-      const caveatCheckedText = ensureRuntimeCaveats(finalText, plan);
-      const artifactCleanedText = stripInternalSurfaceArtifacts(tidySurface(caveatCheckedText));
-      const finalSurfaceText = repairSemanticAnswerFinalSurface(artifactCleanedText, input.construct);
+      const caveatCheckedText = exactSelectedSurface ? finalText : ensureRuntimeCaveats(finalText, plan);
+      const artifactCleanedText = exactSelectedSurface ? caveatCheckedText : stripInternalSurfaceArtifacts(tidySurface(caveatCheckedText));
+      const finalSurfaceText = exactSelectedSurface ? artifactCleanedText : repairSemanticAnswerFinalSurface(artifactCleanedText, input.construct);
       const finalSurfacePreservation = finalSurfaceText === finalText ? finalPreservation : semanticPreservation({ text: finalSurfaceText, plan, entailment: input.entailment });
-      const protectedSurfaceText = protectedImportSummarySurface(plan, finalSurfaceText);
+      const protectedSurfaceText = exactSelectedSurface ? finalSurfaceText : protectedImportSummarySurface(plan, finalSurfaceText);
       const protectedSurfacePreservation = protectedSurfaceText === finalSurfaceText ? finalSurfacePreservation : semanticPreservation({ text: protectedSurfaceText, plan, entailment: input.entailment });
       const evidenceRefs = outputEvidenceRefs(input, plan, selected?.evidenceIds);
-      const formatProtectedSurfaceText = selected?.text ? finalFormattedSurface(selected.text, input, plan) : undefined;
+      const formatProtectedSurfaceText = exactSelectedSurface
+        ? selected?.text
+        : selected?.text ? finalFormattedSurface(selected.text, input, plan) : undefined;
       const unmarkedOutputSurfaceText = admissibleMouthSurface(formatProtectedSurfaceText ?? protectedSurfaceText)
         ? (formatProtectedSurfaceText ?? protectedSurfaceText)
         : "";
       const proofSurface = proofSurfaceMarker({ evidenceRefs, entailment: input.entailment });
       const preserveRequestedFormat = Boolean(formatProtectedSurfaceText);
-      let outputSurfaceText = applyProofSurfaceMarker(unmarkedOutputSurfaceText, proofSurface, { exposeMarker: Boolean(input.style?.exposeProofTerms), preserveFormatting: preserveRequestedFormat });
+      let outputSurfaceText = exactSelectedSurface
+        ? unmarkedOutputSurfaceText
+        : applyProofSurfaceMarker(unmarkedOutputSurfaceText, proofSurface, { exposeMarker: Boolean(input.style?.exposeProofTerms), preserveFormatting: preserveRequestedFormat });
       let outputSurfacePreservation = outputSurfaceText === protectedSurfaceText ? protectedSurfacePreservation : semanticPreservation({ text: outputSurfaceText, plan, entailment: input.entailment });
       let emittedSurfaceEnergy = scoreSurfaceEnergy({
         id: selected?.id ?? "candidate:generated:emitted-surface",
@@ -532,7 +575,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         boundaryDecisions: selected?.boundaryDecisions ?? [],
         metadata: toJsonValue({ path: selected?.path ?? "generated", style: selected?.style ?? "surface.path.generated.emitted", emittedSurface: true, selectedCandidateId: selected?.id ?? null })
       }, finalEnergyContext);
-      if (!emittedSurfaceEnergy.valid && selected?.text) {
+      if (!emittedSurfaceEnergy.valid && selected?.text && !exactSelectedSurface) {
         const conservativeFormatted = finalFormattedSurface(selected.text, input, plan);
         const conservativeUnmarked = conservativeFormatted ?? stripInternalSurfaceArtifacts(tidySurface(ensureRuntimeCaveats(selected.text, plan)));
         const conservativeText = applyProofSurfaceMarker(conservativeUnmarked, proofSurface, { exposeMarker: Boolean(input.style?.exposeProofTerms), preserveFormatting: Boolean(conservativeFormatted) });
@@ -589,7 +632,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             changedByCorrections: candidate.correction.applied.filter(item => item.changed).length,
             preservation: Number(candidate.preservation.score.toFixed(6)),
             forbiddenHits: candidate.forbiddenHits.length,
-            importedPieceIds: candidate.importedPieceIds
+            importedPieceIds: candidate.importedPieceIds,
+            audit: candidate.audit
           })),
           selected: {
             id: selected?.id ?? "language-memory-selected",
@@ -673,17 +717,23 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       };
       const plan = buildSurfacePlan({ ...input, correctionRules: [] }, noLearnedInfluence, options.hashText);
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
-      const selectedText = input.selectedCandidate && kernelCandidateDirectSurfaceAllowed(input.selectedCandidate)
-        ? input.selectedCandidate.answer
-        : semanticSlotSurface(input.semanticInput?.slots[0]?.value ?? null)
-          || plan.orderedPoints.find(point => point.role === "answer" && point.proposition.trim())?.proposition
-          || plan.orderedPoints.find(programOrArtifactSurfacePoint)?.proposition
-          || "";
+      const deterministicSurfaces = [
+        input.selectedCandidate && kernelCandidateDirectSurfaceAllowed(input.selectedCandidate)
+          ? input.selectedCandidate.answer
+          : "",
+        semanticSlotSurface(input.semanticInput?.slots[0]?.value ?? null),
+        plan.orderedPoints.find(point => point.role === "answer" && point.proposition.trim())?.proposition ?? "",
+        plan.orderedPoints.find(programOrArtifactSurfacePoint)?.proposition ?? "",
+        boundarySurfaceFromRuntime(input.entailment, input.evidence, proofGateVerdict(input.entailment))
+      ];
+      const selectedText = deterministicSurfaces.find(surface => admissibleMouthSurface(surface)) ?? "";
       const candidateText = preserveSurfaceExtent(tidySurface(selectedText), input.maxLength, plan);
       const text = admissibleMouthSurface(candidateText) ? candidateText : "";
       const preservation = semanticPreservation({ text, plan, entailment: input.entailment });
       const evidenceRefs = outputEvidenceRefs(input, plan, input.selectedCandidate?.evidenceIds);
-      const selectedId = input.selectedCandidate?.id ?? "candidate:deterministic:surface-plan";
+      const selectedId = text
+        ? input.selectedCandidate?.id ?? "candidate:deterministic:surface-plan"
+        : "candidate:deterministic:continuation-required";
       const textHash = options.hashText(text);
       const planId = planHash(plan, options.hashText);
       return {
@@ -1461,6 +1511,365 @@ function semanticSourceAnswerCandidate(input: SpeakInput, discoursePlan: Discour
   };
 }
 
+interface LearnedConstructionCandidateRow {
+  candidate: SurfaceCandidate;
+  bundleId: string;
+  constructionId: string;
+}
+
+function semanticLearnedConstructionCandidate(
+  input: SpeakInput,
+  plan: SurfacePlan,
+  discoursePlan: DiscoursePlan,
+  hasher: Hasher
+): SurfaceCandidate | undefined {
+  const state = semanticAnswerConstructState(input.construct);
+  if (!state?.certificationBoundary.externalFactCertification) return undefined;
+  if (state.forceId !== "output.force.source_bound_answer" || state.boundaryId !== "output.force.source_bound") return undefined;
+  if (plan.targetLanguage !== input.languageProfile.id) return undefined;
+  const certifiedEvidenceIds = new Set(state.certificationBoundary.evidenceSpanIds);
+  if (!certifiedEvidenceIds.size) return undefined;
+  const certifiedSourceVersionIds = new Set(state.certificationBoundary.sourceVersionIds);
+  const rows: LearnedConstructionCandidateRow[] = [];
+  const facts = uniquePriorBoundFacts(state.selectedFacts);
+  if (facts.length !== 1 || state.selectedFacts.length !== 1) return undefined;
+  const fact = facts[0]!;
+  if (!completeLearnedFactCoverage(state, fact) || !learnedFactRouteAdmissible(fact)) return undefined;
+
+  if (!exactFactSurface(fact.subject) || !exactFactSurface(fact.predicate) || !exactFactSurface(fact.object)) return undefined;
+  const factEvidenceIds = new Set(fact.evidenceIds ?? []);
+  if (!factEvidenceIds.size || !fact.sourceVersionId) return undefined;
+  const proofEvidence = input.evidence
+    .filter(span => span.status === "promoted"
+      && jsonRecord(span.trustVector).forceClass === "direct_evidence"
+      && certifiedEvidenceIds.has(String(span.id))
+      && factEvidenceIds.has(String(span.id))
+      && fact.sourceVersionId === String(span.sourceVersionId)
+      && certifiedSourceVersionIds.has(String(span.sourceVersionId)))
+    .sort((left, right) => compareSurfaceText(String(left.id), String(right.id)));
+  if (!proofEvidence.length) return undefined;
+  const routeAdmissibility = Math.max(...proofEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
+  if (routeAdmissibility <= 0) return undefined;
+  const proofEvidenceIds = proofEvidence.map(span => String(span.id));
+  const bundles = input.languageMemory.importedConstructionBundles
+    .filter(bundle => bundle.bindingId === fact.relationId
+      && bundle.sourceProfileId === input.languageProfile.id
+      && bundle.targetProfileId === input.languageProfile.id)
+    .sort((left, right) => compareSurfaceText(left.id, right.id));
+
+  for (const bundle of bundles) {
+    for (const construction of bundle.constructions) {
+      const candidate = learnedConstructionCandidateFromBundle({
+        input,
+        plan,
+        discoursePlan,
+        fact,
+        bundle,
+        construction,
+        proofEvidenceIds,
+        routeAdmissibility,
+        hasher
+      });
+      if (candidate) rows.push({ candidate, bundleId: bundle.id, constructionId: construction.id });
+    }
+  }
+
+  return rows.sort((left, right) => (
+    right.candidate.fit - left.candidate.fit
+    || compareSurfaceText(left.bundleId, right.bundleId)
+    || compareSurfaceText(left.constructionId, right.constructionId)
+    || compareSurfaceText(left.candidate.id, right.candidate.id)
+  ))[0]?.candidate;
+}
+
+function learnedConstructionCandidateFromBundle(input: {
+  input: SpeakInput;
+  plan: SurfacePlan;
+  discoursePlan: DiscoursePlan;
+  fact: SemanticAnswerFact;
+  bundle: DurableLanguageConstructionBundle;
+  construction: LearnedConstruction;
+  proofEvidenceIds: readonly string[];
+  routeAdmissibility: number;
+  hasher: Hasher;
+}): SurfaceCandidate | undefined {
+  if (input.construction.profileKey !== input.bundle.targetProfileId
+    || !input.bundle.constructions.some(construction => construction.id === input.construction.id)) return undefined;
+  const factSlots = [
+    { slotIndex: 0, semanticId: input.fact.sourceNodeId, surface: input.fact.subject },
+    { slotIndex: 1, semanticId: input.fact.relationId, surface: input.fact.predicate },
+    { slotIndex: 2, semanticId: input.fact.targetNodeId, surface: input.fact.object }
+  ];
+  const slotByRoleId = new Map(factSlots.map(slot => [
+    languageConstructionRoleId(input.hasher, input.bundle.bindingId, slot.slotIndex),
+    slot
+  ]));
+  const occurrenceSlotIndexes = constructionOccurrenceSlotIndexes(input.bundle);
+  if (!occurrenceSlotIndexes) return undefined;
+  const formClasses = input.bundle.formClasses.filter(formClass => formClass.constructionId === input.construction.id);
+  const formClassByOccurrence = new Map(formClasses.map(formClass => [formClass.occurrenceId, formClass.id]));
+  const seenSlotIndexes = new Set<number>();
+  const slots: Array<SurfaceMeaningPlan["slots"][number]> = [];
+  for (const occurrence of input.construction.roleOccurrences) {
+    if (occurrence.realization !== "spoken") return undefined;
+    const slotIndex = occurrenceSlotIndexes.get(occurrence.occurrenceId);
+    const factSlot = slotIndex === undefined ? undefined : slotByRoleId.get(occurrence.roleId);
+    if (!factSlot || factSlot.slotIndex !== slotIndex || seenSlotIndexes.has(slotIndex)) return undefined;
+    const expectedOccurrenceId = languageConstructionOccurrenceId(input.hasher, input.bundle.bindingId, slotIndex, 0);
+    if (occurrence.occurrenceId !== expectedOccurrenceId) return undefined;
+    const formClassId = formClassByOccurrence.get(occurrence.occurrenceId);
+    if (!formClassId) return undefined;
+    seenSlotIndexes.add(slotIndex);
+    slots.push({
+      roleId: occurrence.roleId,
+      occurrenceId: occurrence.occurrenceId,
+      variants: [{
+        id: opaqueSurfaceId(input.hasher, "variant", [input.bundle.id, input.construction.id, input.fact.relationId, factSlot.semanticId, factSlot.surface]),
+        profileKey: input.input.languageProfile.id,
+        surface: factSlot.surface,
+        evidenceIds: [...input.proofEvidenceIds],
+        support: input.routeAdmissibility,
+        formClassId
+      }]
+    });
+  }
+  if (seenSlotIndexes.size !== factSlots.length || factSlots.some(slot => !seenSlotIndexes.has(slot.slotIndex))) return undefined;
+  const plan: SurfaceMeaningPlan = {
+    id: opaqueSurfaceId(input.hasher, "plan", [
+      input.bundle.id,
+      input.construction.id,
+      input.fact.sourceNodeId,
+      input.fact.relationId,
+      input.fact.targetNodeId,
+      input.proofEvidenceIds
+    ]),
+    profileKey: input.input.languageProfile.id,
+    roleSignature: factSlots.map(slot => languageConstructionRoleId(input.hasher, input.bundle.bindingId, slot.slotIndex)),
+    slots
+  };
+  const realized = realizeLearnedSurface({
+    plan,
+    constructions: [input.construction],
+    formClasses,
+    hasher: input.hasher
+  });
+  if (realized.status !== "realized") return undefined;
+  if (!realized.realization.trace
+    .filter(part => part.kind === "literal")
+    .every(part => [...part.surface].every(isUnboundStructuralPoint))) return undefined;
+  if (!exactSurfaceSatisfiesPlan(realized.realization.text, input.input, input.plan)
+    || !learnedProfileAcceptsSurface(input.input.languageProfile, realized.realization.text)) return undefined;
+  return persistedLearnedSurfaceCandidate({
+    input,
+    realization: realized.realization,
+    proofEvidenceIds: input.proofEvidenceIds,
+    normalizedSupport: input.routeAdmissibility
+  });
+}
+
+function persistedLearnedSurfaceCandidate(input: {
+  input: {
+    input: SpeakInput;
+    plan: SurfacePlan;
+    discoursePlan: DiscoursePlan;
+    fact: SemanticAnswerFact;
+    bundle: DurableLanguageConstructionBundle;
+    construction: LearnedConstruction;
+    proofEvidenceIds: readonly string[];
+    routeAdmissibility: number;
+    hasher: Hasher;
+  };
+  realization: LearnedRealization;
+  proofEvidenceIds: readonly string[];
+  normalizedSupport: number;
+}): SurfaceCandidate {
+  const { fact, bundle, construction, discoursePlan, hasher } = input.input;
+  return {
+    id: `candidate:generated:learned-construction:${hasher.digestHex(input.realization.id).slice(0, 20)}`,
+    style: "surface.path.generated.learned_construction",
+    path: "generated",
+    text: input.realization.text,
+    evidenceIds: input.proofEvidenceIds.map(id => id as EvidenceId),
+    fit: input.normalizedSupport,
+    importedPieceIds: [],
+    discoursePlan,
+    boundaryDecisions: [],
+    exactSurface: false,
+    audit: toJsonValue({
+      schema: "scce.mouth.learned_construction_candidate.v2",
+      profile: {
+        profileKey: input.input.input.languageProfile.id,
+        profileSourceVersionId: input.input.input.languageProfile.sourceVersionId
+      },
+      selectedFact: {
+        sourceNodeId: fact.sourceNodeId,
+        relationId: fact.relationId,
+        targetNodeId: fact.targetNodeId,
+        proofEvidenceIds: input.proofEvidenceIds
+      },
+      bundle: {
+        id: bundle.id,
+        contentDigest: bundle.contentDigest,
+        bindingId: bundle.bindingId,
+        sourceProfileId: bundle.sourceProfileId,
+        targetProfileId: bundle.targetProfileId,
+        sourceVersionIds: bundle.sourceVersionIds,
+        evidenceIds: bundle.evidenceIds,
+        sourceExamples: bundle.sourceExamples.map(example => ({
+          id: example.id,
+          sourceVersionId: example.sourceVersionId,
+          evidenceId: example.evidenceId,
+          evidenceCharStart: example.evidenceCharStart,
+          evidenceCharEnd: example.evidenceCharEnd,
+          surfaceStartCodePoint: example.surfaceStartCodePoint,
+          surfaceEndCodePoint: example.surfaceEndCodePoint,
+          coordinateSystemId: "unicode.code_point.v1"
+        }))
+      },
+      construction: {
+        id: construction.id,
+        patternEvidenceIds: construction.patternEvidenceIds,
+        provenance: construction.provenance,
+        support: construction.support
+      },
+      realization: {
+        id: input.realization.id,
+        evidenceIds: input.realization.evidenceIds,
+        provenance: input.realization.provenance,
+        trace: input.realization.trace.map(part => ({
+          ...part,
+          outputStart: codePointOffsetAtUtf16(input.realization.text, part.outputStart),
+          outputEnd: codePointOffsetAtUtf16(input.realization.text, part.outputEnd)
+        })),
+        coordinateSystemId: "unicode.code_point.v1",
+        score: input.realization.score
+      }
+    })
+  };
+}
+
+function constructionOccurrenceSlotIndexes(
+  bundle: DurableLanguageConstructionBundle
+): Map<string, number> | undefined {
+  const out = new Map<string, number>();
+  for (const example of bundle.sourceExamples) {
+    for (const role of [...example.roles, ...example.nullRoles]) {
+      const current = out.get(role.occurrenceId);
+      if (current !== undefined && current !== role.slotIndex) return undefined;
+      out.set(role.occurrenceId, role.slotIndex);
+    }
+  }
+  return out;
+}
+
+function exactFactSurface(value: string): boolean {
+  return value.length > 0 && value === value.normalize("NFC") && value === value.trim();
+}
+
+function completeLearnedFactCoverage(state: SemanticAnswerConstructState, fact: SemanticAnswerFact): boolean {
+  if (state.answerSlots.length !== 1 || state.selectedRelations.length !== 1) return false;
+  if (state.selectedRelations[0] !== fact.relationId || state.selectedSubject !== fact.subject) return false;
+  const slot = state.answerSlots[0]!;
+  if (slot.relationIds.length !== 1 || slot.relationIds[0] !== fact.relationId) return false;
+  if (slot.factKeys.length !== 1 || !learnedFactSurfaceKeys(fact).has(slot.factKeys[0]!)) return false;
+  return finiteUnitSignal(slot.support) && finiteUnitSignal(slot.activation);
+}
+
+function learnedFactSurfaceKeys(fact: SemanticAnswerFact): Set<string> {
+  const surfaces = [fact.subject, fact.predicate, fact.object, fact.relationId];
+  return new Set([
+    surfaces.join("\u0001").toLocaleLowerCase().replace(/\s+/gu, " ").trim(),
+    surfaces.map(surface => surface.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, " ").trim()).join("\u0001")
+  ]);
+}
+
+function learnedFactRouteAdmissible(fact: SemanticAnswerFact): boolean {
+  if (fact.forceClass !== "direct_evidence" || fact.answerGrade !== true) return false;
+  if (!Number.isFinite(fact.finalQuestionFit) || (fact.finalQuestionFit ?? 0) < 0.44) return false;
+  return [
+    fact.support,
+    fact.activation,
+    fact.score,
+    fact.overlap,
+    fact.certificationPower,
+    fact.semanticQuality,
+    fact.questionSlotScore
+  ].every(finiteUnitSignal);
+}
+
+function learnedFactRouteAdmissibility(fact: SemanticAnswerFact, span: EvidenceSpan): number {
+  if (!learnedFactRouteAdmissible(fact) || !finiteUnitSignal(span.alpha)) return 0;
+  const factors = [
+    fact.support,
+    fact.activation,
+    fact.score,
+    fact.overlap,
+    fact.finalQuestionFit!,
+    fact.certificationPower!,
+    fact.semanticQuality!,
+    fact.questionSlotScore!,
+    span.alpha
+  ];
+  return clamp01(factors.reduce((product, value) => product * clamp01(value), 1));
+}
+
+function finiteUnitSignal(value: number | undefined): boolean {
+  return Number.isFinite(value) && (value ?? 0) > 0 && (value ?? 0) <= 1;
+}
+
+function exactSurfaceSatisfiesPlan(surface: string, input: SpeakInput, plan: SurfacePlan): boolean {
+  if (input.maxLength && input.maxLength > 0 && [...surface].length > input.maxLength) return false;
+  if (plan.targetLanguage !== input.languageProfile.id) return false;
+  if (plan.targetScript && !input.languageProfile.scripts.some(row => row.script === plan.targetScript)) return false;
+  if (input.requirementField || input.requiredOutputFeatures?.length || input.prohibitedOutputFeatures?.length || input.revisionConstraints?.length) return false;
+  if (plan.caveatBindings.some(binding => !containsSurface(surface, binding.reason))) return false;
+  if (input.learningDecision && (
+    input.learningDecision.answerWithCaveat
+    || input.learningDecision.deferDueToInsufficientEvidence
+    || input.learningDecision.reportContradiction
+    || input.learningDecision.reportUnsupported
+  )) return false;
+  if (input.style?.exposeProofTerms || input.meterPattern || input.meterPatternId) return false;
+  return true;
+}
+
+function exactSurfaceConstraintHits(
+  surface: string,
+  input: SpeakInput,
+  plan: SurfacePlan,
+  correctionApplications: readonly { changed: boolean }[]
+): string[] {
+  const hits: string[] = [];
+  if (!exactSurfaceSatisfiesPlan(surface, input, plan)) hits.push("surface.exact.constraint_mismatch");
+  if (correctionApplications.some(application => application.changed)) hits.push("surface.exact.correction_required");
+  return hits;
+}
+
+function codePointOffsetAtUtf16(surface: string, offset: number): number {
+  return [...surface.slice(0, Math.max(0, offset))].length;
+}
+
+function isUnboundStructuralPoint(point: string): boolean {
+  return isTrimCodePoint(point) || /[\p{P}\p{Separator}]/u.test(point);
+}
+
+function isTrimCodePoint(point: string): boolean {
+  return point.trim().length === 0;
+}
+
+function learnedProfileAcceptsSurface(profile: LanguageProfile, surface: string): boolean {
+  const ranked = rankLanguageProfilesForSurface([profile], surface)[0];
+  return Boolean(ranked && ranked.score >= 0.48 && ranked.trigramCoverage >= 0.24);
+}
+
+function opaqueSurfaceId(hasher: Hasher, prefix: string, value: unknown): string {
+  return `${prefix}.${hasher.digestHex(canonicalStringify([prefix, value])).slice(0, 24)}`;
+}
+
+function compareSurfaceText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function kernelCandidateDirectSurfaceAllowed(candidate: CandidateSurface): boolean {
   if (candidate.kind === "translation" || candidate.kind === "transformation") return true;
   if (candidate.kind === "creative-candidate" && candidate.force === "invented" && candidate.claimBases?.includes("invented") === true) return true;
@@ -1496,19 +1905,17 @@ function generatedCandidatesFromFrames(plan: SurfacePlan, discoursePlan: Discour
     : undefined;
   if (preflightTemporalCounterexample) {
     const learned = learnedTemporalCounterexampleCandidate(discoursePlan, input);
-    const sourceBoundary = semanticAnswerGraphBoundaryCandidate(plan, discoursePlan, input);
-    return learned ? [learned, ...(sourceBoundary ? [sourceBoundary] : [])] : sourceBoundary ? [sourceBoundary] : [];
+    return learned ? [learned] : [];
   }
   const conversationMemory = conversationMemoryCandidate(input, discoursePlan, languageMemory);
   if (!discoursePlan.units.length) return conversationMemory ? [conversationMemory] : [];
   const creativeRequested = isCreativeRequested(input, plan);
   const semanticAnswerState = creativeRequested ? undefined : semanticAnswerConstructState(input.construct);
   const isSemanticAnswer = Boolean(semanticAnswerState);
-  const semanticAnswerBoundary = isSemanticAnswer ? semanticAnswerGraphBoundaryCandidate(plan, discoursePlan, input) : undefined;
   const rhetoricalLattice = isSemanticAnswer ? rhetoricalLatticeCandidateFromFrames(plan, discoursePlan, input, languageMemory, priorPieces) : undefined;
   const isInsufficientSupport = !creativeRequested && Boolean(insufficientSupportConstructState(input.construct));
   const isImportSummary = plan.constructForces.some(force => force.id === "ImportSummaryConstruct");
-  if (isSemanticAnswer) return rhetoricalLattice ? [rhetoricalLattice, ...(semanticAnswerBoundary ? [semanticAnswerBoundary] : [])] : semanticAnswerBoundary ? [semanticAnswerBoundary] : [];
+  if (isSemanticAnswer) return rhetoricalLattice ? [rhetoricalLattice] : [];
   if (isInsufficientSupport) return [];
   if (isImportSummary) return [];
   const creativeVariants = creativeRequested
@@ -1826,101 +2233,6 @@ function conversationContextSurface(text: string, generationExtent: number): str
   return surface;
 }
 
-function semanticAnswerGraphBoundaryCandidate(plan: SurfacePlan, discoursePlan: DiscoursePlan, input: SpeakInput): SurfaceCandidate | undefined {
-  void plan;
-  const state = semanticAnswerConstructState(input.construct);
-  if (!state) return undefined;
-  const facts = uniquePriorBoundFacts(state.selectedFacts.length ? state.selectedFacts : state.activatedNeighborhood)
-    .filter(fact => normalizeEvidenceSentence(fact.subject) && normalizeEvidenceSentence(fact.object));
-  if (!facts.length) return undefined;
-  if (!state.certificationBoundary.externalFactCertification || !state.certificationBoundary.evidenceSpanIds.length) return undefined;
-  const temporalCounterexample = semanticTemporalCounterexampleSurface(facts);
-  const sourceBoundFacts = facts.every(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.sourceQuote);
-  if (!sourceBoundFacts && !temporalCounterexample) return undefined;
-  const requestedOrPlanCount = discoursePlan.units.length || 4;
-  const limit = Math.max(1, Math.min(requestedOrPlanCount, 10, facts.length));
-  const surfaces = (temporalCounterexample ? [temporalCounterexample] : semanticAnswerSlotSurfaces(state, facts)).slice(0, limit);
-  if (!surfaces.length) return undefined;
-  const selected = surfaces.slice(0, Math.min(6, surfaces.length));
-  const text = ensureSurfaceSentence(selected.join(localAnswerMemberOnly(facts) ? ", " : ". "));
-  if (!text) return undefined;
-  return {
-    id: "candidate:generated:semantic-answer-slots",
-    style: "surface.path.generated.semantic_answer_slots",
-    path: "generated",
-    text,
-    evidenceIds: state.certificationBoundary.externalFactCertification ? state.certificationBoundary.evidenceSpanIds.map(id => id as EvidenceId) : [],
-    fit: 0.64,
-    importedPieceIds: [],
-    discoursePlan,
-    boundaryDecisions: []
-  };
-}
-
-function semanticAnswerSlotSurfaces(state: SemanticAnswerConstructState, facts: readonly SemanticAnswerFact[]): string[] {
-  const slotRank = semanticQuestionSlotRank(state.questionSlotPlan);
-  return uniqueStrings(facts
-    .slice()
-    .sort((left, right) =>
-      (slotRank.get(semanticFactKey(left)) ?? 999) - (slotRank.get(semanticFactKey(right)) ?? 999) ||
-      slotImportanceRank(left.questionSlotImportance) - slotImportanceRank(right.questionSlotImportance) ||
-      (right.questionSlotScore ?? 0) - (left.questionSlotScore ?? 0) ||
-      right.support + right.activation - (left.support + left.activation)
-    )
-    .map(fact => semanticAnswerSlotSurface(state, fact))
-    .filter(Boolean));
-}
-
-function semanticQuestionSlotRank(value: JsonValue | undefined): Map<string, number> {
-  const plan = jsonRecord(value);
-  const rows = [...arrayRecords(plan.selectedAnswerCore), ...arrayRecords(plan.selectedContext)];
-  const out = new Map<string, number>();
-  rows.forEach((row, index) => {
-    const factKey = stringFromJson(row.factKey);
-    if (factKey && !out.has(factKey)) out.set(factKey, index);
-  });
-  return out;
-}
-
-function semanticAnswerSlotSurface(state: SemanticAnswerConstructState, fact: SemanticAnswerFact): string {
-  const slotId = fact.questionSlotId || fact.requestedSlotId || "";
-  if (fact.relationId === LOCAL_ANSWER_RELATION_IDS.sourceQuote) return semanticLocalSourceQuoteSurface(fact);
-  if (fact.relationId === LOCAL_ANSWER_RELATION_IDS.polarityReject) return semanticLocalPolarityRejectSurface(fact);
-  if (fact.relationId === LOCAL_ANSWER_RELATION_IDS.temporalCounterexample) return semanticLocalTemporalCounterexampleSurface(fact);
-  if (fact.relationId === LOCAL_ANSWER_RELATION_IDS.member || slotId === ANSWER_SLOT_IDS.memberRelation || fact.relationRoleId === RELATION_ROLE_IDS.graphRequestMembership) {
-    return semanticMemberSlotSurface(state.selectedSubject, fact);
-  }
-  const subject = normalizeEvidenceSentence(fact.subject);
-  const predicate = normalizeEvidenceSentence(fact.predicate);
-  const object = normalizeEvidenceSentence(fact.object);
-  if (!subject || !object) return subject || object;
-  const relationObject = predicate && predicate.length > 2 ? tidySurface(`${predicate} ${object}`) : object;
-  if (sameSurfaceEntity(subject, state.selectedSubject)) return tidySurface(`${subject}: ${relationObject}`);
-  if (sameSurfaceEntity(object, state.selectedSubject)) return tidySurface(`${object}: ${predicate && predicate.length > 2 ? `${predicate} ${subject}` : subject}`);
-  return tidySurface(`${subject}: ${relationObject}`);
-}
-
-function localAnswerMemberOnly(facts: readonly SemanticAnswerFact[]): boolean {
-  return facts.length > 0 && facts.every(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.member);
-}
-
-function semanticLocalSourceQuoteSurface(fact: SemanticAnswerFact): string {
-  const subject = normalizeEvidenceSentence(fact.subject);
-  const quote = stripOuterSurfaceBoundary(normalizeEvidenceSentence(fact.predicate || fact.object)).replace(/"/gu, "'");
-  if (!subject || !quote) return subject || quote;
-  if (containsSurface(quote, subject) || containsSurface(subject, quote) || entitySurfaceOverlap(subject, quote)) return tidySurface(quote);
-  return tidySurface(`${subject}: ${quote}`);
-}
-
-function semanticLocalPolarityRejectSurface(fact: SemanticAnswerFact): string {
-  void fact;
-  return "";
-}
-
-function semanticLocalTemporalCounterexampleSurface(fact: SemanticAnswerFact): string {
-  return temporalSupportSurface(fact);
-}
-
 function semanticTemporalCounterexampleSurface(facts: readonly SemanticAnswerFact[]): string | undefined {
   const rejection = facts.find(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.polarityReject);
   const support = facts.find(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.temporalCounterexample);
@@ -2155,31 +2467,9 @@ function surfaceEntityUnits(text: string): string[] {
     .filter(unit => [...unit].length >= 3);
 }
 
-function semanticMemberSlotSurface(selectedSubject: string, fact: SemanticAnswerFact): string {
-  const subject = normalizeEvidenceSentence(fact.subject);
-  const object = normalizeEvidenceSentence(fact.object);
-  if (!subject || !object) return subject || object;
-  const subjectMatches = sameSurfaceEntity(subject, selectedSubject);
-  const objectMatches = sameSurfaceEntity(object, selectedSubject);
-  const objectCarriesSelected = selectedSubject ? containsSurface(object, selectedSubject) : false;
-  if (!subjectMatches && objectCarriesSelected) return subject;
-  if (subjectMatches && objectCarriesSelected) return "";
-  if (subjectMatches) return object;
-  if (objectMatches) return subject;
-  return object;
-}
-
-function slotImportanceRank(value: string | undefined): number {
-  if (value === "core") return 0;
-  if (value === "secondary") return 1;
-  if (value === "context") return 2;
-  return 3;
-}
-
 function rhetoricalLatticeCandidateFromFrames(plan: SurfacePlan, discoursePlan: DiscoursePlan, input: SpeakInput, languageMemory: LanguageMemoryRuntime, priorPieces: readonly ImportedSurfacePiece[]): SurfaceCandidate | undefined {
   const frames = plan.realizationFrames.filter(frame => semanticFactFromRealizationConstraints(frame.realizationConstraints));
   if (!frames.length) return undefined;
-  const semanticState = semanticAnswerConstructState(input.construct);
   const contextSymbols = uniqueStrings([
     input.entailment.claim.text,
     semanticAnswerConstructState(input.construct)?.selectedSubject ?? "",
@@ -2198,13 +2488,7 @@ function rhetoricalLatticeCandidateFromFrames(plan: SurfacePlan, discoursePlan: 
     detailProfileId: discoursePlan.targetDetailProfileId
   });
   const learnedText = admissibleLearnedSurface(generation.text, generation) ? tidySurface(generation.text) : "";
-  const selectedFacts = semanticState
-    ? uniquePriorBoundFacts(semanticState.selectedFacts.length ? semanticState.selectedFacts : semanticState.activatedNeighborhood)
-    : [];
-  const slotText = semanticState
-    ? joinSurfaceSentences(semanticAnswerSlotSurfaces(semanticState, selectedFacts).slice(0, Math.max(1, Math.min(6, discoursePlan.maxSentenceCount))))
-    : "";
-  const text = learnedText || (admissibleMouthSurface(slotText) ? slotText : "");
+  const text = learnedText;
   if (!text) return undefined;
   const evidenceIds = uniqueEvidenceIds(frames.flatMap(frame => frame.evidenceBinding?.evidenceId ? [frame.evidenceBinding.evidenceId] : []));
   const pieceIds = uniqueStrings([
@@ -3550,6 +3834,7 @@ function containsSurfaceRealizerTelemetry(text: string): boolean {
 function stripInternalSurfaceArtifactTokens(text: string): string {
   return text
     .replace(/\{[^{}]*scce\.surface\.realizer[^{}]*\}/giu, " ")
+    .replace(/\bsemantic\.answer\.meaning_slot\.[A-Za-z0-9_.:-]+\b/giu, "")
     .replace(/\bsurface\.(?:point|limit|grounding|ref)\s*=\s*[^\n.?!]*(?:[.?!]|\n|$)/giu, " ")
     .replace(/\b(?:language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)_[A-Za-z0-9_:.:-]+\b/giu, "")
     .replace(/\s+([,.;:!?])/gu, "$1")
@@ -3563,6 +3848,7 @@ function containsOnlyInternalSurfaceArtifacts(text: string): boolean {
 
 function containsInternalSurfaceArtifact(text: string): boolean {
   return /scce\.surface\.realizer/iu.test(text) ||
+    /\bsemantic\.answer\.meaning_slot\.[A-Za-z0-9_.:-]+\b/iu.test(text) ||
     /\bsurface\.(?:point|limit|grounding|ref)\s*=/iu.test(text) ||
     /\b(?:language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)_[A-Za-z0-9_:.:-]+\b/iu.test(text);
 }
