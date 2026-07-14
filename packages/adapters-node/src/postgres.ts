@@ -339,6 +339,71 @@ function schemaStatements(q: string): string[] {
     `CREATE TABLE IF NOT EXISTS ${q}.translation_alignments (id TEXT PRIMARY KEY, source_frame_id TEXT NOT NULL, target_frame_id TEXT NOT NULL, source_language TEXT NOT NULL, target_language TEXT NOT NULL, force TEXT NOT NULL, loss_vector JSONB NOT NULL, alignment_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.scce2_import_ledger (id TEXT PRIMARY KEY, import_run_id TEXT NOT NULL, brain_version TEXT NOT NULL, root_path TEXT NOT NULL, section_id TEXT NOT NULL, section_kind TEXT NOT NULL, force_class TEXT NOT NULL, source_path TEXT, file_hash TEXT, shard_hash TEXT, source_version_id TEXT, evidence_ids TEXT[] NOT NULL, node_ids TEXT[] NOT NULL, row_counts_json JSONB NOT NULL, warnings TEXT[] NOT NULL, metadata_json JSONB NOT NULL, imported_at TIMESTAMPTZ NOT NULL, UNIQUE(import_run_id, section_id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.brain_import_lifecycle (import_run_id TEXT PRIMARY KEY, brain_version TEXT NOT NULL, root_path TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('CREATED','IMPORTING','VALIDATING','READY','ACTIVE','STOPPED','FAILED','QUARANTINED','INCOMPATIBLE')), manifest_json JSONB NOT NULL, validation_json JSONB, reason TEXT, revision BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+    `WITH legacy_runs AS (
+       SELECT import_run_id,
+              brain_version,
+              root_path,
+              MIN(imported_at) AS created_at,
+              MAX(imported_at) AS updated_at,
+              MAX(shard_hash) FILTER (WHERE shard_hash ~ '^[a-fA-F0-9]{64}$') AS manifest_hash,
+              COUNT(DISTINCT section_id)::INT AS prior_section_count,
+              SUM(COALESCE((row_counts_json->>'graph_nodes')::BIGINT,0)) AS graph_node_count,
+              SUM(COALESCE((row_counts_json->>'language_units')::BIGINT,0) + COALESCE((row_counts_json->>'language_patterns')::BIGINT,0)) AS language_row_count,
+              SUM(COALESCE((row_counts_json->>'ngram_models')::BIGINT,0)) AS ngram_state_count,
+              BOOL_OR(force_class='direct_evidence') AS has_direct_evidence,
+              BOOL_OR(force_class='learned_concept_prior') AS has_graph_priors,
+              BOOL_OR(force_class='learned_language_prior') AS has_language_priors
+       FROM ${q}.scce2_import_ledger
+       GROUP BY import_run_id,brain_version,root_path
+     ), selected AS (
+       SELECT *
+       FROM legacy_runs
+       WHERE manifest_hash IS NOT NULL AND has_direct_evidence AND has_graph_priors AND has_language_priors
+       ORDER BY updated_at DESC,import_run_id
+       LIMIT 1
+     )
+     INSERT INTO ${q}.brain_import_lifecycle(import_run_id,brain_version,root_path,state,manifest_json,validation_json,reason,revision,created_at,updated_at)
+     SELECT import_run_id,
+            brain_version,
+            root_path,
+            'ACTIVE',
+            jsonb_build_object(
+              'schema','scce.brainManifestContract.v1',
+              'importRunId',import_run_id,
+              'brainVersion',brain_version,
+              'rootPath',root_path,
+              'manifestHash',manifest_hash,
+              'sourceSchema','scce.legacyImportLedger.v1',
+              'runtimeContractVersion',1,
+              'content',jsonb_build_object(
+                'graphShardCount',CASE WHEN graph_node_count>0 THEN 1 ELSE 0 END,
+                'languageShardCount',CASE WHEN language_row_count>0 OR ngram_state_count>0 THEN 1 ELSE 0 END,
+                'ngramStateCount',ngram_state_count,
+                'priorSectionCount',prior_section_count
+              ),
+              'metadata',jsonb_build_object('migration','postgres.v12.legacy_lifecycle_backfill','sourceTable','scce2_import_ledger'),
+              'createdAt',FLOOR(EXTRACT(EPOCH FROM created_at)*1000)
+            ),
+            jsonb_build_object(
+              'schema','scce.brainValidationReport.v1',
+              'importRunId',import_run_id,
+              'brainVersion',brain_version,
+              'manifestHash',manifest_hash,
+              'validatorVersion','postgres.v12.legacy_lifecycle_backfill',
+              'disposition','PASSED',
+              'checks',jsonb_build_array(
+                jsonb_build_object('id','legacy_ledger.manifest_hash','passed',true,'severity','error','message','legacy ledger retained a SHA-256 manifest identity'),
+                jsonb_build_object('id','legacy_ledger.force_classes','passed',true,'severity','error','message','legacy ledger contains direct evidence, graph priors, and language priors')
+              ),
+              'validatedAt',FLOOR(EXTRACT(EPOCH FROM updated_at)*1000)
+            ),
+            'migration activated newest complete legacy ledger run',
+            1,
+            created_at,
+            updated_at
+     FROM selected
+     WHERE NOT EXISTS (SELECT 1 FROM ${q}.brain_import_lifecycle)
+     ON CONFLICT(import_run_id) DO NOTHING`,
     `CREATE TABLE IF NOT EXISTS ${q}.correction_rules (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, rule_kind TEXT NOT NULL, scope TEXT NOT NULL, pattern TEXT NOT NULL, replacement TEXT, weight DOUBLE PRECISION NOT NULL, context_json JSONB NOT NULL, provenance_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.locale_bundles (id TEXT PRIMARY KEY, source_locale TEXT NOT NULL, target_language_id TEXT NOT NULL, target_script_id TEXT, status TEXT NOT NULL, force TEXT NOT NULL, messages_json JSONB NOT NULL, missing_terms_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, translation_alignment_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ppf_cache (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, beta DOUBLE PRECISION NOT NULL, personalization_json JSONB NOT NULL, mass_json JSONB NOT NULL, diagnostics_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,

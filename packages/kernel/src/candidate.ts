@@ -26,6 +26,7 @@ import {
   type CreativePreferenceFeatureVector
 } from "./calibration-spine.js";
 import { boltzmannDistribution, freeEnergyObjective, leastActionPath } from "./equation-operators.js";
+import { candidateCompatibleWithAuthority } from "./request-authority.js";
 
 export interface CandidateSurface {
   id: string;
@@ -43,7 +44,7 @@ export interface CandidateSurface {
     | "program-proposal"
     | "workspace-proposal"
     | "action-preview"
-    | "learning-plan";
+    | "dialogue-continuation";
   answer: string;
   force: EpistemicForce;
   evidenceIds: EvidenceId[];
@@ -136,15 +137,21 @@ export interface CandidateGenerationInput {
 export function createCandidateEngine() {
   return {
     generate(input: CandidateGenerationInput): CandidateField {
-      const hasCognitiveProposals = (input.cognitiveProposals?.length ?? 0) > 0;
+      const proposalCandidates = (input.cognitiveProposals ?? [])
+        .map((proposal, index) => proposalCandidate(input, proposal, index))
+        .filter((candidate): candidate is CandidateSurface => Boolean(candidate));
+      const hasCompatibleCognitiveProposal = input.requestedAuthority
+        ? proposalCandidates.some(candidate => candidateCompatibleWithAuthority(candidate, input.requestedAuthority!))
+        : proposalCandidates.length > 0;
       const supportedCandidates = [
-        ...(operatorSupported(input, [COGNITIVE_OPERATOR_IDS.semanticProof, COGNITIVE_OPERATOR_IDS.evidenceActivation, COGNITIVE_OPERATOR_IDS.clarification])
+        ...(input.requestedAuthority === "factual" && input.evidence.length > 0
+          || operatorSupported(input, [COGNITIVE_OPERATOR_IDS.semanticProof, COGNITIVE_OPERATOR_IDS.evidenceActivation, COGNITIVE_OPERATOR_IDS.clarification])
           ? [proofAnswer(input)]
           : []),
         ...(operatorSupported(input, [COGNITIVE_OPERATOR_IDS.sourceSynthesis, COGNITIVE_OPERATOR_IDS.evidenceActivation, COGNITIVE_OPERATOR_IDS.semanticProof])
           ? [ccrCandidate(input)]
           : []),
-        ...(input.cognitiveProposals ?? []).map((proposal, index) => proposalCandidate(input, proposal, index)),
+        ...proposalCandidates,
         ...(operatorSupported(input, [COGNITIVE_OPERATOR_IDS.workspaceRepair, COGNITIVE_OPERATOR_IDS.programPlanning])
           ? (input.workspacePlans ?? []).map((plan, index) => workspacePlanCandidate(input, plan, index))
           : []),
@@ -154,7 +161,7 @@ export function createCandidateEngine() {
         ...(operatorSupported(input, [COGNITIVE_OPERATOR_IDS.dialogueContinuation, COGNITIVE_OPERATOR_IDS.clarification])
           ? [dialogueStateCandidate(input)]
           : []),
-        ...(!hasCognitiveProposals && operatorSupported(input, [
+        ...(!hasCompatibleCognitiveProposal && operatorSupported(input, [
           COGNITIVE_OPERATOR_IDS.graphPropagation,
           COGNITIVE_OPERATOR_IDS.relationComposition,
           COGNITIVE_OPERATOR_IDS.temporalAnalysis,
@@ -162,19 +169,16 @@ export function createCandidateEngine() {
           COGNITIVE_OPERATOR_IDS.counterfactualConstruction,
           COGNITIVE_OPERATOR_IDS.analogy
         ]) ? [graphInferenceCandidate(input)] : []),
-        ...(!hasCognitiveProposals
+        ...(!hasCompatibleCognitiveProposal
           && operatorSupported(input, [COGNITIVE_OPERATOR_IDS.invention])
           && (input.requirementField === undefined
             || input.requestedAuthority === "creative"
             || operatorExplicitlyActive(input, [COGNITIVE_OPERATOR_IDS.invention]))
           ? (input.inventionCandidates ?? []).map((construct, index) => creativeCandidate(input, construct, index))
           : []),
-        ...(!hasCognitiveProposals && operatorSupported(input, [COGNITIVE_OPERATOR_IDS.clarification])
-          ? [learningCandidate(input)]
-          : [])
       ].filter((candidate): candidate is CandidateSurface => Boolean(candidate));
       const fallbackCandidates = supportedCandidates.length === 0
-        ? [proofAnswer(input), learningCandidate(input)].filter((candidate): candidate is CandidateSurface => Boolean(candidate))
+        ? [proofAnswer(input)]
         : [];
       const candidates = supportedCandidates.length > 0 ? supportedCandidates : fallbackCandidates;
       const candidateOperators = candidateOperatorRows(candidates, input.requestedAuthority, input.calibrationModels, input.requirementField);
@@ -277,10 +281,6 @@ function workspacePlanCandidate(
   const plan = verifiedWorkspacePlan(value);
   if (!plan) return workspaceArtifactCandidate(input, value, candidateIndex);
   const paths = plan.operations.map(operation => operation.path);
-  const listedPaths = paths.slice(0, 4).join(", ");
-  const remaining = Math.max(0, paths.length - 4);
-  const suffix = remaining > 0 ? ` and ${remaining} more` : "";
-  const answer = `Prepared an unexecuted workspace patch plan for ${paths.length} ${paths.length === 1 ? "file" : "files"}: ${listedPaths}${suffix}.`;
   const quality = planCandidateQuality(input, {
     requirementCoverage: operatorActivation(input, [COGNITIVE_OPERATOR_IDS.workspaceRepair, COGNITIVE_OPERATOR_IDS.programPlanning]),
     executableCompleteness: 0.82,
@@ -291,7 +291,7 @@ function workspacePlanCandidate(
   return {
     id: `workspace-plan:${plan.planHash}:${candidateIndex}`,
     kind: "workspace-proposal",
-    answer,
+    answer: "",
     force: "conjectured",
     evidenceIds: [],
     scores: scoresFromQuality(input, quality),
@@ -308,7 +308,16 @@ function workspacePlanCandidate(
       planHash: plan.planHash,
       operations: plan.operations.map(operation => ({ kind: operation.kind, path: operation.path })),
       authorizationGranted: false,
-      executionState: "not_executed"
+      executionState: "not_executed",
+      semanticFrame: {
+        frameId: "semantic.workspace.patch_plan.v1",
+        planId: plan.planHash,
+        roleBindings: {
+          operationIds: plan.operations.map((operation, index) => `${operation.kind}:${index}`),
+          targetIds: paths
+        },
+        stateIds: ["state.authorization.absent.v1", "state.execution.pending.v1"]
+      }
     })
   };
 }
@@ -325,7 +334,6 @@ function workspaceArtifactCandidate(
   const mediaType = cleanPlanToken(artifact.mediaType);
   const role = cleanPlanToken(artifact.role);
   if (!path || !contentHash || !mediaType || !role) return undefined;
-  const answer = `Prepared a workspace artifact proposal for ${path}; exact content validation, authorization, and execution have not occurred.`;
   const quality = planCandidateQuality(input, {
     requirementCoverage: operatorActivation(input, [COGNITIVE_OPERATOR_IDS.workspaceRepair, COGNITIVE_OPERATOR_IDS.programPlanning]),
     executableCompleteness: 0.46,
@@ -337,7 +345,7 @@ function workspaceArtifactCandidate(
   return {
     id: `${proposalId}:${candidateIndex}`,
     kind: "workspace-proposal",
-    answer,
+    answer: "",
     force: "conjectured",
     evidenceIds: [],
     scores: scoresFromQuality(input, quality),
@@ -357,7 +365,17 @@ function workspaceArtifactCandidate(
       role,
       exactContentValidated: false,
       authorizationGranted: false,
-      executionState: "not_executed"
+      executionState: "not_executed",
+      semanticFrame: {
+        frameId: "semantic.workspace.artifact_proposal.v1",
+        artifactId: proposalId,
+        roleBindings: { targetId: path, contentId: contentHash, mediaTypeId: mediaType, roleId: role },
+        stateIds: [
+          "state.content_validation.absent.v1",
+          "state.authorization.absent.v1",
+          "state.execution.pending.v1"
+        ]
+      }
     })
   };
 }
@@ -385,7 +403,7 @@ function actionPlanCandidate(
   const phase = cleanPlanToken(plan.phase);
   if (!id || !capabilityId || plan.status !== "planned" || !["read", "prepare", "commit"].includes(phase ?? "")) return undefined;
   const permission = jsonRecord(plan.permission);
-  const answer = `Prepared an unexecuted action plan for ${capabilityId}; authorization and execution have not occurred.`;
+  const answer = cleanIncomingSurface(plan.previewSurface);
   const quality = planCandidateQuality(input, {
     requirementCoverage: operatorActivation(input, [COGNITIVE_OPERATOR_IDS.actionPlanning]),
     executableCompleteness: 0.68,
@@ -415,7 +433,17 @@ function actionPlanCandidate(
       status: "planned",
       permission: toJsonValue(permission),
       actionReceiptId: null,
-      executionState: "not_executed"
+      executionState: "not_executed",
+      semanticFrame: {
+        frameId: "semantic.action.preview.v1",
+        actionId: id,
+        roleBindings: { capabilityId, phaseId: phase },
+        stateIds: [
+          ...(permission.allowed === false ? ["state.authorization.absent.v1"] : []),
+          "state.execution.pending.v1"
+        ],
+        surfaceOriginId: answer ? "surface.action.preview.input.v1" : null
+      }
     })
   };
 }
@@ -425,7 +453,6 @@ function dialogueStateCandidate(input: CandidateGenerationInput): CandidateSurfa
   const turnId = cleanPlanToken(state.turnId);
   const unresolvedSlots = stringArray(state.unresolvedSlots);
   if (!turnId || unresolvedSlots.length === 0) return undefined;
-  const answer = `The current dialogue has ${unresolvedSlots.length} unresolved ${unresolvedSlots.length === 1 ? "requirement" : "requirements"}; clarification is needed before a complete answer.`;
   const quality = planCandidateQuality(input, {
     requirementCoverage: operatorActivation(input, [COGNITIVE_OPERATOR_IDS.dialogueContinuation, COGNITIVE_OPERATOR_IDS.clarification]),
     executableCompleteness: 0.15,
@@ -436,8 +463,8 @@ function dialogueStateCandidate(input: CandidateGenerationInput): CandidateSurfa
   });
   return {
     id: `dialogue-plan:${turnId}`,
-    kind: "learning-plan",
-    answer,
+    kind: "dialogue-continuation",
+    answer: "",
     force: "unknown",
     evidenceIds: [],
     scores: scoresFromQuality(input, quality),
@@ -453,7 +480,17 @@ function dialogueStateCandidate(input: CandidateGenerationInput): CandidateSurfa
       turnId,
       activeTask: typeof state.activeTask === "string" ? state.activeTask : null,
       unresolvedSlotIds: unresolvedSlots,
-      continuityLinkIds: stringArray(state.continuityLinks)
+      continuityLinkIds: stringArray(state.continuityLinks),
+      semanticFrame: {
+        frameId: "semantic.dialogue.continuation.v1",
+        turnId,
+        roleBindings: {
+          activeTaskId: typeof state.activeTask === "string" ? state.activeTask : null,
+          unresolvedSlotIds: unresolvedSlots,
+          continuityLinkIds: stringArray(state.continuityLinks)
+        },
+        stateIds: ["state.dialogue.slot_resolution.pending.v1"]
+      }
     })
   };
 }
@@ -558,6 +595,8 @@ function proofAnswer(input: {
   requestedAuthority?: RequestedAuthority;
 }): CandidateSurface {
   const answer = normalizeCandidateAnswer(input.proofAnswer, input);
+  const proof = input.entailment.proof;
+  const proofRoute = normalizedSemanticProofRoute(proof);
   return {
     id: candidateId("proof", input.entailment, answer),
     kind: "proof-answer",
@@ -566,7 +605,18 @@ function proofAnswer(input: {
     evidenceIds: input.entailment.evidenceIds,
     scores: baseScores(input),
     boundaries: input.entailment.boundaries,
-    audit: toJsonValue({ source: "semantic-proof", proofId: input.entailment.proof.id }),
+    audit: toJsonValue({
+      source: "semantic-proof",
+      proofId: proof.id,
+      semanticFrame: {
+        frameId: "semantic.answer.proof.v1",
+        claimId: proof.claimId,
+        evidenceIds: input.entailment.evidenceIds,
+        transformIds: proofRoute.transformIds,
+        forceId: input.entailment.force,
+        surfaceOriginId: answer ? "surface.semantic_proof.input.v1" : null
+      }
+    }),
     scoreTrace: [
       featureScore({
         value: input.entailment.support,
@@ -580,16 +630,28 @@ function proofAnswer(input: {
 }
 
 function normalizeCandidateAnswer(answer: string, input: { requestText: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[] }): string {
-  const stripped = stripSurfaceRealizerArtifacts(answer);
-  const clean = stripped.replace(/\s+/g, " ").trim();
+  const clean = cleanIncomingSurface(stripSurfaceRealizerArtifacts(answer));
   const request = input.requestText.replace(/\s+/g, " ").trim();
   const onlyEcho = clean && request && (clean === request || clean.toLocaleLowerCase() === request.toLocaleLowerCase());
-  if (!clean || onlyEcho || looksStructuredTelemetry(clean) || containsSurfaceRealizerTelemetry(answer) || containsProofDiagnosticSurface(clean)) {
-    return input.evidence[0]?.text?.replace(/\s+/gu, " ").trim()
-      || input.evidence[0]?.textPreview?.replace(/\s+/gu, " ").trim()
-      || "I do not have enough supported information to answer this request.";
+  const proofRoute = normalizedSemanticProofRoute(input.entailment.proof);
+  const proofHasRoute = input.entailment.evidenceIds.length > 0
+    || proofRoute.transformIds.length > 0
+    || proofRoute.edgeCount > 0;
+  if (!proofHasRoute || !clean || onlyEcho || containsSurfaceRealizerTelemetry(answer) || containsProofDiagnosticSurface(clean)) {
+    return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence);
   }
   return clean;
+}
+
+function normalizedSemanticProofRoute(proof: SemanticEntailmentResult["proof"]): { transformIds: string[]; edgeCount: number } {
+  const legacy = proof as unknown as { transformIds?: unknown; proofGraph?: { edges?: unknown } };
+  const transformIds = Array.isArray(legacy.transformIds)
+    ? legacy.transformIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  return {
+    transformIds,
+    edgeCount: Array.isArray(legacy.proofGraph?.edges) ? legacy.proofGraph.edges.length : 0
+  };
 }
 
 function stripSurfaceRealizerArtifacts(text: string): string {
@@ -630,6 +692,29 @@ function containsProofDiagnosticSurface(answer: string): boolean {
 function looksStructuredTelemetry(answer: string): boolean {
   const trimmed = answer.trim();
   return (trimmed.startsWith("{") || trimmed.includes("{\"schema\"")) && (trimmed.includes("\"schema\"") || trimmed.includes("candidateKind") || trimmed.includes("proofId"));
+}
+
+function looksControlSurface(answer: string): boolean {
+  const trimmed = answer.trim();
+  return /^i18n[:.]/iu.test(trimmed)
+    || /^\[?scce[:.]/iu.test(trimmed)
+    || /^surface\.[\p{L}\p{N}_.-]+(?:=|$)/iu.test(trimmed);
+}
+
+function cleanIncomingSurface(value: JsonValue | undefined): string {
+  if (typeof value !== "string") return "";
+  const clean = value.replace(/\s+/gu, " ").trim();
+  return clean && !looksStructuredTelemetry(clean) && !looksControlSurface(clean) ? clean : "";
+}
+
+function boundEvidenceSurface(evidenceIds: readonly EvidenceId[], evidence: readonly EvidenceSpan[]): string {
+  const boundIds = new Set(evidenceIds.map(String));
+  for (const span of evidence) {
+    if (!boundIds.has(String(span.id))) continue;
+    const surface = cleanIncomingSurface(span.text) || cleanIncomingSurface(span.textPreview);
+    if (surface) return surface;
+  }
+  return "";
 }
 
 function ccrCandidate(input: {
@@ -693,7 +778,17 @@ function graphInferenceCandidate(input: {
       realizability: 0.72
     },
     boundaries: [...input.entailment.boundaries, "graph-inference-not-direct-proof"],
-    audit: toJsonValue({ causalMass: top }),
+    audit: toJsonValue({
+      causalMass: top,
+      semanticFrame: {
+        frameId: "semantic.answer.graph_inference.v1",
+        claimId: input.entailment.claim.id,
+        evidenceIds: input.entailment.evidenceIds,
+        causalNodeIds: top.map(item => item.nodeId),
+        forceId: input.entailment.force,
+        surfaceOriginId: answer ? "surface.graph.claim_or_evidence.v1" : null
+      }
+    }),
     scoreTrace: [
       provisionalHeuristicScore({
         value: clamp01(mean(top.map(item => item.mass)) * 0.5 + input.entailment.support * 0.5),
@@ -713,11 +808,9 @@ function cleanGraphInferenceSurface(input: {
 }): string {
   const legacyProof = input.entailment.proof as unknown as { claim?: { text?: unknown } };
   const legacyClaimText = typeof legacyProof.claim?.text === "string" ? legacyProof.claim.text : "";
-  const claim = (input.entailment.claim?.text ?? legacyClaimText).replace(/\s+/gu, " ").trim();
-  if (claim && !looksStructuredTelemetry(claim)) return claim;
-  const evidence = input.evidence[0]?.text?.replace(/\s+/gu, " ").trim()
-    || input.evidence[0]?.textPreview?.replace(/\s+/gu, " ").trim();
-  return evidence || "The available graph supports an inference, but not a reliable surface conclusion.";
+  const claim = cleanIncomingSurface(input.entailment.claim?.text ?? legacyClaimText);
+  if (claim) return claim;
+  return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence);
 }
 
 function proposalCandidate(
@@ -732,10 +825,9 @@ function proposalCandidate(
   proposal: CognitiveProposal,
   candidateIndex: number
 ): CandidateSurface | undefined {
-  const answer = proposalSurface(proposal);
-  if (!answer || looksStructuredTelemetry(answer)) return undefined;
-  const quality = candidateQualityFromProposal(input, proposal, answer);
   const kind = candidateKindFromProposal(proposal);
+  const answer = proposalSurface(proposal);
+  const quality = candidateQualityFromProposal(input, proposal, answer);
   const force = epistemicForceFromProposal(proposal);
   const evidenceById = new Map(input.evidence.map(span => [String(span.id), span.id]));
   const evidenceIds = proposal.evidenceIds
@@ -785,8 +877,20 @@ function proposalCandidate(
         basis: claim.basis,
         evidenceIds: claim.evidenceIds,
         actionReceiptId: claim.actionReceiptId ?? null,
-        externallyFactual: claim.externallyFactual
+        externallyFactual: claim.externallyFactual,
+        trace: claim.trace
       })),
+      semanticFrame: {
+        frameId: "semantic.cognitive_proposal.v1",
+        proposalId: proposal.id,
+        candidateKindId: kind,
+        claimIds: proposal.claims.map(claim => claim.id),
+        relationIds: proposal.relations.map(relation => relation.id),
+        stepIds: proposal.steps.map(step => step.id),
+        artifactIds: proposal.artifacts.map(artifact => artifact.id),
+        semanticFrameIds: proposal.semanticFrameIds,
+        surfaceOriginId: answer ? "surface.cognitive_proposal.input.v1" : null
+      },
       constructIds,
       quality,
       proposalTrace: proposal.trace
@@ -796,12 +900,12 @@ function proposalCandidate(
 
 function proposalSurface(proposal: CognitiveProposal): string {
   const claims = proposal.claims
-    .map(claim => claim.text.replace(/\s+/gu, " ").trim())
-    .filter(text => text && !looksStructuredTelemetry(text));
+    .map(claim => cleanIncomingSurface(claim.text))
+    .filter(Boolean);
   const steps = proposal.steps
     .sort((left, right) => left.order - right.order)
-    .map(step => step.text.replace(/\s+/gu, " ").trim())
-    .filter(text => text && !looksStructuredTelemetry(text));
+    .map(step => cleanIncomingSurface(step.text))
+    .filter(Boolean);
   const surfaces = claims.length ? claims : steps;
   return [...new Set(surfaces)].slice(0, 8).join(" ").trim();
 }
@@ -815,8 +919,8 @@ function candidateKindFromProposal(proposal: CognitiveProposal): CandidateSurfac
   if (bases.has("translated")) return "translation";
   if (bases.has("invented")) return "creative-candidate";
   if (operators.has("operator.cognition.workspace_repair.v1")) return "workspace-proposal";
-  if (operators.has("operator.cognition.program_planning.v1") || proposal.artifacts.length > 0) return "program-proposal";
   if (operators.has("operator.cognition.action_planning.v1")) return "action-preview";
+  if (operators.has("operator.cognition.program_planning.v1") || proposal.artifacts.length > 0) return "program-proposal";
   if (operators.has("operator.cognition.transformation.v1")) return "transformation";
   return "reasoned-synthesis";
 }
@@ -997,42 +1101,6 @@ function creativeCandidate(input: {
       fakeCitationForbidden: true
     }),
     scoreTrace: [scoreTrace]
-  };
-}
-
-function learningCandidate(input: {
-  requestText: string;
-  entailment: SemanticEntailmentResult;
-  evidence: EvidenceSpan[];
-  field: FieldState;
-  learningNeeds: string[];
-  locale?: string;
-}): CandidateSurface | undefined {
-  if (!input.learningNeeds.length) return undefined;
-  const answer = "I do not yet have enough learned support to provide a reliable answer.";
-  return {
-    id: candidateId("learning", input.entailment, answer),
-    kind: "learning-plan",
-    answer,
-    force: "unknown",
-    evidenceIds: input.entailment.evidenceIds,
-    scores: {
-      ...baseScores(input),
-      support: clamp01(input.entailment.support * 0.5),
-      realizability: 0.88,
-      actionability: clamp01(input.field.alphaTrace.surfaces.actionability + 0.15)
-    },
-    boundaries: ["needs-learning-before-proof", ...input.entailment.boundaries],
-    audit: toJsonValue({ learningNeeds: input.learningNeeds }),
-    scoreTrace: [
-      featureScore({
-        value: clamp01(input.entailment.support * 0.5),
-        range: [0, 1],
-        meaning: "learning candidate support",
-        inputs: ["entailment.support"],
-        provenance: ["candidate.ts:learningCandidate"]
-      })
-    ]
   };
 }
 

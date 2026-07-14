@@ -17,10 +17,6 @@ export const SURFACE_QUALITY_REJECTION_IDS = {
   blockedSurface: "sq.reject.47c8a1e0"
 } as const;
 
-export const PUBLIC_SURFACE_STATUS_TOKENS = {
-  workspaceAnswerUnsupported: "[scce:workspace.answer.unsupported]"
-} as const;
-
 export type SurfaceQualityIssueKind = typeof SURFACE_QUALITY_KIND_IDS[keyof typeof SURFACE_QUALITY_KIND_IDS];
 
 export interface SurfaceQualityIssue {
@@ -34,6 +30,9 @@ export interface SurfaceQualityIssue {
 const CONTROL_ID_PATTERN = /\b(?:surface|mouth|force|pca|scce|workspace|kernel|planner|proof|runtime)\.[a-z0-9_.-]{2,}\b/gu;
 const SNAKE_CONTROL_PATTERN = /\b(?:unsupported_prior_only|learned_prior_summary|import_bound|certified_factual_proof|direct_source_spans_unavailable)\b/gu;
 const STATUS_TOKEN_PATTERN = /\[scce:[^\]\s]+(?:\s+[^\]]*)?\]/gu;
+const LOCALIZATION_KEY_PATTERN = /\bi18n:[a-z0-9_.:-]+\b/gu;
+const PROOF_MARKER_PATTERN = /^\s*\[(?:proof|no_proof)\]\s*/giu;
+const SYMBOLIC_CONSTRUCT_PATTERN = /(?:[^\s]+\s*[\u{2192}\u{21d2}\u{21e2}]\s*){2,}|(?:\s\u{00b7}\s[^\s]+){2,}/gu;
 const TELEMETRY_TERMS = [
   "active import run",
   "import run",
@@ -49,7 +48,7 @@ const TELEMETRY_TERMS = [
 ] as const;
 
 export function detectCannedAnswerSpeech(text: string): SurfaceQualityIssue[] {
-  const normalized = stripPublicSurfaceStatusTokens(normalizeForQuality(text));
+  const normalized = normalizeForQuality(text);
   const issues: SurfaceQualityIssue[] = [];
   const add = (id: string, kind: SurfaceQualityIssueKind, matched: string, trace: JsonValue = {}) => {
     if (!issues.some(issue => issue.id === id)) issues.push({ id, kind, severity: "reject", matched, trace });
@@ -62,6 +61,17 @@ export function detectCannedAnswerSpeech(text: string): SurfaceQualityIssue[] {
   const statusTokens = [...normalized.matchAll(STATUS_TOKEN_PATTERN)].map(match => match[0]);
   if (statusTokens.length) {
     add(SURFACE_QUALITY_ISSUE_IDS.certification, SURFACE_QUALITY_KIND_IDS.canned, statusTokens.slice(0, 4).join(" "), toJsonValue({ detector: "sq.det.6a1f8074", statusTokens: statusTokens.slice(0, 16) }));
+  }
+  const localizationKeys = [...normalized.matchAll(LOCALIZATION_KEY_PATTERN)].map(match => match[0]);
+  const proofMarkers = [...normalized.matchAll(PROOF_MARKER_PATTERN)].map(match => match[0]);
+  const symbolicConstructs = [...normalized.matchAll(SYMBOLIC_CONSTRUCT_PATTERN)].map(match => match[0]);
+  if (localizationKeys.length || proofMarkers.length || symbolicConstructs.length) {
+    add(
+      SURFACE_QUALITY_ISSUE_IDS.controlId,
+      SURFACE_QUALITY_KIND_IDS.controlId,
+      [...localizationKeys, ...proofMarkers, ...symbolicConstructs].slice(0, 4).join(" "),
+      toJsonValue({ localizationKeys: localizationKeys.slice(0, 16), proofMarkers: proofMarkers.slice(0, 16), symbolicConstructs: symbolicConstructs.slice(0, 16) })
+    );
   }
   const telemetryHits = TELEMETRY_TERMS.filter(term => normalized.includes(term));
   const numericInventory = /\b\d+\b/u.test(normalized);
@@ -76,10 +86,6 @@ export function detectCannedAnswerSpeech(text: string): SurfaceQualityIssue[] {
     add(SURFACE_QUALITY_ISSUE_IDS.certification, SURFACE_QUALITY_KIND_IDS.canned, boundedMatchedText(normalized), toJsonValue({ detector: "sq.det.1e4b9a70" }));
   }
   return issues;
-}
-
-function stripPublicSurfaceStatusTokens(text: string): string {
-  return text.replaceAll(PUBLIC_SURFACE_STATUS_TOKENS.workspaceAnswerUnsupported, " ");
 }
 
 function normalizeForQuality(text: string): string {

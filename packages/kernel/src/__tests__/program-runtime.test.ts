@@ -7,6 +7,7 @@ import {
   createIdFactory,
   createLanguageMemoryRuntime,
   createMouth,
+  createEmissionEngine,
   createProgramGraphBuilder,
   createSourceCodeFileFacts,
   createSourceRepositoryFacts,
@@ -14,6 +15,7 @@ import {
   toJsonValue,
   validateProgramHydrationContract,
   type EvidenceSpan,
+  type CandidateSurface,
   type FieldState,
   type LanguageProfile,
   type ProgramConstructIntent,
@@ -135,6 +137,30 @@ describe("ProgramGraph runtime and artifact emission", () => {
       correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
       hashText: text => hasher.digestHex(text)
     });
+    const selectedCandidate: CandidateSurface = {
+      id: "workspace-plan:fixture",
+      kind: "workspace-proposal",
+      answer: "",
+      force: "conjectured",
+      evidenceIds: [],
+      scores: {
+        support: 1,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.5,
+        actionability: 0.8,
+        evidenceCoverage: 1,
+        novelty: 0.2,
+        realizability: 0.9,
+        risk: 0
+      },
+      claimBases: ["conjectured"],
+      boundaries: ["workspace-plan-not-authorized", "workspace-plan-not-executed"],
+      audit: {
+        authorizationGranted: false,
+        executionState: "not_executed"
+      }
+    };
 
     const spoken = await mouth.speak({
       construct,
@@ -143,7 +169,9 @@ describe("ProgramGraph runtime and artifact emission", () => {
       evidence: [fixture.evidence],
       entailment: entailmentFor(fixture.evidence),
       languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "program-runtime", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }),
-      targetLanguage: "fixture-language"
+      targetLanguage: "fixture-language",
+      requestedAuthority: "program",
+      selectedCandidate
     });
 
     const planText = JSON.stringify(spoken.surfacePlan.orderedPoints.map(point => point.proposition));
@@ -152,7 +180,8 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(planConstraints).toContain("scce.program.hydration.v1");
     expect(planText).toContain("src/cli.ts");
     expect(planText).toContain("pnpm run build");
-    expect(planText).toContain("validated program graph");
+    expect(planText).not.toContain("validated program graph");
+    expect(planText).not.toContain("unvalidated program graph");
     expect(planText).not.toContain("scce.program.hydration.v1");
     expect(planText).not.toContain("program.entrypoint=");
     expect(planText).not.toContain("program.validation.observed=");
@@ -160,6 +189,11 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(planText).not.toContain("source files:");
     expect(planText).not.toContain("validation observed commands:");
     expect(planText).not.toContain("hydration contract:");
+    expect(spoken.text).toContain("src/cli.ts");
+    expect(spoken.text).toContain("pnpm run build");
+    expect(spoken.text).not.toContain("please handle this artifact");
+    expect(spoken.text).not.toMatch(/\b(?:applied|authorized|executed|completed)\b/iu);
+    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:construct-anchored");
 
     const programPoint = required(spoken.surfacePlan.orderedPoints.find(point => JSON.stringify(point.realizationConstraints).includes("programSurface")));
     const programSurface = objectRecord(objectRecord(programPoint.realizationConstraints).programSurface);
@@ -191,6 +225,27 @@ describe("ProgramGraph runtime and artifact emission", () => {
       "program.hydration.emissions",
       "program.hydration.emission_file_count"
     ]));
+  });
+
+  it("keeps failed artifact validation internal to the emission contract", () => {
+    const fixture = engineeringFixture();
+    const construct = buildProgram("read stdin accept --value and write stdout command result", [fixture.evidence]);
+    const entailment = entailmentFor(fixture.evidence);
+    const answer = "fixture.release.surface";
+    const emission = createEmissionEngine({ idFactory: ids }).emit({
+      construct,
+      validation: {
+        id: ids.validationId({ constructId: construct.id, checks: [["fixture", "failed"]] }),
+        constructId: construct.id,
+        checks: [{ id: "fixture", status: "failed", score: 0, message: "fixture.validation", evidenceIds: [] }],
+        passed: false
+      },
+      entailment,
+      answer
+    });
+
+    expect(emission.answer).toBe(answer);
+    expect(emission.artifacts).toEqual([]);
   });
 
   function buildProgram(text: string, evidence: EvidenceSpan[], programIntent?: ProgramConstructIntent) {

@@ -2,7 +2,7 @@ import type { BuildTestResult, ConstructGraph, EmissionGraph, EpisodeId, Evidenc
 import type { IdFactory } from "./ids.js";
 import { featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createProgramPlanner } from "./program-planner.js";
-import { formatSurfaceMessage, validationMessageKey } from "./localization.js";
+import { validationMessageKey } from "./localization.js";
 
 interface ProgramActivationDecision {
   activate: boolean;
@@ -139,11 +139,10 @@ export function createEmissionEngine(options: { idFactory: IdFactory }) {
     emit(input: { construct: ConstructGraph; validation: ValidationGraph; entailment: SemanticEntailmentResult; answer: string; pca?: JsonValue }): EmissionGraph {
       const pcaAnswer = pcaReleaseAnswer(input.pca);
       const releaseAnswer = pcaAnswer ?? input.answer;
-      const hasArtifacts = input.construct.artifacts.length > 0;
       return {
         id: options.idFactory.emissionId({ constructId: input.construct.id, validationId: input.validation.id }),
         constructId: input.construct.id,
-        answer: input.validation.passed || !hasArtifacts ? releaseAnswer : `${releaseAnswer}\n\n${formatSurfaceMessage("validation.artifact_emission_failed")}`,
+        answer: releaseAnswer,
         epistemicForce: input.entailment.force,
         artifacts: input.validation.passed ? input.construct.artifacts : [],
         evidenceIds: input.entailment.evidenceIds,

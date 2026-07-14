@@ -47,6 +47,28 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(candidate?.answer).not.toContain("scores");
   });
 
+  it("keeps a program proposal semantic when its only incoming surface is an internal control id", () => {
+    const operator = activeOperator(COGNITIVE_OPERATOR_IDS.programPlanning);
+    const proposal = cognitiveProposal({
+      id: "proposal.program-semantic-only",
+      operatorActivations: [operator],
+      claims: [claim("claim.program-semantic-only", "i18n:construct.family.answer", "learned_prior")],
+      semanticFrameIds: ["frame.program.fixture"]
+    });
+    const field = createCandidateEngine().generate({
+      ...engineFixture([]),
+      requirementField: requirements({ executableArtifactDemand: 1 }),
+      operatorActivations: [operator],
+      cognitiveProposals: [proposal]
+    });
+
+    const candidate = proposalCandidate(field, proposal.id);
+    expect(candidate.kind).toBe("program-proposal");
+    expect(candidate.answer).toBe("");
+    expect(JSON.stringify(candidate.audit)).toContain('"frameId":"semantic.cognitive_proposal.v1"');
+    expect(JSON.stringify(candidate.audit)).toContain('"semanticFrameIds":["frame.program.fixture"]');
+  });
+
   it("keeps invented material invented without treating missing evidence as a factual-support defect", () => {
     const proposal = cognitiveProposal({
       id: "proposal.invented",
@@ -163,12 +185,21 @@ describe("general-cognition candidate and judge contracts", () => {
     const dialogue = field.candidates.find(row => row.proposalId === "dialogue-plan:turn.fixture");
     expect(workspace?.proposalId).toBe(`workspace-plan:${workspacePlan.planHash}`);
     expect(workspace?.boundaries).toContain("workspace-plan-not-executed");
-    expect(workspace?.answer).toContain("src/new.ts");
-    expect(workspaceArtifact?.answer).toContain("src/proposed.ts");
+    expect(workspace?.answer).toBe("");
+    expect(JSON.stringify(workspace?.audit)).toContain('"frameId":"semantic.workspace.patch_plan.v1"');
+    expect(JSON.stringify(workspace?.audit)).toContain("src/new.ts");
+    expect(workspaceArtifact?.answer).toBe("");
+    expect(JSON.stringify(workspaceArtifact?.audit)).toContain('"frameId":"semantic.workspace.artifact_proposal.v1"');
+    expect(JSON.stringify(workspaceArtifact?.audit)).toContain("src/proposed.ts");
     expect(workspaceArtifact?.boundaries).toContain("workspace-artifact-not-byte-validated");
     expect(action?.claimBases).toEqual(["conjectured"]);
-    expect(action?.answer).toContain("authorization and execution have not occurred");
+    expect(action?.answer).toBe("");
+    expect(JSON.stringify(action?.audit)).toContain('"frameId":"semantic.action.preview.v1"');
+    expect(JSON.stringify(action?.audit)).toContain('"capabilityId":"filesystem.write"');
+    expect(dialogue?.kind).toBe("dialogue-continuation");
+    expect(dialogue?.answer).toBe("");
     expect(dialogue?.missedRequirementIds).toEqual(["slot.target"]);
+    expect(JSON.stringify(dialogue?.audit)).toContain('"frameId":"semantic.dialogue.continuation.v1"');
     expect(field.candidates.some(row => row.kind === "graph-inference" || row.kind === "creative-candidate")).toBe(false);
   });
 
@@ -183,6 +214,8 @@ describe("general-cognition candidate and judge contracts", () => {
 
     expect(field.candidates).toHaveLength(1);
     expect(field.candidates[0]?.kind).toBe("proof-answer");
+    expect(field.candidates[0]?.answer).toBe("");
+    expect(JSON.stringify(field.candidates[0]?.audit)).toContain('"frameId":"semantic.answer.proof.v1"');
     expect(jsonRecord(field.audit).operatorRoutingFallback).toBe(true);
   });
 

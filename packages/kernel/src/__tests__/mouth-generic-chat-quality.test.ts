@@ -71,11 +71,12 @@ describe("Mouth generic chat quality gate", () => {
 
     assertQuality(caveated, evidence, { importedPriorIds: true, caveat: true });
     expect(caveated.uncertainty.length).toBeGreaterThan(0);
-    expect(caveated.text).toContain(fixture.caveatText);
+    expect(caveated.text).not.toContain(fixture.caveatText);
 
-    assertQuality(creative, evidence, { importedPriorIds: true, creative: true });
     expect(creative.force).toBe("creative");
-    expect(creative.text).toContain(fixture.creativeArtifact.path);
+    expect(JSON.stringify(creative.surfacePlan)).toContain(fixture.creativeArtifact.content);
+    expect(creative.text).not.toContain("scce.invention_construct");
+    expect(creative.text).not.toContain("→");
 
     assertQuality(corrected, evidence, { importedPriorIds: true, correctionId: correction.id });
     expect(corrected.text).toContain(fixture.correction.preferredSurface);
@@ -124,8 +125,8 @@ describe("Mouth generic chat quality gate", () => {
       expect(trace).toContain("unit:quality");
       expect(trace).toContain("pattern:quality");
     }
-    if (options.caveat) expect(spoken.text).toContain(fixture.caveatText);
-    if (options.creative) expect(spoken.text).toContain(fixture.creativeArtifact.path);
+    if (options.caveat) expect(spoken.uncertainty.length).toBeGreaterThan(0);
+    if (options.creative) expect(JSON.stringify(spoken.surfacePlan)).toContain(fixture.creativeArtifact.content);
     if (options.correctionId) expect(JSON.stringify(spoken.realizationTrace.corrections)).toContain(options.correctionId);
   }
 

@@ -17,6 +17,7 @@ scce.config.json
 -> learned turn-requirement field and cognitive operators
 -> cognitive proposals with per-claim bases
 -> requirement-aware candidate/judge selection, proof, contradiction, and slot planning
+-> one bounded learn/search/fetch, canonical-ingest, and replan transition when needed
 -> packages/kernel/src/mouth.ts
 -> bounded answer revision
 -> traceable answer and durable turn events
@@ -28,7 +29,9 @@ prompt-stuffing, or SQL-text-search fallback lane. PostgreSQL is the canonical d
 store; graph reasoning occurs in the kernel rather than in broad text queries.
 
 Configuration is read from `scce.config.json`. Runtime database configuration is not
-silently discovered from process environment variables.
+silently inferred from generic process state: a non-empty, explicit
+`SCCE_DATABASE_URL` is the sole database URL override and is applied before config
+validation so credentials need not be committed.
 
 ## Math Placement And Current Contract
 
@@ -44,9 +47,20 @@ silently discovered from process environment variables.
 - `packages/kernel/src/powerwalk.ts` and `powerwalk-ppmi.ts`: deterministic
   second-order walks, pair-disjoint training/validation partition identity, sparse PPMI
   representations, and query-anchor cosine expansion into production field seeds.
-  Zero-context nodes receive no invented fallback representation. Current expansion
-  thresholds and scale remain uncalibrated, and durable incremental-state loading is
-  not yet established.
+  Zero-context nodes receive no invented fallback representation. Graph statistics
+  provide explicitly unfitted initialization. A separate bounded fitter consumes
+  caller-supplied typed transition choices, splits by source-record identity, optimizes
+  `p`, `q`, and temporal decay by multinomial NLL, and activates the fitted candidate
+  only when both fit and untouched holdout NLL improve. This is not representative
+  calibration. Current expansion thresholds and scale remain uncalibrated, and durable
+  incremental-state loading is not yet established.
+- `packages/kernel/src/spectral-forecast.ts`: conditional-Gaussian VAR order selection
+  by AIC on a common estimation window, adaptive-jitter Cholesky log determinants, full
+  companion-matrix stability diagnostics, and exact horizon-specific Wold covariance.
+  Insufficient data or residual degrees of freedom produces a reason-labeled
+  random-walk-with-drift cold start rather than a fitted finite-AIC claim. QR
+  non-convergence degrades to a labeled infinity-norm upper bound. Gaussian forecast
+  intervals are explicitly uncalibrated.
 - `packages/kernel/src/relation-potential.ts`: source-neutral graph-edge features,
   coefficient fitting, Platt calibration, and evaluation metrics on three disjoint
   datasets: coefficient training, calibration fit, and evaluation holdout. The frozen,
@@ -60,6 +74,10 @@ silently discovered from process environment variables.
   activations plus optional structured requirements. It activates 17 stable cognitive
   operators without an English command-verb router. The bundled coefficient models
   are explicitly `uncalibrated_bootstrap`.
+- `packages/kernel/src/request-authority.ts`: the shared source-neutral projection from
+  the requirement field to six request authorities, plus shared operator-support
+  contributions. Scores are bounded routing energies rather than probabilities, and
+  explicit structured authority remains a traced override.
 - `packages/kernel/src/cognitive-planner.ts`: bounded proposals containing typed
   claims, relations, steps, artifacts, evidence/prior identities, requirement
   coverage, operator support, and per-claim bases. Reasoning, invention, and MMR
@@ -69,7 +87,9 @@ silently discovered from process environment variables.
   weakening, telemetry-as-answer, unreceipted action results, and failed executable
   validation are hard failures rather than score tradeoffs.
 - `packages/kernel/src/mouth.ts` and `surface-realizer.ts`: realization of selected
-  material. The mouth does not get authority to manufacture facts or citations.
+  semantic slots and relations through learned language memory. The Mouth does not get
+  authority to select facts, manufacture citations, or expose semantic/control IDs as
+  user-facing text.
 - `packages/kernel/src/answer-revision.ts`: a typed critic/revision boundary capped at
   two rounds. A revision must improve measured quality by at least `0.025` and retain
   citation, action-receipt, test-preservation, and non-telemetry invariants.
@@ -77,6 +97,21 @@ silently discovered from process environment variables.
 `kernel.turn` records the requirement field, operator activations, proposals, selected
 candidate/Mouth state, and revision result as separate inspectable runtime artifacts.
 Ordinary answer prose does not need to expose that telemetry.
+
+`createSourceOnlyScceRuntime` exposes the in-memory source-only runtime for bounded
+fixture and diagnostic use; `createScceRuntime` currently aliases that factory. Its turn
+path derives requirements, projects authority through the shared function, activates
+operators, selects an authority-compatible candidate, and then calls Mouth. It is
+marked simulation/non-hydrated and does not replace the PostgreSQL-backed production
+runtime.
+
+## Low-Support Transition
+
+An under-supported candidate does not terminate the turn with a canned refusal. The kernel may make one bounded transition through eligible local learning or configured search/fetch, canonical typed ingestion, graph/frontier update, and replanning. Fetched material must retain source identity, evidence spans, language, and temporal metadata before it can contribute factual support. The transition is bounded to one recovery pass so missing support cannot create an unbounded retrieval loop.
+
+Replanning preserves authority boundaries. Factual correction and negation require supporting contradiction or temporal proof. Reasoned and prior-bound answers remain qualified. After the single acquisition attempt is exhausted, the current user policy also licenses a bounded creative continuation for an under-supported factual or reasoned turn. That continuation is admissible only when active learned graph or language priors contribute non-request material and the candidate passes non-echo, risk, and unsupported-fact gates. Its claims carry `invented` basis, its evidence set is empty, its provenance is `generated_not_evidence`, and it receives no factual certification.
+
+The terminal creative policy is not a fabrication fallback. Empty connector, graph, and language state provides no honest material from which to synthesize useful knowledge; in that case the planner selects a non-assertive answer limited to source-derived content that actually exists, and the Mouth realizes it. If the Mouth cannot produce an admissible learned realization, an empty surface returns control to the kernel for terminal selection and is not emitted as the user's answer.
 
 ## SCCE2 Import And Brain Lifecycle
 
@@ -109,7 +144,7 @@ does not accept a root, command, approval, authorization, or execution state.
 
 `POST /api/workspace/patch/plan/request` is strict and non-mutating. Its tested coding
 families remove a source-proven unused binding from a type-only import or apply one
-official TypeScript LanguageService code fix to one existing requested file. The
+official TypeScript LanguageService code fix rooted at one existing requested file. The
 adapter builds the LanguageService from exact durable snapshot bytes and the
 TypeScript standard library; it does not read unrecorded workspace or dependency
 source. The source-observed direct `tsc` invocation resolves either its explicit
@@ -121,11 +156,16 @@ candidate; there is no implicit candidate selection. The resulting plan remains
 unauthorized and unexecuted and requires source-observed compiler/typecheck/test
 validation before application.
 
-This path does not synthesize arbitrary features, create targets, or accept multi-file
-compiler actions. Other internal ProgramGraph conversion still requires exact-base
-repair lineage, current live absence observations where relevant, and linked
-validation evidence; caller-supplied metadata cannot establish semantic correctness
-or executed tests. `regressionProtection` remains `0` until execution evidence exists.
+The selected compiler action is preserved as an atomic closure of up to 32 affected
+files and 128 exact text changes. It may replace exact snapshot files or create bounded
+TypeScript/JavaScript sources in existing snapshot directories. Command-bearing
+actions, out-of-workspace targets, stale or absent replacement bases, invalid new-file
+targets, implicit or ambiguous selection, and overlapping changes are rejected. This
+path does not synthesize arbitrary features. Other internal ProgramGraph conversion
+still requires exact-base repair lineage, current live absence observations where
+relevant, and linked validation evidence; caller-supplied metadata cannot establish
+semantic correctness or executed tests. `regressionProtection` remains `0` until
+execution evidence exists.
 
 `POST /api/workspace/patch` is the separate mutation boundary. The Node adapter
 performs containment, symlink, compare-and-swap, staging, verification,
@@ -152,7 +192,6 @@ visibility is not globally atomic; the receipt truthfully reports
 - `packages/vscode`: local-loopback VS Code extension for readiness, ingest, questions,
   project/status workflows, reviewed patch application, and receipt verification.
 - `tools/scce-dev-mcp`: bounded local repository and trace inspection tools.
-- `tools/sealed-eval`: sealed evaluation harness and production JSONL adapter.
 
 The packaged VSIX was installed in an isolated VS Code 1.96.4 profile. The host
 activated it, observed its registered commands, and reached `GET /api/ready`. Visual
@@ -168,7 +207,5 @@ formula results as unverified stored values and does not recalculate formulas or
 execute macros, external links, or embedded objects.
 
 SCCE2 n-gram and compatible graph material stream within byte/count/heap budgets, with
-checkpoint, stop, resume, and lifecycle state. The calibration evaluator and runtime
-load gate require caller-supplied data; no representative calibration or load record
-is included. This does not yet prove representative large-corpus performance,
-clean-machine reproduction, production isolation, or independent public review.
+checkpoint, stop, resume, and lifecycle state. Representative large-corpus behavior,
+clean-machine reproduction, and production isolation remain deployment-specific work.

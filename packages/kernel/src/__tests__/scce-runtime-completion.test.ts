@@ -228,6 +228,10 @@ describe("SCCE source-completion runtime", () => {
       expect(turn.trace.calibration?.calibrationStatus).toBe(turn.trace.calibrationStatus);
       expect(turn.trace.truthState.symbolicState).toBeTruthy();
       expect(turn.trace.evidenceForce).not.toBe("unknown");
+      expect(turn.trace.requestedAuthority).toBe("factual");
+      expect(turn.trace.selectedCandidate?.kind).toBe("proof-answer");
+      expect(turn.trace.selectedCandidate?.force).toBe("observed");
+      expect(turn.workspace.entailment.force).toBe("observed");
       expect(turn.trace.guardFlags.requireEvidence).toBe(true);
 
       const priorOnlyLearning = runtime.runLearningStep({

@@ -101,6 +101,100 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.guardFlags.sourceBacked).toBe(true);
   });
 
+  it("preserves a source-backed relation instead of reducing it to the named entity", async () => {
+    const clock = createClock({ fixedTime: 6_750, stepMs: 1 });
+    const hasher = createHasher();
+    const route = evidenceSpan({
+      id: "evidence:pump-route",
+      sourceVersionId: "source:pump-route:v1" as SourceVersionId,
+      title: "Fixture record",
+      uri: "fixture://pump/route",
+      text: "Pump alpha is controlled by API route POST /api/pumps/alpha/control.",
+      alpha: 0.94
+    });
+    const fixture = storageFixture({ evidence: [route] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({
+      text: "What API route controls pump alpha?",
+      metadata: {
+        sessionContextEvidence: true,
+        runtimeEvidenceIds: [String(route.id)]
+      }
+    });
+    expect(result.answer).toContain("POST /api/pumps/alpha/control");
+    expect(result.evidence.map(span => span.id)).toContain(route.id);
+    expect(result.assistantForce).toBe("source_grounded_answer");
+  });
+
+  it("pairs an early temporal counterexample with distinct source-derived development context", async () => {
+    const clock = createClock({ fixedTime: 6_900, stepMs: 1 });
+    const hasher = createHasher();
+    const subject = evidenceSpan({
+      id: "evidence:martha-washington",
+      sourceVersionId: "source:martha-washington:v1" as SourceVersionId,
+      title: "Martha Washington",
+      uri: "fixture://wiki/Martha_Washington",
+      text: "Martha Washington (1731–1802) was the wife of George Washington.",
+      alpha: 0.96
+    });
+    const historySurface = "In the early 17th century, ships flew flags showing nationality, and those practices evolved into national flags.";
+    const counterexampleSurface = "The flag of Denmark, the Dannebrog, is attested in 1478, and is the oldest national flag still in use.";
+    const hydratedLead = "A national flag represents and symbolizes a nation. ".repeat(160);
+    const longDateSurface = "On 12 April 1606, a flag representing a union between two kingdoms was specified in a decree, according to which two existing standards would be joined.";
+    const flagHistory = evidenceSpan({
+      id: "evidence:national-flag-history",
+      sourceVersionId: "source:national-flag-history:v1" as SourceVersionId,
+      title: "National flag",
+      uri: "fixture://wiki/National_flag",
+      text: `${hydratedLead} [[File:Flag fixture.svg|thumb|decorative fixture]] The first flags aided [[military]] coordination. ${historySurface} ${longDateSurface} The national flag of France was designed in 1794. ${counterexampleSurface} National flags represent nation states.`,
+      alpha: 0.94
+    });
+    expect((flagHistory.text ?? "").length).toBeGreaterThan(6_000);
+    const fixture = storageFixture({ evidence: [subject, flagHistory] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({
+      text: "Did Martha Washington invent the idea of using flags to represent nation states?",
+      metadata: {
+        sessionContextEvidence: true,
+        runtimeEvidenceIds: [String(subject.id), String(flagHistory.id)]
+      }
+    });
+    expect(result.answer).toContain(historySurface);
+    expect(result.answer).toContain(counterexampleSurface);
+    expect(result.answer.indexOf("1478")).toBeLessThan(result.answer.indexOf("17th century"));
+    expect(result.answer).not.toContain("The national flag of France was designed in 1794");
+    expect(result.answer).not.toContain("On 12.");
+    expect(result.answer).not.toContain("...");
+    expect(result.answer).not.toContain("[[");
+    expect(result.answer).not.toContain("File:");
+    expect(result.answer.match(/ships flew flags showing nationality/gu)).toHaveLength(1);
+    expect(result.answer.match(/Dannebrog/gu)).toHaveLength(1);
+    expect(result.evidence.map(span => span.id)).toEqual(expect.arrayContaining([subject.id, flagHistory.id]));
+    expect((result.selectedCandidate as { force?: string } | undefined)?.force).toBe("inferred");
+    expect(result.epistemicForce).toBe("inferred");
+    expect(result.truthState.symbolicState).toBe("truth.source_bound_only");
+    expect(result.entailment.proof.verdict).toBe("inferred");
+    expect(result.entailment.boundaries).toContain("temporal-counterexample-source-bound-inference");
+    expect(result.truthState.contradictionMass).toBe(result.entailment.contradiction);
+    expect((result.entailment.proof.confidence as Record<string, JsonValue>).originalContradiction).toBe(result.entailment.contradiction);
+  });
+
   it("resolves source titles stored in normal ingest provenance metadata", async () => {
     const nested = evidenceSpan({
       id: "evidence:nested-title",
@@ -131,7 +225,7 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.evidence.map(span => span.id)).toContain(nested.id);
   });
 
-  it("returns insufficient support when a requested named source is absent from the local slice", async () => {
+  it("keeps the empty-memory acquisition floor non-assertive without inventing facts or templates", async () => {
     const clock = createClock({ fixedTime: 7000, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
@@ -169,7 +263,19 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.assistantForce).toBe("insufficient_support");
     expect(result.requestedAuthority).toBe("factual");
     expect(result.constructGraph.nodes.some(node => node.kind === "construct:invention")).toBe(false);
-    expect(result.answer).toMatch(/^Insufficient support\./);
+    expect(result.answer.toLocaleLowerCase()).toContain("star trek");
+    expect(result.answer.trim().length).toBeGreaterThan(0);
+    expect(result.answer).not.toBe("Who are the main characters in Star Trek?");
+    expect(result.answer.toLocaleLowerCase()).not.toContain("main — characters");
+    expect(result.answer).not.toContain("Insufficient support");
+    expect(result.answer).not.toContain("enough source-backed evidence");
+    expect(result.runtimeMotion).toMatchObject({
+      motionId: "motion.learn_hydrate_replan",
+      attempt: 1,
+      status: "unavailable"
+    });
+    expect(result.selectedCandidate).toMatchObject({ kind: "dialogue-continuation" });
+    expect(result.constructGraph.nodes.some(node => (node.metadata as Record<string, JsonValue>).schema === "scce.runtime_motion_construct.v1")).toBe(true);
     expect(result.answer).not.toContain("[scce:");
     expect(result.evidence).toEqual([]);
     expect(result.guardFlags.missingEvidence).toBe(true);
@@ -178,10 +284,124 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.answer).not.toContain("Spock");
     expect(result.answer).not.toContain("Kirk");
     expect(result.answer).not.toContain("Ada Lovelace");
+    expect(result.answer).not.toContain(";");
+    expect(JSON.stringify(result.selectedCandidate)).not.toContain("generated_not_evidence");
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorRequired":true');
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":false');
     expect(result.events.some(event => event.typeId === "SemanticEntailmentChecked")).toBe(true);
     expect(result.events.some(event => event.typeId === "MouthSpoken")).toBe(true);
+  });
+
+  it("uses an activated learned semantic prior for an invented non-certified continuation after acquisition is exhausted", async () => {
+    const clock = createClock({ fixedTime: 7_250, stepMs: 1 });
+    const hasher = createHasher();
+    const requestText = "What should the Aurora bridge crew rehearse?";
+    const priorSurface = "Coordinate bridge roles through rotating scenario constraints";
+    const semanticFrame: SemanticFrameRecord = {
+      id: "frame.fixture.aurora.terminal-invention",
+      frameJson: {
+        continuationSurface: priorSurface,
+        surface: requestText,
+        semanticRoleId: "role.fixture.aurora.rehearsal",
+        requirementCoefficients: {
+          noveltyDemand: 4.2,
+          inferentialDepth: 1.4,
+          uncertaintyTolerance: 1.2
+        }
+      },
+      embedding: [],
+      evidenceIds: [],
+      alpha: 0.98,
+      createdAt: 1
+    };
+    const fixture = storageFixture({ evidence: [], semanticFrames: [semanticFrame] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: requestText, requestedAuthority: "factual" });
+    const selectedAudit = JSON.stringify(result.selectedCandidate);
+    const inventionNode = result.constructGraph.nodes.find(node => node.kind === "construct:invention");
+
+    expect(result.requestedAuthority).toBe("factual");
+    expect(result.runtimeMotion).toMatchObject({ attempt: 1, status: "unavailable" });
+    expect(result.selectedCandidate).toMatchObject({ kind: "creative-candidate", force: "invented", evidenceIds: [], claimBases: ["invented"] });
+    expect(result.assistantForce).toBe("creative_answer");
+    expect(result.answer).toContain(priorSurface);
+    expect(result.answer).not.toBe(requestText);
+    expect(result.evidence).toEqual([]);
+    expect(result.emissionGraph.evidenceIds).toEqual([]);
+    expect(inventionNode).toBeDefined();
+    expect(inventionNode?.metadata).toMatchObject({ proofStatusId: "proof.status.generated_not_evidence", basisEvidenceIds: [] });
+    expect(selectedAudit).toContain("scce.runtime_motion_invention_candidate.v1");
+    expect(selectedAudit).toContain("policy.runtime_motion.prior_invention_after_exhausted_acquisition.v1");
+    expect(selectedAudit).toContain('"externalFactCertification":false');
+    expect(selectedAudit).toContain('"fakeEvidenceForbidden":true');
+    expect(selectedAudit).not.toContain('"evidenceIds":["');
+  });
+
+  it("searches, fetches, ingests, and replans once through the configured read-only connector", async () => {
+    const clock = createClock({ fixedTime: 7_500, stepMs: 1 });
+    const hasher = createHasher();
+    const acquiredEvidence: EvidenceSpan[] = [];
+    const fixture = storageFixture({ evidence: acquiredEvidence });
+    const calls: string[] = [];
+    const sourceUri = "https://fixture.invalid/pump-alpha-control";
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      connectors: {
+        async search(query, limit) {
+          calls.push(`search:${query}:${limit}`);
+          return [{ uri: sourceUri, title: "Pump Alpha", snippet: "Pump Alpha is controlled by API route POST /api/pumps/alpha/control.", metadata: { provider: "fixture" } }];
+        },
+        async fetch(uri) {
+          calls.push(`fetch:${uri}`);
+          return {
+            uri,
+            mediaType: "text/plain",
+            bytes: new TextEncoder().encode("Pump Alpha is controlled by API route POST /api/pumps/alpha/control."),
+            metadata: { status: 200 }
+          };
+        }
+      },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
+
+    expect(calls).toEqual([
+      "search:What controls Pump Alpha?:3",
+      `fetch:${sourceUri}`
+    ]);
+    expect(result.answer.toLocaleLowerCase()).toContain("pump alpha");
+    expect(result.answer).toContain("POST /api/pumps/alpha/control");
+    expect(result.answer).toContain(sourceUri);
+    expect(result.answer.toLocaleLowerCase()).not.toContain("what — controls");
+    expect(result.answer).not.toContain("Insufficient support");
+    expect(result.answer).not.toContain("enough source-backed evidence");
+    expect(result.runtimeMotion).toMatchObject({
+      motionId: "motion.learn_hydrate_replan",
+      attempt: 1,
+      status: "empty",
+      ingestedSourceCount: 1,
+      ingestedEvidenceCount: 0,
+      sourceUris: [sourceUri]
+    });
+    expect(acquiredEvidence).toHaveLength(1);
+    expect(acquiredEvidence[0]?.status).toBe("quarantined");
+    expect(JSON.stringify(acquiredEvidence.map(span => span.provenance))).toContain(sourceUri);
+    expect(result.evidence).toEqual([]);
+    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionPlanned")).toHaveLength(1);
+    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionCompleted")).toHaveLength(1);
   });
 
   it("answers deterministic arithmetic without requiring source evidence", async () => {
@@ -219,6 +439,69 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.events.some(event => event.typeId === "ComputationEvaluated")).toBe(true);
   });
 
+  it("preserves source entities when an exact promoted target span licenses translation", async () => {
+    const clock = createClock({ fixedTime: 8_500, stepMs: 1 });
+    const hasher = createHasher();
+    const target = evidenceSpan({
+      id: "evidence:pump-alpha-es",
+      sourceVersionId: "source:pump-alpha-es:v1" as SourceVersionId,
+      title: "Pump alpha",
+      uri: "fixture://translation/pump-alpha-es",
+      text: "Pump alpha es estable.",
+      alpha: 0.94
+    });
+    target.languageHints = { language: "lang.es", script: "Latn" };
+    const fixture = storageFixture({ evidence: [target] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({
+      text: "Pump alpha is stable.",
+      metadata: {
+        targetLanguage: "lang.es",
+        questionId: "translation-candidate-diagnostic",
+        sessionContextEvidence: true,
+        runtimeEvidenceIds: [String(target.id)],
+        turnRequirements: [
+          {
+            id: "translation.fixture.semantic-preservation",
+            dimension: "semanticPreservation",
+            value: 1,
+            confidence: 1,
+            polarity: "required",
+            status: "explicit",
+            learnedFrameOrPatternId: "translation.fixture",
+            sourceActivationId: "translation.fixture.activation",
+            trace: { source: "kernel-local-evidence-anchor.test" }
+          },
+          {
+            id: "translation.fixture.surface-transformation",
+            dimension: "surfaceTransformation",
+            value: 1,
+            confidence: 1,
+            polarity: "required",
+            status: "explicit",
+            learnedFrameOrPatternId: "translation.fixture",
+            sourceActivationId: "translation.fixture.activation",
+            trace: { source: "kernel-local-evidence-anchor.test" }
+          }
+        ]
+      }
+    });
+
+    expect(result.selectedCandidate).toMatchObject({ kind: "translation" });
+    expect(result.answer.toLowerCase()).toContain("pump alpha");
+    expect(result.answer.toLowerCase()).toContain("es estable");
+    expect(result.evidence.map(span => span.id)).toContain(target.id);
+    expect(result.assistantForce).toBe("translation_answer");
+  });
+
   it("creates and speaks an invention construct from an ordinary creative request", async () => {
     const clock = createClock({ fixedTime: 9_000, stepMs: 1 });
     const hasher = createHasher();
@@ -241,9 +524,14 @@ describe("kernel local evidence source anchoring", () => {
     expect(inventionNode).toBeDefined();
     expect(JSON.stringify(inventionNode?.metadata)).toContain("scce.invention_construct.v1");
     expect(JSON.stringify(result.candidateField)).toContain("creative-candidate");
+    expect(result.selectedCandidate).toMatchObject({ kind: "creative-candidate" });
     expect(JSON.stringify(result.judge)).toContain("creative-candidate");
     expect(result.emissionGraph.evidenceIds).toEqual([]);
-    expect(result.answer.trim().length).toBeGreaterThan(24);
+    expect(result.answer.trim().length, JSON.stringify({
+      selectedCandidate: result.selectedCandidate,
+      construct: result.constructGraph.nodes.find(node => node.kind === "construct:invention"),
+      mouth: result.events.find(event => event.typeId === "MouthSpoken")?.payload
+    })).toBeGreaterThan(24);
     expect(result.answer.trim().startsWith("{")).toBe(false);
     expect(result.answer).not.toContain("scce.invention_construct");
   });
@@ -557,7 +845,9 @@ function storageFixture(input: { evidence: EvidenceSpan[]; graph?: GraphSlice; s
     },
     evidence: {
       putSourceVersion: async () => undefined,
-      putEvidenceSpan: async () => undefined,
+      putEvidenceSpan: async (span: EvidenceSpan) => {
+        if (!input.evidence.some(existing => String(existing.id) === String(span.id))) input.evidence.push(span);
+      },
       promoteEvidence: async () => input.evidence.length,
       getEvidence: async (id: EvidenceId) => input.evidence.find(span => String(span.id) === String(id)) ?? null,
       getEvidenceBatch: async (ids: EvidenceId[]) => input.evidence.filter(span => ids.map(String).includes(String(span.id))),

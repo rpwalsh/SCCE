@@ -26,7 +26,7 @@ You can ask normal questions:
 - What should we fix first?
 - Invent a compression algorithm for this data shape.
 
-SCCE should not require every answer to be proven before it says anything. It can speak from learned priors, graph associations, source-bound excerpts, or creative construction. What matters is that it does not label unsupported material as certified.
+SCCE does not require every useful answer to be certified. It can speak from learned priors, graph associations, source-bound excerpts, qualified inference, or creative construction. What matters is that it does not label unsupported material as certified and does not end an ordinary turn with a canned low-support refusal.
 
 ## How To Read Answers
 
@@ -40,7 +40,7 @@ The system has several answer forces:
 - Creative: invented or designed for the task.
 - Contradicted: blocked or pressured by contrary evidence.
 
-Normal answers should be readable. The force and trace should be inspectable, but the answer itself should not be a dump of proof keys, telemetry, or database fields.
+Normal answers should be readable. The force and trace should be inspectable, but the answer itself should not be a dump of proof keys, telemetry, database fields, semantic role identifiers, or workflow notation. The Mouth receives selected semantic slots and relations and realizes them through learned language memory; it does not choose facts.
 
 ## What Proof Means
 
@@ -52,6 +52,27 @@ This distinction is important:
 
 - "Say something useful" can use language priors, concept priors, inference, and invention.
 - "Prove this is true" needs direct source/version/span evidence.
+
+## Low Support Is A Recovery State
+
+Insufficient support does not authorize a final refusal. It triggers one bounded recovery transition:
+
+```text
+detect the missing support
+-> learn from eligible local material or perform a configured search/fetch
+-> admit returned material through canonical typed ingestion
+-> preserve source, version, span, language, and time metadata
+-> replan once
+-> answer with the resulting force
+```
+
+The recovery step is bounded to prevent an open-ended search loop. Search or fetched text does not become factual support until canonical ingestion has created source-backed observations and evidence spans.
+
+After replanning, SCCE should answer with the strongest honest form available: a supported fact or correction, a source-bounded account, or a qualified inference or prior. If the single acquisition attempt is exhausted and a factual or reasoned turn remains under-supported, the current user policy itself licenses one bounded creative continuation; the original request does not need to be framed as a creative task.
+
+That continuation is allowed only when active learned graph or language priors add meaningful material that was not copied from the question. It must pass non-echo, risk, and unsupported-fact checks, carry an `invented` claim basis, cite no evidence, record `generated_not_evidence` provenance, and make no factual-certification claim. This makes the invention inspectable without pretending it is a discovered fact.
+
+If connector, graph, and language state are all empty, there is no honest knowledge material to synthesize. The planner must select a non-assertive answer using only source-derived content that actually exists; it may not compensate with hardcoded phrases or fabricated facts. If a fluent surface cannot yet be realized, the Mouth may return an empty internal surface so the kernel completes its terminal selection. The Mouth then realizes the selected answer; the empty internal surface is never the user-facing answer.
 
 ## What Hydration Does
 
@@ -112,7 +133,7 @@ Examples:
 - Design a local ingestion safety rail for an 8 GB free RAM laptop.
 - Propose a CLI layout for a project that has no server yet.
 
-Creative output is not certified fact. It may be useful or actionable, but it remains unsupported unless evidence is attached and evaluated under the applicable proof rules.
+Creative output is not certified fact. Creative authority permits invention and design; it does not certify factual claims embedded in the result. Any factual claim still needs its own evidence or qualified force, and citations may not be manufactured after generation.
 
 ## Asking Factual Questions
 
@@ -134,6 +155,18 @@ Who are the main characters in Star Trek?
 
 The expected answer shape should prioritize character/cast relations. Producer, composer, network, and episode-count facts are context, not the answer core.
 
+### False premises and changing facts
+
+A question can contain a false attribution or assume that a changing fact was always true. SCCE should not echo the premise and should not infer a negative answer merely because positive support is missing.
+
+For example:
+
+```text
+Did Martha Washington invent the idea of using flags to represent nation states?
+```
+
+This requires evidence for both the attribution and the convention's earlier development. A negative answer is admissible when contradiction evidence or a temporally earlier source-backed history defeats the premise. The response should then correct the attribution and explain the supported development of the convention, rather than merely saying that the original claim lacked support. If that evidence cannot be acquired in the bounded recovery transition, SCCE should distinguish what is established from what remains unresolved. Any terminal invention must remain explicitly invented and cannot supply the missing historical negation.
+
 ## What To Do When Answers Are Weak
 
 If an answer is weak, inspect before guessing:
@@ -150,42 +183,21 @@ Common causes of weak answers include:
 - The graph has support but planning selected the wrong facts.
 - The Mouth had meaning but weak language priors.
 
-## Good User Expectations
+## Operational Checks
 
-Additional hydrated data changes the available graph material. Whether it improves results must be established by evaluation.
+Hydration changes the graph material available for activation; it does not by itself establish better answers. Before relying on a deployment, verify that its corpus is hydrated, its schema is current, its server path is live, and replay works for the intended workload.
 
-Do not treat the runtime as complete before:
-
-- The corpus is hydrated.
-- The schema has migrated.
-- The server path is live.
-- Replay has been tested.
-- The question battery shows behavior across many topics.
-- Calibration has been fitted and checked on representative held-out work.
-- The exact editor package has passed the specific host behaviors required for the deployment.
-- Validation isolation and its Docker/host trust boundary have been reviewed for the deployment.
-
-The public-review harness is evidence-collection infrastructure. The protected public-review procedure has not been executed.
-
-## Verified Local Checks
-
-Run the following against the exact checkout under review:
+Run repository checks against the exact checkout in use:
 
 ```powershell
+pnpm build
+pnpm test
 pnpm validate
 pnpm rehearsal:postgres
 pnpm rehearsal:adapter
-pnpm calibration:evaluate --input <observations.json|jsonl> --dataset-id <immutable-id>
-pnpm load:gate --prompts <prompts.json|jsonl> --workload-id <immutable-id>
-pnpm vscode:test:host
 ```
 
-The calibration and load commands require caller-supplied data; neither has been run
-with a representative release dataset. The PostgreSQL rehearsals also remain
-unexecuted in the current release record because no database password was configured.
-The local Docker and extension-host smoke tests establish only the behaviors they
-observed. They are not production certification, independent review, or a substitute
-for reviewing the Docker daemon, operator, image supply chain, and host kernel.
+Database-dependent checks require a configured PostgreSQL URL. Passing local checks establishes only the contracts those commands exercise.
 
 ## Practical Rule
 

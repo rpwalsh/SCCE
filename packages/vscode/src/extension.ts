@@ -1,15 +1,21 @@
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { YoppClient } from "./client.js";
 import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from "./config.js";
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
 import type { YoppEndpoint } from "./protocol.js";
 import {
+  assertSameWorkspacePhysicalBinding,
+  assertWorkspacePathAbsent,
+  assertWorkspacePhysicalBinding,
+  captureWorkspacePhysicalBinding,
+  readVerifiedWorkspaceFile,
   reviewedPatchIntegritySummary,
   verifyAppliedPatchMatchesPlan,
-  verifyAppliedWorkspaceState
+  verifyAppliedWorkspaceState,
+  verifyReviewedWorkspaceState,
+  type WorkspacePhysicalBinding
 } from "./patch-integrity.js";
 import {
   DEFAULT_PATCH_VALIDATION_POLICY_ID,
@@ -263,8 +269,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         })
       );
       if (!generation) return;
+      let reviewedWorkspace: BoundOpenWorkspace;
       try {
-        await openPatchPlanPreview(patchPreview, statusResult.workspace.rootPath, generation.plan);
+        reviewedWorkspace = await openPatchPlanPreview(patchPreview, statusResult.workspace.rootPath, generation.plan);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(`[${new Date().toISOString()}] Coding-request preview failed: ${message}`);
@@ -285,8 +292,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         async activeClient => {
           const currentStatus = await activeClient.workspaceStatus();
           if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("the server's active workspace changed after coding-plan review");
-          await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
-          return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, currentStatus.workspace.rootPath, generation.plan);
+          const currentWorkspace = await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
+          assertSameWorkspacePhysicalBinding(reviewedWorkspace, currentWorkspace);
+          return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, currentStatus.workspace.rootPath, reviewedWorkspace, generation.plan);
         },
         {
           message: `Apply ${generation.plan.operations.length} verified coding-request file operation(s) to this workspace?`,
@@ -304,8 +312,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!boundStatus) return;
       const plan = await chooseReviewedPatchPlan();
       if (!plan) return;
+      let reviewedWorkspace: BoundOpenWorkspace;
       try {
-        await openPatchPlanPreview(patchPreview, boundStatus.workspace.rootPath, plan);
+        reviewedWorkspace = await openPatchPlanPreview(patchPreview, boundStatus.workspace.rootPath, plan);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(`[${new Date().toISOString()}] Reviewed patch preview failed: ${message}`);
@@ -322,8 +331,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const applied = await run("workspace.patch", "Apply reviewed patch transaction", true, async activeClient => {
         const currentStatus = await activeClient.workspaceStatus();
         if (currentStatus.workspace.id !== boundStatus.workspace.id) throw new Error("the server's active workspace changed after patch-plan review");
-        await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
-        return applyReviewedWorkspacePatch(activeClient, boundStatus.workspace.id, currentStatus.workspace.rootPath, plan);
+        const currentWorkspace = await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
+        assertSameWorkspacePhysicalBinding(reviewedWorkspace, currentWorkspace);
+        return applyReviewedWorkspacePatch(activeClient, boundStatus.workspace.id, currentStatus.workspace.rootPath, reviewedWorkspace, plan);
       }, {
         message: `Apply ${plan.operations.length} reviewed file operation(s) to this workspace?`,
         detail: `${patchPlanSummary(plan)}\n\nThe server will verify all content hashes, stage the workspace, run ${DEFAULT_PATCH_VALIDATION_POLICY_ID}, require a second capability authorization, and commit only after validation passes. This trusted-host policy is not an OS sandbox; use it only for repository code you trust to run with the server process's authority.`
@@ -427,10 +437,8 @@ function patchPlanSummary(plan: ReviewedPatchPlan): string {
   return [`Plan ${plan.planHash}`, reviewedPatchIntegritySummary(plan), ...rows].join("\n");
 }
 
-interface BoundOpenWorkspace {
+interface BoundOpenWorkspace extends WorkspacePhysicalBinding {
   folder: vscode.WorkspaceFolder;
-  resolvedRoot: string;
-  realRoot: string;
 }
 
 interface PatchPreviewEntry {
@@ -441,44 +449,39 @@ interface PatchPreviewEntry {
 
 async function assertServerWorkspaceMatchesOpenFolder(serverRootPath: string): Promise<BoundOpenWorkspace> {
   const resolvedServerRoot = resolve(serverRootPath);
-  const realServerRoot = await realpath(resolvedServerRoot);
+  const serverPhysical = await captureWorkspacePhysicalBinding(resolvedServerRoot);
   const candidates: Array<WorkspaceFolderIdentity<vscode.WorkspaceFolder>> = [];
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const resolvedRoot = resolve(folder.uri.fsPath);
     const realRoot = folder.uri.scheme === "file" && sameFileSystemPath(resolvedRoot, resolvedServerRoot)
-      ? await realpath(resolvedRoot)
+      ? (await captureWorkspacePhysicalBinding(resolvedRoot)).realRoot
       : null;
     candidates.push({ folder, scheme: folder.uri.scheme, resolvedRoot, realRoot });
   }
-  return selectServerBoundWorkspaceFolder(resolvedServerRoot, realServerRoot, candidates);
+  const selected = selectServerBoundWorkspaceFolder(resolvedServerRoot, serverPhysical.realRoot, candidates);
+  const physical = await captureWorkspacePhysicalBinding(selected.resolvedRoot);
+  if (!sameFileSystemPath(physical.realRoot, selected.realRoot)) {
+    throw new Error("the selected workspace folder changed while its physical identity was captured");
+  }
+  await assertWorkspacePhysicalBinding(serverPhysical);
+  assertSameWorkspacePhysicalBinding(serverPhysical, physical);
+  return { folder: selected.folder, ...physical };
 }
 
 async function openPatchPlanPreview(
   provider: PatchPreviewContentProvider,
   serverRootPath: string,
   plan: ReviewedPatchPlan
-): Promise<void> {
+): Promise<BoundOpenWorkspace> {
   const workspace = await assertServerWorkspaceMatchesOpenFolder(serverRootPath);
   const entries: PatchPreviewEntry[] = [];
   let contentBytes = 0;
   for (const operation of plan.operations) {
-    const target = resolve(workspace.resolvedRoot, ...operation.path.split("/"));
-    if (!isSameOrInside(workspace.resolvedRoot, target) || sameFileSystemPath(workspace.resolvedRoot, target)) {
-      throw new Error(`patch preview target escapes the open workspace: ${operation.path}`);
-    }
     let beforeContent: string | null = null;
     if (operation.kind === "create") {
-      await assertCreateTargetAbsent(workspace.realRoot, target, operation.path);
+      await assertWorkspacePathAbsent(workspace, operation.path, "preview");
     } else {
-      const realTarget = await realpath(target);
-      if (!isSameOrInside(workspace.realRoot, realTarget) || sameFileSystemPath(workspace.realRoot, realTarget)) {
-        throw new Error(`patch preview target resolves outside the open workspace: ${operation.path}`);
-      }
-      const bytes = await readFile(realTarget);
-      const actualHash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-      if (actualHash !== operation.beforeContentHash) {
-        throw new Error(`local base hash is stale for ${operation.path}; expected ${operation.beforeContentHash}, found ${actualHash}`);
-      }
+      const bytes = await readVerifiedWorkspaceFile(workspace, operation.path, operation.beforeContentHash, "preview");
       if (bytes.includes(0)) throw new Error(`patch preview supports UTF-8 text only: ${operation.path}`);
       try {
         beforeContent = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -509,28 +512,8 @@ async function openPatchPlanPreview(
     `Yopp patch preview (${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"})`,
     { preview: false }
   );
-}
-
-async function assertCreateTargetAbsent(realRoot: string, target: string, workspacePath: string): Promise<void> {
-  try {
-    await lstat(target);
-    throw new Error(`create target already exists in the open workspace: ${workspacePath}`);
-  } catch (error) {
-    if (!isFileSystemError(error, "ENOENT")) throw error;
-  }
-  let parent = dirname(target);
-  for (;;) {
-    try {
-      const realParent = await realpath(parent);
-      if (!isSameOrInside(realRoot, realParent)) throw new Error(`create target parent resolves outside the open workspace: ${workspacePath}`);
-      return;
-    } catch (error) {
-      if (!isFileSystemError(error, "ENOENT")) throw error;
-      const next = dirname(parent);
-      if (next === parent) throw new Error(`could not verify a workspace parent for create target: ${workspacePath}`);
-      parent = next;
-    }
-  }
+  await assertWorkspacePhysicalBinding(workspace);
+  return workspace;
 }
 
 function combinedPatchPreview(entries: readonly PatchPreviewEntry[], side: "before" | "after"): string {
@@ -548,21 +531,15 @@ function combinedPatchPreview(entries: readonly PatchPreviewEntry[], side: "befo
   }).join("\n\n");
 }
 
-function isSameOrInside(root: string, candidate: string): boolean {
-  const relativePath = relative(root, candidate);
-  return relativePath === "" || (!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith("../") && !relativePath.startsWith("..\\"));
-}
-
-function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
-}
-
 async function applyReviewedWorkspacePatch(
   activeClient: YoppClient,
   workspaceId: string,
   workspaceRootPath: string,
+  reviewedWorkspace: BoundOpenWorkspace,
   plan: ReviewedPatchPlan
 ): Promise<AppliedWorkspacePatch> {
+  await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
+  await verifyReviewedWorkspaceState(reviewedWorkspace, plan);
   let attempt = await activeClient.workspacePatch(workspaceId, plan);
   if ("pendingApproval" in attempt) {
     const pending = attempt.pendingApproval;
@@ -575,18 +552,33 @@ async function applyReviewedWorkspacePatch(
       "Authorize and apply"
     );
     if (confirmed !== "Authorize and apply") throw new Error("server patch authorization was cancelled");
+    await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
+    await verifyReviewedWorkspaceState(reviewedWorkspace, plan);
     const approval = await activeClient.approveWorkspacePatch(pending.planId);
     if (approval.approved.planId !== pending.planId) throw new Error("server approved a different patch plan");
+    await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
+    await verifyReviewedWorkspaceState(reviewedWorkspace, plan);
     attempt = await activeClient.workspacePatch(workspaceId, plan);
   }
   if ("pendingApproval" in attempt) throw new Error("server still requires approval after the exact approved request was retried");
-  if (attempt.workspaceId !== workspaceId || attempt.validationPolicyId !== DEFAULT_PATCH_VALIDATION_POLICY_ID || attempt.receipt.planHash !== plan.planHash) {
+  if (
+    attempt.workspaceId !== workspaceId
+    || attempt.validationPolicyId !== DEFAULT_PATCH_VALIDATION_POLICY_ID
+    || attempt.receipt.validation.validatorId !== DEFAULT_PATCH_VALIDATION_POLICY_ID
+    || attempt.receipt.planHash !== plan.planHash
+  ) {
     throw new Error("patch receipt does not match the reviewed request");
   }
   const applied = verifyAppliedPatchMatchesPlan(attempt, plan);
-  const workspace = await assertServerWorkspaceMatchesOpenFolder(workspaceRootPath);
-  await verifyAppliedWorkspaceState(workspace.resolvedRoot, plan);
+  await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
+  await verifyAppliedWorkspaceState(reviewedWorkspace, plan);
   return applied;
+}
+
+async function assertReviewedWorkspaceStillBound(serverRootPath: string, reviewed: BoundOpenWorkspace): Promise<void> {
+  const current = await assertServerWorkspaceMatchesOpenFolder(serverRootPath);
+  assertSameWorkspacePhysicalBinding(reviewed, current);
+  await assertWorkspacePhysicalBinding(reviewed);
 }
 
 function codingPlanReviewSummary(generation: WorkspaceCodingPatchPlanGeneration): string {

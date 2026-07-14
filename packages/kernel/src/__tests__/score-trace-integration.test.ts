@@ -11,6 +11,16 @@ describe("score trace integration", () => {
     const result = engine.generate({
       requestText: "what is pressure",
       entailment: {
+        claim: {
+          id: "claim-1",
+          hash: "h",
+          atomIds: [],
+          text: "pressure is stable",
+          normalizedText: "pressure is stable",
+          languageId: "language.und",
+          symbols: [],
+          metadata: {}
+        },
         verdict: "supported",
         support: 0.8,
         contradiction: 0.1,
@@ -89,6 +99,11 @@ describe("score trace integration", () => {
 
     expect(result.scoreTrace.length).toBeGreaterThan(0);
     expect(result.candidates.some((candidate) => (candidate.scoreTrace?.length ?? 0) > 0)).toBe(true);
+    const proofCandidate = result.candidates.find(candidate => candidate.kind === "proof-answer");
+    expect(proofCandidate?.answer).toBe("");
+    expect(proofCandidate?.audit).toMatchObject({
+      semanticFrame: { transformIds: [] }
+    });
   });
 
   it("retrieval emits score traces", () => {

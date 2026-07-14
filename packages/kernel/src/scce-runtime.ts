@@ -7,8 +7,10 @@ import type {
   GraphNode,
   Hasher,
   JsonValue,
+  LanguageProfile,
   NodeId,
   ProgramGraph,
+  RequestedAuthority,
   RuntimeCalibrationStatus,
   RuntimeCalibrationSummary,
   RuntimeEvidenceForce,
@@ -48,6 +50,38 @@ import {
   type ToolCapability
 } from "./learning-loop.js";
 import { createProgramRepairKernel, type RepairPlan } from "./program-repair-kernel.js";
+import {
+  activateCognitiveOperators,
+  deriveTurnRequirementField,
+  type ActivatedOperator,
+  type ExplicitTurnRequirement,
+  type LearnedRequirementActivation,
+  type TurnRequirementDimension,
+  type TurnRequirementField
+} from "./turn-requirements.js";
+import {
+  activeRequestOperatorIds,
+  admitCandidatesForAuthority,
+  explicitAuthorityRequirements,
+  projectRequestAuthority,
+  requestOperatorDialogueSupport,
+  requestOperatorGraphSupport,
+  type RequestAuthorityProjection
+} from "./request-authority.js";
+import { createLanguageMemoryRuntime, type LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
+import { createCcrEngine } from "./ccr.js";
+import { createSemanticEntailmentEngine } from "./entailment.js";
+import { planCognitiveProposals, type CognitiveActionPlan, type CognitiveProposal } from "./cognitive-planner.js";
+import { planInventions } from "./invention-planner.js";
+import { createTranslationEngine, type TranslationPlan } from "./translation.js";
+import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
+import { createJudge } from "./judge.js";
+import { DEFAULT_POLICY } from "./safety.js";
+import { createCorrectionMemory } from "./correction-memory.js";
+import { createMouth, type MouthSemanticInput } from "./mouth.js";
+import { createAlphaFieldEngine } from "./field.js";
+import { detectCannedAnswerSpeech } from "./surface-quality.js";
+import { inventionConstructNode, type InventionConstruct } from "./prediction.js";
 import {
   createSourceCompletionContract,
   planHydration as planSourceCompletionHydration,
@@ -142,6 +176,12 @@ export interface SourceOnlyTurnSimulationInput {
   dialogueState?: DialogueState;
   dialogueFeedback?: DialogueFeedback;
   userStyleProfile?: Partial<UserStyleProfile>;
+  requestedAuthority?: RequestedAuthority;
+  explicitRequirements?: readonly ExplicitTurnRequirement[];
+  requirementActivations?: readonly LearnedRequirementActivation[];
+  requirementContext?: Partial<Record<TurnRequirementDimension, number>>;
+  languageMemoryState?: LanguageMemoryRuntimeState;
+  languageProfiles?: LanguageProfile[];
 }
 
 export type ScceRuntimeTurnInput = SourceOnlyTurnSimulationInput;
@@ -178,6 +218,21 @@ export interface SourceOnlyTurnSimulationTrace {
   dialoguePolicyDecisionId: string;
   pragmaticsCriticId: string;
   sourceRefs: WorkspaceCoreSourceRef[];
+  requestedAuthority: RequestedAuthority;
+  requestedAuthorityDecision: JsonValue;
+  requirementField: TurnRequirementField;
+  operatorActivations: ActivatedOperator[];
+  selectedCandidate: {
+    id: string;
+    kind: CandidateSurface["kind"];
+    force: CandidateSurface["force"];
+    evidenceIds: string[];
+  } | null;
+  authorityMotion: {
+    stateId: "motion.candidate_selected.v1" | "motion.learning_then_replan.v1";
+    candidateId: string | null;
+    learningNeedIds: string[];
+  };
   warnings: string[];
   unsupportedRecords: JsonValue[];
   answerTextHash: string;
@@ -200,6 +255,8 @@ export interface SourceOnlyTurnSimulationResult {
   hydratedRuntime: false;
   serverPath: false;
   answer: string;
+  requestedAuthority: RequestedAuthority;
+  selectedCandidate: SourceOnlyTurnSimulationTrace["selectedCandidate"];
   workspace: WorkspaceKernelAnswerResult;
   trace: SourceOnlyTurnSimulationTrace;
 }
@@ -435,8 +492,36 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
     if (!promotion) throw new Error("source-only turn simulation requires promoted workspace core records");
     const conversationId = input.conversationId ?? promotion.workspaceId;
     const previousDialogueState = input.dialogueState ?? state.dialogueStates.get(conversationId);
+    const authorityDialogueState = updateDialogueState({
+      requestText: input.text,
+      targetLanguage: input.targetLanguage ?? "und",
+      previousState: previousDialogueState,
+      conversationId
+    });
+    const explicitAuthority = input.requestedAuthority;
+    const requirementField = deriveTurnRequirementField({
+      requestText: input.text,
+      languageMemoryState: input.languageMemoryState,
+      dialogueState: authorityDialogueState,
+      activations: input.requirementActivations,
+      explicitRequirements: [
+        ...(input.explicitRequirements ?? []),
+        ...explicitAuthorityRequirements({
+          requestText: input.text,
+          authority: explicitAuthority,
+          sourceId: "SourceOnlyTurnSimulationInput.requestedAuthority"
+        }),
+        ...(!explicitAuthority && input.targetLanguage ? explicitAuthorityRequirements({
+          requestText: input.text,
+          authority: "translation",
+          sourceId: "SourceOnlyTurnSimulationInput.targetLanguage"
+        }) : [])
+      ],
+      contextContribution: input.requirementContext
+    });
+    const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
     const calibrationModels = calibrationModelSetFromRuntimeOutcomes([...state.outcomes.values()], clock.now());
-    const answer = await answerFromWorkspaceCoreContext({
+    const workspaceAnswer = await answerFromWorkspaceCoreContext({
       promotion,
       question: input.text,
       options: {
@@ -450,12 +535,62 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
         dialogueState: previousDialogueState,
         dialogueFeedback: input.dialogueFeedback,
         userStyleProfile: input.userStyleProfile,
+        languageMemory: input.languageMemoryState,
+        requestedAuthority: authorityProjection.requestedAuthority,
         calibrationModels
       }
     });
+    const sourceIngest = [...state.ingests.values()].find(ingest => ingest.workspace.id === promotion.workspaceId);
+    const runtimeGraph = {
+      nodes: dedupeById([...workspaceAnswer.graph.nodes, ...(sourceIngest?.graph.nodes ?? [])]),
+      edges: dedupeById([...workspaceAnswer.graph.edges, ...(sourceIngest?.graph.edges ?? [])]),
+      hyperedges: [],
+      bounded: true as const,
+      query: { features: featureSet(input.text, 256) }
+    };
+    const runtimeField = createAlphaFieldEngine().activate({
+      text: input.text,
+      nodes: runtimeGraph.nodes,
+      edges: runtimeGraph.edges
+    });
+    const operatorActivations = activateCognitiveOperators({
+      requirementField,
+      dialogueSupport: requestOperatorDialogueSupport(requirementField),
+      graphSupport: requestOperatorGraphSupport({
+        graph: runtimeGraph,
+        evidence: dedupeById([...workspaceAnswer.mouthInput.speakInput.evidence, ...(sourceIngest?.evidence ?? [])]),
+        field: runtimeField
+      })
+    });
+    const routed = await sourceOnlyAuthorityAnswer({
+      input,
+      promotion,
+      sourceEvidence: sourceIngest?.evidence ?? [],
+      runtimeGraph,
+      runtimeField,
+      workspaceAnswer,
+      requirementField,
+      operatorActivations,
+      authorityProjection,
+      calibrationModels,
+      idFactory,
+      hasher,
+      createdAt: clock.now()
+    });
+    const answer = routed.answer;
     const inputId = stableId(hasher, "runtime_input", { text: input.text, promotionId: promotion.replayTraceId });
     const traceId = stableId(hasher, "runtime_turn", { inputId, answer: answer.spoken.realizationTrace.selected.textHash });
-    const trace = sourceOnlyTurnTrace({ id: traceId, inputId, promotion, answer, hasher });
+    const trace = sourceOnlyTurnTrace({
+      id: traceId,
+      inputId,
+      promotion,
+      answer,
+      hasher,
+      requirementField,
+      operatorActivations,
+      authorityProjection,
+      selectedCandidate: routed.selectedCandidate
+    });
     const result: SourceOnlyTurnSimulationResult = {
       schema: "scce.runtime.turn.v1",
       id: traceId,
@@ -464,6 +599,8 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       hydratedRuntime: false,
       serverPath: false,
       answer: answer.spoken.text,
+      requestedAuthority: authorityProjection.requestedAuthority,
+      selectedCandidate: trace.selectedCandidate,
       workspace: answer,
       trace
     };
@@ -651,7 +788,640 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
 }
 
 export function createScceRuntime(options: { idFactory?: IdFactory; hasher?: Hasher; now?: () => number } = {}): InMemoryScceRuntime {
+  return createSourceOnlyScceRuntime(options);
+}
+
+export function createSourceOnlyScceRuntime(options: { idFactory?: IdFactory; hasher?: Hasher; now?: () => number } = {}): InMemoryScceRuntime {
   return createInMemoryScceRuntime(options);
+}
+
+interface SourceOnlyAuthorityAnswerInput {
+  input: SourceOnlyTurnSimulationInput;
+  promotion: WorkspaceCorePromotionResult;
+  sourceEvidence: EvidenceSpan[];
+  runtimeGraph: {
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+  };
+  runtimeField: WorkspaceKernelAnswerResult["mouthInput"]["speakInput"]["field"];
+  workspaceAnswer: WorkspaceKernelAnswerResult;
+  requirementField: TurnRequirementField;
+  operatorActivations: ActivatedOperator[];
+  authorityProjection: RequestAuthorityProjection;
+  calibrationModels: CalibrationModelSet;
+  idFactory: IdFactory;
+  hasher: Hasher;
+  createdAt: number;
+}
+
+async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput): Promise<{
+  answer: WorkspaceKernelAnswerResult;
+  selectedCandidate?: CandidateSurface;
+}> {
+  const requestedAuthority = input.authorityProjection.requestedAuthority;
+  const speakInput = input.workspaceAnswer.mouthInput.speakInput;
+  const workspaceEvidence = speakInput.evidence;
+  const combinedEvidence = dedupeById([...workspaceEvidence, ...input.sourceEvidence]);
+  const evidence = requestedAuthority === "translation"
+    ? sourceOnlyTranslationEvidence(
+      combinedEvidence,
+      input.input.targetLanguage
+    )
+    : combinedEvidence;
+  const field = input.runtimeField;
+  const graph = {
+    nodes: input.runtimeGraph.nodes,
+    edges: input.runtimeGraph.edges,
+    hyperedges: [],
+    bounded: true as const,
+    query: {
+      features: featureSet(input.input.text, 256),
+      limitNodes: input.runtimeGraph.nodes.length,
+      limitEdges: input.runtimeGraph.edges.length
+    }
+  };
+  const languageMemory = createLanguageMemoryRuntime({ idFactory: input.idFactory, hasher: input.hasher });
+  const languageMemoryState = input.input.languageMemoryState ?? speakInput.languageMemory;
+  const planningConstruct = sourceOnlyPlanningConstruct(speakInput.construct, input.input.text);
+  const ccr = createCcrEngine().run({
+    text: input.input.text,
+    evidence,
+    nodes: graph.nodes,
+    edges: graph.edges,
+    field,
+    entailment: input.workspaceAnswer.entailment
+  });
+  const inventions = requestedAuthority === "creative"
+    ? planInventions({
+      requestText: input.input.text,
+      requestedAuthority,
+      field,
+      graph,
+      languageMemory,
+      languageMemoryState,
+      dialogueState: input.workspaceAnswer.dialogueState,
+      evidence,
+      construct: planningConstruct,
+      requirementField: input.requirementField,
+      operatorActivations: input.operatorActivations,
+      samplingDisabled: true
+    })
+    : [];
+  const translationPlans = sourceOnlyTranslationPlans({
+    requestedAuthority,
+    targetLanguage: input.input.targetLanguage,
+    text: input.input.text,
+    evidence,
+    languageProfiles: input.input.languageProfiles ?? [speakInput.languageProfile],
+    idFactory: input.idFactory,
+    hasher: input.hasher,
+    createdAt: input.createdAt
+  });
+  const actionPlans = requestedAuthority === "action"
+    ? sourceOnlyActionPlans(input.promotion)
+    : [];
+  const proposals = planCognitiveProposals({
+    requestText: input.input.text,
+    requirements: input.requirementField,
+    operatorActivations: input.operatorActivations,
+    evidence,
+    graph,
+    field,
+    construct: planningConstruct,
+    inventions,
+    translationPlans,
+    programGraphs: requestedAuthority === "program" && input.workspaceAnswer.program.programGraph
+      ? [input.workspaceAnswer.program.programGraph]
+      : [],
+    actionPlans,
+    maxProposals: 8
+  });
+  const candidateField = createCandidateEngine().generate({
+    requestText: input.input.text,
+    entailment: input.workspaceAnswer.entailment,
+    evidence,
+    field,
+    ccr,
+    proofAnswer: sourceOnlyProofSurface(input.workspaceAnswer, evidence),
+    learningNeeds: input.workspaceAnswer.learning.needs.map(need => need.needKindId),
+    locale: input.input.targetLanguage,
+    calibrationModels: input.calibrationModels,
+    requestedAuthority,
+    inventionCandidates: inventions,
+    requirementField: input.requirementField,
+    operatorActivations: input.operatorActivations,
+    cognitiveProposals: proposals,
+    dialogueState: toJsonValue(input.workspaceAnswer.dialogueState)
+  });
+  const admitted = admitCandidatesForAuthority(candidateField, requestedAuthority);
+  const decision = admitted.candidates.length > 0
+    ? createJudge({ random: () => 0.5 }).select({
+        field: admitted,
+        policy: DEFAULT_POLICY,
+        requestedAuthority,
+        requirementField: input.requirementField,
+        deterministicReplay: true
+      })
+    : undefined;
+  const selectedCandidate = decision?.selected;
+  const selectedProposal = proposals.find(proposal => proposal.id === selectedCandidate?.proposalId);
+  const selectedEvidenceIds = new Set((selectedCandidate?.evidenceIds ?? []).map(id => String(id)));
+  const selectedEvidence = evidence.filter(span => selectedEvidenceIds.has(String(span.id)));
+  const selectedActionPlan = actionPlans.find(plan => selectedCandidate?.constructIds?.includes(plan.id));
+  const actionContextEvidence = selectedActionPlan
+    ? sourceOnlyActionEvidence({ evidence, promotion: input.promotion, plan: selectedActionPlan })
+    : [];
+  const queryAnswerMaterial = requestedAuthority === "factual" || requestedAuthority === "reasoned"
+    ? sourceOnlyAnswerMaterial(input.workspaceAnswer.answerGraph, evidence, selectedEvidenceIds, input.input.text)
+    : undefined;
+  const routedEvidence = requestedAuthority === "action"
+    ? actionContextEvidence.length > 0 ? actionContextEvidence : workspaceEvidence
+    : queryAnswerMaterial ? [queryAnswerMaterial.evidence]
+      : selectedEvidence.length > 0 ? selectedEvidence : workspaceEvidence;
+  const routedConstruct = sourceOnlyConstructForCandidate({
+    construct: speakInput.construct,
+    requestText: input.input.text,
+    candidate: selectedCandidate,
+    proposal: selectedProposal,
+    requestedAuthority,
+    invention: inventions.find(invention => selectedCandidate?.constructIds?.includes(invention.id)),
+    translationPlan: translationPlans.find(plan => selectedCandidate?.constructIds?.includes(plan.id)),
+    actionPlan: selectedActionPlan,
+    answerGraph: input.workspaceAnswer.answerGraph,
+    learningNeedIds: input.workspaceAnswer.learning.needs.map(need => need.id)
+  });
+  const actionEntailmentMaterial = selectedActionPlan
+    ? sourceOnlyActionCommand(input.promotion, selectedActionPlan)
+    : "";
+  const routedEntailmentMaterial = requestedAuthority === "action"
+    ? actionEntailmentMaterial
+    : queryAnswerMaterial?.surface ?? "";
+  const computedRoutedEntailment = routedEntailmentMaterial
+    ? createSemanticEntailmentEngine({ idFactory: input.idFactory, hasher: input.hasher }).check({
+      text: routedEntailmentMaterial,
+      evidence: routedEvidence,
+      nodes: graph.nodes,
+      field,
+      construct: routedConstruct,
+      createdAt: input.createdAt,
+      calibrationModels: input.calibrationModels
+    })
+    : speakInput.entailment;
+  const selectedCandidateEvidenceIds = new Set((selectedCandidate?.evidenceIds ?? []).map(String));
+  const boundSelectedEvidenceIds = routedEvidence
+    .filter(span => selectedCandidateEvidenceIds.has(String(span.id)))
+    .map(span => span.id);
+  const routedEntailment = selectedCandidate && selectedCandidate.force !== "invented" && boundSelectedEvidenceIds.length > 0
+    ? {
+        ...computedRoutedEntailment,
+        force: selectedCandidate.force,
+        evidenceIds: boundSelectedEvidenceIds,
+        proof: {
+          ...computedRoutedEntailment.proof,
+          verdict: selectedCandidate.force,
+          evidenceIds: boundSelectedEvidenceIds
+        }
+      }
+    : computedRoutedEntailment;
+  const semanticInput = sourceOnlyMouthSemanticInput({
+    requestedAuthority,
+    requestText: input.input.text,
+    promotion: input.promotion,
+    candidate: selectedCandidate,
+    proposal: selectedProposal,
+    evidence: routedEvidence,
+    answerGraph: input.workspaceAnswer.answerGraph,
+    actionPlan: selectedActionPlan,
+    translationPlan: translationPlans.find(plan => selectedCandidate?.constructIds?.includes(plan.id)),
+    learningNeedIds: input.workspaceAnswer.learning.needs.map(need => need.id)
+  });
+  const routedSpeakInput = {
+    ...speakInput,
+    evidence: routedEvidence,
+    field,
+    entailment: routedEntailment,
+    construct: routedConstruct,
+    requirementField: input.requirementField,
+    selectedProposal,
+    claimBases: requestedAuthority === "translation" ? undefined : selectedProposal?.claims,
+    answerDraft: "",
+    semanticInput,
+    requestedAuthority,
+    calibrationModels: input.calibrationModels,
+    correctionRules: input.input.correctionRules,
+    maxLength: input.input.maxLength
+  };
+  const mouth = createMouth({
+    languageMemory,
+    correctionMemory: createCorrectionMemory({ idFactory: input.idFactory, hasher: input.hasher }),
+    hashText: text => input.hasher.digestHex(text)
+  });
+  const spoken = await mouth.speak(routedSpeakInput);
+  const answer: WorkspaceKernelAnswerResult = {
+    ...input.workspaceAnswer,
+    entailment: routedEntailment,
+    spoken,
+    mouthInput: {
+      ...input.workspaceAnswer.mouthInput,
+      speakInput: routedSpeakInput,
+      answerSurface: "",
+      audit: toJsonValue({
+        ...jsonRecord(input.workspaceAnswer.mouthInput.audit),
+        sourceOnlyAuthorityProjection: input.authorityProjection.trace,
+        selectedCandidateId: selectedCandidate?.id ?? null,
+        selectedCandidateKind: selectedCandidate?.kind ?? null,
+        authorityMotionId: selectedCandidate ? "motion.candidate_selected.v1" : "motion.learning_then_replan.v1",
+        semanticSlotCount: semanticInput.slots.length
+      })
+    },
+    audit: toJsonValue({
+      ...jsonRecord(input.workspaceAnswer.audit),
+      sourceOnlyAuthorityProjection: input.authorityProjection.trace,
+      activeOperatorIds: activeRequestOperatorIds(input.operatorActivations),
+      candidateCount: candidateField.candidates.length,
+      candidateKinds: candidateField.candidates.map(candidate => candidate.kind),
+      translationPlans: translationPlans.map(plan => ({
+        id: plan.id,
+        force: plan.force,
+        preservation: plan.emission.preservation,
+        blockingMissing: plan.construct.preservationValidation.blockingMissing,
+        targetFrameCount: plan.targetFrames.length
+      })),
+      surfacePreflightRejections: candidateField.candidates.flatMap(candidate => {
+        const issues = detectCannedAnswerSpeech(candidate.answer);
+        return issues.length ? [{ candidateId: candidate.id, candidateKind: candidate.kind, issues: issues.map(issue => ({ id: issue.id, matched: issue.matched })) }] : [];
+      }),
+      admittedCandidateCount: admitted.candidates.length,
+      selectedCandidateId: selectedCandidate?.id ?? null,
+      selectedCandidateKind: selectedCandidate?.kind ?? null,
+      authorityMotionId: selectedCandidate ? "motion.candidate_selected.v1" : "motion.learning_then_replan.v1",
+      learningNeedIds: input.workspaceAnswer.learning.needs.map(need => need.id)
+    })
+  };
+  return { answer, selectedCandidate };
+}
+
+function sourceOnlyTranslationPlans(input: {
+  requestedAuthority: RequestedAuthority;
+  targetLanguage?: string;
+  text: string;
+  evidence: EvidenceSpan[];
+  languageProfiles: LanguageProfile[];
+  idFactory: IdFactory;
+  hasher: Hasher;
+  createdAt: number;
+}): TranslationPlan[] {
+  if (input.requestedAuthority !== "translation" || !input.targetLanguage) return [];
+  const targetLanguage = input.targetLanguage;
+  return [createTranslationEngine({ idFactory: input.idFactory, hasher: input.hasher }).plan({
+    text: input.text,
+    targetLanguage,
+    evidence: input.evidence,
+    profiles: input.languageProfiles,
+    createdAt: input.createdAt
+  })];
+}
+
+function sourceOnlyTranslationEvidence(evidence: EvidenceSpan[], targetLanguage: string | undefined): EvidenceSpan[] {
+  if (!targetLanguage) return evidence;
+  const exactLanguageEvidence = evidence.filter(span => evidenceHasLanguageHint(span, targetLanguage));
+  return exactLanguageEvidence.length > 0 ? exactLanguageEvidence : evidence;
+}
+
+function evidenceHasLanguageHint(span: EvidenceSpan, targetLanguage: string): boolean {
+  const target = targetLanguage.normalize("NFKC").toLocaleLowerCase();
+  return jsonContainsNormalizedString(span.languageHints, target);
+}
+
+function jsonContainsNormalizedString(value: JsonValue, target: string): boolean {
+  if (typeof value === "string") return value.normalize("NFKC").toLocaleLowerCase() === target;
+  if (Array.isArray(value)) return value.some(item => jsonContainsNormalizedString(item, target));
+  if (value && typeof value === "object") return Object.values(value).some(item => jsonContainsNormalizedString(item, target));
+  return false;
+}
+
+function sourceOnlyActionPlans(promotion: WorkspaceCorePromotionResult): CognitiveActionPlan[] {
+  return promotion.records.commands.slice(0, 8).map(record => ({
+    id: `action.plan.${record.id}`,
+    capabilityId: record.actionId,
+    phase: "prepare",
+    status: "planned",
+    trace: toJsonValue({
+      source: "workspace.command_record",
+      recordId: record.id,
+      sourcePath: record.sourcePath ?? null,
+      semanticSlot: {
+        roleId: "mouth.role.action.command",
+        command: record.command.command,
+        commandName: record.command.name,
+        commandKindId: record.command.kind
+      },
+      executionState: "not_executed",
+      actionReceiptId: null
+    })
+  }));
+}
+
+function sourceOnlyActionCommand(promotion: WorkspaceCorePromotionResult, plan: CognitiveActionPlan): string {
+  const recordId = jsonRecord(plan.trace).recordId;
+  if (typeof recordId !== "string") return "";
+  return promotion.records.commands.find(record => record.id === recordId && record.actionId === plan.capabilityId)?.command.command ?? "";
+}
+
+function sourceOnlyActionEvidence(input: {
+  evidence: readonly EvidenceSpan[];
+  promotion: WorkspaceCorePromotionResult;
+  plan: CognitiveActionPlan;
+}): EvidenceSpan[] {
+  const recordId = jsonRecord(input.plan.trace).recordId;
+  if (typeof recordId !== "string") return [];
+  const record = input.promotion.records.commands.find(candidate =>
+    candidate.id === recordId && candidate.actionId === input.plan.capabilityId
+  );
+  if (!record) return [];
+  const evidenceIds = new Set([
+    record.sourceRef?.evidenceSpanId,
+    ...record.graphNode.evidenceIds
+  ].filter((id): id is string => typeof id === "string" && id.length > 0));
+  return input.evidence.filter(span => evidenceIds.has(String(span.id)));
+}
+
+function sourceOnlyProofSurface(answer: WorkspaceKernelAnswerResult, evidence: readonly EvidenceSpan[]): string {
+  const certified = answer.answerGraph.claims.find(claim => claim.certified && claim.surface.trim());
+  if (certified) return certified.surface.trim();
+  const boundIds = new Set(answer.entailment.evidenceIds.map(String));
+  return evidence.find(span => boundIds.has(String(span.id)))?.text?.trim() ?? "";
+}
+
+function sourceOnlyMouthSemanticInput(input: {
+  requestedAuthority: RequestedAuthority;
+  requestText: string;
+  promotion: WorkspaceCorePromotionResult;
+  candidate?: CandidateSurface;
+  proposal?: CognitiveProposal;
+  evidence: readonly EvidenceSpan[];
+  answerGraph: WorkspaceKernelAnswerResult["answerGraph"];
+  actionPlan?: CognitiveActionPlan;
+  translationPlan?: TranslationPlan;
+  learningNeedIds: string[];
+}): MouthSemanticInput {
+  const evidenceById = new Map(input.evidence.map(span => [String(span.id), span]));
+  const selectedEvidenceIds = new Set((input.candidate?.evidenceIds ?? []).map(String));
+  const sourceAnswer = input.requestedAuthority === "factual" || input.requestedAuthority === "reasoned"
+    ? sourceOnlyAnswerMaterial(input.answerGraph, input.evidence, selectedEvidenceIds, input.requestText)
+    : undefined;
+  const actionCommand = input.actionPlan ? sourceOnlyActionCommand(input.promotion, input.actionPlan) : "";
+  const queryFeatures = featureSet(input.requestText, 256);
+  const relevantClaims = [...input.answerGraph.claims]
+    .filter(claim => claim.surface.trim())
+    .sort((left, right) => weightedJaccard(queryFeatures, featureSet(right.surface, 256))
+      - weightedJaccard(queryFeatures, featureSet(left.surface, 256)))
+    .slice(0, input.requestedAuthority === "program" || input.requestedAuthority === "action" ? 4 : 1);
+  const relevantClaimIds = new Set(relevantClaims.map(claim => claim.id));
+  const slots: MouthSemanticInput["slots"] = [
+    ...(sourceAnswer ? [{
+      id: `mouth.slot.source.answer.${String(sourceAnswer.evidence.id)}`,
+      roleId: "mouth.role.source.answer",
+      value: sourceAnswer.surface,
+      evidenceIds: [sourceAnswer.evidence.id],
+      sourceId: String(sourceAnswer.evidence.sourceId)
+    }] : []),
+    ...(input.translationPlan?.emission.text.trim() ? [{
+      id: `mouth.slot.translation.${input.translationPlan.id}`,
+      roleId: "mouth.role.translation.target",
+      value: toJsonValue({ surface: input.translationPlan.emission.text.trim() }),
+      evidenceIds: input.translationPlan.targetFrames.flatMap(frame => frame.evidenceIds)
+        .map(id => evidenceById.get(String(id))?.id)
+        .filter((id): id is EvidenceSpan["id"] => Boolean(id)),
+      sourceId: input.translationPlan.id
+    }] : []),
+    ...(actionCommand ? [{
+      id: `mouth.slot.action.${input.actionPlan?.id ?? "source"}`,
+      roleId: "mouth.role.action.command",
+      value: toJsonValue({ command: actionCommand }),
+      evidenceIds: input.evidence.map(span => span.id),
+      sourceId: typeof jsonRecord(input.actionPlan?.trace).sourcePath === "string"
+        ? String(jsonRecord(input.actionPlan?.trace).sourcePath)
+        : undefined
+    }] : []),
+    ...(input.proposal?.claims ?? []).filter(claim => Boolean(claim.text.trim())).map(claim => ({
+      id: `mouth.slot.proposal.${claim.id}`,
+      roleId: `mouth.role.proposal.${claim.basis}`,
+      value: toJsonValue({ surface: claim.text.trim() }),
+      evidenceIds: claim.evidenceIds.map(id => evidenceById.get(String(id))?.id).filter((id): id is EvidenceSpan["id"] => Boolean(id)),
+      sourceId: input.proposal?.id
+    })),
+    ...relevantClaims.map(claim => ({
+      id: `mouth.slot.answer_graph.${claim.id}`,
+      roleId: claim.certified ? "mouth.role.claim.certified" : "mouth.role.claim.candidate",
+      value: toJsonValue({ surface: claim.surface.trim() }),
+      evidenceIds: input.answerGraph.supportLinks
+        .filter(link => link.claimId === claim.id)
+        .map(link => evidenceById.get(link.evidenceId)?.id)
+        .filter((id): id is EvidenceSpan["id"] => Boolean(id)),
+      sourceId: claim.proofClaimId
+    })),
+    ...input.answerGraph.caveats.filter(caveat => Boolean(caveat.text.trim()) && (
+      relevantClaims.some(claim => claim.surface.trim() === caveat.text.trim())
+      || weightedJaccard(queryFeatures, featureSet(caveat.text, 256)) >= 0.2
+    )).map(caveat => ({
+      id: `mouth.slot.answer_graph.${caveat.id}`,
+      roleId: "mouth.role.claim.contradiction",
+      value: toJsonValue({ surface: caveat.text.trim() }),
+      evidenceIds: caveat.sourceRef?.evidenceSpanId && evidenceById.has(caveat.sourceRef.evidenceSpanId)
+        ? [evidenceById.get(caveat.sourceRef.evidenceSpanId)!.id]
+        : [],
+      sourceId: caveat.sourceRef?.path
+    })),
+    ...(input.requestedAuthority === "program" || input.requestedAuthority === "action" ? input.answerGraph.actions : []).flatMap(action => action.affectedFiles.map((path, index) => ({
+      id: `mouth.slot.answer_graph.${action.id}.path.${index}`,
+      roleId: "mouth.role.workspace.path",
+      value: toJsonValue({ path }),
+      evidenceIds: action.evidenceSpanIds.map(id => evidenceById.get(id)?.id).filter((id): id is EvidenceSpan["id"] => Boolean(id)),
+      sourceId: action.taskRecordId
+    }))),
+    ...input.evidence.slice(0, 4).map(span => ({
+      id: `mouth.slot.evidence.${String(span.id)}`,
+      roleId: "mouth.role.evidence.span",
+      value: toJsonValue({ surface: span.text }),
+      evidenceIds: [span.id],
+      sourceId: String(span.sourceId)
+    })),
+    ...(input.candidate ? [{
+      id: `mouth.slot.semantic_frame.${input.candidate.id}`,
+      roleId: "mouth.role.semantic.frame",
+      value: toJsonValue({ candidateFrame: input.candidate.audit }),
+      evidenceIds: input.candidate.evidenceIds,
+      sourceId: input.candidate.proposalId
+    }] : [])
+  ];
+  if (slots.length === 0) {
+    slots.push({
+      id: "mouth.slot.learning.motion",
+      roleId: "mouth.role.learning.motion",
+      value: toJsonValue({ learningNeedIds: input.learningNeedIds })
+    });
+  }
+  const kept = slots.slice(0, 24);
+  const keptIds = new Set(kept.map(slot => slot.id));
+  const relations: NonNullable<MouthSemanticInput["relations"]> = input.answerGraph.supportLinks.filter(link => relevantClaimIds.has(link.claimId)).flatMap((link, index) => {
+    const claimSlotId = `mouth.slot.answer_graph.${link.claimId}`;
+    const evidenceSlotId = `mouth.slot.evidence.${link.evidenceId}`;
+    const evidenceId = evidenceById.get(link.evidenceId)?.id;
+    if (!keptIds.has(claimSlotId) || !keptIds.has(evidenceSlotId) || !evidenceId) return [];
+    return [{
+      id: `mouth.relation.answer_support.${index}`,
+      relationId: "mouth.relation.evidence_supports_claim",
+      sourceSlotId: evidenceSlotId,
+      targetSlotId: claimSlotId,
+      evidenceIds: [evidenceId]
+    }];
+  });
+  return { schema: "scce.mouth.semantic_input.v1", authority: input.requestedAuthority, slots: kept, relations };
+}
+
+function sourceOnlyAnswerMaterial(
+  answerGraph: WorkspaceKernelAnswerResult["answerGraph"],
+  evidence: readonly EvidenceSpan[],
+  selectedEvidenceIds: ReadonlySet<string>,
+  requestText: string
+): { surface: string; evidence: EvidenceSpan } | undefined {
+  const queryFeatures = featureSet(requestText, 256);
+  const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
+  const claims = answerGraph.claims.filter(claim => claim.certified && claim.surface.trim()).sort((left, right) =>
+    weightedJaccard(queryFeatures, featureSet(right.surface, 256))
+      - weightedJaccard(queryFeatures, featureSet(left.surface, 256))
+  );
+  for (const claim of claims) {
+    const linked = answerGraph.supportLinks.find(link => link.claimId === claim.id);
+    const span = linked?.sourceRef?.evidenceSpanId
+      ? evidenceById.get(linked.sourceRef.evidenceSpanId)
+      : undefined;
+    if (span) return { surface: span.text.trim(), evidence: span };
+  }
+  const span = [...evidence].sort((left, right) => {
+    const leftSelected = selectedEvidenceIds.has(String(left.id)) ? 1 : 0;
+    const rightSelected = selectedEvidenceIds.has(String(right.id)) ? 1 : 0;
+    if (leftSelected !== rightSelected) return rightSelected - leftSelected;
+    return weightedJaccard(queryFeatures, featureSet(right.text, 256))
+      - weightedJaccard(queryFeatures, featureSet(left.text, 256));
+  })[0];
+  return span ? { surface: span.text.trim(), evidence: span } : undefined;
+}
+
+function sourceOnlyConstructForCandidate(input: {
+  construct: WorkspaceKernelAnswerResult["mouthInput"]["speakInput"]["construct"];
+  requestText: string;
+  candidate?: CandidateSurface;
+  proposal?: CognitiveProposal;
+  requestedAuthority: RequestedAuthority;
+  invention?: InventionConstruct;
+  translationPlan?: TranslationPlan;
+  actionPlan?: CognitiveActionPlan;
+  answerGraph: WorkspaceKernelAnswerResult["answerGraph"];
+  learningNeedIds: string[];
+}): WorkspaceKernelAnswerResult["mouthInput"]["speakInput"]["construct"] {
+  const markerIds = new Set(input.construct.nodes
+    .filter(node => node.id === "workspace.kernel.answer" || jsonRecord(node.metadata).schema === "scce.workspace_kernel.answer.v1")
+    .map(node => node.id));
+  const nodes = input.construct.nodes.filter(node => !markerIds.has(node.id));
+  const inventionNode = input.requestedAuthority === "creative" && input.invention
+    ? inventionConstructNode(input.invention)
+    : undefined;
+  const candidateNodeId = inventionNode?.id
+    ?? (input.candidate ? `source_only.authority_candidate.${input.candidate.id}` : "source_only.authority_motion");
+  const candidateKind = input.requestedAuthority === "translation" ? "construct:translation"
+      : input.requestedAuthority === "program" ? "construct:program"
+        : input.requestedAuthority === "action" ? "construct:action_plan"
+          : input.candidate ? "construct:answer" : "construct:learning_motion";
+  const actionSemanticSlot = jsonRecord(jsonRecord(input.actionPlan?.trace).semanticSlot);
+  const queryFeatures = featureSet(input.requestText, 256);
+  const candidateSurface = input.translationPlan?.emission.text.trim()
+    || (typeof actionSemanticSlot.command === "string" ? actionSemanticSlot.command.trim() : "")
+    || input.proposal?.claims.find(claim => claim.text.trim())?.text.trim()
+    || [...input.answerGraph.claims]
+      .filter(claim => claim.certified && claim.surface.trim())
+      .sort((left, right) => weightedJaccard(queryFeatures, featureSet(right.surface, 256))
+        - weightedJaccard(queryFeatures, featureSet(left.surface, 256)))[0]?.surface.trim()
+    || "";
+  const answerGraphClaims = [...input.answerGraph.claims]
+    .filter(claim => claim.surface.trim())
+    .sort((left, right) => weightedJaccard(queryFeatures, featureSet(right.surface, 256))
+      - weightedJaccard(queryFeatures, featureSet(left.surface, 256)))
+    .slice(0, input.requestedAuthority === "program" || input.requestedAuthority === "action" ? 4 : 1);
+  const answerGraphClaimIds = new Set(answerGraphClaims.map(claim => claim.id));
+  const answerGraph = {
+    ...input.answerGraph,
+    claims: answerGraphClaims,
+    supportLinks: input.answerGraph.supportLinks.filter(link => answerGraphClaimIds.has(link.claimId)),
+    caveats: input.answerGraph.caveats.filter(caveat => answerGraphClaims.some(claim => claim.surface.trim() === caveat.text.trim())
+      || weightedJaccard(queryFeatures, featureSet(caveat.text, 256)) >= 0.2),
+    actions: input.requestedAuthority === "program" || input.requestedAuthority === "action" ? input.answerGraph.actions : []
+  };
+  nodes.push(inventionNode ?? {
+    id: candidateNodeId,
+    kind: candidateKind,
+    label: candidateSurface,
+    metadata: toJsonValue({
+      schema: "scce.source_only.authority_candidate.v1",
+      candidateId: input.candidate?.id ?? null,
+      candidateKind: input.candidate?.kind ?? null,
+      requestedAuthority: input.requestedAuthority,
+      force: input.candidate?.force ?? "unknown",
+      semanticFrame: input.candidate?.audit ?? null,
+      proposal: input.proposal ? {
+        id: input.proposal.id,
+        claims: input.proposal.claims,
+        relations: input.proposal.relations,
+        steps: input.proposal.steps,
+        artifacts: input.proposal.artifacts
+      } : null,
+      answerGraph,
+      learningNeedIds: input.learningNeedIds,
+      translation: input.translationPlan?.construct ?? null,
+      actionPlan: input.actionPlan ? {
+        id: input.actionPlan.id,
+        capabilityId: input.actionPlan.capabilityId,
+        phase: input.actionPlan.phase,
+        status: input.actionPlan.status,
+        semanticSlot: actionSemanticSlot,
+        actionReceiptId: input.actionPlan.actionReceiptId ?? null,
+        trace: input.actionPlan.trace ?? null
+      } : null
+    })
+  });
+  if (input.requestedAuthority !== "program") {
+    const sourceNode = nodes.find(node => node.id !== candidateNodeId && node.label.trim() === candidateSurface);
+    nodes.splice(0, nodes.length, ...(sourceNode ? [sourceNode] : []), nodes.find(node => node.id === candidateNodeId)!);
+  }
+  const nodeIds = new Set(nodes.map(node => node.id));
+  const edges = input.construct.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+  const sourceId = nodes.find(node => node.id !== candidateNodeId)?.id;
+  if (sourceId) edges.push({ source: sourceId, target: candidateNodeId, relation: "licenses_authority_candidate", weight: 1 });
+  if (input.requestedAuthority === "program") return { ...input.construct, nodes, edges };
+  const { program: _program, artifacts: _artifacts, ...construct } = input.construct;
+  return { ...construct, nodes, edges, artifacts: [] };
+}
+
+function sourceOnlyPlanningConstruct(
+  construct: WorkspaceKernelAnswerResult["mouthInput"]["speakInput"]["construct"],
+  requestText: string
+): WorkspaceKernelAnswerResult["mouthInput"]["speakInput"]["construct"] {
+  const markerIds = new Set(construct.nodes
+    .filter(node => node.id === "workspace.kernel.answer" || jsonRecord(node.metadata).schema === "scce.workspace_kernel.answer.v1")
+    .map(node => node.id));
+  const nodes = construct.nodes.filter(node => !markerIds.has(node.id));
+  nodes.push({
+    id: "source_only.request",
+    kind: "construct:request",
+    label: requestText,
+    metadata: toJsonValue({ schema: "scce.source_only.request_construct.v1" })
+  });
+  return {
+    ...construct,
+    nodes,
+    edges: construct.edges.filter(edge => !markerIds.has(edge.source) && !markerIds.has(edge.target))
+  };
 }
 
 function validateSourceOnlyTurnTrace(trace: SourceOnlyTurnSimulationTrace): { valid: boolean; diagnostics: string[] } {
@@ -666,6 +1436,8 @@ function validateSourceOnlyTurnTrace(trace: SourceOnlyTurnSimulationTrace): { va
     ["dialogueStateId", trace.dialogueStateId],
     ["dialoguePolicyDecisionId", trace.dialoguePolicyDecisionId],
     ["pragmaticsCriticId", trace.pragmaticsCriticId],
+    ["requestedAuthority", trace.requestedAuthority],
+    ["authorityMotion.stateId", trace.authorityMotion.stateId],
     ["answerTextHash", trace.answerTextHash]
   ];
   for (const [fieldId, value] of required) if (!value) diagnostics.push(`runtime.trace.missing:${fieldId}`);
@@ -783,8 +1555,8 @@ function evidenceSpanFor(input: { file: ScceRuntimeFixtureFile; sourceVersion: S
     charEnd: input.file.text.length,
     text: input.file.text,
     textPreview: input.file.text.slice(0, 320),
-    languageHints: {},
-    scriptHints: {},
+    languageHints: jsonRecord(input.file.metadata).languageHints ?? {},
+    scriptHints: jsonRecord(input.file.metadata).scriptHints ?? {},
     trustVector: toJsonValue({ trust: 0.9, forceClass: "direct_evidence" }),
     provenance: toJsonValue({ uri: input.file.path, metadata: input.file.metadata ?? null }),
     features: featureSet(input.file.text, 512),
@@ -987,7 +1759,17 @@ function dot(left: readonly number[], right: readonly number[]): number {
   return out;
 }
 
-function sourceOnlyTurnTrace(input: { id: string; inputId: string; promotion: WorkspaceCorePromotionResult; answer: WorkspaceKernelAnswerResult; hasher: Hasher }): SourceOnlyTurnSimulationTrace {
+function sourceOnlyTurnTrace(input: {
+  id: string;
+  inputId: string;
+  promotion: WorkspaceCorePromotionResult;
+  answer: WorkspaceKernelAnswerResult;
+  hasher: Hasher;
+  requirementField: TurnRequirementField;
+  operatorActivations: ActivatedOperator[];
+  authorityProjection: RequestAuthorityProjection;
+  selectedCandidate?: CandidateSurface;
+}): SourceOnlyTurnSimulationTrace {
   const graph = input.answer.graph;
   const proofVerdictId = input.answer.proof.results[0]?.result.verdict ?? input.answer.entailment.verdict;
   const selectedCandidateId = input.answer.spoken.realizationTrace.selected.id;
@@ -1032,6 +1814,24 @@ function sourceOnlyTurnTrace(input: { id: string; inputId: string; promotion: Wo
     dialoguePolicyDecisionId: input.answer.dialoguePolicyDecision.id,
     pragmaticsCriticId: input.answer.pragmatics.selected.criticId,
     sourceRefs: input.promotion.mouthContext.sourceRefs,
+    requestedAuthority: input.authorityProjection.requestedAuthority,
+    requestedAuthorityDecision: toJsonValue({
+      ...jsonRecord(input.authorityProjection.trace),
+      activeOperatorIds: activeRequestOperatorIds(input.operatorActivations)
+    }),
+    requirementField: input.requirementField,
+    operatorActivations: input.operatorActivations,
+    selectedCandidate: input.selectedCandidate ? {
+      id: input.selectedCandidate.id,
+      kind: input.selectedCandidate.kind,
+      force: input.selectedCandidate.force,
+      evidenceIds: input.selectedCandidate.evidenceIds.map(String)
+    } : null,
+    authorityMotion: {
+      stateId: input.selectedCandidate ? "motion.candidate_selected.v1" : "motion.learning_then_replan.v1",
+      candidateId: input.selectedCandidate?.id ?? null,
+      learningNeedIds: input.answer.learning.needs.map(need => need.id)
+    },
     warnings: [
       ...(input.answer.statusId === "workspace.kernel.answer.unsupported" ? ["runtime.turn.unsupported_workspace_coupling"] : []),
       ...input.answer.proof.sourceBoundFailures.map(item => item.reasonId)

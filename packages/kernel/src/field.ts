@@ -249,11 +249,40 @@ function boundedFieldMatrices(alphaTrace: FieldState["alphaTrace"], mass: Map<st
     .slice(0, limit)
     .sort((left, right) => left.index - right.index);
   const indices = selected.map(row => row.index);
+  const adjacency = submatrix(alphaTrace.adjacency.values, indices);
+  const induced = laplaciansFromAdjacency(adjacency);
   return {
     nodes: selected.map(row => row.nodeId),
-    laplacian: submatrix(alphaTrace.laplacian.values, indices),
-    normalizedLaplacian: submatrix(alphaTrace.normalizedLaplacian.values, indices)
+    laplacian: induced.laplacian,
+    normalizedLaplacian: induced.normalizedLaplacian
   };
+}
+
+function laplaciansFromAdjacency(adjacency: readonly (readonly number[])[]): {
+  laplacian: number[][];
+  normalizedLaplacian: number[][];
+} {
+  const size = adjacency.length;
+  const degrees = adjacency.map((row, rowIndex) => row.reduce((sum, raw, columnIndex) => (
+    rowIndex === columnIndex ? sum : sum + raw
+  ), 0));
+  const laplacian = Array.from({ length: size }, () => new Array<number>(size).fill(0));
+  const normalizedLaplacian = Array.from({ length: size }, () => new Array<number>(size).fill(0));
+  for (let row = 0; row < size; row++) {
+    const rowDegree = degrees[row] ?? 0;
+    laplacian[row]![row] = rowDegree;
+    normalizedLaplacian[row]![row] = rowDegree > 0 ? 1 : 0;
+    for (let column = 0; column < size; column++) {
+      if (row === column) continue;
+      const weight = adjacency[row]?.[column] ?? 0;
+      laplacian[row]![column] = -weight;
+      const columnDegree = degrees[column] ?? 0;
+      normalizedLaplacian[row]![column] = rowDegree > 0 && columnDegree > 0
+        ? -weight / Math.sqrt(rowDegree * columnDegree)
+        : 0;
+    }
+  }
+  return { laplacian, normalizedLaplacian };
 }
 
 function submatrix(matrix: readonly (readonly number[])[], indices: readonly number[]): number[][] {

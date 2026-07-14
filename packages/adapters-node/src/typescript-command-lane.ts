@@ -50,6 +50,10 @@ export type TypeScriptCommandLaneResolution =
   | { ok: true; lane: TypeScriptCommandLane }
   | { ok: false; error: { code: TypeScriptCommandLaneErrorCode; message: string } };
 
+export type PortablePackageScriptArgvResolution =
+  | { ok: true; executable: string; args: string[] }
+  | { ok: false; error: { code: TypeScriptCommandLaneErrorCode; message: string } };
+
 export interface TypeScriptCommandLaneSourceBindingInput {
   lane: TypeScriptCommandLane;
   sourceContent: string;
@@ -128,21 +132,10 @@ const NETWORK_CAPABLE_EXECUTABLES = new Set(["bunx", "corepack", "pnpx"]);
 export function resolveTypeScriptCommandLane(input: TypeScriptCommandLaneInput): TypeScriptCommandLaneResolution {
   const metadataError = validateSourceMetadata(input);
   if (metadataError) return failure("invalid_source_metadata", metadataError);
-  if (!input.rawCommand.trim()) return failure("empty_command", "observed package-script command is empty");
-  if (input.rawCommand.includes("\u0000")) return failure("malformed_command", "observed package-script command contains NUL");
-
-  const parsed = parseCommandWords(input.rawCommand);
-  if (!parsed.ok) return failure(parsed.code, parsed.message);
-  if (!parsed.words.length) return failure("empty_command", "observed package-script command is empty");
-  if (parsed.words.some(word => !word || word.includes("\u0000"))) {
-    return failure("empty_argument", "observed package-script command contains an empty or NUL argument");
-  }
-  if (parsed.words.some(word => ENVIRONMENT_ASSIGNMENT.test(word))) {
-    return failure("environment_assignment", "environment assignments are not part of the compiler command lane");
-  }
-
-  const [executable, ...observedArgs] = parsed.words;
-  if (!executable) return failure("empty_command", "observed package-script command has no executable");
+  const portable = resolvePortablePackageScriptArgv(input.rawCommand);
+  if (!portable.ok) return portable;
+  const executable = portable.executable;
+  const observedArgs = portable.args;
   const invocation = compilerInvocation(executable, observedArgs);
   if (!invocation.ok) return invocation;
 
@@ -169,6 +162,28 @@ export function resolveTypeScriptCommandLane(input: TypeScriptCommandLaneInput):
         : "typescript_language_service_project_mode"
     }
   };
+}
+
+/**
+ * Parse the portable, no-expansion argv subset accepted from an exact package
+ * script. The result is safe to pass to a process API with `shell:false`.
+ */
+export function resolvePortablePackageScriptArgv(rawCommand: string): PortablePackageScriptArgvResolution {
+  if (!rawCommand.trim()) return failure("empty_command", "observed package-script command is empty");
+  if (rawCommand.includes("\u0000")) return failure("malformed_command", "observed package-script command contains NUL");
+  const parsed = parseCommandWords(rawCommand);
+  if (!parsed.ok) return failure(parsed.code, parsed.message);
+  if (!parsed.words.length) return failure("empty_command", "observed package-script command is empty");
+  if (parsed.words.some(word => !word || word.includes("\u0000"))) {
+    return failure("empty_argument", "observed package-script command contains an empty or NUL argument");
+  }
+  if (parsed.words.some(word => ENVIRONMENT_ASSIGNMENT.test(word))) {
+    return failure("environment_assignment", "environment assignments are not part of the portable package-script argv lane");
+  }
+  const [executable, ...args] = parsed.words;
+  return executable
+    ? { ok: true, executable, args }
+    : failure("empty_command", "observed package-script command has no executable");
 }
 
 /**
@@ -466,7 +481,7 @@ function parseCommandWords(raw: string): ParsedWords | ParsedWordsFailure {
   const words: string[] = [];
   let current = "";
   let tokenStarted = false;
-  let quote: "single" | "double" | undefined;
+  let quote: "double" | undefined;
 
   const push = () => {
     if (!tokenStarted) return;
@@ -477,31 +492,18 @@ function parseCommandWords(raw: string): ParsedWords | ParsedWordsFailure {
 
   for (let index = 0; index < raw.length; index++) {
     const char = raw[index] ?? "";
-    const next = raw[index + 1] ?? "";
     if (char === "\r" || char === "\n") {
-      return parseFailure("unsafe_shell_syntax", "line breaks are not allowed in an observed compiler command");
+      return parseFailure("unsafe_shell_syntax", "line breaks are not allowed in an observed package-script command");
     }
 
-    if (quote === "single") {
-      if (char === "'") quote = undefined;
-      else current += char;
-      tokenStarted = true;
-      continue;
-    }
     if (quote === "double") {
       if (char === "\"") {
         quote = undefined;
         tokenStarted = true;
         continue;
       }
-      if (char === "`" || char === "$" && (next === "(" || next === "{")) {
-        return parseFailure("unsafe_shell_syntax", "shell expansion is not allowed in an observed compiler command");
-      }
-      if (char === "\\" && ["\"", "\\", " ", "\t"].includes(next)) {
-        current += next;
-        tokenStarted = true;
-        index++;
-        continue;
+      if ("`$%!^\\".includes(char)) {
+        return parseFailure("unsafe_shell_syntax", "shell expansion or platform-specific escaping is not allowed in an observed compiler command");
       }
       current += char;
       tokenStarted = true;
@@ -509,9 +511,7 @@ function parseCommandWords(raw: string): ParsedWords | ParsedWordsFailure {
     }
 
     if (char === "'") {
-      quote = "single";
-      tokenStarted = true;
-      continue;
+      return parseFailure("unsafe_shell_syntax", "single-quoted arguments are not portable between package-script shells");
     }
     if (char === "\"") {
       quote = "double";
@@ -522,31 +522,20 @@ function parseCommandWords(raw: string): ParsedWords | ParsedWordsFailure {
       push();
       continue;
     }
-    if (";&|<>()".includes(char)) {
+    if (";&|<>()#".includes(char)) {
       return parseFailure("unsafe_shell_syntax", `shell operator is not allowed: ${char}`);
     }
-    if (char === "`" || char === "$" && (next === "(" || next === "{")) {
-      return parseFailure("unsafe_shell_syntax", "shell expansion is not allowed in an observed compiler command");
+    if ("`$%!^\\".includes(char)) {
+      return parseFailure("unsafe_shell_syntax", "shell expansion or platform-specific escaping is not allowed in an observed compiler command");
     }
-    if (char === "\\" && next) {
-      if (/\s/u.test(next) || ["'", "\"", "\\", ";", "&", "|", "<", ">", "(", ")"].includes(next)) {
-        current += next;
-        tokenStarted = true;
-        index++;
-        continue;
-      }
-      current += char;
-      tokenStarted = true;
-      continue;
-    }
-    if (char === "\\" && !next) {
-      return parseFailure("malformed_command", "observed compiler command has a dangling escape");
+    if ("*?[]".includes(char) || char === "~" && !tokenStarted) {
+      return parseFailure("unsafe_shell_syntax", "shell pathname or home-directory expansion is not allowed in an observed compiler command");
     }
     current += char;
     tokenStarted = true;
   }
 
-  if (quote) return parseFailure("malformed_command", "observed compiler command has an unterminated quote");
+  if (quote) return parseFailure("malformed_command", "observed package-script command has an unterminated quote");
   push();
   return { ok: true, words };
 }

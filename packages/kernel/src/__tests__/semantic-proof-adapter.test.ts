@@ -171,7 +171,11 @@ describe("semantic proof adapter", () => {
     expect(proofGate(priorOnly.proof.scores)?.trace.proofPath).toBe("structured_runtime");
     expect(["entailed", "observed"]).toContain(spokenDirect.force);
     expect(spokenPrior.force).toBe("underdetermined");
-    expect(spokenPrior.text).toContain(ordinaryText);
+    expect(spokenPrior.text).toBe("");
+    expect(spokenPrior.realizationTrace.selected.path).toBe("generated");
+    expect(spokenPrior.realizationTrace.selected.textHash).toBe(hasher.digestHex(""));
+    expect(JSON.stringify(spokenPrior.realizationTrace.selected)).toContain("no_proof");
+    expect(spokenPrior.inspectRefs.some(ref => ref.kind === "proof")).toBe(true);
     expect(JSON.stringify(spokenPrior.realizationTrace.walshSurfaceEnergy)).toContain("unsupported_prior_only");
     for (const forbidden of ["semanticProofEngine", "certifiedEvidenceIds", "evidenceSpanId", "sourceVersionId"]) {
       expect(spokenDirect.text).not.toContain(forbidden);

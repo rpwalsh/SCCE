@@ -18,6 +18,7 @@ export * from "./engineering-corpus-folder.js";
 export * from "./repo-intelligence-folder.js";
 export * from "./workspace-runtime.js";
 export * from "./typescript-code-actions.js";
+export * from "./typescript-command-lane.js";
 export * from "./connectors.js";
 export * from "./connector-policy.js";
 export * from "./secrets.js";

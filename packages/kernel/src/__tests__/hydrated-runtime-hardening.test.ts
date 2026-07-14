@@ -15,9 +15,9 @@ describe("hydrated runtime surface hardening", () => {
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "hydrated-hardening" });
 
-  it("resolves missing surface messages without leaking runtime localization ids", () => {
+  it("keeps missing surface messages out of user text", () => {
     const missing = formatSurfaceMessage("surface.unregistered.runtime_key", { force: "inferred" });
-    expect(missing.length).toBeGreaterThan(0);
+    expect(missing).toBe("");
     expect(containsUnresolvedSurfaceKey(missing)).toBe(false);
 
     const pca = createProofCarryingAnswer().certify({

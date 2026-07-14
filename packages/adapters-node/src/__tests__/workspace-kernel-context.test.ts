@@ -50,14 +50,19 @@ describe("workspace kernel turn fusion", () => {
     expect(result.program.programGraph?.id).toBeTruthy();
     expect(result.spoken.realizationTrace.selected.path).toBe("generated");
 
-    expect(result.spoken.text).toContain("Implemented:");
-    expect(result.spoken.text).toContain("WidgetService");
-    expect(result.spoken.text).toContain("GET /api/widgets");
-    expect(result.spoken.text).toContain("command build");
-    expect(result.spoken.text).toContain("Contradiction:");
-    expect(result.spoken.text).toContain("Missing:");
-    expect(result.spoken.text).toContain("Fix first:");
-    expect(result.mouthInput.answerSurface).toContain("Implemented:");
+    expect(result.mouthInput.speakInput.answerDraft).toBe("");
+    const semanticInput = result.mouthInput.speakInput.semanticInput;
+    expect(semanticInput?.schema).toBe("scce.mouth.semantic_input.v1");
+    const semanticMaterial = JSON.stringify(semanticInput?.slots ?? []);
+    expect(semanticMaterial).toContain("WidgetService");
+    expect(semanticMaterial).toContain("/api/widgets");
+    expect(semanticMaterial).toContain('"method":"GET"');
+    expect(semanticMaterial).toContain("tsc -p tsconfig.json");
+    expect(semanticMaterial).toContain("src/server.ts");
+    expect(result.mouthInput.answerSurface).not.toContain("Implemented:");
+    expect(result.mouthInput.answerSurface).not.toContain("Contradiction:");
+    expect(result.mouthInput.answerSurface).not.toContain("Missing:");
+    expect(result.mouthInput.answerSurface).not.toContain("Fix first:");
     assertNoTelemetryKeys(result.spoken.text);
     assertNoTelemetryKeys(result.mouthInput.answerSurface);
 
@@ -121,7 +126,10 @@ describe("workspace kernel turn fusion", () => {
     expect(result.usedWorkspaceQueryAdapter).toBe(false);
     expect(result.usedReportTemplate).toBe(false);
     expect(result.answerTrace.statusId).toBe("workspace.kernel.answer.unsupported");
-    expect(result.spoken.text).toContain("[scce:workspace.answer.unsupported]");
+    expect(result.mouthInput.speakInput.answerDraft).toBe("");
+    expect(result.mouthInput.speakInput.semanticInput?.slots.length).toBeGreaterThan(0);
+    expect(result.spoken.text).not.toContain("[scce:workspace.answer.unsupported]");
+    expect(result.mouthInput.answerSurface).not.toContain("[scce:workspace.answer.unsupported]");
     assertNoTelemetryKeys(result.spoken.text);
     assertNoTelemetryKeys(result.mouthInput.answerSurface);
     expect(result.spoken.text).not.toContain("workspace.answer.intent=");

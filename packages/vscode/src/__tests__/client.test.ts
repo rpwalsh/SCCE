@@ -182,6 +182,7 @@ describe("YoppClient HTTP boundary", () => {
 
     await expect(clientWithResponse(response(fixtureReceipt(plan, { omitMutation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/mutation count/u);
     await expect(clientWithResponse(response(fixtureReceipt(plan, { mutationPath: "src/other.ts" }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/path does not match/u);
+    await expect(clientWithResponse(response(fixtureReceipt(plan, { omitValidation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/missing.*validation receipt/u);
   });
 
   it("submits a bounded coding request and verifies the returned content-addressed plan trace", async () => {
@@ -332,7 +333,7 @@ function fixturePlan(path: string, content: string): unknown {
 
 function fixtureReceipt(
   plan: ReturnType<typeof parseReviewedPatchPlan>,
-  options: { mutationPath?: string; omitMutation?: boolean } = {}
+  options: { mutationPath?: string; omitMutation?: boolean; omitValidation?: boolean } = {}
 ): unknown {
   const operation = plan.operations[0]!;
   const mutationPayload = {
@@ -349,7 +350,9 @@ function fixtureReceipt(
     schemaVersion: "yopp.patch-transaction-receipt.v1",
     transactionScope: "atomic-per-file-with-verified-transaction-rollback",
     planHash: plan.planHash,
-    validation: null,
+    validation: options.omitValidation
+      ? null
+      : { validatorId: "trusted-host-pnpm-validate.v1", evidenceHash: sha256("validation-evidence") },
     mutations
   };
   return { ...payload, receiptHash: sha256(JSON.stringify(canonical(payload))) };

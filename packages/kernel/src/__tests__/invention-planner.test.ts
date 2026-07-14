@@ -16,8 +16,11 @@ import {
 } from "../index.js";
 
 describe("requested authority classification", () => {
-  it("classifies an ordinary creative request with inspectable softmax state", () => {
-    const decision = classifyRequestedAuthority({ requestText: "Invent a new indexing algorithm for this graph" });
+  it("classifies a structured creative activation with inspectable softmax state", () => {
+    const decision = classifyRequestedAuthority({
+      requestText: "Ω-17",
+      semanticFrameIds: ["authority.feature.request.creative"]
+    });
 
     expect(decision.requestedAuthority).toBe("creative");
     expect(decision.explicitOverride).toBe(false);
@@ -32,7 +35,7 @@ describe("requested authority classification", () => {
   });
 
   it("keeps an unsupported factual question factual", () => {
-    const decision = classifyRequestedAuthority({ requestText: "What is the capital of the unobserved region?" });
+    const decision = classifyRequestedAuthority({ requestText: "Ω-18?" });
 
     expect(decision.requestedAuthority).toBe("factual");
     expect(decision.features["authority.feature.request.creative"]).toBe(0);
@@ -40,7 +43,7 @@ describe("requested authority classification", () => {
 
   it("honors an explicit authority override before inference", () => {
     const decision = classifyRequestedAuthority({
-      requestText: "Invent a new indexing algorithm",
+      requestText: "Ω-19",
       explicitAuthority: "program"
     });
 

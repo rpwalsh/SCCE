@@ -6,7 +6,7 @@ import { createSemanticEntailmentEngine } from "./entailment.js";
 import { createProgramGraphBuilder } from "./program.js";
 import { createLanguageMemoryRuntime, type LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createCorrectionMemory } from "./correction-memory.js";
-import { createMouth, type SpeakInput, type SpokenOutput } from "./mouth.js";
+import { createMouth, type MouthSemanticInput, type SpeakInput, type SpokenOutput } from "./mouth.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   realizeDialogueResponse,
@@ -17,8 +17,6 @@ import {
   type UserStyleProfile
 } from "./dialogue-pragmatics.js";
 import { createClock, createHasher, toJsonValue } from "./primitives.js";
-import { formatSurfaceMessage } from "./localization.js";
-import { PUBLIC_SURFACE_STATUS_TOKENS } from "./surface-quality.js";
 import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type SemanticProofResult } from "./semantic-proof-engine.js";
 import type {
   ConstructGraph,
@@ -32,6 +30,7 @@ import type {
   LanguageProfile,
   ProgramConstructIntent,
   ProgramGraph,
+  RequestedAuthority,
   SemanticEntailmentResult,
   SourceVersionId
 } from "./types.js";
@@ -185,6 +184,7 @@ export interface WorkspaceKernelContextOptions {
   dialogueFeedback?: DialogueFeedback;
   userStyleProfile?: Partial<UserStyleProfile>;
   calibrationModels?: CalibrationModelSet;
+  requestedAuthority?: RequestedAuthority;
   /** Structured, source-derived constraints for a coding-request ProgramGraph. */
   programIntentOverride?: Partial<ProgramConstructIntent>;
 }
@@ -382,17 +382,31 @@ export function workspaceCoreRecordsToMouthInput(
   const proof = workspaceCoreRecordsToProofContext(source);
   const learning = workspaceCoreRecordsToLearningContext(source);
   const deps = runtimeDeps(options);
-  const answerSurface = options.answerSurface ?? workspaceKernelSurface({ source, requestText, graph, proof, learning, program: undefined, unsupported: Boolean(options.unsupported) });
+  const answerSurface = semanticWorkspaceMaterial({
+    source,
+    requestText,
+    proof,
+    learning,
+    program: undefined,
+    suppliedSurface: options.answerSurface
+  });
   const field = graph.field ?? createAlphaFieldEngine().activate({
-    text: answerSurface,
+    text: requestText || answerSurface,
     nodes: graph.nodes,
     edges: graph.edges,
     seedPriors: workspaceEvidenceSeedPriors(graph.nodes)
   });
-  const construct = constructForWorkspaceAnswer({ answerSurface, source, proof, learning, idFactory: deps.idFactory, episodeId: deps.idFactory.episodeId() });
+  const construct = constructForWorkspaceAnswer({
+    source,
+    proof,
+    learning,
+    requestText,
+    idFactory: deps.idFactory,
+    episodeId: deps.idFactory.episodeId()
+  });
   const certifyingClaims = proof.results.filter(item => item.result.verdict === "certified").map(item => item.claim);
   const entailment = createSemanticEntailmentEngine({ idFactory: deps.idFactory, hasher: deps.hasher }).check({
-    text: answerSurface,
+    text: answerSurface || requestText,
     evidence: mouthContextFrom(source).evidence,
     nodes: graph.nodes,
     field,
@@ -420,10 +434,35 @@ export function workspaceCoreRecordsToMouthInput(
     createdAt: deps.clock.now()
   });
   const finalTrace = workspaceKernelAnswerTrace({ source, proof, program, unsupported: Boolean(options.unsupported) });
-  const finalSurface = options.answerSurface ?? workspaceKernelSurface({ source, requestText, graph, proof, learning, program, unsupported: Boolean(options.unsupported) });
-  const finalConstruct = constructForWorkspaceAnswer({ answerSurface: finalSurface, source, proof, learning, idFactory: deps.idFactory, episodeId: deps.idFactory.episodeId(), program });
+  const finalSurface = semanticWorkspaceMaterial({
+    source,
+    requestText,
+    proof,
+    learning,
+    program,
+    suppliedSurface: options.answerSurface
+  });
+  const answerGraph = workspaceAnswerActionGraph({
+    source,
+    proof,
+    learning,
+    program,
+    answerTrace: finalTrace,
+    unsupported: Boolean(options.unsupported),
+    hasher: deps.hasher
+  });
+  const finalConstruct = constructForWorkspaceAnswer({
+    source,
+    proof,
+    learning,
+    requestText,
+    idFactory: deps.idFactory,
+    episodeId: deps.idFactory.episodeId(),
+    program,
+    answerGraph
+  });
   const finalEntailment = finalSurface === answerSurface ? entailment : createSemanticEntailmentEngine({ idFactory: deps.idFactory, hasher: deps.hasher }).check({
-    text: finalSurface,
+    text: finalSurface || requestText,
     evidence: mouthContextFrom(source).evidence,
     nodes: graph.nodes,
     field,
@@ -435,14 +474,15 @@ export function workspaceCoreRecordsToMouthInput(
   });
   const languageRuntime = createLanguageMemoryRuntime({ idFactory: deps.idFactory, hasher: deps.hasher });
   const languageMemory = options.languageMemory ?? languageRuntime.hydrate({ models: [] });
-  const answerGraph = workspaceAnswerActionGraph({
+  const semanticInput = workspaceMouthSemanticInput({
+    authority: options.requestedAuthority ?? "reasoned",
     source,
     proof,
     learning,
     program,
-    answerTrace: finalTrace,
-    unsupported: Boolean(options.unsupported),
-    hasher: deps.hasher
+    answerGraph,
+    requestText,
+    unsupported: Boolean(options.unsupported)
   });
   const pragmatics = realizeDialogueResponse({
     conversationId: options.conversationId ?? workspaceRefFrom(source).id,
@@ -453,39 +493,22 @@ export function workspaceCoreRecordsToMouthInput(
     statePatch: options.userStyleProfile ? { userStyleProfile: options.userStyleProfile } : undefined,
     answerGraph,
     targetLanguage: options.targetLanguage ?? "und",
-    candidateTexts: [finalSurface],
+    candidateTexts: semanticDialogueSurfaces(answerGraph, finalSurface),
     calibrationModels: options.calibrationModels,
     calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.workspaceAnswer
   });
-  // Dialogue policy may propose a narrower response, but it must not replace the
-  // proof/learning/program surface selected by the workspace answer planner.
-  const pragmaticSurface = finalSurface;
-  const pragmaticConstruct = pragmaticSurface === finalSurface
-    ? finalConstruct
-    : constructForWorkspaceAnswer({ answerSurface: pragmaticSurface, source, proof, learning, idFactory: deps.idFactory, episodeId: deps.idFactory.episodeId(), program });
-  const pragmaticEntailment = pragmaticSurface === finalSurface
-    ? finalEntailment
-    : createSemanticEntailmentEngine({ idFactory: deps.idFactory, hasher: deps.hasher }).check({
-      text: pragmaticSurface,
-      evidence: mouthContextFrom(source).evidence,
-      nodes: graph.nodes,
-      field,
-      construct: pragmaticConstruct,
-      proofClaims: certifyingClaims,
-      proofEvidence: proof.evidence,
-      createdAt: deps.clock.now(),
-      calibrationModels: options.calibrationModels
-    });
   return {
     schema: "scce.workspace_kernel.mouth_input.v1",
     speakInput: {
-      construct: pragmaticConstruct,
+      construct: finalConstruct,
       field,
       languageProfile: languageProfileFor(source, deps.clock.now()),
       evidence: mouthContextFrom(source).evidence,
-      entailment: pragmaticEntailment,
+      entailment: finalEntailment,
       languageMemory,
-      answerDraft: pragmaticSurface,
+      answerDraft: "",
+      semanticInput,
+      requestedAuthority: options.requestedAuthority ?? "reasoned",
       targetLanguage: options.targetLanguage ?? "und",
       maxLength: options.maxLength ?? 2000,
       correctionRules: options.correctionRules,
@@ -512,20 +535,22 @@ export function workspaceCoreRecordsToMouthInput(
     dialogueState: pragmatics.state,
     dialoguePolicyDecision: pragmatics.policyDecision,
     pragmatics,
-    answerSurface: pragmaticSurface,
+    answerSurface: finalSurface,
     answerTrace: finalTrace,
     unsupported: Boolean(options.unsupported),
     audit: toJsonValue({
       source: "workspace-kernel-context.mouth-input",
       unsupported: Boolean(options.unsupported),
-      answerSurfaceHash: deps.hasher.digestHex(pragmaticSurface),
+      answerSurfaceHash: deps.hasher.digestHex(finalSurface),
       answerTrace: finalTrace,
       answerGraphId: answerGraph.id,
       dialogueStateId: pragmatics.state.turnId,
       dialoguePolicyDecisionId: pragmatics.policyDecision.id,
       pragmaticsCriticId: pragmatics.selected.criticId,
-      constructId: String(pragmaticConstruct.id),
-      entailmentForce: pragmaticEntailment.force
+      constructId: String(finalConstruct.id),
+      entailmentForce: finalEntailment.force,
+      semanticSlotCount: semanticInput.slots.length,
+      semanticRelationCount: semanticInput.relations?.length ?? 0
     })
   };
 }
@@ -803,39 +828,41 @@ function sourceRefForProofEvidence(evidence: ProofEvidenceRecord | undefined, so
   return mouthContextFrom(source).sourceRefs.find(ref => ref.evidenceSpanId === evidence.evidenceSpanId);
 }
 
-function workspaceKernelSurface(input: {
+function semanticWorkspaceMaterial(input: {
   source: WorkspaceCoreContextSource;
   requestText: string;
-  graph: WorkspaceGraphContext;
   proof: WorkspaceProofContext;
   learning: WorkspaceLearningContext;
   program: WorkspaceProgramContext | undefined;
-  unsupported: boolean;
+  suppliedSurface?: string;
 }): string {
-  const promotion = promotionFrom(input.source);
+  const supplied = input.suppliedSurface?.replace(/\s+/gu, " ").trim();
+  if (supplied) return supplied;
   const material = workspaceAnswerMaterial(input.source, input.learning, input.program);
-  if (input.unsupported) {
-    return [
-      formatWorkspaceSurfaceMessage("workspace.answer.unsupported"),
-      sourceBoundSummary(material)
-    ].filter(Boolean).join(" ");
-  }
-  const lines: string[] = [];
-  const implemented = [
-    ...material.symbols.slice(0, 1).map(record => `${record.symbolName} from ${sourceRefLabel(record.sourceRef)}`),
-    ...material.capabilities.slice(0, 1).map(record => `${record.route.method} ${record.route.path} from ${sourceRefLabel(record.sourceRef)}`),
-    ...material.commands.slice(0, 1).map(record => `command ${record.command.name} (${record.command.command}) from ${sourceRefLabel(record.sourceRef)}`)
-  ];
-  if (implemented.length) lines.push(formatWorkspaceSurfaceMessage("workspace.answer.implemented", { items: joinHuman(implemented) }));
-  const contradiction = material.contradictions[0];
-  if (contradiction) lines.push(formatWorkspaceSurfaceMessage("workspace.answer.contradiction", { text: ensurePeriod(contradiction.evidenceSpan.text), source: sourceRefLabel(contradiction.sourceRef) }));
-  const gap = material.gaps[0];
-  if (gap) lines.push(formatWorkspaceSurfaceMessage("workspace.answer.missing", { kind: displayId(gap.learningNeed.needKindId), files: fileList(gap.affectedFiles, gap.sourcePath) }));
-  const task = material.tasks[0];
-  if (task) lines.push(formatWorkspaceSurfaceMessage("workspace.answer.fix_first", { kind: displayId(taskFindingKind(task)), files: fileList(task.affectedFiles, task.sourcePath) }));
-  if (!lines.length && promotion) lines.push(sourceBoundSummary(material));
-  if (!lines.length) lines.push(formatWorkspaceSurfaceMessage("workspace.answer.empty"));
-  return lines.join("\n");
+  const certified = new Set(input.proof.certifiedClaimIds);
+  const claimSurfaces = input.proof.claims
+    .filter(claim => certified.has(claim.id))
+    .flatMap(claim => [claim.subject.surface, claim.object.surface])
+    .filter((surface): surface is string => Boolean(surface?.trim()));
+  const surfaces = uniqueStrings([
+    ...claimSurfaces,
+    ...material.symbols.map(record => record.symbolName),
+    ...material.capabilities.map(record => `${record.route.method} ${record.route.path}`.trim()),
+    ...material.commands.map(record => record.command.command),
+    ...material.contradictions.map(record => record.evidenceSpan.text),
+    ...material.gaps.flatMap(record => record.affectedFiles),
+    ...material.tasks.flatMap(record => record.affectedFiles),
+    ...(input.program?.patchPlans.flatMap(plan => plan.affectedFiles) ?? [])
+  ]);
+  return surfaces.length ? surfaces.join("\n") : input.requestText.trim();
+}
+
+function semanticDialogueSurfaces(answerGraph: WorkspaceAnswerActionGraph, semanticMaterial: string): string[] {
+  return uniqueStrings([
+    ...answerGraph.claims.map(claim => claim.surface),
+    ...answerGraph.caveats.map(caveat => caveat.text),
+    ...semanticMaterial.split(/\r?\n/gu)
+  ]).filter(surface => Boolean(surface.trim()));
 }
 
 function workspaceKernelAnswerTrace(input: {
@@ -876,7 +903,10 @@ function workspaceAnswerActionGraph(input: {
     id: `answer_graph.claim.${claim.id}`,
     proofClaimId: claim.id,
     roleId: certified.has(claim.id) ? "answer_graph.role.certified_claim" : "answer_graph.role.candidate_claim",
-    surface: claim.object.surface || claim.object.id || claim.subject.surface || claim.subject.id || claim.id,
+    surface: claim.object.surface
+      || claim.subject.surface
+      || input.proof.evidence.find(record => record.relationId === claim.relationId && record.subject.id === claim.subject.id && record.object.id === claim.object.id)?.text
+      || "",
     certified: certified.has(claim.id)
   }));
   const supportLinks = input.proof.results.flatMap(result => result.result.certifiedEvidenceIds.map(evidenceId => {
@@ -895,12 +925,6 @@ function workspaceAnswerActionGraph(input: {
       text: record.evidenceSpan.text,
       sourceRef: record.sourceRef
     })),
-    ...material.gaps.map(record => ({
-      id: `answer_graph.caveat.${record.id}`,
-      roleId: "answer_graph.role.missing_evidence",
-      text: record.learningNeed.needKindId,
-      sourceRef: record.sourceRef
-    }))
   ].slice(0, 16);
   const actions = input.program.patchPlans.map(plan => ({
     id: `answer_graph.action.${plan.workspaceTaskRecordId}`,
@@ -987,18 +1011,6 @@ function sourceBoundRecord(record: { forceClass: string; sourceRef?: WorkspaceCo
   return record.forceClass === "direct_evidence" && Boolean(record.sourceRef?.evidenceSpanId);
 }
 
-function sourceBoundSummary(material: WorkspaceAnswerMaterial): string {
-  const parts = [
-    material.symbols.length ? formatWorkspaceSurfaceMessage("workspace.records.symbols", { count: material.symbols.length }) : "",
-    material.capabilities.length ? formatWorkspaceSurfaceMessage("workspace.records.routes", { count: material.capabilities.length }) : "",
-    material.commands.length ? formatWorkspaceSurfaceMessage("workspace.records.commands", { count: material.commands.length }) : "",
-    material.gaps.length ? formatWorkspaceSurfaceMessage("workspace.records.gaps", { count: material.gaps.length }) : "",
-    material.contradictions.length ? formatWorkspaceSurfaceMessage("workspace.records.contradictions", { count: material.contradictions.length }) : "",
-    material.tasks.length ? formatWorkspaceSurfaceMessage("workspace.records.tasks", { count: material.tasks.length }) : ""
-  ].filter(Boolean);
-  return parts.length ? formatWorkspaceSurfaceMessage("workspace.answer.records", { records: joinHuman(parts) }) : formatWorkspaceSurfaceMessage("workspace.answer.no_records");
-}
-
 function rankedSymbolRecords(records: readonly WorkspaceSymbolGraphRecord[]): WorkspaceSymbolGraphRecord[] {
   return [...records].sort((left, right) => symbolRecordRank(right) - symbolRecordRank(left) || left.symbolName.localeCompare(right.symbolName) || left.id.localeCompare(right.id));
 }
@@ -1016,117 +1028,173 @@ function jsonArrayLength(value: JsonValue | undefined): number {
   return Array.isArray(value) ? value.length : 0;
 }
 
-function sourceRefLabel(ref: WorkspaceCoreSourceRef | undefined): string {
-  if (!ref) return formatWorkspaceSurfaceMessage("workspace.source.unknown");
-  const line = ref.lineStart ? `:${ref.lineStart}${ref.lineEnd && ref.lineEnd !== ref.lineStart ? `-${ref.lineEnd}` : ""}` : "";
-  return `${ref.path}${line}`;
-}
-
-function fileList(files: readonly string[], fallback: string | undefined): string {
-  const values = files.length ? [...files] : fallback ? [fallback] : [];
-  return values.length ? joinHuman(values) : formatWorkspaceSurfaceMessage("workspace.files.analyzed");
-}
-
-const WORKSPACE_SURFACE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
-  "workspace.answer.unsupported": PUBLIC_SURFACE_STATUS_TOKENS.workspaceAnswerUnsupported,
-  "workspace.answer.implemented": "Implemented: {items}.",
-  "workspace.answer.contradiction": "Contradiction: {text} [{source}].",
-  "workspace.answer.missing": "Missing: {kind}; files: {files}.",
-  "workspace.answer.fix_first": "Fix first: {kind}; files: {files}.",
-  "workspace.answer.empty": "No workspace answer material was available.",
-  "workspace.answer.records": "Workspace evidence: {records}.",
-  "workspace.answer.no_records": "No source-bound workspace records are available.",
-  "workspace.records.symbols": "{count} symbols",
-  "workspace.records.routes": "{count} routes",
-  "workspace.records.commands": "{count} commands",
-  "workspace.records.gaps": "{count} gaps",
-  "workspace.records.contradictions": "{count} contradictions",
-  "workspace.records.tasks": "{count} tasks",
-  "workspace.source.unknown": "unknown source",
-  "workspace.files.analyzed": "analyzed files"
-});
-
-function formatWorkspaceSurfaceMessage(key: string, vars: Record<string, string | number> = {}): string {
-  const template = WORKSPACE_SURFACE_MESSAGES[key];
-  if (!template) return formatSurfaceMessage(key, vars);
-  return template.replace(/\{([A-Za-z0-9_.:-]+)\}/g, (_match, rawKey: string) => String(vars[rawKey] ?? ""));
-}
-
-function taskFindingKind(task: WorkspaceTaskRecord): string {
-  const metadata = objectRecord(task.programPlannerInput.programIntent.metadata);
-  return firstString(metadata.findingKind) ?? task.kind;
-}
-
-function displayId(value: string): string {
-  return capitalizeFirst(compactSpaces(replaceIdSeparators(stripKnownIdPrefix(value))));
-}
-
-function stripKnownIdPrefix(value: string): string {
-  const prefixes = ["workspace.need.", "workspace.", "task.", "program.", "source."];
-  for (const prefix of prefixes) {
-    if (value.startsWith(prefix)) return value.slice(prefix.length);
-  }
-  return value;
-}
-
-function replaceIdSeparators(value: string): string {
-  let out = "";
-  let pendingSpace = false;
-  for (const ch of value) {
-    if (ch === "." || ch === "_" || ch === "-") {
-      pendingSpace = out.length > 0;
-      continue;
-    }
-    if (pendingSpace) out += " ";
-    pendingSpace = false;
-    out += ch;
-  }
-  return out;
-}
-
-function compactSpaces(value: string): string {
-  let out = "";
-  let pendingSpace = false;
-  for (const ch of value.trim()) {
-    if (isWhitespaceChar(ch)) {
-      pendingSpace = out.length > 0;
-      continue;
-    }
-    if (pendingSpace) out += " ";
-    pendingSpace = false;
-    out += ch;
-  }
-  return out;
-}
-
-function capitalizeFirst(value: string): string {
-  if (!value) return value;
-  return `${value[0]?.toLocaleUpperCase() ?? ""}${value.slice(1)}`;
-}
-
-function ensurePeriod(value: string): string {
-  const clean = compactSpaces(value);
-  if (!clean) return clean;
-  const last = clean[clean.length - 1];
-  return last === "." || last === "!" || last === "?" ? clean : `${clean}.`;
-}
-
-function joinHuman(values: readonly string[]): string {
-  const clean = values.map(compactSpaces).filter(Boolean);
-  if (clean.length <= 1) return clean[0] ?? "";
-  return clean.join("; ");
-}
-
-function constructForWorkspaceAnswer(input: {
-  answerSurface: string;
+function workspaceMouthSemanticInput(input: {
+  authority: RequestedAuthority;
   source: WorkspaceCoreContextSource;
   proof: WorkspaceProofContext;
   learning: WorkspaceLearningContext;
+  program: WorkspaceProgramContext;
+  answerGraph: WorkspaceAnswerActionGraph;
+  requestText: string;
+  unsupported: boolean;
+}): MouthSemanticInput {
+  const context = mouthContextFrom(input.source);
+  const evidenceById = new Map(context.evidence.map(span => [String(span.id), span]));
+  const supportByClaim = new Map<string, EvidenceId[]>();
+  for (const link of input.answerGraph.supportLinks) {
+    const evidenceId = evidenceById.get(link.evidenceId)?.id;
+    if (!evidenceId) continue;
+    const values = supportByClaim.get(link.claimId) ?? [];
+    values.push(evidenceId);
+    supportByClaim.set(link.claimId, values);
+  }
+  const material = workspaceAnswerMaterial(input.source, input.learning, input.program);
+  const slots: MouthSemanticInput["slots"] = [
+    ...input.answerGraph.claims.filter(claim => Boolean(claim.surface.trim())).map(claim => ({
+      id: `mouth.slot.${claim.id}`,
+      roleId: claim.certified ? "mouth.role.claim.certified" : "mouth.role.claim.candidate",
+      value: toJsonValue({ surface: claim.surface }),
+      evidenceIds: supportByClaim.get(claim.id) ?? [],
+      sourceId: claim.proofClaimId
+    })),
+    ...input.answerGraph.caveats.filter(caveat => Boolean(caveat.text.trim())).map(caveat => ({
+      id: `mouth.slot.${caveat.id}`,
+      roleId: "mouth.role.claim.contradiction",
+      value: toJsonValue({ surface: caveat.text }),
+      evidenceIds: caveat.sourceRef?.evidenceSpanId && evidenceById.has(caveat.sourceRef.evidenceSpanId)
+        ? [evidenceById.get(caveat.sourceRef.evidenceSpanId)!.id]
+        : [],
+      sourceId: caveat.sourceRef?.path
+    })),
+    ...material.commands.map(record => ({
+      id: `mouth.slot.command.${record.id}`,
+      roleId: "mouth.role.action.command",
+      value: toJsonValue({ command: record.command.command }),
+      evidenceIds: record.sourceRef?.evidenceSpanId && evidenceById.has(record.sourceRef.evidenceSpanId)
+        ? [evidenceById.get(record.sourceRef.evidenceSpanId)!.id]
+        : [],
+      sourceId: record.sourceRef?.path
+    })),
+    ...material.capabilities.map(record => ({
+      id: `mouth.slot.capability.${record.id}`,
+      roleId: "mouth.role.action.route",
+      value: toJsonValue({ method: record.route.method, path: record.route.path }),
+      evidenceIds: record.sourceRef?.evidenceSpanId && evidenceById.has(record.sourceRef.evidenceSpanId)
+        ? [evidenceById.get(record.sourceRef.evidenceSpanId)!.id]
+        : [],
+      sourceId: record.sourceRef?.path
+    })),
+    ...material.symbols.map(record => ({
+      id: `mouth.slot.symbol.${record.id}`,
+      roleId: "mouth.role.code.symbol",
+      value: toJsonValue({ symbol: record.symbolName }),
+      evidenceIds: record.sourceRef?.evidenceSpanId && evidenceById.has(record.sourceRef.evidenceSpanId)
+        ? [evidenceById.get(record.sourceRef.evidenceSpanId)!.id]
+        : [],
+      sourceId: record.sourceRef?.path
+    })),
+    ...input.answerGraph.actions.flatMap(action => action.affectedFiles.map((path, index) => ({
+      id: `mouth.slot.${action.id}.path.${index}`,
+      roleId: "mouth.role.workspace.path",
+      value: toJsonValue({ path }),
+      evidenceIds: action.evidenceSpanIds.map(id => evidenceById.get(id)?.id).filter((id): id is EvidenceId => Boolean(id)),
+      sourceId: action.taskRecordId
+    }))),
+    ...context.evidence.slice(0, 8).map(span => ({
+      id: `mouth.slot.evidence.${String(span.id)}`,
+      roleId: "mouth.role.evidence.span",
+      value: toJsonValue({ surface: span.text }),
+      evidenceIds: [span.id],
+      sourceId: String(span.sourceId)
+    }))
+  ];
+  if (slots.length === 0 && input.requestText.trim()) {
+    slots.push({
+      id: "mouth.slot.request.motion",
+      roleId: input.unsupported ? "mouth.role.learning.request" : "mouth.role.request",
+      value: toJsonValue({ request: input.requestText.trim() })
+    });
+  }
+  const slotIds = new Set(slots.map(slot => slot.id));
+  const relations: NonNullable<MouthSemanticInput["relations"]> = input.answerGraph.supportLinks.flatMap((link, index) => {
+    const sourceSlotId = `mouth.slot.${link.claimId}`;
+    const targetSlotId = `mouth.slot.evidence.${link.evidenceId}`;
+    const evidenceId = evidenceById.get(link.evidenceId)?.id;
+    if (!slotIds.has(sourceSlotId) || !slotIds.has(targetSlotId) || !evidenceId) return [];
+    return [{
+      id: `mouth.relation.support.${index}`,
+      relationId: "mouth.relation.evidence_supports_claim",
+      sourceSlotId: targetSlotId,
+      targetSlotId: sourceSlotId,
+      evidenceIds: [evidenceId]
+    }];
+  });
+  return { schema: "scce.mouth.semantic_input.v1", authority: input.authority, slots: slots.slice(0, 24), relations };
+}
+
+function constructForWorkspaceAnswer(input: {
+  source: WorkspaceCoreContextSource;
+  proof: WorkspaceProofContext;
+  learning: WorkspaceLearningContext;
+  requestText: string;
   idFactory: IdFactory;
   episodeId: ReturnType<IdFactory["episodeId"]>;
   program?: WorkspaceProgramContext;
+  answerGraph?: WorkspaceAnswerActionGraph;
 }): ConstructGraph {
-  const surfaceHash = createHasher().digestHex(input.answerSurface).slice(0, 24);
+  const material = workspaceAnswerMaterial(input.source, input.learning, input.program);
+  const semanticNodes: ConstructGraph["nodes"] = [
+    ...(input.answerGraph?.claims ?? []).filter(claim => Boolean(claim.surface.trim())).map(claim => ({
+      id: `construct.${claim.id}`,
+      kind: "construct:claim",
+      label: claim.surface,
+      metadata: toJsonValue({
+        proofClaimId: claim.proofClaimId ?? null,
+        roleId: claim.roleId,
+        certified: claim.certified,
+        supportLinks: input.answerGraph?.supportLinks.filter(link => link.claimId === claim.id) ?? []
+      })
+    })),
+    ...material.symbols.map(record => ({
+      id: `construct.workspace.symbol.${record.id}`,
+      kind: "construct:code_symbol",
+      label: record.symbolName,
+      metadata: toJsonValue({ sourceRef: record.sourceRef ?? null, evidenceIds: record.graphNode.evidenceIds })
+    })),
+    ...material.capabilities.map(record => ({
+      id: `construct.workspace.capability.${record.id}`,
+      kind: "construct:route",
+      label: `${record.route.method} ${record.route.path}`.trim(),
+      metadata: toJsonValue({ route: record.route, sourceRef: record.sourceRef ?? null, evidenceIds: record.graphNode.evidenceIds })
+    })),
+    ...material.commands.map(record => ({
+      id: `construct.workspace.command.${record.id}`,
+      kind: "construct:command",
+      label: record.command.command,
+      metadata: toJsonValue({ command: record.command, sourceRef: record.sourceRef ?? null, evidenceIds: record.graphNode.evidenceIds })
+    })),
+    ...material.contradictions.map(record => ({
+      id: `construct.workspace.contradiction.${record.id}`,
+      kind: "construct:contradiction",
+      label: record.evidenceSpan.text,
+      metadata: toJsonValue({ sourceRef: record.sourceRef ?? null, evidenceIds: [record.evidenceSpan.id] })
+    })),
+    ...(input.answerGraph?.actions ?? []).flatMap(action => action.affectedFiles.map((path, index) => ({
+      id: `construct.${action.id}.path.${index}`,
+      kind: "construct:workspace_path",
+      label: path,
+      metadata: toJsonValue({ actionId: action.id, taskRecordId: action.taskRecordId, evidenceSpanIds: action.evidenceSpanIds })
+    })))
+  ];
+  const surfaceHash = createHasher().digestHex(JSON.stringify({
+    requestText: input.requestText,
+    nodeIds: semanticNodes.map(node => node.id),
+    labels: semanticNodes.map(node => node.label),
+    answerGraphId: input.answerGraph?.id ?? null,
+    programGraphId: input.program?.programGraph?.id ?? null
+  })).slice(0, 24);
+  const answerNodeId = "workspace.kernel.answer";
+  const coreNodeId = "workspace.kernel.core_records";
   return {
     id: input.idFactory.constructId({ kind: "workspace.kernel.answer", surfaceHash }),
     episodeId: input.episodeId,
@@ -1139,25 +1207,35 @@ function constructForWorkspaceAnswer(input: {
     }),
     nodes: [
       {
-        id: "workspace.kernel.answer",
+        id: answerNodeId,
         kind: "construct:answer",
-        label: "workspace.kernel.answer",
-        metadata: toJsonValue({ surfaceHash, schema: "scce.workspace_kernel.answer.v1" })
+        label: "",
+        metadata: toJsonValue({
+          surfaceHash,
+          schema: "scce.workspace_kernel.answer.v1",
+          requestText: input.requestText,
+          answerGraph: input.answerGraph ?? null
+        })
       },
       {
-        id: "workspace.kernel.core_records",
+        id: coreNodeId,
         kind: "construct:workspace_core",
-        label: "workspace.kernel.core_records",
+        label: "",
         metadata: toJsonValue({
           workspaceId: workspaceRefFrom(input.source).id,
           proofClaimCount: input.proof.claims.length,
           learningNeedCount: input.learning.needs.length,
           programGraphId: input.program?.programGraph?.id ?? null
         })
-      }
+      },
+      ...semanticNodes
     ],
-    edges: [{ source: "workspace.kernel.core_records", target: "workspace.kernel.answer", relation: "supports_surface", weight: 1 }],
-    artifacts: []
+    edges: [
+      { source: coreNodeId, target: answerNodeId, relation: "supports_semantic_motion", weight: 1 },
+      ...semanticNodes.map(node => ({ source: node.id, target: answerNodeId, relation: "contributes_semantic_slot", weight: 1 }))
+    ],
+    program: input.program?.programGraph,
+    artifacts: input.program?.programGraph?.files ?? []
   };
 }
 
@@ -1305,8 +1383,4 @@ function isSymbolChar(ch: string): boolean {
   if (!ch) return false;
   const cp = ch.codePointAt(0) ?? 0;
   return cp === 95 || cp === 36 || cp >= 48 && cp <= 57 || cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122 || cp > 127 && ch.trim() !== "";
-}
-
-function isWhitespaceChar(ch: string): boolean {
-  return ch.trim() === "";
 }

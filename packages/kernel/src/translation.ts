@@ -135,7 +135,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         idFactory: options.idFactory,
         hasher: options.hasher
       });
-      const targetEvidence = input.evidence.filter(span => spanMatchesTarget(span, targetProfile, targetLanguage));
+      const targetEvidence = input.evidence.filter(span => spanMatchesTarget(span, targetProfile, input.targetLanguage));
       const targetFrames = targetEvidence.flatMap(span => framesFromText({
         text: span.text,
         languageHint: targetLanguage,
@@ -387,7 +387,8 @@ function spanMatchesTarget(span: EvidenceSpan, profile: LanguageProfile | undefi
   if (hints.includes(targetLanguage.toLowerCase())) return true;
   if (!profile) return false;
   const script = profile.scripts.slice().sort((a, b) => b.mass - a.mass)[0]?.script;
-  return script ? hints.includes(script) || span.features.some(feature => feature.includes(script)) : false;
+  const scriptKey = script?.toLowerCase();
+  return scriptKey ? hints.includes(scriptKey) || span.features.some(feature => feature.toLowerCase().includes(scriptKey)) : false;
 }
 
 function inferLanguageHint(text: string, profiles: readonly LanguageProfile[]): string {

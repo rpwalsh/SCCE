@@ -135,8 +135,11 @@ The VS Code command accepts a selected UTF-8 JSON plan of at most 8 MiB,
 independently verifies its content and plan hashes, displays the operation
 paths and before/after hashes, requires a modal review, completes the server's
 separate capability authorization, retries the exact request once, and checks
-that the receipt matches the reviewed workspace, policy, and plan. Patch-plan
-generation remains a separate unsatisfied contract; existing Markdown reports
+that the receipt matches the reviewed workspace, policy, and plan. Preview and
+application also bind the physical workspace-root identity, reject root or target
+symlinks/junctions, and recheck root and path identities across authorization,
+retry, and post-state verification. Patch-plan generation remains a separate
+unsatisfied contract; existing Markdown reports
 and virtual repair patches are not treated as filesystem-authorized plans.
 
 ## Transaction scope
@@ -170,14 +173,18 @@ bytes, and converts a strict structured full-file proposal into a content-addres
 plan. The extension and server can apply that reviewed plan when mutation is enabled.
 `POST /api/workspace/patch/plan/request` is strict and non-mutating. Targeted tests
 cover source-proven unused type-only import removal and official TypeScript
-LanguageService fixes for one existing requested file. Compiler actions are derived
-from exact durable snapshot bytes plus the TypeScript standard library. The
+LanguageService actions rooted at one existing requested file. Compiler actions are
+derived from exact durable snapshot bytes plus the TypeScript standard library. The
 source-observed direct `tsc` invocation must resolve an exact snapshot project config,
 and the requested file must belong to its parsed file set. An explicit exact `TS####`,
 `fixName:<id>`, or canonical `codeFixIdentity:<id>` selector must resolve to one
-candidate; the route does not select a candidate implicitly. Command-bearing,
-new-file, unrequested-path, overlapping, and multi-file actions are rejected. The
-route also requires source-observed build and test commands.
+candidate; the route does not select a candidate implicitly. The complete selected
+CodeFixAction may include up to 32 affected files and 128 non-overlapping exact text
+changes. Existing targets must have exact snapshot bases; bounded TypeScript or
+JavaScript new files must be under existing snapshot directories. Command-bearing
+actions, out-of-workspace paths, stale or absent replacement bases, invalid new-file
+targets, and overlapping changes are rejected. The route also requires source-observed
+build and test commands.
 
 The response remains an unauthorized, unexecuted review plan. Its validation contract
 requires compiler, typecheck, and tests; planning does not claim that any command ran

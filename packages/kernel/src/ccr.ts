@@ -131,9 +131,9 @@ function extractiveCompose(input: CcrInput, l2: CcrLayer2CausalFilter): CcrLayer
   if (!accepted.length) abstentions.push("low-sampled-support-lcb");
   if (!l2.davisKahan.stable) abstentions.push(l2.davisKahan.reason);
   if (l2.sde.adversarialPlateau) abstentions.push(l2.sde.reason);
-  const answer = accepted.length
-    ? accepted.map(sentence => sentence.text).join("\n")
-    : `CCR abstains from extractive composition: ${abstentions.join(", ") || "no accepted sentences"}.`;
+  // Rejection reasons are control data for replanning. They are never a
+  // prewritten user surface; only accepted source sentences may leave CCR.
+  const answer = accepted.map(sentence => sentence.text).join("\n");
   return { sentences, answer, abstentions, audit: toJsonValue({ sentences: sentences.length, accepted: accepted.length, abstentions, meanLcb: mean(sentences.map(sentence => sentence.lcb)) }) };
 }
 

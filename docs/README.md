@@ -6,7 +6,6 @@ Use this index to select the smallest relevant document.
 
 - [`USER_GUIDE.md`](USER_GUIDE.md): local setup, ingestion, operation, inspection, and limitations.
 - [`REPO_COMPLETION_MAP.md`](REPO_COMPLETION_MAP.md): current implementation and verification status.
-- [`PUBLIC_REVIEW_CONTRACT.md`](PUBLIC_REVIEW_CONTRACT.md): evidence required for a reproducible public review.
 - [`../SECURITY.md`](../SECURITY.md): security policy and reporting process.
 
 ## Runtime and interfaces
@@ -32,4 +31,8 @@ Use this index to select the smallest relevant document.
 - [`SCCE_DEBUGGING.md`](SCCE_DEBUGGING.md): targeted debugging workflow.
 - [`SCCE_DEV_MCP.md`](SCCE_DEV_MCP.md): bounded MCP repository and trace tools.
 
-Source, tests, current status records, and focused contracts are the maintained references.
+## Status and review records
+
+- [`PUBLIC_REVIEW_CONTRACT.md`](PUBLIC_REVIEW_CONTRACT.md): evidence required before making a reproducible public-review claim.
+
+Source, tests, current status records, and focused contracts are the maintained references. This is a proprietary source release for inspection, not an open-source distribution.

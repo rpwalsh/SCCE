@@ -4,6 +4,8 @@ import type { NgramModelRecord } from "./storage.js";
 import type { EvidenceSpan, FieldState, JsonValue, SemanticEntailmentResult } from "./types.js";
 import { clamp01, featureSet, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createSurfaceRealizer } from "./surface-realizer.js";
+import { containsUnresolvedSurfaceKey } from "./localization.js";
+import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { ensureSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
 
 export interface EvidenceGroundedAnswer {
@@ -31,6 +33,7 @@ export function composeEvidenceGroundedAnswer(input: {
   languageMemory?: LanguageMemoryRuntimeState;
   locale?: string;
   maxSentences?: number;
+  allowDirectSourceSurface?: boolean;
 }): EvidenceGroundedAnswer {
   const maxSentences = Math.max(1, Math.min(12, input.maxSentences ?? 3));
   const claimFeatures = input.entailment.claim.features.length
@@ -62,17 +65,20 @@ export function composeEvidenceGroundedAnswer(input: {
     locale: input.locale
   });
   const evidenceIds = [...new Set([...referencedIds, ...realized.evidenceIds.map(String)])];
-  const evidenceSurface = evidenceAnswerSurface(input.requestText, referencedEvidence.length ? referencedEvidence : input.evidence, maxSentences);
+  const evidenceSurface = input.allowDirectSourceSurface
+    ? evidenceAnswerSurface(input.requestText, referencedEvidence.length ? referencedEvidence : input.evidence, maxSentences)
+    : "";
   const realizedSurface = usableAnswerSurface(realized.text);
-  const answer = evidenceSurface || realizedSurface || "I do not have enough source-backed evidence to answer that.";
+  const answer = realizedSurface || evidenceSurface;
   return {
     answer,
     evidenceIds,
     audit: toJsonValue({
       source: "evidence-grounded-answer-emitter",
       surface: realized.audit,
-      evidenceSurfaceUsed: Boolean(evidenceSurface),
-      insufficientSupportSurfaceUsed: !evidenceSurface && !realizedSurface,
+      directSourceSurfaceAllowed: input.allowDirectSourceSurface === true,
+      evidenceSurfaceUsed: Boolean(evidenceSurface) && answer === evidenceSurface,
+      emptySurface: !answer,
       candidates: candidates.slice(0, 24).map(item => ({
         source: item.source,
         score: item.score,
@@ -229,6 +235,7 @@ function usableAnswerSurface(text: string): string {
   if (clean.startsWith("{") && lower.includes("schema")) return "";
   if (lower.includes("scce.surface.realizer") || lower.includes("scce.surface.candidate")) return "";
   if (lower.includes("surface.point=") || lower.includes("surface.limit=") || lower.includes("proof_")) return "";
+  if (containsUnresolvedSurfaceKey(clean) || detectCannedAnswerSpeech(clean).length) return "";
   return ensureSentence(clean);
 }
 

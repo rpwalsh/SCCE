@@ -861,6 +861,8 @@ export interface TurnResult {
   forecast: ForecastEnvelope;
   learningNeeds: string[];
   candidateField?: JsonValue;
+  /** Candidate admitted by the judge before Mouth realization. */
+  selectedCandidate?: JsonValue;
   judge?: JsonValue;
   actionGraph?: JsonValue;
   selfState?: FunctionalSelfState;
@@ -868,6 +870,8 @@ export interface TurnResult {
   functionalConsciousness?: JsonValue;
   functionalCognition?: JsonValue;
   runtimeCoherence?: JsonValue;
+  /** Bounded internal continuation state for a learn/hydrate/replan retry. */
+  runtimeMotion?: JsonValue;
   discourseObject?: JsonValue;
   proofCarryingAnswer?: JsonValue;
   pface?: JsonValue;

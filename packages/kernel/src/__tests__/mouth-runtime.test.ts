@@ -199,7 +199,7 @@ describe("Mouth runtime surface planning", () => {
         kind: "temporal" as const,
         evidenceIds: [],
         sourceVersionIds: [],
-        audit: {}
+        audit: { surfaceDispositionId: "surface.caveat.append" }
       }]
     };
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
@@ -365,7 +365,7 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).not.toContain("certified by the available evidence");
   });
 
-  it("answers runtime status from the runtime diagnostic boundary instead of imported prose", async () => {
+  it("keeps runtime status diagnostics structured and out of Mouth speech", async () => {
     const source = sourceVersion();
     const evidence = directEvidence(source);
     const field = emptyField();
@@ -398,14 +398,13 @@ describe("Mouth runtime surface planning", () => {
       }
     });
 
-    expect(spoken.text).toContain("learned graph priors");
-    expect(spoken.text).toContain("import-bound");
-    expect(spoken.text).toContain("Broad text-retrieval fallback is outside the intended runtime route.");
-    expect(spoken.text).not.toContain(fixture.importedPhrase);
-    expect(spoken.text).not.toContain("greenhouse");
-    expect(spoken.text).not.toContain('"candidateKind"');
+    expect(spoken.text).toBe("");
+    expect(spoken.evidenceRefs).toEqual([]);
     expect(spoken.force).toBe("bounded");
-    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:construct-anchored");
+    expect(spoken.realizationTrace.selected.path).toBe("generated");
+    expect(spoken.realizationTrace.selected.textHash).toBe(hasher.digestHex(""));
+    expect(spoken.inspectRefs.some(ref => ref.kind === "construct")).toBe(true);
+    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("runtime-status-language");
   });
 
   it("answers an ordinary hydrated question from a semantic answer construct without import telemetry", async () => {
@@ -574,14 +573,13 @@ describe("Mouth runtime surface planning", () => {
       }
     });
 
-    expect(spoken.text.trim().length).toBeGreaterThan(0);
-    expect(spoken.text).not.toBe(question);
-    expect(spoken.text.toLocaleLowerCase()).not.toContain("capital of france");
-    expect(spoken.text.toLocaleLowerCase()).not.toContain("scce- can");
+    expect(spoken.text).toBe("");
     expect(spoken.evidenceRefs).toEqual([]);
     expect(spoken.force).toBe("underdetermined");
+    expect(spoken.realizationTrace.selected.textHash).toBe(hasher.digestHex(""));
+    expect(spoken.inspectRefs.some(ref => ref.kind === "construct")).toBe(true);
+    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("unsupported-topic-language");
     expect(JSON.stringify(spoken.realizationTrace.candidates)).not.toContain("candidate:generated:support-boundary");
-    expect(spoken.text.toLocaleLowerCase()).not.toContain("weak connected support");
   });
 
   it("does not answer requested member slots from raw learned language priors", async () => {
@@ -666,7 +664,7 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:rhetorical-lattice");
   });
 
-  it("keeps a bounded unsupported semantic question on its insufficient-support surface", async () => {
+  it("keeps an unsupported semantic continuation internal when no source surface exists", async () => {
     const source = sourceVersion();
     const evidence = directEvidence(source);
     const field = emptyField();
@@ -700,21 +698,16 @@ describe("Mouth runtime surface planning", () => {
       }
     });
 
-    expect(spoken.text.trim().length).toBeGreaterThan(0);
-    expect(spoken.text.trim().toLocaleLowerCase()).not.toMatch(/^(the|a|an)[.!?]?$/u);
-    expect(spoken.text).not.toBe(question);
-    expect(spoken.text).not.toContain("[no_proof]");
-    expect(spoken.text).not.toContain("Ada Lovelace");
-    expect(spoken.text).not.toContain("contribution");
-    expect(spoken.text).not.toContain('"candidateKind"');
-    expect(spoken.text.toLocaleLowerCase()).not.toContain("mathematician");
-    expect(spoken.text.toLocaleLowerCase()).not.toContain("analytical engine");
+    expect(spoken.text).toBe("");
+    expect(spoken.evidenceRefs).toEqual([]);
     expect(spoken.force).toBe("underdetermined");
-    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:proof-boundary");
-    expect(JSON.stringify(spoken.realizationTrace.selected)).not.toContain("unsupported-ada-language");
+    expect(spoken.realizationTrace.selected.path).toBe("generated");
+    expect(spoken.realizationTrace.selected.textHash).toBe(hasher.digestHex(""));
+    expect(JSON.stringify(spoken.surfacePlan.audit)).toContain("force.policy.insufficient_relevance");
+    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("unsupported-ada-language");
   });
 
-  it("answers an explicit import-summary diagnostic query from metadata without program prior debris", async () => {
+  it("keeps explicit import-summary telemetry in trace rather than generating diagnostic prose", async () => {
     const source = sourceVersion();
     const evidence = directEvidence(source);
     const field = emptyField();
@@ -755,15 +748,13 @@ describe("Mouth runtime surface planning", () => {
       }
     });
 
-    expect(spoken.text).toContain("graph priors");
-    expect(spoken.text).toContain("language priors");
-    expect(spoken.text).toContain("program priors");
-    expect(spoken.text).toContain("direct evidence");
-    for (const leak of ["Import Diagnosticcategory", "/typesjs", "spawn", "require", "child_process", "package.json"]) {
-      expect(spoken.text).not.toContain(leak);
-    }
+    expect(spoken.text).toBe("");
+    expect(spoken.evidenceRefs).toEqual([]);
     expect(detectCannedAnswerSpeech(spoken.text)).toEqual([]);
     expect(spoken.realizationTrace.selected.path).toBe("generated");
+    expect(spoken.realizationTrace.selected.textHash).toBe(hasher.digestHex(""));
+    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("scce2_import_run_wiki_fixture");
+    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("import-summary");
   });
 
   function sourceVersion(): SourceVersion {

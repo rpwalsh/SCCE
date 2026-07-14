@@ -17,6 +17,8 @@ The root `build` script compiles all six packages. PostgreSQL's `pg` client and 
 parsers belong to the adapter package rather than the root. The adapter package resolves
 the vendored SheetJS CE 0.20.3 archive and runs `.xlsx`, `.xlsm`, and `.xls` extraction in
 the bounded spreadsheet child process; formulas are preserved but never evaluated.
+A non-empty `SCCE_DATABASE_URL` overrides `database.url` during configuration loading,
+allowing the PostgreSQL credential to remain outside the checked-in JSON file.
 
 ## One-Lane Runtime Spine
 
@@ -27,6 +29,7 @@ packages/adapters-node/src/config.ts
 -> evidence / typed ingest
 -> graph and field
 -> routing / proof / slot plan
+-> one bounded support recovery and replan when needed
 -> packages/kernel/src/mouth.ts
 -> answer and trace
 ```
@@ -39,21 +42,38 @@ answer lane.
 
 ### Runtime And Graph Math
 
-- `kernel.ts`: `ScceKernel` ingest, train, turn, replay, inspect, benchmark, evaluation
-  condition boundaries, and normal runtime orchestration.
+- `kernel.ts`: `ScceKernel` ingest, train, turn, replay, inspect, bounded low-support
+  recovery, and normal runtime orchestration.
+- `scce-runtime.ts`: the bounded source-only in-memory runtime. The named
+  `createSourceOnlyScceRuntime` factory and its `createScceRuntime` alias are marked
+  simulation/non-hydrated and do not replace the PostgreSQL-backed runtime.
+- `request-authority.ts`: shared source-neutral requirement-field projection to factual,
+  reasoned, creative, translation, program, or action authority, with shared operator
+  support. Scores are uncalibrated routing energies; explicit authority is a traced
+  override.
 - `alpha.ts`: configured or empirical Type-7 alpha thresholds with normalization
   diagnostics. Empirical values are current-slice relative, not calibrated confidence.
 - `field.ts`: graph-field activation and optional relation-potential consumption.
 - `ppf.ts`: directed personalized PageRank/Perron-Frobenius ranking with explicit
   relation policy and convergence traces.
-- `powerwalk.ts`: deterministic second-order PowerWalk and production query-conditioned
-  PPMI seed expansion.
+- `powerwalk.ts`: deterministic second-order PowerWalk, graph-statistics parameter
+  initialization, source-record-disjoint transition-parameter fitting with held-out NLL
+  acceptance, and production query-conditioned PPMI seed expansion. Initialized,
+  fitted-candidate, and active parameters remain distinct in the fit result.
 - `powerwalk-ppmi.ts`: sparse PPMI representation and partition-bound incremental state.
+- `spectral-forecast.ts`: common-window conditional-Gaussian VAR AIC, adaptive-jitter
+  Cholesky log determinant, full companion-matrix spectral diagnostics, and unscaled
+  horizon-specific Wold covariance. Insufficient data yields a reason-labeled
+  random-walk-with-drift cold start, and forecast intervals are explicitly
+  uncalibrated.
 - `relation-potential.ts`: source-neutral edge projection, three-way-disjoint fitting,
   Platt calibration, holdout metrics, and strict content-addressed model validation.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
-PowerWalk thresholds/scale and broad runtime scoring remain provisional. Relation
+The PowerWalk fitter publishes its candidate only when fit and untouched,
+source-record-disjoint holdout mean NLL improve on supplied observations; that does not
+establish representative calibration. PowerWalk thresholds/scale and broad runtime
+scoring remain provisional. Relation
 potential is identity-unconfigured unless a valid frozen model is supplied; the repo
 does not yet ship a representative production-trained model.
 
@@ -69,8 +89,10 @@ does not yet ship a representative production-trained model.
   `walsh-surface-energy.ts`: constrained surface realization and final admissibility.
 - `evaluation-flags.ts`: the eleven isolated evaluation conditions.
 
-The mouth realizes selected material. It must not manufacture facts, evidence spans,
-citations, trace stages, or certainty.
+The Mouth realizes selected semantic slots and relations through learned language
+memory. It must not select facts, manufacture evidence/citations/certainty, or expose
+proof, receipt, semantic-role, or trace identifiers as answer prose. An empty internal
+surface returns control for bounded recovery/replanning and is not a final response.
 
 ### Language, Learning, And Code
 
@@ -113,19 +135,21 @@ review evidence.
 - `packages/server/src/routes.ts`: API routes, including strict non-mutating coding
   planning, exact-byte proposal planning, and separately authorized
   `POST /api/workspace/patch`. Coding planning supports source-proven unused type-only
-  import removal and one official TypeScript LanguageService fix for an existing
-  requested file. It uses exact durable snapshot bytes plus the TypeScript standard
-  library and requires an exact snapshot project config resolved from the
+  import removal and one explicitly selected official TypeScript LanguageService action
+  rooted at an existing requested file. It uses exact durable snapshot bytes plus the
+  TypeScript standard library and requires an exact snapshot project config resolved from the
   source-observed direct `tsc` invocation. An explicit exact `TS####`, `fixName:<id>`,
   or canonical `codeFixIdentity:<id>` selector must resolve to one candidate; no
   candidate is selected implicitly. The route returns an unauthorized, unexecuted
-  plan with compiler/typecheck/test validation.
-  Arbitrary feature synthesis and multi-file compiler fixes are outside this boundary.
+  plan with compiler/typecheck/test validation. The selected action may close over up
+  to 32 affected files and 128 exact text changes and may create bounded
+  TypeScript/JavaScript sources under existing snapshot directories. Command-bearing
+  actions, out-of-workspace targets, stale replacement bases, invalid creations, and
+  overlapping changes are rejected. Arbitrary feature synthesis is outside this
+  boundary.
 - `packages/vscode/src/extension.ts`: readiness, ingest, question, project, status,
   task timeline, explicit approvals, reviewed patch application, and receipt checks.
 - `tools/scce-dev-mcp`: bounded repository, test, and trace inspection helpers.
-- `tools/sealed-eval`: sealed evaluation harness, trace/citation verification, and the
-  normal-runtime production JSONL adapter.
 - `tools/no-hidden-model-check.mjs`: static dependency/import/endpoint integrity scan.
 - `tools/live-postgres-rehearsal.mjs`, `tools/live-adapter-rehearsal.mjs`: synthetic
   disposable-schema integration rehearsals.
@@ -148,23 +172,22 @@ pnpm repo:search
 pnpm repo:deps
 pnpm rehearsal:postgres
 pnpm rehearsal:adapter
-pnpm calibration:evaluate --input <observations.json|jsonl> --dataset-id <immutable-id>
-pnpm load:gate --prompts <prompts.json|jsonl> --workload-id <immutable-id>
+pnpm runtime:authority-matrix
+pnpm cognition:gate
 pnpm vscode:package
 pnpm vscode:test:host
 pnpm mcp:build
 pnpm mcp:start
 ```
 
-Run only scripts that remain present in `package.json`. `pnpm validate` is the complete
-local gate; it does not execute the protected public-review procedure.
+Run only scripts that remain present in `package.json`. Each local command establishes
+only the contracts it executes.
 
 ## Current Boundaries
 
-- Public review status is `NOT_EXECUTED`.
 - Calibration infrastructure is broader than deployed representative calibration.
-- The PostgreSQL rehearsals remain unexecuted in the current release record because
-  no database password was configured.
+- PostgreSQL rehearsal results depend on a valid configured URL; use
+  `SCCE_DATABASE_URL` to provide the complete URL, including credentials, without committing it.
 - Local smoke tests and synthetic rehearsals do not prove broad corpus behavior, production security,
   clean-machine reproducibility, or independent results.
 - Trusted-host staging is not OS isolation; optional Docker isolation retains its

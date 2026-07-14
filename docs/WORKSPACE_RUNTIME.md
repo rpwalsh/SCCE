@@ -74,19 +74,23 @@ The request surface is bounded:
 
 Two TypeScript repair paths are tested: removing one source-proven unused binding from
 a type-only import, and applying one official TypeScript LanguageService code fix to
-one existing requested file. Every compiler-action request must include a literal
-`TS####`, `fixName:<id>`, or canonical
+one existing requested diagnostic file. Every compiler-action request must include a
+literal `TS####`, `fixName:<id>`, or canonical
 `codeFixIdentity:<typescript.code_fix:...>` selector that resolves to one candidate;
 the planner never selects a candidate implicitly. LanguageService input is limited to
 exact durable snapshot files plus the TypeScript standard library. Its source-observed
 direct `tsc` invocation must resolve either an explicit `-p`/`--project` target or an
 exact upward `tsconfig.json` from the command working directory. The config must be in
 the snapshot and include the requested file. Source-observed build and test commands
-are required.
+are required. The complete selected CodeFixAction is preserved as one transaction and
+may contain up to 32 affected files and 128 exact text changes. It may replace exact
+snapshot files and create bounded TypeScript or JavaScript source files whose parent
+directories already exist in the snapshot.
 Plans remain unauthorized and unexecuted and require compiler, typecheck, and tests
 unless the narrow unused-import contract explicitly requires typecheck only. The
-command does not synthesize arbitrary features, create target files, or apply
-multi-file compiler fixes.
+command does not synthesize arbitrary features. Command-bearing actions, implicit or
+ambiguous selection, paths outside the workspace, replacements without exact snapshot
+bases, and creation outside existing workspace directories are rejected.
 
 ## Reports
 
@@ -156,14 +160,18 @@ authorization required by the application endpoint.
 
 `POST /api/workspace/patch/plan/request` accepts a strict coding-request schema and is
 non-mutating. It supports source-proven unused type-only import removal and official
-TypeScript LanguageService fixes for one existing requested target. Fix derivation is
+TypeScript LanguageService fixes rooted at one existing requested target. Fix derivation is
 bound to exact durable snapshot bytes; compiler context includes only those snapshot
 files and the TypeScript standard library. The source-observed direct `tsc` invocation
 must resolve an exact snapshot project config whose parsed file set includes the
 requested target. An explicit exact `TS####`, `fixName:<id>`, or canonical
 `codeFixIdentity:<typescript.code_fix:...>` selector must resolve to one action; there
-is no implicit selection. Command-bearing, new-file, unrequested-path, overlapping,
-and multi-file actions are rejected.
+is no implicit selection. The complete selected action may close over as many as 32
+files and 128 non-overlapping exact text changes. Existing targets must match the
+snapshot; new targets are restricted to TypeScript/JavaScript source files in existing
+snapshot directories. Command-bearing actions, out-of-workspace paths, stale or
+missing replacement bases, invalid new-file targets, and overlapping changes are
+rejected.
 
 The route requires source-observed build and test commands and emits an unauthorized,
 unexecuted plan whose validation contract requires compiler, typecheck, and tests.
@@ -211,7 +219,8 @@ Markdown reports, line-oriented repair patches, and `safeToApplyInTemp` markers 
 content-addressed filesystem transactions. The exported ProgramGraph converter remains
 a structural primitive for trusted internal inputs. The HTTP coding-request route has
 tested exact-byte planning for unused type-only import removal and official
-single-file TypeScript LanguageService fixes; it is not an arbitrary feature or
-multi-file synthesis path. Neither boundary proves semantic correctness.
+TypeScript LanguageService actions with bounded compiler-owned multi-file closure; it
+is not an arbitrary feature-synthesis path. Neither boundary proves semantic
+correctness.
 
 Large files are bounded by configured byte limits. The runtime is designed for normal local repositories and document folders on consumer hardware; internet-scale streams still belong to the dedicated SCCE2/wiki ingestion paths.

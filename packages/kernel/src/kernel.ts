@@ -8,6 +8,7 @@ import type {
   EpistemicForce,
   EpisodeId,
   EvidenceSpan,
+  FieldState,
   GraphEdge,
   GraphNode,
   GraphSlice,
@@ -53,7 +54,7 @@ import { createAlphaFieldEngine } from "./field.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { createCcrEngine } from "./ccr.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
-import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
+import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
 import { createJudge, type JudgeDecision } from "./judge.js";
 import { createActionGraphBuilder } from "./action-graph.js";
 import { createLearningLoop, type LearningLoopPlan, type LearningSourcePlan } from "./learning-loop.js";
@@ -133,6 +134,14 @@ import {
   type ExplicitTurnRequirement,
   type TurnRequirementField
 } from "./turn-requirements.js";
+import {
+  activeRequestOperatorIds,
+  admitCandidatesForAuthority,
+  explicitAuthorityRequirements,
+  projectRequestAuthority,
+  requestOperatorDialogueSupport,
+  requestOperatorGraphSupport
+} from "./request-authority.js";
 import { planCognitiveProposals, type CognitiveActionPlan, type CognitiveProposal } from "./cognitive-planner.js";
 import {
   createAnswerRevisionCoordinator,
@@ -225,6 +234,30 @@ interface HotGraphNeighborhood {
   evidenceHyperedgeIds: Map<string, Set<string>>;
   sourceAnchorEvidenceIds: Map<string, Set<string>>;
 }
+
+type RuntimeReplanTrigger = "authority_family_unavailable" | "coherence_support_failure";
+
+interface RuntimeReplanMotion {
+  schema: "scce.runtime_motion.learn_hydrate_replan.v1";
+  motionId: "motion.learn_hydrate_replan";
+  guardId: string;
+  attempt: 1;
+  trigger: RuntimeReplanTrigger;
+  requestedAuthority: RequestedAuthority;
+  parentEpisodeId: string;
+  queryHash: string;
+  connectorConfigured: boolean;
+  status: "hydrated" | "empty" | "unavailable" | "failed";
+  searchResultCount: number;
+  fetchedSourceCount: number;
+  ingestedSourceCount: number;
+  ingestedEvidenceCount: number;
+  sourceUris: string[];
+  sourceSurfaces: string[];
+  failures: string[];
+}
+
+const RUNTIME_TERMINAL_INVENTION_POLICY_ID = "policy.runtime_motion.prior_invention_after_exhausted_acquisition.v1";
 
 export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   if (deps.evaluationCondition) assertValidEvaluationCondition(deps.evaluationCondition);
@@ -1418,6 +1451,137 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return uniqueKernelStrings([...phrases, ...focuses]).slice(0, 16);
   }
 
+  async function learnHydrateReplan(input: {
+    ownerInput: OwnerInput;
+    episodeId: EpisodeId;
+    requestedAuthority: RequestedAuthority;
+    trigger: RuntimeReplanTrigger;
+    events: ScceEvent[];
+  }): Promise<RuntimeReplanMotion> {
+    const queryHash = hasher.digestHex(input.ownerInput.text);
+    const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}`).slice(0, 32)}`;
+    const motionFailures: string[] = [];
+    let searchResultCount = 0;
+    let fetchedSourceCount = 0;
+    let ingestedSourceCount = 0;
+    let ingestedEvidenceCount = 0;
+    const sourceUris: string[] = [];
+    const sourceSurfaces: string[] = [];
+    input.events.push(await append(eventFactory.create({
+      episodeId: input.episodeId,
+      typeId: "RuntimeMotionPlanned",
+      payload: toJsonValue({
+        schema: "scce.runtime_motion.learn_hydrate_replan.v1",
+        motionId: "motion.learn_hydrate_replan",
+        guardId,
+        attempt: 1,
+        trigger: input.trigger,
+        requestedAuthority: input.requestedAuthority,
+        queryHash,
+        connectorConfigured: Boolean(deps.connectors),
+        readOnlyOperations: ["search", "fetch"]
+      })
+    })));
+
+    if (deps.connectors) {
+      let searchRows: Awaited<ReturnType<typeof deps.connectors.search>> = [];
+      try {
+        searchRows = await deps.connectors.search(input.ownerInput.text, 3);
+        searchResultCount = searchRows.length;
+        sourceSurfaces.push(...searchRows.flatMap(row => [row.title, row.snippet])
+          .map(surface => sourceTextSurface(surface, 320))
+          .filter(Boolean));
+      } catch (error) {
+        motionFailures.push(runtimeMotionFailure("search", error));
+      }
+      const seenUris = new Set<string>();
+      for (const searchRow of searchRows.slice(0, 3)) {
+        const searchUri = searchRow.uri.trim();
+        if (!searchUri || seenUris.has(searchUri)) continue;
+        seenUris.add(searchUri);
+        try {
+          const fetched = await deps.connectors.fetch(searchUri);
+          if (fetched.bytes.byteLength === 0) {
+            motionFailures.push(`fetch returned zero bytes: ${redactSecrets(searchUri)}`);
+            continue;
+          }
+          fetchedSourceCount++;
+          const canonicalUri = fetched.uri.trim() || searchUri;
+          const ingest = await kernel.ingest({
+            uri: canonicalUri,
+            namespace: "runtime-acquisition",
+            content: fetched.bytes,
+            mediaType: fetched.mediaType || "application/octet-stream",
+            metadata: toJsonValue({
+              schema: "scce.runtime_acquired_source.v1",
+              canonicalUri,
+              sourceUri: canonicalUri,
+              uri: canonicalUri,
+              title: searchRow.title,
+              snippet: searchRow.snippet,
+              acquisition: {
+                motionId: "motion.learn_hydrate_replan",
+                guardId,
+                trigger: input.trigger,
+                requestedAuthority: input.requestedAuthority,
+                parentEpisodeId: String(input.episodeId),
+                search: {
+                  uri: searchUri,
+                  title: searchRow.title,
+                  snippet: searchRow.snippet,
+                  metadata: searchRow.metadata
+                },
+                fetch: {
+                  uri: canonicalUri,
+                  mediaType: fetched.mediaType,
+                  metadata: fetched.metadata
+                }
+              }
+            })
+          });
+          ingestedSourceCount += ingest.sources;
+          if (ingest.events.some(event => event.typeId === "SourcePromoted")) ingestedEvidenceCount += ingest.evidence;
+          if (ingest.sources > 0) sourceUris.push(canonicalUri);
+        } catch (error) {
+          motionFailures.push(runtimeMotionFailure(`fetch_ingest:${searchUri}`, error));
+        }
+      }
+    }
+
+    const status: RuntimeReplanMotion["status"] = !deps.connectors
+      ? "unavailable"
+      : ingestedEvidenceCount > 0
+        ? "hydrated"
+        : motionFailures.length > 0 && searchResultCount === 0
+          ? "failed"
+          : "empty";
+    const motion: RuntimeReplanMotion = {
+      schema: "scce.runtime_motion.learn_hydrate_replan.v1",
+      motionId: "motion.learn_hydrate_replan",
+      guardId,
+      attempt: 1,
+      trigger: input.trigger,
+      requestedAuthority: input.requestedAuthority,
+      parentEpisodeId: String(input.episodeId),
+      queryHash,
+      connectorConfigured: Boolean(deps.connectors),
+      status,
+      searchResultCount,
+      fetchedSourceCount,
+      ingestedSourceCount,
+      ingestedEvidenceCount,
+      sourceUris: uniqueKernelStrings(sourceUris).slice(0, 3),
+      sourceSurfaces: uniqueKernelStrings(sourceSurfaces).slice(0, 6),
+      failures: motionFailures.slice(0, 6)
+    };
+    input.events.push(await append(eventFactory.create({
+      episodeId: input.episodeId,
+      typeId: "RuntimeMotionCompleted",
+      payload: toJsonValue(motion)
+    })));
+    return motion;
+  }
+
   const kernel: ScceKernel = {
     async warmup(input: RuntimeWarmupInput = {}): Promise<RuntimeWarmupResult> {
       const started = clock.now();
@@ -1803,6 +1967,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         conversationId: previousDialogueState?.conversationId
       });
       const runtimeDiagnosticRequested = explicitRuntimeDiagnosticRequest(input.metadata);
+      const inheritedRuntimeMotion = runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
       const requirementField = deriveTurnRequirementField({
         requestText: input.text,
@@ -1813,18 +1978,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       });
       let operatorActivations = activateCognitiveOperators({
         requirementField,
-        dialogueSupport: operatorDialogueSupport(requirementField),
+        dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: operatorOutcomeSupport(input.metadata)
       });
-      const requestedAuthority = requestedAuthorityFromRequirementField(requirementField, explicitAuthority);
+      const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
+      const requestedAuthority = authorityProjection.requestedAuthority;
       const requestedAuthorityDecision = toJsonValue({
-        schema: "scce.requested_authority.requirement_projection.v1",
-        requestedAuthority,
-        explicitOverride: Boolean(explicitAuthority),
-        source: "turn_requirement_field",
-        lexicalRouterUsed: false,
-        requirementConfidence: requirementField.confidence,
-        activeOperatorIds: operatorActivations.filter(row => row.active).map(row => row.operatorId)
+        ...jsonRecord(authorityProjection.trace),
+        activeOperatorIds: activeRequestOperatorIds(operatorActivations)
       });
       const calibrationTaskClass = calibrationTaskClassForRequirements(requirementField, requestedAuthority);
       const ownerAsked = await append(eventFactory.create({ episodeId, typeId: "OwnerAsked", payload: { textHash: hasher.digestHex(input.text), metadata: input.metadata ?? null, requestedAuthority, requestedAuthorityDecision } }));
@@ -1994,8 +2155,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       lastField = field;
       operatorActivations = activateCognitiveOperators({
         requirementField,
-        graphSupport: operatorGraphSupport(graph, admissibleEvidence, field),
-        dialogueSupport: operatorDialogueSupport(requirementField),
+        graphSupport: requestOperatorGraphSupport({ graph, evidence: admissibleEvidence, field }),
+        dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: operatorOutcomeSupport(input.metadata)
       });
       events.push(await append(eventFactory.create({
@@ -2027,7 +2188,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         support: discourseObjectTrace ? { discourseObject: discourseObjectTrace, queryConcatenationUsed: false } : { queryConcatenationUsed: false }
       });
       markTiming("graphSliceMs");
-      const preProofSelectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence, metadataEvidenceIds));
+      const preProofSourceEvidence = evidenceForRequest(input.text, admissibleEvidence, metadataEvidenceIds);
+      const preProofSelectedEvidence = runtimeEvidenceWindowsForRequest(input.text, preProofSourceEvidence);
       const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds).slice(0, turnProofEvidenceLimit));
       const supportBundle = evaluationComponent(
         "support-engine",
@@ -2097,11 +2259,19 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         ? mergeEvidenceSpans([...proofSelectedEvidence, ...metadataSelectedEvidence])
         : promoted;
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds));
+      const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence]);
+      const selectedTemporalFallback = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
+      const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalFallback)
+        ? await deps.storage.evidence.getEvidenceBatch(selectedEvidence.map(span => span.id))
+        : [];
+      const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, selectedEvidence.map(span => span.id))
+        ?? selectedTemporalFallback;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       markTiming("proofMs");
       const selectedPoolLocalEvidenceAnswer = localEvidenceAnswerSurface({
         requestText: input.text,
         selectedEvidence,
+        temporalEvidence: selectedTemporalEvidence,
         entailment: entailmentResult,
         semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
         translationTarget,
@@ -2110,6 +2280,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const preProofPoolLocalEvidenceAnswer = preProofSelectedEvidence.length ? localEvidenceAnswerSurface({
         requestText: input.text,
         selectedEvidence: preProofSelectedEvidence,
+        temporalEvidence: preProofSourceEvidence,
         entailment: entailmentResult,
         semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
         translationTarget,
@@ -2201,7 +2372,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           executionState: "not_executed"
         })
       }));
-      const inventionCandidates = planInventions({
+      const plannedInventionCandidates = planInventions({
         requestText: input.text,
         requestedAuthority,
         field,
@@ -2215,6 +2386,43 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         operatorActivations,
         samplingDisabled: deps.deterministicReplay === true
       });
+      const runtimeTerminalPriorContext = inheritedRuntimeMotion
+        && inheritedRuntimeMotion.status !== "hydrated"
+        && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
+        ? runtimeTerminalInventionPriorContext({ graph, field, languageMemoryState: surfaceLanguageMemory, requirementField })
+        : undefined;
+      const runtimeTerminalInventions = runtimeTerminalPriorContext
+        ? planInventions({
+          requestText: input.text,
+          requestedAuthority,
+          field,
+          graph: runtimeTerminalPriorContext.graph,
+          languageMemory: languageMemoryRuntime,
+          languageMemoryState: runtimeTerminalPriorContext.languageMemoryState,
+          dialogueState: authorityDialogueState,
+          evidence: [],
+          construct: candidateConstructSeed,
+          requirementField: {
+            ...requirementField,
+            noveltyDemand: Math.max(0.5, requirementField.noveltyDemand),
+            activatedConstructIds: uniqueKernelStrings([
+              ...requirementField.activatedConstructIds,
+              RUNTIME_TERMINAL_INVENTION_POLICY_ID
+            ])
+          },
+          operatorActivations,
+          samplingDisabled: true,
+          maxCandidates: 4
+        }).filter(invention => runtimeTerminalInventionIsAdmissible({
+          invention,
+          requestText: input.text,
+          eligiblePriorIds: runtimeTerminalPriorContext.eligiblePriorIds
+        }))
+        : [];
+      const inventionCandidates = uniqueInventionConstructs([
+        ...runtimeTerminalInventions,
+        ...plannedInventionCandidates
+      ]);
       if (inventionCandidates.length) {
         events.push(await append(eventFactory.create({
           episodeId,
@@ -2297,7 +2505,48 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         calibrationModels,
         calibrationTaskClass
       });
-      for (const candidate of candidateField.candidates) {
+      let authorityCandidateField = admitCandidatesForAuthority(candidateField, requestedAuthority);
+      let runtimeSurfaceMotion: RuntimeReplanMotion | undefined;
+      const candidateMotionTrigger = requestedAuthority === "creative" || runtimeDiagnosticRequested
+        ? undefined
+        : runtimeCandidateReplanTrigger(authorityCandidateField, requestedAuthority, selectedEvidence);
+      const inheritedMotionNeedsSurface = Boolean(inheritedRuntimeMotion && inheritedRuntimeMotion.status !== "hydrated");
+      if (candidateMotionTrigger || inheritedMotionNeedsSurface) {
+        const trigger = candidateMotionTrigger ?? inheritedRuntimeMotion?.trigger ?? "coherence_support_failure";
+        if (!inheritedRuntimeMotion) {
+          const motion = await learnHydrateReplan({
+            ownerInput: input,
+            episodeId,
+            requestedAuthority,
+            trigger,
+            events
+          });
+          lastField = undefined;
+          return kernel.turn({
+            ...input,
+            metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+          });
+        }
+        runtimeSurfaceMotion = inheritedRuntimeMotion;
+        const terminalInvention = runtimeTerminalInventions[0];
+        const terminalInventionCandidate = terminalInvention
+          ? candidateField.candidates.find(candidate => candidate.constructIds?.includes(terminalInvention.id)
+            || kernelString(jsonRecord(candidate.audit).constructId) === terminalInvention.id)
+          : undefined;
+        authorityCandidateField = runtimeMotionCandidateField({
+          base: authorityCandidateField,
+          requestText: input.text,
+          authority: requestedAuthority,
+          motion: inheritedRuntimeMotion,
+          inventionCandidate: terminalInventionCandidate,
+          unresolvedSlots: authorityDialogueState.unresolvedSlots,
+          learnedLanguageFrameIds: surfaceLanguageMemory.importedSemanticFrames.map(frame => frame.id),
+          hasher
+        });
+      }
+      const generatedCandidates = new Map<string, CandidateSurface>();
+      for (const candidate of [...candidateField.candidates, ...authorityCandidateField.candidates]) generatedCandidates.set(candidate.id, candidate);
+      for (const candidate of generatedCandidates.values()) {
         const candidateProposal = cognitiveProposalForCandidate(candidate, cognitiveProposals);
         const candidateAssistantForce = assistantForceDecision({
           requestedAuthority,
@@ -2315,9 +2564,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       kernelTrace({
         stage: "candidate.score",
         label: "kernel.turn",
-        counts: { candidates: candidateField.candidates.length },
+        counts: {
+          candidates: generatedCandidates.size,
+          admittedCandidates: authorityCandidateField.candidates.length
+        },
         support: {
-          candidates: candidateField.candidates.slice(0, 6).map(candidate => ({
+          candidates: [...generatedCandidates.values()].slice(0, 6).map(candidate => ({
             id: candidate.id,
             kind: candidate.kind,
             force: candidate.force,
@@ -2335,11 +2587,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             scores: candidate.scores,
             evidenceIds: candidate.evidenceIds.length
           })),
-          surfaceMass: candidateField.surfaceMass.slice(0, 6)
+          surfaceMass: authorityCandidateField.surfaceMass.slice(0, 6),
+          authorityAdmission: authorityCandidateField.audit
         }
       });
       const judged = judge.select({
-        field: candidateField,
+        field: authorityCandidateField,
         policy,
         requestedAuthority,
         requirementField,
@@ -2480,13 +2733,20 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         (current, invention) => attachInventionConstruct({ construct: current, invention }),
         proposalConstructGraph
       );
-      const spokenConstructGraph = attachRuntimeDiagnosticConstruct({
+      const runtimeDiagnosticConstructGraph = attachRuntimeDiagnosticConstruct({
         construct: inventionConstructGraph,
         enabled: runtimeDiagnosticRequested,
         requestText: input.text,
         brainMarker: brain,
         hasher,
         locale
+      });
+      const spokenConstructGraph = attachRuntimeMotionConstruct({
+        construct: runtimeDiagnosticConstructGraph,
+        requestText: input.text,
+        motion: runtimeSurfaceMotion,
+        answerSurface: runtimeSurfaceMotion ? authorityCandidateField.candidates[0]?.answer : undefined,
+        hasher
       });
       await deps.storage.constructs.putConstruct(construct);
       await deps.storage.constructs.putConstruct(spokenConstructGraph);
@@ -2528,6 +2788,32 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         () => mouth.speak(speakInput),
         () => deterministicMouth.speak(speakInput)
       );
+      const emptyAuthoritySurface = !spoken.text.trim()
+        && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
+        && !runtimeDiagnosticRequested;
+      if (emptyAuthoritySurface && !inheritedRuntimeMotion) {
+        const motion = await learnHydrateReplan({
+          ownerInput: input,
+          episodeId,
+          requestedAuthority,
+          trigger: "coherence_support_failure",
+          events
+        });
+        lastField = undefined;
+        return kernel.turn({
+          ...input,
+          metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+        });
+      }
+      if (emptyAuthoritySurface && inheritedRuntimeMotion) {
+        // Learned Mouth remains the primary realization lane. The
+        // deterministic Mouth is the bounded terminal realization of the
+        // already-selected semantic motion/candidate, never a new fact lane.
+        spoken = await deterministicMouth.speak(speakInput);
+      }
+      if (!spoken.text.trim() && candidateIsSafeNonExecutingPlan(judged.selected)) {
+        spoken = await deterministicMouth.speak(speakInput);
+      }
       answer = spoken.text;
       if (!answer.trim()) answer = "";
       const mouthAssistantForce = assistantForceDecision({
@@ -2540,9 +2826,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         directEvidenceIds: selectedEvidence.map(span => span.id),
         constructForces: spoken.surfacePlan.constructForces.map(force => force.id),
         support: answerEntailment.support,
-        contradiction: requestedAuthority === "creative"
+        contradiction: candidateUsesNonFactualPlanSemantics(judged.selected)
           ? judged.selected.scores.contradiction
-          : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
+          : requestedAuthority === "creative"
+            ? judged.selected.scores.contradiction
+            : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
       });
       kernelTrace({
@@ -2668,9 +2956,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         directEvidenceIds: selectedEvidence.map(span => span.id),
         constructForces: spoken.surfacePlan.constructForces.map(force => force.id),
         support: answerEntailment.support,
-        contradiction: requestedAuthority === "creative"
+        contradiction: candidateUsesNonFactualPlanSemantics(judged.selected)
           ? judged.selected.scores.contradiction
-          : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
+          : requestedAuthority === "creative"
+            ? judged.selected.scores.contradiction
+            : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
       });
       const runtimeReadinessForEmission = runtimeOrchestrator.readiness({ dag: runtimeDag, safety: safetyWithPlans, retrieval, field, alphaRecord, entailment: answerEntailment, construct: spokenConstructGraph, assembly, toolPlan, capabilityPlans, counterfactual: counterfactualWorld, validation, emission: rawEmission });
@@ -2682,26 +2972,35 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         assistantForce: longPathBasisAnswer
           ? assistantForceFromLocalEvidenceAudit(longPathBasisAnswer.audit, emissionAssistantForce.force)
           : emissionAssistantForce.force,
-        counterfactual: counterfactualWorld,
+        counterfactual: judged.selected.kind === "counterfactual-response" ? counterfactualWorld : undefined,
         readiness: runtimeReadinessForEmission,
         discourseObject: discourseObjectTrace,
         mouthAudit: toJsonValue({ surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, uncertainty: spoken.uncertainty }),
         selectedCandidateAudit: judged.selected.audit
       });
       const runtimeCoherenceTrace = toJsonValue(runtimeCoherence);
-      if (!runtimeCoherence.emitAllowed) {
-        answer = "I do not have enough source-backed evidence to answer that.";
-        const blockedPcaReport = pca.certify({ answer, evidence: selectedEvidence, force: "unknown" });
-        pcaReport = {
-          ...blockedPcaReport,
-          releaseAnswer: answer,
-          audit: toJsonValue({
-            ...jsonRecord(blockedPcaReport.audit),
-            runtimeCoherenceBlocked: runtimeCoherenceTrace
-          })
-        };
-        validation = validationBuilder.build({ construct: spokenConstructGraph, entailment: answerEntailment, buildTest, pca: pcaReport as unknown as JsonValue });
-        rawEmission = emissionEngine.emit({ construct: spokenConstructGraph, validation, entailment: answerEntailment, answer, pca: pcaReport as unknown as JsonValue });
+      const coherenceRequiresContinuation = !runtimeCoherence.emitAllowed
+        || runtimeCoherence.demotionRequired
+        || runtimeCoherence.assistantForceAfter === "insufficient_support";
+      if (
+        coherenceRequiresContinuation
+        && requestedAuthority !== "creative"
+        && !candidateIsSafeNonExecutingPlan(judged.selected)
+        && !runtimeDiagnosticRequested
+        && !inheritedRuntimeMotion
+      ) {
+        const motion = await learnHydrateReplan({
+          ownerInput: input,
+          episodeId,
+          requestedAuthority,
+          trigger: "coherence_support_failure",
+          events
+        });
+        lastField = undefined;
+        return kernel.turn({
+          ...input,
+          metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+        });
       }
       await deps.storage.constructs.putValidation(validation);
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
@@ -2724,7 +3023,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const afterTurnMaintenanceDeferred = afterTurnMaintenance.deferred
         || incrementalLearningDisabled
         || deps.evaluationCondition?.flags.disableLanguageMemory === true;
-      const priorStates = afterTurnMaintenanceDeferred ? [] : await deps.storage.forecasts.getSeries({ limit: 8 });
+      const priorStates = afterTurnMaintenanceDeferred ? [] : await deps.storage.forecasts.getSeries({ limit: 64 });
       const forecast = prediction.forecast({ states: priorStates, source: state, horizon: 2, createdAt: clock.now() });
       if (!afterTurnMaintenanceDeferred) {
         await deps.storage.forecasts.putState(state);
@@ -2766,7 +3065,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           emissionGraph: emission,
           forecast,
           learningNeeds: earlyLearningNeeds,
-          candidateField: candidateField.audit,
+          candidateField: authorityCandidateField.audit,
+          selectedCandidate: toJsonValue(judged.selected),
           judge: judged.audit,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
@@ -2774,6 +3074,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           languageAcquisition: toJsonValue({ maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           mouth: toJsonValue({ surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, uncertainty: spoken.uncertainty }),
           runtimeCoherence: runtimeCoherenceTrace,
+          ...(inheritedRuntimeMotion ? { runtimeMotion: toJsonValue(inheritedRuntimeMotion) } : {}),
           discourseObject: discourseObjectTrace,
           corrections: correctionMemory.summarize(correctionRules),
           brain,
@@ -2788,7 +3089,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             scoreTraces: [...candidateField.scoreTrace, ...(judged.selected.scoreTrace ?? [])],
             retrievalRoles,
             preservationChecked: true,
-            unsupportedContentBlocked: emission.assistantForce === "insufficient_support" || !runtimeCoherence.emitAllowed || runtimeCoherence.demotionRequired
+            unsupportedContentBlocked: emission.assistantForce === "insufficient_support" || runtimeCoherence.demotionRequired
           }),
           events
         };
@@ -2877,7 +3178,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         emissionGraph: emission,
         forecast,
         learningNeeds,
-        candidateField: candidateField.audit,
+        candidateField: authorityCandidateField.audit,
+        selectedCandidate: toJsonValue(judged.selected),
         judge: judged.audit,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
@@ -2885,6 +3187,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         functionalConsciousness: functionalConsciousness.audit,
         functionalCognition: toJsonValue({ ...(functionalCognition.audit as Record<string, JsonValue>), runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace }),
         runtimeCoherence: runtimeCoherenceTrace,
+        ...(inheritedRuntimeMotion ? { runtimeMotion: toJsonValue(inheritedRuntimeMotion) } : {}),
         discourseObject: discourseObjectTrace,
         proofCarryingAnswer: pcaReport.audit,
         pface: pfaceEstimate?.audit,
@@ -2904,7 +3207,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           scoreTraces: [...candidateField.scoreTrace, ...(judged.selected.scoreTrace ?? [])],
           retrievalRoles,
           preservationChecked: true,
-          unsupportedContentBlocked: emission.assistantForce === "insufficient_support" || !runtimeCoherence.emitAllowed || runtimeCoherence.demotionRequired
+          unsupportedContentBlocked: emission.assistantForce === "insufficient_support" || runtimeCoherence.demotionRequired
         }),
         events
       };
@@ -3300,9 +3603,14 @@ interface AlphaRhetoricalPlan {
 }
 
 function selectedCandidateEntailment(entailment: TurnResult["entailment"], selected: CandidateSurface): TurnResult["entailment"] {
+  const candidateOwnsPlanSemantics = candidateUsesNonFactualPlanSemantics(selected);
+  const support = candidateOwnsPlanSemantics ? selected.scores.support : entailment.support;
+  const contradiction = candidateOwnsPlanSemantics ? selected.scores.contradiction : entailment.contradiction;
   if (selected.force === entailment.force) {
     return {
       ...entailment,
+      support,
+      contradiction,
       evidenceIds: [...selected.evidenceIds],
       boundaries: [...new Set([...entailment.boundaries, `selected-candidate:${selected.id}`])]
     };
@@ -3310,6 +3618,8 @@ function selectedCandidateEntailment(entailment: TurnResult["entailment"], selec
   return {
     ...entailment,
     force: selected.force,
+    support,
+    contradiction,
     evidenceIds: [...selected.evidenceIds],
     proof: {
       ...entailment.proof,
@@ -3390,31 +3700,14 @@ function explicitTurnRequirementsFromInput(input: OwnerInput, authority?: Reques
       trace: row.trace ?? toJsonValue({ source: "owner_input.metadata.turnRequirements" })
     });
   }
-  if (!authority) return explicit;
-  const authorityValues: Partial<Record<(typeof TURN_REQUIREMENT_DIMENSIONS)[number], number>> =
-    authority === "creative" ? { noveltyDemand: 0.96, inferentialDepth: 0.62, uncertaintyTolerance: 0.74 }
-      : authority === "translation" ? { semanticPreservation: 0.97, surfaceTransformation: 0.96, audienceAdaptation: 0.64 }
-        : authority === "program" ? { executableArtifactDemand: 0.96, inferentialDepth: 0.72, formatConstraintStrength: 0.62 }
-          : authority === "action" ? { actionCommitment: 0.97, executableArtifactDemand: 0.72, externalTruthAuthority: 0.78 }
-            : authority === "reasoned" ? { inferentialDepth: 0.9, externalTruthAuthority: 0.62, uncertaintyTolerance: 0.46 }
-              : { externalTruthAuthority: 0.92, sourceDependence: 0.82, uncertaintyTolerance: 0.34 };
-  for (const [dimension, value] of Object.entries(authorityValues)) {
-    if (!isTurnRequirementDimension(dimension) || value === undefined) continue;
-    explicit.push({
-      id: `requirement.structured_authority.${authority}.${dimension}.v1`,
-      dimension,
-      value,
-      confidence: 1,
-      polarity: "required",
-      status: "explicit",
-      span: { charStart: 0, charEnd: [...input.text].length },
-      semanticRoleId: "role.request.authority.v1",
-      learnedFrameOrPatternId: `pattern.structured_authority.${authority}.v1`,
-      sourceActivationId: "activation.structured_api.authority.v1",
-      trace: toJsonValue({ source: "OwnerInput.requestedAuthority", authority })
-    });
-  }
-  return explicit;
+  return [
+    ...explicit,
+    ...explicitAuthorityRequirements({
+      requestText: input.text,
+      authority,
+      sourceId: "OwnerInput.requestedAuthority"
+    })
+  ];
 }
 
 function requirementContextFromMetadata(metadata: JsonValue | undefined): Partial<Record<(typeof TURN_REQUIREMENT_DIMENSIONS)[number], number>> {
@@ -3428,30 +3721,6 @@ function requirementContextFromMetadata(metadata: JsonValue | undefined): Partia
   return out;
 }
 
-function operatorDialogueSupport(requirements: TurnRequirementField): Partial<Record<CognitiveOperatorId, number>> {
-  return {
-    [COGNITIVE_OPERATOR_IDS.dialogueContinuation]: Math.max(-1, Math.min(1, requirements.dialogueDependence * 0.5)),
-    [COGNITIVE_OPERATOR_IDS.clarification]: Math.max(-1, Math.min(1, (1 - requirements.confidence) * 0.35))
-  };
-}
-
-function operatorGraphSupport(graph: GraphSlice, evidence: readonly EvidenceSpan[], field: TurnResult["field"]): Partial<Record<CognitiveOperatorId, number>> {
-  const sourceCount = new Set(evidence.map(span => String(span.sourceVersionId))).size;
-  const graphMass = Math.max(0, Math.min(1, Math.log2(1 + graph.edges.length) / 8));
-  const evidenceMass = Math.max(0, Math.min(1, Math.log2(1 + evidence.length) / 5));
-  const causalMass = Math.max(0, Math.min(1, mean(field.causalMass.slice(0, 12).map(row => row.mass))));
-  const hasQualifiedTime = graph.edges.some(edge => edge.temporalScope.validTo !== undefined);
-  return {
-    [COGNITIVE_OPERATOR_IDS.evidenceActivation]: evidenceMass,
-    [COGNITIVE_OPERATOR_IDS.graphPropagation]: graphMass,
-    [COGNITIVE_OPERATOR_IDS.sourceSynthesis]: sourceCount >= 2 ? Math.min(1, sourceCount / 4) : 0,
-    [COGNITIVE_OPERATOR_IDS.relationComposition]: graph.edges.length >= 2 ? graphMass : 0,
-    [COGNITIVE_OPERATOR_IDS.semanticProof]: evidenceMass,
-    [COGNITIVE_OPERATOR_IDS.temporalAnalysis]: hasQualifiedTime ? graphMass : 0,
-    [COGNITIVE_OPERATOR_IDS.causalAnalysis]: causalMass
-  };
-}
-
 function operatorOutcomeSupport(metadata: JsonValue | undefined): Partial<Record<CognitiveOperatorId, number>> {
   const root = jsonRecord(metadata);
   const support = jsonRecord(root.operatorOutcomeSupport);
@@ -3461,20 +3730,6 @@ function operatorOutcomeSupport(metadata: JsonValue | undefined): Partial<Record
     if (typeof value === "number" && Number.isFinite(value)) out[operatorId] = Math.max(-1, Math.min(1, value));
   }
   return out;
-}
-
-function requestedAuthorityFromRequirementField(requirements: TurnRequirementField, explicit?: RequestedAuthority): RequestedAuthority {
-  if (explicit) return explicit;
-  const scores: Record<RequestedAuthority, number> = {
-    factual: 0.42 + 0.34 * requirements.externalTruthAuthority + 0.24 * requirements.sourceDependence,
-    reasoned: 0.18 + 0.62 * requirements.inferentialDepth + 0.12 * requirements.causalReasoningDemand + 0.08 * requirements.temporalReasoningDemand,
-    creative: 0.10 + 0.72 * requirements.noveltyDemand + 0.18 * requirements.counterfactualDemand,
-    translation: 0.08 + 0.47 * requirements.semanticPreservation + 0.45 * requirements.surfaceTransformation,
-    program: 0.08 + 0.72 * requirements.executableArtifactDemand + 0.20 * requirements.formatConstraintStrength,
-    action: 0.08 + 0.78 * requirements.actionCommitment + 0.14 * requirements.executableArtifactDemand
-  };
-  return (Object.keys(scores) as RequestedAuthority[])
-    .sort((left, right) => scores[right] - scores[left] || left.localeCompare(right))[0] ?? "factual";
 }
 
 function isTurnRequirementDimension(value: string): value is (typeof TURN_REQUIREMENT_DIMENSIONS)[number] {
@@ -3862,8 +4117,27 @@ function emptyPowerWalkResult(): PowerWalkResult {
       excludedZeroContextNodes: 0,
       zeroContextPolicy: "excluded_from_similarity"
     },
-    calibration: toJsonValue({ source: "evaluation.powerwalk-bypass", reason: "condition-disabled" })
+    parameterization: toJsonValue({ schema: "scce.powerwalk_parameter_bypass.v1", source: "evaluation.powerwalk-bypass", reason: "condition-disabled" })
   };
+}
+
+function candidateUsesNonFactualPlanSemantics(selected: CandidateSurface): boolean {
+  return selected.kind === "program-proposal"
+    || selected.kind === "workspace-proposal"
+    || selected.kind === "action-preview"
+    || selected.kind === "translation"
+    || selected.kind === "transformation"
+    || selected.kind === "creative-candidate";
+}
+
+function candidateIsSafeNonExecutingPlan(selected: CandidateSurface): boolean {
+  if (selected.kind !== "program-proposal" && selected.kind !== "workspace-proposal") return false;
+  const audit = jsonRecord(selected.audit);
+  return audit.authorizationGranted === false
+    && audit.executionState === "not_executed"
+    && selected.boundaries.includes("workspace-plan-not-authorized")
+    && selected.boundaries.includes("workspace-plan-not-executed")
+    && !selected.claimBases?.includes("action_result");
 }
 
 function createAblatedSupportEntailment(input: {
@@ -4185,6 +4459,7 @@ function sessionContextEvidenceEnabled(metadata: JsonValue | undefined): boolean
 function localEvidenceAnswerSurface(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  temporalEvidence?: readonly EvidenceSpan[];
   entailment: TurnResult["entailment"];
   semanticProof: { verdict: string; contradiction: number };
   translationTarget?: string;
@@ -4211,15 +4486,18 @@ function localEvidenceAnswerSurface(input: {
 function localEvidenceAnswerPlan(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  temporalEvidence?: readonly EvidenceSpan[];
   entailment: TurnResult["entailment"];
   semanticProof: { verdict: string; contradiction: number };
   sessionContextEvidence?: boolean;
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
-  const counterexample = temporalCounterexampleAnswerPlan(input.requestText, evidence);
+  const temporalEvidence = (input.temporalEvidence ?? evidence)
+    .filter(span => span.status === "promoted" || promotedSessionEvidence(span));
+  const counterexample = temporalCounterexampleAnswerPlan(input.requestText, temporalEvidence);
   if (counterexample) return counterexample;
-  if (temporalCounterexampleExpected(input.requestText, evidence)) return undefined;
+  if (temporalCounterexampleExpected(input.requestText, temporalEvidence)) return undefined;
   const collection = collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
   if (collection) return collection;
   const anchored = sourceAnchoredEvidenceForRequest(input.requestText, evidence);
@@ -4596,9 +4874,10 @@ function temporalCounterexampleAnswerPlan(requestText: string, evidence: readonl
   const counter = evidence
     .filter(span => String(span.id) !== String(subject.span.id))
     .map(span => {
-      const marker = earliestHistoricalMarker(span);
       const sourceSurface = sourceTextSurface(span.text || span.textPreview, 24000);
-      const markerSentence = marker ? sentenceContaining(sourceSurface, marker.surface) : "";
+      const markerCandidate = bestTemporalMarkerSentence(span, conceptUnits, orderedConceptUnits, lifespan.birthYear);
+      const marker = markerCandidate?.marker;
+      const markerSentence = markerCandidate?.sentence ?? "";
       const overlap = Math.max(
         evidenceRequestUnitOverlap(span, requestUnits),
         requestUnitOverlapForSurface(sourceSurface, requestUnits)
@@ -4609,11 +4888,22 @@ function temporalCounterexampleAnswerPlan(requestText: string, evidence: readonl
       );
       const pairOverlap = evidenceRequestAdjacentUnitPairOverlap(span, orderedRequestUnits);
       const conceptPairOverlap = surfaceRequestAdjacentUnitPairOverlap(`${evidenceTitle(span)} ${sourceSurface}`, orderedConceptUnits);
-      const markerConceptOverlap = requestUnitOverlapForSurface(markerSentence, conceptUnits);
+      const markerConceptOverlap = markerCandidate?.conceptOverlap ?? 0;
       const titlePosition = evidenceTitleRequestPosition(span, orderedRequestUnits);
-      return marker && overlap > 0 ? { span, marker, markerSentence, overlap, conceptOverlap, markerConceptOverlap, pairOverlap, conceptPairOverlap, titlePosition } : undefined;
+      return marker && markerSentence && overlap > 0 ? {
+        span,
+        marker,
+        markerSentence,
+        markerQuality: markerCandidate?.quality ?? 0,
+        overlap,
+        conceptOverlap,
+        markerConceptOverlap,
+        pairOverlap,
+        conceptPairOverlap,
+        titlePosition
+      } : undefined;
     })
-    .filter((row): row is { span: EvidenceSpan; marker: HistoricalMarker; markerSentence: string; overlap: number; conceptOverlap: number; markerConceptOverlap: number; pairOverlap: number; conceptPairOverlap: number; titlePosition: number } => Boolean(row))
+    .filter((row): row is { span: EvidenceSpan; marker: HistoricalMarker; markerSentence: string; markerQuality: number; overlap: number; conceptOverlap: number; markerConceptOverlap: number; pairOverlap: number; conceptPairOverlap: number; titlePosition: number } => Boolean(row))
     .filter(row => row.conceptOverlap >= 2 || row.conceptPairOverlap >= 1)
     .filter(row => row.markerConceptOverlap >= 1 || row.conceptPairOverlap >= 2)
     .filter(row => (row.overlap >= 2 || row.titlePosition < Number.POSITIVE_INFINITY || row.conceptOverlap >= 2) && (row.pairOverlap >= 1 || row.conceptPairOverlap >= 1 || row.marker.absoluteYear < lifespan.birthYear) && !containedTitlePair(subject.title, evidenceTitle(row.span)))
@@ -4621,14 +4911,11 @@ function temporalCounterexampleAnswerPlan(requestText: string, evidence: readonl
     .sort((left, right) => {
       const leftPosition = Number.isFinite(left.titlePosition) ? left.titlePosition : 9999;
       const rightPosition = Number.isFinite(right.titlePosition) ? right.titlePosition : 9999;
-      return right.conceptPairOverlap - left.conceptPairOverlap || right.conceptOverlap - left.conceptOverlap || leftPosition - rightPosition || right.overlap - left.overlap || right.pairOverlap - left.pairOverlap || left.marker.absoluteYear - right.marker.absoluteYear;
+      return right.markerQuality - left.markerQuality || right.conceptPairOverlap - left.conceptPairOverlap || right.conceptOverlap - left.conceptOverlap || leftPosition - rightPosition || right.overlap - left.overlap || right.pairOverlap - left.pairOverlap || left.marker.absoluteYear - right.marker.absoluteYear;
     })[0];
   if (!counter) return undefined;
-  const counterSentence = boundedLocalQuoteSurface(cleanSourceAnswerSurface(
-    sentenceContaining(sourceTextSurface(counter.span.text || counter.span.textPreview, 24000), counter.marker.surface)
-    || firstUsefulSentence(counter.span)
-  ), 260);
-  const conceptSentence = boundedLocalQuoteSurface(cleanSourceAnswerSurface(bestRequestSentence(counter.span, conceptUnits) || firstUsefulSentence(counter.span)), 220);
+  const counterSentence = cleanSourceAnswerSurface(counter.markerSentence);
+  const conceptSentence = cleanSourceAnswerSurface(temporalDevelopmentContextSentence(counter.span, conceptUnits, counterSentence));
   const polaritySlots = requestDerivedPolaritySlots(requestText, subject.title);
   if (!polaritySlots) return undefined;
   const answerEvidence = uniqueEvidenceById([counter.span, subject.span]);
@@ -4747,6 +5034,14 @@ interface HistoricalMarker {
   absoluteYear: number;
 }
 
+interface TemporalMarkerSentence {
+  marker: HistoricalMarker;
+  sentence: string;
+  conceptOverlap: number;
+  conceptPairOverlap: number;
+  quality: number;
+}
+
 function lifespanYears(span: EvidenceSpan): { birthYear: number; deathYear: number } | undefined {
   const years = [...sourceTextSurface(span.text || span.textPreview, 900).matchAll(/\b(1[0-9]{3}|20[0-9]{2})\b/gu)]
     .map(match => Number(match[1]))
@@ -4758,18 +5053,79 @@ function lifespanYears(span: EvidenceSpan): { birthYear: number; deathYear: numb
   return { birthYear, deathYear };
 }
 
-function earliestHistoricalMarker(span: EvidenceSpan): HistoricalMarker | undefined {
-  const text = sourceTextSurface(span.text || span.textPreview, 24000);
+function historicalMarkersInText(text: string): HistoricalMarker[] {
   const markers: HistoricalMarker[] = [];
   for (const match of text.matchAll(/\b([1-9][0-9]?)(?:st|nd|rd|th)\s+century\s+(?:BC|BCE)\b/giu)) {
     const century = Number(match[1]);
     if (Number.isSafeInteger(century)) markers.push({ surface: match[0], absoluteYear: -((century - 1) * 100 + 1) });
   }
+  for (const match of text.matchAll(/\b([1-9][0-9]?)(?:st|nd|rd|th)\s+century(?:\s+(?:AD|CE))?\b(?!\s+(?:BC|BCE)\b)/giu)) {
+    const century = Number(match[1]);
+    if (Number.isSafeInteger(century)) markers.push({ surface: match[0], absoluteYear: (century - 1) * 100 + 1 });
+  }
   for (const match of text.matchAll(/\b(1[0-9]{3}|[7-9][0-9]{2}|20[0-9]{2})\b/gu)) {
     const year = Number(match[1]);
     if (Number.isSafeInteger(year) && historicalYearContextAllowed(text, match.index ?? 0, match[0].length)) markers.push({ surface: match[0], absoluteYear: year });
   }
-  return markers.sort((left, right) => left.absoluteYear - right.absoluteYear)[0];
+  const unique = new Map<string, HistoricalMarker>();
+  for (const marker of markers) {
+    const key = `${marker.absoluteYear}\u0001${normalizePriorKey(marker.surface)}`;
+    if (!unique.has(key)) unique.set(key, marker);
+  }
+  return [...unique.values()].sort((left, right) => left.absoluteYear - right.absoluteYear || left.surface.localeCompare(right.surface));
+}
+
+function bestTemporalMarkerSentence(
+  span: EvidenceSpan,
+  conceptUnits: ReadonlySet<string>,
+  orderedConceptUnits: readonly string[],
+  subjectBirthYear: number
+): TemporalMarkerSentence | undefined {
+  const sentences = fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000));
+  const candidates: TemporalMarkerSentence[] = [];
+  for (const sentence of sentences) {
+    const complete = completeTemporalEvidenceSentence(sentence, 560);
+    if (!complete) continue;
+    const units = uniqueKernelStrings(splitPriorUnits(normalizePriorKey(complete)).filter(unit => unit.length >= 4));
+    const conceptOverlap = requestUnitOverlapForSurface(complete, conceptUnits);
+    const conceptPairOverlap = surfaceRequestAdjacentUnitPairOverlap(complete, orderedConceptUnits);
+    if (conceptOverlap <= 0 && conceptPairOverlap <= 0) continue;
+    const conceptCoverage = kernelClamp01(conceptOverlap / Math.max(1, Math.min(3, conceptUnits.size)));
+    const pairCoverage = kernelClamp01(conceptPairOverlap / Math.max(1, Math.min(2, orderedConceptUnits.length - 1)));
+    const lengthFitness = complete.length < 48
+      ? kernelClamp01(complete.length / 48)
+      : complete.length <= 240
+        ? 1
+        : kernelClamp01(1 - (complete.length - 240) / 320);
+    const breadth = kernelClamp01(Math.log1p(units.length) / Math.log(22));
+    for (const marker of historicalMarkersInText(complete)) {
+      if (marker.absoluteYear >= subjectBirthYear) continue;
+      const precedence = kernelClamp01((subjectBirthYear - marker.absoluteYear) / Math.max(1, subjectBirthYear + 2000));
+      const quality = 0.32 * conceptCoverage
+        + 0.18 * pairCoverage
+        + 0.22 * lengthFitness
+        + 0.10 * breadth
+        + 0.08 * precedence
+        + 0.10;
+      candidates.push({ marker, sentence: complete, conceptOverlap, conceptPairOverlap, quality });
+    }
+  }
+  const structurallyAdmissible = candidates.filter(candidate => candidate.quality >= 0.56);
+  return (structurallyAdmissible.length ? structurallyAdmissible : candidates).sort((left, right) =>
+    left.marker.absoluteYear - right.marker.absoluteYear
+    || right.quality - left.quality
+    || right.conceptPairOverlap - left.conceptPairOverlap
+    || right.conceptOverlap - left.conceptOverlap
+    || left.sentence.length - right.sentence.length
+  )[0];
+}
+
+function completeTemporalEvidenceSentence(surface: string, maxChars: number): string {
+  const clean = cleanSourceAnswerSurface(surface);
+  if (!clean || clean.length > maxChars) return "";
+  if (/\[\[|\]\]|\{\{|\}\}/u.test(clean)) return "";
+  if (delimiterBalance(clean, "(", ")") !== 0 || delimiterBalance(clean, "[", "]") !== 0 || delimiterBalance(clean, "{", "}") !== 0) return "";
+  return clean;
 }
 
 function historicalYearContextAllowed(text: string, index: number, length: number): boolean {
@@ -4874,13 +5230,58 @@ function requestUnitSimilarity(left: string, right: string): number {
   return kernelClamp01(1 - distance / maxLength);
 }
 
-function bestRequestSentence(span: EvidenceSpan, requestUnits: ReadonlySet<string>): string {
+function temporalDevelopmentContextSentence(span: EvidenceSpan, requestUnits: ReadonlySet<string>, counterSentence: string): string {
   if (!requestUnits.size) return "";
   const sentences = fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000));
+  const counterKey = normalizePriorKey(counterSentence);
+  const counterIndex = sentences.findIndex(sentence => normalizePriorKey(sentence) === counterKey);
+  const counterFeatures = featureSet(counterSentence, 256);
+  const sentenceKeyCounts = new Map<string, number>();
+  for (const sentence of sentences) {
+    const key = normalizePriorKey(sentence);
+    if (key) sentenceKeyCounts.set(key, (sentenceKeyCounts.get(key) ?? 0) + 1);
+  }
   return sentences
-    .map(sentence => ({ sentence, score: requestUnitOverlapForSurface(sentence, requestUnits) }))
-    .filter(row => row.score > 0 && row.sentence.length >= 24)
-    .sort((left, right) => right.score - left.score || left.sentence.length - right.sentence.length)[0]?.sentence ?? "";
+    .map((sentence, index) => {
+      const complete = completeTemporalEvidenceSentence(sentence, 360);
+      const completeKey = normalizePriorKey(complete);
+      const units = uniqueKernelStrings(splitPriorUnits(normalizePriorKey(complete)).filter(unit => unit.length >= 4));
+      const overlap = requestUnitOverlapForSurface(complete, requestUnits);
+      const conceptCoverage = kernelClamp01(overlap / Math.max(1, Math.min(3, requestUnits.size)));
+      const breadth = kernelClamp01(Math.log1p(units.length) / Math.log(18));
+      const distinctness = kernelClamp01(1 - weightedJaccard(featureSet(complete, 256), counterFeatures));
+      const sourceOrder = sentences.length > 1 ? 1 - index / (sentences.length - 1) : 1;
+      const precedingProximity = counterIndex > index
+        ? kernelClamp01(1 - Math.max(0, counterIndex - index - 1) / Math.max(1, counterIndex))
+        : 0;
+      const temporalNeighborhood = kernelClamp01(sentences
+        .slice(Math.max(0, index - 2), Math.min(sentences.length, index + 3))
+        .filter((_, localIndex) => Math.max(0, index - 2) + localIndex !== index)
+        .reduce((sum, row) => sum + Math.min(1, historicalMarkersInText(row).length), 0) / 2);
+      const lengthFitness = complete.length < 40
+        ? kernelClamp01(complete.length / 40)
+        : complete.length <= 220
+          ? 1
+          : kernelClamp01(1 - (complete.length - 220) / 140);
+      const numericSpecificity = kernelClamp01(units.filter(unit => /\p{Number}/u.test(unit)).length / Math.max(1, units.length) * 3);
+      const namedSpecificity = fastAnswerNamedSurfaceMass(complete);
+      const pointDateSpecificity = historicalMarkersInText(complete).some(marker => /^\p{Number}{3,4}$/u.test(marker.surface.trim())) ? 1 : 0;
+      const repetitionPressure = kernelClamp01(((sentenceKeyCounts.get(completeKey) ?? 1) - 1) / 3);
+      const score = 0.18 * conceptCoverage
+        + 0.16 * breadth
+        + 0.16 * distinctness
+        + 0.20 * precedingProximity
+        + 0.18 * temporalNeighborhood
+        + 0.07 * sourceOrder
+        + 0.05 * lengthFitness
+        - 0.10 * numericSpecificity
+        - 0.10 * namedSpecificity
+        - 0.22 * pointDateSpecificity
+        - 0.18 * repetitionPressure;
+      return { sentence: complete, index, overlap, score };
+    })
+    .filter(row => row.sentence && row.overlap > 0 && row.sentence.length >= 24 && normalizePriorKey(row.sentence) !== counterKey)
+    .sort((left, right) => right.score - left.score || left.index - right.index || right.sentence.length - left.sentence.length)[0]?.sentence ?? "";
 }
 
 function requestUnitOverlapForSurface(surface: string, requestUnits: ReadonlySet<string>): number {
@@ -5730,6 +6131,8 @@ function hashTextForLocalProof(text: string): string {
 }
 
 function bindSelectedEvidenceToEntailment(entailment: TurnResult["entailment"], evidence: readonly EvidenceSpan[], audit: JsonValue): TurnResult["entailment"] {
+  const auditRecord = jsonRecord(audit);
+  const sourceBoundTemporalInference = kernelString(auditRecord.basisClassId) === "basis.9f1b2c7a";
   const evidenceIds = uniqueKernelStrings([
     ...entailment.evidenceIds.map(String),
     ...evidence.map(span => String(span.id))
@@ -5766,14 +6169,22 @@ function bindSelectedEvidenceToEntailment(entailment: TurnResult["entailment"], 
   };
   return {
     ...entailment,
+    force: sourceBoundTemporalInference ? "inferred" : entailment.force,
+    truthState: sourceBoundTemporalInference ? "truth.source_bound_only" : entailment.truthState,
     evidenceIds,
     confidence,
     proof: {
       ...entailment.proof,
+      verdict: sourceBoundTemporalInference ? "inferred" : entailment.proof.verdict,
       evidenceIds,
       confidence: toJsonValue({
         ...jsonRecord(entailment.proof.confidence),
         selectedEvidenceBound: audit,
+        selectedAnswerForce: sourceBoundTemporalInference ? "inferred" : entailment.force,
+        selectedAnswerTruthState: sourceBoundTemporalInference ? "truth.source_bound_only" : entailment.truthState ?? null,
+        originalEntailmentForce: entailment.force,
+        originalEntailmentTruthState: entailment.truthState ?? null,
+        originalContradiction: entailment.contradiction,
         supportingEvidence: evidenceIds.length,
         sourceVersions
       }),
@@ -5786,7 +6197,12 @@ function bindSelectedEvidenceToEntailment(entailment: TurnResult["entailment"], 
         selectedEvidenceBound: audit
       }
     },
-    boundaries: [...new Set([...entailment.boundaries, "selected-evidence-bound", "fast-local-evidence-answer"])]
+    boundaries: [...new Set([
+      ...entailment.boundaries,
+      "selected-evidence-bound",
+      "fast-local-evidence-answer",
+      ...(sourceBoundTemporalInference ? ["temporal-counterexample-source-bound-inference"] : [])
+    ])]
   };
 }
 
@@ -6244,7 +6660,7 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
     if (concept || counter) facts.push(localEvidenceSemanticFact({
       subject: cleanSourceAnswerSurface(evidenceTitle(plan.evidence[0]!) || subject),
       predicate: kernelString(jsonRecord(plan.audit).counterexampleDate) ?? "",
-      object: uniqueKernelStrings([concept, counter]).join(" "),
+      object: uniqueKernelStrings([concept, counter]).map(surface => ensureUnicodeSurfaceSentence(surface)).join(" "),
       relationId: LOCAL_ANSWER_RELATION_IDS.temporalCounterexample,
       evidence: plan.evidence,
       index: facts.length,
@@ -6342,6 +6758,11 @@ function localEvidenceRealizationSurface(plan: LocalEvidenceAnswerPlan, requestT
   if (exactTitle) return clean;
   const mention = anchorMentionSurface(clean, anchors);
   if (!mention) return clean;
+  const requestUnits = new Set(requestContentEvidenceUnits(requestText));
+  if (
+    requestUnitOverlapForSurface(clean, requestUnits)
+    > requestUnitOverlapForSurface(mention, requestUnits)
+  ) return clean;
   const mentionMass = splitPriorUnits(normalizePriorKey(mention)).length;
   const cleanMass = splitPriorUnits(normalizePriorKey(clean)).length;
   return mentionMass >= 2 && cleanMass > mentionMass + 4 ? mention : clean;
@@ -6452,7 +6873,7 @@ function attachRuntimeDiagnosticConstruct(input: {
   const languagePriorCount = kernelNumber(marker.importedLanguagePriorCount);
   const programPriorCount = kernelNumber(marker.importedProgramPriorCount);
   const nodeId = `construct:runtime-diagnostic:${input.hasher.digestHex(input.requestText).slice(0, 20)}`;
-  const answerSurface = runtimeDiagnosticAnswerSurface({ graphPriorCount, languagePriorCount, programPriorCount });
+  const semanticFacts = runtimeDiagnosticSemanticFacts({ graphPriorCount, languagePriorCount, programPriorCount });
   return {
     ...input.construct,
     nodes: [
@@ -6462,9 +6883,9 @@ function attachRuntimeDiagnosticConstruct(input: {
         kind: "construct:runtime_diagnostic",
         label: "construct.runtime_diagnostic",
         metadata: toJsonValue({
-          schema: "scce.runtime_diagnostic_construct.v1",
-          answerSurface,
-          forceId: "output.force.import_bound",
+           schema: "scce.runtime_diagnostic_construct.v1",
+           semanticFacts,
+           forceId: "output.force.import_bound",
           priorCounts: {
             graphPriorCount,
             languagePriorCount,
@@ -6478,6 +6899,74 @@ function attachRuntimeDiagnosticConstruct(input: {
     edges: [
       ...input.construct.edges,
       { source: nodeId, target: input.construct.nodes[0]?.id ?? "request", relation: "explains_runtime_boundary", weight: 0.86 }
+    ]
+  };
+}
+
+function attachRuntimeMotionConstruct(input: {
+  construct: ConstructGraph;
+  requestText: string;
+  motion?: RuntimeReplanMotion;
+  answerSurface?: string;
+  hasher: { digestHex(input: string | Uint8Array): string };
+}): ConstructGraph {
+  if (!input.motion) return input.construct;
+  const answerSurface = input.answerSurface?.trim() || runtimeMotionFocusSurface(input.requestText);
+  const nodeId = `construct:runtime-motion:${input.hasher.digestHex(`${input.motion.guardId}\u001f${answerSurface}`).slice(0, 20)}`;
+  const removedNodeIds = new Set(input.construct.nodes.filter(node => node.kind === "construct:runtime_diagnostic").map(node => node.id));
+  const semanticFacts = [
+    {
+      subjectId: `request:${input.motion.queryHash}`,
+      relationId: "motion.requires_resolution",
+      objectId: `focus:${input.hasher.digestHex(answerSurface).slice(0, 20)}`,
+      sourceLabel: answerSurface
+    },
+    {
+      subjectId: input.motion.motionId,
+      relationId: "motion.acquisition_status",
+      objectId: `state.acquisition.${input.motion.status}.v1`
+    },
+    {
+      subjectId: input.motion.motionId,
+      relationId: "motion.requested_authority",
+      objectId: `authority.${input.motion.requestedAuthority}`
+    }
+  ];
+  return {
+    ...input.construct,
+    nodes: [
+      ...input.construct.nodes.filter(node => !removedNodeIds.has(node.id)),
+      {
+        id: nodeId,
+        // The existing Mouth recognizes this construct boundary; the schema
+        // distinguishes a continuation motion from a runtime diagnostic.
+        kind: "construct:runtime_diagnostic",
+        label: input.motion.motionId,
+        metadata: toJsonValue({
+          schema: "scce.runtime_motion_construct.v1",
+          motionId: input.motion.motionId,
+          answerSurface,
+          semanticFacts,
+          semanticFrame: {
+            frameId: "semantic.runtime.motion.clarification.v1",
+            roleBindings: {
+              focusId: semanticFacts[0]?.objectId ?? null,
+              authorityId: `authority.${input.motion.requestedAuthority}`,
+              acquisitionStateId: `state.acquisition.${input.motion.status}.v1`
+            },
+            stateIds: ["state.dialogue.slot_resolution.pending.v1"]
+          },
+          forceId: "output.force.non_assertive_clarification",
+          runtimeBoundary: "motion.learn_hydrate_replan.exhausted",
+          evidenceIds: [],
+          fakeEvidenceForbidden: true,
+          motion: input.motion
+        })
+      }
+    ],
+    edges: [
+      ...input.construct.edges.filter(edge => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target)),
+      { source: nodeId, target: input.construct.nodes.find(node => !removedNodeIds.has(node.id))?.id ?? "request", relation: "realizes_runtime_motion", weight: 1 }
     ]
   };
 }
@@ -6508,12 +6997,343 @@ function previousDialogueStateFromMetadata(metadata: JsonValue | undefined): Dia
   return state as unknown as DialogueState;
 }
 
-function runtimeDiagnosticAnswerSurface(input: { graphPriorCount: number; languagePriorCount: number; programPriorCount: number }): string {
-  void input;
-  const parts = ["SCCE/Yopp is a local runtime"];
-  parts.push("I answer by routing the turn through the kernel, graph memory, and mouth surface");
-  parts.push("I can use source evidence when it is available and reason from learned structure when it is not");
-  return parts.map(part => part.trim()).filter(Boolean).join(". ") + ".";
+function runtimeDiagnosticSemanticFacts(input: { graphPriorCount: number; languagePriorCount: number; programPriorCount: number }) {
+  return [
+    { subjectId: "runtime.scce", relationId: "runtime.routes_through", objectId: "component.kernel", ordinal: 1 },
+    { subjectId: "runtime.scce", relationId: "runtime.routes_through", objectId: "component.graph_memory", ordinal: 2 },
+    { subjectId: "runtime.scce", relationId: "runtime.routes_through", objectId: "component.mouth", ordinal: 3 },
+    { subjectId: "runtime.scce", relationId: "runtime.prior_count", objectId: "prior.graph", value: input.graphPriorCount },
+    { subjectId: "runtime.scce", relationId: "runtime.prior_count", objectId: "prior.language", value: input.languagePriorCount },
+    { subjectId: "runtime.scce", relationId: "runtime.prior_count", objectId: "prior.program", value: input.programPriorCount }
+  ];
+}
+
+function uniqueInventionConstructs(rows: readonly InventionConstruct[]): InventionConstruct[] {
+  const byId = new Map<string, InventionConstruct>();
+  for (const row of rows) if (!byId.has(row.id)) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+function runtimeTerminalInventionPriorContext(input: {
+  graph: GraphSlice;
+  field: FieldState;
+  languageMemoryState: LanguageMemoryRuntimeState;
+  requirementField: TurnRequirementField;
+}): { graph: GraphSlice; languageMemoryState: LanguageMemoryRuntimeState; eligiblePriorIds: ReadonlySet<string> } | undefined {
+  const activeNodeIds = new Set(input.field.active.map(row => String(row.nodeId)));
+  const graphNodes = input.graph.nodes.filter(node => activeNodeIds.has(String(node.id)) && isLearnedPriorClass(graphNodePriorClass(node)));
+  const graphNodeIds = new Set(graphNodes.map(node => String(node.id)));
+  const graphEdges = input.graph.edges.filter(edge => graphNodeIds.has(String(edge.source)) && graphNodeIds.has(String(edge.target)));
+  const activeLanguageIds = new Set([
+    ...input.requirementField.activatedFrameIds,
+    ...input.requirementField.activatedPatternIds,
+    ...input.requirementField.activatedPhraseUnitIds
+  ]);
+  const importedUnits = input.languageMemoryState.importedUnits.filter(row => activeLanguageIds.has(row.id));
+  const importedPatterns = input.languageMemoryState.importedPatterns.filter(row => activeLanguageIds.has(row.id));
+  const importedSemanticFrames = input.languageMemoryState.importedSemanticFrames.filter(row => activeLanguageIds.has(row.id));
+  const eligiblePriorIds = new Set([
+    ...graphNodeIds,
+    ...importedUnits.map(row => row.id),
+    ...importedPatterns.map(row => row.id),
+    ...importedSemanticFrames.map(row => row.id)
+  ]);
+  if (!eligiblePriorIds.size) return undefined;
+  return {
+    graph: {
+      ...input.graph,
+      nodes: graphNodes,
+      edges: graphEdges,
+      hyperedges: []
+    },
+    languageMemoryState: {
+      ...input.languageMemoryState,
+      importedUnits,
+      importedPatterns,
+      importedObservations: [],
+      importedSemanticFrames,
+      importedLanguagePriorCount: importedUnits.length + importedPatterns.length + importedSemanticFrames.length
+    },
+    eligiblePriorIds
+  };
+}
+
+function runtimeTerminalInventionIsAdmissible(input: {
+  invention: InventionConstruct;
+  requestText: string;
+  eligiblePriorIds: ReadonlySet<string>;
+}): boolean {
+  if (input.invention.proofStatusId !== "proof.status.generated_not_evidence" || input.invention.basisEvidenceIds.length) return false;
+  const trace = jsonRecord(input.invention.trace);
+  const selectedPriorIds = [
+    ...kernelStringArray(trace.selectedGraphNodeIds),
+    ...kernelStringArray(trace.selectedLanguagePriorIds)
+  ];
+  if (!selectedPriorIds.some(id => input.eligiblePriorIds.has(id))) return false;
+  if (kernelNumber(trace.unsupportedFactualAssertion) > 0 || kernelNumber(trace.risk) > 0.66) return false;
+  const claimBasis = Array.isArray(trace.claimBasis) ? trace.claimBasis.map(row => jsonRecord(row)) : [];
+  if (!claimBasis.some(row => row.kind === "invention" && row.force === "invented")) return false;
+  if (claimBasis.some(row => row.kind === "factual_premise" || kernelStringArray(row.evidenceIds).length > 0)) return false;
+  const requestUnits = new Set(surfaceWords(input.requestText).map(unit => unit.toLocaleLowerCase()));
+  const proposalUnits = uniqueKernelStrings(surfaceWords(input.invention.proposalSurface).map(unit => unit.toLocaleLowerCase()));
+  const novelUnits = proposalUnits.filter(unit => !requestUnits.has(unit));
+  const normalizedRequest = uniqueKernelStrings([...requestUnits]).join(" ");
+  const normalizedProposal = proposalUnits.join(" ");
+  return proposalUnits.length >= 4 && novelUnits.length >= 2 && normalizedProposal !== normalizedRequest;
+}
+
+function runtimeCandidateReplanTrigger(
+  field: CandidateField,
+  authority: RequestedAuthority,
+  evidence: readonly EvidenceSpan[]
+): RuntimeReplanTrigger | undefined {
+  if (field.candidates.length === 0) return "authority_family_unavailable";
+  if (authority !== "factual" && authority !== "reasoned") return undefined;
+  const hasEvidenceRoute = evidence.length > 0 || field.candidates.some(candidate => candidate.evidenceIds.length > 0);
+  const hasSemanticSurface = field.candidates.some(candidate => candidate.answer.trim().length > 0);
+  const support = Math.max(0, ...field.candidates.map(candidate => candidate.scores.support));
+  return !hasSemanticSurface || !hasEvidenceRoute && support < 0.18
+    ? "coherence_support_failure"
+    : undefined;
+}
+
+function runtimeMotionCandidateField(input: {
+  base: CandidateField;
+  requestText: string;
+  authority: RequestedAuthority;
+  motion: RuntimeReplanMotion;
+  inventionCandidate?: CandidateSurface;
+  unresolvedSlots?: readonly string[];
+  learnedLanguageFrameIds?: readonly string[];
+  hasher: { digestHex(input: string | Uint8Array): string };
+}): CandidateField {
+  if (input.inventionCandidate?.kind === "creative-candidate" && input.inventionCandidate.force === "invented" && input.inventionCandidate.evidenceIds.length === 0) {
+    const priorAudit = jsonRecord(input.base.audit);
+    const candidateAudit = jsonRecord(input.inventionCandidate.audit);
+    const constructId = kernelString(candidateAudit.constructId);
+    const candidate: CandidateSurface = {
+      ...input.inventionCandidate,
+      id: `runtime-motion:${input.motion.guardId}:${input.inventionCandidate.id}`,
+      evidenceIds: [],
+      constructIds: uniqueKernelStrings([...(input.inventionCandidate.constructIds ?? []), ...(constructId ? [constructId] : [])]),
+      claimBases: ["invented"],
+      boundaries: uniqueKernelStrings([
+        ...input.inventionCandidate.boundaries,
+        "runtime-motion-acquisition-exhausted",
+        "runtime-motion-prior-conditioned-invention",
+        "runtime-motion-no-fabricated-evidence"
+      ]),
+      audit: toJsonValue({
+        ...candidateAudit,
+        schema: "scce.runtime_motion_invention_candidate.v1",
+        runtimeMotion: input.motion,
+        runtimePolicyId: RUNTIME_TERMINAL_INVENTION_POLICY_ID,
+        requestedAuthority: input.authority,
+        claimBases: ["invented"],
+        externalFactCertification: false,
+        generatedMaterialUsesEvidenceAsAuthority: false,
+        fakeEvidenceForbidden: true
+      })
+    };
+    return {
+      ...input.base,
+      candidates: [candidate],
+      surfaceMass: [{ candidateId: candidate.id, mass: 1, reason: "runtime prior-conditioned invention" }],
+      scoreTrace: candidate.scoreTrace ?? [],
+      audit: toJsonValue({
+        ...priorAudit,
+        runtimeMotion: input.motion,
+        runtimeMotionCandidate: candidate.audit,
+        authorityAdmission: {
+          schema: "scce.requested_authority.candidate_admission.v1",
+          authority: input.authority,
+          authorityUnavailable: input.base.candidates.length === 0,
+          admittedCandidateIds: [candidate.id],
+          continuationCandidateIds: [candidate.id],
+          fallbackToGeneratedField: false,
+          unrelatedAuthorityFallback: false,
+          inventedTerminalContinuation: true,
+          runtimePolicyId: RUNTIME_TERMINAL_INVENTION_POLICY_ID
+        }
+      })
+    };
+  }
+  const answer = runtimeMotionFocusSurface(
+    input.requestText,
+    input.unresolvedSlots,
+    input.motion.sourceSurfaces,
+    input.motion.sourceUris
+  );
+  const focusId = `focus:${input.hasher.digestHex(answer).slice(0, 20)}`;
+  const unresolvedSlotIds = uniqueKernelStrings((input.unresolvedSlots ?? []).filter(Boolean)).slice(0, 12);
+  const learnedLanguageFrameIds = uniqueKernelStrings((input.learnedLanguageFrameIds ?? []).filter(Boolean)).slice(0, 24);
+  const candidate: CandidateSurface = {
+    id: `runtime-motion:${input.motion.guardId}`,
+    kind: "dialogue-continuation",
+    answer,
+    force: "unknown",
+    evidenceIds: [],
+    scores: {
+      support: 0,
+      contradiction: 0,
+      faithfulness: 1,
+      alphaPressure: 0,
+      actionability: 0.48,
+      evidenceCoverage: 0,
+      novelty: 0,
+      realizability: 1,
+      usefulness: 0.68,
+      risk: 0,
+      unsupportedFactualAssertion: 0
+    },
+    constructIds: [],
+    claimBases: [],
+    satisfiedRequirementIds: [],
+    missedRequirementIds: unresolvedSlotIds,
+    boundaries: [
+      "runtime-motion-non-assertive",
+      "runtime-motion-acquisition-exhausted",
+      "runtime-motion-no-fabricated-evidence"
+    ],
+    audit: toJsonValue({
+      schema: "scce.runtime_motion_candidate.v1",
+      source: "kernel.runtime_decision_boundary",
+      motion: input.motion,
+      semanticFrame: {
+        frameId: "semantic.runtime.motion.clarification.v1",
+        roleBindings: {
+          focusId,
+          requestedAuthorityId: `authority.${input.authority}`,
+          unresolvedSlotIds,
+          learnedLanguageFrameIds
+        },
+        stateIds: ["state.dialogue.slot_resolution.pending.v1"]
+      },
+      surfaceBasis: {
+        source: "request_and_dialogue_slots",
+        requestHash: input.motion.queryHash,
+        unresolvedSlotIds,
+        learnedLanguageFrameIds
+      },
+      externalFactCertification: false,
+      fakeEvidenceForbidden: true
+    })
+  };
+  const priorAudit = jsonRecord(input.base.audit);
+  return {
+    ...input.base,
+    candidates: [candidate],
+    surfaceMass: [{ candidateId: candidate.id, mass: 1, reason: "runtime motion continuation" }],
+    scoreTrace: [],
+    audit: toJsonValue({
+      ...priorAudit,
+      runtimeMotion: input.motion,
+      runtimeMotionCandidate: candidate.audit,
+      authorityAdmission: {
+        schema: "scce.requested_authority.candidate_admission.v1",
+        authority: input.authority,
+        authorityUnavailable: input.base.candidates.length === 0,
+        admittedCandidateIds: [],
+        continuationCandidateIds: [candidate.id],
+        fallbackToGeneratedField: false,
+        unrelatedAuthorityFallback: false
+      }
+    })
+  };
+}
+
+function runtimeMotionFocusSurface(
+  requestText: string,
+  unresolvedSlots: readonly string[] = [],
+  sourceSurfaces: readonly string[] = [],
+  sourceUris: readonly string[] = []
+): string {
+  const normalizedTopic = cognitiveTopicForRequest(requestText);
+  const topic = requestSurfaceCase(normalizedTopic, requestText);
+  const slotSurfaces = unresolvedSlots
+    .map(runtimeMotionSlotSurface)
+    .filter(Boolean)
+    .slice(0, 3);
+  const fallback = collapseSurfaceWhitespace(requestText).replace(/[.!?\u3002\uff01\uff1f]+$/u, "").trim();
+  const lead = topic || fallback;
+  const detail = uniqueKernelStrings([
+    ...sourceSurfaces.map(surface => sourceTextSurface(surface, 320)),
+    ...slotSurfaces,
+    ...sourceUris.slice(0, 2)
+  ])
+    .slice(0, 3);
+  const boundedLead = [...lead].slice(0, 120).join("").trim();
+  const boundedDetail = detail.map(value => [...value].slice(0, 80).join("").trim()).filter(Boolean);
+  const semanticSurface = uniqueKernelStrings([boundedLead, ...boundedDetail]).filter(Boolean).join(": ");
+  return ensureUnicodeSurfaceSentence(semanticSurface);
+}
+
+function requestSurfaceCase(value: string, requestText: string): string {
+  if (!value) return "";
+  const index = requestText.toLocaleLowerCase().indexOf(value.toLocaleLowerCase());
+  return index >= 0 ? requestText.slice(index, index + value.length) : value;
+}
+
+function runtimeMotionSlotSurface(value: string): string {
+  const clean = collapseSurfaceWhitespace(value).trim();
+  if (!clean) return "";
+  if (/^(?:slot|state|role|feat|operator|semantic|authority)[.:_-]/iu.test(clean)) return "";
+  return clean;
+}
+
+function metadataWithRuntimeReplanMotion(metadata: JsonValue | undefined, motion: RuntimeReplanMotion): JsonValue {
+  const record = jsonRecord(metadata);
+  return toJsonValue({
+    ...record,
+    ...(!metadata || typeof metadata === "object" && !Array.isArray(metadata) ? {} : { ownerMetadata: metadata }),
+    runtimeMotion: motion
+  });
+}
+
+function runtimeReplanMotionFromMetadata(metadata: JsonValue | undefined, expectedQueryHash: string): RuntimeReplanMotion | undefined {
+  const row = jsonRecord(jsonRecord(metadata).runtimeMotion);
+  if (
+    row.schema !== "scce.runtime_motion.learn_hydrate_replan.v1"
+    || row.motionId !== "motion.learn_hydrate_replan"
+    || row.attempt !== 1
+    || row.queryHash !== expectedQueryHash
+    || typeof row.guardId !== "string"
+    || typeof row.parentEpisodeId !== "string"
+  ) return undefined;
+  const trigger = row.trigger === "authority_family_unavailable" || row.trigger === "coherence_support_failure"
+    ? row.trigger
+    : undefined;
+  const requestedAuthority = typeof row.requestedAuthority === "string" && ["factual", "reasoned", "creative", "translation", "program", "action"].includes(row.requestedAuthority)
+    ? row.requestedAuthority as RequestedAuthority
+    : undefined;
+  const status = row.status === "hydrated" || row.status === "empty" || row.status === "unavailable" || row.status === "failed"
+    ? row.status
+    : undefined;
+  if (!trigger || !requestedAuthority || !status) return undefined;
+  return {
+    schema: "scce.runtime_motion.learn_hydrate_replan.v1",
+    motionId: "motion.learn_hydrate_replan",
+    guardId: row.guardId,
+    attempt: 1,
+    trigger,
+    requestedAuthority,
+    parentEpisodeId: row.parentEpisodeId,
+    queryHash: expectedQueryHash,
+    connectorConfigured: row.connectorConfigured === true,
+    status,
+    searchResultCount: kernelNumber(row.searchResultCount),
+    fetchedSourceCount: kernelNumber(row.fetchedSourceCount),
+    ingestedSourceCount: kernelNumber(row.ingestedSourceCount),
+    ingestedEvidenceCount: kernelNumber(row.ingestedEvidenceCount),
+    sourceUris: Array.isArray(row.sourceUris) ? row.sourceUris.filter((value): value is string => typeof value === "string").slice(0, 3) : [],
+    sourceSurfaces: Array.isArray(row.sourceSurfaces) ? row.sourceSurfaces.filter((value): value is string => typeof value === "string").slice(0, 6) : [],
+    failures: Array.isArray(row.failures) ? row.failures.filter((value): value is string => typeof value === "string").slice(0, 6) : []
+  };
+}
+
+function runtimeMotionFailure(stage: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${stage}: ${redactSecrets(message)}`.slice(0, 320);
 }
 
 function runtimeDiagnosticCounts(value: JsonValue): { graphPriorCount: number; languagePriorCount: number; programPriorCount: number } {

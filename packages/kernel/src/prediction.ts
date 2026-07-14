@@ -4,6 +4,8 @@ import { covariance, jacobiEigenvaluesSymmetric } from "./math.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
 import { woldForecast } from "./spectral-forecast.js";
 
+const MAX_PREDICTION_HISTORY = 64;
+
 export interface PredictionConstruct {
   schema: "scce.prediction_construct.v1";
   id: string;
@@ -184,11 +186,29 @@ export function createPredictionLayer(options: { idFactory: IdFactory }) {
       };
     },
     forecast(input: { states: ForecastState[]; source: ForecastState; horizon: number; createdAt: number }): ForecastEnvelope {
-      const history = [...input.states.slice(-8), input.source].map(state => state.stateVector);
       const d = input.source.stateVector.length;
-      const eig = jacobiEigenvaluesSymmetric(input.source.spectrum.values);
-      const gap = Math.max(1e-6, Math.abs((eig[1] ?? 0) - (eig[0] ?? 0)));
-      const spectral = woldForecast({ series: input.states.slice(-16).map(state => state.stateVector), source: input.source.stateVector, horizon: input.horizon, maxOrder: 3, sinTheta: 1 / (1 + 1 / gap), stabilityTrust: 0.8 });
+      const seenIds = new Set<string>();
+      const seenTimes = new Set<number>();
+      const chronologicalHistory = input.states
+        .filter(state => state.id !== input.source.id
+          && Number.isFinite(state.t)
+          && state.t < input.source.t
+          && state.stateVector.length === d
+          && state.stateVector.every(Number.isFinite))
+        .sort((left, right) => left.t - right.t || compareOrdinal(left.id, right.id))
+        .filter(state => {
+          if (seenIds.has(state.id) || seenTimes.has(state.t)) return false;
+          seenIds.add(state.id);
+          seenTimes.add(state.t);
+          return true;
+        })
+        .slice(-MAX_PREDICTION_HISTORY);
+      const spectral = woldForecast({
+        series: chronologicalHistory.map(state => state.stateVector),
+        source: input.source.stateVector,
+        horizon: input.horizon,
+        maxOrder: 3
+      });
       const meanVector = spectral.mean.length === d ? spectral.mean : input.source.stateVector;
       const covarianceH = spectral.covariance.length ? spectral.covariance : covariance([new Array(d).fill(1e-6)]);
       const interval = spectral.interval.length ? spectral.interval.map(item => ({ mean: item.mean, low: item.low, high: item.high })) : meanVector.map(m => ({ mean: m, low: m - 1e-3, high: m + 1e-3 }));
@@ -196,22 +216,32 @@ export function createPredictionLayer(options: { idFactory: IdFactory }) {
         id: options.idFactory.forecastEnvelopeId({ source: input.source.id, horizon: input.horizon, meanVector }),
         sourceStateId: input.source.id,
         horizon: input.horizon,
-        mean: meanVector.map(clamp01),
+        mean: meanVector,
         covariance: covarianceH,
         interval,
-        audit: {
+        audit: toJsonValue({
           modelOrder: spectral.model.order,
           aic: spectral.model.aic,
+          aicDiagnostics: spectral.model.aicDiagnostics,
+          fitStatus: spectral.model.fitStatus,
+          fitReason: spectral.model.fitReason ?? null,
           unstable: spectral.unstable,
-          gapPenalty: spectral.gapPenalty,
-          sgwShrink: spectral.sgwShrink,
+          nearUnitRoot: spectral.nearUnitRoot,
+          stability: spectral.stability,
+          horizonSemantics: spectral.horizonSemantics,
+          varianceScale: spectral.varianceScale,
+          intervalMethod: spectral.intervalMethod,
           residualRows: spectral.model.residuals.length,
-          method: "VAR-by-AIC + Wold covariance + SGW Davis-Kahan shrink"
-        },
+          method: "conditional Gaussian VAR by AIC or random-walk-with-drift cold start, with horizon-specific Wold covariance"
+        }),
         createdAt: input.createdAt
       };
     }
   };
+}
+
+function compareOrdinal(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function validationPlanFromProgram(program: ProgramGraph): InventionConstruct["validationPlan"] {

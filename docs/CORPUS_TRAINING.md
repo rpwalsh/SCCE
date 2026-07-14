@@ -79,22 +79,6 @@ pnpm scce --config scce.corpus-dev.config.json ingest wiki data/wiki/enwiki-late
 
 The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded hydration plan from the corpus registry and asks the language-memory store for each enabled language-eligible source system. Per-corpus limits keep laptop memory bounded, and the runtime language-memory compiler still caps usable models internally.
 
-## Eval
-
-Run the regular blind eval:
-
-```powershell
-pnpm yopp:eval
-```
-
-Run corpus ablation output:
-
-```powershell
-pnpm yopp:eval --corpus-ablation
-```
-
-The legacy corpus-ablation report evaluates no-corpus, Wikipedia-only, Wikipedia plus Gutenberg, Wikipedia plus OSS, combined-corpus, and corrections-enabled conditions using local heuristic metrics. The sealed review kit separately defines production-boundary conditions. These local reports are diagnostic rather than representative quality evidence.
-
 ## Activation and evidence limits
 
 - PostgreSQL schema v12 enforces at most one ACTIVE lifecycle row and repairs legacy duplicate-active state during migration.
@@ -103,4 +87,4 @@ The legacy corpus-ablation report evaluates no-corpus, Wikipedia-only, Wikipedia
 
 ## Corpus compilation boundary
 
-Corpus material is compiled into PostgreSQL-backed evidence and language memory. Factual answers still require admissible evidence and proof paths; language priors only shape realization. The production path has no external inference provider or prompt-construction fallback.
+Corpus material is compiled into PostgreSQL-backed evidence and language memory. The same canonical path applies when a low-support turn acquires new material: source identity and typed observations must be admitted before replanning. Factual answers still require admissible evidence and proof paths; language priors shape realization but do not certify claims. The production path has no external inference provider or prompt-construction fallback.

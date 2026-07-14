@@ -68,7 +68,7 @@ describe("creative candidate selection and preference calibration", () => {
     expect(grounded?.scores.graphCoherence).toBeCloseTo(0.86);
   });
 
-  it("lets an authority-fit invention outrank proof-boundary and learning candidates", () => {
+  it("lets an authority-fit invention outrank the proof-boundary candidate without emitting a learning answer", () => {
     const fixture = candidateFixture([]);
     const field = createCandidateEngine().generate({
       ...fixture,
@@ -77,7 +77,8 @@ describe("creative candidate selection and preference calibration", () => {
       learningNeeds: ["constraint.unresolved"]
     });
     expect(field.candidates.some(candidate => candidate.kind === "proof-answer")).toBe(true);
-    expect(field.candidates.some(candidate => candidate.kind === "learning-plan")).toBe(true);
+    expect(field.candidates.map(candidate => candidate.kind)).toEqual(["proof-answer", "creative-candidate"]);
+    expect(field.candidates.find(candidate => candidate.kind === "proof-answer")?.answer).toBe("");
     const decision = createJudge().select({
       field,
       policy: policy(),

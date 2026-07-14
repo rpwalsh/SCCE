@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolvePortablePackageScriptArgv,
   resolveTypeScriptCommandLane,
   verifyTypeScriptCommandLaneSourceBinding,
   type TypeScriptCommandLane,
@@ -63,13 +64,6 @@ describe("TypeScript compiler command lane", () => {
     expect(result.lane.compatibilityReason).toBe("typescript_build_mode_requires_solution_builder");
   });
 
-  it("preserves Windows paths rather than consuming ordinary backslashes", () => {
-    const result = resolveTypeScriptCommandLane(command(String.raw`tsc -p configs\windows\tsconfig.json`));
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.lane.normalizedTscArgs).toEqual(["-p", String.raw`configs\windows\tsconfig.json`]);
-  });
-
   it.each([
     "tsc -p tsconfig.json && echo done",
     "tsc; echo done",
@@ -77,6 +71,17 @@ describe("TypeScript compiler command lane", () => {
     "tsc > output.txt",
     "tsc $(echo --noEmit)",
     "tsc `echo --noEmit`",
+    "tsc $TSC_ARGS",
+    "tsc $$",
+    "tsc %TSC_ARGS%",
+    "tsc !TSC_ARGS!",
+    "tsc -p configs/*.json",
+    "tsc -p configs/tsconfig?.json",
+    "tsc -p configs/[ab].json",
+    "tsc -p ~/tsconfig.json",
+    String.raw`tsc -p configs\windows\tsconfig.json`,
+    "tsc ^--noEmit",
+    "tsc '#not-portable'",
     "tsc\n--noEmit"
   ])("rejects shell syntax: %s", rawCommand => {
     expect(errorCode(rawCommand)).toBe("unsafe_shell_syntax");
@@ -132,9 +137,9 @@ describe("TypeScript compiler command lane", () => {
 
   it.each([
     ["tsc \"\"", "empty_argument"],
-    ["tsc ''", "empty_argument"],
+    ["tsc ''", "unsafe_shell_syntax"],
     [`tsc "unterminated`, "malformed_command"],
-    ["tsc \\", "malformed_command"],
+    ["tsc \\", "unsafe_shell_syntax"],
     ["tsc\u0000--noEmit", "malformed_command"],
     ["   ", "empty_command"]
   ])("rejects malformed or empty argv in %j", (rawCommand, expectedCode) => {
@@ -149,6 +154,21 @@ describe("TypeScript compiler command lane", () => {
     const result = resolveTypeScriptCommandLane({ rawCommand: "tsc", ...metadata });
     expect(result).toMatchObject({ ok: false, error: { code: "invalid_source_metadata" } });
   });
+});
+
+describe("portable package-script argv", () => {
+  it("parses literal argv for shell:false execution", () => {
+    expect(resolvePortablePackageScriptArgv(`vitest run "src/unit tests"`)).toEqual({
+      ok: true,
+      executable: "vitest",
+      args: ["run", "src/unit tests"]
+    });
+  });
+
+  it.each([`vitest "unterminated`, "vitest $TEST_ARGS", "vitest tests/*.test.ts", "vitest && echo done"])(
+    "rejects non-portable package-script syntax: %s",
+    rawCommand => expect(resolvePortablePackageScriptArgv(rawCommand)).toMatchObject({ ok: false })
+  );
 });
 
 function command(rawCommand: string): TypeScriptCommandLaneInput {

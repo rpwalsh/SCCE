@@ -266,8 +266,19 @@ function candidateHardFailures(
   ) failures.push("unsupported_externally_factual_claim");
   if (candidate.claimBases?.includes("action_result") && !candidateHasActionReceipt(candidate)) failures.push("action_result_without_receipt");
   if (requirement.actionCommitment >= 0.6 && candidate.kind === "action-preview" && candidate.claimBases?.includes("action_result")) failures.push("false_action_completion");
-  if (requirement.executableArtifactDemand >= 0.65 && validation && !validation.passed) failures.push("executable_validation_failed");
+  if (
+    requirement.executableArtifactDemand >= 0.65
+    && executableCandidateFamily(candidate)
+    && validation
+    && !validation.passed
+  ) failures.push("executable_validation_failed");
   return [...new Set(failures)];
+}
+
+function executableCandidateFamily(candidate: CandidateSurface): boolean {
+  return candidate.kind === "program-proposal"
+    || candidate.kind === "workspace-proposal"
+    || candidate.kind === "action-preview";
 }
 
 function candidateHasExternallyFactualClaim(candidate: CandidateSurface): boolean {

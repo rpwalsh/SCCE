@@ -1,7 +1,6 @@
 # SCCE Engineering Guide
 
-Status: current implementation contract; representative calibration and protected
-public review remain incomplete
+Status: current implementation contract; production calibration remains provisional
 
 ## Runtime Principle
 
@@ -14,6 +13,8 @@ meaning first, surface last
 Text should be the final product of graph state, answer planning, LanguageMemory, and Walsh surface energy. Text should not be the controlling intermediate representation for cognition.
 
 Proof is also not a speech gate. Proof is a certification layer. The Mouth can produce creative, inferred, prior-bound, or source-bound speech, but certification must remain explicit.
+
+Insufficient support is a control transition, not a prose template. The kernel gets one bounded opportunity to learn from eligible local state or perform configured search/fetch, pass any result through canonical typed ingestion, update the active graph/frontier, and replan. The planner must then select the strongest honest source-bound, qualified, or non-certified creative answer available; the Mouth realizes that selection. Mouth may return an empty internal surface to request continuation, but an empty surface or canned refusal must not be emitted as the final answer.
 
 ## Main Call Stack
 
@@ -36,6 +37,12 @@ source records
 ```
 
 No layer should convert raw traces, IDs, snippets, n-grams, or telemetry into final spoken text by itself.
+
+The exported `createSourceOnlyScceRuntime` is a bounded, in-memory source-only runtime
+for fixture and diagnostic work; `createScceRuntime` currently aliases it. It is marked
+as simulation/non-hydrated and does not replace the PostgreSQL-backed production lane.
+Both it and `kernel.turn` project request authority through the shared
+`projectRequestAuthority` function after deriving the source-neutral requirement field.
 
 ## Mathematical Spine
 
@@ -114,6 +121,15 @@ It is used to:
 
 PPR mass is graph-routing mass, not factual confidence.
 
+### Requirement-Projected Authority
+
+`request-authority.ts` projects the 16-dimensional requirement field to factual,
+reasoned, creative, translation, program, or action authority. Its values are bounded
+routing energies, not probabilities. An explicit structured authority remains a traced
+override. Shared dialogue and graph-support helpers feed the same cognitive-operator
+activation contract in the kernel and source-only runtime; request surface words are
+not used as an authority router.
+
 ### PowerWalk PPMI
 
 PowerWalk supplies deterministic second-order graph contexts. Sparse PPMI fitting uses
@@ -122,8 +138,30 @@ are bound into snapshot identity. Zero-context nodes receive no invented hash-ve
 representation. The production path consumes the learned representation by expanding
 query anchors into bounded field seeds using cosine similarity.
 
-Current expansion thresholds and scale are provisional engineering parameters.
-Durable incremental-state loading and representative outcome calibration remain open.
+Graph statistics initialize `p`, `q`, and temporal-decay `lambda`; that initializer is
+explicitly unfitted. A separate bounded coordinate-descent fitter consumes supplied
+typed transition choices, keeps source records disjoint between fit and holdout, and
+optimizes multinomial NLL in log space. It exposes initialized parameters, the fitted
+candidate, and active parameters separately. The candidate becomes active only when
+fit mean NLL improves and untouched holdout mean NLL clears the configured improvement
+threshold; otherwise initialization remains active.
+
+That gate is evidence only for the supplied source-disjoint observations. It is not
+probability calibration and does not establish representativeness. Current expansion
+thresholds and scale are provisional engineering parameters. Durable incremental-state
+loading and representative outcome review remain open.
+
+### VAR Forecast Diagnostics
+
+`spectral-forecast.ts` fits candidate VAR orders on a common estimation window and
+selects conditional multivariate-Gaussian AIC with regression and free covariance
+parameters included in the count. Adaptive-jitter Cholesky computes covariance log
+determinants. Insufficient observations or residual degrees of freedom produce a
+reason-labeled random-walk-with-drift cold start instead of a fitted finite-AIC model.
+Stability uses the full block companion matrix and shifted real QR with
+1x1/2x2 Schur blocks; non-convergence is explicitly degraded to an infinity-norm upper
+bound. Horizon `h` covariance is the unscaled Wold sum through `Psi_(h-1)`. Its reported
+Gaussian intervals are labeled uncalibrated and do not establish empirical coverage.
 
 ### Relation Potential V2
 
@@ -194,7 +232,7 @@ This keeps answer completeness from being a cosmetic afterthought.
 
 ### Meaning-To-Language Mouth
 
-LanguageMemory should turn meaning into discourse.
+LanguageMemory should turn an already selected semantic plan into discourse. Mouth input consists of semantic values, relations, answer force, and evidence bindings; role IDs, proof keys, receipts, and trace state remain structured controls.
 
 It should use:
 
@@ -207,6 +245,8 @@ It should use:
 - discourse boundaries.
 
 It should not treat atomic graph triples as finished sentences unless the learned language machinery actually realizes them that way.
+
+Direct source wording is reserved for an explicit source-answer construct with bound evidence. Program, action, and creative constructs must be realized as ordinary language or artifacts rather than exposed as workflow notation.
 
 ### Walsh Surface Energy
 
@@ -310,11 +350,11 @@ The answer to the second is yes only when proof succeeds.
 
 Engineering implication:
 
-- Do not make `unsupported_prior_only` produce silence.
-- Do not make `insufficient_evidence` produce a generic refusal.
+- Do not emit `unsupported_prior_only` or `insufficient_evidence` as silence or a generic refusal; route them through the bounded recovery transition.
 - Do not mark unsupported speech as certified.
 - Do keep proof verdicts in traces.
-- Do let Mouth choose useful language when the force is non-certified.
+- Do let the planner select useful prior-bound, reasoned, or creative meaning when the corresponding authority permits it; Mouth realizes that selection.
+- Do require contradiction or temporal proof before correcting a false factual premise with a negative claim.
 
 ## Question Slot Planner Integration
 
@@ -397,7 +437,7 @@ pnpm scce turn "Who are the main characters in Star Trek?"
 pnpm scce turn "What is relativity?"
 ```
 
-Evaluation should inspect both answer text and trace.
+Operational diagnosis should inspect both answer text and trace.
 
 ## Known Limitations
 
@@ -413,30 +453,30 @@ Remaining engineering work includes:
 - Improving answer-plan extent for long explanatory answers.
 - Proving server/API parity with CLI and replay.
 - Fitting representative relation-potential, PowerWalk, truth, contradiction, and
-  selector calibration on immutable disjoint splits.
+  selector calibration on immutable disjoint splits. The implemented PowerWalk
+  source-record-disjoint NLL acceptance gate does not establish representativeness.
 - Persisting and validating durable incremental PowerWalk state across real imports.
 - Extending the coding-request bridge beyond its two tested TypeScript repair paths.
   Current support is limited to source-proven unused type-only import removal and one
-  official TypeScript LanguageService fix for an existing requested file. An explicit
-  exact `TS####`, `fixName:<id>`, or canonical `codeFixIdentity:<id>` selector must
-  resolve to one candidate; no candidate is selected implicitly. The compiler sees
+  official TypeScript LanguageService action rooted at an existing requested file. An
+  explicit exact `TS####`, `fixName:<id>`, or canonical `codeFixIdentity:<id>` selector
+  must resolve to one candidate; no candidate is selected implicitly. The compiler sees
   durable snapshot files plus the TypeScript standard library and requires an exact
   project config resolved from the source-observed direct `tsc` invocation. The
   requested file must belong to that parsed project. Source-observed build/test
   commands are required, and the returned plan is unauthorized and unexecuted.
-  Arbitrary feature synthesis and multi-file compiler fixes remain unsupported;
-  `regressionProtection` remains `0` until execution evidence exists.
+  The selected action may close over up to 32 files and 128 exact text changes,
+  including bounded TypeScript/JavaScript creation under existing snapshot directories.
+  Command-bearing actions, out-of-workspace targets, stale replacement bases, invalid
+  creations, and overlapping changes remain unsupported. Arbitrary feature synthesis
+  is outside this path. `regressionProtection` remains `0` until execution evidence
+  exists.
 - Reviewing the optional Docker validator's daemon, operator, image-supply-chain, and
   host-kernel trust boundary for each deployment. Trusted-host staging is not an OS
   sandbox, and the passing local Docker smoke test is not attestation.
 - Testing packaged VS Code visual behavior, restart recovery, approval, and a live
   patch receipt; the current host smoke covers installation, activation, command
   registration, and readiness only.
-- Running the calibration evaluator and load gate with representative, independently
-  controlled datasets and workloads. Their caller-supplied local reports do not prove
-  representative calibration or capacity.
-- Executing the sealed public-review procedure with independently controlled inputs
-  and reproducing the result on a separate machine. Current status is `NOT_EXECUTED`.
 
 ## Engineering Rule Of Thumb
 

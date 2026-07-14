@@ -137,6 +137,10 @@ export interface ScceRuntimeConfig {
 export async function readScceRuntimeConfig(configPath = "scce.config.json"): Promise<ScceRuntimeConfig> {
   const absolute = path.resolve(configPath);
   const parsed = JSON.parse(await readFile(absolute, "utf8")) as ScceRuntimeConfig;
+  const databaseUrlOverride = process.env.SCCE_DATABASE_URL?.trim();
+  if (databaseUrlOverride) {
+    parsed.database = { ...parsed.database, url: databaseUrlOverride };
+  }
   validateConfig(parsed, absolute);
   parsed.runtime.workspaceRoot = path.resolve(path.dirname(absolute), parsed.runtime.workspaceRoot);
   parsed.runtime.tempRoot = path.resolve(path.dirname(absolute), parsed.runtime.tempRoot);

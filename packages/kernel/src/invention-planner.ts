@@ -69,23 +69,11 @@ export interface RequestedAuthorityDecision {
   audit: JsonValue;
 }
 
-/**
- * @deprecated English-only bootstrap retained solely for callers of the
- * explicitly exported legacy authority classifier below. Production turn
- * routing derives RequestedAuthority from TurnRequirementField and must not
- * call this classifier. Nothing in planInventions references this table.
- */
-const LEGACY_ENGLISH_REQUEST_SIGNAL_SYMBOLS = {
-  reasoned: ["derive", "explain", "reason", "compare"],
-  creative: ["invent", "imagine", "devise", "brainstorm"],
-  translation: ["translate", "translation", "transliterate", "localize"],
-  program: ["implement", "code", "patch", "build"],
-  action: ["send", "schedule", "call", "execute"]
-} as const;
-
 // ---------------------------------------------------------------------------
-// Deprecated English compatibility boundary. Production invention planning
-// starts at PlanInventionsInput below and has no call edge into this section.
+// Compatibility boundary. Production invention planning starts at
+// PlanInventionsInput below. This classifier accepts only structured IDs,
+// learned activation, graph state, and explicit authority; request lexemes do
+// not select an authority family.
 // ---------------------------------------------------------------------------
 
 const AUTHORITY_BOOTSTRAP_MODEL: RequestedAuthorityModel = {
@@ -142,16 +130,15 @@ export function requestedAuthorityBootstrapModel(): RequestedAuthorityModel {
 }
 
 /**
- * @deprecated English-only compatibility classifier. Production routing uses
+ * @deprecated Compatibility classifier. Production routing uses
  * deriveTurnRequirementField plus numeric operator activation. This function
- * remains exported for legacy consumers and tests, but planInventions never
- * calls it and request text never controls invention admission.
+ * remains exported for legacy consumers, but planInventions never calls it and
+ * request text never controls invention admission.
  */
 export function classifyRequestedAuthority(input: AuthorityClassificationInput): RequestedAuthorityDecision {
   const model = input.model ?? AUTHORITY_BOOTSTRAP_MODEL;
   assertLegacyAuthorityModel(model);
   const temperature = boundedLegacyAuthorityTemperature(input.temperature ?? model.defaultTemperature);
-  const requestFeatures = new Set(featureSet(input.requestText, 512));
   const actionIds = new Set(input.dialogueActionIds ?? []);
   const constructKinds = new Set(input.construct?.nodes.map(node => node.kind) ?? []);
   const questionGraphFeatures = [
@@ -164,17 +151,23 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
     ? input.languageMemory.score({ state: input.languageMemoryState, text: input.requestText }).activation
     : 0;
   const semanticFrameActivation = legacyFrameActivation(input.requestText, input.languageMemoryState, input.semanticFrameIds);
+  const structuredIds = new Set([
+    ...(input.semanticFrameIds ?? []),
+    ...(input.questionFeatures ?? []),
+    ...(input.graph?.query.features ?? []),
+    ...(input.dialogueState?.interactionFeatures.map(feature => feature.id) ?? [])
+  ]);
   const features: Record<RequestedAuthorityFeatureId, number> = {
     "authority.feature.bias": 1,
-    "authority.feature.request.question": legacyRequestQuestionSignal(input.requestText, requestFeatures),
-    "authority.feature.request.reasoned": legacyRequestSymbolSignal(requestFeatures, LEGACY_ENGLISH_REQUEST_SIGNAL_SYMBOLS.reasoned),
-    "authority.feature.request.creative": legacyRequestSymbolSignal(requestFeatures, LEGACY_ENGLISH_REQUEST_SIGNAL_SYMBOLS.creative),
-    "authority.feature.request.translation": legacyRequestSymbolSignal(requestFeatures, LEGACY_ENGLISH_REQUEST_SIGNAL_SYMBOLS.translation),
-    "authority.feature.request.program": legacyRequestSymbolSignal(requestFeatures, LEGACY_ENGLISH_REQUEST_SIGNAL_SYMBOLS.program),
-    "authority.feature.request.action": legacyRequestSymbolSignal(requestFeatures, LEGACY_ENGLISH_REQUEST_SIGNAL_SYMBOLS.action),
-    "authority.feature.dialogue.artifact": actionIds.has(DIALOGUE_ACTION_IDS.artifact) ? 1 : legacyDialogueFeature(input.dialogueState, "artifact"),
-    "authority.feature.dialogue.plan": actionIds.has(DIALOGUE_ACTION_IDS.plan) || actionIds.has(DIALOGUE_ACTION_IDS.nextStep) ? 1 : legacyDialogueFeature(input.dialogueState, "plan"),
-    "authority.feature.dialogue.boundary": actionIds.has(DIALOGUE_ACTION_IDS.boundary) ? 1 : legacyDialogueFeature(input.dialogueState, "boundary"),
+    "authority.feature.request.question": legacyRequestQuestionSignal(input.requestText, structuredIds),
+    "authority.feature.request.reasoned": structuredAuthoritySignal(structuredIds, "authority.feature.request.reasoned"),
+    "authority.feature.request.creative": structuredAuthoritySignal(structuredIds, "authority.feature.request.creative"),
+    "authority.feature.request.translation": structuredAuthoritySignal(structuredIds, "authority.feature.request.translation"),
+    "authority.feature.request.program": structuredAuthoritySignal(structuredIds, "authority.feature.request.program"),
+    "authority.feature.request.action": structuredAuthoritySignal(structuredIds, "authority.feature.request.action"),
+    "authority.feature.dialogue.artifact": actionIds.has(DIALOGUE_ACTION_IDS.artifact) ? 1 : structuredAuthoritySignal(structuredIds, "authority.feature.dialogue.artifact"),
+    "authority.feature.dialogue.plan": actionIds.has(DIALOGUE_ACTION_IDS.plan) || actionIds.has(DIALOGUE_ACTION_IDS.nextStep) ? 1 : structuredAuthoritySignal(structuredIds, "authority.feature.dialogue.plan"),
+    "authority.feature.dialogue.boundary": actionIds.has(DIALOGUE_ACTION_IDS.boundary) ? 1 : structuredAuthoritySignal(structuredIds, "authority.feature.dialogue.boundary"),
     "authority.feature.language.activation": clamp01(languageActivation),
     "authority.feature.semantic_frame.activation": semanticFrameActivation,
     "authority.feature.question_graph.activation": legacyQuestionGraphActivation(questionGraphFeatures),
@@ -434,22 +427,13 @@ function boundedCreativeTemperature(value: number): number {
   return Math.max(0.05, Math.min(1.5, value));
 }
 
-function legacyRequestQuestionSignal(text: string, features: ReadonlySet<string>): number {
+function legacyRequestQuestionSignal(text: string, structuredIds: ReadonlySet<string>): number {
   const punctuation = text.trim().endsWith("?") ? 1 : 0;
-  const interrogative = ["what", "who", "when", "where", "which", "is", "are"].some(symbol => features.has(`sym:${symbol}`)) ? 0.7 : 0;
-  return Math.max(punctuation, interrogative);
+  return Math.max(punctuation, structuredAuthoritySignal(structuredIds, "authority.feature.request.question"));
 }
 
-function legacyRequestSymbolSignal(features: ReadonlySet<string>, symbols: readonly string[]): number {
-  const hits = symbols.filter(symbol => features.has(`sym:${symbol}`)).length;
-  return clamp01(hits / Math.max(1, Math.min(2, symbols.length)));
-}
-
-function legacyDialogueFeature(state: DialogueState | undefined, fragment: string): number {
-  if (!state) return 0;
-  const direct = state.interactionFeatures.filter(feature => feature.id.includes(fragment)).map(feature => feature.value);
-  const signals = state.interactionSignals.filter(signal => signal.featureId.includes(fragment)).map(signal => signal.value * signal.confidence);
-  return clamp01(Math.max(0, ...direct, ...signals));
+function structuredAuthoritySignal(ids: ReadonlySet<string>, featureId: RequestedAuthorityFeatureId): number {
+  return ids.has(featureId) ? 1 : 0;
 }
 
 function legacyFrameActivation(requestText: string, state: LanguageMemoryRuntimeState | undefined, explicitFrameIds: readonly string[] | undefined): number {
@@ -631,7 +615,7 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
   if (languageChoice && !rotated.some(row => row.source !== "request" && row.source !== "graph")) rotated[1] = languageChoice;
   const requestChoice = ingredients.find(row => row.source === "request");
   if (requestChoice && !rotated.some(row => row.source === "request")) rotated[2] = requestChoice;
-  const constraintSurface = constraints.slice(0, 6).map(row => row.surface).join(" · ") || requestTerms.slice(0, 6).join(" · ") || title;
+  const constraintSurface = constraints.slice(0, 6).map(row => row.surface).join("; ") || requestTerms.slice(0, 6).join("; ") || title;
   const proposalSurface = evidenceSafeProposal(proposalShape(variant, title, rotated.map(row => row.text), constraintSurface), input.evidence, requestTerms, variant, title);
   const selectedGraphNodeIds = uniqueStrings(rotated.filter(row => row.graphNodeId).map(row => row.graphNodeId!));
   const selectedEdges = selectCompositionEdges(input.graph.edges, selectedGraphNodeIds, variant);
@@ -799,19 +783,19 @@ function selectCompositionEdges(edges: readonly GraphEdge[], nodeIds: readonly s
 
 function proposalShape(variant: number, title: string, pieces: readonly string[], constraints: string): string {
   const [a = title, b = title, c = title] = pieces;
-  if (variant % 4 === 0) return `${title}: ${a} → ${b} → ${c}; ${constraints}.`;
-  if (variant % 4 === 1) return `${constraints}: ${c} ← ${b} ← ${a} — ${title}.`;
-  if (variant % 4 === 2) return `${a} + ${c} ⇢ ${title}; ${b} ⇄ ${constraints}.`;
-  return `${title} — ${b}; ${constraints}; ${a} ↔ ${c}.`;
+  if (variant % 4 === 0) return `${title}: ${a}; ${b}; ${c}; ${constraints}.`;
+  if (variant % 4 === 1) return `${constraints}: ${c}; ${b}; ${a}; ${title}.`;
+  if (variant % 4 === 2) return `${a}; ${c}; ${title}; ${b}; ${constraints}.`;
+  return `${title}: ${b}; ${constraints}; ${a}; ${c}.`;
 }
 
 function evidenceSafeProposal(surface: string, evidence: readonly EvidenceSpan[], requestTerms: readonly string[], variant: number, title: string): string {
   if (!copiesCompleteEvidenceSentence(surface, evidence)) return tidyProposal(surface);
   const safe = requestTerms.slice(0, 8);
-  const fallback = tidyProposal(proposalShape(variant, title, [safe[0] ?? title, safe[1] ?? title, safe[2] ?? title], safe.join(" · ") || title));
+  const fallback = tidyProposal(proposalShape(variant, title, [safe[0] ?? title, safe[1] ?? title, safe[2] ?? title], safe.join("; ") || title));
   if (!copiesCompleteEvidenceSentence(fallback, evidence)) return fallback;
   const opaque = stableId("composition", { variant, requestTerms }).slice(-16);
-  return `⟦composition.${opaque}⟧:${variant + 1}.`;
+  return `${title}: ${opaque}; ${variant + 1}.`;
 }
 
 function copiesCompleteEvidenceSentence(surface: string, evidence: readonly EvidenceSpan[]): boolean {

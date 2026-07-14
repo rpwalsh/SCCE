@@ -85,7 +85,7 @@ export interface AppliedWorkspacePatch {
     schemaVersion: "yopp.patch-transaction-receipt.v1";
     transactionScope: "atomic-per-file-with-verified-transaction-rollback";
     planHash: PatchHash;
-    validation: { validatorId: string; evidenceHash: PatchHash } | null;
+    validation: { validatorId: string; evidenceHash: PatchHash };
     mutations: Array<{
       schemaVersion: "yopp.patch-mutation-receipt.v1";
       planHash: PatchHash;
@@ -115,7 +115,7 @@ export function parseReviewedPatchPlan(value: unknown): ReviewedPatchPlan {
   }
   const sortedPaths = operations.map(operation => operation.path).sort(compareCanonical);
   if (!operations.every((operation, index) => operation.path === sortedPaths[index])) throw new Error("patch plan operations are not in canonical path order");
-  const expected = hashCanonical({ schemaVersion: PATCH_PLAN_SCHEMA, operations });
+  const expected = canonicalPatchHash({ schemaVersion: PATCH_PLAN_SCHEMA, operations });
   if (planHash !== expected) throw new Error(`patch plan content does not match planHash; expected ${expected}`);
   return { schemaVersion: PATCH_PLAN_SCHEMA, operations, planHash };
 }
@@ -226,7 +226,7 @@ export function verifyWorkspaceCodingPatchPlanGeneration(
   for (const operation of result.plan.operations) {
     if (!selectedArtifacts.has(operation.path)) throw new Error(`coding plan operation is absent from the selected artifact trace: ${operation.path}`);
   }
-  const expectedRequestHash = hashCanonical({
+  const expectedRequestHash = canonicalPatchHash({
     requestId: request.requestId,
     text: request.requestText,
     requestedPaths: request.requestedPaths,
@@ -263,12 +263,14 @@ export function parseWorkspacePatchAttempt(value: unknown): WorkspacePatchAttemp
   const validation = parseValidationReceipt(receipt.validation);
   const mutations = array(receipt.mutations, "receipt mutations").map((value, index) => parseMutationReceipt(value, index, planHash));
   const receiptHash = patchHash(receipt.receiptHash, "receipt receiptHash");
-  const expectedReceiptHash = hashCanonical({ schemaVersion: "yopp.patch-transaction-receipt.v1", transactionScope, planHash, validation, mutations });
+  const expectedReceiptHash = canonicalPatchHash({ schemaVersion: "yopp.patch-transaction-receipt.v1", transactionScope, planHash, validation, mutations });
   if (receiptHash !== expectedReceiptHash) throw new Error(`workspace patch receipt content does not match receiptHash; expected ${expectedReceiptHash}`);
+  const validationPolicyId = nonEmptyString(input.validationPolicyId, "workspace patch validationPolicyId");
+  if (validation.validatorId !== validationPolicyId) throw new Error("workspace patch validation receipt does not match validationPolicyId");
   return {
     schemaVersion: WORKSPACE_PATCH_RESPONSE_SCHEMA,
     workspaceId: nonEmptyString(input.workspaceId, "workspace patch workspaceId"),
-    validationPolicyId: nonEmptyString(input.validationPolicyId, "workspace patch validationPolicyId"),
+    validationPolicyId,
     receipt: {
       schemaVersion: "yopp.patch-transaction-receipt.v1",
       transactionScope,
@@ -291,8 +293,8 @@ export function parseSessionApproval(value: unknown): { approved: { planId: stri
   };
 }
 
-function parseValidationReceipt(value: unknown): { validatorId: string; evidenceHash: PatchHash } | null {
-  if (value === null) return null;
+function parseValidationReceipt(value: unknown): { validatorId: string; evidenceHash: PatchHash } {
+  if (value === null) throw new Error("workspace patch response is missing its validation receipt");
   const input = exactRecord(value, "patch validation receipt", ["validatorId", "evidenceHash"]);
   return { validatorId: nonEmptyString(input.validatorId, "validation validatorId"), evidenceHash: patchHash(input.evidenceHash, "validation evidenceHash") };
 }
@@ -330,7 +332,7 @@ function parseMutationReceipt(value: unknown, index: number, expectedPlanHash: P
   }
   const mutationHash = patchHash(input.mutationHash, `patch mutation ${index} mutationHash`);
   const payload = { schemaVersion, planHash, operationIndex, kind: operationKind, path, beforeContentHash, afterContentHash };
-  const expectedMutationHash = hashCanonical(payload);
+  const expectedMutationHash = canonicalPatchHash(payload);
   if (mutationHash !== expectedMutationHash) throw new Error(`patch mutation ${index} content does not match mutationHash; expected ${expectedMutationHash}`);
   return { ...payload, mutationHash };
 }
@@ -422,7 +424,7 @@ function hashText(value: string): PatchHash {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
-function hashCanonical(value: unknown): PatchHash {
+export function canonicalPatchHash(value: unknown): PatchHash {
   return hashText(JSON.stringify(canonical(value)));
 }
 

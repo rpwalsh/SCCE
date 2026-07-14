@@ -26,6 +26,17 @@ describe("surface quality guard", () => {
     expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.canned);
   });
 
+  it("rejects localization keys, proof markers, and symbolic construct notation", () => {
+    for (const text of [
+      "i18n:construct.family.answer",
+      "[proof] source surface",
+      "alpha → beta → gamma",
+      "alpha · beta · gamma"
+    ]) {
+      expect(detectCannedAnswerSpeech(text).map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.controlId);
+    }
+  });
+
   it("rejects import inventory telemetry instead of surfacing it", () => {
     const text = "scce2:wiki / run:1; import run count 1; active import run ids 1. imported graph prior count 6400; shard count 1; graph node count 3937; graph edge count 2461; hyperedge count 2. learned prior count 6400; language prior count 0; program prior count 0; direct evidence count 0; profile excerpt evidence count 0. usable for activation; association; alpha field pressure; ppf ranking; exploration. missing direct source spans; missing language priors.";
 
@@ -43,7 +54,8 @@ describe("surface quality guard", () => {
       "The hydrated brain has",
       "The current answer has no sentence certified",
       "Direct evidence spans available for factual certification",
-      "I cannot certify external factual claims"
+      "I cannot certify external factual claims",
+      "Insufficient support."
     ]) {
       expect(source).not.toContain(forbidden);
     }

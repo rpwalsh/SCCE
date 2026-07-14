@@ -7,14 +7,7 @@ export type MessageBundle = Record<string, string>;
 
 const DEFAULT_LOCALE: LocaleId = "und";
 const BUNDLES: Record<string, MessageBundle> = {
-  [DEFAULT_LOCALE]: {
-    "turn.insufficient_support": "Insufficient support.",
-    "import.summary.graph_priors": "graph priors {count}",
-    "import.summary.language_priors": "language priors {count}",
-    "import.summary.program_priors": "program priors {count}",
-    "import.summary.direct_evidence": "direct evidence {count}",
-    "import.summary.unsupported": "unsupported {count}"
-  }
+  [DEFAULT_LOCALE]: {}
 };
 
 export function registerMessageBundle(locale: LocaleId, bundle: MessageBundle): void {
@@ -37,7 +30,7 @@ export function formatSurfaceMessage(key: MessageKey, vars: MessageVars = {}, lo
     const value = vars[rawKey];
     return value === undefined || value === null ? "" : String(value);
   });
-  return opaqueMessageToken(String(key), vars);
+  return "";
 }
 
 function normalizeLocale(locale: LocaleId): LocaleId {
@@ -59,16 +52,9 @@ export function validationMessageKey(key: MessageKey): string {
 }
 
 export function containsUnresolvedSurfaceKey(text: string): boolean {
-  const exposed = text.replace(/\[scce:[^\]]+\]/gu, "");
-  return exposed.includes("i18n:") ||
-    exposed.includes("surface.") ||
-    exposed.includes("mouth.") ||
-    exposed.includes("workspace.kernel.");
-}
-
-function opaqueMessageToken(key: string, vars: MessageVars): string {
-  const entries = Object.entries(vars)
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([name, value]) => `${name}=${String(value)}`);
-  return entries.length ? `[scce:${key} ${entries.join(" ")}]` : `[scce:${key}]`;
+  return text.includes("[scce:") ||
+    text.includes("i18n:") ||
+    text.includes("surface.") ||
+    text.includes("mouth.") ||
+    text.includes("workspace.kernel.");
 }

@@ -46,6 +46,7 @@ import type { NodeScceRuntime } from "./runtime.js";
 import { analyzeDeveloperRepo, type RepoIntelligenceAnalysis, type RepoIntelligenceFolderOptions } from "./repo-intelligence-folder.js";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFileInspection, type EngineeringCorpusFolderInspection } from "./engineering-corpus-folder.js";
 import { deriveTypeScriptCodeActionRepair } from "./typescript-code-actions.js";
+import { resolvePortablePackageScriptArgv, resolveTypeScriptCommandLane } from "./typescript-command-lane.js";
 
 export interface WorkspaceRuntimeOptions extends RepoIntelligenceFolderOptions {
   maxDocumentBytes?: number;
@@ -1820,18 +1821,31 @@ function observedTypecheckCommand(commands: readonly WorkspaceCommandSummary[], 
       || left.sourcePath.localeCompare(right.sourcePath)
       || left.command.localeCompare(right.command));
   for (const source of candidates) {
-    const command = simpleObservedCommand(source);
-    if (command && executableName(command.command) === "tsc") return { command, source };
+    const cwd = commandContextDirectory(source.sourcePath);
+    const resolved = resolveTypeScriptCommandLane({
+      rawCommand: source.command,
+      sourceSelector: `scripts.${source.name}`,
+      sourcePath: source.sourcePath,
+      cwd
+    });
+    if (resolved.ok && resolved.lane.wrapper === "direct") {
+      return {
+        command: {
+          command: resolved.lane.compilerExecutable,
+          args: resolved.lane.normalizedTscArgs,
+          cwd
+        },
+        source
+      };
+    }
   }
   return undefined;
 }
 
 function simpleObservedCommand(source: WorkspaceCommandSummary): ProgramGraph["build"] | undefined {
-  if (!source.command.trim() || /[\r\n;&|<>]/u.test(source.command)) return undefined;
-  const words = shellWords(source.command);
-  if (words.length < 1 || words.some(word => !word || word.includes("\u0000"))) return undefined;
-  const command = words[0]!;
-  return { command, args: words.slice(1), cwd: commandContextDirectory(source.sourcePath) };
+  const resolved = resolvePortablePackageScriptArgv(source.command);
+  if (!resolved.ok) return undefined;
+  return { command: resolved.executable, args: resolved.args, cwd: commandContextDirectory(source.sourcePath) };
 }
 
 function workspaceCommandContextContains(sourcePath: string, targetPath: string): boolean {
@@ -1848,10 +1862,6 @@ function commandContextDirectory(sourcePath: string): string {
   const normalized = normalizePath(sourcePath);
   const directory = path.posix.dirname(normalized);
   return directory === "." ? "." : directory;
-}
-
-function executableName(command: string): string {
-  return path.basename(command).replace(/\.(?:cmd|exe)$/iu, "").toLocaleLowerCase();
 }
 
 function hasExactTypeScriptCodeActionSelector(requestText: string): boolean {

@@ -129,6 +129,7 @@ export * from "./discourse-state.js";
 export * from "./prediction.js";
 export * from "./invention-planner.js";
 export * from "./turn-requirements.js";
+export * from "./request-authority.js";
 export * from "./cognitive-planner.js";
 export * from "./spectral-forecast.js";
 export * from "./source-completion-contract.js";

@@ -68,7 +68,7 @@ describe("end-to-end working machine source-only path", () => {
     expect(beforeSpoken.force).toBe("underdetermined");
     expect(beforeSpoken.evidenceRefs).toEqual([]);
     expect(JSON.stringify(beforeSpoken.realizationTrace.walshSurfaceEnergy)).toContain("unsupported_prior_only");
-    assertHumanSurface(beforeSpoken.text);
+    expect(beforeSpoken.text).toBe("");
 
     const gaps = detectFieldGaps({ proofResults: [beforeProof] });
     const unsafe: ToolCapability = {
@@ -115,6 +115,17 @@ describe("end-to-end working machine source-only path", () => {
       entailment: entailmentFromProof("Pump alpha pressure is 42 psi.", required(learning.continueDecision.proofAfterUpdate), [promotedEvidence]),
       languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "learned", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }),
       learningDecision: learning.continueDecision,
+      semanticInput: {
+        schema: "scce.mouth.semantic_input.v1",
+        authority: "factual",
+        slots: [{
+          id: "mouth.slot.source.answer.pressure",
+          roleId: "mouth.role.source.answer",
+          value: promotedEvidence.text,
+          evidenceIds: [promotedEvidence.id],
+          sourceId: String(promotedEvidence.sourceId)
+        }]
+      },
       targetLanguage: "working-language"
     });
     expect(["entailed", "observed"]).toContain(afterSpoken.force);
@@ -175,10 +186,10 @@ describe("end-to-end working machine source-only path", () => {
     });
     expect(prediction.proofStatusId).toBe("proof.status.non_certifying_prediction");
     expect(predictionSpoken.force).toBe("underdetermined");
-    expect(predictionSpoken.text).toContain("pump alpha pressure");
-    expect(predictionSpoken.text).toContain("42 psi");
+    expect(prediction.predictedSurface).toContain("pump alpha pressure");
+    expect(prediction.predictedSurface).toContain("42 psi");
+    expect(predictionSpoken.text).toBe("");
     expect(predictionSpoken.text).not.toContain("certified fact unavailable");
-    assertHumanSurface(predictionSpoken.text);
 
     const invention = createInventionConstruct({
       title: "pressure drift CLI",

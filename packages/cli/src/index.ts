@@ -1186,7 +1186,7 @@ function usage(error?: string): void {
     "  pnpm scce replay <episodeId>",
     "  pnpm scce benchmark <config>",
     "",
-    "Config defaults to scce.config.json. No environment variable substitution is used."
+    "Config defaults to scce.config.json. SCCE_DATABASE_URL may override the complete PostgreSQL connection URL; other config values are read from the file."
   ].join("\n") + "\n");
 }
 
