@@ -28,6 +28,7 @@ export interface NgramMemoryCompilation {
 
 export interface NgramMemoryInput {
   streamId: string;
+  sourceSystem?: string;
   profile: LanguageProfile;
   sourceVersionId: SourceVersionId;
   text: string;
@@ -74,7 +75,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
             sourceVersionId: input.sourceVersionId,
             evidenceId: evidenceIds[0],
             observedAt: input.createdAt,
-            metadata: toJsonValue({ profileId: input.profile.id, error: entry.error, approximate: entry.error > 0, evidenceIds: evidenceIds.slice(0, 16) })
+            metadata: toJsonValue({ profileId: input.profile.id, ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), error: entry.error, approximate: entry.error > 0, evidenceIds: evidenceIds.slice(0, 16) })
           } satisfies NgramObservation;
         });
       });
@@ -88,21 +89,23 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         modelJson: toJsonValue({
           sourceVersionId: input.sourceVersionId,
           profileId: input.profile.id,
+          ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}),
           languageHint,
           model,
           compact: compactKneserNeyForProfile(model, input.text)
         }),
         updatedAt: input.createdAt
       } satisfies NgramModelRecord));
-      const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, symbols, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
-      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory });
+      const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
+      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory });
       const semanticFrames = input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
         span,
         index,
         input.profile.id,
         options.idFactory,
         options.hasher,
-        input.createdAt
+        input.createdAt,
+        input.sourceSystem
       ));
       return {
         observations,
@@ -113,6 +116,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         audit: toJsonValue({
           streamId: input.streamId,
           sourceVersionId: input.sourceVersionId,
+          sourceSystem: input.sourceSystem ?? null,
           languageHint,
           symbolCount: symbols.length,
           orders: counters.map(counter => ({ order: counter.order, retained: counter.size, total: counter.total })),
@@ -131,6 +135,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
 function compileLanguageUnits(input: {
   profile: LanguageProfile;
   sourceVersionId: SourceVersionId;
+  sourceSystem?: string;
   symbols: string[];
   evidenceIds: EvidenceSpan["id"][];
   alpha: number;
@@ -155,6 +160,7 @@ function compileLanguageUnits(input: {
 function unit(input: {
   profile: LanguageProfile;
   sourceVersionId: SourceVersionId;
+  sourceSystem?: string;
   evidenceIds: EvidenceSpan["id"][];
   idFactory: IdFactory;
   hasher: Hasher;
@@ -170,13 +176,14 @@ function unit(input: {
     competenceVector: stableVector(features, input.hasher, 16),
     alpha,
     evidenceIds: input.evidenceIds.slice(0, 24),
-    metadata: toJsonValue({ profileEntropy: input.profile.entropy, shape: shapeOf(text) })
+    metadata: toJsonValue({ profileEntropy: input.profile.entropy, ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), shape: shapeOf(text) })
   };
 }
 
 function compileLanguagePatterns(input: {
   profile: LanguageProfile;
   sourceVersionId: SourceVersionId;
+  sourceSystem?: string;
   symbols: string[];
   evidence: EvidenceSpan[];
   evidenceIds: EvidenceSpan["id"][];
@@ -188,11 +195,11 @@ function compileLanguagePatterns(input: {
   const transitionCounts = count(shapes.slice(1).map((shape, i) => `${shapes[i]}→${shape}`));
   const segmentSizes = input.evidence.map(span => symbolizeData(span.text).length);
   const patterns: Array<{ kind: LanguagePatternRecord["patternKind"]; support: number; entropy: number; payload: JsonValue }> = [
-    { kind: "segmentation", support: clamp01(input.evidence.length / 64), entropy: entropy(segmentSizes), payload: toJsonValue({ segmentSizes: segmentSizes.slice(0, 256), sourceVersionId: input.sourceVersionId }) },
-    { kind: "morphology", support: clamp01(new Set(shapes).size / Math.max(1, shapes.length)), entropy: shapeEntropy, payload: toJsonValue({ topShapes: topEntries(count(shapes), 128) }) },
-    { kind: "syntax", support: clamp01(transitionCounts.size / Math.max(1, shapes.length)), entropy: entropy([...transitionCounts.values()]), payload: toJsonValue({ transitions: topEntries(transitionCounts, 128) }) },
-    { kind: "cadence", support: clamp01(input.symbols.length / 8000), entropy: entropy(input.symbols.map(symbol => [...symbol].length)), payload: toJsonValue({ symbolLengths: topEntries(count(input.symbols.map(symbol => String([...symbol].length))), 64) }) },
-    { kind: "semantic_role", support: clamp01(input.profile.charNgrams.length / 256), entropy: input.profile.entropy, payload: toJsonValue({ profileId: input.profile.id, scripts: input.profile.scripts }) }
+    { kind: "segmentation", support: clamp01(input.evidence.length / 64), entropy: entropy(segmentSizes), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), segmentSizes: segmentSizes.slice(0, 256), sourceVersionId: input.sourceVersionId }) },
+    { kind: "morphology", support: clamp01(new Set(shapes).size / Math.max(1, shapes.length)), entropy: shapeEntropy, payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), topShapes: topEntries(count(shapes), 128) }) },
+    { kind: "syntax", support: clamp01(transitionCounts.size / Math.max(1, shapes.length)), entropy: entropy([...transitionCounts.values()]), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), transitions: topEntries(transitionCounts, 128) }) },
+    { kind: "cadence", support: clamp01(input.symbols.length / 8000), entropy: entropy(input.symbols.map(symbol => [...symbol].length)), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), symbolLengths: topEntries(count(input.symbols.map(symbol => String([...symbol].length))), 64) }) },
+    { kind: "semantic_role", support: clamp01(input.profile.charNgrams.length / 256), entropy: input.profile.entropy, payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), profileId: input.profile.id, scripts: input.profile.scripts }) }
   ];
   return patterns.map(pattern => ({
     id: input.idFactory.semanticId("language_pattern", { profileId: input.profile.id, kind: pattern.kind, payload: pattern.payload }),
@@ -206,13 +213,14 @@ function compileLanguagePatterns(input: {
   }));
 }
 
-function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: string, idFactory: IdFactory, hasher: Hasher, createdAt: number): SemanticFrameRecord {
+function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: string, idFactory: IdFactory, hasher: Hasher, createdAt: number, sourceSystem?: string): SemanticFrameRecord {
   const symbols = symbolizeData(span.text).slice(0, 256);
   const features = featureSet(span.text, 256);
   const roles = syntaxSignatures(symbols).slice(0, 16);
   const frameJson = toJsonValue({
     sourceVersionId: span.sourceVersionId,
     profileId,
+    ...(sourceSystem ? { sourceSystem } : {}),
     evidenceId: span.id,
     index,
     textHash: hasher.digestHex(span.text),

@@ -291,7 +291,7 @@ function workspacePlanCandidate(
   return {
     id: `workspace-plan:${plan.planHash}:${candidateIndex}`,
     kind: "workspace-proposal",
-    answer: "",
+    answer: workspacePatchPlanSurface(plan),
     force: "conjectured",
     evidenceIds: [],
     scores: scoresFromQuality(input, quality),
@@ -320,6 +320,35 @@ function workspacePlanCandidate(
       }
     })
   };
+}
+
+/**
+ * A workspace proposal is already a complete, hash-verified transaction plan.
+ * Keep its user-facing representation structural: the manifest carries the
+ * proof identity and operation hashes, while each materialized file body is
+ * copied byte-for-byte from the selected plan. No language-specific narration
+ * is introduced here and the plan remains unauthorized and unexecuted.
+ */
+function workspacePatchPlanSurface(plan: PatchTransactionPlan): string {
+  const manifest = {
+    schemaVersion: plan.schemaVersion,
+    planHash: plan.planHash,
+    operations: plan.operations.map(operation => ({
+      kind: operation.kind,
+      path: operation.path,
+      beforeContentHash: operation.beforeContentHash,
+      afterContentHash: operation.afterContentHash
+    }))
+  };
+  const materializedFiles = plan.operations.flatMap(operation => {
+    if (operation.kind === "delete") return [];
+    const content = operation.content.endsWith("\n") ? operation.content : `${operation.content}\n`;
+    return [`\`${operation.path}\`\n\n\`\`\`\n${content}\`\`\``];
+  });
+  return [
+    `\`\`\`json\n${JSON.stringify(manifest, null, 2)}\n\`\`\``,
+    ...materializedFiles
+  ].join("\n\n");
 }
 
 function workspaceArtifactCandidate(
@@ -403,7 +432,15 @@ function actionPlanCandidate(
   const phase = cleanPlanToken(plan.phase);
   if (!id || !capabilityId || plan.status !== "planned" || !["read", "prepare", "commit"].includes(phase ?? "")) return undefined;
   const permission = jsonRecord(plan.permission);
-  const answer = cleanIncomingSurface(plan.previewSurface);
+  const suppliedPreview = cleanIncomingSurface(plan.previewSurface);
+  const answer = suppliedPreview || actionPlanSurface({
+    requestText: input.requestText,
+    planId: id,
+    capabilityId,
+    phase: phase as "read" | "prepare" | "commit",
+    input: jsonRecord(plan.input),
+    permission
+  });
   const quality = planCandidateQuality(input, {
     requirementCoverage: operatorActivation(input, [COGNITIVE_OPERATOR_IDS.actionPlanning]),
     executableCompleteness: 0.68,
@@ -442,10 +479,45 @@ function actionPlanCandidate(
           ...(permission.allowed === false ? ["state.authorization.absent.v1"] : []),
           "state.execution.pending.v1"
         ],
-        surfaceOriginId: answer ? "surface.action.preview.input.v1" : null
+        surfaceOriginId: suppliedPreview
+          ? "surface.action.preview.input.v1"
+          : "surface.action.preview.structural.v1"
       }
     })
   };
+}
+
+/**
+ * Capability plans do not always carry a learned prose preview. Preserve the
+ * selected meaning as a structural, non-executing artifact built only from
+ * the request and the governed plan. This keeps realization language-neutral
+ * and prevents an admitted action candidate from becoming an empty utterance.
+ */
+function actionPlanSurface(input: {
+  requestText: string;
+  planId: string;
+  capabilityId: string;
+  phase: "read" | "prepare" | "commit";
+  input: Record<string, JsonValue | undefined>;
+  permission: Record<string, JsonValue | undefined>;
+}): string {
+  const allowedOperations = stringArray(input.input.allowedOperations);
+  const objectiveSurface = input.requestText.normalize("NFKC").trim().slice(0, 4096);
+  const mode = cleanPlanToken(input.permission.mode) ?? null;
+  const allowed = typeof input.permission.allowed === "boolean" ? input.permission.allowed : null;
+  const dryRun = typeof input.permission.dryRun === "boolean" ? input.permission.dryRun : null;
+  const plan = {
+    artifactKind: "action-preview",
+    planId: input.planId,
+    capabilityId: input.capabilityId,
+    phase: input.phase,
+    status: "planned",
+    objectiveSurface,
+    allowedOperations,
+    permission: { allowed, dryRun, mode },
+    executionState: "not_executed"
+  };
+  return `\`\`\`json\n${JSON.stringify(plan, null, 2)}\n\`\`\``;
 }
 
 function dialogueStateCandidate(input: CandidateGenerationInput): CandidateSurface | undefined {
@@ -704,7 +776,12 @@ function looksControlSurface(answer: string): boolean {
 function cleanIncomingSurface(value: JsonValue | undefined): string {
   if (typeof value !== "string") return "";
   const clean = value.replace(/\s+/gu, " ").trim();
-  return clean && !looksStructuredTelemetry(clean) && !looksControlSurface(clean) ? clean : "";
+  return clean
+    && !looksStructuredTelemetry(clean)
+    && !looksControlSurface(clean)
+    && !containsProofDiagnosticSurface(clean)
+    ? clean
+    : "";
 }
 
 function boundEvidenceSurface(evidenceIds: readonly EvidenceId[], evidence: readonly EvidenceSpan[]): string {
@@ -826,13 +903,42 @@ function proposalCandidate(
   candidateIndex: number
 ): CandidateSurface | undefined {
   const kind = candidateKindFromProposal(proposal);
-  const answer = proposalSurface(proposal);
-  const quality = candidateQualityFromProposal(input, proposal, answer);
   const force = epistemicForceFromProposal(proposal);
   const evidenceById = new Map(input.evidence.map(span => [String(span.id), span.id]));
-  const evidenceIds = proposal.evidenceIds
+  const declaredEvidenceIds = [
+    ...proposal.evidenceIds,
+    ...proposal.claims.flatMap(claim => claim.evidenceIds),
+    ...proposal.relations.flatMap(relation => relation.evidenceIds),
+    ...proposal.steps.flatMap(step => step.evidenceIds)
+  ];
+  let evidenceIds = [...new Set(declaredEvidenceIds.map(String))]
     .map(id => evidenceById.get(String(id)))
     .filter((id): id is EvidenceId => Boolean(id));
+  const proposalAnswer = proposalSurface(proposal);
+  let answer = proposalAnswer;
+  let surfaceOriginId = proposalAnswer ? "surface.cognitive_proposal.input.v1" : undefined;
+  if (!answer && reasonedProposalCanUseBoundEvidence(kind, proposal, input.entailment, input.evidence)) {
+    const proofEvidenceIds = input.entailment.evidenceIds
+      .map(id => evidenceById.get(String(id)))
+      .filter((id): id is EvidenceId => Boolean(id));
+    const boundFromProof = evidenceIds.length > 0 || proofEvidenceIds.length > 0;
+    const fallbackEvidenceIds = evidenceIds.length
+      ? evidenceIds
+      : proofEvidenceIds.length
+        ? proofEvidenceIds
+        : input.evidence.map(span => span.id);
+    const evidenceSurface = boundEvidenceSurface(fallbackEvidenceIds, input.evidence);
+    if (evidenceSurface) {
+      answer = evidenceSurface;
+      evidenceIds = [...new Set([...evidenceIds, ...fallbackEvidenceIds].map(String))]
+        .map(id => evidenceById.get(id))
+        .filter((id): id is EvidenceId => Boolean(id));
+      surfaceOriginId = boundFromProof
+        ? "surface.cognitive_proposal.bound_proof_evidence.v1"
+        : "surface.cognitive_proposal.bound_selected_evidence.v1";
+    }
+  }
+  const quality = candidateQualityFromProposal(input, proposal, answer);
   const constructIds = [...new Set(proposal.constructIds)];
   return {
     id: `proposal:${proposal.id}:${candidateIndex}`,
@@ -889,13 +995,33 @@ function proposalCandidate(
         stepIds: proposal.steps.map(step => step.id),
         artifactIds: proposal.artifacts.map(artifact => artifact.id),
         semanticFrameIds: proposal.semanticFrameIds,
-        surfaceOriginId: answer ? "surface.cognitive_proposal.input.v1" : null
+        surfaceOriginId: surfaceOriginId ?? null,
+        surfaceEvidenceIds: surfaceOriginId?.startsWith("surface.cognitive_proposal.bound_")
+          ? evidenceIds.map(String)
+          : []
       },
       constructIds,
       quality,
       proposalTrace: proposal.trace
     })
   };
+}
+
+function reasonedProposalCanUseBoundEvidence(
+  kind: CandidateSurface["kind"],
+  proposal: CognitiveProposal,
+  entailment: SemanticEntailmentResult,
+  evidence: readonly EvidenceSpan[]
+): boolean {
+  if (kind !== "reasoned-synthesis" && kind !== "causal-inference" && kind !== "temporal-inference") return false;
+  if (evidence.length === 0 || entailment.support <= entailment.contradiction) return false;
+  return proposal.claims.some(claim =>
+    claim.basis === "reasoned_inference"
+    || claim.basis === "causal_inference"
+    || claim.basis === "temporal_inference"
+    || claim.basis === "source_synthesis"
+    || claim.basis === "direct_evidence"
+  );
 }
 
 function proposalSurface(proposal: CognitiveProposal): string {

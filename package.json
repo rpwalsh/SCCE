@@ -2,7 +2,7 @@
   "name": "scce-v3",
   "version": "3.0.0",
   "private": true,
-  "description": "SCCE v3.0 greenfield Postgres-backed cognitive runtime",
+  "description": "Pre-release local Postgres-backed graph-native cognitive runtime",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",

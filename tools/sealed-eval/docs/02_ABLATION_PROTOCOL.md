@@ -45,7 +45,7 @@ Run conditions in randomized order or on independent clean clones. Learning and 
 - Do not combine categories until preregistered weights are applied.
 - Correct for multiple comparisons when claiming statistical significance across many ablations.
 
-## Current Yopp implementation
+## Current SCCE implementation
 
 All listed condition IDs are wired into the production runtime with immutable
 configuration hashes, condition-specific cache namespaces, and component traces.

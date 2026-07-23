@@ -47,6 +47,88 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(candidate?.answer).not.toContain("scores");
   });
 
+  it("uses exact proof-bound source text when a reasoned proposal has no realizable claim surface", () => {
+    const observed = evidence("evidence.reasoned-surface", "એક જ સમયે 42 kPa અને 57 kPa પરસ્પર વિરોધી માપ છે.");
+    const operator = activeOperator(COGNITIVE_OPERATOR_IDS.relationComposition);
+    const proposal = cognitiveProposal({
+      id: "proposal.reasoned-control-surface",
+      operatorActivations: [operator],
+      claims: [claim("claim.reasoned-control-surface", "i18n:construct.family.answer", "reasoned_inference")],
+      evidenceIds: []
+    });
+    const field = createCandidateEngine().generate({
+      ...engineFixture([observed]),
+      requestedAuthority: "reasoned",
+      requirementField: requirements({ inferentialDepth: 0.98 }),
+      operatorActivations: [operator],
+      cognitiveProposals: [proposal]
+    });
+
+    const candidate = proposalCandidate(field, proposal.id);
+    expect(candidate.answer).toBe(observed.text);
+    expect(candidate.evidenceIds).toEqual([observed.id]);
+    expect(candidate.kind).toBe("reasoned-synthesis");
+    expect(JSON.stringify(candidate.audit)).toContain('"surfaceOriginId":"surface.cognitive_proposal.bound_proof_evidence.v1"');
+    expect(JSON.stringify(candidate.audit)).toContain(String(observed.id));
+  });
+
+  it("labels exact selected-source fallback honestly when the proof has no evidence ids", () => {
+    const observed = evidence("evidence.reasoned-selected-surface", "42 kPa and 57 kPa are incompatible measurements of one state at one time.");
+    const operator = activeOperator(COGNITIVE_OPERATOR_IDS.relationComposition);
+    const proposal = cognitiveProposal({
+      id: "proposal.reasoned-selected-control-surface",
+      operatorActivations: [operator],
+      claims: [claim("claim.reasoned-selected-control-surface", "i18n:construct.family.answer", "reasoned_inference")],
+      steps: [{
+        id: "step.reasoned-selected-proof-control",
+        order: 0,
+        text: "proof_9ee8a4acc2710d48ada36219bd27831eca7247fbe6bedebf",
+        basis: "learned_prior",
+        dependsOnIds: [],
+        evidenceIds: [],
+        trace: {}
+      }],
+      evidenceIds: []
+    });
+    const fixture = engineFixture([observed]);
+    fixture.entailment.evidenceIds = [];
+    fixture.entailment.proof.evidenceIds = [];
+    const field = createCandidateEngine().generate({
+      ...fixture,
+      requestedAuthority: "reasoned",
+      requirementField: requirements({ inferentialDepth: 0.98 }),
+      operatorActivations: [operator],
+      cognitiveProposals: [proposal]
+    });
+
+    const candidate = proposalCandidate(field, proposal.id);
+    expect(candidate.answer).toBe(observed.text);
+    expect(candidate.evidenceIds).toEqual([observed.id]);
+    expect(JSON.stringify(candidate.audit)).toContain('"surfaceOriginId":"surface.cognitive_proposal.bound_selected_evidence.v1"');
+  });
+
+  it("does not invent a fallback surface for an evidence-free reasoned proposal", () => {
+    const operator = activeOperator(COGNITIVE_OPERATOR_IDS.relationComposition);
+    const proposal = cognitiveProposal({
+      id: "proposal.reasoned-control-surface-without-proof",
+      operatorActivations: [operator],
+      claims: [claim("claim.reasoned-control-surface-without-proof", "i18n:construct.family.answer", "reasoned_inference")],
+      evidenceIds: []
+    });
+    const field = createCandidateEngine().generate({
+      ...engineFixture([]),
+      requestedAuthority: "reasoned",
+      requirementField: requirements({ inferentialDepth: 0.98 }),
+      operatorActivations: [operator],
+      cognitiveProposals: [proposal]
+    });
+
+    const candidate = proposalCandidate(field, proposal.id);
+    expect(candidate.answer).toBe("");
+    expect(candidate.evidenceIds).toEqual([]);
+    expect(JSON.stringify(candidate.audit)).toContain('"surfaceOriginId":null');
+  });
+
   it("keeps a program proposal semantic when its only incoming surface is an internal control id", () => {
     const operator = activeOperator(COGNITIVE_OPERATOR_IDS.programPlanning);
     const proposal = cognitiveProposal({
@@ -185,7 +267,10 @@ describe("general-cognition candidate and judge contracts", () => {
     const dialogue = field.candidates.find(row => row.proposalId === "dialogue-plan:turn.fixture");
     expect(workspace?.proposalId).toBe(`workspace-plan:${workspacePlan.planHash}`);
     expect(workspace?.boundaries).toContain("workspace-plan-not-executed");
-    expect(workspace?.answer).toBe("");
+    expect(workspace?.answer).toContain(workspacePlan.planHash);
+    expect(workspace?.answer).toContain('"kind": "create"');
+    expect(workspace?.answer).toContain('"path": "src/new.ts"');
+    expect(workspace?.answer).toContain("export const value = 1;\n");
     expect(JSON.stringify(workspace?.audit)).toContain('"frameId":"semantic.workspace.patch_plan.v1"');
     expect(JSON.stringify(workspace?.audit)).toContain("src/new.ts");
     expect(workspaceArtifact?.answer).toBe("");
@@ -193,9 +278,13 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(JSON.stringify(workspaceArtifact?.audit)).toContain("src/proposed.ts");
     expect(workspaceArtifact?.boundaries).toContain("workspace-artifact-not-byte-validated");
     expect(action?.claimBases).toEqual(["conjectured"]);
-    expect(action?.answer).toBe("");
+    expect(action?.answer).toContain('"artifactKind": "action-preview"');
+    expect(action?.answer).toContain('"objectiveSurface": "fixture request"');
+    expect(action?.answer).toContain('"capabilityId": "filesystem.write"');
+    expect(action?.answer).toContain('"executionState": "not_executed"');
     expect(JSON.stringify(action?.audit)).toContain('"frameId":"semantic.action.preview.v1"');
     expect(JSON.stringify(action?.audit)).toContain('"capabilityId":"filesystem.write"');
+    expect(JSON.stringify(action?.audit)).toContain('"surfaceOriginId":"surface.action.preview.structural.v1"');
     expect(dialogue?.kind).toBe("dialogue-continuation");
     expect(dialogue?.answer).toBe("");
     expect(dialogue?.missedRequirementIds).toEqual(["slot.target"]);

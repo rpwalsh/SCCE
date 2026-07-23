@@ -1,5 +1,9 @@
 # Fluent Cognitive Engine Delivery Plan
 
+Status: unachieved roadmap and acceptance target. The protected public review is
+`NOT_EXECUTED`; current implementation evidence does not establish equivalence to a
+general-purpose assistant. See `REPO_COMPLETION_MAP.md` for the verified boundary.
+
 ## Objective
 
 SCCE must produce responses that blind reviewers cannot reliably distinguish from

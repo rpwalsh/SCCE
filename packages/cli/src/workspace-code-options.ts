@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const WORKSPACE_CODE_USAGE = "scce workspace plan-code --path=<workspace-file> [--path=<workspace-file>] [options] <request>" as const;
+export const WORKSPACE_CODE_USAGE = "scce workspace plan-code --path=<workspace-file> [--diagnostic-code=<integer>] [options] <request>" as const;
 export const WORKSPACE_CODING_REQUEST_MAX_BYTES = 20_000;
 export const WORKSPACE_CODING_REQUEST_MAX_PATHS = 256;
 export const WORKSPACE_CODING_PATH_MAX_CHARS = 1_024;
@@ -17,6 +17,7 @@ export type WorkspaceCodingCheck = (typeof WORKSPACE_CODING_CHECKS)[number];
 export interface WorkspaceCodingCliRequest {
   text: string;
   requestedPaths: string[];
+  diagnosticCodes: number[];
   requestId?: string;
   rootPath?: string;
   validatorId: "trusted-host-pnpm-validate.v1" | "docker-pnpm-validate.v1";
@@ -24,9 +25,42 @@ export interface WorkspaceCodingCliRequest {
   workspaceOptionArgs: string[];
 }
 
+export interface WorkspaceCodingTurnArgs {
+  turnArgs: string[];
+  codingRequest?: WorkspaceCodingCliRequest;
+}
+
+/** Splits explicit chat controls from the structured compiler selector. */
+export function splitWorkspaceCodingTurnArgs(args: readonly string[]): WorkspaceCodingTurnArgs {
+  if (!args.includes("--workspace-code")) return { turnArgs: [...args] };
+  if (args.filter(arg => arg === "--workspace-code").length !== 1) {
+    throw new Error("turn contains duplicate --workspace-code");
+  }
+  const turnArgs: string[] = [];
+  const codingArgs: string[] = [];
+  for (const arg of args) {
+    if (arg === "--workspace-code") continue;
+    if (isTurnOnlyOption(arg)) {
+      turnArgs.push(arg);
+      continue;
+    }
+    if (isWorkspaceCodingOption(arg)) {
+      codingArgs.push(arg);
+      continue;
+    }
+    if (arg.startsWith("--")) throw new Error(`unknown workspace coding turn option: ${arg}`);
+    turnArgs.push(arg);
+    codingArgs.push(arg);
+  }
+  const codingRequest = parseWorkspaceCodingRequest(codingArgs);
+  if (!codingRequest) throw new Error("--workspace-code requires a request and at least one --path");
+  return { turnArgs, codingRequest };
+}
+
 export function parseWorkspaceCodingRequest(args: readonly string[]): WorkspaceCodingCliRequest | undefined {
   const textParts: string[] = [];
   const requestedPaths: string[] = [];
+  const diagnosticCodes: number[] = [];
   const workspaceOptionArgs: string[] = [];
   let requestId: string | undefined;
   let rootPath: string | undefined;
@@ -53,6 +87,13 @@ export function parseWorkspaceCodingRequest(args: readonly string[]): WorkspaceC
     if (arg.startsWith("--request-id=")) {
       if (requestId !== undefined) throw new Error("workspace coding request contains duplicate --request-id");
       requestId = boundedIdFlag(arg.slice("--request-id=".length), "--request-id");
+      continue;
+    }
+    if (arg.startsWith("--diagnostic-code=")) {
+      const value = Number(requiredFlagValue(arg.slice("--diagnostic-code=".length), "--diagnostic-code"));
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error("--diagnostic-code must be a positive integer");
+      if (diagnosticCodes.includes(value)) throw new Error("workspace coding request contains duplicate diagnostic codes");
+      diagnosticCodes.push(value);
       continue;
     }
     if (arg.startsWith("--root=")) {
@@ -91,13 +132,14 @@ export function parseWorkspaceCodingRequest(args: readonly string[]): WorkspaceC
   }
   if (new Set(requestedPaths).size !== requestedPaths.length) throw new Error("workspace coding request contains duplicate paths");
   requestedPaths.sort(compareCanonical);
-  return { text, requestedPaths, requestId, rootPath, validatorId, checks, workspaceOptionArgs };
+  diagnosticCodes.sort((left, right) => left - right);
+  return { text, requestedPaths, diagnosticCodes, requestId, rootPath, validatorId, checks, workspaceOptionArgs };
 }
 
 export function defaultWorkspaceCodingRequestId(input: {
   workspaceId: string;
   expectedWorkspaceUpdatedAt: number;
-  request: Pick<WorkspaceCodingCliRequest, "text" | "requestedPaths" | "validatorId" | "checks">;
+  request: Pick<WorkspaceCodingCliRequest, "text" | "requestedPaths" | "diagnosticCodes" | "validatorId" | "checks">;
 }): string {
   return `workspace_code_${createHash("sha256")
     .update(JSON.stringify({
@@ -105,6 +147,7 @@ export function defaultWorkspaceCodingRequestId(input: {
       updatedAt: input.expectedWorkspaceUpdatedAt,
       text: input.request.text,
       paths: input.request.requestedPaths,
+      diagnosticCodes: input.request.diagnosticCodes,
       validatorId: input.request.validatorId,
       checks: input.request.checks
     }))
@@ -169,6 +212,34 @@ function validateCodingWorkspaceOption(arg: string, seen: Set<string>): boolean 
     throw new Error(`${flag} must be an integer from ${bound[0]} through ${bound[1]}`);
   }
   return true;
+}
+
+function isWorkspaceCodingOption(arg: string): boolean {
+  return arg.startsWith("--path=")
+    || arg.startsWith("--request-id=")
+    || arg.startsWith("--diagnostic-code=")
+    || arg.startsWith("--root=")
+    || arg.startsWith("--validator=")
+    || arg.startsWith("--checks=")
+    || arg === "--no-unsupported"
+    || arg.startsWith("--max-files=")
+    || arg.startsWith("--max-file-bytes=")
+    || arg.startsWith("--max-depth=")
+    || arg.startsWith("--max-document-bytes=");
+}
+
+function isTurnOnlyOption(arg: string): boolean {
+  return arg === "--web"
+    || arg.startsWith("--session-id=")
+    || arg.startsWith("--conversation-id=")
+    || arg.startsWith("--target-language=")
+    || arg.startsWith("--detail=")
+    || arg.startsWith("--detail-profile=")
+    || arg.startsWith("--web-limit=")
+    || arg.startsWith("--web-max-pages=")
+    || arg.startsWith("--web-max-bytes=")
+    || arg.startsWith("--web-min-evidence=")
+    || arg.startsWith("--web-min-lcb=");
 }
 
 function rejectDuplicateOption(flag: string, seen: Set<string>): void {

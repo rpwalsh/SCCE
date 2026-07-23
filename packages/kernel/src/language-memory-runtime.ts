@@ -318,6 +318,7 @@ export interface LanguageMemoryRuntime {
   profile(input: { state: LanguageMemoryRuntimeState }): JsonValue;
   observe(input: {
     streamId: string;
+    sourceSystem?: string;
     profile: LanguageProfile;
     sourceVersionId: SourceVersionId;
     text: string;
@@ -329,6 +330,7 @@ export interface LanguageMemoryRuntime {
   }): NgramMemoryCompilation;
   train(input: {
     streamId: string;
+    sourceSystem?: string;
     profile: LanguageProfile;
     sourceVersionId: SourceVersionId;
     text: string;
@@ -968,13 +970,15 @@ function generationPieces(
   const semanticFrameIds = new Set([...(input.semanticFrameIds ?? []), ...(input.frames ?? []).flatMap(frame => frame.semanticFrameIds ?? [])]);
   const rows: GenerationPiece[] = [];
   const allowRawNgramSurfacePieces = requiredTerms.length === 0 && frameAtoms.length === 0;
+  const contextFeatures = contextText ? featureSet(contextText, 256) : [];
+  const contextAnchors = new Set(symbolizeData(contextText).map(symbol => symbol.toLocaleLowerCase()).filter(isAnchorSymbol));
   const add = (text: string, source: GenerationPiece["source"], id: string | undefined, support: number, metadata: Partial<GenerationPiece> = {}) => {
     const clean = tidyInline(text);
     if (!clean) return;
-    const fit = contextText ? weightedJaccard(featureSet(clean, 256), featureSet(contextText, 256)) : 0.5;
+    const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
     if ((source === "observation" || source === "suggestion") && !allowRawNgramSurfacePieces) return;
-    if ((source === "observation" || source === "suggestion") && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextText))) return;
-    if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextText))) return;
+    if ((source === "observation" || source === "suggestion") && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
+    if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
     const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
     const score = clamp01(0.34 * clamp01(support) + 0.24 * fit + 0.22 * ngram.probability + 0.2 * sourcePreference(source));
     rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score });
@@ -3033,8 +3037,7 @@ function hasLetterLikeSurface(value: string): boolean {
   return false;
 }
 
-function hasContextAnchor(value: string, contextText: string): boolean {
-  const context = new Set(symbolizeData(contextText).map(symbol => symbol.toLocaleLowerCase()).filter(isAnchorSymbol));
+function hasContextAnchor(value: string, context: ReadonlySet<string>): boolean {
   if (!context.size) return false;
   return symbolizeData(value).map(symbol => symbol.toLocaleLowerCase()).some(symbol => isAnchorSymbol(symbol) && context.has(symbol));
 }
@@ -3222,6 +3225,7 @@ function trainWithOptions(input: Parameters<LanguageMemoryRuntime["train"]>[0], 
   }
   return createNgramMemoryCompiler({ idFactory: options.idFactory, hasher: options.hasher }).compile({
     streamId: input.streamId,
+    sourceSystem: input.sourceSystem,
     profile: input.profile,
     sourceVersionId: input.sourceVersionId,
     text: input.text,

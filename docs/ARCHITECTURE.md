@@ -87,7 +87,8 @@ validation so credentials need not be committed.
   weakening, telemetry-as-answer, unreceipted action results, and failed executable
   validation are hard failures rather than score tradeoffs.
 - `packages/kernel/src/mouth.ts` and `surface-realizer.ts`: realization of selected
-  semantic slots and relations through learned language memory. The Mouth does not get
+  semantic slots and relations through learned language memory and permitted source-bound
+  surfaces. The Mouth does not get
   authority to select facts, manufacture citations, or expose semantic/control IDs as
   user-facing text.
 - `packages/kernel/src/answer-revision.ts`: a typed critic/revision boundary capped at
@@ -97,6 +98,11 @@ validation so credentials need not be committed.
 `kernel.turn` records the requirement field, operator activations, proposals, selected
 candidate/Mouth state, and revision result as separate inspectable runtime artifacts.
 Ordinary answer prose does not need to expose that telemetry.
+
+When a request-matched semantic frame selects evidence whose source title differs from
+the request anchor, the selected evidence IDs travel with the runtime graph slice into
+source-anchor admissibility. This is an explicit routed binding, not a general body-text
+match: an unbound content mention cannot bypass source anchoring.
 
 `createSourceOnlyScceRuntime` exposes the in-memory source-only runtime for bounded
 fixture and diagnostic use; `createScceRuntime` currently aliases that factory. Its turn
@@ -109,7 +115,7 @@ runtime.
 
 An under-supported candidate does not terminate the turn with a canned refusal. The kernel may make one bounded transition through eligible local learning or configured search/fetch, canonical typed ingestion, graph/frontier update, and replanning. Fetched material must retain source identity, evidence spans, language, and temporal metadata before it can contribute factual support. The transition is bounded to one recovery pass so missing support cannot create an unbounded retrieval loop.
 
-Replanning preserves authority boundaries. Factual correction and negation require supporting contradiction or temporal proof. Reasoned and prior-bound answers remain qualified. After the single acquisition attempt is exhausted, the current user policy also licenses a bounded creative continuation for an under-supported factual or reasoned turn. That continuation is admissible only when active learned graph or language priors contribute non-request material and the candidate passes non-echo, risk, and unsupported-fact gates. Its claims carry `invented` basis, its evidence set is empty, its provenance is `generated_not_evidence`, and it receives no factual certification.
+Replanning preserves authority boundaries. Factual correction and negation require supporting contradiction or temporal proof. Reasoned and prior-bound answers remain qualified. After the single acquisition attempt is exhausted, the current user policy also licenses a bounded creative continuation for an under-supported factual or reasoned turn. That continuation is admissible only through a `learned_continuation` or `learned_structural_composition` realization with nonempty `sourcePieceIds`, bounded repetition, novel non-request material, and passing non-echo, risk, and unsupported-fact gates. Structural composition binds exact request-owned code-point and UTF-8 byte spans to source-owned learned structure and records their source-activation IDs; request spans remain constraints rather than evidence. Its claims carry `invented` basis, its evidence set is empty, its provenance is `generated_not_evidence`, and it receives no factual certification.
 
 The terminal creative policy is not a fabrication fallback. Empty connector, graph, and language state provides no honest material from which to synthesize useful knowledge; in that case the planner selects a non-assertive answer limited to source-derived content that actually exists, and the Mouth realizes it. If the Mouth cannot produce an admissible learned realization, an empty surface returns control to the kernel for terminal selection and is not emitted as the user's answer.
 
@@ -150,9 +156,10 @@ TypeScript standard library; it does not read unrecorded workspace or dependency
 source. The source-observed direct `tsc` invocation resolves either its explicit
 `-p`/`--project` target or an exact upward `tsconfig.json`; the config and content hash
 must be present in the durable snapshot, and the requested file must belong to its
-parsed file set. Every compiler request must include an explicit exact `TS####`,
-`fixName:<id>`, or canonical `codeFixIdentity:<id>` selector that resolves to one
-candidate; there is no implicit candidate selection. The resulting plan remains
+parsed file set. Every compiler request must include a structured positive integer
+diagnostic code (`diagnosticCodes` over HTTP or `--diagnostic-code=<integer>` in the
+CLI) that resolves to one candidate; request prose never selects the action. The
+resulting plan remains
 unauthorized and unexecuted and requires source-observed compiler/typecheck/test
 validation before application.
 

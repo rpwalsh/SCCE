@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import {
   parseReviewedPatchPlan,
-  parseWorkspaceCodingPatchPlanGeneration,
+  parseWorkspaceCodingPatchPlanResult,
   parseWorkspacePatchAttempt,
   parseWorkspaceStatus,
-  verifyWorkspaceCodingPatchPlanGeneration,
   type WorkspaceCodingPatchPlanRequest
 } from "../patch-protocol.js";
 
@@ -61,27 +60,46 @@ describe("VS Code reviewed patch protocol", () => {
     expect(() => parseWorkspaceStatus({ workspace: null, sources: [] })).toThrow(/initialize and ingest/u);
   });
 
-  it("accepts only an unauthorized, unexecuted coding plan with a matching request trace", () => {
+  it("parses only a request-bound, unauthorized selected compiler plan", () => {
     const request = fixtureCodingRequest();
     const generation = fixtureCodingGeneration(request);
-    expect(verifyWorkspaceCodingPatchPlanGeneration(parseWorkspaceCodingPatchPlanGeneration(generation), request).plan.planHash).toBe(generation.plan.planHash);
-    expect(() => parseWorkspaceCodingPatchPlanGeneration({ ...generation, command: "pnpm test" })).toThrow(/fields are invalid/u);
-    expect(() => parseWorkspaceCodingPatchPlanGeneration({
+    const parsed = parseWorkspaceCodingPatchPlanResult(generation, request);
+    expect(parsed).toMatchObject({ kind: "selected", diagnosticCode: 6133, plan: { planHash: generation.plan.planHash } });
+    expect(() => parseWorkspaceCodingPatchPlanResult({ ...generation, command: "pnpm test" }, request)).toThrow(/fields are invalid/u);
+    expect(() => parseWorkspaceCodingPatchPlanResult({
       ...generation,
       authorization: { required: true, granted: true, capabilityId: "workspace.patch.apply" }
-    })).toThrow(/unauthorized/u);
-    expect(() => parseWorkspaceCodingPatchPlanGeneration({
+    }, request)).toThrow(/unauthorized/u);
+    expect(() => parseWorkspaceCodingPatchPlanResult({
       ...generation,
       execution: { state: "executed", receipt: {} }
-    })).toThrow(/execution state/u);
-    expect(() => verifyWorkspaceCodingPatchPlanGeneration(parseWorkspaceCodingPatchPlanGeneration({
+    }, request)).toThrow(/state/u);
+    expect(() => parseWorkspaceCodingPatchPlanResult({
       ...generation,
-      programProposalTrace: { ...generation.programProposalTrace, requestHash: `sha256:${"0".repeat(64)}` }
-    }), request)).toThrow(/request trace does not match/u);
-    expect(() => verifyWorkspaceCodingPatchPlanGeneration(parseWorkspaceCodingPatchPlanGeneration({
-      ...generation,
-      programProposalTrace: { ...generation.programProposalTrace, selectedArtifactPaths: [] }
-    }), request)).toThrow(/selected artifact trace/u);
+      constraintGraph: { ...generation.constraintGraph, requestId: "another-request" }
+    }, request)).toThrow(/another request/u);
+  });
+
+  it("parses an unresolved compiler result without producing a plan", () => {
+    const request = fixtureCodingRequest();
+    const result = parseWorkspaceCodingPatchPlanResult({
+      schemaVersion: "scce.workspace.compiler_patch_plan.v1",
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      workspaceId: request.workspaceId,
+      revisionId: "revision-1",
+      revisionHash: sha256("revision-1"),
+      requestId: request.requestId,
+      requestedPaths: request.requestedPaths,
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"],
+      observedCompilerLaneCount: 0,
+      selection: null,
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
+    }, request);
+    expect(result).toEqual(expect.objectContaining({
+      kind: "unresolved",
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"]
+    }));
   });
 });
 
@@ -102,6 +120,7 @@ function fixtureCodingRequest(): WorkspaceCodingPatchPlanRequest {
     requestId: "request-1",
     requestText: "Add the verified value export.",
     requestedPaths: ["src/new.ts"],
+    diagnosticCodes: [6133],
     validationPlan: {
       validatorId: "trusted-host-pnpm-validate.v1",
       checks: ["compiler", "typecheck", "tests"]
@@ -112,44 +131,46 @@ function fixtureCodingRequest(): WorkspaceCodingPatchPlanRequest {
 function fixtureCodingGeneration(request: WorkspaceCodingPatchPlanRequest) {
   const revisionId = "revision-1";
   const revisionHash = sha256("revision-1");
-  const evidenceIds = ["evidence-1"];
   const plan = fixturePlan([{ kind: "create", path: "src/new.ts", content: "export const value = 2;\n" }]);
-  const requestHash = sha256(JSON.stringify(canonical({
-    requestId: request.requestId,
-    text: request.requestText,
-    requestedPaths: request.requestedPaths,
-    evidenceIds,
-    revisionId,
-    revisionHash
-  })));
+  const diagnosticIdentity = "diagnostic-6133";
+  const diagnosticNodeId = "diagnostic-node-6133";
+  const graphId = "constraint-graph-1";
   return {
-    schemaVersion: "yopp.workspace-plan-generation.v1",
+    schemaVersion: "scce.workspace.compiler_patch_plan.v1",
+    statusId: "scce.workspace.compiler_patch.selected.v1",
     workspaceId: request.workspaceId,
     revisionId,
     revisionHash,
-    plan,
-    scoreTrace: { schemaVersion: "yopp.workspace-patch-score.v1" },
-    safety: { snapshotComplete: true },
-    validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler", "tests", "typecheck"] },
-    authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
-    execution: { state: "not_executed", receipt: null },
-    rollbackScope: "atomic-per-file-with-verified-transaction-rollback",
-    programProposalTrace: {
-      schemaVersion: "scce.workspace-program-proposal.trace.v1",
-      source: "program-graph-full-file",
+    constraintGraph: {
+      schema: "scce.workspace.task_constraint_graph.v1",
+      id: graphId,
+      workspaceRevision: { workspaceId: request.workspaceId, revisionId, revisionHash },
       requestId: request.requestId,
-      requestHash,
-      programId: "program-1",
-      sourcePlanIds: ["source-plan-1"],
-      evidenceIds,
-      requestedPaths: request.requestedPaths,
-      derivedDependencyPaths: [],
-      selectedArtifactPaths: ["src/new.ts"],
-      regressionTestPaths: [],
-      verifiedParentDirectoryPaths: ["src"],
-      hydrationValidated: true,
-      fullFileMaterialized: true
-    }
+      nodes: [
+        { id: "request-node", kindId: "scce.task.request.v1", subjectId: request.requestId, metadata: { requestedPaths: request.requestedPaths } },
+        { id: diagnosticNodeId, kindId: "scce.program.diagnostic.v1", subjectId: diagnosticIdentity, metadata: { compilerCode: 6133, diagnosticIdentity } }
+      ],
+      diagnosticNodeIds: [diagnosticNodeId],
+      execution: { state: "not_executed" }
+    },
+    selection: {
+      schema: "scce.workspace.transformation_family_selection.v1",
+      graphId,
+      selected: {
+        familyId: "repair.family.typescript.code_action.v1",
+        candidateId: "candidate-1",
+        diagnosticIdentity,
+        codeFixIdentity: "code-fix-1",
+        diagnosticNodeId,
+        patchPlan: plan,
+        execution: { state: "not_executed" }
+      },
+      execution: { state: "not_executed" }
+    },
+    plan,
+    validationPlan: request.validationPlan,
+    authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
+    execution: { state: "not_executed", receipt: null }
   };
 }
 

@@ -203,6 +203,68 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(programSurface.fileCount).toBe(program.files.length);
   });
 
+  it("Mouth preserves the selected non-executing workspace patch plan instead of narrating workspace evidence", async () => {
+    const fixture = engineeringFixture();
+    const construct = buildProgram("please handle this artifact", [fixture.evidence], {
+      artifactKindIds: ["artifact.cli"],
+      capabilityIds: ["capability:command-runtime"],
+      inputMediaTypes: ["text/plain"],
+      outputMediaTypes: ["application/json"],
+      provenanceEvidenceIds: [String(fixture.evidence.id)]
+    });
+    const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const mouth = createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    });
+    const exactPlanSurface = "```json\n{\n  \"planHash\": \"sha256:fixture\"\n}\n```\n\n`src/index.ts`\n\n```\nexport const value = count;\n```";
+    const selectedCandidate: CandidateSurface = {
+      id: "workspace-plan:sha256:fixture:0",
+      kind: "workspace-proposal",
+      answer: exactPlanSurface,
+      force: "conjectured",
+      evidenceIds: [],
+      scores: {
+        support: 1,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.5,
+        actionability: 0.8,
+        evidenceCoverage: 1,
+        novelty: 0.2,
+        realizability: 0.9,
+        risk: 0
+      },
+      claimBases: ["conjectured"],
+      boundaries: ["workspace-plan-not-authorized", "workspace-plan-not-executed"],
+      audit: {
+        source: "workspace.patch_transaction_plan",
+        planHash: "sha256:fixture",
+        operations: [{ kind: "replace", path: "src/index.ts" }],
+        authorizationGranted: false,
+        executionState: "not_executed"
+      }
+    };
+
+    const spoken = await mouth.speak({
+      construct,
+      field: emptyField(),
+      languageProfile: languageProfile(sourceVersion("repo://workspace-plan-surface")),
+      evidence: [fixture.evidence],
+      entailment: entailmentFor(fixture.evidence),
+      languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "workspace-plan-surface", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }),
+      targetLanguage: "fixture-language",
+      requestedAuthority: "program",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe(exactPlanSurface);
+    expect(spoken.text).toContain("export const value = count;");
+    expect(spoken.text).not.toContain("pnpm run build");
+    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:construct-anchored");
+  });
+
   it("rejects incomplete ProgramGraph hydration contracts", () => {
     const fixture = engineeringFixture();
     const construct = buildProgram("read stdin accept --value and write stdout command result", [fixture.evidence]);

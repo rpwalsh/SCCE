@@ -11,7 +11,8 @@ Status: targeted current-source map; not a generated completeness or readiness c
 - `packages/ui` (`@scce/ui`): workbench models and surfaces.
 - `packages/server` (`@scce/server`): local HTTP API and workbench server.
 - `packages/cli` (`@scce/cli`): local CLI.
-- `packages/vscode` (`yopp-vscode`): local-loopback VS Code extension.
+- `packages/vscode` (`yopp-vscode` compatibility package ID): SCCE local-loopback VS
+  Code extension.
 
 The root `build` script compiles all six packages. PostgreSQL's `pg` client and document
 parsers belong to the adapter package rather than the root. The adapter package resolves
@@ -138,9 +139,10 @@ review evidence.
   import removal and one explicitly selected official TypeScript LanguageService action
   rooted at an existing requested file. It uses exact durable snapshot bytes plus the
   TypeScript standard library and requires an exact snapshot project config resolved from the
-  source-observed direct `tsc` invocation. An explicit exact `TS####`, `fixName:<id>`,
-  or canonical `codeFixIdentity:<id>` selector must resolve to one candidate; no
-  candidate is selected implicitly. The route returns an unauthorized, unexecuted
+  source-observed direct `tsc` invocation. A structured positive integer diagnostic
+  code (`diagnosticCodes` over HTTP or `--diagnostic-code=<integer>` in the CLI) must
+  resolve to one candidate; request prose never selects the action. The route returns
+  an unauthorized, unexecuted
   plan with compiler/typecheck/test validation. The selected action may close over up
   to 32 affected files and 128 exact text changes and may create bounded
   TypeScript/JavaScript sources under existing snapshot directories. Command-bearing

@@ -17,6 +17,15 @@ import { verifyYoppEvaluationTrace } from "./sealed-eval/integration/yopp-trace-
 
 const outputDirectory = path.resolve(".tmp/runtime-authority-matrix");
 const configPath = path.resolve(process.env.SCCE_AUTHORITY_MATRIX_CONFIG ?? "scce.config.json");
+const REASONED_MEASUREMENT_FIXTURE = "Measurement A reports 42 kPa while measurement B reports 57 kPa at the same timestamp.";
+const REASONED_CONFLICT_FIXTURE = "Contradictory measurements require reconciliation because one physical state cannot retain incompatible values at the same time.";
+const REASONED_FIXTURE = `${REASONED_MEASUREMENT_FIXTURE} ${REASONED_CONFLICT_FIXTURE}`;
+const CREATIVE_LANGUAGE_FIXTURE = "At dusk, the old pump hummed beside the quiet harbor. It dreamed of carrying starlight across the sleeping town. Before dawn, its steady rhythm became a silver melody and woke the patient bells.";
+const CREATIVE_REQUEST_FIXTURE = "Write a fictional two-sentence story about a purple pump that learns to sing.";
+const TRANSLATION_TARGET_FIXTURE = "Pump alpha es estable.";
+const ACTION_REQUEST_FIXTURE = "Create a command action plan to restart pump alpha without executing it.";
+const ACTION_CAPABILITY_FIXTURE = "process.local";
+const ACTION_PHASE_FIXTURE = "prepare";
 const schema = `scce_authority_matrix_${process.pid}_${Date.now()}`;
 if (!/^scce_authority_matrix_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe authority-matrix schema name");
 
@@ -82,14 +91,14 @@ try {
     uri: "authority-matrix://pump-alpha/measurements",
     namespace: "authority-matrix",
     mediaType: "text/plain",
-    content: "Measurement A reports 42 kPa while measurement B reports 57 kPa at the same timestamp. Contradictory measurements require reconciliation because one physical state cannot retain incompatible values at the same time.",
+    content: REASONED_FIXTURE,
     metadata: { fixtureRole: "reasoned", sourceKind: "authority-matrix.source" }
   }));
   fixtureIngests.set("translation", await runtime.kernel.ingest({
     uri: "authority-matrix://pump-alpha/es",
     namespace: "authority-matrix",
     mediaType: "text/plain",
-    content: "Pump alpha es estable.",
+    content: TRANSLATION_TARGET_FIXTURE,
     metadata: { fixtureRole: "translation", sourceKind: "authority-matrix.source" }
   }));
   fixtureIngests.set("program", await runtime.kernel.ingest({
@@ -105,8 +114,24 @@ try {
     ].join("\n"),
     metadata: { fixtureRole: "program", sourceKind: "authority-matrix.source", engineeringCorpus: true, sourceCode: true }
   }));
+  const creativeLanguageIngest = await runtime.kernel.ingest({
+    uri: "authority-matrix://language/creative-narrative",
+    namespace: "authority-matrix",
+    mediaType: "text/plain",
+    content: CREATIVE_LANGUAGE_FIXTURE,
+    metadata: {
+      fixtureRole: "creative-language",
+      sourceKind: "authority-matrix.source",
+      sourceSystem: "workspace"
+    }
+  });
   requireCheck("fixture.ingest", [...fixtureIngests.values()].every(result => result.sources === 1 && result.evidence > 0), {
     fixtures: [...fixtureIngests.entries()].map(([role, result]) => ({ role, sources: result.sources, evidence: result.evidence, skipped: result.skipped }))
+  });
+  requireCheck("fixture.creative_language_ingest", creativeLanguageIngest.sources === 1 && creativeLanguageIngest.evidence > 0, {
+    sources: creativeLanguageIngest.sources,
+    evidence: creativeLanguageIngest.evidence,
+    skipped: creativeLanguageIngest.skipped
   });
 
   const training = await runtime.kernel.train({
@@ -169,7 +194,7 @@ try {
     {
       id: "creative",
       authority: "creative",
-      text: "Write a fictional two-sentence story about a purple pump that learns to sing.",
+      text: CREATIVE_REQUEST_FIXTURE,
       requirements: { noveltyDemand: 1, counterfactualDemand: 0.74, uncertaintyTolerance: 0.8 }
     },
     {
@@ -193,16 +218,34 @@ try {
     {
       id: "action",
       authority: "action",
-      text: "Create a command action plan to restart pump alpha without executing it.",
+      text: ACTION_REQUEST_FIXTURE,
       requirements: { actionCommitment: 1, executableArtifactDemand: 0.64, externalTruthAuthority: 0.7 }
     }
   ];
+
+  const programPlan = await workspaceRuntime.planCodingPatch({
+    workspaceId: workspaceIngest.workspace.id,
+    expectedWorkspaceUpdatedAt: workspaceIngest.workspace.updatedAt,
+    requestId: "authority-matrix-program-repair",
+    requestText: "Apply the compiler-owned fix for TS2552 in src/index.ts.",
+    requestedPaths: ["src/index.ts"],
+    diagnosticCodes: [2552],
+    validationPlan: {
+      validatorId: "trusted-host-pnpm-validate.v1",
+      checks: ["compiler", "typecheck", "tests"]
+    }
+  }, fixtureRoot, { maxFiles: 64, maxDepth: 8 });
+  const programPlanSelected = programPlan.statusId === "scce.workspace.compiler_patch.selected.v1";
+  if (programPlanSelected) verifyPatchTransactionPlan(programPlan.plan);
 
   for (const request of requests) {
     const result = await runtime.kernel.turn({
       text: request.text,
       metadata: {
         ...(request.metadata ?? {}),
+        ...(request.id === "program" && programPlanSelected
+          ? { runtime: { workspacePlans: [programPlan.plan] } }
+          : {}),
         questionId: `authority-${request.id}`,
         turnRequirements: Object.entries(request.requirements).map(([dimension, value]) => ({
           id: `authority-matrix.${request.id}.${dimension}`,
@@ -239,6 +282,9 @@ try {
         })),
         translation: result.translation ?? null,
         actionGraph: result.actionGraph ?? null,
+        inventionTrace: request.id === "creative" ? inventionTraceFromEvents(result.events) : null,
+        candidateGenerationTrace: request.id === "reasoned" ? candidateGenerationTraceFromEvents(result.events) : null,
+        cognitiveProposals: request.id === "reasoned" ? result.cognitiveProposals ?? null : null,
         answer: result.answer,
         answerHash: sha256Tagged(result.answer),
         trace: result.evaluationTrace ?? null,
@@ -250,19 +296,6 @@ try {
     validateAuthorityRow(row);
   }
 
-  const programPlan = await workspaceRuntime.planCodingPatch({
-    workspaceId: workspaceIngest.workspace.id,
-    expectedWorkspaceUpdatedAt: workspaceIngest.workspace.updatedAt,
-    requestId: "authority-matrix-program-repair",
-    requestText: "Apply the compiler-owned fix for TS2552 in src/index.ts.",
-    requestedPaths: ["src/index.ts"],
-    validationPlan: {
-      validatorId: "trusted-host-pnpm-validate.v1",
-      checks: ["compiler", "typecheck", "tests"]
-    }
-  }, fixtureRoot, { maxFiles: 64, maxDepth: 8 });
-  const programPlanSelected = programPlan.statusId === "scce.workspace.compiler_patch.selected.v1";
-  if (programPlanSelected) verifyPatchTransactionPlan(programPlan.plan);
   recordCheck("program.exact_repair_transaction", (
     programPlanSelected
     && programPlan.plan.operations.length > 0
@@ -387,16 +420,61 @@ function validateAuthorityRow(row) {
       evidenceIds: row.result.evidenceIds,
       assistantForce: row.result.assistantForce
     });
+  } else if (row.id === "reasoned") {
+    const relevance = reasonedFixtureRelevance(row.result.answer);
+    const creativeLeakage = sourceCopyMetrics(row.result.answer, CREATIVE_LANGUAGE_FIXTURE);
+    recordCheck("reasoned.nonempty_surface", typeof row.result.answer === "string" && row.result.answer.trim().length > 0, {
+      answer: row.result.answer
+    });
+    recordCheck("reasoned.fixture_relevance", relevance.passed, {
+      answer: row.result.answer,
+      ...relevance
+    });
+    recordCheck("reasoned.no_creative_narrative_leakage", (
+      creativeLeakage.fiveGramRatio < 0.20
+      && creativeLeakage.longestSharedTokenRun < 6
+    ), creativeLeakage);
   } else if (row.id === "creative") {
+    const sentenceCount = sentenceBoundaryCount(row.result.answer);
+    const requestConstraints = creativeRequestConstraints(row.result.answer);
+    const requestCopy = sourceCopyMetrics(row.result.answer, CREATIVE_REQUEST_FIXTURE);
+    const fixtureCopy = sourceCopyMetrics(row.result.answer, CREATIVE_LANGUAGE_FIXTURE);
     recordCheck("creative.force", row.result.epistemicForce === "invented" && row.result.assistantForce === "creative_answer", {
       epistemicForce: row.result.epistemicForce,
       assistantForce: row.result.assistantForce
     });
     recordCheck("creative.no_fabricated_evidence", row.result.evidenceIds.length === 0, { evidenceIds: row.result.evidenceIds });
+    recordCheck("creative.exact_sentence_count", sentenceCount === 2, {
+      answer: row.result.answer,
+      expected: 2,
+      actual: sentenceCount
+    });
+    recordCheck("creative.request_constraints", requestConstraints.passed, {
+      answer: row.result.answer,
+      ...requestConstraints
+    });
+    recordCheck("creative.no_request_echo_or_template_leakage", (
+      !requestCopy.fullNormalizedSourcePresent
+      && requestCopy.fiveGramRatio < 0.30
+      && requestCopy.longestSharedTokenRun < 8
+    ), requestCopy);
+    recordCheck("creative.no_fixture_source_copy", (
+      fixtureCopy.fiveGramRatio < 0.35
+      && fixtureCopy.longestSharedTokenRun < 9
+    ), fixtureCopy);
+    recordCheck("creative.surface_quality", creativeSurfaceQuality(row.result.answer), {
+      answer: row.result.answer,
+      sentenceBoundaries: sentenceCount,
+      uniqueLexicalRatio: uniqueLexicalRatio(row.result.answer)
+    });
   } else if (row.id === "translation") {
     recordCheck("translation.preservation", row.result.assistantForce === "translation_answer" && hasStructuredContent(row.result.translation), {
       assistantForce: row.result.assistantForce,
       translation: row.result.translation
+    });
+    recordCheck("translation.exact_fixture_surface", outerWhitespaceTrim(row.result.answer) === TRANSLATION_TARGET_FIXTURE, {
+      expected: TRANSLATION_TARGET_FIXTURE,
+      actual: row.result.answer
     });
   } else if (row.id === "program") {
     const candidate = objectRecord(row.result.selectedCandidate);
@@ -405,11 +483,17 @@ function validateAuthorityRow(row) {
     recordCheck("program.nonempty_surface", typeof row.result.answer === "string" && row.result.answer.trim().length > 0, {
       answer: row.result.answer
     });
-    recordCheck("program.request_target_grounded", row.result.answer.includes("src/index.ts") && row.result.answer.includes("TS2552"), {
+    recordCheck("program.request_target_grounded", row.result.answer.includes("src/index.ts") && row.result.answer.includes("export const value = count;"), {
       answer: row.result.answer,
-      requiredSurfaces: ["src/index.ts", "TS2552"]
+      requiredSurfaces: ["src/index.ts", "export const value = count;"]
     });
     recordCheck("program.no_web_motion", !objectRecord(audit?.motion), { audit });
+    recordCheck("program.verified_plan_surface", (
+      audit?.source === "workspace.patch_transaction_plan"
+      && row.result.answer.includes('"planHash"')
+      && row.result.answer.includes("src/index.ts")
+      && row.result.answer.includes("export const value = count;")
+    ), { audit, answer: row.result.answer });
     recordCheck("program.nonexecuting_boundary", (
       audit?.authorizationGranted === false
       && audit?.executionState === "not_executed"
@@ -420,9 +504,133 @@ function validateAuthorityRow(row) {
       answer: row.result.answer
     });
   } else if (row.id === "action") {
+    const selected = objectRecord(row.result.selectedCandidate);
+    const audit = objectRecord(selected?.audit);
+    const preview = structuredActionPreview(row.result.answer);
     const claims = candidateClaimAudits(row.result.selectedCandidate);
     const unreceiptedCompletion = claims.some(claim => claim && claim.basis === "action_result" && !claim.actionReceiptId);
     recordCheck("action.receipt_boundary", !unreceiptedCompletion, { claims, actionGraph: row.result.actionGraph });
+    recordCheck("action.nonempty_preview", (
+      typeof row.result.answer === "string"
+      && row.result.answer.trim().length > 0
+      && preview?.executionState === "not_executed"
+    ), { answer: row.result.answer, preview });
+    recordCheck("action.fixture_plan_identity", (
+      preview?.capabilityId === ACTION_CAPABILITY_FIXTURE
+      && preview?.phase === ACTION_PHASE_FIXTURE
+      && audit?.capabilityId === ACTION_CAPABILITY_FIXTURE
+      && audit?.phase === ACTION_PHASE_FIXTURE
+    ), {
+      expected: { capabilityId: ACTION_CAPABILITY_FIXTURE, phase: ACTION_PHASE_FIXTURE },
+      preview,
+      audit
+    });
+  }
+}
+
+function creativeSurfaceQuality(surface) {
+  return typeof surface === "string"
+    && sentenceBoundaryCount(surface) >= 2
+    && uniqueLexicalRatio(surface) >= 0.55
+    && !/(?:^|\s)([^\s]+)(?:\s+\1){2,}(?:\s|$)/iu.test(surface);
+}
+
+function sentenceBoundaryCount(surface) {
+  return typeof surface === "string" ? (surface.match(/[.!?。！？]+(?:\s|$)/gu) ?? []).length : 0;
+}
+
+function uniqueLexicalRatio(surface) {
+  const symbols = unicodeTokens(surface);
+  return symbols.length ? new Set(symbols).size / symbols.length : 0;
+}
+
+function reasonedFixtureRelevance(surface) {
+  const tokens = unicodeTokens(surface);
+  const tokenSet = new Set(tokens);
+  const measurementValues = (tokenSet.has("42") && tokenSet.has("57"))
+    || (tokenSet.has("15") && tokenSet.has("kpa"));
+  const simultaneity = (
+    tokenSet.has("same") && ["time", "timestamp", "moment", "instant"].some(token => tokenSet.has(token))
+  ) || tokens.some(token => ["simultan", "concurren", "coincid"].some(stem => token.startsWith(stem)));
+  const conflict = tokens.some(token => ["contradict", "conflict", "incompatib", "reconcil", "disagree"].some(stem => token.startsWith(stem)));
+  return {
+    passed: measurementValues && simultaneity && conflict,
+    measurementValues,
+    simultaneity,
+    conflict
+  };
+}
+
+function creativeRequestConstraints(surface) {
+  const tokens = unicodeTokens(surface);
+  const purple = hasMeaning(tokens, ["purple", "violet", "lavender", "amethyst"]);
+  const pump = hasMeaning(tokens, ["pump"], ["pump"]);
+  const learning = hasMeaning(tokens, ["learnt", "taught", "found"], ["learn", "teach", "practic", "discover", "master", "acquir", "develop"]);
+  const singing = hasMeaning(tokens, ["sang", "sung", "song", "voice", "aria"], ["sing", "melod", "tun", "chorus", "vocal", "hum"]);
+  return { passed: purple && pump && learning && singing, purple, pump, learning, singing };
+}
+
+function hasMeaning(tokens, exactTerms, stems = []) {
+  return tokens.some(token => exactTerms.includes(token) || stems.some(stem => token.startsWith(stem)));
+}
+
+function unicodeTokens(surface) {
+  return typeof surface === "string"
+    ? surface.normalize("NFKC").toLocaleLowerCase().match(/[\p{Letter}\p{Number}]+/gu) ?? []
+    : [];
+}
+
+function sourceCopyMetrics(surface, source) {
+  const outputTokens = unicodeTokens(surface);
+  const sourceTokens = unicodeTokens(source);
+  const outputFiveGrams = tokenNgrams(outputTokens, 5);
+  const sourceFiveGrams = new Set(tokenNgrams(sourceTokens, 5));
+  const matchedFiveGrams = outputFiveGrams.filter(ngram => sourceFiveGrams.has(ngram)).length;
+  const normalizedOutput = outputTokens.join(" ");
+  const normalizedSource = sourceTokens.join(" ");
+  return {
+    outputTokenCount: outputTokens.length,
+    sourceTokenCount: sourceTokens.length,
+    outputFiveGramCount: outputFiveGrams.length,
+    matchedFiveGramCount: matchedFiveGrams,
+    fiveGramRatio: outputFiveGrams.length ? matchedFiveGrams / outputFiveGrams.length : 0,
+    longestSharedTokenRun: longestSharedTokenRun(outputTokens, sourceTokens),
+    fullNormalizedSourcePresent: normalizedSource.length > 0 && normalizedOutput.includes(normalizedSource)
+  };
+}
+
+function tokenNgrams(tokens, size) {
+  if (!Number.isInteger(size) || size <= 0 || tokens.length < size) return [];
+  return Array.from({ length: tokens.length - size + 1 }, (_, index) => tokens.slice(index, index + size).join("\u001f"));
+}
+
+function longestSharedTokenRun(left, right) {
+  let longest = 0;
+  let previous = new Uint32Array(right.length + 1);
+  for (const token of left) {
+    const current = new Uint32Array(right.length + 1);
+    for (let index = 0; index < right.length; index += 1) {
+      if (token !== right[index]) continue;
+      current[index + 1] = previous[index] + 1;
+      if (current[index + 1] > longest) longest = current[index + 1];
+    }
+    previous = current;
+  }
+  return longest;
+}
+
+function outerWhitespaceTrim(surface) {
+  return typeof surface === "string" ? surface.trim() : null;
+}
+
+function structuredActionPreview(surface) {
+  if (typeof surface !== "string") return undefined;
+  const trimmed = surface.trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(trimmed);
+  try {
+    return objectRecord(JSON.parse(fenced?.[1] ?? trimmed));
+  } catch {
+    return undefined;
   }
 }
 
@@ -439,6 +647,19 @@ function candidateClaimAudits(candidate) {
 function selectedCandidateFromEvents(events) {
   const event = Array.isArray(events) ? [...events].reverse().find(row => row?.typeId === "CandidateSelected") : undefined;
   return objectRecord(event?.payload) ?? null;
+}
+
+function inventionTraceFromEvents(events) {
+  const event = Array.isArray(events) ? [...events].reverse().find(row => row?.typeId === "InventionPlanned") : undefined;
+  const payload = objectRecord(event?.payload);
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates.map(objectRecord).filter(Boolean) : [];
+  return candidates.map(candidate => ({ id: candidate.id ?? null, trace: candidate.trace ?? null })).slice(0, 8);
+}
+
+function candidateGenerationTraceFromEvents(events) {
+  return Array.isArray(events)
+    ? events.filter(row => row?.typeId === "CandidateGenerated").map(row => objectRecord(row?.payload)).filter(Boolean).slice(0, 12)
+    : [];
 }
 
 function objectRecord(value) {
@@ -495,8 +716,8 @@ async function writeFixture(root) {
       "",
       "Pump alpha is controlled by API route POST /api/pumps/alpha/control.",
       "Pump alpha is stable during normal operation.",
-      "Measurement A reports 42 kPa while measurement B reports 57 kPa at the same timestamp.",
-      "Contradictory measurements require reconciliation because one physical state cannot retain incompatible values at the same time."
+      REASONED_MEASUREMENT_FIXTURE,
+      REASONED_CONFLICT_FIXTURE
     ].join("\n") + "\n"],
     ["package.json", `${JSON.stringify({ name: "authority-matrix-fixture", private: true, type: "module", scripts: { build: "tsc -p tsconfig.json", test: "vitest run" } }, null, 2)}\n`],
     ["tsconfig.json", `${JSON.stringify({ compilerOptions: { strict: true, module: "NodeNext", moduleResolution: "NodeNext" }, include: ["src"] }, null, 2)}\n`],

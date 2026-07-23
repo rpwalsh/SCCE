@@ -135,6 +135,7 @@ describe("creative Mouth production boundary", () => {
     const creativeVariants = first.realizationTrace.candidates.filter(candidate => candidate.id.startsWith("candidate:generated:creative:"));
 
     expect(first.force).toBe("creative");
+    expect(first.text).toBe("Constraint-safe graph index with bounded updates and a validation pass.");
     expect(first.evidenceRefs).toEqual([premise.id]);
     expect(first.evidenceRefs).not.toContain(unrelated.id);
     expect(first.text).toBe(second.text);
@@ -142,6 +143,7 @@ describe("creative Mouth production boundary", () => {
     expect(first.text).not.toContain("basisEvidenceIds");
     expect(first.text).not.toContain("scce.invention_construct.v1");
     expect(creativeVariants.length).toBeGreaterThanOrEqual(2);
+    expect(creativeVariants.some(candidate => candidate.id === "candidate:generated:creative:learned-proposal")).toBe(true);
     expect(new Set(creativeVariants.map(candidate => candidate.textHash)).size).toBeGreaterThanOrEqual(2);
     expect(ranked.length).toBeGreaterThanOrEqual(creativeVariants.length);
     expect(JSON.stringify(walshTrace)).toContain("surface.creative.bootstrap.v1");
@@ -173,6 +175,12 @@ function creativeConstruct(basisEvidenceId: EvidenceId, ids?: ReturnType<typeof 
       risk: 0.27,
       repetition: 0.04,
       unsupportedFactualAssertion: 0,
+      proposalRealization: {
+        path: "learned_structural_composition",
+        sourcePieceIds: ["prior:graph-pattern"],
+        structuralSourceIds: ["prior:graph-pattern"],
+        structuralSentenceCount: 1
+      },
       constraints: [
         { id: "constraint:bounded", surface: "bounded updates", weight: 1, satisfied: true },
         { id: "constraint:validation", surface: "validation pass", weight: 0.8, satisfied: true }

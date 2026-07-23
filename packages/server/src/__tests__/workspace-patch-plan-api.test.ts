@@ -180,7 +180,7 @@ describe("workspace patch planning API contract", () => {
     expect(await readFile(filePath, "utf8")).toBe(before);
   });
 
-  it("returns structured compiler ambiguity without using request prose as a selector", async () => {
+  it("requires a structured compiler selector and never uses request prose as one", async () => {
     const root = await mkdtemp(join(tmpdir(), "scce-type-import-repair-"));
     roots.push(root);
     const before = "import type { Legacy } from \"./legacy.js\";\r\nconst count = 1;\r\nexport const value = coutn;\r\n";
@@ -252,9 +252,11 @@ describe("workspace patch planning API contract", () => {
     const result = await planWorkspaceCodingPatchApiRequest(context, request);
 
     expect(result).toMatchObject({
-      schema: "scce.workspace.transformation_family_selection.v1",
-      selected: null,
-      execution: { state: "not_executed" }
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.diagnostic_selector_absent.v1"],
+      selection: null,
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
     });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
 
@@ -265,6 +267,7 @@ describe("workspace patch planning API contract", () => {
       requestId: "request.fix-ts2552",
       requestText: "Apply the compiler-owned fix for TS2552 in src/index.ts.",
       requestedPaths: ["src/index.ts"],
+      diagnosticCodes: [2552],
       validationPlan: {
         validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
         checks: ["compiler", "typecheck", "tests"]
@@ -272,9 +275,9 @@ describe("workspace patch planning API contract", () => {
     });
     const compilerResult = await planWorkspaceCodingPatchApiRequest(context, compilerRequest);
     expect(compilerResult).toMatchObject({
-      schema: "scce.workspace.transformation_family_selection.v1",
-      selected: null,
-      execution: { state: "not_executed" }
+      statusId: "scce.workspace.compiler_patch.selected.v1",
+      plan: { operations: [{ kind: "replace", path: "src/index.ts" }] },
+      execution: { state: "not_executed", receipt: null }
     });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
 
@@ -291,9 +294,11 @@ describe("workspace patch planning API contract", () => {
       }
     });
     await expect(planWorkspaceCodingPatchApiRequest(context, unrelatedRequest)).resolves.toMatchObject({
-      schema: "scce.workspace.transformation_family_selection.v1",
-      selected: null,
-      execution: { state: "not_executed" }
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.diagnostic_selector_absent.v1"],
+      selection: null,
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
     });
     expect(await readFile(join(root, "src/index.ts"), "utf8")).toBe(before);
   }, 30_000);
@@ -363,6 +368,7 @@ describe("workspace patch planning API contract", () => {
       requestId: "request.fix-non-default-project",
       requestText: "Apply the compiler-owned fix for TS6133 in src/index.ts.",
       requestedPaths: ["src/index.ts"],
+      diagnosticCodes: [6133],
       validationPlan: {
         validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
         checks: ["compiler", "typecheck", "tests"]
@@ -456,6 +462,7 @@ describe("workspace patch planning API contract", () => {
       requestId: "request.update-library",
       requestText: "Update the existing library module with explicit input validation and a structured result.",
       requestedPaths: ["src/index.ts"],
+      diagnosticCodes: [2552],
       validationPlan: {
         validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
         checks: ["compiler", "typecheck", "tests"]
@@ -478,7 +485,8 @@ describe("workspace patch planning API contract", () => {
         expectedWorkspaceUpdatedAt: updatedAt,
         requestId: "request.unsupported-path",
         requestText: "Implement a source file for which no program artifact was materialized.",
-        requestedPaths: ["src/not-materialized.ts"]
+        requestedPaths: ["src/not-materialized.ts"],
+        diagnosticCodes: [2552]
       })
     });
     await expect(planWorkspaceCodingPatchApiRequest(context, unsupported)).resolves.toMatchObject({

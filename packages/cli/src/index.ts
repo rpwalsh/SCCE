@@ -4,11 +4,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
-import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
-import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, traceEvent } from "@scce/kernel";
+import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
+import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent } from "@scce/kernel";
 
 interface Parsed {
   configPath: string;
@@ -81,9 +81,10 @@ async function main(): Promise<void> {
         printJson(await runtime.kernel.train({ config: JSON.parse(await readFile(path.resolve(parsed.args[0]), "utf8")) }));
         return;
       case "turn": {
-        const turnArgs = parseTurnArgs(parsed.args);
+        const workspaceTurn = splitWorkspaceCodingTurnArgs(parsed.args);
+        const turnArgs = parseTurnArgs(workspaceTurn.turnArgs);
         const text = turnArgs.text;
-        if (!text) return usage("scce turn <prompt>");
+        if (!text) return usage("scce turn [--workspace-code --path=<workspace-file> --diagnostic-code=<integer>] <prompt>");
         const turnStarted = Date.now();
         traceEvent(trace, { stage: "turn.input", label: "cli.turn", input: previewText(text), counts: { textChars: text.length } });
         try {
@@ -91,7 +92,43 @@ async function main(): Promise<void> {
           traceEvent(trace, { stage: "turn.runtime.start", label: "cli.turn" });
           const conversationId = turnArgs.conversationId ?? turnArgs.sessionId ?? "conversation.cli";
           const learnedDialogueProfile = await latestDialogueStyleProfile(runtime.storage.dialogueMemory, conversationId);
-          const turnInput = { text, metadata: { runtimePath: { hydratedRuntime: true, serverPath: false, sourceOnlySimulation: false }, activeBrainVersion: active.activeBrainVersion, activeImportRunIds: active.activeImportRunIds, conversationId, sessionId: turnArgs.sessionId ?? conversationId, ...(turnArgs.detailProfileId ? { detailProfileId: turnArgs.detailProfileId } : {}) } };
+          const workspaceRuntime = workspaceTurn.codingRequest ? createWorkspaceRuntime({ runtime, config }) : undefined;
+          const workspaceProject = workspaceRuntime && workspaceTurn.codingRequest
+            ? await workspaceRuntime.project(workspaceTurn.codingRequest.rootPath, parseWorkspaceOptions(workspaceTurn.codingRequest.workspaceOptionArgs))
+            : undefined;
+          const workspaceCoding = workspaceRuntime && workspaceTurn.codingRequest && workspaceProject
+            ? await workspaceRuntime.planCodingPatch({
+              workspaceId: workspaceProject.workspace.id,
+              expectedWorkspaceUpdatedAt: workspaceProject.workspace.updatedAt,
+              requestId: workspaceTurn.codingRequest.requestId ?? defaultWorkspaceCodingRequestId({
+                workspaceId: workspaceProject.workspace.id,
+                expectedWorkspaceUpdatedAt: workspaceProject.workspace.updatedAt,
+                request: workspaceTurn.codingRequest
+              }),
+              requestText: text,
+              requestedPaths: workspaceTurn.codingRequest.requestedPaths,
+              ...(workspaceTurn.codingRequest.diagnosticCodes.length
+                ? { diagnosticCodes: workspaceTurn.codingRequest.diagnosticCodes }
+                : {}),
+              validationPlan: {
+                validatorId: workspaceTurn.codingRequest.validatorId,
+                checks: workspaceTurn.codingRequest.checks
+              }
+            }, workspaceTurn.codingRequest.rootPath, parseWorkspaceOptions(workspaceTurn.codingRequest.workspaceOptionArgs))
+            : undefined;
+          const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
+          const turnInput = {
+            text,
+            metadata: {
+              runtimePath: { hydratedRuntime: true, serverPath: false, sourceOnlySimulation: false },
+              runtime: { workspacePlans: workspacePlans.map(plan => toJsonValue(plan)) },
+              activeBrainVersion: active.activeBrainVersion,
+              activeImportRunIds: active.activeImportRunIds,
+              conversationId,
+              sessionId: turnArgs.sessionId ?? conversationId,
+              ...(turnArgs.detailProfileId ? { detailProfileId: turnArgs.detailProfileId } : {})
+            }
+          };
           const result = await runtime.kernel.turn(turnInput);
           const calibrationModels = await loadCalibrationModelSet({
             store: runtime.storage.dialogueMemory,
@@ -447,6 +484,7 @@ async function workspace(runtime: ReturnType<typeof createWorkspaceRuntime>, arg
       requestId,
       requestText: request.text,
       requestedPaths: request.requestedPaths,
+      ...(request.diagnosticCodes.length ? { diagnosticCodes: request.diagnosticCodes } : {}),
       validationPlan: {
         validatorId: request.validatorId,
         checks: request.checks

@@ -62,6 +62,16 @@ describe("general-cognition Mouth surface objective", () => {
     expect(telemetry.valid).toBe(false);
     expect(telemetry.hardViolations.map(row => row.id)).toContain("surface.reject.telemetry_leak");
 
+    const graphIdentifiers = scoreSurfaceEnergy({
+      id: "surface:general:graph-identifiers",
+      text: `visible prose node_${"a".repeat(48)} relation_${"b".repeat(48)}`,
+      force: "bounded",
+      semanticPreservation: 0.92
+    }, context);
+    expect(graphIdentifiers.valid).toBe(false);
+    expect(graphIdentifiers.hardViolations.map(row => row.id)).toContain("surface.reject.telemetry_leak");
+    expect(JSON.stringify(graphIdentifiers.components.find(row => row.id === "surface.general.telemetry_leak")?.trace)).toContain("surface.telemetry.graph_identifier");
+
     const unsupportedClaim: PlannedClaim = {
       id: "claim:unsupported",
       text: "The external measurement is 91 percent.",

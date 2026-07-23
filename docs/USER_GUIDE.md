@@ -4,7 +4,7 @@
 
 SCCE is an active local runtime with specific verified engineering paths and material remaining work. Local checks and synthetic PostgreSQL or adapter rehearsals do not establish general answer quality, scale, or production readiness.
 
-The VS Code client can inspect status, submit approved local operations, and apply an operator-selected content-addressed patch plan after review. The server can generate an exact-byte plan from a strict full-file proposal. Its separate coding-request route is strict and non-mutating and has two tested TypeScript paths: source-proven unused type-only import removal and one official TypeScript LanguageService fix for an existing requested file. An explicit compiler diagnostic or exact action selector must resolve to one candidate; there is no unique-candidate fallback. The compiler uses durable snapshot files plus the TypeScript standard library and must resolve an exact project config from the source-observed direct `tsc` invocation. The returned plan remains unauthorized and unexecuted pending compiler, typecheck, and test validation. Arbitrary feature synthesis, new targets, and multi-file fixes are not supported.
+The VS Code client can inspect status, submit approved local operations, and apply an operator-selected content-addressed patch plan after review. The server can generate an exact-byte plan from a strict full-file proposal. Its separate coding-request route is strict and non-mutating and has two tested TypeScript paths: source-proven unused type-only import removal and one official TypeScript LanguageService fix for an existing requested file. Compiler fixes use structured `diagnosticCodes` (`--diagnostic-code=<integer>` in the CLI); request prose does not select a code action, and the structured scope must resolve to one candidate. The compiler uses durable snapshot files plus the TypeScript standard library and must resolve an exact project config from the source-observed direct `tsc` invocation. The selected compiler-owned action may close over as many as 32 files and 128 exact text changes, including bounded TypeScript or JavaScript creation under existing snapshot directories. The returned plan remains unauthorized and unexecuted pending compiler, typecheck, and test validation. Arbitrary feature synthesis remains unsupported.
 
 A packaged VSIX has been installed and activated in an isolated VS Code 1.96.4
 profile, where its commands and readiness request were observed. That smoke test did
@@ -40,7 +40,7 @@ The system has several answer forces:
 - Creative: invented or designed for the task.
 - Contradicted: blocked or pressured by contrary evidence.
 
-Normal answers should be readable. The force and trace should be inspectable, but the answer itself should not be a dump of proof keys, telemetry, database fields, semantic role identifiers, or workflow notation. The Mouth receives selected semantic slots and relations and realizes them through learned language memory; it does not choose facts.
+Normal answers should be readable. The force and trace should be inspectable, but the answer itself should not be a dump of proof keys, telemetry, database fields, semantic role identifiers, or workflow notation. The Mouth is the realization boundary: it consumes learned language memory and permitted source-bound surfaces without choosing facts.
 
 ## What Proof Means
 
@@ -70,9 +70,11 @@ The recovery step is bounded to prevent an open-ended search loop. Search or fet
 
 After replanning, SCCE should answer with the strongest honest form available: a supported fact or correction, a source-bounded account, or a qualified inference or prior. If the single acquisition attempt is exhausted and a factual or reasoned turn remains under-supported, the current user policy itself licenses one bounded creative continuation; the original request does not need to be framed as a creative task.
 
-That continuation is allowed only when active learned graph or language priors add meaningful material that was not copied from the question. It must pass non-echo, risk, and unsupported-fact checks, carry an `invented` claim basis, cite no evidence, record `generated_not_evidence` provenance, and make no factual-certification claim. This makes the invention inspectable without pretending it is a discovered fact.
+Generic graph or language state alone is not enough. The selected continuation must use an admitted `learned_continuation` or `learned_structural_composition` realization, carry nonempty source-piece lineage, keep repetition bounded, and add meaningful material not copied from the question. Structural composition records the exact request-owned code-point and UTF-8 byte spans it binds into learned source structure; those spans are constraints and do not become factual evidence. The candidate must pass non-echo, risk, and unsupported-fact checks, carry an `invented` claim basis, cite no evidence, record `generated_not_evidence` provenance, and make no factual-certification claim. This makes the invention inspectable without pretending it is a discovered fact.
 
 If connector, graph, and language state are all empty, there is no honest knowledge material to synthesize. The planner must select a non-assertive answer using only source-derived content that actually exists; it may not compensate with hardcoded phrases or fabricated facts. If a fluent surface cannot yet be realized, the Mouth may return an empty internal surface so the kernel completes its terminal selection. The Mouth then realizes the selected answer; the empty internal surface is never the user-facing answer.
+
+Sparse or source-only cold-start realization is not a fluent-assistant claim. Current output may be fragmentary until a compatible learned language profile is hydrated.
 
 ## What Hydration Does
 
@@ -193,11 +195,17 @@ Run repository checks against the exact checkout in use:
 pnpm build
 pnpm test
 pnpm validate
+$env:SCCE_DATABASE_URL="postgresql://<user>:<password>@<host>:<port>/<database>"
+pnpm scce db migrate
+pnpm scce db verify
 pnpm rehearsal:postgres
 pnpm rehearsal:adapter
 ```
 
-Database-dependent checks require a configured PostgreSQL URL. Passing local checks establishes only the contracts those commands exercise.
+Database-dependent checks require a configured PostgreSQL URL, and the server does not
+migrate the schema automatically. Normal startup binds the socket before background
+warmup; use `GET /api/ready` for database readiness. Passing local checks establishes
+only the contracts those commands exercise.
 
 ## Practical Rule
 

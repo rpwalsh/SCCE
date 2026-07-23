@@ -67,9 +67,13 @@ The repository contains sealing, custody, blind scoring, exact citation verifica
 Known gaps include:
 
 - no sealed coding-task adapter;
-- no packaged VS Code extension-host trial;
+- no protected or custodian-controlled packaged VS Code trial and no live patch
+  round trip; the completed local installed-VSIX activation and readiness smoke is
+  not an independent review;
 - no completed protected run with an independently controlled input set;
-- no available operating-system sandbox for untrusted workspace validation in the current local rehearsal environment.
+- no attested operating-system sandbox for untrusted workspace validation. The
+  trusted-host validator is not a sandbox, and the completed local networkless Docker
+  smoke is not independent evidence or an attestation.
 
 ## Required evidence package
 

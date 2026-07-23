@@ -1,10 +1,10 @@
 import { DIALOGUE_ACTION_IDS, type DialogueState } from "./dialogue-pragmatics.js";
 import { boltzmannDistribution } from "./equation-operators.js";
 import { kneserNeyProbability } from "./kneser-ney.js";
-import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
+import type { LanguageGenerationResult, LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createInventionConstruct, type InventionConstruct } from "./prediction.js";
 import { canonicalStringify, clamp01, createHasher, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
-import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirementField } from "./turn-requirements.js";
+import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirement, type TurnRequirementField } from "./turn-requirements.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, GraphEdge, GraphNode, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
 
 export const REQUESTED_AUTHORITIES = ["factual", "reasoned", "creative", "translation", "program", "action"] as const satisfies readonly RequestedAuthority[];
@@ -237,7 +237,7 @@ export interface PlanInventionsInput {
     | "activatedPatternIds"
     | "activatedPhraseUnitIds"
     | "activatedConstructIds"
-  >;
+  > & Partial<Pick<TurnRequirementField, "requiredFeatures">>;
   /** Numeric operator state; learned IDs select the invention lane. */
   operatorActivations?: readonly ActivatedOperator[];
   temperature?: number;
@@ -273,6 +273,7 @@ interface CompositionIngredient {
 interface DraftComposition {
   title: string;
   proposalSurface: string;
+  proposalRealization: ProposalRealizationTrace;
   artifactKindIds: string[];
   basisPriorIds: string[];
   selectedGraphNodeIds: string[];
@@ -280,6 +281,68 @@ interface DraftComposition {
   selectedEdges: GraphEdge[];
   claimBasis: InventionClaimBasis[];
   untestedPerformanceClaim: boolean;
+}
+
+interface ProposalRealizationTrace {
+  path: "learned_continuation" | "learned_structural_composition" | "composition_fallback";
+  contextSymbols: string[];
+  generationTextHash?: string;
+  generationConfidence?: number;
+  discourseScore?: number;
+  cohesion?: number;
+  repetitionPenalty?: number;
+  sourcePieceIds?: string[];
+  requestConstraintIds?: string[];
+  requestConstraintSourceActivationIds?: string[];
+  requestConstraintCoverage?: number;
+  requestSlotSpans?: Array<{
+    text: string;
+    charStart: number;
+    charEnd: number;
+    byteStart: number;
+    byteEnd: number;
+    sourceActivationId: string;
+  }>;
+  structuralSourceIds?: string[];
+  structuralSentenceCount?: number;
+  structuralRealizability?: number;
+  stoppedBy?: LanguageGenerationResult["stoppedBy"];
+}
+
+interface RequestOwnedCreativeConstraint {
+  id: string;
+  surface: string;
+  semanticRoleId: string;
+  learnedFrameOrPatternId: string;
+  sourceActivationId: string;
+  confidence: number;
+  value: number;
+  requestSpan: TurnRequirement["origin"]["requestSpan"];
+}
+
+interface RequestOwnedLanguageActivationSpan {
+  id: string;
+  sourceActivationId: string;
+  surface: string;
+  normalizedSymbols: string[];
+  sourceVersionId: string;
+  alpha: number;
+  unitKind: LanguageMemoryRuntimeState["importedUnits"][number]["unitKind"];
+  requestSpan: TurnRequirement["origin"]["requestSpan"];
+}
+
+interface RequestOwnedCreativeSlots {
+  anchor: RequestOwnedLanguageActivationSpan;
+  anchoredSlot: TurnRequirement["origin"]["requestSpan"];
+  continuationSlot: TurnRequirement["origin"]["requestSpan"];
+}
+
+interface LearnedStructuralSource {
+  id: string;
+  sourceVersionId: string;
+  evidenceIds: string[];
+  alpha: number;
+  sentences: string[];
 }
 
 interface ScoredComposition extends DraftComposition {
@@ -307,15 +370,18 @@ const CREATIVE_TEMPERATURE = 0.28;
 export function planInventions(input: PlanInventionsInput): InventionConstruct[] {
   const planningActivation = inventionPlanningActivation(input);
   if (!planningActivation.admissible) return [];
-  const maxCandidates = boundedInteger(input.maxCandidates ?? 4, 2, 8);
+  const maxCandidates = boundedInteger(input.maxCandidates ?? 4, 1, 8);
   const constraints = extractConstraints(input).slice(0, 16);
   const graphIngredients = graphCompositionIngredients(input).slice(0, 12);
   const languageIngredients = languageCompositionIngredients(input).slice(0, 18);
   const requestIngredients = requestCompositionIngredients(input.requestText);
   const ingredients = uniqueIngredients([...graphIngredients, ...languageIngredients, ...requestIngredients]);
-  const drafts = Array.from({ length: maxCandidates + 2 }, (_, index) => buildDraft(input, constraints, ingredients, graphIngredients, index))
-    .filter((draft, index, all) => all.findIndex(candidate => normalizeSurface(candidate.proposalSurface) === normalizeSurface(draft.proposalSurface)) === index)
-    .slice(0, maxCandidates);
+  const uniqueDrafts = Array.from({ length: maxCandidates + 2 }, (_, index) => buildDraft(input, constraints, ingredients, graphIngredients, index))
+    .filter(draft => Boolean(draft.proposalSurface) && !containsInternalSurfaceIdentifier(draft.proposalSurface))
+    .filter((draft, index, all) => all.findIndex(candidate => normalizeSurface(candidate.proposalSurface) === normalizeSurface(draft.proposalSurface)) === index);
+  const learnedDrafts = uniqueDrafts.filter(draft => draft.proposalRealization.path !== "composition_fallback");
+  const coldStartFallbackActive = learnedDrafts.length === 0;
+  const drafts = (coldStartFallbackActive ? uniqueDrafts : learnedDrafts).slice(0, maxCandidates);
   const memorySurfaces = existingMemorySurfaces(input);
   const preliminary = drafts.map((draft, index) => scoreDraft(input, draft, constraints, memorySurfaces, drafts, index));
   const temperature = boundedCreativeTemperature(input.temperature ?? CREATIVE_TEMPERATURE);
@@ -363,6 +429,13 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         selectedGraphNodeIds: candidate.selectedGraphNodeIds,
         selectedGraphEdgeIds: candidate.selectedEdges.map(edge => String(edge.id)),
         selectedLanguagePriorIds: candidate.selectedLanguagePriorIds,
+        proposalRealization: candidate.proposalRealization,
+        proposalSelectionGuard: {
+          id: "guard.invention.learned_realization_priority.v1",
+          coldStartFallbackActive,
+          learnedCandidateCount: learnedDrafts.length,
+          fallbackCandidateCount: uniqueDrafts.length - learnedDrafts.length
+        },
         bootstrapCoefficients: {
           constraintCoverage: 0.28,
           graphCoherence: 0.22,
@@ -500,21 +573,74 @@ function inventionPlanningActivation(input: PlanInventionsInput): {
   };
 }
 
+function requestOwnedCreativeConstraints(input: PlanInventionsInput): RequestOwnedCreativeConstraint[] {
+  const requestPoints = [...input.requestText];
+  const rows: RequestOwnedCreativeConstraint[] = [];
+  for (const requirement of input.requirementField?.requiredFeatures ?? []) {
+    const span = requirement.origin.requestSpan;
+    if (!requirement.id || !requirement.sourceActivationId || !requirement.origin.learnedFrameOrPatternId) continue;
+    if (!requirement.origin.semanticRoleId || requirement.origin.semanticRoleId === "role.structural.unspecified.v1") continue;
+    if (requirement.origin.semanticRoleId === "role.request.authority.v1") continue;
+    if (!Number.isInteger(span.charStart) || !Number.isInteger(span.charEnd) || span.charStart < 0 || span.charEnd <= span.charStart || span.charEnd > requestPoints.length) continue;
+    if (span.charStart === 0 && span.charEnd === requestPoints.length) continue;
+    const surface = requestPoints.slice(span.charStart, span.charEnd).join("");
+    const prefix = requestPoints.slice(0, span.charStart).join("");
+    if (!surface || surface !== span.text || surface !== surface.trim() || surface.length > 256) continue;
+    if (new TextEncoder().encode(prefix).byteLength !== span.byteStart || new TextEncoder().encode(prefix + surface).byteLength !== span.byteEnd) continue;
+    if (!/[\p{Letter}\p{Number}]/u.test(surface)) continue;
+    rows.push({
+      id: requirement.id,
+      surface,
+      semanticRoleId: requirement.origin.semanticRoleId,
+      learnedFrameOrPatternId: requirement.origin.learnedFrameOrPatternId,
+      sourceActivationId: requirement.sourceActivationId,
+      confidence: clamp01(requirement.confidence),
+      value: clamp01(requirement.value),
+      requestSpan: span
+    });
+  }
+  const bySurface = new Map<string, RequestOwnedCreativeConstraint>();
+  for (const row of rows) {
+    const key = normalizeSurface(row.surface);
+    const previous = bySurface.get(key);
+    if (!previous || Math.max(row.confidence, row.value) > Math.max(previous.confidence, previous.value)) bySurface.set(key, row);
+  }
+  return [...bySurface.values()].sort((left, right) => (
+    Math.max(right.confidence, right.value) - Math.max(left.confidence, left.value)
+    || left.requestSpan.charStart - right.requestSpan.charStart
+    || left.id.localeCompare(right.id)
+  ));
+}
+
 function extractConstraints(input: PlanInventionsInput): ConstraintSeed[] {
-  const requestTerms = requestSurfaceUnits(input.requestText).slice(0, 10);
-  const rows: ConstraintSeed[] = requestTerms.map((surface, index) => ({
+  const activatedSlots = requestOwnedCreativeSlots(input)[0];
+  const requestTerms = activatedSlots
+    ? requestSurfaceUnits(activatedSlots.continuationSlot.text).slice(0, 10)
+    : requestSurfaceUnits(input.requestText).slice(0, 10);
+  const requestOwned = requestOwnedCreativeConstraints(input);
+  const rows: ConstraintSeed[] = requestOwned.map(constraint => ({
+    id: constraint.id,
+    surface: constraint.surface,
+    weight: 1 + Math.max(constraint.confidence, constraint.value)
+  }));
+  rows.push(...requestTerms.map((surface, index) => ({
     id: stableId("constraint.request", { surface, index }),
     surface,
     weight: Number((1 + Math.min(0.5, [...surface].length / 24)).toFixed(6))
-  }));
+  })));
   for (const node of input.construct.nodes) {
     const metadata = jsonRecord(node.metadata);
     const explicit = [metadata.constraints, metadata.requiredTerms, metadata.artifactKindIds].flatMap(value => jsonStrings(value, 16));
-    for (const surface of explicit.map(cleanSurfacePiece).filter(Boolean)) {
+    for (const surface of explicit
+      .map(cleanSurfacePiece)
+      .filter(surface => surface && surfaceOwnedByRequestOrEvidence(surface, input.requestText, input.evidence))) {
       rows.push({ id: stableId("constraint.construct", { nodeId: node.id, surface }), surface, weight: 1.5 });
     }
   }
-  for (const surface of input.dialogueState.unresolvedSlots.map(cleanSurfacePiece).filter(Boolean).slice(0, 6)) {
+  for (const surface of input.dialogueState.unresolvedSlots
+    .map(cleanSurfacePiece)
+    .filter(surface => surface && surfaceOwnedByRequestOrEvidence(surface, input.requestText, input.evidence))
+    .slice(0, 6)) {
     rows.push({ id: stableId("constraint.dialogue", surface), surface, weight: 1.25 });
   }
   const unique = new Map<string, ConstraintSeed>();
@@ -559,12 +685,12 @@ function languageCompositionIngredients(input: PlanInventionsInput): Composition
     rows.push({ id: unit.id, text, source: "language_unit", weight: clamp01(0.52 * unit.alpha + 0.28 * weightedJaccard(requestFeatures, featureSet(text, 128)) + 0.2 * Number(activatedIds.has(unit.id))), evidenceIds: unit.evidenceIds.map(String) });
   }
   for (const pattern of state.importedPatterns.slice(0, 128)) {
-    const text = jsonStrings(pattern.patternJson, 8).map(cleanSurfacePiece).find(Boolean) ?? "";
+    const text = sourceSurfaceFields(pattern.patternJson).map(cleanSurfacePiece).find(Boolean) ?? "";
     if (!text) continue;
     rows.push({ id: pattern.id, text, source: "language_pattern", weight: clamp01(0.46 * Math.min(1, pattern.support / 8) + 0.34 * weightedJaccard(requestFeatures, featureSet(text, 128)) + 0.2 * Number(activatedIds.has(pattern.id))), evidenceIds: pattern.evidenceIds.map(String) });
   }
   for (const frame of state.importedSemanticFrames.slice(0, 128)) {
-    const text = jsonStrings(frame.frameJson, 12).map(cleanSurfacePiece).find(Boolean) ?? "";
+    const text = sourceSurfaceFields(frame.frameJson).map(cleanSurfacePiece).find(Boolean) ?? "";
     if (!text) continue;
     rows.push({ id: frame.id, text, source: "semantic_frame", weight: clamp01(0.5 * frame.alpha + 0.3 * weightedJaccard(requestFeatures, featureSet(text, 128)) + 0.2 * Number(activatedIds.has(frame.id))), evidenceIds: frame.evidenceIds.map(String) });
   }
@@ -599,7 +725,8 @@ function uniqueIngredients(rows: readonly CompositionIngredient[]): CompositionI
 
 function buildDraft(input: PlanInventionsInput, constraints: readonly ConstraintSeed[], ingredients: readonly CompositionIngredient[], graphIngredients: readonly CompositionIngredient[], variant: number): DraftComposition {
   const requestTerms = requestSurfaceUnits(input.requestText);
-  const title = surfaceTitle(requestTerms.slice(0, 6).join(" ") || `composition.${stableId("title", input.requestText).slice(-8)}`);
+  const activatedSlots = requestOwnedCreativeSlots(input)[0];
+  const title = surfaceTitle(activatedSlots?.continuationSlot.text ?? requestTerms.slice(0, 6).join(" "));
   const rotated = rotate(ingredients, variant).slice(0, 3);
   while (rotated.length < 3) rotated.push({
     id: stableId("request.fallback", { variant, index: rotated.length }),
@@ -616,7 +743,12 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
   const requestChoice = ingredients.find(row => row.source === "request");
   if (requestChoice && !rotated.some(row => row.source === "request")) rotated[2] = requestChoice;
   const constraintSurface = constraints.slice(0, 6).map(row => row.surface).join("; ") || requestTerms.slice(0, 6).join("; ") || title;
-  const proposalSurface = evidenceSafeProposal(proposalShape(variant, title, rotated.map(row => row.text), constraintSurface), input.evidence, requestTerms, variant, title);
+  const learnedProposal = learnedProposalFromMemory(input, requestTerms, variant);
+  const shapedProposal = proposalShape(variant, title, rotated.map(row => row.text), constraintSurface);
+  const proposalSurface = evidenceSafeProposal(learnedProposal?.surface ?? shapedProposal, input.evidence, requestTerms, variant, title);
+  const proposalRealization: ProposalRealizationTrace = learnedProposal && normalizeSurface(proposalSurface) === normalizeSurface(learnedProposal.surface)
+    ? learnedProposal.trace
+    : { path: "composition_fallback", contextSymbols: learnedProposal?.trace.contextSymbols ?? [] };
   const selectedGraphNodeIds = uniqueStrings(rotated.filter(row => row.graphNodeId).map(row => row.graphNodeId!));
   const selectedEdges = selectCompositionEdges(input.graph.edges, selectedGraphNodeIds, variant);
   for (const edge of selectedEdges) {
@@ -634,7 +766,6 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
   }));
   const deductions = selectedEdges.slice(0, 3).map(edge => ({
     id: stableId("claim.deduction", { edge: edge.id, relation: edge.relationId }),
-    surface: String(edge.relationId),
     force: "inferred" as const,
     evidenceIds: uniqueStrings(edge.evidenceIds.map(String).filter(id => availableEvidenceIds.has(id))),
     kind: "deduction" as const
@@ -649,16 +780,21 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
   const untestedPerformanceClaim = constructRequestsPerformancePrediction(input.construct);
   const performance: InventionClaimBasis[] = untestedPerformanceClaim ? [{
     id: stableId("claim.performance", { title, request: input.requestText }),
-    surface: `${title} ⟦semantic.role.performance_prediction⟧`,
+    surface: title,
     force: "conjectured",
     evidenceIds: [],
     kind: "performance_prediction"
   }] : [];
-  const selectedLanguagePriorIds = uniqueStrings(rotated.filter(row => row.source !== "request" && row.source !== "graph").map(row => row.id));
+  const selectedLanguagePriorIds = uniqueStrings([
+    ...rotated.filter(row => row.source !== "request" && row.source !== "graph").map(row => row.id),
+    ...(proposalRealization.sourcePieceIds ?? []),
+    ...(proposalRealization.structuralSourceIds ?? [])
+  ]);
   const basisPriorIds = uniqueStrings([...selectedGraphNodeIds, ...selectedLanguagePriorIds, ...selectedEdges.map(edge => String(edge.relationId))]);
   return {
     title,
     proposalSurface,
+    proposalRealization,
     artifactKindIds: artifactKindIds(input.construct),
     basisPriorIds,
     selectedGraphNodeIds,
@@ -667,6 +803,336 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
     claimBasis: [...factualPremises, ...deductions, invention, ...performance],
     untestedPerformanceClaim
   };
+}
+
+/**
+ * Realizes an invention through hydrated language memory before the bounded
+ * cold-start composition path. The seed comes from the request and the
+ * continuation from source-owned memory; this boundary contains no
+ * language-specific vocabulary.
+ */
+function learnedProposalFromMemory(input: PlanInventionsInput, requestTerms: readonly string[], variant: number): { surface: string; trace: ProposalRealizationTrace } | undefined {
+  if (!requestTerms.length || !input.languageMemoryState.models.length) return undefined;
+  const requestConstraints = requestOwnedCreativeConstraints(input);
+  if (!requestConstraints.length) {
+    const structural = learnedStructuralProposalFromMemory(input);
+    if (structural) return structural;
+  }
+  const requestConstraint = requestConstraints.length ? requestConstraints[variant % requestConstraints.length] : undefined;
+  const contextSurface = requestConstraint?.surface ?? requestTerms[Math.max(0, requestTerms.length - 1 - (variant % requestTerms.length))];
+  if (!contextSurface) return undefined;
+  const contextSymbols = symbolizeData(contextSurface).filter(symbol => symbol.trim());
+  if (!contextSymbols.length) return undefined;
+  const generation = input.languageMemory.generate({
+    state: input.languageMemoryState,
+    contextSymbols,
+    requiredTerms: [],
+    frames: [],
+    generationExtent: 48
+  });
+  const learnedMove = generation.discourse.moves.find(move => move.role === "learned_continuation");
+  const continuation = splitEvidenceSentences(generation.text)[0] ?? "";
+  const continuationAlreadyCarriesConstraint = requestConstraint
+    ? normalizeSurface(continuation).startsWith(normalizeSurface(requestConstraint.surface))
+    : normalizeSurface(continuation).startsWith(normalizeSurface(contextSurface));
+  const surface = tidyProposal(continuationAlreadyCarriesConstraint ? continuation : [contextSurface, continuation].filter(Boolean).join(" "));
+  const continuationSymbols = symbolizeData(continuation).filter(symbol => /[\p{Letter}\p{Number}]/u.test(symbol));
+  if (!learnedMove || continuationSymbols.length < 3 || !surface || containsInternalSurfaceIdentifier(surface)) return undefined;
+  if (normalizeSurface(surface) === normalizeSurface(input.requestText)) return undefined;
+  if (generation.discourse.cohesion <= 0 || generation.discourse.fluency.ngramMeanActivation <= 0) return undefined;
+  if (generation.discourse.repetitionPenalty >= 0.5) return undefined;
+  if (copiesCompleteEvidenceSentence(surface, input.evidence)) return undefined;
+  if (copiesExactSourceOwnedSurface(surface, input)) return undefined;
+  const coveredRequestConstraints = requestConstraints.filter(constraint => normalizeSurface(surface).includes(normalizeSurface(constraint.surface)));
+  if (requestConstraint && !coveredRequestConstraints.some(constraint => constraint.id === requestConstraint.id)) return undefined;
+  return {
+    surface,
+    trace: {
+      path: "learned_continuation",
+      contextSymbols,
+      generationTextHash: stableId("generation.surface", generation.text),
+      generationConfidence: generation.confidence,
+      discourseScore: generation.discourse.discourseScore,
+      cohesion: generation.discourse.cohesion,
+      repetitionPenalty: generation.discourse.repetitionPenalty,
+      sourcePieceIds: uniqueStrings(learnedMove.sourcePieceIds),
+      requestConstraintIds: coveredRequestConstraints.map(constraint => constraint.id),
+      requestConstraintSourceActivationIds: uniqueStrings(coveredRequestConstraints.map(constraint => constraint.sourceActivationId)),
+      requestConstraintCoverage: requestConstraints.length ? coveredRequestConstraints.length / requestConstraints.length : 0,
+      stoppedBy: generation.stoppedBy
+    }
+  };
+}
+
+/**
+ * Plain corpus ingestion owns language structure but deliberately does not
+ * invent semantic role labels. This path therefore binds exact request spans
+ * to a source-owned sentence topology through an activated language unit. It
+ * changes every selected source sentence, carries no evidence authority, and
+ * records both the request coordinates and the durable language-prior IDs.
+ */
+function learnedStructuralProposalFromMemory(input: PlanInventionsInput): { surface: string; trace: ProposalRealizationTrace } | undefined {
+  const slots = requestOwnedCreativeSlots(input);
+  const sources = learnedStructuralSources(input.languageMemoryState);
+  if (!slots.length || !sources.length) return undefined;
+  const ranked = slots.flatMap(slot => sources.flatMap(source => {
+    const anchorSentenceIndex = source.sentences.findIndex(sentence => containsSymbolSequence(sentence, slot.anchor.normalizedSymbols));
+    if (anchorSentenceIndex < 0 || source.sentences.length < 2) return [];
+    const exactSourceVersion = source.sourceVersionId && source.sourceVersionId === slot.anchor.sourceVersionId;
+    const sourceEvidence = new Set(source.evidenceIds);
+    const anchorUnit = input.languageMemoryState.importedUnits.find(unit => unit.id === slot.anchor.id);
+    const evidenceOverlap = anchorUnit?.evidenceIds.some(id => sourceEvidence.has(String(id))) ?? false;
+    if (!exactSourceVersion && !evidenceOverlap) return [];
+    const requestFit = weightedJaccard(featureSet(input.requestText, 256), featureSet(source.sentences.join(" "), 256));
+    const score = clamp01(
+      0.38 * Number(exactSourceVersion)
+      + 0.18 * Number(evidenceOverlap)
+      + 0.18 * clamp01(source.alpha)
+      + 0.14 * clamp01(source.sentences.length / 3)
+      + 0.12 * requestFit
+    );
+    return [{ slot, source, anchorSentenceIndex, score }];
+  })).sort((left, right) => (
+    right.score - left.score
+    || right.source.sentences.length - left.source.sentences.length
+    || right.slot.anchor.normalizedSymbols.length - left.slot.anchor.normalizedSymbols.length
+    || left.source.id.localeCompare(right.source.id)
+  ));
+  for (const row of ranked) {
+    const anchoredSentence = bindAnchoredSourceSentence(
+      row.source.sentences[row.anchorSentenceIndex]!,
+      row.slot.anchor.normalizedSymbols,
+      row.slot.anchoredSlot.text
+    );
+    const continuationSource = row.source.sentences[(row.anchorSentenceIndex + 1) % row.source.sentences.length];
+    const continuationSentence = continuationSource
+      ? bindContinuationSourceSentence(continuationSource, row.slot.continuationSlot.text)
+      : undefined;
+    if (!anchoredSentence || !continuationSentence) continue;
+    const surface = tidyProposal(`${anchoredSentence} ${continuationSentence}`);
+    const sentences = splitEvidenceSentences(surface);
+    if (sentences.length !== 2 || !surface || containsInternalSurfaceIdentifier(surface)) continue;
+    if (normalizeSurface(surface) === normalizeSurface(input.requestText)) continue;
+    if (!normalizeSurface(surface).includes(normalizeSurface(row.slot.anchoredSlot.text))) continue;
+    if (!normalizeSurface(surface).includes(normalizeSurface(row.slot.continuationSlot.text))) continue;
+    if (copiesExactSourceOwnedSurface(surface, input) || copiesCompleteEvidenceSentence(surface, input.evidence)) continue;
+    const structuralRealizability = kneserNeyRealizability(input.languageMemoryState, surface);
+    const contextSymbols = symbolizeData(row.slot.continuationSlot.text).filter(symbol => symbol.trim());
+    return {
+      surface,
+      trace: {
+        path: "learned_structural_composition",
+        contextSymbols,
+        generationTextHash: stableId("generation.structural_surface", surface),
+        generationConfidence: clamp01(0.48 + row.score * 0.34 + Math.min(0.18, structuralRealizability * 6)),
+        discourseScore: row.score,
+        cohesion: clamp01(0.58 + row.score * 0.32),
+        repetitionPenalty: 0,
+        sourcePieceIds: uniqueStrings([row.slot.anchor.id, row.source.id]),
+        requestConstraintIds: [],
+        requestConstraintSourceActivationIds: [row.slot.anchor.sourceActivationId],
+        requestConstraintCoverage: 1,
+        requestSlotSpans: [row.slot.anchoredSlot, row.slot.continuationSlot].map(span => ({
+          ...span,
+          sourceActivationId: row.slot.anchor.sourceActivationId
+        })),
+        structuralSourceIds: [row.source.id],
+        structuralSentenceCount: sentences.length,
+        structuralRealizability,
+        stoppedBy: "source_exhausted"
+      }
+    };
+  }
+  return undefined;
+}
+
+function requestOwnedCreativeSlots(input: PlanInventionsInput): RequestOwnedCreativeSlots[] {
+  const requestTokens = lexicalSurfaceSpans(input.requestText);
+  if (!requestTokens.length) return [];
+  const out: RequestOwnedCreativeSlots[] = [];
+  for (const anchor of requestOwnedLanguageActivationSpans(input)) {
+    const startUtf16 = utf16IndexAtCodePoint(input.requestText, anchor.requestSpan.charStart);
+    const endUtf16 = utf16IndexAtCodePoint(input.requestText, anchor.requestSpan.charEnd);
+    const first = requestTokens.findIndex(token => token.start >= startUtf16 && token.start < endUtf16);
+    if (first < 0) continue;
+    let last = first;
+    while (last + 1 < requestTokens.length && requestTokens[last + 1]!.start < endUtf16) last++;
+    const previous = first > 0 && whitespaceOnly(input.requestText.slice(requestTokens[first - 1]!.end, requestTokens[first]!.start))
+      ? requestTokens[first - 1]
+      : undefined;
+    const anchoredStart = previous?.start ?? requestTokens[first]!.start;
+    const anchoredEnd = requestTokens[last]!.end;
+    let continuationLast = last;
+    while (continuationLast + 1 < requestTokens.length && continuationLast - last < 7) {
+      const gap = input.requestText.slice(requestTokens[continuationLast]!.end, requestTokens[continuationLast + 1]!.start);
+      if (hasSentenceBoundary(gap)) break;
+      continuationLast++;
+    }
+    if (!previous || continuationLast <= last) continue;
+    const anchoredSlot = exactRequestSpan(input.requestText, anchoredStart, anchoredEnd);
+    const continuationSlot = exactRequestSpan(input.requestText, requestTokens[first]!.start, requestTokens[continuationLast]!.end);
+    if (!anchoredSlot || !continuationSlot) continue;
+    out.push({ anchor, anchoredSlot, continuationSlot });
+  }
+  const seen = new Set<string>();
+  return out.filter(row => {
+    const key = `${row.anchor.sourceVersionId}\u0001${row.anchoredSlot.charStart}\u0001${row.continuationSlot.charEnd}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((left, right) => (
+    right.anchor.normalizedSymbols.length - left.anchor.normalizedSymbols.length
+    || [...right.anchor.surface].length - [...left.anchor.surface].length
+    || right.anchor.alpha - left.anchor.alpha
+    || left.anchor.id.localeCompare(right.anchor.id)
+  ));
+}
+
+function requestOwnedLanguageActivationSpans(input: PlanInventionsInput): RequestOwnedLanguageActivationSpan[] {
+  const activated = new Set(input.requirementField?.activatedPhraseUnitIds ?? []);
+  if (!activated.size) return [];
+  const requestTokens = lexicalSurfaceSpans(input.requestText);
+  const rows: RequestOwnedLanguageActivationSpan[] = [];
+  for (const unit of input.languageMemoryState.importedUnits) {
+    if (!activated.has(unit.id) || (unit.unitKind !== "symbol" && unit.unitKind !== "phrase" && unit.unitKind !== "morpheme")) continue;
+    const normalizedSymbols = lexicalSurfaceSpans(unit.text).map(token => token.key);
+    if (!normalizedSymbols.length || normalizedSymbols.length > requestTokens.length) continue;
+    for (let index = 0; index <= requestTokens.length - normalizedSymbols.length; index++) {
+      if (!normalizedSymbols.every((symbol, offset) => requestTokens[index + offset]?.key === symbol)) continue;
+      const start = requestTokens[index]!.start;
+      const end = requestTokens[index + normalizedSymbols.length - 1]!.end;
+      const requestSpan = exactRequestSpan(input.requestText, start, end);
+      if (!requestSpan || requestSpan.charStart === 0 && requestSpan.charEnd === [...input.requestText].length) continue;
+      rows.push({
+        id: unit.id,
+        sourceActivationId: unit.id,
+        surface: requestSpan.text,
+        normalizedSymbols,
+        sourceVersionId: String(unit.sourceVersionId),
+        alpha: clamp01(unit.alpha),
+        unitKind: unit.unitKind,
+        requestSpan
+      });
+    }
+  }
+  return rows.sort((left, right) => (
+    right.normalizedSymbols.length - left.normalizedSymbols.length
+    || [...right.surface].length - [...left.surface].length
+    || right.alpha - left.alpha
+    || left.id.localeCompare(right.id)
+  ));
+}
+
+function learnedStructuralSources(state: LanguageMemoryRuntimeState): LearnedStructuralSource[] {
+  const rows: LearnedStructuralSource[] = [];
+  for (const frame of state.importedSemanticFrames.slice(0, 512)) {
+    const record = jsonRecord(frame.frameJson);
+    const sourceVersionId = typeof record.sourceVersionId === "string" ? record.sourceVersionId : "";
+    for (const [index, surface] of sourceSurfaceFields(frame.frameJson).entries()) {
+      const sentences = splitEvidenceSentences(surface).filter(sentence => lexicalSurfaceSpans(sentence).length >= 3);
+      if (sentences.length < 2) continue;
+      rows.push({
+        id: `${frame.id}:surface:${index}`,
+        sourceVersionId,
+        evidenceIds: frame.evidenceIds.map(String),
+        alpha: clamp01(frame.alpha),
+        sentences: sentences.slice(0, 12)
+      });
+    }
+  }
+  const seen = new Set<string>();
+  return rows.filter(row => {
+    const key = `${row.sourceVersionId}\u0001${normalizeSurface(row.sentences.join(" "))}`;
+    if (!row.sourceVersionId || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function bindAnchoredSourceSentence(sentence: string, anchorSymbols: readonly string[], requestSlot: string): string | undefined {
+  const tokens = lexicalSurfaceSpans(sentence);
+  const match = symbolSequenceIndex(tokens.map(token => token.key), anchorSymbols);
+  if (match < 0) return undefined;
+  const anchorEnd = match + anchorSymbols.length - 1;
+  const previous = match > 0 && whitespaceOnly(sentence.slice(tokens[match - 1]!.end, tokens[match]!.start))
+    ? tokens[match - 1]
+    : undefined;
+  const start = previous?.start ?? tokens[match]!.start;
+  const end = tokens[anchorEnd]!.end;
+  const replacement = alignSurfaceCase(requestSlot, sentence.slice(start, end));
+  return tidyProposal(`${sentence.slice(0, start)}${replacement}${sentence.slice(end)}`);
+}
+
+function bindContinuationSourceSentence(sentence: string, requestSlot: string): string | undefined {
+  const first = lexicalSurfaceSpans(sentence)[0];
+  if (!first) return undefined;
+  const replacement = alignSurfaceCase(requestSlot, sentence.slice(first.start, first.end));
+  return tidyProposal(`${sentence.slice(0, first.start)}${replacement}${sentence.slice(first.end)}`);
+}
+
+function containsSymbolSequence(surface: string, symbols: readonly string[]): boolean {
+  return symbolSequenceIndex(lexicalSurfaceSpans(surface).map(token => token.key), symbols) >= 0;
+}
+
+function symbolSequenceIndex(haystack: readonly string[], needle: readonly string[]): number {
+  if (!needle.length || needle.length > haystack.length) return -1;
+  for (let index = 0; index <= haystack.length - needle.length; index++) {
+    if (needle.every((symbol, offset) => haystack[index + offset] === symbol)) return index;
+  }
+  return -1;
+}
+
+function lexicalSurfaceSpans(text: string): Array<{ surface: string; key: string; start: number; end: number }> {
+  const rows: Array<{ surface: string; key: string; start: number; end: number }> = [];
+  for (const match of text.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)) {
+    const surface = match[0];
+    const start = match.index;
+    const key = surface.normalize("NFKC").toLocaleLowerCase();
+    if (key) rows.push({ surface, key, start, end: start + surface.length });
+  }
+  return rows;
+}
+
+function exactRequestSpan(text: string, startUtf16: number, endUtf16: number): TurnRequirement["origin"]["requestSpan"] | undefined {
+  if (!Number.isInteger(startUtf16) || !Number.isInteger(endUtf16) || startUtf16 < 0 || endUtf16 <= startUtf16 || endUtf16 > text.length) return undefined;
+  const surface = text.slice(startUtf16, endUtf16);
+  if (!surface || surface !== surface.trim()) return undefined;
+  const prefix = text.slice(0, startUtf16);
+  return {
+    text: surface,
+    charStart: [...prefix].length,
+    charEnd: [...prefix + surface].length,
+    byteStart: new TextEncoder().encode(prefix).byteLength,
+    byteEnd: new TextEncoder().encode(prefix + surface).byteLength
+  };
+}
+
+function utf16IndexAtCodePoint(text: string, pointIndex: number): number {
+  return [...text].slice(0, Math.max(0, pointIndex)).join("").length;
+}
+
+function whitespaceOnly(value: string): boolean {
+  return /^\s*$/u.test(value);
+}
+
+function hasSentenceBoundary(value: string): boolean {
+  return /[.!?\u3002\uff01\uff1f]/u.test(value);
+}
+
+function alignSurfaceCase(surface: string, template: string): string {
+  const source = [...template];
+  const target = [...surface];
+  const sourceIndex = source.findIndex(character => character.toLocaleLowerCase() !== character.toLocaleUpperCase());
+  const targetIndex = target.findIndex(character => character.toLocaleLowerCase() !== character.toLocaleUpperCase());
+  if (sourceIndex < 0 || targetIndex < 0) return surface;
+  const sourceCharacter = source[sourceIndex]!;
+  const targetCharacter = target[targetIndex]!;
+  if (sourceCharacter === sourceCharacter.toLocaleUpperCase() && sourceCharacter !== sourceCharacter.toLocaleLowerCase()) {
+    target[targetIndex] = targetCharacter.toLocaleUpperCase();
+  } else if (sourceCharacter === sourceCharacter.toLocaleLowerCase() && sourceCharacter !== sourceCharacter.toLocaleUpperCase()) {
+    target[targetIndex] = targetCharacter.toLocaleLowerCase();
+  }
+  return target.join("");
 }
 
 function scoreDraft(input: PlanInventionsInput, draft: DraftComposition, constraints: readonly ConstraintSeed[], memorySurfaces: readonly string[], drafts: readonly DraftComposition[], index: number): ScoredComposition {
@@ -794,8 +1260,8 @@ function evidenceSafeProposal(surface: string, evidence: readonly EvidenceSpan[]
   const safe = requestTerms.slice(0, 8);
   const fallback = tidyProposal(proposalShape(variant, title, [safe[0] ?? title, safe[1] ?? title, safe[2] ?? title], safe.join("; ") || title));
   if (!copiesCompleteEvidenceSentence(fallback, evidence)) return fallback;
-  const opaque = stableId("composition", { variant, requestTerms }).slice(-16);
-  return `${title}: ${opaque}; ${variant + 1}.`;
+  const requestOwned = tidyProposal(safe.join(" "));
+  return copiesCompleteEvidenceSentence(requestOwned, evidence) ? "" : requestOwned;
 }
 
 function copiesCompleteEvidenceSentence(surface: string, evidence: readonly EvidenceSpan[]): boolean {
@@ -806,16 +1272,72 @@ function copiesCompleteEvidenceSentence(surface: string, evidence: readonly Evid
   }));
 }
 
+function copiesExactSourceOwnedSurface(surface: string, input: PlanInventionsInput): boolean {
+  const candidateSentences = splitEvidenceSentences(surface)
+    .map(normalizeSurface)
+    .filter(candidate => symbolizeData(candidate).filter(symbol => /[\p{Letter}\p{Number}]/u.test(symbol)).length >= 2);
+  if (!candidateSentences.length) return false;
+  const sourceSurfaces = [
+    ...input.evidence.map(span => span.text),
+    ...input.languageMemoryState.importedUnits.map(unit => unit.text),
+    ...input.languageMemoryState.importedPatterns.flatMap(pattern => sourceSurfaceFields(pattern.patternJson)),
+    ...input.languageMemoryState.importedSemanticFrames.flatMap(frame => sourceSurfaceFields(frame.frameJson)),
+    ...input.languageMemoryState.importedConstructionBundles.flatMap(bundle => bundle.sourceExamples.map(example => example.surface))
+  ];
+  const sourceSentences = new Set(sourceSurfaces
+    .flatMap(splitEvidenceSentences)
+    .map(normalizeSurface)
+    .filter(source => symbolizeData(source).filter(symbol => /[\p{Letter}\p{Number}]/u.test(symbol)).length >= 2));
+  return candidateSentences.some(candidate => sourceSentences.has(candidate));
+}
+
+function sourceSurfaceFields(value: JsonValue): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const record = value as Record<string, JsonValue>;
+  return ["surface", "text", "preview", "excerpt", "proposition", "claim", "phrase", "title", "summary"]
+    .flatMap(key => {
+      const item = record[key];
+      if (typeof item === "string") return [item];
+      if (Array.isArray(item)) return item.filter((entry): entry is string => typeof entry === "string");
+      return [];
+    });
+}
+
 function splitEvidenceSentences(text: string): string[] {
   return text.split(/(?<=[.!?])\s+|\r?\n+/u).map(value => value.trim()).filter(Boolean);
 }
 
 function graphNodeSurface(node: GraphNode, evidence: readonly EvidenceSpan[], requestText: string): string {
-  const candidates = [...jsonStrings(node.representation, 12), ...jsonStrings(node.metadata, 8), ...node.features.filter(feature => feature.startsWith("sym:")).map(feature => feature.slice(4))];
+  const linkedEvidenceIds = new Set(node.evidenceIds.map(String));
+  const linkedEvidence = evidence.filter(span => linkedEvidenceIds.has(String(span.id)));
+  const candidates = [
+    ...explicitSourceSurfaceFields(node.representation),
+    ...sourceSurfaceFields(node.metadata),
+    ...node.features.filter(feature => feature.startsWith("sym:")).map(feature => feature.slice(4))
+  ];
   const requestFeatures = featureSet(requestText, 256);
-  return uniqueStrings(candidates.map(cleanSurfacePiece).filter(candidate => candidate && !copiesCompleteEvidenceSentence(candidate, evidence)))
+  return uniqueStrings(candidates
+    .map(cleanSurfacePiece)
+    .filter(candidate => candidate
+      && surfaceOwnedByRequestOrEvidence(candidate, requestText, linkedEvidence)
+      && !copiesCompleteEvidenceSentence(candidate, linkedEvidence)))
     .map(candidate => ({ candidate, fit: weightedJaccard(requestFeatures, featureSet(candidate, 128)) }))
     .sort((left, right) => right.fit - left.fit || right.candidate.length - left.candidate.length || left.candidate.localeCompare(right.candidate))[0]?.candidate ?? "";
+}
+
+function explicitSourceSurfaceFields(value: JsonValue): string[] {
+  return typeof value === "string" ? [value] : sourceSurfaceFields(value);
+}
+
+function surfaceOwnedByRequestOrEvidence(surface: string, requestText: string, evidence: readonly EvidenceSpan[]): boolean {
+  return containsNormalizedSurfaceSequence(requestText, surface)
+    || evidence.some(span => containsNormalizedSurfaceSequence(span.text, surface) || containsNormalizedSurfaceSequence(span.textPreview, surface));
+}
+
+function containsNormalizedSurfaceSequence(owner: string, candidate: string): boolean {
+  const ownerSurface = normalizeSurface(owner);
+  const candidateSurface = normalizeSurface(candidate);
+  return Boolean(candidateSurface) && ` ${ownerSurface} `.includes(` ${candidateSurface} `);
 }
 
 function artifactKindIds(construct: ConstructGraph): string[] {
@@ -840,18 +1362,25 @@ function constructRequestsPerformancePrediction(construct: ConstructGraph): bool
  * happen before this function through structured numeric state.
  */
 function requestSurfaceUnits(text: string): string[] {
-  return uniqueStrings(symbolizeData(text)
-    .filter(symbol => /^[\p{Letter}\p{Number}_-]+$/u.test(symbol))
+  return uniqueStrings((text.normalize("NFC").match(/[\p{Letter}\p{Mark}\p{Number}_-]+/gu) ?? [])
     .filter(Boolean))
     .slice(0, 24);
 }
 
 function cleanSurfacePiece(value: string): string {
   const clean = value.normalize("NFC").replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
-  if (!clean || clean.length > 96 || clean.includes("://") || !/[\p{Letter}\p{Number}]/u.test(clean)) return "";
+  if (!clean || clean.length > 96 || clean.includes("://") || containsInternalSurfaceIdentifier(clean) || !/[\p{Letter}\p{Number}]/u.test(clean)) return "";
   const symbols = symbolizeData(clean);
   if (!symbols.length || symbols.length > 8) return "";
   return clean.replace(/[.!?]+$/u, "");
+}
+
+function containsInternalSurfaceIdentifier(value: string): boolean {
+  const clean = value.normalize("NFC").trim();
+  if (!clean) return false;
+  if (/(?:^|\s)(?:sym:[^\s|]+|bi:[^\s|]+\|[^\s|]+|tri:[^\s|]+\|[^\s|]+\|[^\s|]+|char:\S+)(?:$|\s)/u.test(clean)) return true;
+  if (/(?:^|[^\p{Letter}\p{Number}_])(?:node|edge|relation|hyperedge|source|evidence|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)_[0-9a-f]{24,}(?:$|[^\p{Letter}\p{Number}_])/iu.test(clean)) return true;
+  return !/\s/u.test(clean) && /^(?:[\p{Letter}][\p{Letter}\p{Number}_-]*[.:]){2,}[\p{Letter}\p{Number}_.:-]+$/u.test(clean);
 }
 
 function tidyProposal(value: string): string {
@@ -863,7 +1392,7 @@ function surfaceTitle(value: string): string {
 }
 
 function normalizeSurface(value: string): string {
-  return value.normalize("NFKC").toLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return value.normalize("NFKC").toLowerCase().replace(/[^\p{Letter}\p{Mark}\p{Number}]+/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 function rotate<T>(rows: readonly T[], offset: number): T[] {

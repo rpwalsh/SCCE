@@ -22,7 +22,7 @@ import {
   parseReviewedPatchPlan,
   type AppliedWorkspacePatch,
   type ReviewedPatchPlan,
-  type WorkspaceCodingPatchPlanGeneration
+  type WorkspaceCodingPatchPlanSelected
 } from "./patch-protocol.js";
 import {
   sameFileSystemPath,
@@ -256,6 +256,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showErrorMessage("Yopp coding requests are limited to 256 selected source paths.");
         return;
       }
+      const diagnosticCodes = await chooseTypeScriptDiagnosticCodes(codingWorkspace, selected.map(item => item.path));
+      if (!diagnosticCodes) return;
       const generation = await run(
         "workspace.patch.plan.request",
         "Plan coding request",
@@ -265,10 +267,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           expectedWorkspaceUpdatedAt: statusResult.workspace.updatedAt,
           requestId: `vscode-${randomUUID()}`,
           requestText,
-          requestedPaths: selected.map(item => item.path)
+          requestedPaths: selected.map(item => item.path),
+          diagnosticCodes
         })
       );
       if (!generation) return;
+      if (generation.kind === "unresolved") {
+        const reasons = generation.reasonIds.join(", ");
+        output.appendLine(`[${new Date().toISOString()}] Coding request was not resolved: ${reasons}`);
+        void vscode.window.showInformationMessage(`Yopp found no unique admissible compiler action. Reason IDs: ${reasons}`);
+        return;
+      }
       let reviewedWorkspace: BoundOpenWorkspace;
       try {
         reviewedWorkspace = await openPatchPlanPreview(patchPreview, statusResult.workspace.rootPath, generation.plan);
@@ -581,19 +590,79 @@ async function assertReviewedWorkspaceStillBound(serverRootPath: string, reviewe
   await assertWorkspacePhysicalBinding(reviewed);
 }
 
-function codingPlanReviewSummary(generation: WorkspaceCodingPatchPlanGeneration): string {
-  const trace = generation.programProposalTrace;
-  const requested = trace.requestedPaths.join(", ");
-  const derived = trace.derivedDependencyPaths.length ? trace.derivedDependencyPaths.join(", ") : "none";
-  const tests = trace.regressionTestPaths.length ? trace.regressionTestPaths.join(", ") : "none reported";
+function codingPlanReviewSummary(generation: WorkspaceCodingPatchPlanSelected): string {
   return [
     patchPlanSummary(generation.plan),
-    `Request trace: ${trace.requestHash}`,
-    `Requested paths: ${requested}`,
-    `Derived dependency paths: ${derived}`,
-    `Regression test paths: ${tests}`,
+    `Request: ${generation.requestId}`,
+    `Requested paths: ${generation.requestedPaths.join(", ")}`,
+    `Compiler diagnostic selector: TS${generation.diagnosticCode}`,
+    `Compiler candidate: ${generation.selection.candidateId}`,
     "Execution state: not_executed"
   ].join("\n");
+}
+
+interface TypeScriptDiagnosticPick extends vscode.QuickPickItem {
+  code: number;
+}
+
+async function chooseTypeScriptDiagnosticCodes(
+  workspace: BoundOpenWorkspace,
+  requestedPaths: readonly string[]
+): Promise<number[] | undefined> {
+  const observed = new Map<number, Array<{ path: string; diagnostic: vscode.Diagnostic }>>();
+  for (const workspacePath of requestedPaths) {
+    const uri = vscode.Uri.joinPath(workspace.folder.uri, ...workspacePath.split("/"));
+    for (const diagnostic of vscode.languages.getDiagnostics(uri)) {
+      const code = numericTypeScriptDiagnosticCode(diagnostic);
+      if (code === undefined) continue;
+      const entries = observed.get(code) ?? [];
+      entries.push({ path: workspacePath, diagnostic });
+      observed.set(code, entries);
+    }
+  }
+  if (observed.size === 0) {
+    void vscode.window.showInformationMessage("No current positive-integer TypeScript diagnostics were found in the selected files.");
+    return undefined;
+  }
+  const items: TypeScriptDiagnosticPick[] = [...observed].sort((left, right) => left[0] - right[0]).map(([code, entries]) => ({
+    code,
+    label: `TS${code}`,
+    description: `${entries.length} occurrence${entries.length === 1 ? "" : "s"}`,
+    detail: entries.slice(0, 3).map(({ path, diagnostic }) => {
+      const start = diagnostic.range.start;
+      const message = diagnostic.message.replace(/\s+/gu, " ").trim();
+      return `${path}:${start.line + 1}:${start.character + 1} ${message}`;
+    }).join(" | ")
+  }));
+  const selected = await vscode.window.showQuickPick(items, {
+    title: "Select TypeScript compiler diagnostics",
+    placeHolder: "Only the selected numeric codes may choose a server-observed compiler action",
+    canPickMany: true,
+    ignoreFocusOut: true,
+    matchOnDescription: true,
+    matchOnDetail: true
+  });
+  if (!selected) return undefined;
+  const codes = selected.map(item => item.code).sort((left, right) => left - right);
+  if (codes.length === 0) {
+    void vscode.window.showInformationMessage("Select at least one TypeScript diagnostic code.");
+    return undefined;
+  }
+  if (codes.length > 128) {
+    void vscode.window.showErrorMessage("Yopp coding requests are limited to 128 diagnostic codes.");
+    return undefined;
+  }
+  return codes;
+}
+
+function numericTypeScriptDiagnosticCode(diagnostic: vscode.Diagnostic): number | undefined {
+  const source = diagnostic.source?.trim().toLocaleLowerCase();
+  if (source !== "ts" && source !== "typescript") return undefined;
+  const raw = diagnostic.code && typeof diagnostic.code === "object" && "value" in diagnostic.code
+    ? diagnostic.code.value
+    : diagnostic.code;
+  const code = typeof raw === "number" ? raw : typeof raw === "string" && /^[1-9][0-9]*$/u.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(code) && code > 0 ? code : undefined;
 }
 
 function showAppliedReceipt(applied: AppliedWorkspacePatch): void {

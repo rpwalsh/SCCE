@@ -13,6 +13,7 @@ import {
   persistDialogueTurn,
   planStreamRhythm,
   promoteWorkspaceAnalysisToCoreRecords,
+  verifyPatchTransactionPlan,
   toJsonValue,
   createWorkspaceRevisionSnapshot,
   selectWorkspaceTransformationFamily,
@@ -22,6 +23,7 @@ import {
   type FileArtifact,
   type IngestResult,
   type JsonValue,
+  type PatchTransactionPlan,
   type RepoSnapshot,
   type WorkspaceCorePromotionResult,
   type WorkspaceKernelAnswerResult,
@@ -244,6 +246,7 @@ export interface WorkspaceCodingPatchPlanningInput {
   requestId: string;
   requestText: string;
   requestedPaths: string[];
+  diagnosticCodes?: number[];
   validationPlan: WorkspacePatchValidationPlan;
 }
 
@@ -271,6 +274,7 @@ export interface WorkspaceCompilerPatchPlanGenerationResult {
 }
 
 export type WorkspaceCompilerPatchUnresolvedReasonId =
+  | "scce.workspace.compiler_patch.unresolved.diagnostic_selector_absent.v1"
   | "scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"
   | "scce.workspace.compiler_patch.unresolved.compiler_lane_ambiguous.v1"
   | "scce.workspace.compiler_patch.unresolved.compiler_config_absent.v1";
@@ -295,6 +299,34 @@ export type WorkspaceCodingPatchPlanningResult =
   | WorkspaceCompilerPatchPlanGenerationResult
   | WorkspaceCompilerPatchUnresolvedResult
   | WorkspaceTransformationFamilySelection;
+
+/**
+ * Converts only the server-owned compiler-planning success state into the
+ * kernel handoff. This helper never accepts an approval or execution receipt.
+ */
+export function verifiedCompilerPlansForTurn(
+  result: WorkspaceCodingPatchPlanningResult
+): readonly PatchTransactionPlan[] {
+  if (!("statusId" in result) || result.statusId !== "scce.workspace.compiler_patch.selected.v1") return [];
+  if (result.authorization.required !== true
+    || result.authorization.granted !== false
+    || result.authorization.capabilityId !== "workspace.patch.apply") {
+    throw new Error("workspace compiler plan handoff requires absent execution authority");
+  }
+  if (result.execution.state !== "not_executed" || result.execution.receipt !== null) {
+    throw new Error("workspace compiler plan handoff requires an unexecuted plan");
+  }
+  const selected = result.selection.selected;
+  if (!selected || selected.execution.state !== "not_executed") {
+    throw new Error("workspace compiler plan handoff requires the selected unexecuted transformation");
+  }
+  verifyPatchTransactionPlan(result.plan);
+  verifyPatchTransactionPlan(selected.patchPlan);
+  if (selected.patchPlan.planHash !== result.plan.planHash) {
+    throw new Error("workspace compiler plan handoff selection does not match the returned plan");
+  }
+  return Object.freeze([result.plan]);
+}
 
 export interface WorkspaceAnswerOutcomeInput {
   status: "accepted" | "rejected" | "corrected";
@@ -1583,6 +1615,22 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
 }): Promise<WorkspaceCodingPatchPlanningResult> {
   const initial = await loadDurableWorkspaceRevision(args);
   const requestedPaths = uniqueWorkspacePaths(args.input.requestedPaths);
+  if (!args.input.diagnosticCodes?.length) {
+    return {
+      schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      workspaceId: initial.snapshot.workspaceId,
+      revisionId: initial.snapshot.revisionId,
+      revisionHash: initial.snapshot.revisionHash,
+      requestId: args.input.requestId,
+      requestedPaths,
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.diagnostic_selector_absent.v1"],
+      observedCompilerLaneCount: 0,
+      selection: null,
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
+    };
+  }
   const compilerLaneResolution = selectSourceObservedCompilerLane(initial.snapshot, requestedPaths);
   if (!compilerLaneResolution.selected) {
     return {
@@ -1622,7 +1670,7 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
     const file = confirmed.snapshot.files.find(candidate => candidate.path === workspacePath)!;
     return { path: file.path, content: decodeExactWorkspaceSource(file), contentHash: file.contentHash };
   });
-  const family = deriveTypeScriptCodeActionCandidates({
+  const family = args.input.diagnosticCodes?.length ? deriveTypeScriptCodeActionCandidates({
     rootPath: args.root,
     requestedPaths,
     files: analyzedFiles,
@@ -1632,8 +1680,9 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
       semanticRevisionHash: observation.semanticRevisionHash
     },
     compilerCommand: compilerLane.command,
+    diagnosticCodes: args.input.diagnosticCodes,
     maxEdits: 128
-  });
+  }) : undefined;
   const graph = buildCompilerTaskConstraintGraph({
     revision: confirmed.snapshot,
     observation,
@@ -1874,6 +1923,7 @@ function buildCompilerTaskConstraintGraph(args: {
       && command.rawCommandEvidence === args.compilerLane.rawCommand;
   });
   const evidenceIds = [...new Set([...diagnosticEvidenceByPath.values()].flat())].sort(compareCanonicalText);
+  const diagnosticSymbolBindings = compilerDiagnosticSymbolBindings(args.semanticProgram, transformations);
   return buildWorkspaceTaskConstraintGraph({
     revision: args.revision,
     observation: args.observation,
@@ -1908,8 +1958,37 @@ function buildCompilerTaskConstraintGraph(args: {
     validationPlan: { validatorId: args.input.validationPlan.validatorId, checks: ["compiler"] },
     validationCommandBindings: semanticCommand
       ? [{ id: `compiler_validation_${hashParts(semanticCommand.id, args.input.requestId).slice(0, 32)}`, checkId: "compiler", commandId: semanticCommand.id }]
-      : []
+      : [],
+    diagnosticSymbolBindings
   });
+}
+
+function compilerDiagnosticSymbolBindings(
+  program: TypeScriptSemanticProgramIndex,
+  transformations: readonly TypeScriptCodeActionCandidateSet["transformations"][number][]
+): Array<{ diagnosticId: string; symbolId: string }> {
+  const bindings = new Map<string, { diagnosticId: string; symbolId: string }>();
+  for (const transformation of transformations) {
+    const diagnostic = program.diagnostics.find(row => row.span
+      && row.span.path === transformation.path
+      && row.compilerCode === transformation.diagnostic.code
+      && row.span.start === transformation.diagnostic.start
+      && row.span.length === transformation.diagnostic.length
+      && row.rawMessageEvidence === transformation.diagnostic.message);
+    if (!diagnostic) continue;
+    const replacementSurfaces = new Set(transformation.codeFix.fileChanges
+      .flatMap(change => change.textChanges)
+      .map(change => change.newText.normalize("NFC").trim())
+      .filter(Boolean));
+    for (const surface of replacementSurfaces) {
+      const symbols = program.symbols.filter(symbol => symbol.nameEvidence.normalize("NFC") === surface);
+      if (symbols.length !== 1) continue;
+      const symbol = symbols[0]!;
+      bindings.set(`${diagnostic.id}\0${symbol.id}`, { diagnosticId: diagnostic.id, symbolId: symbol.id });
+    }
+  }
+  return [...bindings.values()].sort((left, right) => compareCanonicalText(left.diagnosticId, right.diagnosticId)
+    || compareCanonicalText(left.symbolId, right.symbolId));
 }
 
 function assertSameWorkspaceRevision(

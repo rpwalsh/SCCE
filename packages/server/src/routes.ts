@@ -3,14 +3,16 @@ import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
+import type { RuntimeStartupReadiness } from "./startup.js";
 
 export interface ApiContext {
   runtime: ReturnType<typeof createNodeRuntime>;
   config: Awaited<ReturnType<typeof readScceRuntimeConfig>>;
+  startupReadiness: RuntimeStartupReadiness;
   maxBodyBytes?: number;
   /** Optional server-owned remote isolation lane; never selected by request data. */
   patchValidation?: {
@@ -182,9 +184,13 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
   if (req.method === "GET" && url.pathname === "/api/manifest") return json({ routes: ROUTES, serverUrl: context.config.server.url });
   if (req.method === "GET" && url.pathname === "/api/brain/status") return json(await context.runtime.kernel.inspect("brain"));
   if (req.method === "GET" && url.pathname === "/api/ready") {
-    const postgres = await context.runtime.storage.verify();
-    const ok = healthOk(postgres);
-    return json({ ok, postgres, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
+    const warmup = context.startupReadiness.snapshot();
+    const postgres = context.runtime.storage.status
+      ? await context.runtime.storage.status()
+      : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
+    const exactCounts = hasExactPostgresCounts(postgres);
+    const ok = warmup.ok && healthOk(postgres) && exactCounts;
+    return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
   }
   if (req.method === "POST" && url.pathname === "/api/db/init") {
     await context.runtime.storage.migrate();
@@ -364,6 +370,10 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
     try {
       const body = await readBody(req, context.maxBodyBytes);
       const turn = validateTurn(body);
+      const workspaceCodingInput = parseTurnWorkspaceCodingRequest(
+        isRecord(body) ? body.workspaceCoding : undefined,
+        turn.text
+      );
       const sessionId = conversationSessionId(body);
       const conversationId = dialogueConversationId(body, sessionId);
       await assertSurfaceLanguageReady(context, turn.text);
@@ -377,6 +387,13 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
         : undefined;
       const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0 && !sourceSurfaceStrongEnough(turn.text);
       const active = await assertHydratedRuntimeReady(context.runtime.storage);
+      const workspaceCoding = workspaceCodingInput
+        ? await planWorkspaceCodingPatchApiRequest(context, {
+          schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+          input: workspaceCodingInput
+        })
+        : undefined;
+      const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
       const webRequested = webLearningRequested(body);
       const learnedDialogueProfile = await latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId);
       const previousDialogue = await latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId });
@@ -384,6 +401,7 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
       traceEvent(trace, { stage: "turn.runtime.start", label: "api.turn" });
       const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
       const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
+      const { workspacePlans: _untrustedWorkspacePlans, ...trustedOriginalRuntime } = originalRuntime;
       const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
       const fastLocalEvidenceAnswer = originalMetadata.fastLocalEvidenceAnswer === true
         || originalRuntime.fastLocalEvidenceAnswer === true
@@ -401,9 +419,10 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
           ...originalMetadata,
           ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
           runtime: {
-            ...originalRuntime,
+            ...trustedOriginalRuntime,
             ...(fastLocalEvidenceAnswer ? { fastLocalEvidenceAnswer: true } : {}),
-            ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {})
+            ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
+            workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
           },
           runtimeEvidenceIds,
           dialogue: {
@@ -482,7 +501,11 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
         : undefined;
       const turnResponse = url.searchParams.get("full") === "1" ? result : compactTurnResult(result);
       const dialogueResponse = compactTurnDialogue(dialogue);
-      const baseResponse = { ...turnResponse, dialogue: dialogueResponse };
+      const baseResponse = {
+        ...turnResponse,
+        dialogue: dialogueResponse,
+        ...(workspaceCoding ? { workspaceCoding: toJsonValue(workspaceCoding) } : {})
+      };
       return json(webLearning ? { ...baseResponse, webLearning, session: sessionAudit } : sessionAudit ? { ...baseResponse, session: sessionAudit } : baseResponse);
     } catch (error) {
       traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
@@ -773,6 +796,18 @@ function hasUncasedLetter(text: string): boolean {
 
 function conversationTurnForMetadata(record: ConversationTurnRecord): JsonValue {
   const metadata = isRecord(record.metadata) ? record.metadata : {};
+  const storedMetadata = isRecord(metadata.metadata) ? metadata.metadata : {};
+  const storedDialogue = isRecord(storedMetadata.dialogue) ? storedMetadata.dialogue : {};
+  const turnAct = isRecord(storedDialogue.turnAct)
+    ? storedDialogue.turnAct
+    : isRecord(storedMetadata.turnAct)
+      ? storedMetadata.turnAct
+      : undefined;
+  const questionAct = isRecord(storedDialogue.questionAct)
+    ? storedDialogue.questionAct
+    : isRecord(storedMetadata.questionAct)
+      ? storedMetadata.questionAct
+      : undefined;
   return {
     id: record.id,
     sessionId: record.sessionId,
@@ -782,6 +817,12 @@ function conversationTurnForMetadata(record: ConversationTurnRecord): JsonValue 
     text: record.text,
     evidenceIds: record.evidenceIds.map(String),
     sourceVersionIds: optionalStringArray(metadata.sourceVersionIds),
+    ...(turnAct || questionAct ? {
+      dialogue: {
+        ...(turnAct ? { turnAct } : {}),
+        ...(questionAct ? { questionAct } : {})
+      }
+    } : {}),
     createdAt: record.createdAt
   };
 }
@@ -999,6 +1040,7 @@ function validateBenchmarkTask(value: unknown, label: string): NonNullable<Bench
 
 export const WORKSPACE_PATCH_PLAN_REQUEST_SCHEMA = "yopp.workspace-patch-plan-request.v1" as const;
 export const WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA = "scce.workspace-coding-patch-plan-request.v1" as const;
+export const WORKSPACE_CODING_TURN_REQUEST_SCHEMA = "scce.workspace-coding-turn-request.v1" as const;
 export const WORKSPACE_PATCH_REQUEST_SCHEMA = "yopp.workspace-patch-request.v1" as const;
 export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "yopp.workspace-patch-response.v1" as const;
 export const DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "trusted-host-pnpm-validate.v1" as const;
@@ -1047,8 +1089,37 @@ export interface WorkspaceCodingPatchPlanApiRequest {
   readonly input: WorkspaceCodingPatchPlanningInput;
 }
 
+/**
+ * Parses the optional chat-side compiler selector. The turn text is supplied
+ * by the server and cannot be replaced by the nested request. The selector is
+ * structured diagnostic identity, never request prose or execution authority.
+ */
+export function parseTurnWorkspaceCodingRequest(
+  value: unknown,
+  requestText: string
+): WorkspaceCodingPatchPlanningInput | undefined {
+  if (value === undefined) return undefined;
+  const body = exactRecord(value, "workspace coding turn request", [
+    "schemaVersion",
+    "workspaceId",
+    "expectedWorkspaceUpdatedAt",
+    "requestId",
+    "requestedPaths",
+    "diagnosticCodes",
+    "validationPlan"
+  ]);
+  if (body.schemaVersion !== WORKSPACE_CODING_TURN_REQUEST_SCHEMA) {
+    throw new HttpError(400, `unsupported workspace coding turn request schema: ${String(body.schemaVersion)}`);
+  }
+  return parseWorkspaceCodingPatchPlanRequest({
+    ...body,
+    schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+    requestText
+  }).input;
+}
+
 export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceCodingPatchPlanApiRequest {
-  const body = exactRecord(value, "workspace coding patch plan request", [
+  const body = exactRecordWithOptional(value, "workspace coding patch plan request", [
     "schemaVersion",
     "workspaceId",
     "expectedWorkspaceUpdatedAt",
@@ -1056,7 +1127,7 @@ export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceC
     "requestText",
     "requestedPaths",
     "validationPlan"
-  ]);
+  ], ["diagnosticCodes"]);
   if (body.schemaVersion !== WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA) {
     throw new HttpError(400, `unsupported workspace coding patch plan request schema: ${String(body.schemaVersion)}`);
   }
@@ -1064,6 +1135,11 @@ export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceC
     .map((item, index) => boundedWorkspacePath(item, `requestedPaths[${index}]`));
   if (requestedPaths.length < 1) throw new HttpError(400, "requestedPaths must contain at least one path");
   rejectDuplicateApiPaths(requestedPaths, "requestedPaths");
+  const diagnosticCodes = body.diagnosticCodes === undefined
+    ? []
+    : boundedArray(body.diagnosticCodes, "diagnosticCodes", 128)
+      .map((item, index) => strictInteger(item, `diagnosticCodes[${index}]`, 1, Number.MAX_SAFE_INTEGER));
+  if (new Set(diagnosticCodes).size !== diagnosticCodes.length) throw new HttpError(400, "diagnosticCodes must not contain duplicates");
   return {
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     input: {
@@ -1072,6 +1148,7 @@ export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceC
       requestId: boundedString(body.requestId, "requestId", 256),
       requestText: boundedUtf8Content(body.requestText, "requestText", 20_000),
       requestedPaths,
+      ...(diagnosticCodes.length ? { diagnosticCodes } : {}),
       validationPlan: parseWorkspaceValidationPlan(body.validationPlan)
     }
   };
@@ -1774,6 +1851,11 @@ function healthOk(value: unknown): boolean {
   if (value.ok === true) return true;
   const verify = value.verify;
   return isRecord(verify) && verify.ok === true;
+}
+
+function hasExactPostgresCounts(value: unknown): boolean {
+  if (!isRecord(value) || value.countSemantics !== "postgres_exact_table_counts") return false;
+  return isRecord(value.tableCounts);
 }
 
 function requireFields(value: unknown, fields: string[]): Record<string, unknown> {

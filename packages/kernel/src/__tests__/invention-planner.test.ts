@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyRequestedAuthority,
+  createClock,
+  createHasher,
+  createIdFactory,
   createLanguageMemoryRuntime,
+  createNgramMemoryCompiler,
   featureSet,
   planInventions,
   updateDialogueState,
@@ -12,8 +16,10 @@ import {
   type GraphNode,
   type GraphSlice,
   type InventionConstruct,
-  type JsonValue
+  type JsonValue,
+  type PlanInventionsInput
 } from "../index.js";
+import type { LanguageProfile } from "../types.js";
 
 describe("requested authority classification", () => {
   it("classifies a structured creative activation with inspectable softmax state", () => {
@@ -97,6 +103,136 @@ describe("invention planner", () => {
     expect(first.reduce((sum, item) => sum + Number(traceRecord(item).selectionProbability), 0)).toBeCloseTo(1, 12);
   });
 
+  it("realizes hydrated inventions through learned prose instead of the cold-start punctuation lattice", () => {
+    const fixture = plannerFixtureWithLanguageCorpus(
+      "write a fictional scene about a purple pump",
+      "At dusk, the violet pump hummed beside the empty canal. It dreamed of carrying starlight instead of water. Before dawn, the patient machine sent one silver reflection across the sleeping town."
+    );
+    const learnedMemory = fixture.languageMemory;
+    fixture.languageMemory = {
+      ...learnedMemory,
+      generate(input) {
+        const generated = learnedMemory.generate(input);
+        return input.contextSymbols?.[0] === "pump"
+          ? generated
+          : {
+            ...generated,
+            discourse: {
+              ...generated.discourse,
+              repetitionPenalty: 1
+            }
+          };
+      }
+    };
+
+    const planned = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
+    const realization = traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>;
+
+    expect(realization.path).toBe("learned_continuation");
+    expect(realization.sourcePieceIds).toEqual(expect.arrayContaining([expect.stringMatching(/^language_unit_/u)]));
+    expect(Number(realization.cohesion)).toBeGreaterThan(0);
+    expect(Number(realization.discourseScore)).toBeGreaterThan(0);
+    expect(planned[0]!.proposalSurface).not.toContain(";");
+    expect(planned[0]!.proposalSurface.split(/\s+/u).length).toBeGreaterThan(4);
+    expect(planned.every(candidate => (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path === "learned_continuation")).toBe(true);
+    expect(traceRecord(planned[0]!).proposalSelectionGuard).toMatchObject({
+      id: "guard.invention.learned_realization_priority.v1",
+      coldStartFallbackActive: false,
+      learnedCandidateCount: 1,
+      fallbackCandidateCount: 5
+    });
+  });
+
+  it("carries an exact request-owned semantic span into learned creative realization without calling it evidence", () => {
+    const requestText = "write a fictional scene about a purple pump";
+    const requestConstraint = "purple pump";
+    const fixture = plannerFixtureWithLanguageCorpus(
+      requestText,
+      "At dusk, the violet pump hummed beside the empty canal. It dreamed of carrying starlight instead of water."
+    );
+
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      requirementField: creativeRequestConstraintField(requestText, requestConstraint),
+      samplingDisabled: true
+    });
+    const trace = traceRecord(planned[0]!);
+    const realization = trace.proposalRealization as Record<string, JsonValue>;
+    const claims = trace.claimBasis as Array<{ kind: string; evidenceIds: string[] }>;
+
+    expect(planned[0]!.proposalSurface).toBe("purple pump hummed beside the empty canal.");
+    expect(realization).toMatchObject({
+      path: "learned_continuation",
+      contextSymbols: ["purple", "pump"],
+      requestConstraintIds: ["requirement.creative-fixture"],
+      requestConstraintSourceActivationIds: ["activation.creative-fixture"],
+      requestConstraintCoverage: 1
+    });
+    expect(planned[0]!.basisEvidenceIds).toEqual([]);
+    expect(claims.find(claim => claim.kind === "invention")?.evidenceIds).toEqual([]);
+    expect(planned[0]!.proposalSurface).not.toContain("It dreamed of carrying starlight instead of water.");
+  });
+
+  it("binds activated request spans into source-owned narrative structure without copying a source sentence", () => {
+    const requestText = "Write a fictional two-sentence story about a purple pump that learns to sing.";
+    const corpus = "At dusk, the old pump hummed beside the quiet harbor. It dreamed of carrying starlight across the sleeping town. Before dawn, its steady rhythm became a silver melody and woke the patient bells.";
+    const fixture = plannerFixtureWithLanguageCorpus(requestText, corpus);
+    const pumpUnitIds = fixture.languageMemoryState.importedUnits
+      .filter(unit => unit.unitKind === "symbol" && unit.text.normalize("NFKC").toLocaleLowerCase() === "pump")
+      .map(unit => unit.id);
+    const fullRequestControl = creativeRequestConstraintField(requestText, requestText);
+
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      requirementField: {
+        ...fullRequestControl,
+        activatedPhraseUnitIds: pumpUnitIds,
+      },
+      samplingDisabled: true
+    });
+    const surface = planned[0]!.proposalSurface;
+    const realization = traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>;
+
+    expect(surface).toBe("At dusk, the purple pump hummed beside the quiet harbor. Pump that learns to sing dreamed of carrying starlight across the sleeping town.");
+    expect(surface.match(/[.!?]+(?:\s|$)/gu)).toHaveLength(2);
+    expect(corpus.split(/(?<=[.!?])\s+/u)).not.toContain(surface.split(/(?<=[.!?])\s+/u)[0]);
+    expect(corpus.split(/(?<=[.!?])\s+/u)).not.toContain(surface.split(/(?<=[.!?])\s+/u)[1]);
+    expect(realization).toMatchObject({
+      path: "learned_structural_composition",
+      structuralSentenceCount: 2,
+      requestConstraintCoverage: 1,
+      stoppedBy: "source_exhausted"
+    });
+    expect(realization.sourcePieceIds).toEqual(expect.arrayContaining([pumpUnitIds[0]]));
+    expect(realization.requestSlotSpans).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: "purple pump" }),
+      expect.objectContaining({ text: "pump that learns to sing" })
+    ]));
+    expect(planned[0]!.basisEvidenceIds).toEqual([]);
+  });
+
+  it("rejects a learned proposal that reconstructs an exact source-owned sentence", () => {
+    const requestText = "compose a violet pump";
+    const sourceSentence = "violet pump hummed beside the empty canal.";
+    const fixture = plannerFixtureWithLanguageCorpus(requestText, sourceSentence);
+
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      requirementField: creativeRequestConstraintField(requestText, "violet pump"),
+      samplingDisabled: true
+    });
+
+    expect(planned.every(candidate => (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path === "composition_fallback")).toBe(true);
+    expect(planned.every(candidate => candidate.proposalSurface !== sourceSentence)).toBe(true);
+    expect(traceRecord(planned[0]!).proposalSelectionGuard).toMatchObject({
+      coldStartFallbackActive: true,
+      learnedCandidateCount: 0
+    });
+  });
+
   it("does not run for factual authority without an explicit invention construct", () => {
     const fixture = plannerFixture("What is the graph fanout?");
     fixture.construct.forceVector = { force: "invented" };
@@ -131,6 +267,38 @@ describe("invention planner", () => {
       expect(trace.surfaceTokensAffectAdmission).toBe(false);
     }
     expect(JSON.stringify(nonEnglish.map(item => item.proposalSurface))).toContain("그래프");
+  });
+
+  it("keeps multilingual cold-start composition free of graph feature and control identifiers", () => {
+    const requestText = "નવી રચના જાંબલી પંપ";
+    const premise = evidenceSpan("જાંબલી પંપ શાંત લયમાં ગૂંજ્યો.");
+    const source = graphNode("node.source.multilingual", "જાંબલી પંપ", [premise.id]);
+    source.representation = { surface: "bi:જાંબલી|પંપ", label: "language_memory" };
+    source.metadata = { surface: `relation_${"a".repeat(48)}`, control: "language_memory" };
+    const target = graphNode("node.target.multilingual", "શાંત લય", [premise.id]);
+    const edge = {
+      ...graphEdge(source, target, [premise.id]),
+      relationId: `relation_${"b".repeat(48)}` as GraphEdge["relationId"]
+    };
+    const fixture = plannerFixture(requestText, {
+      evidence: [premise],
+      graph: graphSlice([source, target], [edge]),
+      activeNodeIds: [String(source.id), String(target.id)]
+    });
+
+    const planned = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
+
+    expect(planned.length).toBeGreaterThan(0);
+    for (const construct of planned) {
+      const trace = traceRecord(construct);
+      const claimBasis = trace.claimBasis as Array<{ surface?: string }>;
+      const publicSurfaces = JSON.stringify([construct.proposalSurface, ...claimBasis.map(claim => claim.surface)]);
+      expect(construct.proposalSurface.trim().length).toBeGreaterThan(0);
+      expect(construct.proposalSurface).toContain("જાંબલી");
+      expect(publicSurfaces).not.toMatch(/(?:^|[\s"])(?:sym:[^\s|"]+|bi:[^\s|"]+\|[^\s|"]+|tri:[^\s|"]+\|[^\s|"]+\|[^\s|"]+|char:[^\s"]+)/u);
+      expect(publicSurfaces).not.toMatch(/(?:node|edge|relation|hyperedge)_[0-9a-f]{24,}/iu);
+      expect(publicSurfaces).not.toContain("language_memory");
+    }
   });
 
   it("admits opaque invention through numeric learned requirements", () => {
@@ -256,6 +424,100 @@ function plannerFixture(requestText: string, options: { evidence?: EvidenceSpan[
     dialogueState: updateDialogueState({ requestText }),
     evidence: options.evidence ?? [],
     construct: constructGraph()
+  };
+}
+
+function plannerFixtureWithLanguageCorpus(requestText: string, text: string) {
+  const hasher = createHasher();
+  const ids = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true });
+  const sourceVersionId = ids.sourceVersionId("creative-language-fixture");
+  const profile: LanguageProfile = {
+    id: "profile.creative-language-fixture",
+    sourceVersionId,
+    scripts: [{ script: "script:Latn", mass: 1 }],
+    symbolShapes: [],
+    charNgrams: [],
+    direction: "ltr",
+    entropy: 0.5,
+    createdAt: 1
+  };
+  const evidence: EvidenceSpan = {
+    id: "evidence.creative-language-fixture" as EvidenceSpan["id"],
+    sourceId: "source.creative-language-fixture" as EvidenceSpan["sourceId"],
+    sourceVersionId,
+    chunkId: "chunk.creative-language-fixture" as EvidenceSpan["chunkId"],
+    contentHash: "hash.creative-language-fixture" as EvidenceSpan["contentHash"],
+    mediaType: "text/plain",
+    byteStart: 0,
+    byteEnd: Buffer.byteLength(text),
+    charStart: 0,
+    charEnd: text.length,
+    text,
+    textPreview: text,
+    languageHints: [],
+    scriptHints: [],
+    trustVector: {},
+    provenance: {},
+    features: featureSet(text, 128),
+    status: "promoted",
+    alpha: 0.9,
+    observedAt: 1
+  };
+  const compiled = createNgramMemoryCompiler({ hasher, idFactory: ids }).compile({
+    streamId: "stream.creative-language-fixture",
+    profile,
+    sourceVersionId,
+    text,
+    evidence: [evidence],
+    createdAt: 1
+  });
+  const languageMemory = createLanguageMemoryRuntime({ hasher, idFactory: ids });
+  const languageMemoryState = languageMemory.hydrate({
+    models: compiled.models,
+    observations: compiled.observations,
+    units: compiled.units,
+    patterns: compiled.patterns,
+    semanticFrames: compiled.semanticFrames
+  });
+  return {
+    ...plannerFixture(requestText),
+    languageMemory,
+    languageMemoryState
+  };
+}
+
+function creativeRequestConstraintField(requestText: string, surface: string): NonNullable<PlanInventionsInput["requirementField"]> {
+  const utf16Start = requestText.indexOf(surface);
+  if (utf16Start < 0) throw new Error("fixture constraint is not in request");
+  const prefix = requestText.slice(0, utf16Start);
+  const charStart = [...prefix].length;
+  const charEnd = charStart + [...surface].length;
+  return {
+    noveltyDemand: 1,
+    requiredFeatures: [{
+      id: "requirement.creative-fixture",
+      dimension: "noveltyDemand",
+      value: 1,
+      confidence: 1,
+      status: "explicit",
+      origin: {
+        requestSpan: {
+          text: surface,
+          charStart,
+          charEnd,
+          byteStart: Buffer.byteLength(prefix),
+          byteEnd: Buffer.byteLength(prefix + surface)
+        },
+        semanticRoleId: "role.creative-fixture",
+        learnedFrameOrPatternId: "frame.creative-fixture"
+      },
+      sourceActivationId: "activation.creative-fixture",
+      trace: {}
+    }],
+    activatedFrameIds: [],
+    activatedPatternIds: [],
+    activatedPhraseUnitIds: [],
+    activatedConstructIds: []
   };
 }
 

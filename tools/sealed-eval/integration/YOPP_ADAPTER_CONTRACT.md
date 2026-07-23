@@ -1,4 +1,8 @@
-# Yopp adapter contract
+# SCCE adapter contract
+
+This file, the `yopp-*` adapter basenames, and the `YOPP_EVAL_*` environment names
+retain their legacy compatibility identifiers. They refer to the SCCE production
+runtime.
 
 The integration adapter must be a thin bridge to the normal production runtime. It must not contain benchmark answers, special prompt cases, alternate retrieval, or a private scoring key.
 
