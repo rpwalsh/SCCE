@@ -453,20 +453,25 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
         calibrationModels,
         calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome
       });
-      await persistDialogueTurn({
-        store: context.runtime.storage.dialogueMemory,
-        result: dialogue.pragmatics,
-        answerGraphHash: dialogue.answerGraphHash,
-        now: Date.now()
-      });
-      const cognitiveShadow = await persistDialogueCognitiveShadowV2({
-        context,
-        conversationId,
-        sessionId,
-        requestText: turn.text,
-        result,
-        now: Date.now()
-      });
+      const [, cognitiveShadow, sessionAudit] = await Promise.all([
+        persistDialogueTurn({
+          store: context.runtime.storage.dialogueMemory,
+          result: dialogue.pragmatics,
+          answerGraphHash: dialogue.answerGraphHash,
+          now: Date.now()
+        }),
+        persistDialogueCognitiveShadowV2({
+          context,
+          conversationId,
+          sessionId,
+          requestText: turn.text,
+          result,
+          now: Date.now()
+        }),
+        sessionId
+          ? persistConversationTurnPair(context, sessionId, turn, result)
+          : Promise.resolve(undefined)
+      ]);
       traceEvent(trace, {
         stage: "dialogue.shadow",
         label: "api.turn.discourse-v2",
@@ -493,9 +498,6 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
           artifacts: result.emissionGraph.artifacts.length
         }
       });
-      const sessionAudit = sessionId
-        ? await persistConversationTurnPair(context, sessionId, turn, result)
-        : undefined;
       const webLearning = webRequested
         ? { schema: "scce.web_learning.disabled.v1", enabled: false, triggered: false, disabledReason: "local_mouth_focus" }
         : undefined;

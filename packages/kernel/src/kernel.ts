@@ -386,6 +386,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   let hotNeighborhoodLoad: Promise<HotGraphNeighborhood | undefined> | undefined;
   let activeBrainMarkerCache: { loadedAt: number; value: JsonValue } | undefined;
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
+  let sourceAnchorSemanticFrameCache: {
+    loadedAt: number;
+    value: Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>;
+  } | undefined;
   let calibrationModelCache: { loadedAt: number; value: CalibrationModelSet } | undefined;
   let correctionRuleCache: { loadedAt: number; value: Awaited<ReturnType<typeof deps.storage.corrections.listRules>> } | undefined;
 
@@ -417,6 +421,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     surfaceLanguageMemoryCache.clear();
     activeBrainMarkerCache = undefined;
     surfaceProfileCache = undefined;
+    sourceAnchorSemanticFrameCache = undefined;
     calibrationModelCache = undefined;
   }
 
@@ -614,6 +619,24 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const frameSurface = kernelString(jsonRecord(frame.frameJson).surface);
       return frameSurface ? normalizePriorKey(frameSurface) === normalizedSurface : false;
     }), 128);
+  }
+
+  async function sourceAnchorSemanticFramesCached(): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>> {
+    const now = clock.now();
+    if (sourceAnchorSemanticFrameCache && now - sourceAnchorSemanticFrameCache.loadedAt < surfaceLanguageMemoryCacheMs) {
+      return sourceAnchorSemanticFrameCache.value;
+    }
+    const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 });
+    const value = frames.map(frame => {
+      const record = jsonRecord(frame.frameJson);
+      const surface = sourceTextSurface(kernelString(record.preview) ?? kernelString(record.text) ?? "", 6000);
+      return {
+        frame,
+        surfaceUnits: surface ? splitPriorUnits(normalizePriorKey(surface)).filter(Boolean) : []
+      };
+    });
+    sourceAnchorSemanticFrameCache = { loadedAt: now, value };
+    return value;
   }
 
   async function correctionRulesCached() {
@@ -829,11 +852,22 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           : undefined;
         if (hotSlice && !temporalCounterexampleExpected(text, hotAnchoredEvidence)) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
       }
+      const anchoredEvidenceStarted = Date.now();
       const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
+      kernelTrace({
+        stage: "graph.resolve.anchor_evidence",
+        label: "kernel.graphForText",
+        durationMs: Date.now() - anchoredEvidenceStarted,
+        counts: {
+          evidence: anchoredSelection.evidence.length,
+          semanticFrameEvidence: anchoredSelection.semanticFrameBoundEvidenceIds.length
+        }
+      });
       const anchoredEvidence = anchoredSelection.evidence;
       if (!anchoredEvidence.length) {
         return cacheGraphSlice(cacheKey, { graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [], features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 } }, evidence: [], semanticFrameBoundEvidenceIds: [] }, "postgres");
       }
+      const anchoredGraphStarted = Date.now();
       const graph = await deps.storage.graph.getSlice({
         evidenceIds: anchoredEvidence.map(span => span.id),
         features: [...features],
@@ -841,6 +875,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         radius: 2,
         limitNodes: sourceAnchorHotNodeLimit,
         limitEdges: sourceAnchorHotEdgeLimit
+      });
+      kernelTrace({
+        stage: "graph.resolve.anchor_slice",
+        label: "kernel.graphForText",
+        durationMs: Date.now() - anchoredGraphStarted,
+        counts: { nodes: graph.nodes.length, edges: graph.edges.length, hyperedges: graph.hyperedges.length }
       });
       const graphEvidenceIds = uniqueKernelStrings([
         ...anchoredEvidence.map(span => String(span.id)),
@@ -950,11 +990,38 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
 
   async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
     const anchorFeatures = sourceAnchorRetrievalFeatures(text);
-    const retrievalFeatures = uniqueKernelStrings([...features, ...anchorFeatures]).slice(0, 256);
-    const [evidenceResults, semanticFrameEvidence] = await Promise.all([
-      deps.storage.evidence.searchEvidence({ features: retrievalFeatures, limit: anchorFeatures.length ? 96 : 48 }),
-      allowSemanticFrameEvidence ? sourceAnchorSemanticFrameEvidence(text) : Promise.resolve({ evidence: [], semanticFrameBoundEvidenceIds: [] })
-    ]);
+    // Source-bound retrieval should rank on the subject anchors themselves. Mixing
+    // the full request feature field into this query makes common prompt fragments
+    // match a large share of a hydrated corpus and turns overlap ranking into the
+    // dominant turn cost. Fall back to the broader field only when no admissible
+    // anchor feature could be derived.
+    const retrievalFeatures = uniqueKernelStrings(anchorFeatures.length ? anchorFeatures : features).slice(0, 128);
+    const evidenceSearchStarted = Date.now();
+    const evidenceSearch = deps.storage.evidence.searchEvidence({ features: retrievalFeatures, limit: anchorFeatures.length ? 96 : 48 })
+      .then(results => {
+        kernelTrace({
+          stage: "graph.resolve.anchor_evidence_search",
+          label: "kernel.sourceAnchoredEvidenceForText",
+          durationMs: Date.now() - evidenceSearchStarted,
+          counts: { results: results.length, features: retrievalFeatures.length },
+          support: { retrievalFeatures }
+        });
+        return results;
+      });
+    const semanticFramesStarted = Date.now();
+    const semanticFrames = (allowSemanticFrameEvidence
+      ? sourceAnchorSemanticFrameEvidence(text)
+      : Promise.resolve({ evidence: [], semanticFrameBoundEvidenceIds: [] }))
+      .then(result => {
+        kernelTrace({
+          stage: "graph.resolve.anchor_semantic_frames",
+          label: "kernel.sourceAnchoredEvidenceForText",
+          durationMs: Date.now() - semanticFramesStarted,
+          counts: { evidence: result.evidence.length, evidenceIds: result.semanticFrameBoundEvidenceIds.length }
+        });
+        return result;
+      });
+    const [evidenceResults, semanticFrameEvidence] = await Promise.all([evidenceSearch, semanticFrames]);
     const promoted = mergeEvidenceSpans(evidenceResults.map(item => item.span).concat(semanticFrameEvidence.evidence))
       .filter(span => span.status === "promoted" || promotedSessionEvidence(span));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
@@ -970,10 +1037,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   async function sourceAnchorSemanticFrameEvidence(text: string): Promise<SourceAnchoredEvidenceSelection> {
     const anchors = sourceEvidenceAnchorsForRequest(text);
     if (!anchors.length) return { evidence: [], semanticFrameBoundEvidenceIds: [] };
-    const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 }).catch(() => []);
+    const frames = await sourceAnchorSemanticFramesCached().catch(() => []);
     const semanticFrameBoundEvidenceIds = uniqueKernelStrings(frames
-      .filter(frame => semanticFrameMatchesSourceAnchor(frame, anchors))
-      .flatMap(frame => frame.evidenceIds.map(String)))
+      .filter(row => semanticFrameMatchesSourceAnchor(row.surfaceUnits, anchors))
+      .flatMap(row => row.frame.evidenceIds.map(String)))
       .slice(0, 64);
     const evidenceIds = semanticFrameBoundEvidenceIds as EvidenceSpan["id"][];
     return {
@@ -982,11 +1049,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     };
   }
 
-  function semanticFrameMatchesSourceAnchor(frame: SemanticFrameRecord, anchors: readonly string[]): boolean {
-    const record = jsonRecord(frame.frameJson);
-    const surface = sourceTextSurface(kernelString(record.preview) ?? kernelString(record.text) ?? "", 6000);
-    if (!surface) return false;
-    const surfaceUnits = splitPriorUnits(normalizePriorKey(surface)).filter(Boolean);
+  function semanticFrameMatchesSourceAnchor(surfaceUnits: readonly string[], anchors: readonly string[]): boolean {
+    if (!surfaceUnits.length) return false;
     return anchors.some(anchor => {
       const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
       return anchorUnits.length > 0 && sourceAnchorPhraseContains(surfaceUnits, anchorUnits);
@@ -998,23 +1062,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     for (const anchor of sourceEvidenceAnchorsForRequest(text).slice(0, 24)) {
       for (const feature of orderedRetrievalFeatures(anchor)) {
         if (isHighInformationRetrievalFeature(feature)) features.set(feature, true);
-        if (feature.startsWith("sym:")) {
-          for (const variant of retrievalUnitPrefixVariants(feature.slice(4))) {
-            const variantFeature = `sym:${variant}`;
-            if (isHighInformationRetrievalFeature(variantFeature)) features.set(variantFeature, true);
-          }
-        }
       }
     }
     return [...features.keys()].slice(0, 128);
-  }
-
-  function retrievalUnitPrefixVariants(unit: string): string[] {
-    const normalized = normalizePriorKey(unit);
-    if ([...normalized].length < 5) return [];
-    const chars = [...normalized];
-    return [chars.slice(0, -1).join("")]
-      .filter(value => value.length >= 4 && value !== normalized && !genericQuestionSignal(value));
   }
 
   async function hotNeighborhoodCached(): Promise<HotGraphNeighborhood | undefined> {
@@ -1714,20 +1764,23 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
 
       if (input.language ?? true) {
-        tasks.push(surfaceLanguageClusterCached("")
-          .then(cluster => hydrateSurfaceLanguageMemoryCached(
-            languageLimit,
-            cluster,
-            cluster ? "warmup-dominant-language-cluster" : "warmup-no-owned-language-cluster"
-          ))
-          .then(language => {
+        tasks.push(Promise.all([
+          surfaceLanguageClusterCached("")
+            .then(cluster => hydrateSurfaceLanguageMemoryCached(
+              languageLimit,
+              cluster,
+              cluster ? "warmup-dominant-language-cluster" : "warmup-no-owned-language-cluster"
+            )),
+          sourceAnchorSemanticFramesCached()
+        ])
+          .then(([language, sourceAnchorFrames]) => {
             result.language = {
               loaded: true,
               models: language.models.length,
               observations: language.observations.length,
               units: language.units.length,
               patterns: language.patterns.length,
-              semanticFrames: language.semanticFrames.length
+              semanticFrames: Math.max(language.semanticFrames.length, sourceAnchorFrames.length)
             };
           })
           .catch(error => {

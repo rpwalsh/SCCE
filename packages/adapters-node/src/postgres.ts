@@ -791,11 +791,38 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       return rows.map(rowToEvidence);
     },
     async searchEvidence(query: EvidenceQuery) {
+      const features = evidenceQueryFeatures(query.features ?? []);
+      if (features.length && !query.sourceId && !query.sourceVersionId) {
+        const featureBranches = features.map((_, index) =>
+          `SELECT id, ${index + 1}::bigint AS feature_ord FROM ${storage.table("evidence_spans")} WHERE features @> ARRAY[$${index + 1}]::text[]`
+        );
+        const limitIndex = features.length + 1;
+        const rows = await storage.query<EvidenceRow>(
+          `WITH feature_hits AS MATERIALIZED (
+             ${featureBranches.join("\nUNION ALL\n")}
+           ),
+           candidate_hits AS (
+             SELECT id, COUNT(*) AS overlap_count, MIN(feature_ord) AS first_feature_ord
+             FROM feature_hits
+             GROUP BY id
+           )
+           SELECT ev.*
+           FROM candidate_hits hits
+           JOIN ${storage.table("evidence_spans")} ev ON ev.id=hits.id
+           ORDER BY hits.overlap_count DESC,
+                    hits.first_feature_ord ASC,
+                    CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC,
+                    ev.alpha DESC,
+                    ev.observed_at DESC
+           LIMIT $${limitIndex}`,
+          [...features, query.limit ?? 80]
+        );
+        return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres GIN feature-hit evidence search" }));
+      }
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.sourceId) { params.push(query.sourceId); where.push(`ev.source_id=$${params.length}`); }
       if (query.sourceVersionId) { params.push(query.sourceVersionId); where.push(`ev.source_version_id=$${params.length}`); }
-      const features = evidenceQueryFeatures(query.features ?? []);
       let featureParamIndex = 0;
       if (features.length) {
         params.push(features);
