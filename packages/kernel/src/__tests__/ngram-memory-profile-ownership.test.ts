@@ -55,6 +55,31 @@ describe("n-gram memory profile ownership", () => {
     expect(left.models[0]?.id).not.toBe(right.models[0]?.id);
     expect(left.observations[0]?.id).not.toBe(right.observations[0]?.id);
   });
+
+  it("preserves a source-declared corpus system across every language-memory record family", () => {
+    const hasher = createHasher();
+    const compiler = createNgramMemoryCompiler({
+      hasher,
+      idFactory: createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true })
+    });
+    const learned = profile("profile.owned", "source.owned");
+    const evidence = span("evidence.owned", "qelari venatu qelari venatu");
+    const compiled = compiler.compile({
+      streamId: "stream.owned",
+      sourceSystem: "workspace",
+      profile: learned,
+      sourceVersionId: learned.sourceVersionId,
+      text: evidence.text,
+      evidence: [evidence],
+      createdAt: 1
+    });
+
+    expect(compiled.observations[0]?.metadata).toMatchObject({ sourceSystem: "workspace" });
+    expect(compiled.models[0]?.modelJson).toMatchObject({ sourceSystem: "workspace" });
+    expect(compiled.units[0]?.metadata).toMatchObject({ sourceSystem: "workspace" });
+    expect(compiled.patterns[0]?.patternJson).toMatchObject({ sourceSystem: "workspace" });
+    expect(compiled.semanticFrames[0]?.frameJson).toMatchObject({ sourceSystem: "workspace" });
+  });
 });
 
 function profile(id: string, sourceVersionId: string): LanguageProfile {

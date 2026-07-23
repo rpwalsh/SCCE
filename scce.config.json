@@ -46,7 +46,7 @@
       "wikipedia": {
         "enabled": true,
         "dumpPath": "data/wiki/enwiki-latest-pages-articles-multistream.xml.bz2",
-        "indexPath": "data/wiki/enwiki-multistream-index.txt.bz2",
+        "indexPath": "data/wiki/enwiki-latest-pages-articles-multistream-index.txt.bz2",
         "namespace": "wikipedia-enwiki",
         "python": "python",
         "decompressor": "bzip2",

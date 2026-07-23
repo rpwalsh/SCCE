@@ -58,7 +58,7 @@ pnpm scce workspace plan-code \
   "Remove unused type import ExampleType from src/types.ts."
 ```
 
-The command prints an unauthorized, unexecuted `yopp.workspace-plan-generation.v1` result. It does not edit workspace files, approve or apply the returned transaction, or execute compiler, typecheck, or test commands. Before planning it analyzes the selected workspace and persists the normal project/workspace report metadata. Exact-byte planning still uses the previously ingested durable source records; run `pnpm scce workspace ingest` after local edits or the stale-byte check rejects the request.
+The command prints an unauthorized, unexecuted `yopp.workspace-plan-generation.v1` result. The `yopp.*` prefix is retained as a versioned compatibility identifier; the product surface is SCCE. Planning does not edit workspace files, approve or apply the returned transaction, or execute compiler, typecheck, or test commands. Before planning it analyzes the selected workspace and persists the normal project/workspace report metadata. Exact-byte planning still uses the previously ingested durable source records; run `pnpm scce workspace ingest` after local edits or the stale-byte check rejects the request.
 
 The request surface is bounded:
 
@@ -75,9 +75,9 @@ The request surface is bounded:
 Two TypeScript repair paths are tested: removing one source-proven unused binding from
 a type-only import, and applying one official TypeScript LanguageService code fix to
 one existing requested diagnostic file. Every compiler-action request must include a
-literal `TS####`, `fixName:<id>`, or canonical
-`codeFixIdentity:<typescript.code_fix:...>` selector that resolves to one candidate;
-the planner never selects a candidate implicitly. LanguageService input is limited to
+structured positive integer diagnostic code (`--diagnostic-code=<integer>` in the CLI,
+`diagnosticCodes` in the HTTP request) whose scope resolves to one candidate. Request
+prose never selects a code action. LanguageService input is limited to
 exact durable snapshot files plus the TypeScript standard library. Its source-observed
 direct `tsc` invocation must resolve either an explicit `-p`/`--project` target or an
 exact upward `tsconfig.json` from the command working directory. The config must be in
@@ -164,9 +164,8 @@ TypeScript LanguageService fixes rooted at one existing requested target. Fix de
 bound to exact durable snapshot bytes; compiler context includes only those snapshot
 files and the TypeScript standard library. The source-observed direct `tsc` invocation
 must resolve an exact snapshot project config whose parsed file set includes the
-requested target. An explicit exact `TS####`, `fixName:<id>`, or canonical
-`codeFixIdentity:<typescript.code_fix:...>` selector must resolve to one action; there
-is no implicit selection. The complete selected action may close over as many as 32
+requested target. Structured `diagnosticCodes` must scope the compiler candidates to
+one action; request prose is never used as a selector. The complete selected action may close over as many as 32
 files and 128 non-overlapping exact text changes. Existing targets must match the
 snapshot; new targets are restricted to TypeScript/JavaScript source files in existing
 snapshot directories. Command-bearing actions, out-of-workspace paths, stale or

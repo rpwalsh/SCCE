@@ -682,7 +682,7 @@ export interface LanguageMemoryStore {
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number }): Promise<LanguageUnitRecord[]>;
   listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<LanguagePatternRecord[]>;
-  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
+  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
 

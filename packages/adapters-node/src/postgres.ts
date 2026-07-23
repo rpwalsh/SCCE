@@ -223,34 +223,45 @@ export class PostgresStorageAdapter implements ScceStorage {
       ).catch(() => []);
       const active = await this.brainImports.active().catch(() => ({ activeImportRunIds: [] }));
       const counts: Record<string, number> = {};
+      const countErrors: string[] = [];
       for (const table of POSTGRES_REQUIRED_TABLES) {
         if (!verify.tables.includes(table)) continue;
-        const rows = await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${this.table(table)}`).catch(() => []);
-        counts[table] = Number(rows[0]?.count ?? 0);
+        try {
+          const rows = await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${this.table(table)}`);
+          const count = Number(rows[0]?.count);
+          if (!Number.isSafeInteger(count) || count < 0) throw new Error("invalid exact row count");
+          counts[table] = count;
+        } catch (error) {
+          countErrors.push(`exact count failed for ${table}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       const schemaVersion = meta[0]?.value_json && typeof meta[0].value_json === "object" && !Array.isArray(meta[0].value_json)
         ? (meta[0].value_json as Record<string, JsonValue>).version
         : undefined;
       return {
-        ok: verify.ok,
+        schema: "scce.postgres.status.v1",
+        ok: verify.ok && countErrors.length === 0,
         connected: true,
         database: { schema: this.schema, urlConfigured: true },
         schemaVersion: schemaVersion ?? null,
         expectedSchemaVersion: POSTGRES_SCHEMA_VERSION,
         tableCount: verify.tables.length,
         requiredTableCount: POSTGRES_REQUIRED_TABLES.length,
+        countSemantics: "postgres_exact_table_counts",
         tableCounts: counts,
-        health: verify.ok ? "ready" : "needs_migration",
+        health: verify.ok && countErrors.length === 0 ? "ready" : "needs_migration",
         activeBrain: active,
-        errors: verify.errors
+        errors: [...verify.errors, ...countErrors]
       };
     } catch (error) {
       return {
+        schema: "scce.postgres.status.v1",
         ok: false,
         connected: false,
         database: { schema: this.schema, urlConfigured: true },
         schemaVersion: null,
         expectedSchemaVersion: POSTGRES_SCHEMA_VERSION,
+        countSemantics: "postgres_exact_table_counts",
         tableCounts: {},
         health: "unreachable",
         activeBrain: { activeImportRunIds: [] },
@@ -260,11 +271,22 @@ export class PostgresStorageAdapter implements ScceStorage {
   }
 
   async stats(): Promise<JsonValue> {
-    const rows = await this.query<{ relname: string; n_live_tup: string }>(
-      `SELECT relname, n_live_tup::text FROM pg_stat_user_tables WHERE schemaname=$1 ORDER BY relname`,
+    const rows = await this.query<{ relname: string; estimated_rows: string }>(
+      `SELECT c.relname,
+              GREATEST(COALESCE(s.n_live_tup, 0), COALESCE(c.reltuples, 0), 0)::bigint::text AS estimated_rows
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid=c.relnamespace
+         LEFT JOIN pg_stat_user_tables s ON s.relid=c.oid
+        WHERE n.nspname=$1 AND c.relkind IN ('r','p')
+        ORDER BY c.relname`,
       [this.schema]
     );
-    return { tables: rows.map(row => ({ table: row.relname, rows: Number(row.n_live_tup) })) };
+    return {
+      schema: "scce.postgres.stats.v1",
+      exact: false,
+      countSemantics: "postgres_planner_estimate",
+      tables: rows.map(row => ({ table: row.relname, rows: Number(row.estimated_rows), estimated: true }))
+    };
   }
 
   async resetLocalDevOnly(input: { confirmLocalDevOnly: boolean }): Promise<JsonValue> {
@@ -435,6 +457,7 @@ function schemaStatements(q: string): string[] {
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_features ON ${q}.graph_nodes USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_evidence ON ${q}.graph_nodes USING GIN(evidence_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_updated ON ${q}.graph_nodes(updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_alpha_rank ON ${q}.graph_nodes(alpha DESC,updated_at DESC,id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_edges_source ON ${q}.graph_edges(source_node_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_edges_target ON ${q}.graph_edges(target_node_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_edges_relation ON ${q}.graph_edges(relation_id)`,
@@ -499,6 +522,7 @@ function schemaStatements(q: string): string[] {
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_system_rank ON ${q}.semantic_frames((frame_json->>'sourceSystem'), alpha DESC, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_profile_rank ON ${q}.semantic_frames((frame_json->>'profileId'),alpha DESC,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_version_rank ON ${q}.semantic_frames((frame_json->>'sourceVersionId'),alpha DESC,created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_surface_rank ON ${q}.semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_embedding ON ${q}.semantic_frames USING ivfflat (embedding vector_cosine_ops) WITH (lists = 64)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_pair ON ${q}.translation_alignments(source_language,target_language,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_scce2_import_run ON ${q}.scce2_import_ledger(import_run_id,imported_at DESC)`,
@@ -1267,11 +1291,11 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json
            FROM ${storage.table("language_profiles")} lp
-           WHERE EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id)
-              OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id)
-              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id)
-              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id)
-              OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id)
+           WHERE EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
+              OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
+              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
+              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+              OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
            ORDER BY lp.created_at DESC, lp.id ASC
            LIMIT $1`,
           [boundedLimit]
@@ -1471,6 +1495,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame_json->>'sourceSystem'=$${params.length}`); }
+      if (query.surface) { params.push(query.surface); where.push(`frame_json->>'surface'=$${params.length}`); }
       if (query.profileIds || query.sourceVersionIds) {
         const ownership: string[] = [];
         if (query.profileIds?.length) {

@@ -31,7 +31,8 @@ From the repository root, the command wrappers are `pnpm eval:kit:verify`,
 `pnpm eval:blind`, `pnpm eval:verify-citations`, `pnpm eval:score`,
 `pnpm eval:aggregate`, `pnpm eval:ablation`, and `pnpm eval:validate`.
 
-The SCCE production adapter at `integration/yopp-jsonl-adapter.mjs` implements the knowledge/question protocol
+The SCCE production adapter at `integration/yopp-jsonl-adapter.mjs` (a retained
+compatibility basename) implements the knowledge/question protocol
 through the normal built runtime. `integration/yopp-trace-verifier.mjs` verifies
 the kernel's component trace; it is not a replacement for the citation verifier
 or the run harness. There is no `yopp-coding-adapter.mjs`, so coding tasks and

@@ -20,6 +20,96 @@ describe("translation target evidence admission", () => {
     expect(plan.targetFrames.length).toBeGreaterThan(0);
     expect(plan.targetFrames.flatMap(frame => frame.evidenceIds)).toContain(String(evidence.id));
     expect(plan.targetLanguage).toBe("lang.es");
+    expect(plan.emission.text).toBe(evidence.text);
+  });
+
+  it("admits promoted target-language evidence without requiring a language profile", () => {
+    const evidence = span("evidence.profileless", "Superficie Exacta.", { language: "lang.profileless" }, { script: "Latin" });
+    const plan = engine().plan({
+      text: "Exact surface.",
+      targetLanguage: "LANG.PROFILELESS",
+      evidence: [evidence],
+      profiles: [],
+      createdAt: 1
+    });
+
+    expect(plan.targetProfile).toBeUndefined();
+    expect(plan.targetFrames.length).toBeGreaterThan(0);
+    expect(plan.targetFrames[0]?.frameJson).toMatchObject({ sourceVersionId: evidence.sourceVersionId });
+    expect(plan.targetFrames[0]?.frameJson).not.toHaveProperty("profileId");
+  });
+
+  it("rejects quarantined evidence and mismatched language hints", () => {
+    const target = profile("lang.admission", "Latin");
+    const quarantined = span("evidence.quarantined", "Superficie en cuarentena.", { language: target.id }, { script: "Latin" });
+    quarantined.sourceVersionId = target.sourceVersionId;
+    quarantined.status = "quarantined";
+    const mismatched = span("evidence.mismatched", "Superficie de otra lengua.", { language: "lang.other" }, { script: "Latin" });
+    const plan = engine().plan({
+      text: "Admission surface.",
+      targetLanguage: target.id,
+      evidence: [quarantined, mismatched],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    expect(plan.targetFrames).toHaveLength(0);
+    expect(plan.force).toBe("unknown");
+  });
+
+  it("keeps language-hint evidence source-owned when an unrelated target profile is selected", () => {
+    const target = profile("lang.owned", "Latin");
+    const evidence = span("evidence.source-owned", "Superficie con propietario de origen.", { language: target.id }, { script: "Latin" });
+    const plan = engine().plan({
+      text: "Source-owned surface.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    expect(plan.targetProfile?.id).toBe(target.id);
+    expect(plan.targetFrames[0]?.frameJson).toMatchObject({ sourceVersionId: evidence.sourceVersionId });
+    expect(plan.targetFrames[0]?.frameJson).not.toHaveProperty("profileId");
+  });
+
+  it("preserves exact case and punctuation across multiple target semantic windows", () => {
+    const targetText = "Primera Frase conserva MAYÚSCULAS y puntuación. Segunda Frase mantiene CamelCase y el número 42. Tercera Frase termina con Exactitud.";
+    const evidence = span("evidence.multi-window", targetText, { language: "lang.multi" }, { script: "Latin" });
+    const plan = engine().plan({
+      text: "First statement remains exact. Second statement keeps its number 42. Third statement ends clearly.",
+      targetLanguage: "lang.multi",
+      evidence: [evidence],
+      profiles: [],
+      createdAt: 1
+    });
+
+    expect(plan.targetFrames.map(frame => frame.text)).toEqual([
+      "Primera Frase conserva MAYÚSCULAS y puntuación.",
+      "Segunda Frase mantiene CamelCase y el número 42.",
+      "Tercera Frase termina con Exactitud."
+    ]);
+    expect(plan.targetFrames.every(frame => targetText.includes(frame.text))).toBe(true);
+  });
+
+  it("preserves target surfaces for a no-whitespace script", () => {
+    const targetText = "第一の文は静かです。第二の文は明るいです！第三の文も続きます。";
+    const evidence = span("evidence.no-whitespace", targetText, { language: "lang.no-whitespace" }, { script: "Hani" });
+    const plan = engine().plan({
+      text: "The first sentence is quiet. The second is bright. A third continues.",
+      targetLanguage: "lang.no-whitespace",
+      evidence: [evidence],
+      profiles: [],
+      createdAt: 1
+    });
+
+    expect(plan.targetFrames.map(frame => frame.text)).toEqual([
+      "第一の文は静かです。",
+      "第二の文は明るいです！",
+      "第三の文も続きます。"
+    ]);
+    expect(plan.targetFrames.map(frame => frame.text).join("")).toBe(targetText);
+    expect(plan.targetFrames.every(frame => !frame.text.includes(" "))).toBe(true);
   });
 
   it("does not admit target evidence from a matching script alone", () => {

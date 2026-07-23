@@ -167,7 +167,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
           text: span.text,
           languageHint: targetLanguageHint,
           evidence: [span],
-          ownership: { profileId: owner.id, sourceVersionId: String(span.sourceVersionId) },
+          ownership: owner,
           idPrefix: "translation_target_frame",
           idFactory: options.idFactory,
           hasher: options.hasher
@@ -271,25 +271,29 @@ function framesFromText(input: {
   text: string;
   languageHint: string;
   evidence: EvidenceSpan[];
-  ownership?: { profileId: string; sourceVersionId: string };
+  ownership?: { profileId?: string; sourceVersionId: string };
   idPrefix: string;
   idFactory: IdFactory;
   hasher: Hasher;
 }): TranslationSemanticFrame[] {
   const symbols = symbolizeData(input.text).slice(0, 4096);
   const windows = semanticWindows(symbols);
+  const surfaceSymbols = sourceSurfaceSymbols(input.text).slice(0, 4096);
   const evidenceIds = input.evidence.map(span => String(span.id));
   return windows.map((window, index) => {
-    const text = window.join(" ");
-    const features = frameFeatures(window);
-    const roles = roleTopology(window);
+    const text = sourceSurfaceSlice(input.text, surfaceSymbols, window);
+    const features = frameFeatures(window.symbols);
+    const roles = roleTopology(window.symbols);
     const frameJson = toJsonValue({
       languageHint: input.languageHint,
       textHash: input.hasher.digestHex(text),
-      symbolCount: window.length,
+      symbolCount: window.symbols.length,
       shapeSignature: roles.map(role => role.shape),
       evidenceIds,
-      ...(input.ownership ? { profileId: input.ownership.profileId, sourceVersionId: input.ownership.sourceVersionId } : {})
+      ...(input.ownership ? {
+        ...(input.ownership.profileId ? { profileId: input.ownership.profileId } : {}),
+        sourceVersionId: input.ownership.sourceVersionId
+      } : {})
     });
     return {
       id: input.idFactory.semanticId(input.idPrefix, {
@@ -302,7 +306,7 @@ function framesFromText(input: {
       }),
       languageHint: input.languageHint,
       text,
-      symbols: window,
+      symbols: window.symbols,
       features,
       roles,
       embedding: stableVector(features, input.hasher, 64),
@@ -311,6 +315,47 @@ function framesFromText(input: {
       frameJson
     };
   });
+}
+
+interface SemanticWindow {
+  symbols: string[];
+  symbolStart: number;
+  surfaceEnd: number;
+}
+
+interface SourceSurfaceSymbol {
+  canonical: string;
+  start: number;
+  end: number;
+}
+
+function sourceSurfaceSymbols(text: string): SourceSurfaceSymbol[] {
+  const safe = text.replace(/\u0000/gu, " ");
+  const out: SourceSurfaceSymbol[] = [];
+  const pattern = /[\p{Letter}\p{Mark}\p{Number}_]+|[^\s]/gu;
+  for (const match of safe.matchAll(pattern)) {
+    const start = match.index;
+    if (start === undefined) continue;
+    out.push({
+      canonical: match[0].normalize("NFC").toLowerCase(),
+      start,
+      end: start + match[0].length
+    });
+  }
+  return out;
+}
+
+function sourceSurfaceSlice(text: string, surfaceSymbols: readonly SourceSurfaceSymbol[], window: SemanticWindow): string {
+  const safe = text.replace(/\u0000/gu, " ");
+  const start = surfaceSymbols[window.symbolStart]?.start;
+  const end = surfaceSymbols[window.surfaceEnd - 1]?.end;
+  const aligned = window.symbols.every((symbol, offset) => surfaceSymbols[window.symbolStart + offset]?.canonical === symbol);
+  if (start !== undefined && end !== undefined && aligned) return safe.slice(start, end).trim();
+
+  // Normalization can alter token boundaries for unusual combining-mark
+  // sequences. Keep a literal source slice instead of realizing normalized
+  // semantic symbols as generated, lower-cased text.
+  return safe.slice(start ?? 0, end ?? safe.length).trim();
 }
 
 function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], targetProfile: LanguageProfile | undefined): TranslationFrameAlignment {
@@ -364,23 +409,26 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
   };
 }
 
-function semanticWindows(symbols: string[]): string[][] {
+function semanticWindows(symbols: string[]): SemanticWindow[] {
   if (!symbols.length) return [];
-  const out: string[][] = [];
+  const out: SemanticWindow[] = [];
   let current: string[] = [];
-  for (const symbol of symbols) {
+  let symbolStart = 0;
+  for (let index = 0; index < symbols.length; index++) {
+    const symbol = symbols[index]!;
     if (/^[\p{Punctuation}\p{Symbol}]$/u.test(symbol) && current.length) {
-      out.push(current);
+      out.push({ symbols: current, symbolStart, surfaceEnd: index + 1 });
       current = [];
       continue;
     }
+    if (!current.length) symbolStart = index;
     current.push(symbol);
     if (current.length >= 18) {
-      out.push(current);
+      out.push({ symbols: current, symbolStart, surfaceEnd: index + 1 });
       current = [];
     }
   }
-  if (current.length) out.push(current);
+  if (current.length) out.push({ symbols: current, symbolStart, surfaceEnd: symbols.length });
   return out.slice(0, 256);
 }
 
@@ -494,14 +542,30 @@ function targetEvidenceAdmission(
   selection: TranslationTargetSelection | undefined,
   priors: readonly TranslationAlignmentRecord[],
   targetKey: string
-): { owner: LanguageProfile; basis: "profile_source" | "verified_alignment" } | undefined {
-  if (!selection) return undefined;
-  const directOwner = selection.cluster.members.find(member => member.sourceVersionId === span.sourceVersionId);
-  if (directOwner) return { owner: directOwner, basis: "profile_source" };
+): { owner: { profileId?: string; sourceVersionId: string }; basis: "profile_source" | "evidence_language_hint" | "verified_alignment" } | undefined {
+  if (span.status !== "promoted") return undefined;
+  const directOwner = selection?.cluster.members.find(member => member.sourceVersionId === span.sourceVersionId);
+  if (directOwner) return {
+    owner: { profileId: directOwner.id, sourceVersionId: String(span.sourceVersionId) },
+    basis: "profile_source"
+  };
+  const languageHints = span.languageHints !== null && typeof span.languageHints === "object" && !Array.isArray(span.languageHints)
+    ? span.languageHints
+    : {};
+  const evidenceLanguage = typeof languageHints.language === "string" ? languageHints.language.trim() : "";
+  if (evidenceLanguage && canonicalTranslationTargetKey(evidenceLanguage) === targetKey) {
+    return {
+      owner: { sourceVersionId: String(span.sourceVersionId) },
+      basis: "evidence_language_hint"
+    };
+  }
   const aligned = priors.some(prior => canonicalTranslationTargetKey(prior.targetLanguage) === targetKey
     && (prior.force === "direct" || prior.force === "approximate")
     && prior.evidenceIds.some(evidenceId => String(evidenceId) === String(span.id)));
-  return aligned ? { owner: selection.profile, basis: "verified_alignment" } : undefined;
+  return aligned ? {
+    owner: { sourceVersionId: String(span.sourceVersionId) },
+    basis: "verified_alignment"
+  } : undefined;
 }
 
 function inferLanguageHint(text: string, clusters: readonly LanguageProfileCluster[]): string {

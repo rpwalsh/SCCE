@@ -45,6 +45,7 @@ export interface TypeScriptCodeActionInput {
 
 export interface TypeScriptCodeActionCandidateInput extends Omit<TypeScriptCodeActionInput, "requestText" | "workspaceManifest"> {
   workspaceManifest: readonly TypeScriptCodeActionSnapshotManifestFile[];
+  diagnosticCodes?: readonly number[];
   semanticAnalyzer: {
     analyzerId: string;
     semanticRevisionHash: string;
@@ -230,7 +231,13 @@ export function deriveTypeScriptCodeActionCandidates(
     throw new Error("semantic analyzer binding is invalid");
   }
   const limit = boundedLimit(input.maxEdits);
-  const transformations = derived.transformations.slice(0, limit);
+  const diagnosticCodes = [...new Set(input.diagnosticCodes ?? [])].sort((left, right) => left - right);
+  if (diagnosticCodes.some(code => !Number.isSafeInteger(code) || code <= 0)) throw new Error("diagnostic code selector is invalid");
+  const scopedTransformations = diagnosticCodes.length
+    ? derived.transformations.filter(transformation => diagnosticCodes.includes(transformation.diagnostic.code))
+    : derived.transformations;
+  if (scopedTransformations.length === 0) return undefined;
+  const transformations = scopedTransformations.slice(0, limit);
   const compiler = transformations[0]!.compiler;
   const analyzer: WorkspaceCompilerAnalyzerBinding = {
     analyzerId: input.semanticAnalyzer.analyzerId,
@@ -245,9 +252,9 @@ export function deriveTypeScriptCodeActionCandidates(
     familyId: FAMILY_ID,
     snapshotHash: derived.snapshotHash,
     analyzedSnapshotHash: derived.analyzedSnapshotHash,
-    availableCandidateCount: derived.transformations.length,
-    truncated: derived.transformations.length > limit,
-    complete: derived.transformations.length <= limit,
+    availableCandidateCount: scopedTransformations.length,
+    truncated: scopedTransformations.length > limit,
+    complete: scopedTransformations.length <= limit,
     analyzer,
     transformations
   };

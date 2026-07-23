@@ -155,6 +155,11 @@ export interface BuildWorkspaceTaskConstraintGraphInput {
   readonly requestedOutcomes?: readonly WorkspaceRequestedOutcomeConstraint[];
   readonly validationPlan: WorkspacePatchValidationPlan;
   readonly validationCommandBindings?: readonly WorkspaceValidationCommandBinding[];
+  /** Compiler-owned replacement targets projected onto exact semantic symbols. */
+  readonly diagnosticSymbolBindings?: readonly {
+    readonly diagnosticId: string;
+    readonly symbolId: string;
+  }[];
 }
 
 export interface WorkspaceTaskConstraintNode {
@@ -530,6 +535,7 @@ export function buildWorkspaceTaskConstraintGraph(
     }
   }
 
+  const diagnosticNodeById = new Map<string, WorkspaceTaskConstraintNode>();
   for (const diagnostic of program.diagnostics) {
     if (!diagnostic.span || !affectedPaths.has(diagnostic.span.path)) continue;
     const spanId = registerSpan(diagnostic.span);
@@ -567,11 +573,27 @@ export function buildWorkspaceTaskConstraintGraph(
       })
     });
     diagnosticNodeIds.add(node.id);
+    diagnosticNodeById.set(diagnostic.id, node);
     addEdge("scce.rel.program.file_has_diagnostic.v1", fileNode.id, node.id, [spanId]);
     for (const [symbolId, spans] of occurrenceSpansBySymbol) {
       if (!spans.some(span => spansOverlap(span, diagnostic.span!))) continue;
       const symbolNode = symbolNodeById.get(symbolId);
       if (symbolNode) addEdge("scce.rel.program.diagnostic_intersects_symbol.v1", node.id, symbolNode.id, [spanId]);
+    }
+  }
+  for (const binding of input.diagnosticSymbolBindings ?? []) {
+    const diagnosticNode = diagnosticNodeById.get(binding.diagnosticId);
+    const symbolNode = symbolNodeById.get(binding.symbolId);
+    if (!diagnosticNode || !symbolNode) throw new Error("compiler diagnostic-symbol binding is outside the semantic program");
+    if (![...edges.values()].some(edge => edge.relationId === "scce.rel.program.diagnostic_intersects_symbol.v1"
+      && edge.sourceId === diagnosticNode.id
+      && edge.targetId === symbolNode.id)) {
+      addEdge(
+        "scce.rel.program.diagnostic_intersects_symbol.v1",
+        diagnosticNode.id,
+        symbolNode.id,
+        uniqueSorted([...diagnosticNode.evidenceSpanIds, ...symbolNode.evidenceSpanIds])
+      );
     }
   }
 
@@ -724,6 +746,7 @@ export function buildWorkspaceTaskConstraintGraph(
       nodeCount: sortedNodes.length,
       edgeCount: sortedEdges.length,
       evidenceSpanCount: sortedEvidence.length,
+      compilerDiagnosticSymbolBindingCount: input.diagnosticSymbolBindings?.length ?? 0,
       unresolvedConstraintCount: sortedUnresolved.length
     })
   };

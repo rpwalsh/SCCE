@@ -198,6 +198,68 @@ describe("language control hygiene scanner", () => {
     }
   });
 
+  it("accepts structured diagnostics and non-routing syntax that shares control words", async () => {
+    const root = await tempRepo();
+    try {
+      await writeSource(root, "packages/kernel/src/structured-runtime.ts", [
+        "export async function acquire(input: { ownerInput: { text: string } }, deps: { connectors: { search(text: string, limit: number): Promise<unknown> } }): Promise<void> {",
+        "  await deps.connectors.search(input.ownerInput.text, 3);",
+        "}",
+        "export function decode(row: { requestedAuthority?: string }): string | undefined {",
+        "  return typeof row.requestedAuthority === \"string\" && [\"factual\", \"creative\"].includes(row.requestedAuthority) ? row.requestedAuthority : undefined;",
+        "}",
+        "export function scoreCandidate(requestedAuthority: string, surfaceMass: number): number {",
+        "  if (requestedAuthority === \"creative\") return surfaceMass;",
+        "  return 0;",
+        "}",
+        "export function rejectNeutralizedTest(content: string): boolean {",
+        "  const neutralized = /(?:test|describe)\\.(?:skip|todo)/u;",
+        "  return neutralized.test(content);",
+        "}",
+        "export const parserOptions = { sheetStubs: false };",
+        "export const risks = [{ id: \"gap\", level: \"info\", message: \"No spectral gap is reported because its assumptions were not established.\", evidence: {} }];",
+        "// Unrelated answer families are not reopened as a fallback.",
+        "export function bindEvidence(fallbackEvidenceIds: string[], evidence: unknown): unknown {",
+        "  return boundEvidenceSurface(fallbackEvidenceIds, evidence);",
+        "}",
+        "declare function boundEvidenceSurface(ids: string[], evidence: unknown): unknown;"
+      ].join("\n"));
+
+      const result = await scanLanguageControlHygiene({ root });
+      expect(result.failed).toBe(false);
+      expect(result.issues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails request-echo fallbacks, stringly surface routing, and canned Mouth messages", async () => {
+    const root = await tempRepo();
+    try {
+      await writeSource(root, "packages/kernel/src/stringly-mouth.ts", [
+        "export function runtimeMotionFocusSurface(requestText: string): string {",
+        "  const fallback = requestText.trim();",
+        "  return fallback;",
+        "}",
+        "export function route(candidate: { style: string }): number {",
+        "  if (candidate.style === \"creative\") return 1;",
+        "  return 0;",
+        "}",
+        "export function speak(): { message: string } {",
+        "  return { message: \"I cannot answer this request\" };",
+        "}"
+      ].join("\n"));
+
+      const result = await scanLanguageControlHygiene({ root });
+      const rules = result.issues.map(issue => issue.ruleId);
+      expect(rules).toContain("runtime_surface_fallback");
+      expect(rules).toContain("display_string_branch");
+      expect(rules).toContain("runtime_canned_surface");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails blocked architecture terminology in runtime source", async () => {
     const root = await tempRepo();
     try {

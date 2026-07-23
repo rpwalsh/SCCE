@@ -248,6 +248,8 @@ It should not treat atomic graph triples as finished sentences unless the learne
 
 Direct source wording is reserved for an explicit source-answer construct with bound evidence. Program, action, and creative constructs must be realized as ordinary language or artifacts rather than exposed as workflow notation.
 
+`learned_structural_composition` inserts exact request-owned spans into source-owned learned sentence structure. It preserves code-point and UTF-8 byte coordinates, source-activation IDs, and nonempty `sourcePieceIds`; these bindings grant no evidence authority.
+
 ### Walsh Surface Energy
 
 Walsh surface energy selects among candidate surfaces.
@@ -458,9 +460,10 @@ Remaining engineering work includes:
 - Persisting and validating durable incremental PowerWalk state across real imports.
 - Extending the coding-request bridge beyond its two tested TypeScript repair paths.
   Current support is limited to source-proven unused type-only import removal and one
-  official TypeScript LanguageService action rooted at an existing requested file. An
-  explicit exact `TS####`, `fixName:<id>`, or canonical `codeFixIdentity:<id>` selector
-  must resolve to one candidate; no candidate is selected implicitly. The compiler sees
+  official TypeScript LanguageService action rooted at an existing requested file. A
+  structured positive integer diagnostic code (`diagnosticCodes` over HTTP or
+  `--diagnostic-code=<integer>` in the CLI) must resolve to one candidate; request prose
+  never selects the action. The compiler sees
   durable snapshot files plus the TypeScript standard library and requires an exact
   project config resolved from the source-observed direct `tsc` invocation. The
   requested file must belong to that parsed project. Source-observed build/test

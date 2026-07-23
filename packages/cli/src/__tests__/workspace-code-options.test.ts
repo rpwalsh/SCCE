@@ -9,10 +9,31 @@ import {
   WORKSPACE_CODING_MAX_FILES,
   WORKSPACE_CODING_REQUEST_MAX_BYTES,
   defaultWorkspaceCodingRequestId,
-  parseWorkspaceCodingRequest
+  parseWorkspaceCodingRequest,
+  splitWorkspaceCodingTurnArgs
 } from "../workspace-code-options.js";
 
 describe("workspace plan-code CLI parsing", () => {
+  it("keeps chat controls separate from the structured compiler selector", () => {
+    expect(splitWorkspaceCodingTurnArgs([
+      "--workspace-code",
+      "--conversation-id=conversation.1",
+      "--root=C:/repo",
+      "--path=src/index.ts",
+      "--diagnostic-code=2552",
+      "repair",
+      "symbol"
+    ])).toEqual({
+      turnArgs: ["--conversation-id=conversation.1", "repair", "symbol"],
+      codingRequest: expect.objectContaining({
+        text: "repair symbol",
+        rootPath: "C:/repo",
+        requestedPaths: ["src/index.ts"],
+        diagnosticCodes: [2552]
+      })
+    });
+  });
+
   it("uses the complete compiler validation contract and canonical requested paths", () => {
     const request = parseWorkspaceCodingRequest([
       "--path=src/z.ts",
@@ -27,6 +48,7 @@ describe("workspace plan-code CLI parsing", () => {
     expect(request).toEqual({
       text: "Remove the unused import",
       requestedPaths: ["package.json", "src/z.ts"],
+      diagnosticCodes: [],
       requestId: "request-1",
       rootPath: "C:\\repo",
       validatorId: DEFAULT_WORKSPACE_CODING_VALIDATOR_ID,
@@ -45,6 +67,20 @@ describe("workspace plan-code CLI parsing", () => {
       validatorId: "docker-pnpm-validate.v1",
       checks: ["typecheck"]
     });
+  });
+
+  it("parses structured compiler diagnostic selectors without reading request prose", () => {
+    expect(parseWorkspaceCodingRequest([
+      "--path=src/index.ts",
+      "--diagnostic-code=2552",
+      "opaque"
+    ])).toMatchObject({ diagnosticCodes: [2552] });
+    expect(() => parseWorkspaceCodingRequest([
+      "--path=src/index.ts",
+      "--diagnostic-code=2552",
+      "--diagnostic-code=2552",
+      "opaque"
+    ])).toThrow(/duplicate diagnostic/u);
   });
 
   it("supports a conventional delimiter for request text containing flag-like tokens", () => {

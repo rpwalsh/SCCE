@@ -1,4 +1,7 @@
-# Yopp integration map
+# SCCE integration map
+
+The `yopp-*` integration basenames below are retained compatibility identifiers for
+the SCCE evaluation interface.
 
 The current production and evaluation boundaries are:
 

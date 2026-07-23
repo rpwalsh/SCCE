@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import ts from "typescript";
 
 export type LanguageControlSeverity = "fail" | "warn";
 
@@ -153,68 +154,55 @@ async function* walkSourceFiles(root: string, dir: string, ignored: string[]): A
 function scanFile(root: string, file: string, text: string, issues: LanguageControlIssue[], maxIssues: number): void {
   const rel = relativePath(root, file);
   const lines = splitLines(text);
+  const source = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const emitted = new Set<string>();
+  const reportPosition = (position: number, ruleId: string): void => {
+    if (issues.length >= maxIssues) return;
+    const line = source.getLineAndCharacterOfPosition(Math.max(0, position)).line;
+    const key = `${ruleId}:${line}`;
+    if (emitted.has(key)) return;
+    emitted.add(key);
+    pushIssue(issues, rel, line + 1, ruleId, "fail", lines[line] ?? "");
+  };
+  const reportNode = (node: ts.Node, ruleId: string): void => reportPosition(node.getStart(source, false), ruleId);
+
   for (let index = 0; index < lines.length && issues.length < maxIssues; index++) {
     const line = lines[index] ?? "";
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (containsAny(line, BLOCKED_TERMS)) pushIssue(issues, rel, index + 1, "blocked_term", "fail", line);
-    if (containsAny(line, UNFINISHED_MARKERS)) pushIssue(issues, rel, index + 1, "unfinished_marker", "fail", line);
-    if (looksLikePromptStringRouter(line)) pushIssue(issues, rel, index + 1, "prompt_text_router", "fail", line);
-    if (looksLikeDisplayBranch(line)) pushIssue(issues, rel, index + 1, "display_string_branch", "fail", line);
-    if (looksLikeLegacyDetailSignalFlow(line)) pushIssue(issues, rel, index + 1, "legacy_detail_signal_runtime", "fail", line);
-    if (looksLikeRegexCorrectionParser(line)) pushIssue(issues, rel, index + 1, "regex_correction_parser", "fail", line);
-    if (looksLikeRuntimeOperationLabel(line)) pushIssue(issues, rel, index + 1, "operation_display_label", "fail", line);
-    if (looksLikeLooseSectionClassifier(line)) pushIssue(issues, rel, index + 1, "loose_section_classifier", "fail", line);
-    if (looksLikeCannedSurface(line)) pushIssue(issues, rel, index + 1, "runtime_canned_surface", "fail", line);
-    if (looksLikeRuntimeSurfaceFallback(line)) pushIssue(issues, rel, index + 1, "runtime_surface_fallback", "fail", line);
+    if (containsAny(line, BLOCKED_TERMS)) reportPosition(source.getPositionOfLineAndCharacter(index, 0), "blocked_term");
   }
-}
+  scanUnfinishedMarkers(text, source, reportPosition);
 
-function looksLikePromptStringRouter(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  const stringRouter = lower.includes(".includes(") || lower.includes(".startsWith(") || lower.includes(".endsWith(");
-  const regexRouter = lower.includes(".match(") || lower.includes(".search(") || lower.includes(".test(") || lower.includes("new regexp");
-  if (!(stringRouter || regexRouter)) return false;
-  if (!(lower.includes("prompt") || lower.includes("input") || lower.includes("request") || lower.includes("text"))) return false;
-  return containsControlLiteral(lower);
-}
-
-function looksLikeDisplayBranch(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  if (looksLikeTypeOrSchemaDeclaration(lower)) return false;
-  if (!(lower.includes("if (") || lower.includes("case ") || lower.includes(" ? ") || lower.trimStart().startsWith("? "))) return false;
-  if (lower.includes("construct")) return false;
-  if (DETAIL_DISPLAY_WORDS.some(word => containsRuntimeLiteral(lower, word))) return true;
-  if (!(lower.includes("detail") || lower.includes("style") || lower.includes("surface") || lower.includes("operation") || lower.includes("action"))) return false;
-  return containsControlLiteral(lower);
-}
-
-function looksLikeLegacyDetailSignalFlow(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  if (looksLikeTypeOrSchemaDeclaration(lower)) return false;
-  if (!lower.includes("legacydetailsignal")) return false;
-  return lower.includes("input.detaillevel")
-    || lower.includes("correctioninfluence.detaillevel")
-    || lower.includes(":")
-    || lower.includes("=");
-}
-
-function looksLikeRegexCorrectionParser(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  const regexRouter = lower.includes(".match(") || lower.includes(".search(") || lower.includes(".test(") || lower.includes("new regexp");
-  if (!regexRouter) return false;
-  return lower.includes("feedback") || lower.includes("correction") || lower.includes("owner");
-}
-
-function looksLikeRuntimeSurfaceFallback(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  if (!lower.includes("fallback")) return false;
-  return lower.includes("answer") || lower.includes("message") || lower.includes("surface") || lower.includes("speech");
-}
-
-function looksLikeRuntimeOperationLabel(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  return lower.includes("operation(") && containsControlLiteral(lower);
+  const visit = (node: ts.Node): void => {
+    if (issues.length >= maxIssues) return;
+    if (ts.isCallExpression(node)) {
+      if (isPromptTextRouter(node)) reportNode(node, "prompt_text_router");
+      if (isRegexCorrectionParser(node)) reportNode(node, "regex_correction_parser");
+      if (isRuntimeOperationLabel(node)) reportNode(node, "operation_display_label");
+      if (isLooseSectionClassifier(node)) reportNode(node, "loose_section_classifier");
+      if (isCannedCandidateCall(node)) reportNode(node, "runtime_canned_surface");
+    }
+    if (ts.isIfStatement(node) && isDisplayStringCondition(node.expression)) {
+      reportNode(node.expression, "display_string_branch");
+    }
+    if (ts.isConditionalExpression(node) && isDisplayStringCondition(node.condition)) {
+      reportNode(node.condition, "display_string_branch");
+    }
+    if (ts.isCaseClause(node) && ts.isSwitchStatement(node.parent.parent)
+      && isDisplayStringCondition(node.expression, node.parent.parent.expression)) {
+      reportNode(node.expression, "display_string_branch");
+    }
+    if (ts.isPropertyAssignment(node)) {
+      if (isLegacyDetailSignalProperty(node)) reportNode(node, "legacy_detail_signal_runtime");
+      if (isCannedSurfaceProperty(node)) reportNode(node, "runtime_canned_surface");
+    }
+    if (ts.isVariableDeclaration(node)) {
+      if (isCannedAnswerDeclaration(node)) reportNode(node, "runtime_canned_surface");
+      if (isRuntimeSurfaceFallback(node)) reportNode(node, "runtime_surface_fallback");
+    }
+    if (ts.isBinaryExpression(node) && isCannedAnswerAssignment(node)) reportNode(node, "runtime_canned_surface");
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
 }
 
 function containsControlLiteral(lowerLine: string): boolean {
@@ -228,34 +216,223 @@ function containsRuntimeLiteral(lowerLine: string, word: string): boolean {
     || lowerLine.includes(`${word}/`);
 }
 
-function looksLikeLooseSectionClassifier(line: string): boolean {
-  const lower = line.toLocaleLowerCase();
-  if (!(lower.includes(".includes(") || lower.includes(".startsWith(") || lower.includes(".endsWith("))) return false;
-  if (!(lower.includes("lower") || lower.includes("normalized") || lower.includes("name") || lower.includes("path"))) return false;
-  return lower.includes("\"code\"") || lower.includes("'code'") || lower.includes("\"model\"") || lower.includes("'model'");
+function isPromptTextRouter(node: ts.CallExpression): boolean {
+  const access = propertyCall(node);
+  if (!access || !containsControlLiteral(node.getText().toLocaleLowerCase())) return false;
+  if (["includes", "startswith", "endswith", "match", "search"].includes(access.method)) {
+    return hasRawTextSignal(access.receiver);
+  }
+  if (access.method !== "test" || !isInlineRegularExpression(access.receiver)) return false;
+  return node.arguments.some(hasRawTextSignal);
 }
 
-function looksLikeCannedSurface(line: string): boolean {
-  const trimmed = line.trim();
-  const lower = trimmed.toLocaleLowerCase();
-  if (!(lower.includes("candidate(") || lower.includes("answer =") || lower.includes("message:"))) return false;
-  const firstQuote = firstQuoteIndex(trimmed);
-  if (firstQuote < 0) return false;
-  const quoted = quotedStringAt(trimmed, firstQuote);
-  if (!quoted) return false;
-  const profileKey = quoted.startsWith("surface.") || quoted.startsWith("validation.") || quoted.startsWith("inspect.");
-  if (profileKey) return false;
-  return countWords(quoted) >= 3;
+function isDisplayStringCondition(condition: ts.Expression, selector?: ts.Expression): boolean {
+  const lower = `${selector?.getText() ?? ""} ${condition.getText()}`.toLocaleLowerCase();
+  if (!containsControlLiteral(lower) || lower.includes("construct")) return false;
+  if (DETAIL_DISPLAY_WORDS.some(word => containsRuntimeLiteral(lower, word))) return true;
+  return expressionIdentifiers(selector ?? condition).some(name =>
+    ["detail", "style", "surface", "operation", "action"].some(signal => name.includes(signal))
+  );
 }
 
-function looksLikeTypeOrSchemaDeclaration(lowerLine: string): boolean {
-  const trimmed = lowerLine.trimStart();
-  return trimmed.startsWith("export type ")
-    || trimmed.startsWith("type ")
-    || trimmed.startsWith("| ")
-    || trimmed.startsWith("source:")
-    || trimmed.startsWith("role:")
-    || trimmed.startsWith("kind:");
+function isLegacyDetailSignalProperty(node: ts.PropertyAssignment): boolean {
+  return propertyName(node.name) === "legacydetailsignal"
+    && expressionIdentifiers(node.initializer).some(name => name.includes("detaillevel"));
+}
+
+function isRegexCorrectionParser(node: ts.CallExpression): boolean {
+  const access = propertyCall(node);
+  if (!access || !["match", "search", "test"].includes(access.method)) return false;
+  if (access.method === "match" || access.method === "search") return hasCorrectionSignal(access.receiver);
+  return node.arguments.some(hasCorrectionSignal);
+}
+
+function isRuntimeOperationLabel(node: ts.CallExpression): boolean {
+  const called = callName(node.expression);
+  return called === "operation" && containsControlLiteral(node.getText().toLocaleLowerCase());
+}
+
+function isLooseSectionClassifier(node: ts.CallExpression): boolean {
+  const access = propertyCall(node);
+  if (!access || !["includes", "startswith", "endswith"].includes(access.method)) return false;
+  if (!expressionIdentifiers(access.receiver).some(name => ["lower", "normalized", "name", "path"].includes(name))) return false;
+  return node.arguments.some(argument => {
+    const value = staticString(argument)?.toLocaleLowerCase();
+    return value === "code" || value === "model";
+  });
+}
+
+function isCannedCandidateCall(node: ts.CallExpression): boolean {
+  const called = callName(node.expression);
+  if (!called.endsWith("candidate")) return false;
+  return isCannedSurfaceLiteral(node.arguments[0]);
+}
+
+function isCannedAnswerDeclaration(node: ts.VariableDeclaration): boolean {
+  return bindingName(node.name) === "answer" && isCannedSurfaceLiteral(node.initializer);
+}
+
+function isCannedAnswerAssignment(node: ts.BinaryExpression): boolean {
+  if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
+  return terminalExpressionName(node.left) === "answer" && isCannedSurfaceLiteral(node.right);
+}
+
+function isCannedSurfaceProperty(node: ts.PropertyAssignment): boolean {
+  const name = propertyName(node.name);
+  if (name === "answer") {
+    return isCannedSurfaceLiteral(node.initializer) && enclosingCallableNames(node).some(isSurfaceCallableName);
+  }
+  if (name !== "message" || !isCannedSurfaceLiteral(node.initializer)) return false;
+  if (isStructuredDiagnosticObject(node.parent)) return false;
+  return enclosingCallableNames(node).some(isSurfaceCallableName);
+}
+
+function isRuntimeSurfaceFallback(node: ts.VariableDeclaration): boolean {
+  const name = bindingName(node.name);
+  if (!name.includes("fallback") || !node.initializer || !hasRawTextSignalInTree(node.initializer)) return false;
+  return name.includes("surface") || name.includes("answer") || name.includes("message") || name.includes("speech")
+    || enclosingCallableNames(node).some(isRuntimeSurfaceCallableName);
+}
+
+function isCannedSurfaceLiteral(node: ts.Expression | undefined): boolean {
+  const value = staticString(node);
+  if (!value) return false;
+  if (value.startsWith("surface.") || value.startsWith("validation.") || value.startsWith("inspect.")) return false;
+  if (!/\s/u.test(value) && /^[\p{L}\p{N}_-]+(?:[.:][\p{L}\p{N}_-]+){2,}$/u.test(value)) return false;
+  return countWords(value) >= 3;
+}
+
+function isStructuredDiagnosticObject(node: ts.ObjectLiteralExpression): boolean {
+  const names = new Set(node.properties
+    .filter(ts.isPropertyAssignment)
+    .map(property => propertyName(property.name)));
+  return ["severity", "level", "passed", "evidence", "code", "category"].some(name => names.has(name));
+}
+
+function scanUnfinishedMarkers(text: string, source: ts.SourceFile, report: (position: number, ruleId: string) => void): void {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, text);
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if ((token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia)
+      && containsUnfinishedMarker(scanner.getTokenText())) {
+      report(scanner.getTokenPos(), "unfinished_marker");
+    }
+  }
+  const visit = (node: ts.Node): void => {
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && containsUnfinishedMarker(node.text)) {
+      report(node.getStart(source, false), "unfinished_marker");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+}
+
+function containsUnfinishedMarker(value: string): boolean {
+  return UNFINISHED_MARKERS.some(marker => {
+    const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^A-Za-z0-9_])${escaped}($|[^A-Za-z0-9_])`, "iu").test(value);
+  });
+}
+
+function propertyCall(node: ts.CallExpression): { receiver: ts.Expression; method: string } | undefined {
+  if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
+  return { receiver: node.expression.expression, method: node.expression.name.text.toLocaleLowerCase() };
+}
+
+function callName(expression: ts.LeftHandSideExpression): string {
+  if (ts.isIdentifier(expression)) return expression.text.toLocaleLowerCase();
+  if (ts.isPropertyAccessExpression(expression)) return expression.name.text.toLocaleLowerCase();
+  return "";
+}
+
+function staticString(node: ts.Expression | undefined): string | undefined {
+  return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined;
+}
+
+function propertyName(name: ts.PropertyName): string {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text.toLocaleLowerCase();
+  return name.getText().toLocaleLowerCase();
+}
+
+function bindingName(name: ts.BindingName): string {
+  return ts.isIdentifier(name) ? name.text.toLocaleLowerCase() : "";
+}
+
+function terminalExpressionName(expression: ts.Expression): string {
+  if (ts.isIdentifier(expression)) return expression.text.toLocaleLowerCase();
+  if (ts.isPropertyAccessExpression(expression)) return expression.name.text.toLocaleLowerCase();
+  return "";
+}
+
+function hasRawTextSignal(expression: ts.Expression): boolean {
+  if (ts.isIdentifier(expression)) return isRawTextName(expression.text);
+  if (ts.isPropertyAccessExpression(expression)) return isRawTextName(expression.name.text);
+  if (ts.isElementAccessExpression(expression)) return isRawTextName(staticString(expression.argumentExpression) ?? "");
+  if (ts.isParenthesizedExpression(expression)) return hasRawTextSignal(expression.expression);
+  return false;
+}
+
+function hasRawTextSignalInTree(node: ts.Node): boolean {
+  let matched = false;
+  const visit = (child: ts.Node): void => {
+    if (matched) return;
+    if (ts.isPropertyAccessExpression(child) || ts.isElementAccessExpression(child)) {
+      if (hasRawTextSignal(child)) matched = true;
+      else if (ts.isCallExpression(child.parent) && child.parent.expression === child) visit(child.expression);
+      return;
+    }
+    if (ts.isExpression(child) && hasRawTextSignal(child)) matched = true;
+    else ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return matched;
+}
+
+function isRawTextName(value: string): boolean {
+  const lower = value.toLocaleLowerCase();
+  if (["prompt", "request", "text", "input", "normalized", "lower"].includes(lower)) return true;
+  return lower.endsWith("text") && ["prompt", "request", "input", "owner", "query"].some(prefix => lower.startsWith(prefix));
+}
+
+function hasCorrectionSignal(node: ts.Node): boolean {
+  return expressionIdentifiers(node).some(name => name.includes("feedback") || name.includes("correction"));
+}
+
+function expressionIdentifiers(node: ts.Node): string[] {
+  const names: string[] = [];
+  const visit = (child: ts.Node): void => {
+    if (ts.isIdentifier(child)) names.push(child.text.toLocaleLowerCase());
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return names;
+}
+
+function isInlineRegularExpression(expression: ts.Expression): boolean {
+  if (expression.kind === ts.SyntaxKind.RegularExpressionLiteral) return true;
+  return ts.isNewExpression(expression) && callName(expression.expression) === "regexp";
+}
+
+function enclosingCallableNames(node: ts.Node): string[] {
+  const names: string[] = [];
+  for (let current = node.parent; current; current = current.parent) {
+    if ((ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current) || ts.isGetAccessorDeclaration(current) || ts.isSetAccessorDeclaration(current)) && current.name) {
+      names.push(current.name.getText().toLocaleLowerCase());
+    } else if ((ts.isFunctionExpression(current) || ts.isArrowFunction(current)) && current.parent) {
+      if (ts.isVariableDeclaration(current.parent)) names.push(bindingName(current.parent.name));
+      if (ts.isPropertyAssignment(current.parent)) names.push(propertyName(current.parent.name));
+    }
+  }
+  return names;
+}
+
+function isSurfaceCallableName(name: string): boolean {
+  return ["speak", "answer", "respond", "reply", "surface", "realiz", "emit", "mouth", "candidate", "focus"]
+    .some(signal => name.includes(signal));
+}
+
+function isRuntimeSurfaceCallableName(name: string): boolean {
+  return ["speak", "answer", "respond", "reply", "surface", "realiz", "emit", "mouth", "focus"]
+    .some(signal => name.includes(signal));
 }
 
 function pushIssue(issues: LanguageControlIssue[], file: string, line: number, ruleId: string, severity: LanguageControlSeverity, excerpt: string): void {
@@ -281,36 +458,6 @@ async function existsPath(value: string): Promise<boolean> {
 function containsAny(value: string, needles: readonly string[]): boolean {
   const lower = value.toLocaleLowerCase();
   return needles.some(needle => lower.includes(needle.toLocaleLowerCase()));
-}
-
-function firstQuoteIndex(value: string): number {
-  const single = value.indexOf("'");
-  const double = value.indexOf("\"");
-  if (single < 0) return double;
-  if (double < 0) return single;
-  return Math.min(single, double);
-}
-
-function quotedStringAt(value: string, start: number): string | undefined {
-  const quote = value[start];
-  if (quote !== "\"" && quote !== "'") return undefined;
-  let out = "";
-  let escaped = false;
-  for (let i = start + 1; i < value.length; i++) {
-    const ch = value[i] ?? "";
-    if (escaped) {
-      out += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === quote) return out;
-    out += ch;
-  }
-  return undefined;
 }
 
 function countWords(value: string): number {

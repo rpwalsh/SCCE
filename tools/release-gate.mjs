@@ -44,6 +44,10 @@ const defaultPromptCases = [
       requireEvidenceIds: true,
       requireRuntimeCoherence: true,
       minFactCount: 1,
+      minNovelAnswerUnits: 3,
+      minNovelEvidenceUnits: 3,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       maxEvidenceSourceVersions: 2,
       rejectWikiDebris: true
     }
@@ -63,7 +67,12 @@ const defaultPromptCases = [
       requireSessionEvidenceContinuity: true,
       requireDiscourseObjectBinding: true,
       requireDiscourseEvidenceOnly: true,
+      requireExplicitContextBound: true,
       minFactCount: 1,
+      minNovelAnswerUnits: 3,
+      minNovelEvidenceUnits: 3,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       maxEvidenceSourceVersions: 2,
       rejectWikiDebris: true
     }
@@ -83,6 +92,11 @@ const defaultPromptCases = [
       requireSourceAnchorRequired: true,
       requireSourceAnchorMatched: true,
       rejectSessionBound: true,
+      rejectExplicitContextBound: true,
+      minNovelAnswerUnits: 3,
+      minNovelEvidenceUnits: 3,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       maxEvidenceSourceVersions: 2,
       rejectWikiDebris: true
     }
@@ -100,8 +114,13 @@ const defaultPromptCases = [
       requireEvidenceIds: true,
       requireRuntimeCoherence: true,
       rejectSessionBound: true,
+      rejectExplicitContextBound: true,
       requireSingleSourceVersion: true,
       minFactCount: 1,
+      minNovelAnswerUnits: 3,
+      minNovelEvidenceUnits: 3,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       rejectWikiDebris: true
     }
   },
@@ -119,6 +138,10 @@ const defaultPromptCases = [
       requireCollectionPlan: true,
       requireSingleSourceVersion: true,
       minFactCount: 4,
+      minNovelAnswerUnits: 4,
+      minNovelEvidenceUnits: 4,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       rejectWikiDebris: true
     }
   },
@@ -135,6 +158,10 @@ const defaultPromptCases = [
       requireRuntimeCoherence: true,
       requireTemporalCounterexample: true,
       minFactCount: 2,
+      minNovelAnswerUnits: 3,
+      minNovelEvidenceUnits: 3,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       rejectWikiDebris: true
     }
   },
@@ -150,6 +177,9 @@ const defaultPromptCases = [
       requireEvidenceIds: true,
       requireRuntimeCoherence: true,
       minFactCount: 1,
+      minNovelAnswerUnits: 2,
+      maxRepeatedTrigramRatio: 0.2,
+      maxSingleCodePointUnitRatio: 0.3,
       maxEvidenceSourceVersions: 2,
       rejectWikiDebris: true
     }
@@ -204,14 +234,14 @@ function normalizePromptCases(value) {
       throw new Error("release gate no longer supports answer text term requirements; use structural checks instead");
     }
     const id = String(record.id ?? `case.${index + 1}`);
-    const prompt = id === "live.multiscript.ada" ? "Ada Lovelace는 누구였나요?" : String(record.prompt ?? record.text ?? "");
-    const promptText = id === "live.multiscript.ada" ? "Ada Lovelace는 누구였나요?" : prompt;
+    const promptText = String(record.prompt ?? record.text ?? "");
     return {
       id,
       prompt: promptText,
       minEvidence: numberOrUndefined(record.minEvidence),
       maxChars: numberOrUndefined(record.maxChars),
       minChars: numberOrUndefined(record.minChars),
+      maxElapsedMs: numberOrUndefined(record.maxElapsedMs ?? 10_000),
       sessionId: optionalString(record.sessionId),
       sessionGroup: optionalString(record.sessionGroup),
       conversationId: optionalString(record.conversationId),
@@ -241,6 +271,7 @@ async function runCase(testCase) {
   const lowerAnswer = answer.toLocaleLowerCase();
   const failures = [];
   if (!answer.trim()) failures.push("empty answer");
+  if (typeof testCase.maxElapsedMs === "number" && elapsedMs > testCase.maxElapsedMs) failures.push(`elapsed time ${Math.round(elapsedMs)}ms above ${testCase.maxElapsedMs}ms`);
   if (typeof testCase.minChars === "number" && answer.length < testCase.minChars) failures.push(`answer length ${answer.length} below ${testCase.minChars}`);
   if (typeof testCase.maxChars === "number" && answer.length > testCase.maxChars) failures.push(`answer length ${answer.length} above ${testCase.maxChars}`);
   if (typeof testCase.minEvidence === "number" && evidence.length < testCase.minEvidence) failures.push(`evidence count ${evidence.length} below ${testCase.minEvidence}`);
@@ -340,9 +371,15 @@ function normalizeStructural(value) {
     requireDiscourseEvidenceOnly: Boolean(value.requireDiscourseEvidenceOnly),
     requireSourceAnchorRequired: Boolean(value.requireSourceAnchorRequired),
     requireSourceAnchorMatched: Boolean(value.requireSourceAnchorMatched),
+    requireExplicitContextBound: Boolean(value.requireExplicitContextBound),
     rejectSessionBound: Boolean(value.rejectSessionBound),
+    rejectExplicitContextBound: Boolean(value.rejectExplicitContextBound),
     rejectWikiDebris: Boolean(value.rejectWikiDebris),
     minFactCount: numberOrUndefined(value.minFactCount),
+    minNovelAnswerUnits: numberOrUndefined(value.minNovelAnswerUnits),
+    minNovelEvidenceUnits: numberOrUndefined(value.minNovelEvidenceUnits),
+    maxRepeatedTrigramRatio: numberOrUndefined(value.maxRepeatedTrigramRatio),
+    maxSingleCodePointUnitRatio: numberOrUndefined(value.maxSingleCodePointUnitRatio),
     maxEvidenceSourceVersions: numberOrUndefined(value.maxEvidenceSourceVersions)
   };
 }
@@ -355,6 +392,26 @@ function structuralFailures(testCase, response, answer, evidence, previousGroupS
   const semantic = recordAt(response, ["mouth", "surfacePlan", "audit", "semanticAnswer"]);
   const runtimeCoherence = recordAt(response, ["runtimeCoherence"]);
   const discourseObject = recordAt(response, ["discourseObject"]) ?? recordAt(response, ["actionGraph", "discourseObject"]);
+  const answerUnits = surfaceUnits(answer);
+  const requestUnitSet = new Set(surfaceUnits(testCase.prompt));
+  const novelAnswerUnits = uniqueStrings(answerUnits.filter(unit => !requestUnitSet.has(unit)));
+  const selectedEvidence = selectedEvidenceForResponse(selected, evidence);
+  const evidenceUnitSet = new Set(selectedEvidence.flatMap(evidenceSurfaceUnits));
+  const novelEvidenceUnits = novelAnswerUnits.filter(unit => evidenceUnitSet.has(unit));
+  if (typeof structural.minNovelAnswerUnits === "number" && novelAnswerUnits.length < structural.minNovelAnswerUnits) {
+    failures.push(`answer adds ${novelAnswerUnits.length} novel units below ${structural.minNovelAnswerUnits}`);
+  }
+  if (typeof structural.minNovelEvidenceUnits === "number" && novelEvidenceUnits.length < structural.minNovelEvidenceUnits) {
+    failures.push(`answer adds ${novelEvidenceUnits.length} evidence-grounded novel units below ${structural.minNovelEvidenceUnits}`);
+  }
+  if (typeof structural.maxRepeatedTrigramRatio === "number") {
+    const repetitionRatio = repeatedTrigramRatio(answerUnits);
+    if (repetitionRatio > structural.maxRepeatedTrigramRatio) failures.push(`answer repeated-trigram ratio ${repetitionRatio.toFixed(3)} above ${structural.maxRepeatedTrigramRatio}`);
+  }
+  if (typeof structural.maxSingleCodePointUnitRatio === "number") {
+    const singleUnitRatio = singleCodePointUnitRatio(answerUnits);
+    if (singleUnitRatio > structural.maxSingleCodePointUnitRatio) failures.push(`answer single-code-point unit ratio ${singleUnitRatio.toFixed(3)} above ${structural.maxSingleCodePointUnitRatio}`);
+  }
   if (structural.requireSelectedEvidenceBound && !selected) failures.push("missing selected evidence-bound answer object");
   if (selected) {
     if (selected.fakeEvidenceForbidden !== true) failures.push("selected answer object does not forbid fake evidence");
@@ -362,7 +419,9 @@ function structuralFailures(testCase, response, answer, evidence, previousGroupS
     if (structural.requireEvidenceIds && selectedAnswerEvidenceIds(selected).length < Math.max(1, testCase.minEvidence ?? 1)) failures.push("selected answer object has too few evidence ids");
     if (structural.requireSourceAnchorRequired && selected.sourceAnchorRequired !== true) failures.push("selected answer object did not require a source anchor");
     if (structural.requireSourceAnchorMatched && selected.sourceAnchorMatched !== true) failures.push("selected answer object did not match a source anchor");
+    if (structural.requireExplicitContextBound && selected.explicitContextBound !== true) failures.push("selected answer object did not retain its explicit context binding");
     if (structural.rejectSessionBound && selected.sessionBound === true) failures.push("selected answer object was session-bound for a new topic");
+    if (structural.rejectExplicitContextBound && selected.explicitContextBound === true) failures.push("selected answer object retained an explicit context binding for a new topic");
     if (typeof selected.answerKindId === "string" && !looksOpaqueId(selected.answerKindId)) failures.push("selected answer kind id is not opaque");
     if (typeof selected.answerPlanId === "string" && !looksOpaqueId(selected.answerPlanId)) failures.push("selected answer plan id is not opaque");
   }
@@ -453,11 +512,38 @@ function evidenceState(response, evidence) {
 
 function sourceVersionIdsForResponse(response, evidence) {
   const selected = recordAt(response, ["entailment", "proof", "scores", "selectedEvidenceBound"]);
+  const selectedEvidence = selectedEvidenceForResponse(selected, evidence);
+  return uniqueStrings(selectedEvidence.map(item => typeof item?.sourceVersionId === "string" ? item.sourceVersionId : undefined));
+}
+
+function selectedEvidenceForResponse(selected, evidence) {
   const selectedIds = new Set(selectedAnswerEvidenceIds(selected));
-  const selectedEvidence = selectedIds.size
+  return selectedIds.size
     ? evidence.filter(item => selectedIds.has(String(item?.id ?? "")))
     : evidence;
-  return uniqueStrings(selectedEvidence.map(item => typeof item?.sourceVersionId === "string" ? item.sourceVersionId : undefined));
+}
+
+function evidenceSurfaceUnits(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+  return surfaceUnits([item.text, item.textPreview]
+    .filter(value => typeof value === "string")
+    .join(" "));
+}
+
+function surfaceUnits(value) {
+  return (String(value).normalize("NFKC").toLocaleLowerCase().match(/[\p{Letter}\p{Number}]+/gu) ?? []);
+}
+
+function repeatedTrigramRatio(units) {
+  if (units.length < 6) return 0;
+  const trigrams = [];
+  for (let index = 0; index <= units.length - 3; index++) trigrams.push(units.slice(index, index + 3).join("\u001f"));
+  return (trigrams.length - new Set(trigrams).size) / Math.max(1, trigrams.length);
+}
+
+function singleCodePointUnitRatio(units) {
+  if (units.length < 6) return 0;
+  return units.filter(unit => [...unit].length === 1).length / units.length;
 }
 
 function recordAt(value, path) {

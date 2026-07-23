@@ -111,14 +111,16 @@ describe("YoppClient HTTP boundary", () => {
       expectedWorkspaceUpdatedAt: 1,
       requestId: "request-1",
       requestText: "  ",
-      requestedPaths: ["src/a.ts"]
+      requestedPaths: ["src/a.ts"],
+      diagnosticCodes: [6133]
     })).toThrow("coding request text must be non-empty");
     expect(() => client.workspaceCodingPatchPlan({
       workspaceId: "workspace-1",
       expectedWorkspaceUpdatedAt: 1,
       requestId: "request-1",
       requestText: "change it",
-      requestedPaths: ["../outside.ts"]
+      requestedPaths: ["../outside.ts"],
+      diagnosticCodes: [6133]
     })).toThrow("unsafe segment");
     expect(transport).not.toHaveBeenCalled();
   });
@@ -200,9 +202,12 @@ describe("YoppClient HTTP boundary", () => {
       expectedWorkspaceUpdatedAt: 10,
       requestId: "request-1",
       requestText: "  Add the verified value export.  ",
-      requestedPaths: ["src/new.ts", "package.json"]
+      requestedPaths: ["src/new.ts", "package.json"],
+      diagnosticCodes: [6133, 2552]
     });
 
+    expect(result.kind).toBe("selected");
+    if (result.kind !== "selected") throw new Error(JSON.stringify(result));
     expect(result.plan.planHash).toBe(plan.planHash);
     expect(result.authorization).toEqual({ required: true, granted: false, capabilityId: "workspace.patch.apply" });
     expect(result.execution).toEqual({ state: "not_executed", receipt: null });
@@ -217,6 +222,7 @@ describe("YoppClient HTTP boundary", () => {
       requestId: "request-1",
       requestText: "Add the verified value export.",
       requestedPaths: ["package.json", "src/new.ts"],
+      diagnosticCodes: [2552, 6133],
       validationPlan: {
         validatorId: "trusted-host-pnpm-validate.v1",
         checks: ["compiler", "typecheck", "tests"]
@@ -234,7 +240,8 @@ describe("YoppClient HTTP boundary", () => {
     const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async (_input, init) => {
       const request = JSON.parse(String(init.body)) as Record<string, unknown>;
       const generation = fixtureCodingGeneration(plan, request);
-      generation.programProposalTrace.requestedPaths = ["src/other.ts"];
+      const requestNode = generation.constraintGraph.nodes.find(node => node.kindId === "scce.task.request.v1")!;
+      requestNode.metadata.requestedPaths = ["src/other.ts"];
       return jsonResponse(generation);
     });
 
@@ -243,7 +250,8 @@ describe("YoppClient HTTP boundary", () => {
       expectedWorkspaceUpdatedAt: 10,
       requestId: "request-1",
       requestText: "Add the verified value export.",
-      requestedPaths: ["src/new.ts"]
+      requestedPaths: ["src/new.ts"],
+      diagnosticCodes: [6133]
     })).rejects.toThrow("coding plan requested paths do not match the submitted scope");
   });
 
@@ -361,49 +369,48 @@ function fixtureReceipt(
 function fixtureCodingGeneration(plan: ReturnType<typeof parseReviewedPatchPlan>, request: Record<string, unknown>) {
   const revisionId = "revision-1";
   const revisionHash = sha256("revision-1");
-  const evidenceIds = ["evidence-1"];
   const requestId = String(request.requestId);
-  const requestText = String(request.requestText);
   const requestedPaths = [...(request.requestedPaths as string[])];
-  const requestHash = sha256(JSON.stringify(canonical({
-    requestId,
-    text: requestText,
-    requestedPaths,
-    evidenceIds,
-    revisionId,
-    revisionHash
-  })));
+  const diagnosticCode = (request.diagnosticCodes as number[])[0]!;
+  const diagnosticIdentity = `diagnostic-${diagnosticCode}`;
+  const diagnosticNodeId = `diagnostic-node-${diagnosticCode}`;
+  const graphId = "constraint-graph-1";
   return {
-    schemaVersion: "yopp.workspace-plan-generation.v1",
+    schemaVersion: "scce.workspace.compiler_patch_plan.v1",
+    statusId: "scce.workspace.compiler_patch.selected.v1",
     workspaceId: String(request.workspaceId),
     revisionId,
     revisionHash,
-    plan,
-    scoreTrace: { schemaVersion: "yopp.workspace-patch-score.v1" },
-    safety: { snapshotComplete: true },
-    validationPlan: {
-      validatorId: "trusted-host-pnpm-validate.v1",
-      checks: ["compiler", "tests", "typecheck"]
-    },
-    authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
-    execution: { state: "not_executed", receipt: null },
-    rollbackScope: "atomic-per-file-with-verified-transaction-rollback",
-    programProposalTrace: {
-      schemaVersion: "scce.workspace-program-proposal.trace.v1",
-      source: "program-graph-full-file",
+    constraintGraph: {
+      schema: "scce.workspace.task_constraint_graph.v1",
+      id: graphId,
+      workspaceRevision: { workspaceId: String(request.workspaceId), revisionId, revisionHash },
       requestId,
-      requestHash,
-      programId: "program-1",
-      sourcePlanIds: ["source-plan-1"],
-      evidenceIds,
-      requestedPaths,
-      derivedDependencyPaths: [],
-      selectedArtifactPaths: plan.operations.map(operation => operation.path),
-      regressionTestPaths: [],
-      verifiedParentDirectoryPaths: ["src"],
-      hydrationValidated: true,
-      fullFileMaterialized: true
-    }
+      nodes: [
+        { id: "request-node", kindId: "scce.task.request.v1", subjectId: requestId, metadata: { requestedPaths } },
+        { id: diagnosticNodeId, kindId: "scce.program.diagnostic.v1", subjectId: diagnosticIdentity, metadata: { compilerCode: diagnosticCode, diagnosticIdentity } }
+      ],
+      diagnosticNodeIds: [diagnosticNodeId],
+      execution: { state: "not_executed" }
+    },
+    selection: {
+      schema: "scce.workspace.transformation_family_selection.v1",
+      graphId,
+      selected: {
+        familyId: "repair.family.typescript.code_action.v1",
+        candidateId: "candidate-1",
+        diagnosticIdentity,
+        codeFixIdentity: "code-fix-1",
+        diagnosticNodeId,
+        patchPlan: plan,
+        execution: { state: "not_executed" }
+      },
+      execution: { state: "not_executed" }
+    },
+    plan,
+    validationPlan: request.validationPlan,
+    authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
+    execution: { state: "not_executed", receipt: null }
   };
 }
 

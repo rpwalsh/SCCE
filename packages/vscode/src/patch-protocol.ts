@@ -4,8 +4,10 @@ export const PATCH_PLAN_SCHEMA = "yopp.patch-transaction-plan.v1" as const;
 export const WORKSPACE_PATCH_REQUEST_SCHEMA = "yopp.workspace-patch-request.v1" as const;
 export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "yopp.workspace-patch-response.v1" as const;
 export const WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA = "scce.workspace-coding-patch-plan-request.v1" as const;
-export const WORKSPACE_PLAN_GENERATION_SCHEMA = "yopp.workspace-plan-generation.v1" as const;
-export const WORKSPACE_PROGRAM_PROPOSAL_TRACE_SCHEMA = "scce.workspace-program-proposal.trace.v1" as const;
+export const WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA = "scce.workspace.compiler_patch_plan.v1" as const;
+export const WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA = "scce.workspace.transformation_family_selection.v1" as const;
+export const WORKSPACE_TASK_CONSTRAINT_GRAPH_SCHEMA = "scce.workspace.task_constraint_graph.v1" as const;
+export const TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY = "repair.family.typescript.code_action.v1" as const;
 export const DEFAULT_PATCH_VALIDATION_POLICY_ID = "trusted-host-pnpm-validate.v1" as const;
 export const DEFAULT_PATCH_VALIDATION_CHECKS = ["compiler", "typecheck", "tests"] as const;
 
@@ -33,44 +35,52 @@ export interface WorkspaceCodingPatchPlanRequest {
   requestId: string;
   requestText: string;
   requestedPaths: string[];
+  diagnosticCodes: number[];
   validationPlan: {
     validatorId: typeof DEFAULT_PATCH_VALIDATION_POLICY_ID;
     checks: Array<(typeof DEFAULT_PATCH_VALIDATION_CHECKS)[number]>;
   };
 }
 
-export interface WorkspaceCodingPatchPlanGeneration {
-  schemaVersion: typeof WORKSPACE_PLAN_GENERATION_SCHEMA;
+export interface WorkspaceCodingPatchPlanSelected {
+  kind: "selected";
+  schemaVersion: typeof WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA;
+  statusId: "scce.workspace.compiler_patch.selected.v1";
   workspaceId: string;
   revisionId: string;
   revisionHash: PatchHash;
+  requestId: string;
+  requestedPaths: string[];
+  diagnosticCode: number;
   plan: ReviewedPatchPlan;
-  scoreTrace: Record<string, unknown>;
-  safety: Record<string, unknown>;
   validationPlan: {
     validatorId: typeof DEFAULT_PATCH_VALIDATION_POLICY_ID;
     checks: Array<(typeof DEFAULT_PATCH_VALIDATION_CHECKS)[number]>;
   };
   authorization: { required: true; granted: false; capabilityId: "workspace.patch.apply" };
   execution: { state: "not_executed"; receipt: null };
-  rollbackScope: "atomic-per-file-with-verified-transaction-rollback";
-  programProposalTrace: {
-    schemaVersion: typeof WORKSPACE_PROGRAM_PROPOSAL_TRACE_SCHEMA;
-    source: "program-graph-full-file";
-    requestId: string;
-    requestHash: PatchHash;
-    programId: string;
-    sourcePlanIds: string[];
-    evidenceIds: string[];
-    requestedPaths: string[];
-    derivedDependencyPaths: string[];
-    selectedArtifactPaths: string[];
-    regressionTestPaths: string[];
-    verifiedParentDirectoryPaths: string[];
-    hydrationValidated: true;
-    fullFileMaterialized: true;
+  selection: {
+    familyId: typeof TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY;
+    candidateId: string;
+    diagnosticIdentity: string;
+    codeFixIdentity: string;
   };
 }
+
+export interface WorkspaceCodingPatchPlanUnresolved {
+  kind: "unresolved";
+  schemaVersion: typeof WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA | typeof WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA;
+  statusId: "scce.workspace.compiler_patch.unresolved.v1";
+  workspaceId: string;
+  revisionId: string;
+  revisionHash: PatchHash;
+  requestId: string;
+  requestedPaths: string[];
+  reasonIds: string[];
+  execution: { state: "not_executed"; receipt: null };
+}
+
+export type WorkspaceCodingPatchPlanResult = WorkspaceCodingPatchPlanSelected | WorkspaceCodingPatchPlanUnresolved;
 
 export interface PendingPatchApproval {
   ok: false;
@@ -139,103 +149,201 @@ export function parseWorkspaceStatus(value: unknown): WorkspaceStatusResponse {
   };
 }
 
-export function parseWorkspaceCodingPatchPlanGeneration(value: unknown): WorkspaceCodingPatchPlanGeneration {
-  const input = exactRecord(value, "workspace coding patch plan generation", [
+export function parseWorkspaceCodingPatchPlanResult(
+  value: unknown,
+  request: WorkspaceCodingPatchPlanRequest
+): WorkspaceCodingPatchPlanResult {
+  const input = record(value, "workspace coding patch plan result");
+  if (input.schemaVersion === WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA) {
+    if (input.statusId === "scce.workspace.compiler_patch.selected.v1") return parseSelectedCompilerPlan(input, request);
+    if (input.statusId === "scce.workspace.compiler_patch.unresolved.v1") return parseUnresolvedCompilerPlan(input, request);
+    throw new Error("workspace compiler patch result status is unsupported");
+  }
+  if (input.schema === WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA) {
+    return parseUnresolvedTransformationSelection(input, request);
+  }
+  throw new Error("workspace coding patch result schema is unsupported");
+}
+
+function parseSelectedCompilerPlan(
+  value: unknown,
+  request: WorkspaceCodingPatchPlanRequest
+): WorkspaceCodingPatchPlanSelected {
+  const input = exactRecord(value, "selected workspace compiler patch plan", [
     "schemaVersion",
+    "statusId",
     "workspaceId",
     "revisionId",
     "revisionHash",
+    "constraintGraph",
+    "selection",
     "plan",
-    "scoreTrace",
-    "safety",
     "validationPlan",
     "authorization",
-    "execution",
-    "rollbackScope",
-    "programProposalTrace"
+    "execution"
   ]);
+  literal(input.schemaVersion, WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA, "selected compiler plan schema");
+  literal(input.statusId, "scce.workspace.compiler_patch.selected.v1", "selected compiler plan status");
+  const workspaceId = boundedId(input.workspaceId, "selected compiler plan workspaceId");
+  if (workspaceId !== request.workspaceId) throw new Error("coding plan belongs to another workspace");
+  const revisionId = boundedId(input.revisionId, "selected compiler plan revisionId");
+  const revisionHash = patchHash(input.revisionHash, "selected compiler plan revisionHash");
+  const plan = parseReviewedPatchPlan(input.plan);
   const validationPlan = parseCodingValidationPlan(input.validationPlan);
-  const authorization = exactRecord(input.authorization, "coding plan authorization", ["required", "granted", "capabilityId"]);
-  if (authorization.required !== true || authorization.granted !== false) throw new Error("coding plan must be returned unauthorized");
-  const execution = exactRecord(input.execution, "coding plan execution", ["state", "receipt"]);
-  literal(execution.state, "not_executed", "coding plan execution state");
-  if (execution.receipt !== null) throw new Error("coding plan must be returned unexecuted");
-  const trace = exactRecord(input.programProposalTrace, "program proposal trace", [
-    "schemaVersion",
-    "source",
-    "requestId",
-    "requestHash",
-    "programId",
-    "sourcePlanIds",
-    "evidenceIds",
-    "requestedPaths",
-    "derivedDependencyPaths",
-    "selectedArtifactPaths",
-    "regressionTestPaths",
-    "verifiedParentDirectoryPaths",
-    "hydrationValidated",
-    "fullFileMaterialized"
-  ]);
-  if (trace.hydrationValidated !== true || trace.fullFileMaterialized !== true) throw new Error("coding plan is not a fully hydrated full-file proposal");
+  if (validationPlan.validatorId !== request.validationPlan.validatorId || !sameStringSets(validationPlan.checks, request.validationPlan.checks)) {
+    throw new Error("coding plan validation policy does not match the submitted request");
+  }
+  const authorization = parseAbsentPatchAuthorization(input.authorization);
+  parseUnexecutedPlanState(input.execution, "selected compiler plan execution");
+
+  const selection = record(input.selection, "selected compiler transformation selection");
+  literal(selection.schema, WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA, "compiler transformation selection schema");
+  const selected = record(selection.selected, "selected compiler transformation");
+  const familyId = literal(selected.familyId, TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY, "selected compiler transformation family");
+  const candidateId = boundedId(selected.candidateId, "selected compiler transformation candidateId");
+  const diagnosticIdentity = boundedId(selected.diagnosticIdentity, "selected compiler diagnostic identity");
+  const codeFixIdentity = boundedId(selected.codeFixIdentity, "selected compiler code-fix identity");
+  const diagnosticNodeId = boundedId(selected.diagnosticNodeId, "selected compiler diagnostic nodeId");
+  parseUnexecutedSelectionState(selected.execution, "selected compiler transformation execution");
+  parseUnexecutedSelectionState(selection.execution, "compiler transformation selection execution");
+  const selectedPlan = parseReviewedPatchPlan(selected.patchPlan);
+  if (selectedPlan.planHash !== plan.planHash) throw new Error("selected compiler transformation contains a different patch plan");
+
+  const graph = record(input.constraintGraph, "selected compiler constraint graph");
+  literal(graph.schema, WORKSPACE_TASK_CONSTRAINT_GRAPH_SCHEMA, "selected compiler constraint graph schema");
+  const graphId = boundedId(graph.id, "selected compiler constraint graph id");
+  if (boundedId(selection.graphId, "compiler transformation selection graphId") !== graphId) {
+    throw new Error("compiler transformation selection belongs to another constraint graph");
+  }
+  if (boundedId(graph.requestId, "selected compiler constraint graph requestId") !== request.requestId) {
+    throw new Error("coding plan belongs to another request");
+  }
+  parseUnexecutedSelectionState(graph.execution, "selected compiler constraint graph execution");
+  const graphRevision = exactRecord(graph.workspaceRevision, "selected compiler constraint graph workspace revision", ["workspaceId", "revisionId", "revisionHash"]);
+  if (boundedId(graphRevision.workspaceId, "constraint graph workspaceId") !== workspaceId
+    || boundedId(graphRevision.revisionId, "constraint graph revisionId") !== revisionId
+    || patchHash(graphRevision.revisionHash, "constraint graph revisionHash") !== revisionHash) {
+    throw new Error("coding plan constraint graph belongs to another workspace revision");
+  }
+
+  const nodes = array(graph.nodes, "selected compiler constraint graph nodes").map((node, index) => record(node, `constraint graph node ${index}`));
+  const requestNodes = nodes.filter(node => node.kindId === "scce.task.request.v1" && node.subjectId === request.requestId);
+  if (requestNodes.length !== 1) throw new Error("coding plan constraint graph request binding is invalid");
+  const requestMetadata = record(requestNodes[0]!.metadata, "constraint graph request metadata");
+  const requestedPaths = boundedUniquePaths(requestMetadata.requestedPaths, "constraint graph requestedPaths", 256);
+  if (!sameStrings(requestedPaths, request.requestedPaths)) throw new Error("coding plan requested paths do not match the submitted scope");
+
+  const diagnosticNodeIds = boundedUniqueStrings(graph.diagnosticNodeIds, "constraint graph diagnosticNodeIds", 4096);
+  if (!diagnosticNodeIds.includes(diagnosticNodeId)) throw new Error("selected compiler diagnostic is absent from the constraint graph index");
+  const diagnosticNode = nodes.find(node => node.id === diagnosticNodeId && node.kindId === "scce.program.diagnostic.v1");
+  if (!diagnosticNode) throw new Error("selected compiler diagnostic node is absent from the constraint graph");
+  const diagnosticMetadata = record(diagnosticNode.metadata, "selected compiler diagnostic metadata");
+  if (boundedId(diagnosticMetadata.diagnosticIdentity, "selected compiler graph diagnostic identity") !== diagnosticIdentity) {
+    throw new Error("selected compiler diagnostic identity does not match its constraint graph node");
+  }
+  const diagnosticCode = positiveSafeInteger(diagnosticMetadata.compilerCode, "selected compiler diagnostic code");
+  if (!request.diagnosticCodes.includes(diagnosticCode)) throw new Error("selected compiler diagnostic code was not requested");
+
   return {
-    schemaVersion: literal(input.schemaVersion, WORKSPACE_PLAN_GENERATION_SCHEMA, "coding plan generation schema"),
-    workspaceId: boundedId(input.workspaceId, "coding plan workspaceId"),
-    revisionId: boundedId(input.revisionId, "coding plan revisionId"),
-    revisionHash: patchHash(input.revisionHash, "coding plan revisionHash"),
-    plan: parseReviewedPatchPlan(input.plan),
-    scoreTrace: record(input.scoreTrace, "coding plan scoreTrace"),
-    safety: record(input.safety, "coding plan safety"),
+    kind: "selected",
+    schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
+    statusId: "scce.workspace.compiler_patch.selected.v1",
+    workspaceId,
+    revisionId,
+    revisionHash,
+    requestId: request.requestId,
+    requestedPaths,
+    diagnosticCode,
+    plan,
     validationPlan,
-    authorization: {
-      required: true,
-      granted: false,
-      capabilityId: literal(authorization.capabilityId, "workspace.patch.apply", "coding plan authorization capabilityId")
-    },
+    authorization,
     execution: { state: "not_executed", receipt: null },
-    rollbackScope: literal(input.rollbackScope, "atomic-per-file-with-verified-transaction-rollback", "coding plan rollbackScope"),
-    programProposalTrace: {
-      schemaVersion: literal(trace.schemaVersion, WORKSPACE_PROGRAM_PROPOSAL_TRACE_SCHEMA, "program proposal trace schema"),
-      source: literal(trace.source, "program-graph-full-file", "program proposal trace source"),
-      requestId: boundedId(trace.requestId, "program proposal trace requestId"),
-      requestHash: patchHash(trace.requestHash, "program proposal trace requestHash"),
-      programId: boundedId(trace.programId, "program proposal trace programId"),
-      sourcePlanIds: boundedUniqueStrings(trace.sourcePlanIds, "program proposal trace sourcePlanIds", 4096),
-      evidenceIds: boundedUniqueStrings(trace.evidenceIds, "program proposal trace evidenceIds", 4096),
-      requestedPaths: boundedUniquePaths(trace.requestedPaths, "program proposal trace requestedPaths", 256),
-      derivedDependencyPaths: boundedUniquePaths(trace.derivedDependencyPaths, "program proposal trace derivedDependencyPaths", 256),
-      selectedArtifactPaths: boundedUniquePaths(trace.selectedArtifactPaths, "program proposal trace selectedArtifactPaths", 256),
-      regressionTestPaths: boundedUniquePaths(trace.regressionTestPaths, "program proposal trace regressionTestPaths", 256),
-      verifiedParentDirectoryPaths: boundedUniquePaths(trace.verifiedParentDirectoryPaths, "program proposal trace verifiedParentDirectoryPaths", 256, true),
-      hydrationValidated: true,
-      fullFileMaterialized: true
-    }
+    selection: { familyId, candidateId, diagnosticIdentity, codeFixIdentity }
   };
 }
 
-export function verifyWorkspaceCodingPatchPlanGeneration(
-  result: WorkspaceCodingPatchPlanGeneration,
+function parseUnresolvedCompilerPlan(
+  value: unknown,
   request: WorkspaceCodingPatchPlanRequest
-): WorkspaceCodingPatchPlanGeneration {
-  if (result.workspaceId !== request.workspaceId) throw new Error("coding plan belongs to another workspace");
-  if (result.programProposalTrace.requestId !== request.requestId) throw new Error("coding plan belongs to another request");
-  if (!sameStrings(result.programProposalTrace.requestedPaths, request.requestedPaths)) throw new Error("coding plan requested paths do not match the submitted scope");
-  if (result.validationPlan.validatorId !== request.validationPlan.validatorId || !sameStringSets(result.validationPlan.checks, request.validationPlan.checks)) {
-    throw new Error("coding plan validation policy does not match the submitted request");
+): WorkspaceCodingPatchPlanUnresolved {
+  const input = exactRecord(value, "unresolved workspace compiler patch plan", [
+    "schemaVersion",
+    "statusId",
+    "workspaceId",
+    "revisionId",
+    "revisionHash",
+    "requestId",
+    "requestedPaths",
+    "reasonIds",
+    "observedCompilerLaneCount",
+    "selection",
+    "plan",
+    "execution"
+  ]);
+  literal(input.schemaVersion, WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA, "unresolved compiler plan schema");
+  literal(input.statusId, "scce.workspace.compiler_patch.unresolved.v1", "unresolved compiler plan status");
+  const workspaceId = boundedId(input.workspaceId, "unresolved compiler plan workspaceId");
+  if (workspaceId !== request.workspaceId) throw new Error("unresolved coding plan belongs to another workspace");
+  const requestId = boundedId(input.requestId, "unresolved compiler plan requestId");
+  if (requestId !== request.requestId) throw new Error("unresolved coding plan belongs to another request");
+  const requestedPaths = boundedUniquePaths(input.requestedPaths, "unresolved compiler plan requestedPaths", 256);
+  if (!sameStrings(requestedPaths, request.requestedPaths)) throw new Error("unresolved coding plan requested paths do not match the submitted scope");
+  const reasonIds = boundedUniqueStrings(input.reasonIds, "unresolved compiler plan reasonIds", 256);
+  if (reasonIds.length < 1) throw new Error("unresolved compiler plan must contain at least one reason ID");
+  nonNegativeSafeInteger(input.observedCompilerLaneCount, "unresolved compiler plan observedCompilerLaneCount");
+  if (input.selection !== null || input.plan !== null) throw new Error("unresolved compiler plan must not contain a selected transformation or patch plan");
+  parseUnexecutedPlanState(input.execution, "unresolved compiler plan execution");
+  return {
+    kind: "unresolved",
+    schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
+    statusId: "scce.workspace.compiler_patch.unresolved.v1",
+    workspaceId,
+    revisionId: boundedId(input.revisionId, "unresolved compiler plan revisionId"),
+    revisionHash: patchHash(input.revisionHash, "unresolved compiler plan revisionHash"),
+    requestId,
+    requestedPaths,
+    reasonIds,
+    execution: { state: "not_executed", receipt: null }
+  };
+}
+
+function parseUnresolvedTransformationSelection(
+  value: unknown,
+  request: WorkspaceCodingPatchPlanRequest
+): WorkspaceCodingPatchPlanUnresolved {
+  const input = record(value, "unresolved compiler transformation selection");
+  literal(input.schema, WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA, "unresolved compiler transformation selection schema");
+  if (input.selected !== null) throw new Error("a selected transformation must be returned in the compiler plan envelope");
+  parseUnexecutedSelectionState(input.execution, "unresolved compiler transformation selection execution");
+  const revision = exactRecord(input.workspaceRevision, "unresolved transformation workspace revision", ["workspaceId", "revisionId", "revisionHash"]);
+  const workspaceId = boundedId(revision.workspaceId, "unresolved transformation workspaceId");
+  if (workspaceId !== request.workspaceId) throw new Error("unresolved transformation belongs to another workspace");
+  const reasonIds = new Set<string>();
+  for (const [index, candidate] of array(input.rejectedCandidates, "unresolved transformation rejectedCandidates").entries()) {
+    const item = record(candidate, `unresolved transformation rejected candidate ${index}`);
+    for (const reason of boundedUniqueStrings(item.reasonIds, `unresolved transformation rejected candidate ${index} reasonIds`, 256)) reasonIds.add(reason);
   }
-  const selectedArtifacts = new Set(result.programProposalTrace.selectedArtifactPaths);
-  for (const operation of result.plan.operations) {
-    if (!selectedArtifacts.has(operation.path)) throw new Error(`coding plan operation is absent from the selected artifact trace: ${operation.path}`);
+  for (const [index, constraint] of array(input.graphUnresolvedConstraints, "unresolved transformation graphUnresolvedConstraints").entries()) {
+    const item = record(constraint, `unresolved transformation graph constraint ${index}`);
+    reasonIds.add(boundedId(item.reasonId, `unresolved transformation graph constraint ${index} reasonId`));
   }
-  const expectedRequestHash = canonicalPatchHash({
+  for (const [index, outcome] of array(input.unresolvedOutcomes, "unresolved transformation unresolvedOutcomes").entries()) {
+    const item = record(outcome, `unresolved transformation outcome ${index}`);
+    for (const reason of boundedUniqueStrings(item.reasonIds, `unresolved transformation outcome ${index} reasonIds`, 256)) reasonIds.add(reason);
+  }
+  if (reasonIds.size < 1) throw new Error("unresolved compiler transformation must contain at least one reason ID");
+  return {
+    kind: "unresolved",
+    schemaVersion: WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA,
+    statusId: "scce.workspace.compiler_patch.unresolved.v1",
+    workspaceId,
+    revisionId: boundedId(revision.revisionId, "unresolved transformation revisionId"),
+    revisionHash: patchHash(revision.revisionHash, "unresolved transformation revisionHash"),
     requestId: request.requestId,
-    text: request.requestText,
-    requestedPaths: request.requestedPaths,
-    evidenceIds: result.programProposalTrace.evidenceIds,
-    revisionId: result.revisionId,
-    revisionHash: result.revisionHash
-  });
-  if (result.programProposalTrace.requestHash !== expectedRequestHash) throw new Error(`coding plan request trace does not match its content; expected ${expectedRequestHash}`);
-  return result;
+    requestedPaths: [...request.requestedPaths],
+    reasonIds: [...reasonIds].sort(compareCanonical),
+    execution: { state: "not_executed", receipt: null }
+  };
 }
 
 export function parseWorkspacePatchAttempt(value: unknown): WorkspacePatchAttempt {
@@ -299,7 +407,7 @@ function parseValidationReceipt(value: unknown): { validatorId: string; evidence
   return { validatorId: nonEmptyString(input.validatorId, "validation validatorId"), evidenceHash: patchHash(input.evidenceHash, "validation evidenceHash") };
 }
 
-function parseCodingValidationPlan(value: unknown): WorkspaceCodingPatchPlanGeneration["validationPlan"] {
+function parseCodingValidationPlan(value: unknown): WorkspaceCodingPatchPlanSelected["validationPlan"] {
   const input = exactRecord(value, "coding plan validationPlan", ["validatorId", "checks"]);
   const checks = array(input.checks, "coding plan validationPlan checks").map((value, index) => {
     if (value !== "compiler" && value !== "typecheck" && value !== "tests") throw new Error(`coding plan validationPlan check ${index} is unsupported`);
@@ -312,6 +420,27 @@ function parseCodingValidationPlan(value: unknown): WorkspaceCodingPatchPlanGene
     validatorId: literal(input.validatorId, DEFAULT_PATCH_VALIDATION_POLICY_ID, "coding plan validationPlan validatorId"),
     checks
   };
+}
+
+function parseAbsentPatchAuthorization(value: unknown): WorkspaceCodingPatchPlanSelected["authorization"] {
+  const authorization = exactRecord(value, "coding plan authorization", ["required", "granted", "capabilityId"]);
+  if (authorization.required !== true || authorization.granted !== false) throw new Error("coding plan must be returned unauthorized");
+  return {
+    required: true,
+    granted: false,
+    capabilityId: literal(authorization.capabilityId, "workspace.patch.apply", "coding plan authorization capabilityId")
+  };
+}
+
+function parseUnexecutedPlanState(value: unknown, label: string): void {
+  const execution = exactRecord(value, label, ["state", "receipt"]);
+  literal(execution.state, "not_executed", `${label} state`);
+  if (execution.receipt !== null) throw new Error(`${label} must not contain a receipt`);
+}
+
+function parseUnexecutedSelectionState(value: unknown, label: string): void {
+  const execution = exactRecord(value, label, ["state"]);
+  literal(execution.state, "not_executed", `${label} state`);
 }
 
 function parseMutationReceipt(value: unknown, index: number, expectedPlanHash: PatchHash): AppliedWorkspacePatch["receipt"]["mutations"][number] {
@@ -405,6 +534,12 @@ function boundedId(value: unknown, label: string): string {
 function nonNegativeSafeInteger(value: unknown, label: string): number {
   const result = finiteNumber(value, label);
   if (!Number.isSafeInteger(result) || result < 0) throw new Error(`${label} must be a non-negative safe integer`);
+  return result;
+}
+
+function positiveSafeInteger(value: unknown, label: string): number {
+  const result = finiteNumber(value, label);
+  if (!Number.isSafeInteger(result) || result <= 0) throw new Error(`${label} must be a positive safe integer`);
   return result;
 }
 

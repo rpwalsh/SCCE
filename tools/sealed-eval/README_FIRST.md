@@ -37,18 +37,19 @@ node --test harness/tests/*.test.mjs
 
 The kit is now installed at `tools/sealed-eval/`. The root package exposes the
 seal, run, blind, citation, score, aggregate, ablation, verification, and test
-commands. The production adapter at `integration/yopp-jsonl-adapter.mjs` enters the normal
+commands. The production adapter at `integration/yopp-jsonl-adapter.mjs` (a retained
+compatibility basename) enters the normal
 runtime, requires a hydrated active brain, preserves real support state, and
 checks citations against exact sealed-corpus bytes. All declared condition IDs
 are wired at production boundaries and have independent trace verification.
 
-The current public-review status is `NOT_EXECUTED`. The live PostgreSQL and
-knowledge-adapter rehearsals used synthetic material and are local verification
-only. A coding adapter is not present, no custodian-controlled protected review plan
-has been executed, and the editor extension has not been exercised as an
-installed package in an extension host. The trusted-host patch validator is not
-an OS sandbox, and its latest live rehearsal was blocked during frozen offline
-dependency materialization.
+The current public-review status is `NOT_EXECUTED`. PostgreSQL and knowledge-adapter
+rehearsals used synthetic material and are local verification only. A packaged VSIX
+was installed, activated, and checked for readiness in a local extension-host smoke;
+the digest-pinned Docker validator also completed a local networkless smoke. Neither
+is a protected or independent trial, a live patch round trip, or an attestation. A
+coding adapter is not present, and no custodian-controlled protected review plan has
+been executed. The trusted-host patch validator is not an OS sandbox.
 
 ## Evidence rule
 

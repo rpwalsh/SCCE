@@ -7,6 +7,7 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createSemanticEntailmentEngine,
+  deriveTurnRequirementField,
   detectCannedAnswerSpeech,
   featureSet,
   legacyDetailProfileIdFromSignal
@@ -24,6 +25,7 @@ import {
   QUESTION_TYPE_IDS,
   RELATION_ROLE_IDS
 } from "../question-routing-ids.js";
+import type { CandidateSurface } from "../candidate.js";
 import { genericChatMouthFixture as fixture } from "./fixtures/generic-chat-mouth-fixture.js";
 
 describe("Mouth runtime surface planning", () => {
@@ -31,6 +33,539 @@ describe("Mouth runtime surface planning", () => {
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
   const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+
+  it("realizes a typed structural action preview without inventing completion", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: "restart pump alpha",
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const preview = `\`\`\`json\n${JSON.stringify({
+      artifactKind: "action-preview",
+      planId: "capability-plan.fixture",
+      capabilityId: "process.local",
+      phase: "prepare",
+      objectiveSurface: "restart pump alpha",
+      executionState: "not_executed"
+    }, null, 2)}\n\`\`\``;
+    const selectedCandidate: CandidateSurface = {
+      id: "action-plan:capability-plan.fixture:0",
+      kind: "action-preview",
+      answer: preview,
+      force: "conjectured",
+      evidenceIds: [],
+      scores: {
+        support: 1,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.5,
+        actionability: 0.9,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 1,
+        risk: 0
+      },
+      claimBases: ["conjectured"],
+      boundaries: ["action-plan-not-executed"],
+      audit: {
+        source: "capability.plan",
+        status: "planned",
+        planId: "capability-plan.fixture",
+        capabilityId: "process.local",
+        phase: "prepare",
+        permission: { allowed: true, dryRun: true, mode: "explicit" },
+        executionState: "not_executed",
+        actionReceiptId: null
+      }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: constructGraph(false),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: languageRuntime.hydrateFromImportedBrain({
+        importRunId: "action-preview",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: []
+      }),
+      requestedAuthority: "action",
+      selectedCandidate,
+      semanticInput: {
+        schema: "scce.mouth.semantic_input.v1",
+        authority: "action",
+        slots: [{
+          id: "mouth.slot.action.preview.fixture",
+          roleId: "mouth.role.action.preview",
+          value: preview,
+          evidenceIds: []
+        }]
+      }
+    });
+
+    expect(spoken.text).toContain('"objectiveSurface": "restart pump alpha"');
+    expect(spoken.text).toContain('"capabilityId": "process.local"');
+    expect(spoken.text).toContain('"executionState": "not_executed"');
+  });
+
+  it("rejects a plain completion claim that is not structurally bound to the audited action plan", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: "restart pump alpha",
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const falseCompletion = "Pump alpha restarted successfully.";
+    const selectedCandidate: CandidateSurface = {
+      id: "action-plan:capability-plan.false-completion:0",
+      kind: "action-preview",
+      answer: falseCompletion,
+      force: "conjectured",
+      evidenceIds: [],
+      scores: {
+        support: 1,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.5,
+        actionability: 0.9,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 1,
+        risk: 0
+      },
+      claimBases: ["conjectured"],
+      boundaries: ["action-plan-not-executed"],
+      audit: {
+        source: "capability.plan",
+        status: "planned",
+        planId: "capability-plan.false-completion",
+        capabilityId: "process.local",
+        phase: "prepare",
+        permission: { allowed: true, dryRun: true, mode: "explicit" },
+        executionState: "not_executed",
+        actionReceiptId: null
+      }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: constructGraph(false),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: languageRuntime.hydrateFromImportedBrain({
+        importRunId: "action-preview-false-completion",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: []
+      }),
+      requestedAuthority: "action",
+      selectedCandidate,
+      semanticInput: {
+        schema: "scce.mouth.semantic_input.v1",
+        authority: "action",
+        slots: [{
+          id: "mouth.slot.action.preview.false-completion",
+          roleId: "mouth.role.action.preview",
+          value: falseCompletion,
+          evidenceIds: []
+        }]
+      }
+    });
+
+    expect(spoken.text).not.toContain(falseCompletion);
+    expect(spoken.realizationTrace.selected.id).not.toBe("candidate:generated:governed-action-preview");
+  });
+
+  it("keeps an audited terminal runtime-motion surface ahead of graph-derived prose", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate = terminalRuntimeMotionCandidate("fixture focus.");
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [],
+      entailment,
+      languageMemory: importedMemory(source, evidence, "terminal-runtime-motion"),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe(selectedCandidate.answer);
+    expect(spoken.evidenceRefs).toEqual([]);
+    expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+    expect(spoken.realizationTrace.languageMemory).toMatchObject({ bypassed: true, reason: "deterministic-mouth" });
+  });
+
+  it("removes unmatched structural closers without changing the selected surface content", async () => {
+    const source = sourceVersion();
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate = terminalRuntimeMotionCandidate("Aster (Beta) ) ).");
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [],
+      entailment,
+      languageMemory: importedMemory(source, directEvidence(source), "terminal-runtime-motion-delimiters"),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe("Aster (Beta).");
+    expect([...spoken.text].filter(char => char === "(")).toHaveLength(1);
+    expect([...spoken.text].filter(char => char === ")")).toHaveLength(1);
+  });
+
+  it("clips at completed Unicode sentence and token boundaries", async () => {
+    const source = sourceVersion();
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const completed = "Άλφα ολοκληρώθηκε.";
+    const oversized = `Βήτα ${"παράδειγμα ".repeat(12).trimEnd()}.`;
+    const unfinished = "Γάμμα αποσ";
+    const selectedCandidate = terminalRuntimeMotionCandidate(`${completed} ${oversized} ${unfinished}`);
+    const maxLength = 64;
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [],
+      entailment,
+      languageMemory: importedMemory(source, directEvidence(source), "terminal-runtime-motion-extent"),
+      requestedAuthority: "factual",
+      selectedCandidate,
+      maxLength
+    });
+
+    expect(spoken.text).toBe(completed);
+    expect(spoken.text).not.toContain(unfinished);
+    expect([...spoken.text].length).toBeLessThanOrEqual(maxLength);
+    expect(spoken.text).not.toMatch(/\p{Letter}$/u);
+  });
+
+  it("rejects canonical graph control identifiers from a terminal user surface", async () => {
+    const source = sourceVersion();
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const nodeId = `node_${"a".repeat(48)}`;
+    const relationId = `relation_${"b".repeat(48)}`;
+    const selectedCandidate = terminalRuntimeMotionCandidate(`fixture focus ${nodeId} ${relationId}.`);
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [],
+      entailment,
+      languageMemory: languageRuntime.hydrateFromImportedBrain({
+        importRunId: "terminal-runtime-motion-control-ids",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: []
+      }),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe("");
+    expect(spoken.text).not.toContain(nodeId);
+    expect(spoken.text).not.toContain(relationId);
+  });
+
+  it("preserves an exact source-bound reasoned surface instead of replacing it with a language prior", async () => {
+    const source = sourceVersion();
+    const evidenceProfileId = "profile:reasoned-source-bound";
+    const evidenceSourceVersionId = "source-version:reasoned-source-bound" as SourceVersion["sourceVersionId"];
+    const evidence = {
+      ...directEvidence(source),
+      sourceVersionId: evidenceSourceVersionId,
+      languageHints: { profileId: evidenceProfileId }
+    };
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate: CandidateSurface = {
+      id: "proposal:reasoned-source-bound:0",
+      kind: "reasoned-synthesis",
+      answer: evidence.text,
+      force: "inferred",
+      evidenceIds: [evidence.id],
+      scores: {
+        support: 0.8,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.5,
+        actionability: 0.8,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 1,
+        risk: 0
+      },
+      claimBases: ["reasoned_inference"],
+      boundaries: [],
+      audit: {
+        source: "cognitive-proposal",
+        semanticFrame: {
+          surfaceOriginId: "surface.cognitive_proposal.bound_proof_evidence.v1",
+          surfaceEvidenceIds: [evidence.id]
+        }
+      }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment: {
+        ...entailment,
+        evidenceIds: [],
+        proof: { ...entailment.proof, evidenceIds: [] }
+      },
+      languageMemory: {
+        ...importedMemory(source, evidence, "reasoned-source-bound"),
+        scope: {
+          mode: "cluster",
+          clusterId: "language-cluster:reasoned-source-bound",
+          profileIds: ["fixture-language", evidenceProfileId],
+          sourceVersionIds: [String(source.sourceVersionId), String(evidenceSourceVersionId)],
+          purityProven: true,
+          degraded: false
+        }
+      },
+      requirementField: {
+        ...deriveTurnRequirementField({ requestText: fixture.claim }),
+        semanticPreservation: 1
+      },
+      requestedAuthority: "reasoned",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe(evidence.text);
+    expect(spoken.evidenceRefs).toEqual([evidence.id]);
+    expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+  });
+
+  it("collapses overlapping factual spans before applying the default surface extent", async () => {
+    const source = sourceVersion();
+    const clauses = [
+      "Aurelia Venn (1815-1852) was a mathematician and writer whose work connected symbolic notation with mechanical calculation",
+      "in 1843 Aurelia Venn published notes on Engine-7 that described a symbolic procedure for calculating Bernoulli numbers",
+      "the notes distinguished the machine's physical mechanism from the abstract operations and symbols it could represent",
+      "her worked sequence linked numbered steps intermediate values and a final result while preserving the operation order"
+    ];
+    const factualSurface = clauses.join("; ");
+    const overlap = clauses.slice(1).join("; ").slice(0, 272);
+    const bloatedSurface = `${factualSurface}; ${overlap}; ${factualSurface}.`;
+    const baseEvidence = directEvidence(source);
+    const evidence = {
+      ...baseEvidence,
+      text: factualSurface,
+      textPreview: factualSurface,
+      charEnd: factualSurface.length,
+      byteEnd: Buffer.byteLength(factualSurface),
+      features: featureSet(factualSurface, 256)
+    };
+    const field = emptyField();
+    const claim = "Who was Aurelia Venn in 1843 and what concerned Engine-7?";
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate: CandidateSurface = {
+      id: "candidate:factual-overlap-regression",
+      kind: "proof-answer",
+      answer: bloatedSurface,
+      force: "proved",
+      evidenceIds: [evidence.id],
+      scores: {
+        support: 0.96,
+        contradiction: 0,
+        faithfulness: 0.98,
+        alphaPressure: 0.8,
+        actionability: 0.5,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 0.9,
+        risk: 0
+      },
+      claimBases: ["direct_evidence"],
+      boundaries: ["selected-evidence-bound"],
+      audit: { source: "mouth-runtime.repetition-regression" }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: constructGraph(false),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: importedMemory(source, evidence, "factual-overlap-regression"),
+      requirementField: deriveTurnRequirementField({ requestText: claim }),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(bloatedSurface).toHaveLength(1235);
+    expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+    expect(spoken.text.length).toBeLessThanOrEqual(560);
+    expect(spoken.text).toContain("Aurelia Venn");
+    expect(spoken.text).toContain("1815-1852");
+    expect(spoken.text).toContain("1843");
+    expect(spoken.text).toContain("Engine-7");
+    expect(spoken.text.split("symbolic notation with mechanical calculation")).toHaveLength(2);
+  });
+
+  it("does not emit a bound-selected reasoned surface that did not participate in the proof", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate = sourceBoundReasonedCandidate(evidence, "surface.cognitive_proposal.bound_selected_evidence.v1");
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: importedMemory(source, evidence, "reasoned-unrelated-source"),
+      targetLanguage: "fixture-language",
+      requestedAuthority: "reasoned",
+      selectedCandidate
+    });
+
+    expect(spoken.realizationTrace.selected.id).not.toBe(selectedCandidate.id);
+    expect(spoken.evidenceRefs).not.toContain(evidence.id);
+  });
+
+  it("does not emit participating reasoned evidence owned by a different language profile", async () => {
+    const source = sourceVersion();
+    const evidence = {
+      ...directEvidence(source),
+      id: "evidence:foreign-language" as EvidenceSpan["id"],
+      sourceId: "source:foreign-language" as EvidenceSpan["sourceId"],
+      sourceVersionId: "source-version:foreign-language" as EvidenceSpan["sourceVersionId"],
+      chunkId: "chunk:foreign-language" as EvidenceSpan["chunkId"],
+      languageHints: { profileId: "foreign-language" }
+    };
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate = sourceBoundReasonedCandidate(evidence, "surface.cognitive_proposal.bound_proof_evidence.v1");
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: importedMemory(source, evidence, "reasoned-foreign-language"),
+      targetLanguage: "fixture-language",
+      requestedAuthority: "reasoned",
+      selectedCandidate
+    });
+
+    expect(spoken.realizationTrace.selected.id).not.toBe(selectedCandidate.id);
+  });
 
   it("uses SurfacePlan, imported priors, correction memory, and preservation for normal speech", async () => {
     const source = sourceVersion();
@@ -798,6 +1333,69 @@ describe("Mouth runtime surface planning", () => {
       status: "promoted",
       alpha: 0.9,
       observedAt: clock.now()
+    };
+  }
+
+  function sourceBoundReasonedCandidate(evidence: EvidenceSpan, surfaceOriginId: string): CandidateSurface {
+    return {
+      id: `proposal:reasoned-source-bound:${surfaceOriginId}`,
+      kind: "reasoned-synthesis",
+      answer: evidence.text,
+      force: "inferred",
+      evidenceIds: [evidence.id],
+      scores: {
+        support: 0.8,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.5,
+        actionability: 0.8,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 1,
+        risk: 0
+      },
+      claimBases: ["reasoned_inference"],
+      boundaries: [],
+      audit: {
+        source: "cognitive-proposal",
+        semanticFrame: {
+          surfaceOriginId,
+          surfaceEvidenceIds: [evidence.id]
+        }
+      }
+    };
+  }
+
+  function terminalRuntimeMotionCandidate(answer: string): CandidateSurface {
+    return {
+      id: `runtime-motion:${hasher.digestHex(answer).slice(0, 24)}`,
+      kind: "dialogue-continuation",
+      answer,
+      force: "unknown",
+      evidenceIds: [],
+      scores: {
+        support: 0,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0,
+        actionability: 0.48,
+        evidenceCoverage: 0,
+        novelty: 0,
+        realizability: 1,
+        risk: 0
+      },
+      boundaries: [
+        "runtime-motion-non-assertive",
+        "runtime-motion-acquisition-exhausted",
+        "runtime-motion-no-fabricated-evidence"
+      ],
+      audit: {
+        schema: "scce.runtime_motion_candidate.v1",
+        source: "kernel.runtime_decision_boundary",
+        externalFactCertification: false,
+        fakeEvidenceForbidden: true,
+        semanticFrame: { frameId: "semantic.runtime.motion.clarification.v1" }
+      }
     };
   }
 

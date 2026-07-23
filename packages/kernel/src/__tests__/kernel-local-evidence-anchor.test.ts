@@ -79,7 +79,7 @@ describe("kernel local evidence source anchoring", () => {
       sourceVersionId: "source:ada-multipart:v1" as SourceVersionId,
       title: "Ada Lovelace",
       uri: "fixture://wiki/Ada_Lovelace",
-      text: "Ada Lovelace was an English mathematician. She published an algorithm intended for Charles Babbage's Analytical Engine.",
+      text: "Ada Lovelace was an English mathematician. Her contributions included publishing an algorithm intended for Charles Babbage's Analytical Engine.",
       alpha: 0.94
     });
     const fixture = storageFixture({ evidence: [ada] });
@@ -95,10 +95,95 @@ describe("kernel local evidence source anchoring", () => {
     const result = await kernel.turn({ text: "Who was Ada Lovelace, and what did she contribute?" });
 
     expect(result.answer).toContain("English mathematician");
-    expect(result.answer).toContain("published an algorithm");
+    expect(result.answer).toContain("publishing an algorithm");
     expect(result.evidence.map(span => String(span.id))).toEqual([String(ada.id)]);
     expect(result.assistantForce).toBe("source_grounded_answer");
     expect(result.guardFlags.sourceBacked).toBe(true);
+  });
+
+  it("preserves an explicitly discourse-bound durable source for a sparse pronoun follow-up", async () => {
+    const clock = createClock({ fixedTime: 6_625, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-discourse-followup",
+      sourceVersionId: "source:ada-discourse-followup:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was an English mathematician. She published an algorithm intended for Charles Babbage's Analytical Engine.",
+      alpha: 0.94
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({
+      text: "What about her?",
+      metadata: {
+        sessionContextEvidence: true,
+        runtimeEvidenceIds: [String(ada.id)],
+        discourse: {
+          activeObject: {
+            schema: "scce.discourse_object_state.v1",
+            objectId: "discourse_object_ada",
+            stateId: "discourse_state_ada_followup",
+            selectedTurnId: "turn_assistant_ada",
+            mentionIds: ["turn_assistant_ada"],
+            evidenceIds: [String(ada.id)],
+            sourceVersionIds: [String(ada.sourceVersionId)],
+            salienceMass: 0.94,
+            decayMass: 0,
+            bindingConfidence: 0.92,
+            signalIds: [],
+            policyId: "disc.policy.fixture",
+            surfaceHash: "fixture",
+            queryConcatenationUsed: false,
+            audit: { source: "focused-test" }
+          }
+        }
+      }
+    });
+
+    expect(result.answer).toContain("Ada Lovelace was an English mathematician");
+    expect(result.evidence.map(span => String(span.id))).toEqual([String(ada.id)]);
+    expect(JSON.stringify(result.events)).toContain('"explicitContextBound":true');
+    expect(JSON.stringify(result.events)).toContain('"sessionBound":false');
+  });
+
+  it("does not let a broad session-context flag admit an unrelated new topic without bound evidence ids", async () => {
+    const clock = createClock({ fixedTime: 6_675, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-unrelated-context",
+      sourceVersionId: "source:ada-unrelated-context:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace wrote notes about the Analytical Engine.",
+      alpha: 0.96
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({
+      text: "What is anarchism?",
+      metadata: { sessionContextEvidence: true }
+    });
+
+    expect(result.answer).not.toContain("Ada Lovelace");
+    expect(result.answer).not.toContain("Analytical Engine");
+    expect(result.evidence.map(span => String(span.id))).not.toContain(String(ada.id));
   });
 
   it("preserves a source-backed relation instead of reducing it to the named entity", async () => {
@@ -225,6 +310,106 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.evidence.map(span => span.id)).toContain(nested.id);
   });
 
+  it("admits different-title evidence only when a matched semantic frame explicitly binds it", async () => {
+    const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
+    const hasher = createHasher();
+    const unrelatedCorpusTail = Array.from({ length: 320 }, (_, index) => `context${index}`).join(" ");
+    const kirk = evidenceSpan({
+      id: "evidence:star-trek-kirk-frame-bound",
+      sourceVersionId: "source:star-trek-kirk-frame-bound:v1" as SourceVersionId,
+      title: "List of Star Trek: The Original Series episodes",
+      uri: "fixture://wiki/Star_Trek",
+      text: `Created by Gene Roddenberry, Star Trek stars William Shatner as Captain James T. Kirk. ${unrelatedCorpusTail}.`,
+      alpha: 0.96
+    });
+    const semanticFrame: SemanticFrameRecord = {
+      id: "frame.fixture.captain-kirk.source-anchor",
+      frameJson: {
+        sourceSystem: "wikipedia",
+        preview: "Captain James T. Kirk is the fictional commander of the starship Enterprise."
+      },
+      embedding: [],
+      evidenceIds: [kirk.id],
+      alpha: 0.98,
+      createdAt: 1
+    };
+    const fixture = storageFixture({ evidence: [kirk], semanticFrames: [semanticFrame] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Who was Captain Kirk?" });
+
+    expect(result.evidence.map(span => String(span.id))).toEqual([String(kirk.id)]);
+    expect(result.assistantForce).toBe("source_grounded_answer");
+    expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":true');
+  });
+
+  it("does not admit a different-title content mention without a matched semantic-frame route", async () => {
+    const clock = createClock({ fixedTime: 6_825, stepMs: 1 });
+    const hasher = createHasher();
+    const kirkMention = evidenceSpan({
+      id: "evidence:star-trek-kirk-unrouted",
+      sourceVersionId: "source:star-trek-kirk-unrouted:v1" as SourceVersionId,
+      title: "Star Trek",
+      uri: "fixture://wiki/Star_Trek",
+      text: "Captain James T. Kirk is the fictional commander of the starship Enterprise in Star Trek.",
+      alpha: 0.99
+    });
+    const fixture = storageFixture({ evidence: [kirkMention], semanticFrames: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Who was Captain Kirk?" });
+
+    expect(result.evidence.map(span => String(span.id))).not.toContain(String(kirkMention.id));
+    expect(result.answer).not.toContain("fictional commander");
+    expect(result.answer).not.toContain("starship Enterprise");
+    expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":false');
+  });
+
+  it("uses a resident one-span exact source route without another durable graph read", async () => {
+    const clock = createClock({ fixedTime: 6_850, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-hot-one-span",
+      sourceVersionId: "source:ada-hot-one-span:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was an English mathematician who published work about the Analytical Engine.",
+      alpha: 0.97
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const warmup = await kernel.warmup({ graph: true, language: false, brain: false, profile: false, corrections: false });
+    expect(warmup.graph?.loaded).toBe(true);
+    expect(fixture.metrics.graphReads).toBe(1);
+
+    const result = await kernel.turn({ text: "Who was Ada Lovelace?" });
+
+    expect(result.evidence.map(span => String(span.id))).toEqual([String(ada.id)]);
+    expect(fixture.metrics.graphReads).toBe(1);
+  });
+
   it("keeps the empty-memory acquisition floor non-assertive without inventing facts or templates", async () => {
     const clock = createClock({ fixedTime: 7000, stepMs: 1 });
     const hasher = createHasher();
@@ -292,7 +477,7 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.events.some(event => event.typeId === "MouthSpoken")).toBe(true);
   });
 
-  it("uses an activated learned semantic prior for an invented non-certified continuation after acquisition is exhausted", async () => {
+  it("does not escalate an irrelevant semantic prior into creative output after acquisition is exhausted", async () => {
     const clock = createClock({ fixedTime: 7_250, stepMs: 1 });
     const hasher = createHasher();
     const requestText = "What should the Aurora bridge crew rehearse?";
@@ -326,23 +511,20 @@ describe("kernel local evidence source anchoring", () => {
 
     const result = await kernel.turn({ text: requestText, requestedAuthority: "factual" });
     const selectedAudit = JSON.stringify(result.selectedCandidate);
-    const inventionNode = result.constructGraph.nodes.find(node => node.kind === "construct:invention");
 
     expect(result.requestedAuthority).toBe("factual");
     expect(result.runtimeMotion).toMatchObject({ attempt: 1, status: "unavailable" });
-    expect(result.selectedCandidate).toMatchObject({ kind: "creative-candidate", force: "invented", evidenceIds: [], claimBases: ["invented"] });
-    expect(result.assistantForce).toBe("creative_answer");
-    expect(result.answer).toContain(priorSurface);
+    expect(result.selectedCandidate).toMatchObject({ kind: "dialogue-continuation", evidenceIds: [] });
+    expect(result.assistantForce).not.toBe("creative_answer");
+    expect(result.answer.trim().length).toBeGreaterThan(0);
+    expect(result.answer).not.toContain(priorSurface);
     expect(result.answer).not.toBe(requestText);
     expect(result.evidence).toEqual([]);
     expect(result.emissionGraph.evidenceIds).toEqual([]);
-    expect(inventionNode).toBeDefined();
-    expect(inventionNode?.metadata).toMatchObject({ proofStatusId: "proof.status.generated_not_evidence", basisEvidenceIds: [] });
-    expect(selectedAudit).toContain("scce.runtime_motion_invention_candidate.v1");
-    expect(selectedAudit).toContain("policy.runtime_motion.prior_invention_after_exhausted_acquisition.v1");
-    expect(selectedAudit).toContain('"externalFactCertification":false');
-    expect(selectedAudit).toContain('"fakeEvidenceForbidden":true');
-    expect(selectedAudit).not.toContain('"evidenceIds":["');
+    expect(result.truthState.symbolicState).toBe("truth.insufficient_evidence");
+    expect(selectedAudit).not.toContain("scce.runtime_motion_invention_candidate.v1");
+    expect(selectedAudit).not.toContain("policy.runtime_motion.prior_invention_after_exhausted_acquisition.v1");
+    expect(selectedAudit).not.toContain("composition_fallback");
   });
 
   it("searches, fetches, ingests, and replans once through the configured read-only connector", async () => {

@@ -161,7 +161,22 @@ describe("source-only request-authority routing", () => {
     }
 
     expect(new Set(turns.map(row => JSON.stringify(row.turn.workspace.mouthInput.speakInput.semanticInput))).size).toBeGreaterThanOrEqual(5);
-    expect(turns.find(row => row.behavior === "invention")!.turn.selectedCandidate?.force).toBe("invented");
+    const invention = turns.find(row => row.behavior === "invention")!.turn;
+    expect(invention.selectedCandidate?.force).toBe("invented");
+    expect(invention.answer.trim().length).toBeGreaterThan(0);
+    expect(invention.answer).not.toMatch(/(?:^|\s)(?:sym:[^\s|]+|bi:[^\s|]+\|[^\s|]+|tri:[^\s|]+\|[^\s|]+\|[^\s|]+|char:\S+)(?:$|\s)/u);
+    expect(invention.answer).not.toMatch(/(?:node|edge|relation|hyperedge)_[0-9a-f]{24,}/iu);
+    expect(invention.answer).not.toContain("language_memory");
+    const inventionRequest = cases.find(row => row.behavior === "invention")!.text;
+    const requestUnits = inventionRequest.normalize("NFKC").toLocaleLowerCase().match(/[\p{Letter}\p{Number}_-]+/gu) ?? [];
+    const normalizedInvention = invention.answer.normalize("NFKC").toLocaleLowerCase();
+    expect(requestUnits.filter(unit => [...unit].length >= 3).some(unit => normalizedInvention.includes(unit))).toBe(true);
+    for (const sourceSentence of files
+      .flatMap(file => file.text.split(/(?<=[.!?])\s+|\r?\n+/u))
+      .map(sentence => sentence.trim())
+      .filter(sentence => [...sentence].length >= 16)) {
+      expect(invention.answer).not.toContain(sourceSentence);
+    }
     const action = turns.find(row => row.behavior === "plan")!.turn;
     expect(action.selectedCandidate?.kind).toBe("action-preview");
     expect(action.workspace.mouthInput.speakInput.answerDraft).toBe("");

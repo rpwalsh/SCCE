@@ -18,6 +18,7 @@ import {
   type SourceId,
   type SourceVersionId
 } from "../index.js";
+import { sessionOwnerObservationSurface } from "../kernel.js";
 
 describe("kernel training", () => {
   it("promotes only orchestrator-selected evidence and trains language memory from it", async () => {
@@ -173,7 +174,8 @@ describe("kernel training", () => {
           sessionId: "session:test",
           recentTurns: [
             { id: "turn:1", sessionId: "session:test", episodeId: "episode:prior", turnIndex: 1, roleId: "session.role.owner", text: "Aster is the release codename.", evidenceIds: [], createdAt: 3990 },
-            { id: "turn:2", sessionId: "session:test", episodeId: "episode:prior", turnIndex: 2, roleId: "session.role.assistant", text: "Unsupported prior says the codename is Longs Peak.", evidenceIds: [], createdAt: 3991 }
+            { id: "turn:2", sessionId: "session:test", episodeId: "episode:prior", turnIndex: 2, roleId: "session.role.owner", text: "What was the previous codename?", evidenceIds: [], createdAt: 3991 },
+            { id: "turn:3", sessionId: "session:test", episodeId: "episode:prior", turnIndex: 3, roleId: "session.role.assistant", text: "Unsupported prior says the codename is Longs Peak.", evidenceIds: [], createdAt: 3992 }
           ]
         }
       }
@@ -185,7 +187,7 @@ describe("kernel training", () => {
     expect(sessionEvidence[0]?.status).toBe("promoted");
   });
 
-  it("treats current declarative session input as owner observation evidence", async () => {
+  it("uses typed dialogue-act state to admit a punctuationless current owner observation", async () => {
     const clock = createClock({ fixedTime: 5000, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
@@ -200,14 +202,49 @@ describe("kernel training", () => {
     });
 
     const result = await kernel.turn({
-      text: "The release codename is Aster.",
-      metadata: { session: { sessionId: "session:current", recentTurns: [] } }
+      text: "The release codename is Aster",
+      metadata: {
+        session: { sessionId: "session:current", recentTurns: [] },
+        dialogue: {
+          turnAct: {
+            schema: "scce.dialogue.turn_act.v1",
+            assertionMass: 1,
+            questionMass: 0
+          }
+        }
+      }
     });
 
     const sessionEvidence = result.evidence.filter(span => String(span.id).startsWith("evidence_session_"));
     expect(sessionEvidence).toHaveLength(1);
-    expect(sessionEvidence[0]?.text).toBe("The release codename is Aster.");
+    expect(sessionEvidence[0]?.text).toBe("The release codename is Aster");
     expect(result.answer).toContain("Aster");
+    expect(JSON.stringify(result.events)).toContain('"sessionBound":true');
+  });
+
+  it("admits emphatic and non-Latin declaratives while quarantining an Arabic question", () => {
+    expect(sessionOwnerObservationSurface("The Zephyr valve is stable!")).toBe(true);
+    expect(sessionOwnerObservationSurface("펌프 알파는 안정적입니다。")).toBe(true);
+    expect(sessionOwnerObservationSurface("هل المضخة مستقرة؟")).toBe(false);
+    expect(sessionOwnerObservationSurface("Is the Zephyr valve stable?!")).toBe(false);
+    expect(sessionOwnerObservationSurface("The release codename is Aster", {
+      dialogue: {
+        turnAct: {
+          schema: "scce.dialogue.turn_act.v1",
+          assertionMass: 1,
+          questionMass: 0
+        }
+      }
+    })).toBe(true);
+    expect(sessionOwnerObservationSurface("punctuationless typed query", {
+      dialogue: {
+        turnAct: {
+          schema: "scce.dialogue.turn_act.v1",
+          assertionMass: 0,
+          questionMass: 1
+        }
+      }
+    })).toBe(false);
   });
 });
 

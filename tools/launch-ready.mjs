@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { exactHydrationSummary } from "./launch-ready-contract.mjs";
 
 const root = process.cwd();
 const serverUrl = argValue("--server-url") ?? process.env.SCCE_LIVE_SERVER_URL ?? "http://127.0.0.1:3873";
@@ -16,25 +17,16 @@ const skipArchive = process.argv.includes("--skip-archive");
 const archivePath = argValue("--archive") ?? defaultArchivePath();
 const failures = [];
 const steps = [];
-const HYDRATION_REQUIREMENTS = {
-  source_versions: 10000,
-  evidence_spans: 10000,
-  graph_nodes: 250000,
-  graph_edges: 250000,
-  ngram_observations: 1000000,
-  language_units: 25000,
-  semantic_frames: 10000
-};
-
 if (!skipBuild) await runStep("build", pnpmCommand(), ["build"]);
 if (!skipHygiene) await runStep("language-control", pnpmCommand(), ["hygiene:language-control"]);
 
 const ready = await fetchJson(`${serverUrl}/api/ready`, "ready");
-if (!ready.ok) failures.push(`ready endpoint failed: ${JSON.stringify(ready.value).slice(0, 500)}`);
+if (!ready.ok) failures.push(`ready endpoint failed: ${boundedFailureDetail(ready)}`);
+const hydration = exactHydrationSummary(ready.value);
+for (const failure of hydration.failures) failures.push(failure);
 
 const stats = await fetchJson(`${serverUrl}/api/db/stats`, "db-stats");
-if (stats.ok) checkHydration(stats.value);
-else failures.push(`db stats endpoint failed: ${String(stats.error)}`);
+if (!stats.ok) failures.push(`db stats endpoint failed: ${boundedFailureDetail(stats)}`);
 
 const releaseGate = await runStep("live-release-gate", nodeCommand(), ["tools/release-gate.mjs", "--json"], {
   env: { ...process.env, SCCE_LIVE_SERVER_URL: serverUrl }
@@ -54,8 +46,9 @@ const summary = {
     exitCode: step.exitCode,
     durationMs: step.durationMs
   })),
-  ready: ready.ok ? ready.value : { ok: false, error: String(ready.error) },
-  hydration: stats.ok ? hydrationSummary(stats.value) : { ok: false },
+  ready: ready.value ?? { ok: false, error: String(ready.error) },
+  hydration,
+  databaseStats: stats.value ?? { ok: false, error: String(stats.error) },
   releaseGate: releaseSummary,
   archive,
   failures
@@ -116,33 +109,6 @@ async function fetchJson(url, id) {
   }
 }
 
-function checkHydration(value) {
-  const rows = tableRows(value);
-  for (const [table, minimum] of Object.entries(HYDRATION_REQUIREMENTS)) {
-    const actual = rows[table] ?? 0;
-    if (actual < minimum) failures.push(`hydration table ${table} has ${actual}, expected at least ${minimum}`);
-  }
-}
-
-function hydrationSummary(value) {
-  const rows = tableRows(value);
-  const selected = Object.fromEntries(Object.keys(HYDRATION_REQUIREMENTS).map(table => [table, rows[table] ?? 0]));
-  const required = { ...HYDRATION_REQUIREMENTS };
-  return {
-    ok: Object.entries(required).every(([table, minimum]) => (selected[table] ?? 0) >= minimum),
-    rows: selected,
-    required
-  };
-}
-
-function tableRows(value) {
-  const rows = {};
-  for (const row of Array.isArray(value?.tables) ? value.tables : []) {
-    if (typeof row?.table === "string") rows[row.table] = Number(row.rows) || 0;
-  }
-  return rows;
-}
-
 function parseReleaseGate(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) return undefined;
@@ -156,6 +122,12 @@ function parseReleaseGate(stdout) {
     }
   }
   return undefined;
+}
+
+function boundedFailureDetail(result) {
+  if (result.error !== undefined) return String(result.error).slice(0, 500);
+  const serialized = JSON.stringify(result.value);
+  return (serialized === undefined ? "undefined response" : serialized).slice(0, 500);
 }
 
 async function checkArchive(candidate) {

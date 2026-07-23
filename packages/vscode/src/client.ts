@@ -15,12 +15,11 @@ import {
   WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
   WORKSPACE_PATCH_REQUEST_SCHEMA,
   parseSessionApproval,
-  parseWorkspaceCodingPatchPlanGeneration,
+  parseWorkspaceCodingPatchPlanResult,
   parseWorkspacePatchAttempt,
   parseWorkspaceStatus,
-  verifyWorkspaceCodingPatchPlanGeneration,
   type ReviewedPatchPlan,
-  type WorkspaceCodingPatchPlanGeneration,
+  type WorkspaceCodingPatchPlanResult,
   type WorkspaceCodingPatchPlanRequest,
   type WorkspacePatchAttempt,
   type WorkspaceStatusResponse
@@ -88,11 +87,10 @@ export class YoppClient {
     requestId: string;
     requestText: string;
     requestedPaths: readonly string[];
-  }): Promise<WorkspaceCodingPatchPlanGeneration> {
+    diagnosticCodes: readonly number[];
+  }): Promise<WorkspaceCodingPatchPlanResult> {
     const request = codingPatchPlanRequest(input);
-    return this.request("POST", "/api/workspace/patch/plan/request", request, value => (
-      verifyWorkspaceCodingPatchPlanGeneration(parseWorkspaceCodingPatchPlanGeneration(value), request)
-    ));
+    return this.request("POST", "/api/workspace/patch/plan/request", request, value => parseWorkspaceCodingPatchPlanResult(value, request));
   }
 
   workspacePatch(workspaceId: string, plan: ReviewedPatchPlan): Promise<WorkspacePatchAttempt> {
@@ -155,6 +153,7 @@ function codingPatchPlanRequest(input: {
   requestId: string;
   requestText: string;
   requestedPaths: readonly string[];
+  diagnosticCodes: readonly number[];
 }): WorkspaceCodingPatchPlanRequest {
   const workspaceId = requireBoundedId(input.workspaceId, "workspace id");
   const requestId = requireBoundedId(input.requestId, "coding request id");
@@ -168,6 +167,13 @@ function codingPatchPlanRequest(input: {
   const requestedPaths = [...input.requestedPaths].map((path, index) => requireWorkspaceRelativePath(path, `coding request path ${index}`));
   if (new Set(requestedPaths).size !== requestedPaths.length) throw new Error("coding request scope contains duplicate paths");
   requestedPaths.sort(compareCanonical);
+  if (input.diagnosticCodes.length < 1 || input.diagnosticCodes.length > 128) throw new Error("coding request must select 1 through 128 diagnostic codes");
+  const diagnosticCodes = [...input.diagnosticCodes].map((code, index) => {
+    if (!Number.isSafeInteger(code) || code <= 0) throw new Error(`coding request diagnostic code ${index} must be a positive safe integer`);
+    return code;
+  });
+  if (new Set(diagnosticCodes).size !== diagnosticCodes.length) throw new Error("coding request diagnostic codes contain duplicates");
+  diagnosticCodes.sort((left, right) => left - right);
   return {
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     workspaceId,
@@ -175,6 +181,7 @@ function codingPatchPlanRequest(input: {
     requestId,
     requestText,
     requestedPaths,
+    diagnosticCodes,
     validationPlan: {
       validatorId: DEFAULT_PATCH_VALIDATION_POLICY_ID,
       checks: [...DEFAULT_PATCH_VALIDATION_CHECKS]

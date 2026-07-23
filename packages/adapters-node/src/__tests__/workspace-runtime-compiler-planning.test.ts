@@ -16,7 +16,7 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
     const fixture = await workspaceFixture(baseFiles({
       "src/index.ts": "const unused = 1;\nexport const value = 2;\n"
     }));
-    const result = await plan(fixture, ["src/index.ts"], "요청 표면은 선택기가 읽지 않는다");
+    const result = await plan(fixture, ["src/index.ts"], "요청 표면은 선택기가 읽지 않는다", [6133]);
 
     expectSelected(result);
     expect(result.plan.operations).toEqual([expect.objectContaining({
@@ -28,23 +28,42 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
     expect(result.execution).toEqual({ state: "not_executed", receipt: null });
   });
 
-  it("keeps an unrequested multi-file action out of scope and does not break compiler-lineage ties with prose", async () => {
+  it("binds a compiler-owned misspelling replacement to the exact declared symbol", async () => {
+    const fixture = await workspaceFixture(baseFiles({
+      "src/index.ts": "import type { Legacy } from \"./legacy\";\nconst count = 1;\nexport const value = coutn;\n",
+      "src/legacy.ts": "export interface Legacy { value: number; }\n"
+    }));
+    const result = await plan(fixture, ["src/index.ts"], "opaque", [2552]);
+
+    expectSelected(result);
+    expect(result.plan.operations).toEqual([expect.objectContaining({
+      kind: "replace",
+      path: "src/index.ts",
+      content: "import type { Legacy } from \"./legacy\";\nconst count = 1;\nexport const value = count;\n"
+    })]);
+    expect(result.constraintGraph.audit).toMatchObject({ compilerDiagnosticSymbolBindingCount: 1 });
+  });
+
+  it("keeps an unrequested compiler action out of scope and admits it only when every affected file is requested", async () => {
     const fixture = await workspaceFixture(baseFiles({
       "src/a.ts": "const hidden = 1;\nexport const visible = 2;\n",
       "src/b.ts": "import { hidden } from \"./a\";\nexport const value = hidden;\n"
     }));
-    const refused = await plan(fixture, ["src/b.ts"]);
+    const refused = await plan(fixture, ["src/b.ts"], "opaque request surface", [2459]);
     expectUnselected(refused);
     expect(refused.rejectedCandidates.flatMap(candidate => candidate.reasonIds)).toEqual(expect.arrayContaining([
       "scce.transformation.reject.affected_file_unbound.v1",
       "scce.transformation.reject.protected_invariant.v1"
     ]));
 
-    const explicitlyScoped = await plan(fixture, ["src/a.ts", "src/b.ts"]);
-    expectUnselected(explicitlyScoped);
-    expect(explicitlyScoped.rejectedCandidates.flatMap(candidate => candidate.reasonIds)).toContain(
-      "scce.transformation.reject.candidate_ambiguity.v1"
-    );
+    const explicitlyScoped = await plan(fixture, ["src/a.ts", "src/b.ts"], "opaque request surface", [2459]);
+    expectSelected(explicitlyScoped);
+    expect(explicitlyScoped.plan.operations).toEqual([expect.objectContaining({
+      kind: "replace",
+      path: "src/a.ts",
+      content: "export const hidden = 1;\nexport const visible = 2;\n"
+    })]);
+    expect(explicitlyScoped.constraintGraph.audit).toMatchObject({ requestTextUsed: false });
   });
 
   it("returns structured unresolved state for absent and ambiguous compiler lanes and an absent config", async () => {
@@ -52,7 +71,7 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
       ["package.json", `${JSON.stringify({ scripts: { check: "vitest run" } })}\n`],
       ["src/index.ts", "export const value = 1;\n"]
     ]));
-    expect(await plan(absent, ["src/index.ts"])).toMatchObject({
+    expect(await plan(absent, ["src/index.ts"], "opaque", [2552])).toMatchObject({
       statusId: "scce.workspace.compiler_patch.unresolved.v1",
       reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"],
       plan: null,
@@ -64,7 +83,7 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
       ["tsconfig.json", `${JSON.stringify({ compilerOptions: { strict: true }, include: ["src/**/*.ts"] })}\n`],
       ["src/index.ts", "export const value = 1;\n"]
     ]));
-    expect(await plan(ambiguous, ["src/index.ts"])).toMatchObject({
+    expect(await plan(ambiguous, ["src/index.ts"], "opaque", [2552])).toMatchObject({
       statusId: "scce.workspace.compiler_patch.unresolved.v1",
       reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_lane_ambiguous.v1"],
       observedCompilerLaneCount: 2,
@@ -75,7 +94,7 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
       ["package.json", `${JSON.stringify({ scripts: { build: "tsc -p missing.json" } })}\n`],
       ["src/index.ts", "export const value = 1;\n"]
     ]));
-    expect(await plan(noConfig, ["src/index.ts"])).toMatchObject({
+    expect(await plan(noConfig, ["src/index.ts"], "opaque", [2552])).toMatchObject({
       statusId: "scce.workspace.compiler_patch.unresolved.v1",
       reasonIds: ["scce.workspace.compiler_patch.unresolved.compiler_config_absent.v1"],
       observedCompilerLaneCount: 1,
@@ -83,9 +102,21 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
     });
   });
 
-  it("returns the verified selector state when the exact program has no fixable diagnostic", async () => {
+  it("returns a structured unresolved state without launching compiler selection when the diagnostic selector is absent", async () => {
     const fixture = await workspaceFixture(baseFiles({ "src/index.ts": "export const value = 1;\n" }));
     const result = await plan(fixture, ["src/index.ts"]);
+    expect(result).toMatchObject({
+      statusId: "scce.workspace.compiler_patch.unresolved.v1",
+      reasonIds: ["scce.workspace.compiler_patch.unresolved.diagnostic_selector_absent.v1"],
+      selection: null,
+      plan: null,
+      execution: { state: "not_executed", receipt: null }
+    });
+  });
+
+  it("returns the verified selector state when the selected diagnostic has no fixable candidate", async () => {
+    const fixture = await workspaceFixture(baseFiles({ "src/index.ts": "export const value = 1;\n" }));
+    const result = await plan(fixture, ["src/index.ts"], "opaque", [6133]);
     expectUnselected(result);
     expect(result.execution).toEqual({ state: "not_executed" });
     expect(result.unresolvedOutcomes.flatMap(outcome => outcome.reasonIds)).toContain(
@@ -117,6 +148,7 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
       requestId: "request.stale",
       requestText: "opaque",
       requestedPaths: ["src/index.ts"],
+      diagnosticCodes: [6133],
       validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler"] }
     }, fixture.root, { maxFiles: 64, maxFileBytes: 1024 * 1024 })).rejects.toThrow(/stale workspace revision/u);
   });
@@ -126,7 +158,7 @@ describe("WorkspaceRuntime compiler transformation planning", () => {
       "src/value.ts": "export const count = 1;\n",
       "test/value.test.ts": "import { count } from \"../src/value\";\nconst unused = 1;\nexport const observed = count;\n"
     }, ["src/**/*.ts", "test/**/*.ts"]));
-    const result = await plan(fixture, ["test/value.test.ts"]);
+    const result = await plan(fixture, ["test/value.test.ts"], "opaque request surface", [6133]);
     expectSelected(result);
     expect(result.plan.operations.map(operation => operation.path)).toEqual(["test/value.test.ts"]);
     const protectedPaths = result.constraintGraph.protectedInvariantNodeIds.map(id =>
@@ -196,13 +228,14 @@ async function workspaceFixture(files: Map<string, string>): Promise<Fixture> {
   return { root, workspace, sources, runtime };
 }
 
-async function plan(fixture: Fixture, requestedPaths: string[], requestText = "opaque request surface"): Promise<WorkspaceCodingPatchPlanningResult> {
+async function plan(fixture: Fixture, requestedPaths: string[], requestText = "opaque request surface", diagnosticCodes: number[] = []): Promise<WorkspaceCodingPatchPlanningResult> {
   return fixture.runtime.planCodingPatch({
     workspaceId: String(fixture.workspace.id),
     expectedWorkspaceUpdatedAt: Number(fixture.workspace.updatedAt),
     requestId: `request-${createHash("sha256").update(JSON.stringify(requestedPaths)).digest("hex").slice(0, 12)}`,
     requestText,
     requestedPaths,
+    ...(diagnosticCodes.length ? { diagnosticCodes } : {}),
     validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler"] }
   }, fixture.root, { maxFiles: 64, maxFileBytes: 1024 * 1024 });
 }

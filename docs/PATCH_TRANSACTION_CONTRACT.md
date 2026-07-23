@@ -42,6 +42,9 @@ over `{ workspaceId, planHash, validationPolicyId, validationBinding }`. The
 server computes `validationBinding` from the complete policy and the selected
 provider's stable configuration identity; request data cannot supply it.
 
+The `yopp.*` schema prefix is a versioned SCCE wire-compatibility identifier. It does
+not name a separate product or runtime lane.
+
 The default server policy is `trusted-host-pnpm-validate.v1`. It is available
 only when `config.policy.allowMutation` is explicitly enabled. It copies the
 workspace into a private bounded staging directory, applies the staged plan there, and spawns the
@@ -176,9 +179,10 @@ cover source-proven unused type-only import removal and official TypeScript
 LanguageService actions rooted at one existing requested file. Compiler actions are
 derived from exact durable snapshot bytes plus the TypeScript standard library. The
 source-observed direct `tsc` invocation must resolve an exact snapshot project config,
-and the requested file must belong to its parsed file set. An explicit exact `TS####`,
-`fixName:<id>`, or canonical `codeFixIdentity:<id>` selector must resolve to one
-candidate; the route does not select a candidate implicitly. The complete selected
+and the requested file must belong to its parsed file set. A structured positive
+integer diagnostic code (`diagnosticCodes` over HTTP or
+`--diagnostic-code=<integer>` in the CLI) must resolve to one candidate; request prose
+never selects the action. The complete selected
 CodeFixAction may include up to 32 affected files and 128 non-overlapping exact text
 changes. Existing targets must have exact snapshot bases; bounded TypeScript or
 JavaScript new files must be under existing snapshot directories. Command-bearing

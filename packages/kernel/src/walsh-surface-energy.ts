@@ -664,6 +664,7 @@ function internalTelemetryHits(text: string): string[] {
   };
   if (/\b(?:construct|graph|feature\s*vector|score|proof|database\s*record)\s*(?:id|ids|label|labels|internals?)\s*[:=]/iu.test(text)) add("surface.telemetry.internal_label");
   if (/\b(?:node|edge|construct|candidate|proof|trace|frame|pattern):[a-z0-9_.:-]{3,}\b/iu.test(text)) add("surface.telemetry.control_identifier");
+  if (/\b(?:node|edge|relation|hyperedge)_[0-9a-f]{32,64}\b/iu.test(text)) add("surface.telemetry.graph_identifier");
   const jsonLike = (normalized.startsWith("{") && normalized.endsWith("}")) || (normalized.startsWith("[") && normalized.endsWith("]"));
   if (jsonLike && /"(?:candidateId|constructIds|graphNodeIds|graphEdgeIds|featureVector|scoreTrace|proofVerdict|activeImportRunIds|databaseRecord)"\s*:/iu.test(text)) add("surface.telemetry.json_record");
   return hits;

@@ -19,6 +19,9 @@ export type ToolIntentKind =
 export type ApprovalMode = "not_required" | "explicit" | "temporary_operator_grant" | "blocked_by_policy";
 export type CapabilityPhase = "read" | "prepare" | "commit";
 
+const ACTION_PREPARE_COMMITMENT_THRESHOLD = 0.55;
+const PREPARED_ACTION_KINDS = new Set<ToolIntentKind>(["edit", "execute", "communicate", "schedule", "purchase", "publish"]);
+
 export interface ToolObjective {
   id: string;
   kind: ToolIntentKind;
@@ -106,8 +109,8 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
   const now = options.now ?? (() => Date.now());
 
   return {
-    analyze(input: { request: string; evidence?: EvidenceSpan[]; field?: FieldState }): ToolObjective[] {
-      return analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher);
+    analyze(input: { request: string; evidence?: EvidenceSpan[]; field?: FieldState; actionCommitment?: number }): ToolObjective[] {
+      return analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher, input.actionCommitment);
     },
 
     plan(input: {
@@ -117,13 +120,15 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
       policy: PolicyProfile;
       evidence?: EvidenceSpan[];
       field?: FieldState;
+      actionCommitment?: number;
       temporaryOperatorGrant?: { enabled: boolean; until?: number };
     }): ToolCognitionPlan {
       const t = now();
-      const objectives = analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher);
+      const actionCommitment = clamp01(input.actionCommitment ?? 0);
+      const objectives = analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher, actionCommitment);
       const operatorGrant = Boolean(input.temporaryOperatorGrant?.enabled && (!input.temporaryOperatorGrant.until || input.temporaryOperatorGrant.until > t));
       const scored = scoreCapabilities({ objectives, capabilities: input.capabilities, policy: input.policy, operatorGrant, now: t });
-      const selected = selectCapabilityScores(scored, input.policy);
+      const selected = selectCapabilityScores(scored, input.policy, objectives, actionCommitment);
       const capabilityPlans = materializePlans({ selected, objectives, episodeId: input.episodeId, request: input.request, policy: input.policy, operatorGrant, hasher, t });
       const approvals = buildApprovalControls(capabilityPlans, selected, operatorGrant, t);
       const residualNeeds = residualNeedsFor(objectives, selected, input.capabilities);
@@ -143,7 +148,7 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
           { id: `ledger_${hasher.digestHex(`selected:${selected.map(s => s.capabilityId).join("|")}`).slice(0, 18)}`, t, event: "capabilities_selected", payload: toJsonValue({ selected }) },
           { id: `ledger_${hasher.digestHex(`approval:${approvals.map(a => a.id).join("|")}`).slice(0, 18)}`, t, event: "approvals_prepared", payload: toJsonValue({ approvalIds: approvals.map(a => a.id), operatorGrant }) }
         ],
-        policyAudit: toJsonValue(policyAudit(input.policy, selected, capabilityPlans, approvals)),
+        policyAudit: toJsonValue(policyAudit(input.policy, selected, capabilityPlans, approvals, actionCommitment)),
         residualNeeds,
         session: {
           operatorGrant,
@@ -162,13 +167,13 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
   };
 }
 
-function analyzeObjectives(request: string, evidence: readonly EvidenceSpan[], field: FieldState | undefined, hasher: Hasher): ToolObjective[] {
+function analyzeObjectives(request: string, evidence: readonly EvidenceSpan[], field: FieldState | undefined, hasher: Hasher, actionCommitment = 0): ToolObjective[] {
   const features = featureSet(request, 512);
   const evidenceMass = evidence.length ? mean(evidence.map(span => clamp01(span.alpha))) : 0;
   const fieldMass = field ? mean([...field.ppf.map(item => item.mass), ...field.active.map(item => item.activation)].slice(0, 512)) : 0;
   const surfaces = field?.alphaTrace.surfaces;
   const riskSurface = surfaces ? clamp01(0.35 * surfaces.risk + 0.25 * surfaces.contradiction + 0.2 * surfaces.drift + 0.2 * (1 - surfaces.bond)) : 0.35;
-  const operations = operationPressures(request, features);
+  const operations = operationPressures(request, features, actionCommitment);
   const objectives: ToolObjective[] = [];
   const baseExpected = clamp01(0.25 + 0.45 * (1 - evidenceMass) + 0.2 * (1 - fieldMass) + 0.1 * riskSurface);
   const add = (kind: ToolIntentKind, pressure: number, label: string, patch: Partial<ToolObjective> = {}) => {
@@ -197,7 +202,7 @@ function analyzeObjectives(request: string, evidence: readonly EvidenceSpan[], f
   add("analyze", operations.analysis, "run bounded analysis over graph and source material", { mutationPressure: 0, networkPressure: 0 });
   add("generate", operations.generate, "prepare generated artifact content", { mutationPressure: 0.15 * operations.generate, codePressure: operations.code });
   add("edit", operations.edit, "prepare filesystem edits behind approval", { mutationPressure: operations.mutation, codePressure: operations.code });
-  add("execute", operations.execute, "execute a local command or verification step behind approval", { mutationPressure: Math.max(0.25, operations.mutation), codePressure: operations.code });
+  add("execute", operations.execute, "execute a local command or verification step behind approval", { mutationPressure: Math.max(0.25, operations.mutation, actionCommitment), codePressure: operations.code });
   add("communicate", operations.communication, "prepare outbound communication through a configured connector", { mutationPressure: operations.communication, communicationPressure: operations.communication, privacyPressure: Math.max(operations.privacy, 0.55) });
   add("schedule", operations.schedule, "prepare calendar or reminder action", { mutationPressure: operations.schedule, communicationPressure: 0.45 });
   add("purchase", operations.purchase, "prepare a spend-bearing transaction", { mutationPressure: operations.purchase, networkPressure: operations.network, privacyPressure: 0.8, expectedValue: baseExpected * 0.65 });
@@ -207,7 +212,7 @@ function analyzeObjectives(request: string, evidence: readonly EvidenceSpan[], f
   return mergeCompatibleObjectives(objectives).sort((a, b) => b.expectedValue - a.expectedValue || b.requiredEvidence - a.requiredEvidence);
 }
 
-function operationPressures(request: string, features: readonly string[]) {
+function operationPressures(request: string, features: readonly string[], actionCommitment = 0) {
   const featureText = features.join(" ");
   const hasUrl = /[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]+/iu.test(request);
   const hasEmailLike = /[\p{Letter}\p{Number}._%+-]+@[\p{Letter}\p{Number}.-]+\.[\p{Letter}]{2,}/u.test(request);
@@ -225,6 +230,11 @@ function operationPressures(request: string, features: readonly string[]) {
   const network = hasUrl ? 1 : 0.08;
   const mutation = hasPatchMarker ? 0.92 : hasPathLike && code ? 0.64 : 0.08;
   const communication = hasEmailLike || hasPhoneLike || hasCalendarLike ? 1 : 0.03;
+  const edit = hasPatchMarker ? 1 : 0.1;
+  const structuralExecute = hasCliFlag || hasPackageLike ? 0.7 : 0.08;
+  const schedule = hasCalendarLike ? 1 : 0.02;
+  const publish = hasUrl && hasPatchMarker ? 0.6 : 0.04;
+  const specializedAction = Math.max(edit, communication, schedule, publish);
   const privacy = hasSecretLike ? 1 : 0.18;
   const urgency = hasCalendarLike ? 0.55 : 0.35;
   return {
@@ -233,12 +243,14 @@ function operationPressures(request: string, features: readonly string[]) {
     extract: hasArchiveOrDocumentExt ? 1 : 0.18,
     analysis: hasArchiveOrDocumentExt || hasCodeFence || hasPathLike ? 0.72 : 0.48,
     generate: code > 0.5 || hasCliFlag ? 0.75 : 0.2,
-    edit: hasPatchMarker ? 1 : 0.1,
-    execute: hasCliFlag || hasPackageLike ? 0.7 : 0.08,
+    edit,
+    execute: specializedAction > 0.5
+      ? structuralExecute
+      : Math.max(structuralExecute, clamp01(actionCommitment)),
     communication,
-    schedule: hasCalendarLike ? 1 : 0.02,
+    schedule,
     purchase: 0,
-    publish: hasUrl && hasPatchMarker ? 0.6 : 0.04,
+    publish,
     repair: hasPatchMarker || code > 0.5 && hasPathLike ? 0.55 : 0.2,
     network,
     mutation,
@@ -301,9 +313,9 @@ function scoreCapabilities(input: { objectives: ToolObjective[]; capabilities: C
 }
 
 function phasesFor(objective: ToolObjective, capability: Capability, policy: PolicyProfile): CapabilityPhase[] {
-  const phases: CapabilityPhase[] = ["read"];
+  const phases: CapabilityPhase[] = objective.kind === "execute" ? ["prepare"] : ["read"];
   const needsPrepare = objective.mutationPressure > 0.1 || capability.mutates || objective.kind === "generate" || objective.kind === "repair";
-  if (needsPrepare) phases.push("prepare");
+  if (needsPrepare && !phases.includes("prepare")) phases.push("prepare");
   const canCommit = objective.mutationPressure > 0.3 || capability.mutates || objective.kind === "publish" || objective.kind === "communicate" || objective.kind === "purchase";
   if (canCommit && policy.allowMutation) phases.push("commit");
   return phases;
@@ -383,7 +395,21 @@ function scoreReasons(objective: ToolObjective, capability: Capability, phase: C
   return reasons;
 }
 
-function selectCapabilityScores(scores: CapabilityScore[], policy: PolicyProfile): CapabilityScore[] {
+function selectCapabilityScores(
+  scores: CapabilityScore[],
+  policy: PolicyProfile,
+  objectives: readonly ToolObjective[],
+  actionCommitment: number
+): CapabilityScore[] {
+  if (actionCommitment >= ACTION_PREPARE_COMMITMENT_THRESHOLD) {
+    const objectiveById = new Map(objectives.map(objective => [objective.id, objective]));
+    const preparedExecution = scores.find(score =>
+      score.phase === "prepare"
+      && score.approvalMode !== "blocked_by_policy"
+      && PREPARED_ACTION_KINDS.has(objectiveById.get(score.objectiveId)?.kind ?? "observe")
+    );
+    if (preparedExecution) return [preparedExecution];
+  }
   const selected: CapabilityScore[] = [];
   const covered = new Set<string>();
   const phaseCount = new Map<CapabilityPhase, number>();
@@ -544,8 +570,10 @@ function connectorHintForObjective(objective: ToolObjective, capabilities: Capab
   return undefined;
 }
 
-function policyAudit(policy: PolicyProfile, selected: CapabilityScore[], plans: CapabilityPlan[], approvals: ApprovalControl[]) {
+function policyAudit(policy: PolicyProfile, selected: CapabilityScore[], plans: CapabilityPlan[], approvals: ApprovalControl[], actionCommitment: number) {
   return {
+    actionCommitment,
+    actionPrepareCommitmentThreshold: ACTION_PREPARE_COMMITMENT_THRESHOLD,
     allowMutation: policy.allowMutation,
     requireTwoPhaseCommit: policy.requireTwoPhaseCommit,
     dryRunByDefault: policy.dryRunByDefault,

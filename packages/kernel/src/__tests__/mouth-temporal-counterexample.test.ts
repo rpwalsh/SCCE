@@ -108,7 +108,7 @@ describe("Mouth temporal counterexample realization", () => {
     expect(spoken.text).not.toContain("Martha Washington invent");
     expect(spoken.text).not.toMatch(/[¬\[\]]|rel\.|semantic\./u);
     expect(spoken.evidenceRefs).toEqual(expect.arrayContaining([counter.id, subject.id]));
-    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:semantic-answer-slots");
+    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:semantic-temporal-counterexample");
   });
 
   function temporalCounterexampleConstruct(counter: EvidenceSpan, subject: EvidenceSpan): ConstructGraph {

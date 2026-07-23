@@ -1,7 +1,7 @@
 {
   "name": "yopp-vscode",
-  "displayName": "Yopp",
-  "description": "Local VS Code surface for the Yopp cognitive runtime.",
+  "displayName": "SCCE",
+  "description": "Local VS Code surface for the SCCE cognitive runtime.",
   "version": "0.1.0",
   "private": true,
   "publisher": "yopp-local",
@@ -100,14 +100,14 @@
         "yopp.serverUrl": {
           "type": "string",
           "default": "http://127.0.0.1:3873",
-          "description": "Local Yopp server origin. Only localhost, 127.0.0.0/8, and ::1 are accepted."
+          "description": "Local SCCE server origin. Only localhost, 127.0.0.0/8, and ::1 are accepted."
         },
         "yopp.requestTimeoutMs": {
           "type": "number",
           "default": 120000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Maximum duration for one Yopp HTTP request."
+          "description": "Maximum duration for one SCCE HTTP request."
         }
       }
     },

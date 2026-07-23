@@ -150,3 +150,4 @@ export * from "./support-assessment.js";
 export * from "./relation-potential.js";
 export * from "./patch-transaction.js";
 export * from "./workspace-plan-generator.js";
+export * from "./runtime-workspace-plan-context.js";

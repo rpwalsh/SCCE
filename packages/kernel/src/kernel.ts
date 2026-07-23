@@ -157,8 +157,48 @@ import {
   type RevisionAnswerVersion,
   type RevisionValidationResults
 } from "./answer-revision.js";
+import { runtimeWorkspacePlanContext } from "./runtime-workspace-plan-context.js";
 
-type RuntimeGraphSliceValue = { graph: GraphSlice; evidence: EvidenceSpan[] };
+type RuntimeGraphSliceValue = {
+  graph: GraphSlice;
+  evidence: EvidenceSpan[];
+  semanticFrameBoundEvidenceIds?: string[];
+};
+
+type SourceAnchoredEvidenceSelection = {
+  evidence: EvidenceSpan[];
+  semanticFrameBoundEvidenceIds: string[];
+};
+
+const SESSION_QUESTION_TERMINAL_CODE_POINTS = new Set([
+  0x003f,
+  0x037e,
+  0x055e,
+  0x061f,
+  0x1367,
+  0x1945,
+  0x2047,
+  0x2048,
+  0x2049,
+  0x2cfa,
+  0x2cfb,
+  0x2e2e,
+  0xa60f,
+  0xa6f7,
+  0xfe56,
+  0xff1f,
+  0x11143,
+  0x1144b,
+  0x115f0
+]);
+
+const SESSION_EXCLAMATION_TERMINAL_CODE_POINTS = new Set([
+  0x0021,
+  0x055c,
+  0x203c,
+  0xfe57,
+  0xff01
+]);
 
 const LOCAL_ANSWER_KIND_IDS = {
   evidenceBoundary: "ans.kind.6f2a4b81",
@@ -566,6 +606,16 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       ?? selectDominantLanguageProfileCluster(clusters);
   }
 
+  async function requestSemanticFrames(surface: string): Promise<SemanticFrameRecord[]> {
+    const normalizedSurface = normalizePriorKey(surface);
+    if (!normalizedSurface) return [];
+    const frames = await deps.storage.languageMemory.listSemanticFrames({ surface, limit: 128 }).catch(() => []);
+    return uniqueRecordsById(frames.filter(frame => {
+      const frameSurface = kernelString(jsonRecord(frame.frameJson).surface);
+      return frameSurface ? normalizePriorKey(frameSurface) === normalizedSurface : false;
+    }), 128);
+  }
+
   async function correctionRulesCached() {
     const now = clock.now();
     if (correctionRuleCache && now - correctionRuleCache.loadedAt < 30_000) return correctionRuleCache.value;
@@ -777,11 +827,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         const hotSlice = hotAnchoredEvidence.length
           ? graphSliceFromHotEvidence(residentHot, hotAnchoredEvidence, features, topicTerms)
           : undefined;
-        if (hotSlice && hotAnchoredEvidence.length >= 4 && !temporalCounterexampleExpected(text, hotAnchoredEvidence)) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
+        if (hotSlice && !temporalCounterexampleExpected(text, hotAnchoredEvidence)) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
       }
-      const anchoredEvidence = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
+      const anchoredEvidence = anchoredSelection.evidence;
       if (!anchoredEvidence.length) {
-        return cacheGraphSlice(cacheKey, { graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [], features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 } }, evidence: [] }, "postgres");
+        return cacheGraphSlice(cacheKey, { graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [], features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 } }, evidence: [], semanticFrameBoundEvidenceIds: [] }, "postgres");
       }
       const graph = await deps.storage.graph.getSlice({
         evidenceIds: anchoredEvidence.map(span => span.id),
@@ -804,7 +855,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           ...graph,
           query: { evidenceIds: anchoredEvidence.map(span => span.id), features: [...features], topicTerms, radius: 2, limitNodes: sourceAnchorHotNodeLimit, limitEdges: sourceAnchorHotEdgeLimit }
         },
-        evidence: mergeEvidenceSpans([...anchoredEvidence, ...anchoredGraphEvidence])
+        evidence: mergeEvidenceSpans([...anchoredEvidence, ...anchoredGraphEvidence]),
+        semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
       };
       return cacheGraphSlice(cacheKey, value, "postgres");
     }
@@ -865,9 +917,15 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   async function evidenceOnlyForText(text: string, allowSemanticFrameEvidence = true): Promise<RuntimeGraphSliceValue> {
     const features = graphRetrievalFeatures(text);
     const topicTerms = graphTopicTermsForText(text);
-    const evidence = requestNeedsSourceAnchoredEvidence(text)
-      ? await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence)
-      : (await deps.storage.evidence.searchEvidence({ features, limit: 40 })).map(item => item.span);
+    if (requestNeedsSourceAnchoredEvidence(text)) {
+      const selection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
+      return emptyRuntimeGraphSlice(
+        { evidenceIds: selection.evidence.map(span => span.id), features, topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 },
+        selection.evidence,
+        selection.semanticFrameBoundEvidenceIds
+      );
+    }
+    const evidence = (await deps.storage.evidence.searchEvidence({ features, limit: 40 })).map(item => item.span);
     return emptyRuntimeGraphSlice({ evidenceIds: evidence.map(span => span.id), features, topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 }, evidence);
   }
 
@@ -877,10 +935,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return emptyRuntimeGraphSlice({ evidenceIds: bounded, radius: 0, limitNodes: 0, limitEdges: 0 }, evidence);
   }
 
-  function emptyRuntimeGraphSlice(query: GraphSlice["query"], evidence: readonly EvidenceSpan[]): RuntimeGraphSliceValue {
+  function emptyRuntimeGraphSlice(query: GraphSlice["query"], evidence: readonly EvidenceSpan[], semanticFrameBoundEvidenceIds: readonly string[] = []): RuntimeGraphSliceValue {
     return {
       graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query },
-      evidence: [...evidence]
+      evidence: [...evidence],
+      semanticFrameBoundEvidenceIds: [...semanticFrameBoundEvidenceIds]
     };
   }
 
@@ -889,28 +948,38 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return hotNeighborhoodLoad;
   }
 
-  async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<EvidenceSpan[]> {
+  async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
     const anchorFeatures = sourceAnchorRetrievalFeatures(text);
     const retrievalFeatures = uniqueKernelStrings([...features, ...anchorFeatures]).slice(0, 256);
     const [evidenceResults, semanticFrameEvidence] = await Promise.all([
       deps.storage.evidence.searchEvidence({ features: retrievalFeatures, limit: anchorFeatures.length ? 96 : 48 }),
-      allowSemanticFrameEvidence ? sourceAnchorSemanticFrameEvidence(text) : Promise.resolve([])
+      allowSemanticFrameEvidence ? sourceAnchorSemanticFrameEvidence(text) : Promise.resolve({ evidence: [], semanticFrameBoundEvidenceIds: [] })
     ]);
-    const promoted = mergeEvidenceSpans(evidenceResults.map(item => item.span).concat(semanticFrameEvidence))
+    const promoted = mergeEvidenceSpans(evidenceResults.map(item => item.span).concat(semanticFrameEvidence.evidence))
       .filter(span => span.status === "promoted" || promotedSessionEvidence(span));
-    const anchored = sourceAnchoredEvidenceForRequest(text, promoted);
-    return (anchored.evidence.length ? anchored.evidence : []).slice(0, 24);
+    const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
+    const anchored = sourceAnchoredEvidenceForRequest(text, promoted, semanticFrameBoundEvidenceIds);
+    const evidence = (anchored.evidence.length ? anchored.evidence : []).slice(0, 24);
+    const admittedIds = new Set(evidence.map(span => String(span.id)));
+    return {
+      evidence,
+      semanticFrameBoundEvidenceIds: semanticFrameEvidence.semanticFrameBoundEvidenceIds.filter(id => admittedIds.has(id))
+    };
   }
 
-  async function sourceAnchorSemanticFrameEvidence(text: string): Promise<EvidenceSpan[]> {
+  async function sourceAnchorSemanticFrameEvidence(text: string): Promise<SourceAnchoredEvidenceSelection> {
     const anchors = sourceEvidenceAnchorsForRequest(text);
-    if (!anchors.length) return [];
-    const frames = await deps.storage.languageMemory.listSemanticFrames({ sourceSystem: "wikipedia", limit: 2048 }).catch(() => []);
-    const evidenceIds = uniqueKernelStrings(frames
+    if (!anchors.length) return { evidence: [], semanticFrameBoundEvidenceIds: [] };
+    const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 }).catch(() => []);
+    const semanticFrameBoundEvidenceIds = uniqueKernelStrings(frames
       .filter(frame => semanticFrameMatchesSourceAnchor(frame, anchors))
       .flatMap(frame => frame.evidenceIds.map(String)))
-      .slice(0, 64) as EvidenceSpan["id"][];
-    return evidenceIds.length ? deps.storage.evidence.getEvidenceBatch(evidenceIds) : [];
+      .slice(0, 64);
+    const evidenceIds = semanticFrameBoundEvidenceIds as EvidenceSpan["id"][];
+    return {
+      evidence: evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [],
+      semanticFrameBoundEvidenceIds
+    };
   }
 
   function semanticFrameMatchesSourceAnchor(frame: SemanticFrameRecord, anchors: readonly string[]): boolean {
@@ -1308,6 +1377,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         if (!text) return undefined;
         const roleId = kernelString(record.roleId) || "session.role.unknown";
         const ownerTurn = roleId === "session.role.owner";
+        const ownerObservation = ownerTurn && sessionOwnerObservationSurface(text, record);
         const turnId = kernelString(record.id) || `${sessionId}:${index}`;
         const discourseBoundTurn = discourseObject?.mentionIds.includes(turnId) === true;
         const discourseFeature = discourseBoundTurn ? `disc:${discourseObject.objectId.replace(/^.*_([0-9a-f]+)$/u, "$1")}` : undefined;
@@ -1329,11 +1399,19 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           textPreview: text.replace(/\s+/g, " ").slice(0, 700),
           languageHints: {},
           scriptHints: {},
-          trustVector: toJsonValue({ trust: ownerTurn ? 0.96 : 0.62, sourceTrust: ownerTurn ? 0.96 : 0.62, forceClass: ownerTurn ? "session_owner_turn_evidence" : "session_assistant_turn_context" }),
+          trustVector: toJsonValue({
+            trust: ownerObservation ? 0.96 : ownerTurn ? 0.52 : 0.62,
+            sourceTrust: ownerObservation ? 0.96 : ownerTurn ? 0.52 : 0.62,
+            forceClass: ownerObservation
+              ? "session_owner_turn_evidence"
+              : ownerTurn
+                ? "session_owner_query_context"
+                : "session_assistant_turn_context"
+          }),
           provenance: toJsonValue({ sourceSystem: "conversation-session", sessionId, turnId, roleId, episodeId, createdAt, discourseObjectId: discourseBoundTurn ? discourseObject?.objectId : null }),
           features: [...new Set([...featureSet(text, 512), `session:${sessionHash}`, `role:${roleId}`, ...(discourseFeature ? [discourseFeature] : [])])].slice(0, 560),
-          status: ownerTurn ? "promoted" : "quarantined",
-          alpha: ownerTurn ? 0.88 : 0.48,
+          status: ownerObservation ? "promoted" : "quarantined",
+          alpha: ownerObservation ? 0.88 : ownerTurn ? 0.36 : 0.48,
           observedAt: createdAt
         };
       })
@@ -1343,7 +1421,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   function currentOwnerSessionEvidence(input: OwnerInput): EvidenceSpan[] {
     const session = jsonRecord(jsonRecord(input.metadata).session);
     const sessionId = kernelString(session.sessionId);
-    if (!sessionId || !sessionObservationSurface(input.text)) return [];
+    if (!sessionId || !sessionOwnerObservationSurface(input.text, input.metadata)) return [];
     return sessionEvidenceRecords({
       sessionId,
       turns: [{
@@ -1390,12 +1468,6 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         };
       })
       .filter((span): span is EvidenceSpan => Boolean(span));
-  }
-
-  function sessionObservationSurface(text: string): boolean {
-    const clean = text.trim();
-    if (!clean || /[\u003f\u0021\uFF1F\uFF01]$/u.test(clean)) return false;
-    return /\p{Terminal_Punctuation}$/u.test(clean);
   }
 
   function mergeEvidenceSpans(spans: EvidenceSpan[]): EvidenceSpan[] {
@@ -1642,7 +1714,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
 
       if (input.language ?? true) {
-        tasks.push(hydrateSurfaceLanguageMemoryCached(languageLimit)
+        tasks.push(surfaceLanguageClusterCached("")
+          .then(cluster => hydrateSurfaceLanguageMemoryCached(
+            languageLimit,
+            cluster,
+            cluster ? "warmup-dominant-language-cluster" : "warmup-no-owned-language-cluster"
+          ))
           .then(language => {
             result.language = {
               loaded: true,
@@ -1825,6 +1902,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
 
         const languageMemory = typedProjection.languageText.trim() ? languageMemoryRuntime.observe({
           streamId: file.uri,
+          sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem),
           profile,
           sourceVersionId,
           text: typedProjection.languageText,
@@ -1985,12 +2063,31 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         ? undefined
         : await surfaceLanguageClusterCached(input.text);
       const selectedSurfaceProfile = selectedSurfaceCluster?.members[0];
-      const authorityLanguage = await evaluationComponent(
+      const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
         () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal"),
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
+      const exactRequestFrames = deps.evaluationCondition?.flags.disableLanguageMemory
+        ? []
+        : await requestSemanticFrames(input.text);
+      const authorityLanguage = exactRequestFrames.length
+        ? {
+          ...baseAuthorityLanguage,
+          semanticFrames: uniqueRecordsById([...exactRequestFrames, ...baseAuthorityLanguage.semanticFrames], 128),
+          state: {
+            ...baseAuthorityLanguage.state,
+            importedSemanticFrames: uniqueRecordsById([...exactRequestFrames, ...baseAuthorityLanguage.state.importedSemanticFrames], 128),
+            importedLanguagePriorCount: baseAuthorityLanguage.state.importedLanguagePriorCount + exactRequestFrames.filter(frame => !baseAuthorityLanguage.state.importedSemanticFrames.some(existing => existing.id === frame.id)).length,
+            audit: toJsonValue({
+              ...jsonRecord(baseAuthorityLanguage.state.audit),
+              requestExactSemanticFrameIds: exactRequestFrames.map(frame => frame.id),
+              requestExactSemanticFrameMatch: true
+            })
+          }
+        }
+        : baseAuthorityLanguage;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
       const authorityDialogueState = updateDialogueState({
         requestText: input.text,
@@ -2001,9 +2098,13 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const runtimeDiagnosticRequested = explicitRuntimeDiagnosticRequest(input.metadata);
       const inheritedRuntimeMotion = runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
+      const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
       const requirementField = deriveTurnRequirementField({
         requestText: input.text,
-        explicitRequirements: explicitTurnRequirementsFromInput(input, explicitAuthority),
+        explicitRequirements: [
+          ...explicitTurnRequirementsFromInput(input, explicitAuthority),
+          ...workspacePlanContext.explicitRequirements
+        ],
         dialogueState: authorityDialogueState,
         languageMemoryState: authorityLanguage.state,
         contextContribution: requirementContextFromMetadata(input.metadata)
@@ -2034,6 +2135,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         coefficientHash: hasher.digestHex(JSON.stringify(operatorActivations.map(row => jsonRecord(row.trace).coefficientModel ?? null)))
       }) })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "RequestedAuthorityProjected", payload: requestedAuthorityDecision })));
+      if (workspacePlanContext.plans.length) {
+        events.push(await append(eventFactory.create({ episodeId, typeId: "WorkspacePlansBound", payload: workspacePlanContext.audit })));
+      }
       const detectedCorrections = correctionMemory.fromMetadata({ episodeId, metadata: input.metadata, ownerFeedbackEventId: ownerAsked.id, now: clock.now() });
       for (const rule of detectedCorrections) {
         await deps.storage.corrections.putRule(rule);
@@ -2112,7 +2216,13 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         ...metadataEvidence.map(span => String(span.id)),
         ...(discourseObject?.evidenceIds ?? [])
       ]);
-      const discourseEvidenceBound = sessionContextEvidenceEnabled(input.metadata) && metadataEvidenceIds.size > 0;
+      const sessionContextEvidence = sessionContextEvidenceEnabled(input.metadata);
+      const explicitContextEvidenceIds = new Set(sessionContextEvidence
+        ? discourseObject?.evidenceIds.length
+          ? discourseObject.evidenceIds
+          : runtimeEvidenceIdsFromMetadata(input.metadata)
+        : []);
+      const discourseEvidenceBound = explicitContextEvidenceIds.size > 0;
       const allowSemanticFrameEvidence = deps.evaluationCondition?.flags.disableLanguageMemory !== true
         && deps.evaluationCondition?.flags.disableLearnedSemantics !== true;
       const graphSlice = await evaluationComponent(
@@ -2126,15 +2236,21 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         ),
         () => discourseEvidenceBound ? evidenceOnlyForIds([...metadataEvidenceIds]) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence)
       );
+      const semanticFrameBoundEvidenceIds = new Set(graphSlice.semanticFrameBoundEvidenceIds ?? []);
       let graph = graphSlice.graph;
       const evidencePool = discourseEvidenceBound
         ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))])
         : mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]);
-      const evidence = evidenceWithGraphPreviewWindows(input.text, evidencePool, graph.nodes, metadataEvidenceIds);
+      const evidence = evidenceWithGraphPreviewWindows(
+        input.text,
+        evidencePool,
+        graph.nodes,
+        new Set([...metadataEvidenceIds, ...semanticFrameBoundEvidenceIds])
+      );
       const calibrationModels = await calibrationModelsCached();
       const sourceAnchorAudit = discourseEvidenceBound
         ? { required: false, anchors: [] as string[], evidence }
-        : sourceAnchoredEvidenceForRequest(input.text, evidence);
+        : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
       const admissibleEvidence = sourceAnchorAudit.required ? sourceAnchorAudit.evidence : evidence;
       if (sourceAnchorAudit.required) graph = graphFilteredToEvidence(graph, sourceAnchorAudit.evidence);
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
@@ -2220,9 +2336,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         support: discourseObjectTrace ? { discourseObject: discourseObjectTrace, queryConcatenationUsed: false } : { queryConcatenationUsed: false }
       });
       markTiming("graphSliceMs");
-      const preProofSourceEvidence = evidenceForRequest(input.text, admissibleEvidence, metadataEvidenceIds);
+      const preProofSourceEvidence = evidenceForRequest(input.text, admissibleEvidence, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
       const preProofSelectedEvidence = runtimeEvidenceWindowsForRequest(input.text, preProofSourceEvidence);
-      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds).slice(0, turnProofEvidenceLimit));
+      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit));
       const supportBundle = evaluationComponent(
         "support-engine",
         "proof.support-engine",
@@ -2290,7 +2406,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const evidenceSelectionPool = proofSelectedEvidence.length
         ? mergeEvidenceSpans([...proofSelectedEvidence, ...metadataSelectedEvidence])
         : promoted;
-      let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds));
+      let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds));
       const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence]);
       const selectedTemporalFallback = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
       const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalFallback)
@@ -2307,7 +2423,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         entailment: entailmentResult,
         semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
         translationTarget,
-        sessionContextEvidence: sessionContextEvidenceEnabled(input.metadata)
+        sessionContextEvidence,
+        explicitContextEvidenceIds,
+        semanticFrameBoundEvidenceIds
       });
       const preProofPoolLocalEvidenceAnswer = preProofSelectedEvidence.length ? localEvidenceAnswerSurface({
         requestText: input.text,
@@ -2316,7 +2434,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         entailment: entailmentResult,
         semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
         translationTarget,
-        sessionContextEvidence: sessionContextEvidenceEnabled(input.metadata)
+        sessionContextEvidence,
+        explicitContextEvidenceIds,
+        semanticFrameBoundEvidenceIds
       }) : undefined;
       // A later evidence-surface shortcut must not reattach proof support after
       // the support engine has been explicitly bypassed.
@@ -2400,6 +2520,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           policy,
           evidence: selectedEvidence,
           field,
+          actionCommitment: requirementField.actionCommitment,
           temporaryOperatorGrant: { enabled: candidateApprovalPolicyPatch.dryRunByDefault === false }
         }).capabilityPlans
         : [];
@@ -2455,7 +2576,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           },
           operatorActivations,
           samplingDisabled: true,
-          maxCandidates: 4
+          maxCandidates: 1
         }).filter(invention => runtimeTerminalInventionIsAdmissible({
           invention,
           requestText: input.text,
@@ -2504,6 +2625,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         counterfactualWorlds: [counterfactualWorld],
         translationPlans: productionTranslationPlan ? [productionTranslationPlan] : [],
         programGraphs: candidateConstructSeed.program ? [candidateConstructSeed.program] : [],
+        workspacePlans: workspacePlanContext.plans,
         actionPlans: cognitiveActionPlans,
         maxProposals: 8
       });
@@ -2530,13 +2652,16 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         operatorActivations,
         cognitiveProposals,
         dialogueState: toJsonValue(authorityDialogueState),
-        workspacePlans: candidateConstructSeed.artifacts.map(artifact => toJsonValue({
-          schema: "scce.workspace.proposed_artifact.v1",
-          path: artifact.path,
-          contentHash: artifact.contentHash,
-          mediaType: artifact.mediaType,
-          role: artifact.role
-        })),
+        workspacePlans: [
+          ...workspacePlanContext.plans.map(plan => toJsonValue(plan)),
+          ...candidateConstructSeed.artifacts.map(artifact => toJsonValue({
+            schema: "scce.workspace.proposed_artifact.v1",
+            path: artifact.path,
+            contentHash: artifact.contentHash,
+            mediaType: artifact.mediaType,
+            role: artifact.role
+          }))
+        ],
         actionPlans: candidateActionPlans.map(plan => toJsonValue(plan)),
         entailment: answerEntailmentSeed,
         evidence: selectedEvidence,
@@ -2553,8 +2678,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const candidateMotionTrigger = requestedAuthority === "creative" || runtimeDiagnosticRequested
         ? undefined
         : runtimeCandidateReplanTrigger(authorityCandidateField, requestedAuthority, selectedEvidence);
-      const inheritedMotionNeedsSurface = Boolean(inheritedRuntimeMotion && inheritedRuntimeMotion.status !== "hydrated");
-      if (candidateMotionTrigger || inheritedMotionNeedsSurface) {
+      // A completed acquisition attempt is context for this replan, not an
+      // instruction to discard a candidate that the replan can now realize.
+      // Only the current field decides whether a terminal motion surface is
+      // still required.
+      if (candidateMotionTrigger) {
         const trigger = candidateMotionTrigger ?? inheritedRuntimeMotion?.trigger ?? "coherence_support_failure";
         if (!inheritedRuntimeMotion) {
           const motion = await learnHydrateReplan({
@@ -2687,6 +2815,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           policy,
           evidence: selectedEvidence,
           field,
+          actionCommitment: requirementField.actionCommitment,
           temporaryOperatorGrant: { enabled: approvalPolicyPatch.dryRunByDefault === false }
         })
         : {
@@ -2769,10 +2898,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           hasher
         });
       const proposalConstructGraph = attachCognitiveProposal({ construct: priorConstructGraph, proposal: selectedProposal });
-      const orderedInventions = selectedInvention
-        ? [selectedInvention, ...inventionCandidates.filter(invention => invention.id !== selectedInvention.id)]
-        : inventionCandidates;
-      const inventionConstructGraph = orderedInventions.reduce(
+      const selectedInventions = selectedInvention ? [selectedInvention] : [];
+      const inventionConstructGraph = selectedInventions.reduce(
         (current, invention) => attachInventionConstruct({ construct: current, invention }),
         proposalConstructGraph
       );
@@ -2822,7 +2949,20 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         prohibitedOutputFeatures: requirementField.prohibitedFeatures,
         calibrationModels,
         calibrationTaskClass,
-        requestedAuthority
+        requestedAuthority,
+        semanticInput: judged.selected.kind === "action-preview" && judged.selected.answer.trim()
+          ? {
+            schema: "scce.mouth.semantic_input.v1" as const,
+            authority: requestedAuthority,
+            slots: [{
+              id: `mouth.slot.action.preview.${judged.selected.id}`,
+              roleId: "mouth.role.action.preview",
+              value: judged.selected.answer,
+              evidenceIds: judged.selected.evidenceIds,
+              sourceId: judged.selected.proposalId
+            }]
+          }
+          : undefined
       };
       let spoken = await evaluationComponent(
         "learned-mouth",
@@ -4372,7 +4512,13 @@ function evidenceBatchFromSlice(evidence: readonly EvidenceSpan[], evidenceIds: 
   return selected.filter((span): span is EvidenceSpan => Boolean(span));
 }
 
-function evidenceForRequest(text: string, evidence: readonly EvidenceSpan[], priorityIds: ReadonlySet<string> = new Set()): EvidenceSpan[] {
+function evidenceForRequest(
+  text: string,
+  evidence: readonly EvidenceSpan[],
+  priorityIds: ReadonlySet<string> = new Set(),
+  explicitContextEvidenceIds: ReadonlySet<string> = new Set(),
+  semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set()
+): EvidenceSpan[] {
   const requestFeatures = featureSet(text, 256);
   const anchors = sourceEvidenceAnchorsForRequest(text);
   const orderedRequestUnits = requestUnitsFromText(text);
@@ -4390,27 +4536,30 @@ function evidenceForRequest(text: string, evidence: readonly EvidenceSpan[], pri
         evidenceTitleDistinctAnchorMatches(span, anchors) ||
         evidenceSourceMatchesAnchors(span, anchors)
       );
+      const explicitContextAligned = explicitContextEvidenceIds.has(String(span.id));
+      const semanticFrameBoundAligned = semanticFrameBoundEvidenceIds.has(String(span.id));
       const priorityAligned = priorityIds.has(String(span.id)) && (
+        explicitContextAligned ||
         !anchors.length ||
         evidenceExactSourceAnchorMatches(span, anchors) ||
         evidenceTitleDistinctAnchorMatches(span, anchors) ||
         evidenceRequestAdjacentUnitPairOverlap(span, orderedRequestUnits) >= 2
       );
-      const priorityBoost = priorityAligned ? 0.36 : anchorAligned ? 0.22 : 0;
-      const alphaBoost = lexical >= 0.025 || priorityAligned || anchorAligned ? span.alpha * 0.18 : 0;
+      const priorityBoost = explicitContextAligned ? 0.48 : (semanticFrameBoundAligned || priorityAligned) ? 0.36 : anchorAligned ? 0.22 : 0;
+      const alphaBoost = lexical >= 0.025 || semanticFrameBoundAligned || priorityAligned || anchorAligned ? span.alpha * 0.18 : 0;
       const sessionBoost = sessionSpan && (lexical >= 0.045 || priorityAligned) ? 0.08 : 0;
-      return { span, score: lexical + alphaBoost + sessionBoost + priorityBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, anchorAligned, sessionSpan, contentOverlap };
+      return { span, score: lexical + alphaBoost + sessionBoost + priorityBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, sessionSpan, contentOverlap };
     })
     .filter(row => {
-      if (row.priorityAligned || row.anchorAligned) return true;
+      if (row.explicitContextAligned || row.semanticFrameBoundAligned || row.priorityAligned || row.anchorAligned) return true;
       if (!contentUnits.length || row.contentOverlap <= 0) return false;
       return row.lexical >= (row.sessionSpan ? 0.045 : 0.025);
     })
     .sort((a, b) => b.score - a.score || b.span.alpha - a.span.alpha || String(a.span.id).localeCompare(String(b.span.id)));
-  const pinned = rows.filter(row =>
+  const pinned = rows.filter(row => row.explicitContextAligned || row.semanticFrameBoundAligned || (
     priorityIds.has(String(row.span.id)) &&
     (evidenceExactSourceAnchorMatches(row.span, anchors) || evidenceTitleDistinctAnchorMatches(row.span, anchors))
-  );
+  ));
   return uniqueEvidenceById([...pinned.map(row => row.span), ...rows.map(row => row.span)]).slice(0, 16);
 }
 
@@ -4502,6 +4651,63 @@ function runtimeEvidenceWindowsForRequest(text: string, evidence: readonly Evide
   });
 }
 
+/** @internal Focused session-evidence invariant; not re-exported by the package entrypoint. */
+export function sessionOwnerObservationSurface(text: string, typedState?: JsonValue): boolean {
+  const typed = typedSessionOwnerObservation(typedState);
+  if (typed !== undefined) return typed;
+  const clean = text.trim();
+  if (!clean || endsWithUnicodeQuestionMark(clean)) return false;
+  return /\p{Terminal_Punctuation}$/u.test(clean);
+}
+
+function typedSessionOwnerObservation(value: JsonValue | undefined): boolean | undefined {
+  const record = jsonRecord(value);
+  const metadata = jsonRecord(record.metadata);
+  const ownerMetadata = jsonRecord(metadata.metadata);
+  const dialogueRows = [
+    jsonRecord(record.dialogue),
+    jsonRecord(metadata.dialogue),
+    jsonRecord(ownerMetadata.dialogue)
+  ];
+  const turnActs = [
+    jsonRecord(record.dialogueAct),
+    jsonRecord(record.turnAct),
+    ...dialogueRows.map(row => jsonRecord(row.turnAct))
+  ];
+  for (const act of turnActs) {
+    if (act.schema !== "scce.dialogue.turn_act.v1") continue;
+    const questionMass = kernelNumber(act.questionMass) ?? 0;
+    const assertionMass = kernelNumber(act.assertionMass) ?? 0;
+    if (questionMass >= 0.5 && questionMass > assertionMass) return false;
+    if (assertionMass >= 0.5 && assertionMass > questionMass) return true;
+  }
+  const questionActs = [
+    jsonRecord(record.questionAct),
+    jsonRecord(metadata.questionAct),
+    jsonRecord(ownerMetadata.questionAct),
+    ...dialogueRows.map(row => jsonRecord(row.questionAct))
+  ];
+  for (const act of questionActs) {
+    if (act.schema !== "scce.dialogue.question_act.v1") continue;
+    if (act.active === true || kernelStringArray(act.requestedSlotIds).length > 0) return false;
+  }
+  return undefined;
+}
+
+function endsWithUnicodeQuestionMark(text: string): boolean {
+  const symbols = [...text.trim()];
+  for (let index = symbols.length - 1; index >= 0; index--) {
+    const symbol = symbols[index] ?? "";
+    if (!symbol) continue;
+    const codePoint = symbol.codePointAt(0);
+    if (codePoint !== undefined && SESSION_QUESTION_TERMINAL_CODE_POINTS.has(codePoint)) return true;
+    if (codePoint !== undefined && SESSION_EXCLAMATION_TERMINAL_CODE_POINTS.has(codePoint)) continue;
+    if (/^[\p{Pe}\p{Pf}\p{Cf}]$/u.test(symbol)) continue;
+    return false;
+  }
+  return false;
+}
+
 function sessionContextEvidenceEnabled(metadata: JsonValue | undefined): boolean {
   const record = jsonRecord(metadata);
   const runtime = jsonRecord(record.runtime);
@@ -4516,6 +4722,8 @@ function localEvidenceAnswerSurface(input: {
   semanticProof: { verdict: string; contradiction: number };
   translationTarget?: string;
   sessionContextEvidence?: boolean;
+  explicitContextEvidenceIds?: ReadonlySet<string>;
+  semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   if (input.translationTarget) return undefined;
   const plan = localEvidenceAnswerPlan(input);
@@ -4542,6 +4750,8 @@ function localEvidenceAnswerPlan(input: {
   entailment: TurnResult["entailment"];
   semanticProof: { verdict: string; contradiction: number };
   sessionContextEvidence?: boolean;
+  explicitContextEvidenceIds?: ReadonlySet<string>;
+  semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
@@ -4552,10 +4762,16 @@ function localEvidenceAnswerPlan(input: {
   if (temporalCounterexampleExpected(input.requestText, temporalEvidence)) return undefined;
   const collection = collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
   if (collection) return collection;
-  const anchored = sourceAnchoredEvidenceForRequest(input.requestText, evidence);
-  const sessionBound = evidence.some(promotedSessionEvidence) || input.sessionContextEvidence === true;
-  if (anchored.required && !anchored.evidence.length && !sessionBound) return undefined;
-  const answerEvidence = anchored.evidence.length ? anchored.evidence : sourceCoherentUnanchoredEvidence(input.requestText, evidence);
+  const anchored = sourceAnchoredEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds);
+  const explicitContextEvidence = input.explicitContextEvidenceIds?.size
+    ? evidence.filter(span => input.explicitContextEvidenceIds?.has(String(span.id)))
+    : [];
+  if (anchored.required && !anchored.evidence.length && !explicitContextEvidence.length) return undefined;
+  const answerEvidence = anchored.evidence.length
+    ? anchored.evidence
+    : explicitContextEvidence.length
+      ? explicitContextEvidence
+      : sourceCoherentUnanchoredEvidence(input.requestText, evidence);
   if (!answerEvidence.length) return undefined;
   const contradiction = Math.max(input.entailment.contradiction, input.semanticProof.contradiction);
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !anchored.evidence.length)) return undefined;
@@ -4563,7 +4779,8 @@ function localEvidenceAnswerPlan(input: {
   if (!sentences.length) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = input.entailment.evidenceIds.length > 0;
-  const answerSessionBound = answerEvidence.some(promotedSessionEvidence) || input.sessionContextEvidence === true;
+  const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
+  const explicitContextBound = answerEvidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
   if (!evidenceBound && !answerSessionBound && relevance < 0.035) return undefined;
   return {
     planId: "ans.plan.31a6c2f8",
@@ -4584,6 +4801,7 @@ function localEvidenceAnswerPlan(input: {
       sourceAnchors: anchored.anchors,
       evidenceBound,
       sessionBound: answerSessionBound,
+      explicitContextBound,
       relevance,
       contradiction,
       entailmentForce: input.entailment.force,
@@ -5367,7 +5585,11 @@ function sentenceContaining(text: string, needle: string): string {
   return fastAnswerSentences(text).find(sentence => sentence.toLocaleLowerCase().includes(lowerNeedle)) ?? "";
 }
 
-function sourceAnchoredEvidenceForRequest(requestText: string, evidence: readonly EvidenceSpan[]): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
+function sourceAnchoredEvidenceForRequest(
+  requestText: string,
+  evidence: readonly EvidenceSpan[],
+  semanticFrameBoundEvidenceIds?: ReadonlySet<string>
+): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   if (!anchors.length) return { required: false, anchors, evidence: [...evidence] };
   const durableEvidencePresent = evidence.some(span => !String(span.id).startsWith("evidence_session_"));
@@ -5380,15 +5602,18 @@ function sourceAnchoredEvidenceForRequest(requestText: string, evidence: readonl
   const primaryEvidence = primaryAnchor
     ? primaryEvidenceForSourceAnchor(primaryAnchor, requestText, evidence)
     : [];
-  if (primaryAnchor && !primaryEvidence.length) return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: [] };
+  const semanticFrameBoundEvidence = semanticFrameBoundEvidenceIds?.size
+    ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
+    : [];
+  if (primaryAnchor && !primaryEvidence.length && !semanticFrameBoundEvidence.length) return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: [] };
   const primaryExact = primaryAnchor
     ? evidence.filter(span => evidenceExactSourceAnchorMatches(span, [primaryAnchor]) && evidenceAnchorFitForRequest(span, requestText))
     : [];
   if (primaryAnchor && primaryExact.length && requestContentEvidenceUnits(requestText).length <= 3) {
-    return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: uniqueEvidenceById(primaryExact) };
+    return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: uniqueEvidenceById([...primaryExact, ...semanticFrameBoundEvidence]) };
   }
   if (primaryAnchor && primaryAnchorUnits.length === 1 && primaryEvidence.length) {
-    return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: uniqueEvidenceById(primaryEvidence) };
+    return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: uniqueEvidenceById([...primaryEvidence, ...semanticFrameBoundEvidence]) };
   }
   const exact = evidence.filter(span => (
     (evidenceExactSourceAnchorMatches(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors)) &&
@@ -5398,7 +5623,13 @@ function sourceAnchoredEvidenceForRequest(requestText: string, evidence: readonl
     (evidenceSourceMatchesAnchors(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors)) &&
     evidenceAnchorFitForRequest(span, requestText)
   ));
-  return { required: true, anchors: uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]), evidence: exact.length ? uniqueEvidenceById([...primaryEvidence, ...exact, ...selected]) : uniqueEvidenceById([...primaryEvidence, ...selected]) };
+  return {
+    required: true,
+    anchors: uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
+    evidence: exact.length
+      ? uniqueEvidenceById([...primaryEvidence, ...exact, ...selected, ...semanticFrameBoundEvidence])
+      : uniqueEvidenceById([...primaryEvidence, ...selected, ...semanticFrameBoundEvidence])
+  };
 }
 
 function primaryEvidenceForSourceAnchor(primaryAnchor: string, requestText: string, evidence: readonly EvidenceSpan[]): EvidenceSpan[] {
@@ -5422,10 +5653,11 @@ function evidenceAnchorFitForRequest(span: EvidenceSpan, requestText: string): b
   if (!requestUnits.length) return true;
   const matchedTitleUnits = [...titleUnits].filter(titleUnit => requestUnits.some(unit => requestUnitMatchesSurface(unit, titleUnit)));
   const firstTitlePosition = firstTitleUnitPosition(requestUnits, titleUnits);
+  if (!matchedTitleUnits.length) return false;
+  if (matchedTitleUnits.length >= 2 && firstTitlePosition <= 2) return true;
   const nonTitleUnits = requestUnits.filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)));
   const sourceSurface = sourceTextSurface(span.text || span.textPreview, 3200);
   const nonTitleOverlap = requestUnitOverlapForSurface(sourceSurface, new Set(nonTitleUnits));
-  if (matchedTitleUnits.length >= 2 && firstTitlePosition <= 2) return true;
   const singleLateTitleOverlapFloor = titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1;
   if (matchedTitleUnits.length >= 1 && nonTitleOverlap >= singleLateTitleOverlapFloor) return true;
   return titleUnits.size > 1 && firstTitlePosition <= 2 && matchedTitleUnits.length / Math.max(1, titleUnits.size) >= 0.67;
@@ -7143,6 +7375,11 @@ function runtimeTerminalInventionIsAdmissible(input: {
   ];
   if (!selectedPriorIds.some(id => input.eligiblePriorIds.has(id))) return false;
   if (kernelNumber(trace.unsupportedFactualAssertion) > 0 || kernelNumber(trace.risk) > 0.66) return false;
+  const proposalRealization = jsonRecord(trace.proposalRealization);
+  const repetitionPenalty = kernelNumber(proposalRealization.repetitionPenalty, Number.POSITIVE_INFINITY);
+  if (proposalRealization.path !== "learned_continuation") return false;
+  if (!kernelStringArray(proposalRealization.sourcePieceIds).length) return false;
+  if (repetitionPenalty < 0 || repetitionPenalty >= 0.5) return false;
   const claimBasis = Array.isArray(trace.claimBasis) ? trace.claimBasis.map(row => jsonRecord(row)) : [];
   if (!claimBasis.some(row => row.kind === "invention" && row.force === "invented")) return false;
   if (claimBasis.some(row => row.kind === "factual_premise" || kernelStringArray(row.evidenceIds).length > 0)) return false;
@@ -7326,15 +7563,13 @@ function runtimeMotionFocusSurface(
     .map(runtimeMotionSlotSurface)
     .filter(Boolean)
     .slice(0, 3);
-  const fallback = collapseSurfaceWhitespace(requestText).replace(/[.!?\u3002\uff01\uff1f]+$/u, "").trim();
-  const lead = topic || fallback;
   const detail = uniqueKernelStrings([
     ...sourceSurfaces.map(surface => sourceTextSurface(surface, 320)),
     ...slotSurfaces,
     ...sourceUris.slice(0, 2)
   ])
     .slice(0, 3);
-  const boundedLead = [...lead].slice(0, 120).join("").trim();
+  const boundedLead = [...topic].slice(0, 120).join("").trim();
   const boundedDetail = detail.map(value => [...value].slice(0, 80).join("").trim()).filter(Boolean);
   const semanticSurface = uniqueKernelStrings([boundedLead, ...boundedDetail]).filter(Boolean).join(": ");
   return ensureUnicodeSurfaceSentence(semanticSurface);
@@ -9888,6 +10123,7 @@ function estimateRuntimeGraphSliceBytes(value: RuntimeGraphSliceValue): number {
     bytes += span.features.reduce((sum, feature) => sum + feature.length * 2 + 24, 0);
     bytes += estimateJsonBytes(span.languageHints, 2048) + estimateJsonBytes(span.scriptHints, 2048) + estimateJsonBytes(span.trustVector, 2048) + estimateJsonBytes(span.provenance, 4096);
   }
+  bytes += (value.semanticFrameBoundEvidenceIds ?? []).reduce((sum, id) => sum + id.length * 2 + 16, 0);
   return bytes;
 }
 
@@ -9931,6 +10167,7 @@ function limitRuntimeGraphSlice(value: RuntimeGraphSliceValue, nodeLimit: number
     ...hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
   ]));
   const evidence = value.evidence.filter(span => evidenceIds.has(String(span.id))).slice(0, evidenceLimit);
+  const retainedEvidenceIds = new Set(evidence.map(span => String(span.id)));
   return {
     graph: {
       ...value.graph,
@@ -9939,7 +10176,8 @@ function limitRuntimeGraphSlice(value: RuntimeGraphSliceValue, nodeLimit: number
       hyperedges,
       query: { ...value.graph.query, limitNodes: nodeLimit, limitEdges: edgeLimit }
     },
-    evidence
+    evidence,
+    semanticFrameBoundEvidenceIds: value.semanticFrameBoundEvidenceIds?.filter(id => retainedEvidenceIds.has(id))
   };
 }
 

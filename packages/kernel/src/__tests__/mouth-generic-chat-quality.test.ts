@@ -42,6 +42,41 @@ describe("Mouth generic chat quality gate", () => {
     expect(sentenceCount(concise.text)).toBeLessThanOrEqual(sentenceCount(detailed.text));
   });
 
+  it("reuses one bounded imported-surface scan without changing answer semantics", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = semanticEntailment(evidence, field);
+    const languageMemory = importedMemory(source, evidence, "quality-import-scan");
+    const sliceCalls: Array<{ collection: string; start?: number; end?: number }> = [];
+    const tracked = <T>(collection: string, rows: T[]): T[] => new Proxy(rows, {
+      get(target, property, receiver) {
+        if (property !== "slice") return Reflect.get(target, property, receiver);
+        return (start?: number, end?: number) => {
+          sliceCalls.push({ collection, start, end });
+          return target.slice(start, end);
+        };
+      }
+    });
+    const trackedMemory = {
+      ...languageMemory,
+      importedUnits: tracked("units", languageMemory.importedUnits),
+      importedObservations: tracked("observations", languageMemory.importedObservations),
+      importedPatterns: tracked("patterns", languageMemory.importedPatterns),
+      importedSemanticFrames: tracked("semanticFrames", languageMemory.importedSemanticFrames)
+    };
+    const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
+    const baseline = await mouth.speak(baseInput({ source, evidence, field, entailment, languageMemory, construct: constructGraph(false) }));
+    const observed = await mouth.speak(baseInput({ source, evidence, field, entailment, languageMemory: trackedMemory, construct: constructGraph(false) }));
+
+    expect(observed.text).toBe(baseline.text);
+    expect(observed.realizationTrace.selected).toEqual(baseline.realizationTrace.selected);
+    expect(observed.evidenceRefs).toEqual(baseline.evidenceRefs);
+    expect(observed.realizationTrace).toEqual(baseline.realizationTrace);
+    expect(sliceCalls.filter(call => call.collection === "observations" && call.start === 0 && call.end === 512)).toHaveLength(1);
+    expect(sliceCalls.filter(call => call.collection === "semanticFrames" && call.start === 0 && call.end === 256)).toHaveLength(1);
+  });
+
   it("keeps caveats, creative artifacts, correction influence, and imported priors inspectable", async () => {
     const source = sourceVersion();
     const evidence = directEvidence(source);

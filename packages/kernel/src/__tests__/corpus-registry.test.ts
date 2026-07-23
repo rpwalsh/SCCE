@@ -6,7 +6,8 @@ import {
   languageMemoryEligibleCorpora,
   languageMemoryHydrationPlan,
   type ScceEvent,
-  type ScceStorage
+  type ScceStorage,
+  type LanguageProfile
 } from "../index.js";
 
 describe("corpus registry", () => {
@@ -35,7 +36,8 @@ describe("corpus registry", () => {
 
   it("hydrates the Mouth language path from non-Wikipedia source systems", async () => {
     const queried: string[] = [];
-    const storage = corpusQueryStorage(queried);
+    const queriedProfileIds: string[][] = [];
+    const storage = corpusQueryStorage(queried, queriedProfileIds);
     const kernel = createScceKernel({
       storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -54,13 +56,28 @@ describe("corpus registry", () => {
     expect(queried).toContain("oss_docs");
     expect(queried).toContain("oss_code");
     expect(queried.filter(source => source === "wikipedia").length).toBeGreaterThan(0);
+    expect(queriedProfileIds.length).toBeGreaterThan(0);
+    expect(queriedProfileIds.every(profileIds => profileIds.includes("profile.corpus-registry"))).toBe(true);
   });
 });
 
-function corpusQueryStorage(queried: string[]): ScceStorage {
+function corpusQueryStorage(queried: string[], queriedProfileIds: string[][]): ScceStorage {
   const events: ScceEvent[] = [];
-  const remember = async (query?: { sourceSystem?: string }) => {
-    if (query?.sourceSystem) queried.push(query.sourceSystem);
+  const profile: LanguageProfile = {
+    id: "profile.corpus-registry",
+    sourceVersionId: "source.corpus-registry" as never,
+    scripts: [{ script: "script.opaque", mass: 1 }],
+    symbolShapes: [],
+    charNgrams: [],
+    direction: "unknown",
+    entropy: 0,
+    createdAt: 1
+  };
+  const remember = async (query?: { sourceSystem?: string; profileIds?: readonly string[] }) => {
+    if (query?.sourceSystem) {
+      queried.push(query.sourceSystem);
+      queriedProfileIds.push([...(query.profileIds ?? [])]);
+    }
     return [];
   };
   return {
@@ -92,6 +109,9 @@ function corpusQueryStorage(queried: string[]): ScceStorage {
       summarize: async () => ({ activeImportRunIds: [], importedLanguagePriorCount: 0, importedGraphPriorCount: 0, importedDirectEvidenceCount: 0, profileExcerptEvidenceCount: 0, importedLearnedPriorCount: 0, importedProgramPriorCount: 0, unknownPriorCount: 0, runs: [] }),
       active: async () => ({ activeImportRunIds: [] })
     },
+    model: {
+      listLanguageProfiles: async () => [profile]
+    },
     init: async () => undefined,
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
@@ -108,7 +128,6 @@ function corpusQueryStorage(queried: string[]): ScceStorage {
     capabilities: unusedStore(),
     forecasts: unusedStore(),
     benchmarks: unusedStore(),
-    model: unusedStore(),
     corrections: unusedStore(),
     localization: unusedStore(),
     flowCache: unusedStore(),

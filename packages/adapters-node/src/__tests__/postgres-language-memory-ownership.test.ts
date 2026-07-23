@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { POSTGRES_REQUIRED_TABLES } from "@scce/kernel";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -55,6 +56,48 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls[0]?.params).toEqual(["fixture", ["profile.a"], ["source.a"], 9]);
   });
 
+  it("filters exact semantic-frame surfaces before the matching rank limit", async () => {
+    const { adapter, calls } = fixture();
+
+    await adapter.languageMemory.listSemanticFrames({ surface: "surface.fixture", limit: 11 });
+
+    const sql = calls[0]!.sql;
+    expect(sql).toContain("frame_json->>'surface'=$1");
+    expect(sql).toContain("ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $2");
+    expect(sql.indexOf("frame_json->>'surface'=$1")).toBeLessThan(sql.indexOf("ORDER BY"));
+    expect(calls[0]?.params).toEqual(["surface.fixture", 11]);
+  });
+
+  it("migrates an idempotent expression index matching exact surface ranking", async () => {
+    const { adapter } = fixture();
+    const statements: string[] = [];
+    const client = {
+      async query(sql: string): Promise<{ rows: Array<Record<string, string>> }> {
+        statements.push(sql);
+        if (sql.includes("information_schema.tables")) {
+          return { rows: POSTGRES_REQUIRED_TABLES.map(table_name => ({ table_name })) };
+        }
+        if (sql.includes("information_schema.columns")) {
+          const identifiers = [...new Set(statements
+            .filter(statement => statement.startsWith("CREATE TABLE"))
+            .flatMap(statement => statement.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []))];
+          return {
+            rows: POSTGRES_REQUIRED_TABLES.flatMap(table_name => identifiers.map(column_name => ({ table_name, column_name })))
+          };
+        }
+        return { rows: [] };
+      },
+      release(): void {}
+    };
+    (adapter.pool as unknown as { connect: () => Promise<typeof client> }).connect = async () => client;
+
+    await adapter.migrate();
+
+    expect(statements.filter(statement => statement.includes("semantic_frames_surface_rank"))).toEqual([
+      `CREATE INDEX IF NOT EXISTS idx_fixture_semantic_frames_surface_rank ON "fixture".semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`
+    ]);
+  });
+
   it("bounds referenced profile discovery with index-backed semi-joins", async () => {
     const { adapter, calls } = fixture();
 
@@ -63,6 +106,7 @@ describe("Postgres language-memory ownership queries", () => {
     const sql = calls[0]!.sql;
     expect(sql).toContain("WHERE EXISTS");
     expect(sql).toContain("profile_id=lp.id");
+    expect(sql.match(/OFFSET 0/g)).toHaveLength(5);
     expect(sql).toContain("LIMIT $1");
     expect(sql).not.toMatch(/artifact_refs|GROUP BY|WITH\s/i);
     expect(calls[0]?.params).toEqual([17]);

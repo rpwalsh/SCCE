@@ -55,9 +55,9 @@ Add a sealed update corpus containing corrections and new facts. Measure:
 
 Inject failures after each stage. An incomplete brain must never become active. The previous active brain must remain available. Resume must be idempotent.
 
-## Current Yopp implementation
+## Current SCCE implementation
 
-Yopp persists the lifecycle states `CREATED`, `IMPORTING`, `VALIDATING`, `READY`,
+SCCE persists the lifecycle states `CREATED`, `IMPORTING`, `VALIDATING`, `READY`,
 `ACTIVE`, `STOPPED`, `FAILED`, `QUARANTINED`, and `INCOMPATIBLE`. Activation
 requires `READY`, uses compare-and-swap semantics, returns the previous active
 brain to `READY`, and is protected in PostgreSQL by an at-most-one-`ACTIVE`
