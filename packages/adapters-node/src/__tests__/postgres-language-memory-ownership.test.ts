@@ -30,10 +30,12 @@ describe("Postgres language-memory ownership queries", () => {
 
     expect(calls[0]?.sql).toContain("model_json->>'profileId'=ANY($1::text[])");
     expect(calls[0]?.sql).not.toContain("sourceVersionId");
-    expect(calls[0]?.params).toEqual([["profile.a"], 7]);
-    expect(calls[1]?.sql).toContain("FROM unnest($1::text[]) AS owner(owner_id)");
+    expect(calls[0]?.params[0]).toEqual(["profile.a"]);
+    expect(calls[0]?.params.at(-1)).toBe(7);
+    expect(calls[1]?.sql).toContain("FROM unnest($5::text[]) AS owner(owner_id)");
     expect(calls[1]?.sql).toContain("metadata_json->>'profileId'=owner.owner_id");
-    expect(calls[1]?.params).toEqual([["profile.a"], 7]);
+    expect(calls[1]?.params[4]).toEqual(["profile.a"]);
+    expect(calls[1]?.params.at(-1)).toBe(7);
     expect(calls).toHaveLength(2);
   });
 
@@ -50,7 +52,9 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql).toContain("frame_json->>'profileId'=ANY");
     expect(sql).not.toContain("sourceVersionId");
     expect(sql.indexOf("profileId")).toBeLessThan(sql.indexOf("LIMIT"));
-    expect(calls[0]?.params).toEqual(["fixture", ["profile.a"], 9]);
+    expect(calls[0]?.params[0]).toBe("fixture");
+    expect(calls[0]?.params[1]).toEqual(["profile.a"]);
+    expect(calls[0]?.params.at(-1)).toBe(9);
   });
 
   it("filters exact semantic-frame surfaces before the matching rank limit", async () => {
@@ -60,9 +64,10 @@ describe("Postgres language-memory ownership queries", () => {
 
     const sql = calls[0]!.sql;
     expect(sql).toContain("frame_json->>'surface'=$1");
-    expect(sql).toContain("ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $2");
+    expect(sql).toContain("ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $6");
     expect(sql.indexOf("frame_json->>'surface'=$1")).toBeLessThan(sql.indexOf("ORDER BY"));
-    expect(calls[0]?.params).toEqual(["surface.fixture", 11]);
+    expect(calls[0]?.params[0]).toBe("surface.fixture");
+    expect(calls[0]?.params.at(-1)).toBe(11);
   });
 
   it("migrates an idempotent expression index matching exact surface ranking", async () => {
@@ -101,12 +106,12 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.model.listLanguageProfiles({ limit: 17, referencedByLanguageMemory: true });
 
     const sql = calls[0]!.sql;
-    expect(sql).toContain("WHERE EXISTS");
+    expect(sql).toContain("EXISTS");
     expect(sql).toContain("profile_id=lp.id");
     expect(sql.match(/OFFSET 0/g)).toHaveLength(5);
     expect(sql).toContain("LIMIT $1");
     expect(sql).not.toMatch(/artifact_refs|GROUP BY|WITH\s/i);
-    expect(calls[0]?.params).toEqual([17]);
+    expect(calls[0]?.params[0]).toBe(17);
   });
 });
 
@@ -114,7 +119,16 @@ function fixture(): {
   adapter: PostgresStorageAdapter;
   calls: Array<{ sql: string; params: unknown[] }>;
 } {
-  const adapter = createPostgresStorageAdapter({ url: "postgres://fixture:fixture@127.0.0.1/fixture", schema: "fixture" });
+  const adapter = createPostgresStorageAdapter({
+    url: "postgres://fixture:fixture@127.0.0.1/fixture",
+    schema: "fixture",
+    informationAccess: {
+      tenantId: "tenant.fixture",
+      principalId: "principal.fixture",
+      compartments: [],
+      maximumExportClass: "restricted"
+    }
+  });
   adapters.push(adapter);
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {

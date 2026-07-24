@@ -2359,12 +2359,12 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE scoped.pattern_json->>'schema'='scce.request_requirement_pattern.v1'
          ),
          eligible_patterns AS (
-           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at
-           FROM scoped_patterns
-           WHERE pattern_json->>'schema' IS DISTINCT FROM 'scce.request_requirement_pattern.v1'
-           UNION ALL
-           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at
-           FROM ranked_request_patterns
+            SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
+            FROM scoped_patterns
+            WHERE pattern_json->>'schema' IS DISTINCT FROM 'scce.request_requirement_pattern.v1'
+            UNION ALL
+            SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
+            FROM ranked_request_patterns
            WHERE source_version_rank=1
          )
          SELECT *
