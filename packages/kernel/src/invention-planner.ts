@@ -298,7 +298,7 @@ interface DraftComposition {
 }
 
 interface ProposalRealizationTrace {
-  path: "learned_continuation" | "learned_structural_composition" | "mouth_realization_deferred" | "composition_fallback";
+  path: "learned_continuation" | "learned_structural_composition" | "mouth_realization_deferred" | "mouth_non_event_realization_deferred";
   semanticPlanId?: string;
   contextSymbols: string[];
   generationTextHash?: string;
@@ -501,12 +501,13 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
     && draft.proposalRealization.structuralBundleIds?.every(id => admittedStructuralBundleIds.has(id))
   ));
   const productionStructuralAuthority = structuralDrafts.length > 0;
-  const learnedDrafts = uniqueDrafts.filter(draft => draft.proposalRealization.path !== "composition_fallback");
-  const coldStartFallbackActive = !productionStructuralAuthority && learnedDrafts.length === 0;
+  const mouthHandoffDrafts = uniqueDrafts.filter(draft => draft.proposalRealization.path === "mouth_non_event_realization_deferred");
+  const learnedDrafts = uniqueDrafts.filter(draft => draft.proposalRealization.path !== "mouth_non_event_realization_deferred");
+  const mouthRealizationHandoffActive = !productionStructuralAuthority && learnedDrafts.length === 0;
   const drafts = (
     productionStructuralAuthority
       ? structuralDrafts
-      : coldStartFallbackActive ? uniqueDrafts : learnedDrafts
+      : mouthRealizationHandoffActive ? mouthHandoffDrafts.slice(0, 1) : learnedDrafts
   ).slice(0, structuralCandidateLimit);
   if (productionStructuralAuthority && drafts.length === 0) return [];
   const memorySurfaces = existingMemorySurfaces(input);
@@ -579,10 +580,12 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
             ? "guard.invention.production_structural_authority.v1"
             : "guard.invention.learned_realization_priority.v1",
           productionStructuralAuthority,
-          coldStartFallbackActive,
+          coldStartFallbackActive: false,
+          mouthRealizationHandoffActive,
           learnedCandidateCount: productionStructuralAuthority ? 0 : learnedDrafts.length,
           structuralCandidateCount: structuralDrafts.length,
-          fallbackCandidateCount: productionStructuralAuthority ? 0 : uniqueDrafts.length - learnedDrafts.length
+          fallbackCandidateCount: 0,
+          mouthHandoffCandidateCount: productionStructuralAuthority ? 0 : mouthHandoffDrafts.length
         },
         bootstrapCoefficients: {
           constraintCoverage: 0.28,
@@ -1211,7 +1214,15 @@ function buildDraft(
   const deferSurfaceRealization = structuralEventPlan.length >= 4;
   const requestTerms = requestSurfaceUnits(input.requestText);
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
-  const title = surfaceTitle(activatedSlots?.continuationSlot.text ?? requestTerms.slice(0, 6).join(" "));
+  const requestFrameFocus = input.creativeRequestFrame && validCreativeRequestFrame(input.requestText, input.creativeRequestFrame)
+    ? input.creativeRequestFrame.focus.span.text
+    : undefined;
+  const requestBoundSurface = tidyProposal(
+    requestFrameFocus
+    ?? activatedSlots?.continuationSlot.text
+    ?? requestTerms.slice(0, 8).join(" ")
+  );
+  const title = surfaceTitle(requestBoundSurface);
   const rotated = rotate(ingredients, variant).slice(0, 3);
   while (rotated.length < 3) rotated.push({
     id: stableId("request.fallback", { variant, index: rotated.length }),
@@ -1227,17 +1238,13 @@ function buildDraft(
   if (languageChoice && !rotated.some(row => row.source !== "request" && row.source !== "graph")) rotated[1] = languageChoice;
   const requestChoice = ingredients.find(row => row.source === "request");
   if (requestChoice && !rotated.some(row => row.source === "request")) rotated[2] = requestChoice;
-  const constraintSurface = constraints.slice(0, 6).map(row => row.surface).join("; ") || requestTerms.slice(0, 6).join("; ") || title;
   const learnedProposal = deferSurfaceRealization
     ? undefined
     : reusedLearnedProposalFromMemory(input, requestTerms, variant, learnedProposalReuse);
   const structuralBundleIds = uniqueStrings(structuralEventPlan.map(event => event.bundleId));
-  const shapedProposal = deferSurfaceRealization
-    ? title
-    : proposalShape(variant, title, rotated.map(row => row.text), constraintSurface);
   const proposalSurface = deferSurfaceRealization
     ? title
-    : evidenceSafeProposal(learnedProposal?.surface ?? shapedProposal, input.evidence, requestTerms, variant, title);
+    : evidenceSafeProposal(learnedProposal?.surface ?? requestBoundSurface, input.evidence, requestTerms);
   const proposalRealization: ProposalRealizationTrace = deferSurfaceRealization
     ? {
       path: "mouth_realization_deferred",
@@ -1258,7 +1265,7 @@ function buildDraft(
     }
     : learnedProposal && normalizeSurface(proposalSurface) === normalizeSurface(learnedProposal.surface)
       ? learnedProposal.trace
-      : { path: "composition_fallback", contextSymbols: learnedProposal?.trace.contextSymbols ?? [] };
+      : { path: "mouth_non_event_realization_deferred", contextSymbols: symbolizeData(requestBoundSurface).filter(Boolean) };
   const selectedGraphNodeIds = uniqueStrings(rotated.filter(row => row.graphNodeId).map(row => row.graphNodeId!));
   const selectedEdges = selectCompositionEdges(input.graph.edges, selectedGraphNodeIds, variant);
   for (const edge of selectedEdges) {
@@ -1337,11 +1344,10 @@ function reusedLearnedProposalFromMemory(
 
 function learnedProposalFromMemory(input: PlanInventionsInput, requestTerms: readonly string[], variant: number): LearnedProposal | undefined {
   if (!requestTerms.length || !input.languageMemoryState.models.length) return undefined;
+  const structural = learnedStructuralProposalFromMemory(input);
+  if (structural) return structural;
+  if (input.requestedAuthority === "creative") return undefined;
   const requestConstraints = requestOwnedCreativeConstraints(input);
-  if (!requestConstraints.length) {
-    const structural = learnedStructuralProposalFromMemory(input);
-    if (structural) return structural;
-  }
   const requestConstraint = requestConstraints.length ? requestConstraints[variant % requestConstraints.length] : undefined;
   const contextSurface = requestConstraint?.surface ?? requestTerms[Math.max(0, requestTerms.length - 1 - (variant % requestTerms.length))];
   if (!contextSurface) return undefined;
@@ -1832,19 +1838,9 @@ function selectCompositionEdges(edges: readonly GraphEdge[], nodeIds: readonly s
   return rotate([...rows].sort((left, right) => edgeRelationPotential(right) - edgeRelationPotential(left) || String(left.id).localeCompare(String(right.id))), variant).slice(0, 6);
 }
 
-function proposalShape(variant: number, title: string, pieces: readonly string[], constraints: string): string {
-  const [a = title, b = title, c = title] = pieces;
-  if (variant % 4 === 0) return `${title}: ${a}; ${b}; ${c}; ${constraints}.`;
-  if (variant % 4 === 1) return `${constraints}: ${c}; ${b}; ${a}; ${title}.`;
-  if (variant % 4 === 2) return `${a}; ${c}; ${title}; ${b}; ${constraints}.`;
-  return `${title}: ${b}; ${constraints}; ${a}; ${c}.`;
-}
-
-function evidenceSafeProposal(surface: string, evidence: readonly EvidenceSpan[], requestTerms: readonly string[], variant: number, title: string): string {
+function evidenceSafeProposal(surface: string, evidence: readonly EvidenceSpan[], requestTerms: readonly string[]): string {
   if (!copiesCompleteEvidenceSentence(surface, evidence)) return tidyProposal(surface);
   const safe = requestTerms.slice(0, 8);
-  const fallback = tidyProposal(proposalShape(variant, title, [safe[0] ?? title, safe[1] ?? title, safe[2] ?? title], safe.join("; ") || title));
-  if (!copiesCompleteEvidenceSentence(fallback, evidence)) return fallback;
   const requestOwned = tidyProposal(safe.join(" "));
   return copiesCompleteEvidenceSentence(requestOwned, evidence) ? "" : requestOwned;
 }

@@ -12,7 +12,8 @@ export const SURFACE_QUALITY_ISSUE_IDS = {
   controlId: "sq.issue.5d0f2a91",
   telemetry: "sq.issue.8c41b7e3",
   certification: "sq.issue.d29a0c64",
-  repeatedNgram: "sq.issue.0ef857db"
+  repeatedNgram: "sq.issue.0ef857db",
+  fragmentedList: "sq.issue.4bc2138e"
 } as const;
 
 export const SURFACE_QUALITY_REJECTION_IDS = {
@@ -105,7 +106,77 @@ export function detectCannedAnswerSpeech(text: string): SurfaceQualityIssue[] {
       })
     );
   }
+  const fragmentedList = concentratedFragmentList(normalized);
+  if (fragmentedList) {
+    add(
+      SURFACE_QUALITY_ISSUE_IDS.fragmentedList,
+      SURFACE_QUALITY_KIND_IDS.degenerate,
+      boundedMatchedText(normalized),
+      toJsonValue({
+        detector: "sq.det.846bd209",
+        fragmentCount: fragmentedList.fragmentCount,
+        lexicalTokenCount: fragmentedList.lexicalTokenCount,
+        shortFragmentRatio: fragmentedList.shortFragmentRatio,
+        repeatedTokenMass: fragmentedList.repeatedTokenMass,
+        uniqueTokenRatio: fragmentedList.uniqueTokenRatio,
+        medianFragmentTokens: fragmentedList.medianFragmentTokens,
+        maximumFragmentTokens: fragmentedList.maximumFragmentTokens
+      })
+    );
+  }
   return issues;
+}
+
+interface FragmentListConcentration {
+  fragmentCount: number;
+  lexicalTokenCount: number;
+  shortFragmentRatio: number;
+  repeatedTokenMass: number;
+  uniqueTokenRatio: number;
+  medianFragmentTokens: number;
+  maximumFragmentTokens: number;
+}
+
+/**
+ * Detects a long, delimiter-driven sequence dominated by tiny fragments and
+ * recycled tokens. Uniform compact lists, prose clauses, and code statements
+ * remain admissible because they lack the combined concentration and length
+ * imbalance.
+ */
+function concentratedFragmentList(text: string): FragmentListConcentration | undefined {
+  const fragments = text
+    .split(/[\u003b\u061b\u007c\uff1b]+/u)
+    .map(fragment => unicodeLexicalTokens(fragment))
+    .filter(tokens => tokens.length > 0)
+    .slice(0, 128);
+  if (fragments.length < 7) return undefined;
+  const fragmentLengths = fragments.map(tokens => tokens.length);
+  const lexicalTokens = fragments.flat();
+  if (lexicalTokens.length < 10) return undefined;
+  const tokenCounts = new Map<string, number>();
+  for (const token of lexicalTokens) tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+  const repeatedTokenMass = [...tokenCounts.values()]
+    .reduce((sum, count) => sum + Math.max(0, count - 1), 0) / lexicalTokens.length;
+  const uniqueTokenRatio = tokenCounts.size / lexicalTokens.length;
+  const shortFragmentRatio = fragmentLengths.filter(length => length <= 2).length / fragments.length;
+  const orderedLengths = [...fragmentLengths].sort((left, right) => left - right);
+  const medianFragmentTokens = orderedLengths[Math.floor((orderedLengths.length - 1) / 2)] ?? 0;
+  const maximumFragmentTokens = orderedLengths.at(-1) ?? 0;
+  const imbalanced = maximumFragmentTokens >= medianFragmentTokens + 3
+    && maximumFragmentTokens >= Math.max(4, medianFragmentTokens * 3);
+  if (shortFragmentRatio < 0.7
+    || repeatedTokenMass < 0.4
+    || uniqueTokenRatio > 0.65
+    || !imbalanced) return undefined;
+  return {
+    fragmentCount: fragments.length,
+    lexicalTokenCount: lexicalTokens.length,
+    shortFragmentRatio,
+    repeatedTokenMass,
+    uniqueTokenRatio,
+    medianFragmentTokens,
+    maximumFragmentTokens
+  };
 }
 
 interface RepeatedNgramConcentration {
@@ -124,9 +195,7 @@ interface RepeatedNgramConcentration {
  * it leaves stray lexical material and ends in a mixed punctuation run.
  */
 function concentratedRepeatedNgram(text: string): RepeatedNgramConcentration | undefined {
-  const tokens = [...text.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)]
-    .map(match => match[0])
-    .slice(0, 128);
+  const tokens = unicodeLexicalTokens(text).slice(0, 128);
   if (tokens.length < 4) return undefined;
   const uniqueTokenRatio = new Set(tokens).size / tokens.length;
   const punctuationRuns = [...text.matchAll(/[\p{Punctuation}\p{Symbol}]+/gu)].map(match => match[0]);
@@ -181,6 +250,10 @@ function concentratedRepeatedNgram(text: string): RepeatedNgramConcentration | u
     || right.ngram.length - left.ngram.length
     || left.ngram.join("\u0001").localeCompare(right.ngram.join("\u0001"))
   )[0];
+}
+
+function unicodeLexicalTokens(text: string): string[] {
+  return [...text.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)].map(match => match[0]);
 }
 
 function normalizeForQuality(text: string): string {

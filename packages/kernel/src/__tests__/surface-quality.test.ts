@@ -52,6 +52,26 @@ describe("surface quality guard", () => {
     expect(issues.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.repeatedNgram);
   });
 
+  it("rejects high-concentration delimiter-separated fragment speech", () => {
+    const issues = detectCannedAnswerSpeech("ocean; Invent; Invent a new kind of clock; for; Invent; a city; ocean; Invent a; for a; city.");
+
+    expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.degenerate);
+    expect(issues.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.fragmentedList);
+  });
+
+  it("preserves compact lists, prose, code, and multilingual delimiter surfaces", () => {
+    const koreanList = "\ube68\uac15; \ucd08\ub85d; \ud30c\ub791; \ub178\ub791; \ud558\uc580; \uac80\uc815; \ubcf4\ub77c.";
+    for (const text of [
+      "red; green; blue; amber; black; white; violet.",
+      "phase one; phase two; phase three; phase four; phase five; phase six; phase seven.",
+      "Open the file; read the header; parse the rows; validate the schema; store the result; close the file; publish the report.",
+      "let alpha = 1; let beta = 2; let gamma = 3; let delta = 4; let total = alpha + beta; return total; export default total;",
+      koreanList
+    ]) {
+      expect(detectCannedAnswerSpeech(text)).toEqual([]);
+    }
+  });
+
   it("preserves clean short rhetoric and multilingual long-form surfaces", () => {
     for (const text of [
       "Never again, never again.",

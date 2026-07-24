@@ -186,7 +186,7 @@ describe("invention planner", () => {
       const path = (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path;
       return path === "learned_continuation"
         || path === "learned_structural_composition"
-        || path === "composition_fallback";
+        || path === "mouth_non_event_realization_deferred";
     })).toBe(false);
   });
 
@@ -210,7 +210,7 @@ describe("invention planner", () => {
     }
   });
 
-  it("reuses one bounded language generation for no-model creative fallback candidates", () => {
+  it("hands no-model creative realization to Mouth without phrase salad or repeated generation", () => {
     const fixture = plannerFixtureWithLanguageCorpus(
       "Invent a new indexing algorithm for this graph.",
       "At dusk, the old pump hummed beside the quiet harbor. It dreamed of carrying starlight across the sleeping town. Before dawn, its steady rhythm became a silver melody and woke the patient bells."
@@ -224,8 +224,11 @@ describe("invention planner", () => {
       samplingDisabled: true
     });
 
-    expect(generate).toHaveBeenCalledTimes(1);
-    expect(planned.length).toBeGreaterThan(0);
+    expect(generate.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(planned).toHaveLength(1);
+    expect(planned[0]!.proposalSurface).not.toContain(";");
+    expect((traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>).path)
+      .toBe("mouth_non_event_realization_deferred");
     expect(fixture.languageMemoryState.creativeEventCompatibilityModels).toEqual([]);
   });
 
@@ -442,11 +445,14 @@ describe("invention planner", () => {
       samplingDisabled: true
     });
 
-    expect(planned.every(candidate => (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path === "composition_fallback")).toBe(true);
+    expect(planned.every(candidate => (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path === "mouth_non_event_realization_deferred")).toBe(true);
     expect(planned.every(candidate => candidate.proposalSurface !== sourceSentence)).toBe(true);
+    expect(planned.every(candidate => !candidate.proposalSurface.includes(";"))).toBe(true);
     expect(traceRecord(planned[0]!).proposalSelectionGuard).toMatchObject({
-      coldStartFallbackActive: true,
-      learnedCandidateCount: 0
+      coldStartFallbackActive: false,
+      mouthRealizationHandoffActive: true,
+      learnedCandidateCount: 0,
+      fallbackCandidateCount: 0
     });
   });
 
@@ -528,7 +534,7 @@ describe("invention planner", () => {
       }
     });
 
-    expect(planned.length).toBeGreaterThanOrEqual(3);
+    expect(planned).toHaveLength(1);
     const activation = traceRecord(planned[0]!).planningActivation as Record<string, JsonValue>;
     expect(activation.authority).toBe(0);
     expect(activation.noveltyRequirement).toBe(0.91);
@@ -553,7 +559,7 @@ describe("invention planner", () => {
       }]
     });
 
-    expect(planned.length).toBeGreaterThanOrEqual(3);
+    expect(planned).toHaveLength(1);
     const activation = traceRecord(planned[0]!).planningActivation as Record<string, JsonValue>;
     expect(activation.inventionOperator).toBe(0.84);
     expect(activation.activeLearnedIds).toEqual([
@@ -568,7 +574,7 @@ describe("invention planner", () => {
 
     const planned = planInventions({ ...fixture, requestedAuthority: "factual" });
 
-    expect(planned.length).toBeGreaterThan(1);
+    expect(planned).toHaveLength(1);
     expect(planned.every(item => item.proofStatusId === "proof.status.generated_not_evidence")).toBe(true);
   });
 
@@ -587,7 +593,7 @@ describe("invention planner", () => {
 
     const planned = planInventions({ ...fixture, requestedAuthority: "factual" });
 
-    expect(planned.length).toBeGreaterThan(1);
+    expect(planned).toHaveLength(1);
     for (const construct of planned) {
       const trace = traceRecord(construct);
       const claims = trace.claimBasis as Array<{ kind: string; force: string; evidenceIds: string[] }>;

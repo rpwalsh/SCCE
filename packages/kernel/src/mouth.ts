@@ -491,6 +491,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("correction_influence");
       const structuralCreativeProductionLane = input.requestedAuthority === "creative";
       const structuralCreativeSelection = selectedStructuralCreativePlan(input);
+      const nonEventCreativeMouthHandoff = selectedNonEventCreativeMouthHandoff(input);
       const structuralCreativePreflight = structuralCreativeProductionLane
         && Boolean(structuralCreativeSelection)
         && hasHydratedStructuralCreativePrior(
@@ -518,7 +519,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const priorPieces = structuralCreativeBound
         ? basePriorPieces
         : importedSurfacePieces(input, plan, options.languageMemory, basePriorPieces);
-      const kernelSelectedCandidate = structuralCreativeBound
+      const kernelSelectedCandidate = structuralCreativeBound || nonEventCreativeMouthHandoff
         ? undefined
         : input.selectedCandidate ? surfaceCandidateFromKernelCandidate(input.selectedCandidate, discoursePlan, input) : undefined;
       const governedActionPreview = structuralCreativeBound ? undefined : governedActionPreviewCandidate(input, discoursePlan);
@@ -526,7 +527,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const learnedConstructionCandidate = structuralCreativeBound
         ? undefined
         : semanticLearnedConstructionCandidate(input, plan, discoursePlan, constructionHasher);
-      const constructAnchored = structuralCreativeBound
+      const constructAnchored = structuralCreativeBound || nonEventCreativeMouthHandoff
         ? undefined
         : constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
       const preserveEvidenceBackedKernelCandidate = Boolean(
@@ -3223,6 +3224,14 @@ function learnedCreativeProposalCandidate(
     discoursePlan,
     boundaryDecisions: []
   };
+}
+
+function selectedNonEventCreativeMouthHandoff(input: SpeakInput): boolean {
+  if (input.requestedAuthority !== "creative") return false;
+  const invention = inventionConstructState(input.construct);
+  if (!invention) return false;
+  const realization = jsonRecord(jsonRecord(invention.trace).proposalRealization);
+  return realization.path === "mouth_non_event_realization_deferred";
 }
 
 function creativeArtifactCandidate(input: SpeakInput, discoursePlan: DiscoursePlan): SurfaceCandidate | undefined {

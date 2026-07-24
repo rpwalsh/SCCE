@@ -502,10 +502,9 @@ export function createProductionTurnRuntime(options: {
         languageMemoryState: requestRequirementLanguageState,
         contextContribution: requirementContextFromMetadata(input.metadata)
       });
-      const creativeRequestFrame = authorityLanguage.state.creativeEventCompatibilityModels.some(model => (
-        model.reliability === "calibrated"
-        && model.requestCompilerId === ENGLISH_CREATIVE_REQUEST_COMPILER_ID
-      ))
+      const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
+      const requestedAuthority = authorityProjection.requestedAuthority;
+      const creativeRequestFrame = requestedAuthority === "creative"
         ? compileEnglishCreativeRequestFrame({
           requestText: input.text,
           learnedRequirements: requirementField.requiredFeatures,
@@ -520,8 +519,6 @@ export function createProductionTurnRuntime(options: {
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: operatorOutcomeSupport(input.metadata)
       });
-      const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
-      const requestedAuthority = authorityProjection.requestedAuthority;
       const requestedAuthorityDecision = toJsonValue({
         ...jsonRecord(authorityProjection.trace),
         activeOperatorIds: activeRequestOperatorIds(operatorActivations)
