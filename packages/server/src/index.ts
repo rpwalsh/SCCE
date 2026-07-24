@@ -90,8 +90,8 @@ function closeServer(server: http.Server): Promise<void> {
 }
 
 function startupWarmupLanguageLimit(): number {
-  const parsed = Number(process.env.SCCE_STARTUP_LANGUAGE_LIMIT ?? 12);
-  if (!Number.isFinite(parsed)) return 12;
+  const parsed = Number(process.env.SCCE_STARTUP_LANGUAGE_LIMIT ?? 64);
+  if (!Number.isFinite(parsed)) return 64;
   return Math.max(1, Math.min(64, Math.floor(parsed)));
 }
 

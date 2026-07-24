@@ -13,6 +13,7 @@ import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./la
 export interface GutenbergCorpusTrainOptions {
   storage: ScceStorage;
   rootPath: string;
+  startFileIndex?: number;
   maxFilesPerRun?: number;
   maxFileBytes?: number;
   maxDepth?: number;
@@ -27,6 +28,7 @@ export interface GutenbergCorpusTrainReport {
   schema: "scce.gutenbergCorpusTrainReport.v1";
   rootPath: string;
   sourceSystem: typeof CORPUS_SOURCE_SYSTEM_IDS.gutenberg;
+  startFileIndex: number;
   filesTrained: number;
   filesSkipped: Array<{ path: string; reason: string; byteLength?: number }>;
   totals: GutenbergCorpusTrainingTotals;
@@ -55,9 +57,16 @@ const DEFAULT_MAX_DEPTH = 8;
 
 export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): Promise<GutenbergCorpusTrainReport> {
   const root = path.resolve(input.rootPath);
+  const startFileIndex = Math.max(0, Math.floor(input.startFileIndex ?? 0));
   const maxFiles = Math.max(1, Math.floor(input.maxFilesPerRun ?? DEFAULT_MAX_FILES));
   const maxFileBytes = Math.max(1024, Math.floor(input.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES));
-  const files = await walkTextFiles(root, Math.max(0, Math.floor(input.maxDepth ?? DEFAULT_MAX_DEPTH)), maxFiles);
+  const files = (
+    await walkTextFiles(
+      root,
+      Math.max(0, Math.floor(input.maxDepth ?? DEFAULT_MAX_DEPTH)),
+      startFileIndex + maxFiles
+    )
+  ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
   const skipped: GutenbergCorpusTrainReport["filesSkipped"] = [];
   for (const file of files) {
@@ -98,6 +107,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     schema: "scce.gutenbergCorpusTrainReport.v1",
     rootPath: root,
     sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
+    startFileIndex,
     filesTrained: reports.length,
     filesSkipped: skipped,
     totals: sumReports(reports),
@@ -117,7 +127,10 @@ function sourceLanguageAliases(raw: string, supplied: readonly string[] | undefi
 }
 
 function builtInCreativeCompiler(aliases: readonly string[]): CreativeEventConstructionCompiler | undefined {
-  const normalized = new Set(aliases.map(alias => alias.normalize("NFKC").trim().toLocaleLowerCase()));
+  const normalized = new Set(aliases.flatMap(alias => {
+    const exact = alias.normalize("NFKC").trim().toLocaleLowerCase();
+    return [exact, ...exact.split(/[\s,;/]+/u).filter(Boolean)];
+  }));
   return normalized.has("en") || normalized.has("eng") || normalized.has("english")
     ? createEnglishCreativeEventConstructionCompiler()
     : undefined;

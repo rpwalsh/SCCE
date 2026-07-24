@@ -3,7 +3,8 @@ import { boltzmannDistribution } from "./equation-operators.js";
 import { kneserNeyProbability } from "./kneser-ney.js";
 import {
   englishCreativeStructuralRouteEvents,
-  isEnglishCreativeEventStructurallyRealizable
+  isEnglishCreativeEventStructurallyRealizable,
+  MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS
 } from "./english-structural-realizer.js";
 import type { LanguageGenerationResult, LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createInventionConstruct, type InventionConstruct } from "./prediction.js";
@@ -407,7 +408,7 @@ interface ScoredComposition extends DraftComposition {
 }
 
 const CREATIVE_TEMPERATURE = 0.28;
-const MAX_STRUCTURAL_CREATIVE_EVENTS = 720;
+const MAX_STRUCTURAL_CREATIVE_EVENTS = MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS;
 
 function productionStructuralCreativeBundles(
   input: PlanInventionsInput
@@ -456,7 +457,10 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
   const requestIngredients = requestCompositionIngredients(input.requestText);
   const ingredients = uniqueIngredients([...graphIngredients, ...languageIngredients, ...requestIngredients]);
   const productionStructuralAuthority = structuralBundles.length > 0;
-  const uniqueDrafts = Array.from({ length: maxCandidates + 2 }, (_, index) =>
+  const structuralCandidateLimit = productionStructuralAuthority
+    ? Math.min(maxCandidates, 3)
+    : maxCandidates;
+  const uniqueDrafts = Array.from({ length: structuralCandidateLimit + 2 }, (_, index) =>
     buildDraft(input, constraints, ingredients, graphIngredients, index, structuralBundles)
   )
     .filter(draft => Boolean(draft.proposalSurface) && !containsInternalSurfaceIdentifier(draft.proposalSurface))
@@ -475,7 +479,7 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
     productionStructuralAuthority
       ? structuralDrafts
       : coldStartFallbackActive ? uniqueDrafts : learnedDrafts
-  ).slice(0, maxCandidates);
+  ).slice(0, structuralCandidateLimit);
   if (productionStructuralAuthority && drafts.length === 0) return [];
   const memorySurfaces = existingMemorySurfaces(input);
   const preliminary = drafts.map((draft, index) => scoreDraft(input, draft, constraints, memorySurfaces, drafts, index));
@@ -859,6 +863,7 @@ function buildStructuralCreativeEventPlan(
   structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"]
 ): StructuralCreativeEventPlanRecord[] {
   const requestFeatures = featureSet(input.requestText, 256);
+  const structuralEventLimit = structuralCreativeEventLimit(input);
   const groups = structuralBundles
     .flatMap(bundle => {
       const events = englishCreativeStructuralRouteEvents(bundle.creativeEvents ?? [])
@@ -911,7 +916,7 @@ function buildStructuralCreativeEventPlan(
     routeAnchorEventId: string;
   }> = [];
   for (const group of orderedGroups) {
-    const remaining = MAX_STRUCTURAL_CREATIVE_EVENTS - selected.length;
+    const remaining = structuralEventLimit - selected.length;
     if (remaining <= 0) break;
     const route = boundedSourceAdjacentRoute(
       group.events,
@@ -975,6 +980,37 @@ function buildStructuralCreativeEventPlan(
       evidenceId: row.event.evidenceId
     };
   });
+}
+
+function structuralCreativeEventLimit(input: PlanInventionsInput): number {
+  const requestPoints = [...input.requestText];
+  let targetWords = 360;
+  for (const requirement of input.requirementField?.requiredFeatures ?? []) {
+    const responseExtent = jsonRecord(
+      jsonRecord(jsonRecord(requirement.trace).activationTrace).responseExtent
+    );
+    const wordsPerUnit = typeof responseExtent.wordsPerUnit === "number"
+      && Number.isFinite(responseExtent.wordsPerUnit)
+      && responseExtent.wordsPerUnit > 0
+      ? responseExtent.wordsPerUnit
+      : 0;
+    if (!wordsPerUnit) continue;
+    const span = requirement.origin.requestSpan;
+    const context = requestPoints.slice(
+      Math.max(0, span.charStart - 32),
+      Math.min(requestPoints.length, span.charEnd + 12)
+    ).join("");
+    const quantities = [...context.matchAll(/\p{Number}+(?:[.,]\p{Number}+)?/gu)]
+      .map(match => Number(match[0].replaceAll(",", "")))
+      .filter(value => Number.isFinite(value) && value > 0);
+    const quantity = quantities.at(-1);
+    if (quantity) targetWords = Math.max(targetWords, quantity * wordsPerUnit);
+  }
+  return boundedInteger(
+    Math.ceil(targetWords / 3 * 1.1),
+    120,
+    MAX_STRUCTURAL_CREATIVE_EVENTS
+  );
 }
 
 function structuralCreativeEventGraphFit(

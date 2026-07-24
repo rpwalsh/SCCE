@@ -14,7 +14,7 @@ export const LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA = "scce.language_construction_
 export const LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
 export const CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA = "scce.creative_event_construction_pattern.v3" as const;
 export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argument_frame.v1" as const;
-export const ENGLISH_CREATIVE_EVENT_COMPILER_ID = "surface.compiler.en.compromise.v4" as const;
+export const ENGLISH_CREATIVE_EVENT_COMPILER_ID = "surface.compiler.en.compromise.v5" as const;
 
 export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   input: "surface.construction_memory.reject.input",
@@ -435,20 +435,28 @@ function compileCreativeEvent(input: {
   const rawVerb = recordUnknown(arrayUnknown(document.verbs().json({ terms: { tags: true } }))[0]);
   const verb = recordUnknown(rawVerb.verb);
   if (verb.negative === true) return undefined;
-  const lexicalTerm = arrayUnknown(rawVerb.terms)
-    .map(recordUnknown)
+  const verbTerms = arrayUnknown(rawVerb.terms).map(recordUnknown);
+  const lexicalTerms = verbTerms
     .filter(term => {
       const tags = arrayUnknown(term.tags).map(String);
       return tags.includes("Verb") && !tags.includes("Auxiliary") && !tags.includes("Modal");
-    })
-    .at(-1);
+    });
+  const lexicalTerm = lexicalTerms.at(-1);
   if (!lexicalTerm) return undefined;
+  const lexicalTermIndex = termIndexUnknown(lexicalTerm.index);
+  if (lexicalTermIndex === undefined || verbTerms.some(term => {
+    const termIndex = termIndexUnknown(term.index);
+    const tags = arrayUnknown(term.tags).map(String);
+    return termIndex !== undefined
+      && termIndex < lexicalTermIndex
+      && (tags.includes("Auxiliary") || tags.includes("Modal"));
+  })) return undefined;
   const lexicalConfidence = numberUnknown(lexicalTerm.confidence);
   if (lexicalConfidence !== undefined && lexicalConfidence < 0.5) return undefined;
   const lexicalTags = arrayUnknown(lexicalTerm.tags).map(String);
-  if (lexicalTags.includes("Participle") && !lexicalTags.includes("PastTense")) return undefined;
+  if ((lexicalTags.includes("Participle") || lexicalTags.includes("Gerund"))
+    && !lexicalTags.includes("PastTense")) return undefined;
   const verbSurface = stringUnknown(lexicalTerm.text);
-  const lexicalTermIndex = termIndexUnknown(lexicalTerm.index);
   const infinitive = stringUnknown(verb.infinitive) || verbSurface;
   if (!verbSurface || lexicalTermIndex === undefined
     || !infinitive || normalizeMemorySurface(infinitive) === "be") return undefined;

@@ -121,9 +121,11 @@ interface RealizedBeat {
   clauses: RealizedClause[];
 }
 
+export const MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS = 1_800;
 const MAX_TARGET_WORDS = 6_000;
-const MAX_OUTPUT_SENTENCES = 720;
+const MAX_OUTPUT_SENTENCES = MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS;
 const structuralEventRealizabilityCache = new WeakMap<DurableCreativeEventConstruction, boolean>();
+const sourceArgumentSurfaceCache = new Map<string, string | null>();
 
 export function isEnglishCreativeEventStructurallyRealizable(
   event: DurableCreativeEventConstruction
@@ -373,7 +375,21 @@ function realizeTypedEvent(
   const replacedRoles = ["scce.role.agent", "scce.role.request_action"];
   const sourceBoundRoles: string[] = [];
   let unchangedTokenRun = 0;
-  for (const binding of frame.bindings) {
+  const requestBoundArgument = frame.bindings.find(binding =>
+    row.requestRoleBindings?.some(candidate =>
+      candidate.admissible
+      && candidate.requestRoleId === "scce.request.role.antagonist"
+      && candidate.eventRoleId === binding.roleId
+    )
+  );
+  const sourceBoundArgument = frame.bindings.find(binding => binding.roleId === "scce.role.patient")
+    ?? frame.bindings[0];
+  const realizedBindings = requestBoundArgument
+    ? [requestBoundArgument]
+    : sourceBoundArgument
+      ? [sourceBoundArgument]
+      : [];
+  for (const binding of realizedBindings) {
     const plannedRequestBinding = row.requestRoleBindings?.find(candidate =>
       candidate.admissible
       && candidate.requestRoleId === "scce.request.role.antagonist"
@@ -912,15 +928,43 @@ function cleanNounSurface(value: string): string {
 }
 
 function sourceBoundEnglishArgumentSurface(value: string): string | undefined {
+  const cacheKey = value.normalize("NFKC");
+  if (sourceArgumentSurfaceCache.has(cacheKey)) {
+    return sourceArgumentSurfaceCache.get(cacheKey) ?? undefined;
+  }
   const clean = cleanNounSurface(value);
   const words = surfaceTokens(clean);
-  if (!clean || words.length < 1 || words.length > 4) return undefined;
+  if (!clean || words.length < 1 || words.length > 4) {
+    cacheSourceArgumentSurface(cacheKey, undefined);
+    return undefined;
+  }
   if (/\b(?:a|an|the|every|some|any|each|this|that|these|those)\b/iu.test(clean)) {
+    cacheSourceArgumentSurface(cacheKey, undefined);
     return undefined;
   }
   const document = nlp(clean);
-  if (!document.nouns().found || document.verbs().found) return undefined;
-  return englishDefiniteSurface(clean);
+  if (!document.nouns().found || document.verbs().found) {
+    cacheSourceArgumentSurface(cacheKey, undefined);
+    return undefined;
+  }
+  const tags = new Set(
+    unknownArray(document.json({ terms: { tags: true } }))
+      .flatMap(row => unknownArray(recordUnknown(row).terms))
+      .flatMap(term => unknownArray(recordUnknown(term).tags).map(String))
+  );
+  const surface = tags.has("Plural")
+    || tags.has("Uncountable")
+    || tags.has("ProperNoun")
+    || /^(?:(?:some|any|every|no)(?:one|body|thing)|none)$/iu.test(clean)
+    ? clean
+    : englishDefiniteSurface(clean);
+  cacheSourceArgumentSurface(cacheKey, surface);
+  return surface;
+}
+
+function cacheSourceArgumentSurface(key: string, value: string | undefined): void {
+  if (sourceArgumentSurfaceCache.size >= 20_000) return;
+  sourceArgumentSurfaceCache.set(key, value ?? null);
 }
 
 function englishDefiniteSurface(value: string): string {

@@ -133,6 +133,7 @@ import type { RetrievalPlan } from "./retrieval.js";
 import type { CcrResult } from "./ccr.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { planInventions } from "./invention-planner.js";
+import { englishCreativeStructuralRouteEvents } from "./english-structural-realizer.js";
 import { updateDialogueState, type DialogueState } from "./dialogue-pragmatics.js";
 import {
   activateCognitiveOperators,
@@ -2227,6 +2228,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             cluster ? "warmup-creative-language-cluster" : "warmup-creative-language-unscoped",
             CORPUS_ROLE_IDS.publicDomainProse
           );
+          const creativeEvents = creativeLanguage.state.importedConstructionBundles
+            .flatMap(bundle => bundle.creativeEvents ?? []);
+          const structuralCreativeEvents = englishCreativeStructuralRouteEvents(creativeEvents);
           if (result.language) {
             result.language.models = Math.max(result.language.models, creativeLanguage.models.length);
             result.language.observations = Math.max(result.language.observations, creativeLanguage.observations.length);
@@ -2241,7 +2245,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             counts: {
               sourceFrames: sourceFrames.length,
               sourceEvidence: sourceEvidenceIds.length,
-              creativeFrames: creativeLanguage.semanticFrames.length
+              creativeFrames: creativeLanguage.semanticFrames.length,
+              creativeEvents: creativeEvents.length,
+              structuralCreativeEvents: structuralCreativeEvents.length
             }
           });
         } catch (error) {

@@ -146,7 +146,7 @@ describe("invention planner", () => {
     expect(planned[0]!.basisEvidenceIds).toEqual([]);
   });
 
-  it("gives an exact purity-proven compiler-v4 cluster exclusive structural authority", () => {
+  it("gives the exact current purity-proven compiler cluster exclusive structural authority", () => {
     const fixture = plannerFixtureWithStructuralCreativeBundle(
       "Write a fictional story about a cartographer crossing a storm."
     );
@@ -207,7 +207,7 @@ describe("invention planner", () => {
     expect(planned).toEqual([]);
   });
 
-  it("returns no creative inventions without verified compiler-v4 structural bundles", () => {
+  it("returns no creative inventions without verified current structural bundles", () => {
     const fixture = plannerFixture("Write a fictional story about a cartographer crossing a storm.");
 
     expect(planInventions({

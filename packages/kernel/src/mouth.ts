@@ -47,6 +47,7 @@ import {
 import {
   englishCreativeStructuralRouteEvents,
   isEnglishCreativeEventStructurallyRealizable,
+  MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS,
   realizeEnglishStructuralCreative,
   type EnglishStructuralPlannedEvent,
   type LearnedResponseExtentHint,
@@ -2643,7 +2644,9 @@ function selectedStructuralCreativePlan(input: SpeakInput): StructuralCreativeSe
 function structuralCreativeEventSelectors(
   value: JsonValue | undefined
 ): StructuralCreativeEventSelector[] {
-  if (!Array.isArray(value) || value.length < 4 || value.length > 720) return [];
+  if (!Array.isArray(value)
+    || value.length < 4
+    || value.length > MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS) return [];
   const rows = arrayRecords(value);
   if (rows.length !== value.length) return [];
   const out: StructuralCreativeEventSelector[] = [];

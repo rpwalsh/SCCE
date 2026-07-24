@@ -355,12 +355,13 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
     if (!runtime) return usage("scce corpus train <gutenberg|oss> <path> [limits]");
     const kind = args[1];
     const target = args[2];
-    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss> <path> [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
+    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss> <path> [--language=<source-alias>] [--start-file=<n>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
     const options = parseCorpusTrainOptions(args.slice(3));
     if (kind === "gutenberg") {
       printJson(await trainGutenbergCorpus({
         storage: runtime.storage,
         rootPath: path.resolve(target),
+        startFileIndex: options.startFileIndex,
         maxFilesPerRun: options.maxFiles,
         maxFileBytes: options.maxFileBytes,
         maxDepth: options.maxDepth,
@@ -1099,6 +1100,7 @@ function parseCorpusTrainOptions(args: string[]): {
   maxFiles?: number;
   maxFileBytes?: number;
   maxDepth?: number;
+  startFileIndex?: number;
   includeDocs?: boolean;
   includeSource?: boolean;
   ngramMaxOrder?: number;
@@ -1110,6 +1112,7 @@ function parseCorpusTrainOptions(args: string[]): {
     maxFiles?: number;
     maxFileBytes?: number;
     maxDepth?: number;
+    startFileIndex?: number;
     includeDocs?: boolean;
     includeSource?: boolean;
     ngramMaxOrder?: number;
@@ -1121,6 +1124,7 @@ function parseCorpusTrainOptions(args: string[]): {
     const [flag, raw] = arg.split("=", 2);
     const num = raw === undefined ? NaN : Number(raw);
     if ((flag === "--max-files" || flag === "--max-files-per-run" || flag === "--max-files-per-repo") && Number.isFinite(num)) out.maxFiles = Math.max(1, Math.floor(num));
+    else if ((flag === "--start-file" || flag === "--start-file-index") && Number.isFinite(num)) out.startFileIndex = Math.max(0, Math.floor(num));
     else if (flag === "--max-file-bytes" && Number.isFinite(num)) out.maxFileBytes = Math.max(1024, Math.floor(num));
     else if (flag === "--max-depth" && Number.isFinite(num)) out.maxDepth = Math.max(0, Math.floor(num));
     else if (flag === "--ngram-max-order" && Number.isFinite(num)) out.ngramMaxOrder = Math.max(1, Math.min(6, Math.floor(num)));
