@@ -537,16 +537,15 @@ export function createRuntimeGraphRetrieval(options: {
 
   async function loadHotNeighborhood(epoch: number): Promise<HotGraphNeighborhood | undefined> {
     try {
-      const anchorNodeLimit = hotNeighborhoodNodeLimit <= 1
-        ? hotNeighborhoodNodeLimit
-        : Math.max(1, Math.floor(hotNeighborhoodNodeLimit * 0.75));
       const graph = await deps.storage.graph.getSlice({
-        limitNodes: anchorNodeLimit,
+        limitNodes: hotNeighborhoodNodeLimit,
         limitEdges: hotNeighborhoodEdgeLimit,
         allowLatestFallback: true
       });
       if (epoch !== runtimeCacheEpoch || !graph.nodes.length) return undefined;
-      const closureCapacity = Math.max(0, hotNeighborhoodNodeLimit - graph.nodes.length);
+      const closureCapacity = hotNeighborhoodNodeLimit <= 1
+        ? 0
+        : hotNeighborhoodNodeLimit - Math.max(1, Math.floor(hotNeighborhoodNodeLimit * 0.75));
       const closureCandidates = hotNeighborhoodClosureCandidates(graph, closureCapacity);
       const closureGraph = closureCandidates.length
         ? await deps.storage.graph.getSlice({
@@ -556,6 +555,14 @@ export function createRuntimeGraphRetrieval(options: {
           })
         : undefined;
       if (epoch !== runtimeCacheEpoch) return undefined;
+      const requestedClosureNodeIds = new Set(
+        closureCandidates.map(candidate => candidate.nodeId)
+      );
+      const loadedClosureNodeIds = new Set(
+        (closureGraph?.nodes ?? [])
+          .map(node => String(node.id))
+          .filter(nodeId => requestedClosureNodeIds.has(nodeId))
+      );
       const closedGraph = closeHotNeighborhoodTopology(
         graph,
         closureCandidates,
@@ -576,7 +583,7 @@ export function createRuntimeGraphRetrieval(options: {
             graph: {
               ...closedGraph,
               nodes: interleaveHotClosureNodes(
-                graph.nodes,
+                closedGraph.nodes.filter(node => !loadedClosureNodeIds.has(String(node.id))),
                 closureCandidates,
                 closureGraph?.nodes ?? []
               )
@@ -595,7 +602,8 @@ export function createRuntimeGraphRetrieval(options: {
           nodes: hot.value.graph.nodes.length,
           edges: hot.value.graph.edges.length,
           evidence: hot.value.evidence.length,
-          closureNodes: Math.max(0, hot.value.graph.nodes.length - graph.nodes.length),
+          closureNodes: hot.value.graph.nodes
+            .filter(node => loadedClosureNodeIds.has(String(node.id))).length,
           bytes: hot.bytes,
           cacheBytes: graphSliceCacheBytes
         }
@@ -708,10 +716,26 @@ export function createRuntimeGraphRetrieval(options: {
     loadedNodes: readonly GraphNode[]
   ): GraphSlice {
     const requestedNodeIds = new Set(candidates.map(candidate => candidate.nodeId));
+    const graphNodeIds = new Set(graph.nodes.map(node => String(node.id)));
+    const closureNodes = [...new Map(loadedNodes
+      .filter(node =>
+        requestedNodeIds.has(String(node.id))
+        && !graphNodeIds.has(String(node.id)))
+      .map(node => [String(node.id), node])).values()]
+      .slice(0, hotNeighborhoodNodeLimit);
+    const closureNodeIds = new Set(closureNodes.map(node => String(node.id)));
+    const requiredAnchorNodeIds = new Set(candidates
+      .filter(candidate => closureNodeIds.has(candidate.nodeId))
+      .map(candidate => candidate.anchorNodeId));
+    const anchorLimit = Math.max(0, hotNeighborhoodNodeLimit - closureNodes.length);
+    const selectedAnchorNodeIds = new Set([
+      ...graph.nodes.filter(node => requiredAnchorNodeIds.has(String(node.id))),
+      ...graph.nodes.filter(node => !requiredAnchorNodeIds.has(String(node.id)))
+    ].slice(0, anchorLimit).map(node => String(node.id)));
     const nodes = [
-      ...graph.nodes,
-      ...loadedNodes.filter(node => requestedNodeIds.has(String(node.id)))
-    ].slice(0, hotNeighborhoodNodeLimit);
+      ...graph.nodes.filter(node => selectedAnchorNodeIds.has(String(node.id))),
+      ...closureNodes
+    ];
     const nodeIds = new Set(nodes.map(node => String(node.id)));
     return {
       ...graph,
