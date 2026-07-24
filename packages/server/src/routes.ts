@@ -5,7 +5,7 @@ import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RuntimeDeadlineMetadata, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness } from "./startup.js";
@@ -727,10 +727,23 @@ function validateTrain(value: unknown): TrainInput {
 
 function validateTurn(value: unknown): OwnerInput {
   if (!isRecord(value) || typeof value.text !== "string" || !value.text.trim()) throw new HttpError(400, "turn requires non-empty text");
+  if (value.requestedAuthority !== undefined && !isRequestedAuthority(value.requestedAuthority)) {
+    throw new HttpError(400, "turn requestedAuthority is invalid");
+  }
   return {
     text: boundedString(value.text, "text", 20000),
+    ...(value.requestedAuthority ? { requestedAuthority: value.requestedAuthority } : {}),
     metadata: value.metadata === undefined ? undefined : validateJsonValue(value.metadata, "metadata")
   };
+}
+
+function isRequestedAuthority(value: unknown): value is RequestedAuthority {
+  return value === "factual"
+    || value === "reasoned"
+    || value === "creative"
+    || value === "translation"
+    || value === "program"
+    || value === "action";
 }
 
 function conversationSessionId(value: unknown): string | undefined {

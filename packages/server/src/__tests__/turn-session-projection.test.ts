@@ -123,6 +123,7 @@ describe("turn session metadata projection", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         text: "Continue the session",
+        requestedAuthority: "factual",
         sessionId: "session.fixture",
         metadata: {
           fastLocalEvidenceAnswer: false,
@@ -137,6 +138,7 @@ describe("turn session metadata projection", () => {
 
     expect(response.status).toBe(500);
     expect(captured).toHaveLength(1);
+    expect(captured[0]?.requestedAuthority).toBe("factual");
     const metadata = captured[0]?.metadata as Record<string, unknown>;
     const session = metadata.session as Record<string, unknown>;
     const recentTurns = session.recentTurns as Array<Record<string, unknown>>;
