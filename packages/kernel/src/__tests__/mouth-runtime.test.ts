@@ -421,6 +421,173 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
   });
 
+  it("preserves a planner-selected source excerpt when formal proof is unavailable", async () => {
+    const source = sourceVersion();
+    const evidence = {
+      ...directEvidence(source),
+      languageHints: {
+        scripts: [{ script: "script:Latn", mass: 1 }]
+      },
+      scriptHints: {
+        dominantScripts: [{ script: "script:Latn", mass: 1 }]
+      }
+    };
+    const surfaceProfile = {
+      ...languageProfile(source),
+      sourceVersionId: ids.sourceVersionId(Buffer.from("independent-language-profile"))
+    };
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const answer = fixture.evidenceText;
+    const selectedCandidate: CandidateSurface = {
+      id: "candidate:source-excerpt-without-proof",
+      kind: "proof-answer",
+      answer,
+      force: "inferred",
+      evidenceIds: [evidence.id],
+      scores: {
+        support: 0.48,
+        contradiction: 0,
+        faithfulness: 0.52,
+        alphaPressure: 0.5,
+        actionability: 0.6,
+        evidenceCoverage: 0.2,
+        novelty: 0,
+        realizability: 0.8,
+        risk: 0
+      },
+      claimBases: ["direct_evidence"],
+      boundaries: ["proof-admission.critical-missing:1"],
+      audit: { source: "planner-selected-source-excerpt" }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: surfaceProfile,
+      evidence: [evidence],
+      entailment: {
+        ...entailment,
+        evidenceIds: [],
+        proof: { ...entailment.proof, evidenceIds: [] }
+      },
+      languageMemory: importedMemory(source, evidence, "source-excerpt-without-proof"),
+      requirementField: deriveTurnRequirementField({ requestText: fixture.claim }),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe(answer);
+    expect(spoken.evidenceRefs).toEqual([evidence.id]);
+    expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+  });
+
+  it("uses the bounded exact-excerpt entailment route when source text is available", () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const result = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: evidence.text,
+      evidence: [evidence],
+      nodes: [],
+      field: emptyField(),
+      createdAt: clock.now(),
+      sourceExcerpts: [{ text: evidence.text, evidenceId: evidence.id }]
+    });
+
+    expect(result.force).toBe("observed");
+    expect(result.evidenceIds).toEqual([evidence.id]);
+    expect(result.contradiction).toBe(0);
+    expect(result.proof.scores).toMatchObject({ sourceExcerptExact: true });
+  });
+
+  it("uses the exact-excerpt route when source typography is normalized for speech", () => {
+    const source = sourceVersion();
+    const evidence = {
+      ...directEvidence(source),
+      text: "The 'analytical engine' was designed by Charles Babbage.",
+      textPreview: "The 'analytical engine' was designed by Charles Babbage."
+    };
+    const answer = "The analytical engine was designed by Charles Babbage.";
+    const result = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: answer,
+      evidence: [evidence],
+      nodes: [],
+      field: emptyField(),
+      createdAt: clock.now(),
+      sourceExcerpts: [{ text: answer, evidenceId: evidence.id }]
+    });
+
+    expect(result.force).toBe("observed");
+    expect(result.evidenceIds).toEqual([evidence.id]);
+    expect(result.proof.scores).toMatchObject({ sourceExcerptExact: true });
+  });
+
+  it("rejects a cited planner surface that is absent from its evidence", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const unsupportedAnswer = "The greenhouse launches a weather satellite before noon.";
+    const selectedCandidate: CandidateSurface = {
+      id: "candidate:unsupported-cited-surface",
+      kind: "proof-answer",
+      answer: unsupportedAnswer,
+      force: "inferred",
+      evidenceIds: [evidence.id],
+      scores: {
+        support: 0.48,
+        contradiction: 0,
+        faithfulness: 0.52,
+        alphaPressure: 0.5,
+        actionability: 0.6,
+        evidenceCoverage: 0.2,
+        novelty: 0,
+        realizability: 0.8,
+        risk: 0
+      },
+      claimBases: ["direct_evidence"],
+      boundaries: ["proof-admission.critical-missing:1"],
+      audit: { source: "planner-selected-source-excerpt" }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: semanticAnswerConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment: {
+        ...entailment,
+        evidenceIds: [],
+        proof: { ...entailment.proof, evidenceIds: [] }
+      },
+      languageMemory: importedMemory(source, evidence, "unsupported-cited-surface"),
+      requirementField: deriveTurnRequirementField({ requestText: fixture.claim }),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(spoken.text).not.toBe(unsupportedAnswer);
+    expect(spoken.realizationTrace.selected.id).not.toBe(selectedCandidate.id);
+  });
+
   it("collapses overlapping factual spans before applying the default surface extent", async () => {
     const source = sourceVersion();
     const clauses = [

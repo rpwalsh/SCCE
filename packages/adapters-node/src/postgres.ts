@@ -348,6 +348,7 @@ function schemaStatements(q: string): string[] {
     `CREATE TABLE IF NOT EXISTS ${q}.sources (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, canonical_uri TEXT NOT NULL, first_seen_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.source_versions (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, byte_length BIGINT NOT NULL, trust DOUBLE PRECISION NOT NULL, metadata_json JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, relation_id TEXT NOT NULL, member_node_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
@@ -513,6 +514,7 @@ function schemaStatements(q: string): string[] {
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_version ON ${q}.evidence_spans(source_version_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_status ON ${q}.evidence_spans(status)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_status_rank ON ${q}.evidence_spans(status, alpha DESC, observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_anchor_features ON ${q}.evidence_anchor_index USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_features ON ${q}.graph_nodes USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_evidence ON ${q}.graph_nodes USING GIN(evidence_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_updated ON ${q}.graph_nodes(updated_at DESC)`,
@@ -625,6 +627,7 @@ function requiredHydrationColumns(): Record<string, string[]> {
     sources: ["id", "namespace", "canonical_uri"],
     source_versions: ["id", "source_id", "content_hash", "media_type", "observed_at", "byte_length", "trust", "metadata_json"],
     evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "trust_vector", "provenance_json", "features", "status", "alpha"],
+    evidence_anchor_index: ["evidence_id", "features"],
     graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json"],
     graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json"],
     graph_hyperedges: ["id", "relation_id", "member_node_ids", "weight_vector", "provenance_refs"],
@@ -853,6 +856,34 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     },
     async searchEvidence(query: EvidenceQuery) {
       const features = evidenceQueryFeatures(query.features ?? []);
+      if (features.length && features.every(isEvidenceAnchorFeature) && !query.sourceId && !query.sourceVersionId) {
+        const rows = await storage.query<EvidenceRow>(
+          `WITH requested_features AS (
+             SELECT feature, feature_ord
+             FROM unnest($1::text[]) WITH ORDINALITY AS requested(feature, feature_ord)
+           ),
+           candidate_hits AS (
+             SELECT anchor_index.evidence_id AS id,
+                    COUNT(*) AS overlap_count,
+                    MIN(requested.feature_ord) AS first_feature_ord
+             FROM requested_features requested
+             JOIN ${storage.table("evidence_anchor_index")} anchor_index
+               ON anchor_index.features @> ARRAY[requested.feature]::text[]
+             GROUP BY anchor_index.evidence_id
+           )
+           SELECT evidence.*
+           FROM candidate_hits hits
+           JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
+           ORDER BY hits.overlap_count DESC,
+                    hits.first_feature_ord ASC,
+                    CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
+                    evidence.alpha DESC,
+                    evidence.observed_at DESC
+           LIMIT $2`,
+          [features, query.limit ?? 80]
+        );
+        return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting evidence search" }));
+      }
       if (features.length && !query.sourceId && !query.sourceVersionId) {
         const featureBranches = features.map((_, index) =>
           `SELECT id, ${index + 1}::bigint AS feature_ord FROM ${storage.table("evidence_spans")} WHERE features @> ARRAY[$${index + 1}]::text[]`
@@ -934,7 +965,8 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
     observed_at_ms: span.observedAt
   }));
   await storage.query(
-    `INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at)
+    `WITH upserted AS (
+       INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at)
      SELECT
        r.id,
        r.source_id,
@@ -983,7 +1015,29 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        alpha=GREATEST(ev.alpha, EXCLUDED.alpha),
        trust_vector=ev.trust_vector || EXCLUDED.trust_vector,
        provenance_json=ev.provenance_json || EXCLUDED.provenance_json,
-       features=ARRAY(SELECT DISTINCT value FROM unnest(ev.features || EXCLUDED.features) AS merged(value) ORDER BY value)`,
+       features=ARRAY(SELECT DISTINCT value FROM unnest(ev.features || EXCLUDED.features) AS merged(value) ORDER BY value)
+     RETURNING id,features
+     )
+     INSERT INTO ${storage.table("evidence_anchor_index")} AS anchor_index(evidence_id,features)
+     SELECT upserted.id,
+            ARRAY(
+              SELECT feature
+              FROM unnest(upserted.features) AS feature
+              WHERE feature LIKE 'anchor:bi:%' OR feature LIKE 'anchor:sym:%'
+              ORDER BY feature
+            )
+     FROM upserted
+     WHERE EXISTS (
+       SELECT 1
+       FROM unnest(upserted.features) AS feature
+       WHERE feature LIKE 'anchor:bi:%' OR feature LIKE 'anchor:sym:%'
+     )
+     ON CONFLICT(evidence_id) DO UPDATE SET
+       features=ARRAY(
+         SELECT DISTINCT feature
+         FROM unnest(anchor_index.features || EXCLUDED.features) AS feature
+         ORDER BY feature
+       )`,
     [JSON.stringify(payload)]
   );
 }
@@ -1253,6 +1307,8 @@ function isGraphRetrievalFeature(feature: string): boolean {
 function isEvidenceRetrievalFeature(feature: string): boolean {
   const cleanFeature = feature.trim();
   if (!cleanFeature) return false;
+  if (cleanFeature.startsWith("anchor:bi:")) return true;
+  if (cleanFeature.startsWith("anchor:sym:")) return [...cleanFeature.slice("anchor:sym:".length)].length >= 3;
   if (cleanFeature.startsWith("tri:") || cleanFeature.startsWith("bi:")) return true;
   if (cleanFeature.startsWith("sym:")) return [...cleanFeature.slice(4)].length >= 4;
   return false;
@@ -1509,6 +1565,11 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
       );
     }
   });
+}
+
+function isEvidenceAnchorFeature(feature: string): boolean {
+  const cleanFeature = feature.trim();
+  return cleanFeature.startsWith("anchor:bi:") || cleanFeature.startsWith("anchor:sym:");
 }
 
 function sourceOwnedLanguageAliasRows(profiles: readonly LanguageProfile[]): Array<{

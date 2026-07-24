@@ -1,7 +1,7 @@
 import type { EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceVersionId } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import type { Hasher } from "./types.js";
-import { clamp01, entropy, featureSet, symbolizeData, toJsonValue } from "./primitives.js";
+import { anchorFeatureSet, clamp01, entropy, featureSet, symbolizeData, toJsonValue } from "./primitives.js";
 
 export interface EvidenceExtractionInput {
   sourceId: SourceId;
@@ -292,11 +292,12 @@ function sectionForChunk(sections: SectionBoundary[], chunk: ChunkBoundary): Sec
 
 function evidenceFeatures(text: string, section: SectionBoundary | undefined, index: number): string[] {
   const base = featureSet(text, 900);
+  const anchors = anchorFeatureSet(text, 256);
   const structural = [`span-index:${Math.floor(index / 4)}`, `span-mod:${index % 4}`];
   if (section) structural.push(`section:${section.title.toLowerCase()}`, `section-depth:${section.depth}`);
   const density = symbolizeData(text).length / Math.max(1, [...text].length);
   structural.push(`density:${Math.round(density * 100)}`);
-  return [...new Set([...base, ...structural])].sort().slice(0, 1100);
+  return [...new Set([...anchors, ...base, ...structural])].sort().slice(0, 1100);
 }
 
 function evidenceAlpha(input: { features: string[]; structuralConfidence: number; chunk: ChunkBoundary; lexicalEntropy: number; mediaType: string }): number {

@@ -14,6 +14,7 @@
     "xlsx": "file:../../vendor/xlsx-0.20.3.tgz"
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "backfill:evidence-anchors": "node scripts/backfill-evidence-anchor-features.mjs"
   }
 }

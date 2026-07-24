@@ -80,6 +80,7 @@ import type {
   evidence: EvidenceSpan[];
   slotSurfaces: Record<string, string | string[]>;
   maxSentences: number;
+  proofExcerpts?: Array<{ text: string; evidenceId: EvidenceSpan["id"] }>;
   audit: JsonValue;
 }
 
@@ -119,10 +120,12 @@ export function evidenceForRequest(
       const lexical = Math.max(weightedJaccard(requestFeatures, span.features), weightedJaccard(requestFeatures, surfaceFeatures));
       const sessionSpan = String(span.id).startsWith("evidence_session_");
       const contentOverlap = evidenceRequestContentOverlap(span, contentUnits);
+      const contentAnchorAligned = anchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, text));
       const anchorAligned = anchors.length > 0 && (
         evidenceExactSourceAnchorMatches(span, anchors) ||
         evidenceTitleDistinctAnchorMatches(span, anchors) ||
-        evidenceSourceMatchesAnchors(span, anchors)
+        evidenceSourceMatchesAnchors(span, anchors) ||
+        contentAnchorAligned
       );
       const explicitContextAligned = explicitContextEvidenceIds.has(String(span.id));
       const semanticFrameBoundAligned = semanticFrameBoundEvidenceIds.has(String(span.id));
@@ -191,7 +194,7 @@ export function runtimeEvidenceWindowsForRequest(text: string, evidence: readonl
   const requestUnits = requestUnitSet(text);
   const definitionAnchor = definitionRequestAnchor(text);
   return evidence.slice(0, 8).map(span => {
-    const source = evidenceRetrievalSurface(span, 12000);
+    const source = sourceTextSurface(span.text || span.textPreview, 12000);
     if (source.length <= 6000) return span;
     const sentences = source
       .split(/(?<=[.!?。！？])\s+|\n+/u)
@@ -229,7 +232,11 @@ export function runtimeEvidenceWindowsForRequest(text: string, evidence: readonl
       .sort((a, b) => b.score - a.score || a.index - b.index)
       .slice(0, 4);
     const byIndex = new Map<number, { sentence: string; index: number; score: number }>();
-    for (const row of [...leadRows, ...ranked, ...dateRows, ...sectionRows]) byIndex.set(row.index, row);
+    for (const row of [...leadRows, ...ranked, ...dateRows]) byIndex.set(row.index, row);
+    for (const row of sectionRows) {
+      const index = sentences.length + row.index;
+      byIndex.set(index, { ...row, index });
+    }
     const selectedRows = [...byIndex.values()]
       .sort((a, b) => a.index - b.index);
     const selected = (selectedRows.length ? selectedRows : sentences.slice(0, 8).map((sentence, index) => ({ sentence, index, score: 0 })))
@@ -355,7 +362,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
   const rows = evidence.flatMap(span =>
-    fastAnswerSentences(evidenceRetrievalSurface(span, 12000))
+    fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 12000))
       .slice(0, 80)
       .map((sentence, index) => {
         const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
@@ -390,6 +397,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       [LOCAL_ANSWER_SLOT_IDS.sentence]: [selected.sentence]
     },
     maxSentences: 1,
+    proofExcerpts: [{ text: selected.sentence, evidenceId: selected.span.id }],
     audit: toJsonValue({
       source: "kernel.turn.source_exact_proposal",
       basisClassId: "basis.source_exact.54d2a9be",
@@ -398,7 +406,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       sourceAnchors: anchored.anchors,
       proposalScore: selected.score,
       proposalSentenceIndex: selected.index,
-      proofRequired: true,
+      proofEnrichmentOptional: true,
       fakeEvidenceForbidden: true
     })
   };
@@ -541,6 +549,9 @@ export function localEvidenceAnswerClaimSurface(candidate: LocalEvidenceAnswerCa
 export function localEvidenceAnswerProofExcerpts(
   candidate: LocalEvidenceAnswerCandidate
 ): Array<{ text: string; evidenceId: EvidenceSpan["id"] }> {
+  if (candidate.plan.proofExcerpts?.length) {
+    return candidate.plan.proofExcerpts.map(excerpt => ({ ...excerpt }));
+  }
   const surfaces = Object.values(candidate.plan.slotSurfaces)
     .flatMap(value => Array.isArray(value) ? value : [value])
     .map(value => sourceTextSurface(String(value), 12000))
@@ -1356,7 +1367,17 @@ export function sourceAnchoredEvidenceForRequest(
   const semanticFrameBoundEvidence = semanticFrameBoundEvidenceIds?.size
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
     : [];
-  if (primaryAnchor && !primaryEvidence.length && !semanticFrameBoundEvidence.length) return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: [] };
+  const contentBoundEvidence = evidence.filter(span =>
+    anchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, requestText))
+  );
+  const contentMentionEvidence = contentBoundEvidence.length
+    ? []
+    : evidence.filter(span => anchors.some(anchor => evidenceContentMentionsAnchor(span, anchor)));
+  if (primaryAnchor
+    && !primaryEvidence.length
+    && !contentBoundEvidence.length
+    && !contentMentionEvidence.length
+    && !semanticFrameBoundEvidence.length) return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: [] };
   const primaryExact = primaryAnchor
     ? evidence.filter(span => evidenceExactSourceAnchorMatches(span, [primaryAnchor]) && evidenceAnchorFitForRequest(span, requestText))
     : [];
@@ -1378,9 +1399,29 @@ export function sourceAnchoredEvidenceForRequest(
     required: true,
     anchors: uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
     evidence: exact.length
-      ? uniqueEvidenceById([...primaryEvidence, ...exact, ...selected, ...semanticFrameBoundEvidence])
-      : uniqueEvidenceById([...primaryEvidence, ...selected, ...semanticFrameBoundEvidence])
+      ? uniqueEvidenceById([...primaryEvidence, ...exact, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence])
+      : uniqueEvidenceById([...primaryEvidence, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence])
   };
+}
+
+function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, requestText: string): boolean {
+  const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+  if (anchorUnits.length < 2) return false;
+  const relationUnits = requestAnchorFitUnits(requestText)
+    .filter(unit => !anchorUnits.some(anchorUnit => requestUnitMatchesSurface(unit, anchorUnit)));
+  if (!relationUnits.length) return false;
+  return fastAnswerSentences((span.textPreview || span.text).slice(0, 4000)).some(sentence => {
+    const sentenceUnits = splitPriorUnits(normalizePriorKey(sentence)).filter(Boolean);
+    if (!sourceAnchorPhraseContains(sentenceUnits, anchorUnits)) return false;
+    return relationUnits.some(unit => sentenceUnits.some(sentenceUnit => requestUnitMatchesSurface(unit, sentenceUnit)));
+  });
+}
+
+function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): boolean {
+  const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+  if (anchorUnits.length < 2) return false;
+  const previewUnits = splitPriorUnits(normalizePriorKey((span.textPreview || span.text).slice(0, 4000))).filter(Boolean);
+  return sourceAnchorPhraseContains(previewUnits, anchorUnits);
 }
 
 

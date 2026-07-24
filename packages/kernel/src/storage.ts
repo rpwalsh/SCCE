@@ -829,7 +829,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 13;
+export const POSTGRES_SCHEMA_VERSION = 14;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -840,6 +840,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "sources",
   "source_versions",
   "evidence_spans",
+  "evidence_anchor_index",
   "graph_nodes",
   "graph_edges",
   "graph_hyperedges",

@@ -37,6 +37,7 @@
     "eval:validate": "pnpm --dir tools/sealed-eval test",
     "rehearsal:postgres": "node tools/live-postgres-rehearsal.mjs",
     "rehearsal:adapter": "node tools/live-adapter-rehearsal.mjs",
+    "maintenance:evidence-anchors": "pnpm --dir packages/adapters-node backfill:evidence-anchors",
     "validate": "pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",
     "scce": "node packages/cli/dist/index.js",
     "hygiene:language-control": "node packages/cli/dist/index.js hygiene language-control",

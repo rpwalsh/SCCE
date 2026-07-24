@@ -5,6 +5,7 @@ import {
   createIdFactory,
   createEvaluationCondition,
   createScceKernel,
+  anchorFeatureSet,
   featureSet,
   verifyEvaluationTrace,
   type AlphaTrace,
@@ -23,8 +24,39 @@ import {
   type EvaluationConditionId,
   type EvaluationTraceEvent
 } from "../index.js";
+import { sourceAnchoredEvidenceForRequest } from "../local-evidence-runtime.js";
 
 describe("kernel local evidence source anchoring", () => {
+  it("keeps punctuation-neutral multi-token source anchors ahead of generic features", () => {
+    const features = anchorFeatureSet(
+      "The analytical engine was designed by Charles Babbage's team.",
+      64
+    );
+
+    expect(features).toContain("anchor:bi:charles|babbage");
+    expect(features).toContain("anchor:sym:charles");
+    expect(features).toContain("anchor:sym:babbage");
+  });
+
+  it("admits a bounded source preview that names the requested multi-token subject", () => {
+    const analyticalEngine = evidenceSpan({
+      id: "evidence:ada-babbage",
+      sourceVersionId: "source:ada-babbage:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace worked on Charles Babbage's proposed mechanical general-purpose computer, the analytical engine.",
+      alpha: 0.93
+    });
+
+    const anchored = sourceAnchoredEvidenceForRequest(
+      "What did Charles Babbage design?",
+      [analyticalEngine]
+    );
+
+    expect(anchored.required).toBe(true);
+    expect(anchored.evidence.map(span => String(span.id))).toEqual([String(analyticalEngine.id)]);
+  });
+
   it("answers a locally present named source from its matching evidence instead of a generic A page", async () => {
     const clock = createClock({ fixedTime: 6000, stepMs: 1 });
     const hasher = createHasher();

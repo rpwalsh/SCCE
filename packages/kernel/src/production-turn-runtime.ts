@@ -640,7 +640,11 @@ export function createProductionTurnRuntime(options: {
         input.text,
         evidencePool,
         graph.nodes,
-        new Set([...metadataEvidenceIds, ...semanticFrameBoundEvidenceIds])
+        new Set([
+          ...metadataEvidenceIds,
+          ...semanticFrameBoundEvidenceIds,
+          ...(requestedAuthority === "creative" ? [] : graphSlice.evidence.map(span => String(span.id)))
+        ])
       );
       const calibrationModels = await calibrationModelsCached();
       const sourceAnchorAudit = discourseEvidenceBound
@@ -772,6 +776,20 @@ export function createProductionTurnRuntime(options: {
       const proofSourceExcerpts = answerProposal
         ? localEvidenceAnswerProofExcerpts(answerProposal)
         : [];
+      kernelTrace({
+        stage: "candidate.proposal",
+        label: "kernel.turn.source_exact",
+        counts: {
+          proposed: answerProposal ? 1 : 0,
+          claimChars: proofClaimText.length,
+          evidence: proofCandidateEvidence.length,
+          sourceExcerpts: proofSourceExcerpts.length
+        },
+        support: {
+          planId: answerProposal?.plan.planId ?? null,
+          evidenceIds: answerProposal?.evidence.map(span => String(span.id)) ?? []
+        }
+      });
       const supportBundle = evaluationComponent(
         "support-engine",
         "proof.support-engine",
@@ -887,13 +905,24 @@ export function createProductionTurnRuntime(options: {
         ?? selectedTemporalFallback;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       markTiming("proofMs");
-      const selectedPoolLocalEvidenceAnswer = proofSelectedEvidence.length
-        ? (
-          answerProposal
-          && proofSourceExcerpts.length > 0
-          && answerProposal.evidence.every(span => entailmentResult.evidenceIds.some(id => String(id) === String(span.id)))
-            ? answerProposal
-            : localEvidenceAnswerSurface({
+      const semanticProofContradiction = typeof semanticProof.contradiction === "number"
+        && Number.isFinite(semanticProof.contradiction)
+        ? semanticProof.contradiction
+        : 0;
+      // Formal-proof pressure can remain high when the proof graph is incomplete.
+      // It calibrates force, but it is not counterevidence against an exact
+      // promoted source excerpt. Only contradiction mass from the selected
+      // evidence lane can reject that excerpt.
+      const proposalContradiction = entailmentResult.contradiction;
+      const evidenceProposalAdmissible = Boolean(
+        answerProposal
+        && proofSourceExcerpts.length > 0
+        && proposalContradiction < 0.72
+      );
+      const selectedPoolLocalEvidenceAnswer = evidenceProposalAdmissible
+        ? answerProposal
+        : proofSelectedEvidence.length
+          ? localEvidenceAnswerSurface({
               requestText: input.text,
               selectedEvidence,
               temporalEvidence: selectedTemporalEvidence,
@@ -904,15 +933,38 @@ export function createProductionTurnRuntime(options: {
               explicitContextEvidenceIds,
               semanticFrameBoundEvidenceIds
             })
-        )
-        : undefined;
-      // Surface planning may narrow the evidence selected by the proof engine,
-      // but it may not introduce evidence or support edges after proof.
+          : undefined;
+      // Direct source evidence may propose a bounded answer without full proof.
+      // Proof strengthens force; material contradiction can still reject it.
+      kernelTrace({
+        stage: "candidate.proposal.admit",
+        label: "kernel.turn.source_exact",
+        counts: {
+          proposed: answerProposal ? 1 : 0,
+          sourceExcerpts: proofSourceExcerpts.length,
+          admitted: evidenceProposalAdmissible ? 1 : 0,
+          supportEngineDisabled: deps.evaluationCondition?.flags.disableSupportEngine ? 1 : 0
+        },
+        support: {
+          entailmentContradiction: entailmentResult.contradiction,
+          semanticProofContradiction,
+          proposalContradiction
+        }
+      });
       const localEvidenceAnswer = deps.evaluationCondition?.flags.disableSupportEngine
         ? undefined
         : selectedPoolLocalEvidenceAnswer;
       const longPathBasisAnswer = requestedAuthority === "creative" ? undefined : localEvidenceAnswer;
-      const answerEntailmentSeed = entailmentResult;
+      const answerEntailmentSeed = longPathBasisAnswer
+        ? {
+          ...entailmentResult,
+          boundaries: [...new Set([
+            ...entailmentResult.boundaries,
+            "selected-evidence-bound",
+            "local-evidence-certification-boundary"
+          ])]
+        }
+        : entailmentResult;
       if (longPathBasisAnswer) {
         selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, longPathBasisAnswer.evidence);
         earlyLearningNeeds = learningNeedsFor(input.text, answerEntailmentSeed, selectedEvidence, locale);
@@ -1010,7 +1062,7 @@ export function createProductionTurnRuntime(options: {
       });
       const answerSurface = longPathBasisAnswer
         ? {
-          answer: longPathBasisAnswer.answer,
+          answer: longPathBasisAnswer.answer || localEvidenceAnswerClaimSurface(longPathBasisAnswer),
           audit: toJsonValue({
             source: "kernel.turn.long_path_basis_answer",
             basis: longPathBasisAnswer.audit,

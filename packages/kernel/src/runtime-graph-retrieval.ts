@@ -6,7 +6,6 @@ import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelSt
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import {
   evidenceForRequest,
-  evidenceSourceAnchorSurface,
   promotedSessionEvidence,
   requestNeedsSourceAnchoredEvidence,
   sessionOwnerObservationSurface,
@@ -15,7 +14,7 @@ import {
   sourceEvidenceAnchorsForRequest,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
-import { createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
+import { anchorFeatureSet, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import type { RuntimeGraphSliceValue } from "./runtime-graph-cache.js";
 import {
   estimateRuntimeGraphSliceBytes,
@@ -97,9 +96,9 @@ export function createRuntimeGraphRetrieval(options: {
 
   const hotNeighborhoodPostingCap = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_POSTING_CAP", 512);
 
-  const sourceAnchorHotNodeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_NODES", 64);
+  const sourceAnchorHotNodeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_NODES", 16);
 
-  const sourceAnchorHotEdgeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_EDGES", 128);
+  const sourceAnchorHotEdgeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_EDGES", 32);
 
   const sourceAnchorEvidenceCacheMaxEntries = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_ENTRIES", 4096);
 
@@ -201,11 +200,24 @@ export function createRuntimeGraphRetrieval(options: {
     sourceAnchoringRequired?: boolean;
     residentOnly?: boolean;
   } = {}) {
-    const features = graphRetrievalFeatures(text);
-    const topicTerms = graphTopicTermsForText(text);
+    const queryPreparationStarted = Date.now();
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
     const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
     const residentOnly = options.residentOnly === true;
+    const sourceAnchorFeatures = sourceAnchoringRequired ? sourceAnchorRetrievalFeatures(text) : [];
+    const features = sourceAnchoringRequired
+      ? sourceAnchorFeatures.map(feature => feature.slice("anchor:".length))
+      : graphRetrievalFeatures(text);
+    const topicTerms = sourceAnchoringRequired
+      ? sourceEvidenceAnchorsForRequest(text).slice(0, 8)
+      : graphTopicTermsForText(text);
+    kernelTrace({
+      stage: "graph.resolve.query_features",
+      label: "kernel.graphForText",
+      durationMs: Date.now() - queryPreparationStarted,
+      counts: { features: features.length, topicTerms: topicTerms.length },
+      support: { sourceAnchoringRequired, residentOnly }
+    });
     const cacheKey = hasher.digestHex(JSON.stringify({
       features,
       topicTerms,
@@ -216,16 +228,15 @@ export function createRuntimeGraphRetrieval(options: {
     const exact = cachedGraphSlice(cacheKey);
     if (exact) return exact;
     if (sourceAnchoringRequired) {
-      const residentHot = await hotNeighborhoodIfResident();
-      if (residentHot) {
-        const hotAnchoredEvidence = sourceAnchoredEvidenceFromHot(residentHot, text)
-          .filter(span => evidenceProofBoundary(span).certifiesFactualProof);
-        const hotSlice = hotAnchoredEvidence.length
-          ? graphSliceFromHotEvidence(residentHot, hotAnchoredEvidence, features, topicTerms)
-          : undefined;
-        if (hotSlice && !temporalCounterexampleExpected(text, hotAnchoredEvidence)) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
-      }
       if (residentOnly) {
+        const residentHot = await hotNeighborhoodIfResident();
+        if (residentHot) {
+          const hotAnchoredEvidence = sourceAnchoredEvidenceFromHot(residentHot, text);
+          const hotSlice = hotAnchoredEvidence.length
+            ? graphSliceFromHotEvidence(residentHot, hotAnchoredEvidence, features, topicTerms)
+            : undefined;
+          if (hotSlice && !temporalCounterexampleExpected(text, hotAnchoredEvidence)) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
+        }
         const semanticSelection = allowSemanticFrameEvidence
           ? await sourceAnchorSemanticFrameEvidence(text, true)
           : { evidence: [], semanticFrameBoundEvidenceIds: [] };
@@ -266,12 +277,23 @@ export function createRuntimeGraphRetrieval(options: {
       if (!anchoredEvidence.length) {
         return cacheGraphSlice(cacheKey, { graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [], features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 } }, evidence: [], semanticFrameBoundEvidenceIds: [] }, "postgres");
       }
+      const residentGraphHot = await hotNeighborhoodIfResident();
+      const residentSlice = residentGraphHot
+        ? graphSliceFromHotEvidence(residentGraphHot, anchoredEvidence, features, topicTerms)
+        : undefined;
+      if (residentSlice) {
+        return cacheGraphSlice(cacheKey, {
+          ...residentSlice,
+          evidence: mergeEvidenceSpans(anchoredEvidence),
+          semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
+        }, "hot-neighborhood");
+      }
       const anchoredGraphStarted = Date.now();
       const graph = await deps.storage.graph.getSlice({
         evidenceIds: anchoredEvidence.map(span => span.id),
         features: [...features],
         topicTerms,
-        radius: 2,
+        radius: 1,
         limitNodes: sourceAnchorHotNodeLimit,
         limitEdges: sourceAnchorHotEdgeLimit
       });
@@ -281,23 +303,12 @@ export function createRuntimeGraphRetrieval(options: {
         durationMs: Date.now() - anchoredGraphStarted,
         counts: { nodes: graph.nodes.length, edges: graph.edges.length, hyperedges: graph.hyperedges.length }
       });
-      const graphEvidenceIds = uniqueKernelStrings([
-        ...anchoredEvidence.map(span => String(span.id)),
-        ...graph.nodes.flatMap(node => node.evidenceIds.map(String)),
-        ...graph.edges.flatMap(edge => edge.evidenceIds.map(String)),
-        ...graph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
-      ]).slice(0, 80);
-      const graphEvidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
-      const anchoredGraphEvidence = graphEvidence.filter(span =>
-        evidenceProofBoundary(span).certifiesFactualProof
-        && evidenceMatchesSourceAnchor(span, anchoredEvidence)
-      );
       const value: RuntimeGraphSliceValue = {
         graph: {
           ...graph,
-          query: { evidenceIds: anchoredEvidence.map(span => span.id), features: [...features], topicTerms, radius: 2, limitNodes: sourceAnchorHotNodeLimit, limitEdges: sourceAnchorHotEdgeLimit }
+          query: { evidenceIds: anchoredEvidence.map(span => span.id), features: [...features], topicTerms, radius: 1, limitNodes: sourceAnchorHotNodeLimit, limitEdges: sourceAnchorHotEdgeLimit }
         },
-        evidence: mergeEvidenceSpans([...anchoredEvidence, ...anchoredGraphEvidence]),
+        evidence: mergeEvidenceSpans(anchoredEvidence),
         semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
       };
       return cacheGraphSlice(cacheKey, value, "postgres");
@@ -424,26 +435,17 @@ export function createRuntimeGraphRetrieval(options: {
         });
         return results;
       });
-    const semanticFramesStarted = Date.now();
-    const semanticFrames = (allowSemanticFrameEvidence
-      ? sourceAnchorSemanticFrameEvidence(text)
-      : Promise.resolve({ evidence: [], semanticFrameBoundEvidenceIds: [] }))
-      .then(result => {
-        kernelTrace({
-          stage: "graph.resolve.anchor_semantic_frames",
-          label: "kernel.sourceAnchoredEvidenceForText",
-          durationMs: Date.now() - semanticFramesStarted,
-          counts: { evidence: result.evidence.length, evidenceIds: result.semanticFrameBoundEvidenceIds.length }
-        });
-        return result;
-      });
-    const [evidenceResults, semanticFrameEvidence] = await Promise.all([evidenceSearch, semanticFrames]);
-    const promoted = mergeEvidenceSpans(evidenceResults.map(item => item.span).concat(semanticFrameEvidence.evidence))
+    const evidenceResults = await evidenceSearch;
+    const semanticFrameEvidence: SourceAnchoredEvidenceSelection = {
+      evidence: [],
+      semanticFrameBoundEvidenceIds: []
+    };
+    const promoted = mergeEvidenceSpans(evidenceResults.map(item => item.span))
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof);
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
     const anchored = sourceAnchoredEvidenceForRequest(text, promoted, semanticFrameBoundEvidenceIds);
-    const evidence = (anchored.evidence.length ? anchored.evidence : []).slice(0, 24);
+    const evidence = anchored.evidence.slice(0, 24);
     const admittedIds = new Set(evidence.map(span => String(span.id)));
     return {
       evidence,
@@ -481,13 +483,25 @@ export function createRuntimeGraphRetrieval(options: {
 
 
   function sourceAnchorRetrievalFeatures(text: string): string[] {
-    const features = new Map<string, true>();
-    for (const anchor of sourceEvidenceAnchorsForRequest(text).slice(0, 24)) {
-      for (const feature of orderedRetrievalFeatures(anchor)) {
-        if (isHighInformationRetrievalFeature(feature)) features.set(feature, true);
-      }
-    }
-    return [...features.keys()].slice(0, 128);
+    const anchors = sourceEvidenceAnchorsForRequest(text);
+    const primary = anchors.find(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2)
+      ?? anchors[0];
+    if (!primary) return [];
+    const ordered = anchorFeatureSet(primary, 64);
+    const phraseFeatures = ordered
+      .filter(feature => feature.startsWith("anchor:bi:"))
+      .filter(feature => {
+        const units = retrievalFeatureUnits(feature.slice("anchor:".length)).filter(unit => !genericQuestionSignal(unit));
+        return units.length >= 2 && units.reduce((sum, unit) => sum + [...normalizePriorKey(unit)].length, 0) >= 6;
+      });
+    if (phraseFeatures.length) return phraseFeatures.slice(0, 4);
+    return ordered
+      .filter(feature => feature.startsWith("anchor:sym:"))
+      .filter(feature => {
+        const unit = normalizePriorKey(feature.slice("anchor:sym:".length));
+        return !genericQuestionSignal(unit) && [...unit].length >= 3;
+      })
+      .slice(0, 4);
   }
 
 
@@ -556,8 +570,14 @@ export function createRuntimeGraphRetrieval(options: {
     for (const span of value.evidence) {
       const evidenceId = String(span.id);
       evidenceById.set(evidenceId, span);
-      for (const anchor of sourceAnchorKeysForSurface(evidenceSourceAnchorSurface(span))) {
-        addHotIndexValue(sourceAnchorEvidenceIds, anchor, evidenceId, 256);
+      const anchorFeatures = uniqueKernelStrings([
+        ...span.features.filter(feature => feature.startsWith("anchor:")),
+        ...anchorFeatureSet((span.textPreview || span.text).slice(0, 4000), 256)
+      ]);
+      for (const feature of anchorFeatures) {
+        if (feature.startsWith("anchor:bi:") || feature.startsWith("anchor:sym:")) {
+          addHotIndexValue(sourceAnchorEvidenceIds, feature, evidenceId, 256);
+        }
       }
     }
     for (const node of value.graph.nodes) {
@@ -625,20 +645,22 @@ export function createRuntimeGraphRetrieval(options: {
 
 
   function sourceAnchoredEvidenceFromHot(hot: HotGraphNeighborhood, text: string): EvidenceSpan[] {
-    const anchors = sourceEvidenceAnchorsForRequest(text);
-    if (!anchors.length) return [];
+    const anchorFeatures = sourceAnchorRetrievalFeatures(text);
+    if (!anchorFeatures.length) return [];
     const evidenceIds = new Set<string>();
-    for (const anchor of anchors) {
-      for (const key of sourceAnchorKeysForSurface(anchor)) {
-        for (const evidenceId of hot.sourceAnchorEvidenceIds.get(key) ?? []) evidenceIds.add(evidenceId);
-      }
+    for (const feature of anchorFeatures) {
+      for (const evidenceId of hot.sourceAnchorEvidenceIds.get(feature) ?? []) evidenceIds.add(evidenceId);
     }
     const indexedEvidence = [...evidenceIds]
       .map(id => hot.evidenceById.get(id))
       .filter((span): span is EvidenceSpan => Boolean(span));
-    const candidates = indexedEvidence.length ? indexedEvidence : hot.value.evidence;
-    const anchored = sourceAnchoredEvidenceForRequest(text, candidates);
-    return evidenceForRequest(text, anchored.evidence).slice(0, 24);
+    const candidates = indexedEvidence
+      .filter(span => evidenceProofBoundary(span).certifiesFactualProof);
+    const indexedAnchored = candidates.length
+      ? sourceAnchoredEvidenceForRequest(text, candidates)
+      : { evidence: [] };
+    if (indexedAnchored.evidence.length) return evidenceForRequest(text, indexedAnchored.evidence).slice(0, 24);
+    return [];
   }
 
 
@@ -716,21 +738,6 @@ export function createRuntimeGraphRetrieval(options: {
       evidence: mergeEvidenceSpans([...anchoredEvidence])
     };
   }
-
-
-  function sourceAnchorKeysForSurface(surface: string): string[] {
-    const normalized = normalizePriorKey(surface);
-    const units = splitPriorUnits(normalized).filter(unit => unit.length >= 2);
-    if (!units.length) return [];
-    const keys: string[] = [normalized];
-    for (let width = 2; width <= Math.min(4, units.length); width++) {
-      for (let index = 0; index <= units.length - width; index++) keys.push(units.slice(index, index + width).join(" "));
-    }
-    if (units.length === 1 && units[0]!.length >= 4) keys.push(units[0]!);
-    return uniqueKernelStrings(keys.filter(Boolean)).slice(0, 32);
-  }
-
-
   function graphSliceFromHotNeighborhood(hot: HotGraphNeighborhood, features: string[], topicTerms: string[]): RuntimeGraphSliceValue | undefined {
     const queryFeatures = uniqueKernelStrings([
       ...features,
@@ -968,20 +975,6 @@ export function createRuntimeGraphRetrieval(options: {
     for (const span of spans) if (!byId.has(String(span.id))) byId.set(String(span.id), span);
     return [...byId.values()];
   }
-
-
-  function evidenceMatchesSourceAnchor(span: EvidenceSpan, anchors: readonly EvidenceSpan[]): boolean {
-    const spanId = String(span.id);
-    const sourceId = String(span.sourceId);
-    const sourceVersionId = String(span.sourceVersionId);
-    return anchors.some(anchor =>
-      String(anchor.id) === spanId ||
-      String(anchor.sourceId) === sourceId ||
-      String(anchor.sourceVersionId) === sourceVersionId
-    );
-  }
-
-
   function graphRetrievalFeatures(text: string): string[] {
     const features = new Map<string, true>();
     const add = (feature: string) => {

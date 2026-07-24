@@ -123,6 +123,21 @@ export function featureSet(text: string, limit = 2000): string[] {
   return [...features].sort().slice(0, limit);
 }
 
+export function anchorFeatureSet(text: string, limit = 256): string[] {
+  const symbols = symbolizeData(text.replace(/\u0000/g, " ").normalize("NFC"))
+    .flatMap(symbol => symbol.match(/[\p{Letter}\p{Number}\p{Mark}]+/gu) ?? []);
+  const features = new Set<string>();
+  for (const symbol of symbols) {
+    features.add(`anchor:sym:${symbol}`);
+    if (features.size >= limit) return [...features];
+  }
+  for (let index = 0; index < symbols.length - 1; index++) {
+    features.add(`anchor:bi:${symbols[index]}|${symbols[index + 1]}`);
+    if (features.size >= limit) return [...features];
+  }
+  return [...features];
+}
+
 export function sourceTextSurface(text: string, maxChars = 1200): string {
   let out = text.replace(/\u0000/g, " ").normalize("NFC");
   out = mainSourceFragment(out);

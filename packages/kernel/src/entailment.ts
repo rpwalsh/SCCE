@@ -1,6 +1,6 @@
 import type { Claim, ConstructGraph, EvidenceSpan, FieldState, GraphNode, Hasher, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
-import { featureSet, toJsonValue, symbolizeData } from "./primitives.js";
+import { featureSet, sourceTextSurface, toJsonValue, symbolizeData } from "./primitives.js";
 import { createProofCalculus } from "./proof-calculus.js";
 import { createSemanticGraphEntailment } from "./semantic-graph.js";
 import { evaluateSemanticObligations } from "./semantic-obligations.js";
@@ -34,6 +34,22 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       const certifyingEvidenceIds = new Set(proofBoundaries.filter(item => item.certifiesFactualProof).map(item => item.evidenceId));
       const certifyingEvidence = input.evidence.filter(span => certifyingEvidenceIds.has(String(span.id)));
       const excludedProofEvidence = proofBoundaries.filter(item => !item.certifiesFactualProof);
+      const excerptGate = sourceExcerptProofGate({
+        claim,
+        evidence: input.evidence,
+        excerpts: input.sourceExcerpts,
+        hasher: options.hasher
+      });
+      if (excerptGate?.verdict === "certified") {
+        const excerptEvidenceIds = new Set(excerptGate.certifiedEvidenceIds.map(String));
+        return exactSourceExcerptEntailment({
+          claim,
+          evidence: certifyingEvidence.filter(span => excerptEvidenceIds.has(String(span.id))),
+          gate: excerptGate,
+          createdAt: input.createdAt,
+          idFactory: options.idFactory
+        });
+      }
       const result = calculus.evaluate({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field });
       const structuralResult = structural.check({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field });
       const obligations = evaluateSemanticObligations({ claim, evidence: input.evidence, nodes: input.nodes, field: input.field, hasher: options.hasher });
@@ -145,6 +161,143 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
   };
 }
 
+function exactSourceExcerptEntailment(input: {
+  claim: Claim;
+  evidence: EvidenceSpan[];
+  gate: SemanticProofResult;
+  createdAt: number;
+  idFactory: IdFactory;
+}): SemanticEntailmentResult {
+  const certifiedIds = new Set(input.gate.certifiedEvidenceIds);
+  const evidence = input.evidence.filter(span => certifiedIds.has(String(span.id)));
+  const evidenceIds = evidence.map(span => span.id);
+  const sourceVersionIds = [...new Set(evidence.map(span => span.sourceVersionId))];
+  const transformIds = ["source-excerpt-exact"];
+  const proofId = input.idFactory.proofId({
+    claimId: input.claim.id,
+    evidenceIds,
+    transforms: transformIds,
+    validatorVersion: VALIDATOR_VERSION
+  });
+  const scores = {
+    structuralCoverage: 1,
+    roleCoverage: 1,
+    relationCompatibility: 1,
+    transformationSupport: 1,
+    causalMass: 1,
+    faithfulnessLCB: 1,
+    contradiction: 0,
+    stability: 1
+  };
+  const confidence = {
+    verdict: "entailed" as const,
+    support: 1,
+    contradiction: 0,
+    faithfulnessLcb: 1,
+    supportingEvidence: evidenceIds.length,
+    sourceVersions: sourceVersionIds.map(String),
+    structuralCoverage: 1,
+    roleCoverage: 1,
+    relationCompatibility: 1,
+    transformationSupport: 1,
+    causalMass: 1,
+    stability: 1,
+    satisfiedObligations: 1,
+    requiredObligations: 1
+  };
+  const obligationId = `obligation.source-excerpt:${String(input.claim.id)}`;
+  return {
+    claim: input.claim,
+    verdict: "entailed",
+    semanticVerdict: "entailed",
+    truthState: input.gate.truthState,
+    force: "observed",
+    support: 1,
+    contradiction: 0,
+    faithfulnessLcb: 1,
+    confidence,
+    scores,
+    obligations: [{
+      id: obligationId,
+      kind: "predicate",
+      status: "satisfied",
+      claimText: input.claim.text,
+      evidenceIds,
+      sourceVersionIds,
+      support: 1,
+      contradiction: 0,
+      required: true,
+      reason: "exact source excerpt",
+      metadata: toJsonValue({ source: "entailment.source_excerpt_exact" })
+    }],
+    mappings: [{
+      id: `mapping.source-excerpt:${String(input.claim.id)}`,
+      obligationId,
+      kind: "predicate",
+      status: "satisfied",
+      claimText: input.claim.text,
+      relation: "exact",
+      evidenceIds,
+      sourceVersionIds,
+      support: 1,
+      contradiction: 0,
+      audit: toJsonValue({ source: "entailment.source_excerpt_exact" })
+    }],
+    transforms: [{
+      id: transformIds[0]!,
+      transformKind: "identity",
+      source: input.claim.text,
+      target: input.claim.text,
+      registered: true,
+      support: 1,
+      evidenceIds,
+      sourceVersionIds,
+      audit: toJsonValue({ source: "entailment.source_excerpt_exact" })
+    }],
+    counterexamples: [],
+    missing: [],
+    proof: {
+      id: proofId,
+      claimId: input.claim.id,
+      verdict: "observed",
+      confidence: toJsonValue({ ...confidence, semanticProofEngine: input.gate }),
+      proofGraph: {
+        nodes: [
+          {
+            id: String(input.claim.id),
+            kind: "claim",
+            label: "source excerpt claim",
+            metadata: toJsonValue({ normalized: input.claim.normalized })
+          },
+          ...evidence.map(span => ({
+            id: String(span.id),
+            kind: "evidence" as const,
+            label: "exact source excerpt",
+            metadata: toJsonValue({ sourceVersionId: span.sourceVersionId })
+          }))
+        ],
+        edges: evidence.map(span => ({
+          source: String(span.id),
+          target: String(input.claim.id),
+          relation: "supports" as const,
+          weight: 1,
+          evidenceIds: [span.id]
+        }))
+      },
+      evidenceIds,
+      transformIds,
+      scores: toJsonValue({
+        sourceExcerptExact: true,
+        semanticProofEngine: input.gate
+      }),
+      validatorVersion: VALIDATOR_VERSION,
+      createdAt: input.createdAt
+    },
+    evidenceIds,
+    boundaries: [...new Set(["source-excerpt-exact", ...proofGateBoundaries(input.gate)])]
+  };
+}
+
 function proofSupportFromObligations(semanticVerdict: string, obligationSupport: number, structuralSupport: number, calculusSupport: number): number {
   if (semanticVerdict === "contradicted") return Math.min(0.24, obligationSupport);
   if (semanticVerdict === "entailed") return Math.max(obligationSupport, Math.min(0.12 + structuralSupport * 0.32 + calculusSupport * 0.18, obligationSupport + 0.14));
@@ -202,15 +355,31 @@ function sourceExcerptProofGate(input: {
   hasher: Hasher;
 }): SemanticProofResult | undefined {
   if (!input.excerpts?.length) return undefined;
-  const normalizedExcerpts = input.excerpts.map(excerpt => normalizedText(excerpt.text)).filter(Boolean);
-  if (!normalizedExcerpts.length || normalizedText(normalizedExcerpts.join(" ")) !== input.claim.normalized) return undefined;
+  const claimContent = normalizedContentText(input.claim.text);
+  const normalizedExcerpts = input.excerpts
+    .map(excerpt => ({
+      excerpt,
+      normalized: normalizedText(excerpt.text),
+      content: normalizedContentText(excerpt.text)
+    }))
+    .filter(item => item.normalized && item.content);
+  if (!normalizedExcerpts.length) return undefined;
+  const exactClaimExcerpts = normalizedExcerpts.filter(item => item.content === claimContent);
+  const selectedExcerpts = exactClaimExcerpts.length
+    ? exactClaimExcerpts
+    : normalizedExcerpts.map(item => item.content).join(" ") === claimContent
+      ? normalizedExcerpts
+      : [];
+  if (!selectedExcerpts.length) return undefined;
   const evidenceById = new Map(input.evidence.map(span => [String(span.id), span]));
   const verified = new Map<string, EvidenceSpan>();
-  for (const excerpt of input.excerpts) {
+  for (const { excerpt, content: excerptContent } of selectedExcerpts) {
     const span = evidenceById.get(String(excerpt.evidenceId));
     if (!span || !evidenceProofBoundary(span).certifiesFactualProof) return undefined;
-    const excerptText = normalizedText(excerpt.text);
-    if (!excerptText || !normalizedText(span.text || span.textPreview).includes(excerptText)) return undefined;
+    const source = span.text || span.textPreview;
+    const sourceContainsExcerpt = source.includes(excerpt.text)
+      || normalizedContentText(sourceTextSurface(source, 24000)).includes(excerptContent);
+    if (!sourceContainsExcerpt) return undefined;
     verified.set(String(span.id), span);
   }
   const claimTextId = textIdentity(input.claim.normalized, input.hasher);
@@ -435,6 +604,12 @@ function stringUnknown(value: unknown): string | undefined {
 
 function normalizedText(text: string): string {
   return symbolizeData(text).join(" ");
+}
+
+function normalizedContentText(text: string): string {
+  return symbolizeData(text)
+    .flatMap(symbol => symbol.match(/[\p{Letter}\p{Number}\p{Mark}]+/gu) ?? [])
+    .join(" ");
 }
 
 function textIdentity(text: string, hasher: Hasher): string {

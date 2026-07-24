@@ -82,7 +82,7 @@ import {
   languageConstructionRoleId,
   type DurableLanguageConstructionBundle
 } from "./language-construction-memory.js";
-import { rankLanguageProfilesForSurface } from "./language.js";
+import { learnedScriptIdForCharacter, rankLanguageProfilesForSurface } from "./language.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
   sourceQuote: "rel.1f7c4a92",
@@ -530,10 +530,13 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const preserveEvidenceBackedKernelCandidate = Boolean(
         kernelSelectedCandidate &&
         input.requestedAuthority !== "creative" &&
-        !semanticAnswerConstructState(input.construct) &&
         input.selectedCandidate &&
-        (input.selectedCandidate.kind === "proof-answer"
-          || kernelCandidateCarriesExactBoundSourceSurface(input.selectedCandidate, input)) &&
+        (kernelCandidateCarriesVerifiedSourceExcerptSurface(input.selectedCandidate, input)
+          || (
+            !semanticAnswerConstructState(input.construct)
+            && (input.selectedCandidate.kind === "proof-answer"
+              || kernelCandidateCarriesExactBoundSourceSurface(input.selectedCandidate, input))
+          )) &&
         input.selectedCandidate.evidenceIds.length > 0 &&
         kernelCandidateCanPreempt(input, kernelSelectedCandidate)
       );
@@ -765,7 +768,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const finalPreservation = finalText === preservationText ? preservationChecked : repairedPreservation;
       const caveatCheckedText = protectedSelectedSurface ? finalText : ensureRuntimeCaveats(finalText, plan);
       const artifactCleanedText = protectedSelectedSurface ? caveatCheckedText : stripInternalSurfaceArtifacts(tidySurface(caveatCheckedText));
-      const repairedFinalSurfaceText = protectedSelectedSurface ? artifactCleanedText : repairSemanticAnswerFinalSurface(artifactCleanedText, input.construct);
+      const repairedFinalSurfaceText = protectedSelectedSurface
+        ? artifactCleanedText
+        : repairSemanticAnswerFinalSurface(artifactCleanedText, input.construct);
       const finalFactualSurfaceControl = Boolean(selected && !protectedSelectedSurface && appliesFactualSurfaceControl(input, selected, plan));
       const finalSurfaceText = protectedSelectedSurface
         ? repairedFinalSurfaceText
@@ -1772,17 +1777,24 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
     discoursePlan,
     boundaryDecisions: [],
     exactSurface: kernelCandidateCarriesExactBoundSourceSurface(candidate, input)
+      || kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)
   };
 }
 
 function kernelCandidateCanPreempt(input: SpeakInput, candidate: SurfaceCandidate): boolean {
   if (input.selectedCandidate?.id === candidate.id && kernelCandidateCarriesExactBoundSourceSurface(input.selectedCandidate, input)) return true;
+  if (input.selectedCandidate?.id === candidate.id && kernelCandidateCarriesVerifiedSourceExcerptSurface(input.selectedCandidate, input)) return true;
+  if (input.selectedCandidate?.id === candidate.id
+    && candidate.evidenceIds.length > 0
+    && input.selectedCandidate.boundaries.some(boundary => (
+      boundary === "selected-evidence-bound"
+      || boundary === "local-evidence-certification-boundary"
+      || boundary === "source-bound"
+    ))) return true;
   if (semanticAnswerConstructState(input.construct)) return false;
   if (generatedConstructSurface(input.construct)) return false;
   if (isWorkspaceKernelSpeakInput(input)) return false;
   if (candidate.evidenceIds.length > 0) return true;
-  const verdict = proofGateVerdict(input.entailment);
-  if (verdict && verdict !== "certified") return false;
   return candidate.fit >= 0.42;
 }
 
@@ -2170,6 +2182,7 @@ function kernelCandidateDirectSurfaceAllowed(candidate: CandidateSurface, input:
   if (candidate.kind === "translation" || candidate.kind === "transformation") return true;
   if (candidate.kind === "creative-candidate" && candidate.force === "invented" && candidate.claimBases?.includes("invented") === true) return true;
   if (kernelCandidateCarriesExactBoundSourceSurface(candidate, input)) return true;
+  if (kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)) return true;
   if ((candidate.kind === "proof-answer" || candidate.kind === "ccr-extractive") && candidate.evidenceIds.length > 0) {
     return candidate.boundaries.some(boundary => boundary === "selected-evidence-bound" || boundary === "local-evidence-certification-boundary" || boundary === "source-bound");
   }
@@ -2243,6 +2256,25 @@ function kernelCandidateCarriesExactBoundSourceSurface(candidate: CandidateSurfa
   });
 }
 
+function kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate: CandidateSurface, input: SpeakInput): boolean {
+  if (candidate.kind !== "proof-answer" && candidate.kind !== "ccr-extractive") return false;
+  const candidateEvidenceIds = new Set(candidate.evidenceIds.map(String));
+  if (!candidateEvidenceIds.size) return false;
+  const evidenceById = new Map(input.evidence.map(span => [String(span.id), span]));
+  const admittedEvidence = [...candidateEvidenceIds]
+    .map(id => evidenceById.get(id))
+    .filter((span): span is EvidenceSpan => Boolean(span));
+  if (admittedEvidence.length !== candidateEvidenceIds.size) return false;
+  if (admittedEvidence.some(span => span.status !== "promoted" || !evidenceLanguageCompatibleWithMouth(span, input))) return false;
+  const answer = tidySurface(candidate.answer);
+  if (!answer || !admissibleMouthSurface(answer)) return false;
+  return admittedEvidence.some(span => (
+    [span.text, span.textPreview]
+      .filter((surface): surface is string => typeof surface === "string")
+      .some(surface => tidySurface(surface).includes(answer))
+  ));
+}
+
 function kernelCandidateParticipatingEvidenceIds(candidate: CandidateSurface, input: SpeakInput): Set<string> {
   const audit = jsonRecord(candidate.audit);
   const claimBases = Array.isArray(audit.claimBases) ? audit.claimBases.map(jsonRecord) : [];
@@ -2288,7 +2320,27 @@ function evidenceLanguageCompatibleWithMouth(span: EvidenceSpan, input: SpeakInp
     && declaredIds.some(id => scope.profileIds.includes(id))
     && scope.sourceVersionIds.includes(String(span.sourceVersionId))) return true;
   if (declaredIds.length) return false;
+  const declaredScripts = new Set([
+    ...arrayRecords(hints.scripts),
+    ...arrayRecords(jsonRecord(span.scriptHints).dominantScripts)
+  ].map(row => stringFrom(row.script)).filter((script): script is string => Boolean(script)));
+  const targetScripts = new Set([
+    ...input.languageProfile.scripts.map(row => row.script),
+    input.targetScript
+  ].filter((script): script is string => typeof script === "string" && script.length > 0));
+  if (declaredScripts.size && [...declaredScripts].some(script => targetScripts.has(script))) return true;
+  const requestScripts = contentScriptIds(input.entailment.claim.text);
+  const evidenceScripts = contentScriptIds(span.text || span.textPreview);
+  if (requestScripts.size
+    && evidenceScripts.size
+    && [...requestScripts].every(script => evidenceScripts.has(script))) return true;
   return learnedProfileAcceptsSurface(input.languageProfile, span.text || span.textPreview);
+}
+
+function contentScriptIds(surface: string): Set<string> {
+  return new Set([...surface]
+    .filter(point => /[\p{Letter}\p{Mark}]/u.test(point))
+    .map(learnedScriptIdForCharacter));
 }
 
 function generatedCandidatesFromFrames(
@@ -4834,7 +4886,10 @@ function brainImportSummary(markerValue: JsonValue | undefined): {
 
 function answerFromObligations(entailment: SemanticEntailmentResult, evidence: readonly EvidenceSpan[], options: { allowClaimBoundary?: boolean } = {}): string {
   const proofVerdict = proofGateVerdict(entailment);
-  if (proofVerdict && proofVerdict !== "certified") return boundarySurfaceFromRuntime(entailment, evidence, proofVerdict);
+  if (proofVerdict === "contradicted") {
+    const contradictionSurface = boundarySurfaceFromRuntime(entailment, evidence, proofVerdict);
+    if (contradictionSurface) return contradictionSurface;
+  }
   const satisfied = entailment.obligations.find(item =>
     item.status === "satisfied" &&
     (options.allowClaimBoundary || item.evidenceIds.length > 0 || !questionEchoHits(item.claimText, entailment.claim.text).length)
@@ -4846,6 +4901,10 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   if (sourceText) return sourceText;
   const claimText = normalizeEvidenceSentence(entailment.claim.text);
   if (claimText && options.allowClaimBoundary) return claimText;
+  if (proofVerdict === "source_bound_only") {
+    const sourceBoundary = boundarySurfaceFromRuntime(entailment, evidence, proofVerdict);
+    if (sourceBoundary) return sourceBoundary;
+  }
   return unsupportedAnswerBoundarySurface();
 }
 
