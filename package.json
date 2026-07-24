@@ -6,11 +6,11 @@
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rpwalsh/SCCE.git"
+    "url": "git+https://github.com/devgrrl/SCCE.git"
   },
-  "homepage": "https://github.com/rpwalsh/SCCE#readme",
+  "homepage": "https://github.com/devgrrl/SCCE#readme",
   "bugs": {
-    "url": "https://github.com/rpwalsh/SCCE/issues"
+    "url": "https://github.com/devgrrl/SCCE/issues"
   },
   "engines": {
     "node": ">=20"
