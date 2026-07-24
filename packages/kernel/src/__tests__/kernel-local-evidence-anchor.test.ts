@@ -28,7 +28,10 @@ import {
   type EvaluationConditionId,
   type EvaluationTraceEvent
 } from "../index.js";
-import { sourceAnchoredEvidenceForRequest } from "../local-evidence-runtime.js";
+import {
+  proposeSourceExactEvidenceAnswer,
+  sourceAnchoredEvidenceForRequest
+} from "../local-evidence-runtime.js";
 
 const proofEngineCalls = vi.hoisted(() => ({
   ablatedSupport: 0,
@@ -481,10 +484,14 @@ describe("kernel local evidence source anchoring", () => {
       sourceVersionId: "source:star-trek-kirk-unrouted:v1" as SourceVersionId,
       title: "Star Trek",
       uri: "fixture://wiki/Star_Trek",
-      text: "Captain James T. Kirk is the fictional commander of the starship Enterprise in Star Trek.",
+      text: "Captain James T. Kirk was known for commanding the starship Enterprise in Star Trek.",
       alpha: 0.99
     });
     const fixture = storageFixture({ evidence: [kirkMention], semanticFrames: [] });
+    expect(proposeSourceExactEvidenceAnswer({
+      requestText: "What was Captain Kirk known for?",
+      selectedEvidence: [kirkMention]
+    })).toBeUndefined();
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -494,11 +501,10 @@ describe("kernel local evidence source anchoring", () => {
       deterministicReplay: true
     });
 
-    const result = await kernel.turn({ text: "Who was Captain Kirk?" });
+    const result = await kernel.turn({ text: "What was Captain Kirk known for?" });
 
     expect(result.evidence.map(span => String(span.id))).not.toContain(String(kirkMention.id));
-    expect(result.answer).not.toContain("fictional commander");
-    expect(result.answer).not.toContain("starship Enterprise");
+    expect(result.answer).not.toContain("commanding the starship Enterprise");
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":false');
   });
 

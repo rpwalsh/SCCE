@@ -357,7 +357,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
     promoted,
     input.semanticFrameBoundEvidenceIds
   );
-  const evidence = anchored.required ? anchored.evidence : promoted;
+  const evidence = anchored.required
+    ? anchored.evidence.filter(span => (
+      evidenceExactSourceAnchorMatches(span, anchored.anchors)
+      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
+      || input.semanticFrameBoundEvidenceIds?.has(String(span.id))
+    ))
+    : promoted;
   if (!evidence.length) return undefined;
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
