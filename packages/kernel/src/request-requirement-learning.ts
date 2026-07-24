@@ -35,6 +35,7 @@ export interface RequestRequirementCorpusExample {
 export interface RequestRequirementCorpus {
   schema: typeof REQUEST_REQUIREMENT_CORPUS_SCHEMA;
   language: string;
+  corpusRevision?: string;
   responseFormProfiles?: RequestRequirementResponseFormProfile[];
   examples: RequestRequirementCorpusExample[];
 }
@@ -90,6 +91,11 @@ export function parseRequestRequirementCorpus(text: string): RequestRequirementC
   }
   if (!isRecord(value) || value.schema !== REQUEST_REQUIREMENT_CORPUS_SCHEMA || !Array.isArray(value.examples)) return undefined;
   const language = typeof value.language === "string" && value.language.trim() ? value.language.trim() : "und";
+  const corpusRevision = typeof value.corpusRevision === "string"
+    && value.corpusRevision.trim()
+    && [...value.corpusRevision.trim()].length <= 128
+    ? value.corpusRevision.trim()
+    : undefined;
   const responseFormProfiles = parseResponseFormProfiles(value.responseFormProfiles);
   const examples: RequestRequirementCorpusExample[] = [];
   for (const row of value.examples.slice(0, 10_000)) {
@@ -113,6 +119,7 @@ export function parseRequestRequirementCorpus(text: string): RequestRequirementC
   return {
     schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
     language,
+    ...(corpusRevision ? { corpusRevision } : {}),
     ...(responseFormProfiles.length ? { responseFormProfiles } : {}),
     examples
   };
@@ -257,6 +264,7 @@ export function compileRequestRequirementCorpus(
     audit: toJsonValue({
       schema: "scce.request_requirement_learning_report.v1",
       corpusSchema: input.corpus.schema,
+      corpusRevision: input.corpus.corpusRevision ?? null,
       language: input.corpus.language,
       examples: input.corpus.examples.length,
       featureCandidates: featureCounts.size,
@@ -293,8 +301,10 @@ function compiledResponseForm(
   const winner = ranked[0];
   const runnerUp = ranked[1];
   if (!winner || winner.count < 2) return undefined;
-  const posterior = winner.count / counts.responseFormExamples;
-  const margin = (winner.count - (runnerUp?.count ?? 0)) / counts.responseFormExamples;
+  const noFormCount = Math.max(0, counts.examples - counts.responseFormExamples);
+  const competingCount = Math.max(runnerUp?.count ?? 0, noFormCount);
+  const posterior = winner.count / counts.examples;
+  const margin = (winner.count - competingCount) / counts.examples;
   if (posterior < 0.68 || margin < 0.34) return undefined;
   const sourceLabel = Object.entries(counts.responseFormSourceLabels[winner.id] ?? {})
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0];
