@@ -25,23 +25,39 @@ describe("language control hygiene scanner", () => {
   });
 
   it("keeps cognitive answer routing free of canned demo bypasses", async () => {
+    const runtimePaths = [
+      "kernel.ts",
+      "production-turn-runtime.ts",
+      "learned-graph-prior-runtime.ts",
+      "local-evidence-runtime.ts",
+      "runtime-graph-retrieval.ts",
+      "runtime-motion.ts",
+      "surface-language-runtime.ts",
+      "candidate-construct-binding.ts",
+      "candidate-proof-policy.ts",
+      "evaluation-runtime-bypass.ts",
+      "turn-request-control.ts"
+    ];
+    const runtime = (await Promise.all(runtimePaths.map(file =>
+      readFile(path.resolve("packages/kernel/src", file), "utf8")
+    ))).join("\n");
     const kernel = await readFile(path.resolve("packages/kernel/src/kernel.ts"), "utf8");
     const questionCognitiveEdge = await readFile(path.resolve("packages/kernel/src/question-cognitive-edge.ts"), "utf8");
     const mouth = await readFile(path.resolve("packages/kernel/src/mouth.ts"), "utf8");
     const languageMemory = await readFile(path.resolve("packages/kernel/src/language-memory-runtime.ts"), "utf8");
     const surfaceRealizer = await readFile(path.resolve("packages/kernel/src/surface-realizer.ts"), "utf8");
 
-    expect(kernel).not.toContain("fastCognitiveAnswerTurn");
-    expect(kernel).not.toContain("hotLearnedPriorAnswer");
-    expect(kernel).not.toContain("hot-prior.");
-    expect(kernel).not.toContain("Ada Lovelace was a nineteenth-century");
-    expect(kernel).not.toContain("For the original Star Trek");
-    expect(kernel).not.toContain("input.selectedEvidence.length || kernelNumber(input.brainMarker.importedDirectEvidenceCount)");
-    expect(kernel).toContain("const directEvidenceCount = input.selectedEvidence.length;");
-    expect(kernel).toContain("constructGraph: spokenConstructGraph");
+    expect(runtime).not.toContain("fastCognitiveAnswerTurn");
+    expect(runtime).not.toContain("hotLearnedPriorAnswer");
+    expect(runtime).not.toContain("hot-prior.");
+    expect(runtime).not.toContain("Ada Lovelace was a nineteenth-century");
+    expect(runtime).not.toContain("For the original Star Trek");
+    expect(runtime).not.toContain("input.selectedEvidence.length || kernelNumber(input.brainMarker.importedDirectEvidenceCount)");
+    expect(runtime).toContain("const directEvidenceCount = input.selectedEvidence.length;");
+    expect(runtime).toContain("constructGraph: spokenConstructGraph");
     expect(kernel).toContain("withBufferedEventWrites");
-    expect(kernel).toContain("graphSliceCache");
-    expect(kernel).toContain("afterTurnMaintenanceDeferred");
+    expect(runtime).toContain("graphSliceCache");
+    expect(runtime).toContain("afterTurnMaintenanceDeferred");
     for (const forbidden of [
       "calendarResidueUnit",
       "pluralBiographyClass",
@@ -65,7 +81,7 @@ describe("language control hygiene scanner", () => {
       "physicist",
       "programmer"
     ]) {
-      expect(kernel).not.toContain(forbidden);
+      expect(runtime).not.toContain(forbidden);
       expect(questionCognitiveEdge).not.toContain(forbidden);
     }
     expect(mouth).not.toContain("const selected = workspaceDraftCandidate ??");
@@ -79,7 +95,7 @@ describe("language control hygiene scanner", () => {
     expect(languageMemory).not.toContain(hygienePhrase("In", "short:"));
     expect(mouth).toContain("selectedCandidate?: CandidateSurface");
     expect(mouth).toContain("const selectedKernelCandidate");
-    expect(mouth).toContain("const selected = semanticGraphCandidate ??");
+    expect(mouth).toContain("const selected = plannerSelectedCandidate ??");
     expect(mouth).toContain("kernelCandidateCanPreempt");
     expect(mouth).toContain("extentRequiredSurfaces");
     expect(mouth).toContain("candidate:generated:rhetorical-lattice");

@@ -26,6 +26,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       typedObservations?: SupportedProofObservation[];
       proofClaims?: ProofClaim[];
       proofEvidence?: ProofEvidenceRecord[];
+      sourceExcerpts?: Array<{ text: string; evidenceId: EvidenceSpan["id"] }>;
       calibrationModels?: CalibrationModelSet;
     }): SemanticEntailmentResult {
       const claim = claimFrom(input.text, options.idFactory);
@@ -45,7 +46,9 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         proofClaims: input.proofClaims,
         proofEvidence: input.proofEvidence,
         hasher: options.hasher
-      }) ?? exactTextProofGate({ claim, evidence: input.evidence, hasher: options.hasher });
+      })
+        ?? exactTextProofGate({ claim, evidence: input.evidence, hasher: options.hasher })
+        ?? sourceExcerptProofGate({ claim, evidence: input.evidence, excerpts: input.sourceExcerpts, hasher: options.hasher });
       const semanticVerdict = verdictWithProofGate(obligations.verdict, proofGate);
       const truthState = proofGate ? proofGate.truthState : truthStateFromProofVerdict("insufficient_evidence");
       const structuralSupport = structuralResult.structuralCoverage * 0.34 + structuralResult.causalMass * 0.27 + structuralResult.faithfulnessLCB * 0.21 + structuralResult.stability * 0.18;
@@ -178,6 +181,50 @@ function exactTextProofGate(input: { claim: Claim; evidence: EvidenceSpan[]; has
       modalityId: "modality.asserted"
     };
   });
+  return proveClaim({
+    claim: {
+      id: String(input.claim.id),
+      subject: { id: "proof.atom.claim_text", kindId: "proof.atom.text" },
+      relationId: "relation.test.has_value",
+      object: { id: claimTextId, kindId: "proof.atom.text" },
+      polarityId: input.claim.polarity < 0 ? "polarity.negative" : "polarity.positive",
+      modalityId: "modality.asserted",
+      requiredSourceBinding: true
+    },
+    candidateEvidence
+  });
+}
+
+function sourceExcerptProofGate(input: {
+  claim: Claim;
+  evidence: EvidenceSpan[];
+  excerpts?: Array<{ text: string; evidenceId: EvidenceSpan["id"] }>;
+  hasher: Hasher;
+}): SemanticProofResult | undefined {
+  if (!input.excerpts?.length) return undefined;
+  const normalizedExcerpts = input.excerpts.map(excerpt => normalizedText(excerpt.text)).filter(Boolean);
+  if (!normalizedExcerpts.length || normalizedText(normalizedExcerpts.join(" ")) !== input.claim.normalized) return undefined;
+  const evidenceById = new Map(input.evidence.map(span => [String(span.id), span]));
+  const verified = new Map<string, EvidenceSpan>();
+  for (const excerpt of input.excerpts) {
+    const span = evidenceById.get(String(excerpt.evidenceId));
+    if (!span || !evidenceProofBoundary(span).certifiesFactualProof) return undefined;
+    const excerptText = normalizedText(excerpt.text);
+    if (!excerptText || !normalizedText(span.text || span.textPreview).includes(excerptText)) return undefined;
+    verified.set(String(span.id), span);
+  }
+  const claimTextId = textIdentity(input.claim.normalized, input.hasher);
+  const candidateEvidence: ProofEvidenceRecord[] = [...verified.values()].map(span => ({
+    id: String(span.id),
+    forceClass: "direct_evidence",
+    sourceVersionId: String(span.sourceVersionId),
+    evidenceSpanId: String(span.id),
+    subject: { id: "proof.atom.claim_text", kindId: "proof.atom.text" },
+    relationId: "relation.test.has_value",
+    object: { id: claimTextId, kindId: "proof.atom.text" },
+    polarityId: input.claim.polarity < 0 ? "polarity.negative" : "polarity.positive",
+    modalityId: "modality.asserted"
+  }));
   return proveClaim({
     claim: {
       id: String(input.claim.id),

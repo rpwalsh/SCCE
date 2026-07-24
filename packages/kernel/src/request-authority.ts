@@ -8,7 +8,7 @@ import {
   type TurnRequirementDimension,
   type TurnRequirementField
 } from "./turn-requirements.js";
-import type { CandidateField, CandidateSurface } from "./candidate.js";
+import type { CandidateField, CandidateSurface } from "./candidate-contract.js";
 import type { EvidenceSpan, FieldState, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
 
 export const REQUESTED_AUTHORITY_IDS = [

@@ -1,6 +1,7 @@
 import type { EvidenceId, EvidenceSpan, GraphNode, Hasher, JsonValue, NodeId, SourceVersionId } from "./types.js";
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
+import { evidenceRetrievalSurface } from "./evidence-retrieval-surface.js";
 
 export type RetrievalIndexKind = "lexical" | "vector" | "graph" | "temporal" | "source" | "hybrid";
 
@@ -149,7 +150,7 @@ export function createSemanticMemoryIndex(options: { hasher?: Hasher; dimensions
 }
 
 function postingsForEvidence(span: EvidenceSpan): LexicalPosting[] {
-  const symbols = symbolizeData(span.text);
+  const symbols = symbolizeData(evidenceRetrievalSurface(span));
   const positions = new Map<string, number[]>();
   for (let i = 0; i < symbols.length; i++) {
     const symbol = symbols[i]!;
@@ -168,7 +169,7 @@ function postingsForEvidence(span: EvidenceSpan): LexicalPosting[] {
 }
 
 function vectorForEvidence(span: EvidenceSpan, hasher: Hasher, dimensions: number): VectorPosting {
-  const features = span.features.length ? span.features : featureSet(span.text, 1024);
+  const features = span.features.length ? span.features : featureSet(evidenceRetrievalSurface(span), 1024);
   return {
     id: `vector:evidence:${String(span.id)}`,
     evidenceId: span.id,

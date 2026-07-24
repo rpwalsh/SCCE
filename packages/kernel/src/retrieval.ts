@@ -3,6 +3,7 @@ import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue } f
 import { featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import { PROOF_GRAPH_KIND, SEMANTIC_VERDICT } from "./semantic-codes.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
+import { evidenceRetrievalSurface } from "./evidence-retrieval-surface.js";
 
 export interface CorpusIndex {
   documents: IndexedDocument[];
@@ -52,7 +53,7 @@ export interface RetrievalPlan {
 
 function buildCorpusIndex(evidence: readonly EvidenceSpan[]): CorpusIndex {
   const documents = evidence.map(span => {
-    const symbols = symbolizeData(span.text);
+    const symbols = symbolizeData(evidenceRetrievalSurface(span));
     return {
       id: String(span.id),
       evidenceId: String(span.id),
