@@ -38,6 +38,7 @@ import {
   type SurfaceTransformationBaseline
 } from "./walsh-surface-energy.js";
 import {
+  languageGenerationSurfaceAdequate,
   semanticFrameSurfaces,
   type LanguageGenerationResult,
   type LanguageMemoryRuntime,
@@ -444,7 +445,7 @@ interface MouthGenerationWorkBudget {
 }
 
 const MOUTH_GENERATION_CALL_LIMIT = 1;
-const MOUTH_GENERATION_EXTENT_LIMIT = 48;
+const MOUTH_GENERATION_EXTENT_LIMIT = 256;
 const MOUTH_GENERATION_WINDOW_MS = 2_500;
 
 function createMouthGenerationWorkBudget(startedAtMs: number): MouthGenerationWorkBudget {
@@ -2588,7 +2589,7 @@ function creativeCandidatesFromFrames(
     const anchoredAssembly = creativeAnchoredAssembly(variant.id, variant.frames, discoursePlan, input.languageMemory);
     const generationExtent = claimMouthGenerationWork(
       generationWorkBudget,
-      Math.max(24, Math.min(128, discoursePlan.units.reduce((total, unit) => total + unit.generationExtent, 0) || 64))
+      creativeLearnedGenerationExtent(input, discoursePlan)
     );
     if (generationExtent === undefined) break;
     const generation = languageMemory.generate({
@@ -3135,6 +3136,48 @@ function creativeResponseExtentHints(input: SpeakInput): LearnedResponseExtentHi
     });
   }
   return hints;
+}
+
+function creativeLearnedGenerationExtent(input: SpeakInput, discoursePlan: DiscoursePlan): number {
+  const plannedExtent = discoursePlan.units.reduce(
+    (total, unit) => total + unit.generationExtent,
+    0
+  ) || 64;
+  return resolveLearnedCreativeGenerationExtent({
+    requestText: input.entailment.claim.text,
+    hints: creativeResponseExtentHints(input),
+    plannedExtent
+  });
+}
+
+export function resolveLearnedCreativeGenerationExtent(input: {
+  requestText: string;
+  hints: readonly LearnedResponseExtentHint[];
+  plannedExtent: number;
+  maxExtent?: number;
+}): number {
+  const maxExtent = Math.max(1, Math.floor(input.maxExtent ?? MOUTH_GENERATION_EXTENT_LIMIT));
+  const requestPoints = [...input.requestText];
+  const learnedExtent = input.hints
+    .map(hint => {
+      const prefix = requestPoints.slice(
+        Math.max(0, hint.requestSpan.charStart - 32),
+        hint.requestSpan.charStart
+      ).join("");
+      const numericSurfaces = prefix.match(/[0-9]+(?:[.,][0-9]+)*/gu) ?? [];
+      const quantitySurface = numericSurfaces.at(-1);
+      if (!quantitySurface) return 0;
+      const quantity = Number(quantitySurface.replace(/,(?=[0-9]{3}(?:\D|$))/gu, ""));
+      return Number.isFinite(quantity) && quantity > 0
+        ? quantity * hint.wordsPerUnit
+        : 0;
+    })
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((left, right) => right - left)[0] ?? 0;
+  return Math.max(24, Math.min(
+    maxExtent,
+    Math.ceil(Math.max(input.plannedExtent, learnedExtent))
+  ));
 }
 
 function creativeDefaultTargetWords(input: SpeakInput): number {
@@ -5178,7 +5221,9 @@ function admissibleMouthSurface(text: string): boolean {
 }
 
 function admissibleLearnedSurface(text: string, generation: LanguageGenerationResult): boolean {
-  return admissibleMouthSurface(text) && generationImportedPriorIds(generation).length > 0;
+  return admissibleMouthSurface(text)
+    && languageGenerationSurfaceAdequate(generation)
+    && generationImportedPriorIds(generation).length > 0;
 }
 
 function forceFromEntailment(entailment: SemanticEntailmentResult): OutputForce {
