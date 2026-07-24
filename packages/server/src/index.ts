@@ -42,6 +42,7 @@ async function main(): Promise<void> {
     }
   };
   await startRuntimeSurface({
+    initialize: () => runtime.storage.init(),
     warmupEnabled: process.env.SCCE_STARTUP_WARMUP !== "0",
     strictWarmup,
     listen: () => listen(server, port, host, config.server.url),

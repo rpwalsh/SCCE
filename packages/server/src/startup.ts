@@ -1,4 +1,5 @@
 export interface RuntimeSurfaceStartupInput {
+  readonly initialize: () => Promise<void>;
   readonly warmupEnabled: boolean;
   readonly strictWarmup: boolean;
   readonly listen: () => Promise<void>;
@@ -63,6 +64,7 @@ export function createRuntimeStartupReadiness(): RuntimeStartupReadinessControll
  * until the cache is fully warm. Strict mode additionally gates the socket.
  */
 export async function startRuntimeSurface(input: RuntimeSurfaceStartupInput): Promise<void> {
+  await input.initialize();
   if (!input.warmupEnabled) input.readiness.disable();
   if (input.warmupEnabled && input.strictWarmup) await runWarmup(input);
   await input.listen();
