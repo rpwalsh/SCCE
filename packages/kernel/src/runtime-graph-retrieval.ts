@@ -68,6 +68,14 @@ interface HotGraphNeighborhood {
   sourceAnchorEvidenceIds: Map<string, Set<string>>;
 }
 
+interface HotNeighborhoodClosureCandidate {
+  anchorNodeId: string;
+  nodeId: string;
+  potential: number;
+  routeId: string;
+  kind: "edge" | "hyperedge";
+}
+
 // Hard resident-walk caps: environment sizing may enlarge the hydrated cache,
 // but a turn cannot enlarge this query frontier.
 const HOT_QUERY_RADIUS = 2;
@@ -529,20 +537,55 @@ export function createRuntimeGraphRetrieval(options: {
 
   async function loadHotNeighborhood(epoch: number): Promise<HotGraphNeighborhood | undefined> {
     try {
+      const anchorNodeLimit = hotNeighborhoodNodeLimit <= 1
+        ? hotNeighborhoodNodeLimit
+        : Math.max(1, Math.floor(hotNeighborhoodNodeLimit * 0.75));
       const graph = await deps.storage.graph.getSlice({
-        limitNodes: hotNeighborhoodNodeLimit,
+        limitNodes: anchorNodeLimit,
         limitEdges: hotNeighborhoodEdgeLimit,
         allowLatestFallback: true
       });
       if (epoch !== runtimeCacheEpoch || !graph.nodes.length) return undefined;
+      const closureCapacity = Math.max(0, hotNeighborhoodNodeLimit - graph.nodes.length);
+      const closureCandidates = hotNeighborhoodClosureCandidates(graph, closureCapacity);
+      const closureGraph = closureCandidates.length
+        ? await deps.storage.graph.getSlice({
+            seedNodeIds: closureCandidates.map(candidate => candidate.nodeId as GraphNode["id"]),
+            limitNodes: closureCandidates.length,
+            limitEdges: 0
+          })
+        : undefined;
+      if (epoch !== runtimeCacheEpoch) return undefined;
+      const closedGraph = closeHotNeighborhoodTopology(
+        graph,
+        closureCandidates,
+        closureGraph?.nodes ?? []
+      );
       const graphEvidenceIds = uniqueKernelStrings([
-        ...graph.nodes.flatMap(node => node.evidenceIds.map(String)),
-        ...graph.edges.flatMap(edge => edge.evidenceIds.map(String)),
-        ...graph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
+        ...closedGraph.nodes.flatMap(node => node.evidenceIds.map(String)),
+        ...closedGraph.edges.flatMap(edge => edge.evidenceIds.map(String)),
+        ...closedGraph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
       ]).slice(0, hotNeighborhoodEvidenceLimit);
       const evidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
       if (epoch !== runtimeCacheEpoch) return undefined;
-      const value = fitRuntimeGraphSliceToBudget({ graph, evidence }, Math.max(16 * 1024 * 1024, Math.floor(graphSliceCacheMaxBytes * 0.8)));
+      const budgetBytes = Math.max(16 * 1024 * 1024, Math.floor(graphSliceCacheMaxBytes * 0.8));
+      const residentValue = { graph: closedGraph, evidence };
+      const budgetInput = estimateRuntimeGraphSliceBytes(residentValue) > budgetBytes
+        ? {
+            ...residentValue,
+            graph: {
+              ...closedGraph,
+              nodes: interleaveHotClosureNodes(
+                graph.nodes,
+                closureCandidates,
+                closureGraph?.nodes ?? []
+              )
+            }
+          }
+        : residentValue;
+      const value = retainClosedHotTopology(
+        fitRuntimeGraphSliceToBudget(budgetInput, budgetBytes)
+      );
       const hot = buildHotNeighborhood(value);
       hotNeighborhood = hot;
       kernelTrace({
@@ -552,6 +595,7 @@ export function createRuntimeGraphRetrieval(options: {
           nodes: hot.value.graph.nodes.length,
           edges: hot.value.graph.edges.length,
           evidence: hot.value.evidence.length,
+          closureNodes: Math.max(0, hot.value.graph.nodes.length - graph.nodes.length),
           bytes: hot.bytes,
           cacheBytes: graphSliceCacheBytes
         }
@@ -561,6 +605,190 @@ export function createRuntimeGraphRetrieval(options: {
       failures.push(`hot neighborhood load failed: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
+  }
+
+  function hotNeighborhoodClosureCandidates(
+    graph: GraphSlice,
+    capacity: number
+  ): HotNeighborhoodClosureCandidate[] {
+    if (capacity <= 0) return [];
+    const anchorOrder = new Map(
+      graph.nodes.map((node, index) => [String(node.id), index])
+    );
+    const betterCandidate = (
+      left: HotNeighborhoodClosureCandidate,
+      right: HotNeighborhoodClosureCandidate | undefined
+    ) => !right
+      || left.potential > right.potential
+      || (left.potential === right.potential
+        && (left.routeId.localeCompare(right.routeId) < 0
+          || (left.routeId === right.routeId && left.nodeId.localeCompare(right.nodeId) < 0)));
+    const edgeByAnchor = new Map<string, HotNeighborhoodClosureCandidate>();
+    for (const edge of graph.edges) {
+      const source = String(edge.source);
+      const target = String(edge.target);
+      const sourceResident = anchorOrder.has(source);
+      const targetResident = anchorOrder.has(target);
+      if (sourceResident === targetResident) continue;
+      const anchorNodeId = sourceResident ? source : target;
+      const candidate: HotNeighborhoodClosureCandidate = {
+        anchorNodeId,
+        nodeId: sourceResident ? target : source,
+        potential: hotEdgeTransitionPotential(edge),
+        routeId: String(edge.id),
+        kind: "edge"
+      };
+      if (betterCandidate(candidate, edgeByAnchor.get(anchorNodeId))) {
+        edgeByAnchor.set(anchorNodeId, candidate);
+      }
+    }
+    const hyperedgeByAnchor = new Map<string, HotNeighborhoodClosureCandidate>();
+    for (const hyperedge of graph.hyperedges) {
+      const memberNodeIds = uniqueKernelStrings(hyperedge.memberNodeIds.map(String));
+      const anchorNodeId = memberNodeIds
+        .filter(nodeId => anchorOrder.has(nodeId))
+        .sort((left, right) =>
+          (anchorOrder.get(left) ?? Number.MAX_SAFE_INTEGER)
+          - (anchorOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+          || left.localeCompare(right))[0];
+      const nodeId = memberNodeIds
+        .filter(memberNodeId => !anchorOrder.has(memberNodeId))
+        .sort((left, right) => left.localeCompare(right))[0];
+      if (!anchorNodeId || !nodeId) continue;
+      const candidate: HotNeighborhoodClosureCandidate = {
+        anchorNodeId,
+        nodeId,
+        potential: hotHyperedgeTransitionPotential(hyperedge),
+        routeId: String(hyperedge.id),
+        kind: "hyperedge"
+      };
+      if (betterCandidate(candidate, hyperedgeByAnchor.get(anchorNodeId))) {
+        hyperedgeByAnchor.set(anchorNodeId, candidate);
+      }
+    }
+    const compareCandidates = (
+      left: HotNeighborhoodClosureCandidate,
+      right: HotNeighborhoodClosureCandidate
+    ) =>
+      (anchorOrder.get(left.anchorNodeId) ?? Number.MAX_SAFE_INTEGER)
+      - (anchorOrder.get(right.anchorNodeId) ?? Number.MAX_SAFE_INTEGER)
+      || right.potential - left.potential
+      || left.routeId.localeCompare(right.routeId)
+      || left.nodeId.localeCompare(right.nodeId);
+    const edgeCandidates = [...edgeByAnchor.values()].sort(compareCandidates);
+    const hyperedgeCandidates = [...hyperedgeByAnchor.values()].sort(compareCandidates);
+    const selected: HotNeighborhoodClosureCandidate[] = [];
+    const selectedNodeIds = new Set<string>();
+    const addCandidates = (
+      candidates: readonly HotNeighborhoodClosureCandidate[],
+      limit: number
+    ) => {
+      let added = 0;
+      for (const candidate of candidates) {
+        if (selected.length >= capacity || added >= limit) break;
+        if (selectedNodeIds.has(candidate.nodeId)) continue;
+        selectedNodeIds.add(candidate.nodeId);
+        selected.push(candidate);
+        added++;
+      }
+    };
+    const edgeCapacity = Math.ceil(capacity / 2);
+    addCandidates(edgeCandidates, edgeCapacity);
+    addCandidates(hyperedgeCandidates, capacity - selected.length);
+    addCandidates(
+      [...edgeCandidates, ...hyperedgeCandidates].sort(compareCandidates),
+      capacity - selected.length
+    );
+    return selected.sort(compareCandidates);
+  }
+
+  function closeHotNeighborhoodTopology(
+    graph: GraphSlice,
+    candidates: readonly HotNeighborhoodClosureCandidate[],
+    loadedNodes: readonly GraphNode[]
+  ): GraphSlice {
+    const requestedNodeIds = new Set(candidates.map(candidate => candidate.nodeId));
+    const nodes = [
+      ...graph.nodes,
+      ...loadedNodes.filter(node => requestedNodeIds.has(String(node.id)))
+    ].slice(0, hotNeighborhoodNodeLimit);
+    const nodeIds = new Set(nodes.map(node => String(node.id)));
+    return {
+      ...graph,
+      nodes,
+      edges: graph.edges
+        .filter(edge =>
+          nodeIds.has(String(edge.source))
+          && nodeIds.has(String(edge.target)))
+        .slice(0, hotNeighborhoodEdgeLimit),
+      hyperedges: graph.hyperedges
+        .filter(hyperedge => hyperedge.memberNodeIds
+          .filter(nodeId => nodeIds.has(String(nodeId))).length >= 2),
+      query: {
+        ...graph.query,
+        limitNodes: hotNeighborhoodNodeLimit,
+        limitEdges: hotNeighborhoodEdgeLimit
+      }
+    };
+  }
+
+  function interleaveHotClosureNodes(
+    anchorNodes: readonly GraphNode[],
+    candidates: readonly HotNeighborhoodClosureCandidate[],
+    loadedNodes: readonly GraphNode[]
+  ): GraphNode[] {
+    const loadedById = new Map(
+      loadedNodes.map(node => [String(node.id), node])
+    );
+    const candidatesByAnchor = new Map<string, HotNeighborhoodClosureCandidate[]>();
+    for (const candidate of candidates) {
+      if (!loadedById.has(candidate.nodeId)) continue;
+      const rows = candidatesByAnchor.get(candidate.anchorNodeId) ?? [];
+      rows.push(candidate);
+      candidatesByAnchor.set(candidate.anchorNodeId, rows);
+    }
+    const nodes: GraphNode[] = [];
+    const selectedNodeIds = new Set<string>();
+    const addNode = (node: GraphNode | undefined) => {
+      if (!node || selectedNodeIds.has(String(node.id))) return;
+      selectedNodeIds.add(String(node.id));
+      nodes.push(node);
+    };
+    for (const anchor of anchorNodes) {
+      addNode(anchor);
+      for (const candidate of candidatesByAnchor.get(String(anchor.id)) ?? []) {
+        addNode(loadedById.get(candidate.nodeId));
+      }
+    }
+    return nodes.slice(0, hotNeighborhoodNodeLimit);
+  }
+
+  function retainClosedHotTopology(value: RuntimeGraphSliceValue): RuntimeGraphSliceValue {
+    const nodeIds = new Set(value.graph.nodes.map(node => String(node.id)));
+    const edges = value.graph.edges.filter(edge =>
+      nodeIds.has(String(edge.source))
+      && nodeIds.has(String(edge.target)));
+    const hyperedges = value.graph.hyperedges.filter(hyperedge =>
+      hyperedge.memberNodeIds
+        .filter(nodeId => nodeIds.has(String(nodeId))).length >= 2);
+    const evidenceIds = new Set(uniqueKernelStrings([
+      ...value.graph.nodes.flatMap(node => node.evidenceIds.map(String)),
+      ...edges.flatMap(edge => edge.evidenceIds.map(String)),
+      ...hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
+    ]));
+    const evidence = value.evidence.filter(span => evidenceIds.has(String(span.id)));
+    const retainedEvidenceIds = new Set(evidence.map(span => String(span.id)));
+    return {
+      ...value,
+      graph: {
+        ...value.graph,
+        edges,
+        hyperedges
+      },
+      evidence,
+      semanticFrameBoundEvidenceIds: value.semanticFrameBoundEvidenceIds
+        ?.filter(id => retainedEvidenceIds.has(id))
+    };
   }
 
 
