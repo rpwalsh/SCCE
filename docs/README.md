@@ -1,39 +1,70 @@
 # SCCE Documentation
 
-Use this index to select the smallest relevant document.
+This directory contains the maintained operating, architecture, and engineering
+documentation for SCCE. Start with the user guide, then open only the contract or
+reference needed for the task.
 
 ## Start here
 
-- [`USER_GUIDE.md`](USER_GUIDE.md): local setup, ingestion, operation, inspection, and limitations.
-- [`REPO_COMPLETION_MAP.md`](REPO_COMPLETION_MAP.md): current implementation and verification status.
-- [`../SECURITY.md`](../SECURITY.md): security policy and reporting process.
+- [User guide](USER_GUIDE.md) — setup, ingestion, operation, inspection, and
+  limitations.
+- [Architecture](ARCHITECTURE.md) — the one-lane runtime, package boundaries, and
+  durable-store boundary.
+- [Repository status](REPO_COMPLETION_MAP.md) — implemented surfaces, verification
+  boundaries, and remaining work.
+- [Security policy](../SECURITY.md) — vulnerability reporting and supported security
+  boundary.
 
-## Runtime and interfaces
+## Operate SCCE
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): package boundaries and production runtime path.
-- [`API_SURFACE.md`](API_SURFACE.md): CLI, HTTP, kernel, adapter, and extension surfaces.
-- [`BRAIN_TO_MOUTH_PIPELINE.md`](BRAIN_TO_MOUTH_PIPELINE.md): evidence-to-answer path.
-- [`FLUENT_COGNITIVE_ENGINE_PLAN.md`](FLUENT_COGNITIVE_ENGINE_PLAN.md): unachieved roadmap and acceptance target for corpus-learned conversational, multilingual, creative, and coding behavior.
-- [`WORKSPACE_RUNTIME.md`](WORKSPACE_RUNTIME.md): workspace ingestion, reports, planning, and patch application.
-- [`PATCH_TRANSACTION_CONTRACT.md`](PATCH_TRANSACTION_CONTRACT.md): exact-byte plan, authorization, validation, and receipt rules.
-- [`SPREADSHEET_INGESTION_CONTRACT.md`](SPREADSHEET_INGESTION_CONTRACT.md): workbook parsing and evidence behavior.
+- [API surface](API_SURFACE.md) — root commands, package APIs, server routes, CLI,
+  workbench, VS Code, and developer tooling.
+- [Corpus training](CORPUS_TRAINING.md) — corpus layout, compilation commands,
+  hydration, and activation.
+- [Workspace runtime](WORKSPACE_RUNTIME.md) — workspace ingestion, questions,
+  reports, planning, and reviewed patch application.
+- [Spreadsheet ingestion](SPREADSHEET_INGESTION_CONTRACT.md) — supported workbook
+  formats, limits, formula handling, provenance, and failure behavior.
 
-## Engineering contracts
+## Understand the engine
 
-- [`SERIOUS_VERSION_MATH_APPENDIX.md`](SERIOUS_VERSION_MATH_APPENDIX.md): required mathematical contract for serious-version work.
-- [`SCORING_AND_CALIBRATION.md`](SCORING_AND_CALIBRATION.md): fitted, provisional, and fallback scoring behavior.
-- [`MULTILINGUAL_CONTRACT.md`](MULTILINGUAL_CONTRACT.md): language-neutral cognition and source-derived labels.
-- [`CORPUS_TRAINING.md`](CORPUS_TRAINING.md): corpus compilation and durable learning.
-- [`ENGINEERING_GUIDE.md`](ENGINEERING_GUIDE.md): implementation and debugging boundaries.
-- [`SCCE_MAP.md`](SCCE_MAP.md): compact source map.
+- [Brain-to-Mouth pipeline](BRAIN_TO_MOUTH_PIPELINE.md) — evidence, graph
+  activation, selection, proof, semantic planning, realization, and trace.
+- [Serious-version math contract](SERIOUS_VERSION_MATH_APPENDIX.md) — required
+  optimization, calibration, and acceptance contract for serious-version work.
+- [Scoring and calibration](SCORING_AND_CALIBRATION.md) — meanings and limitations
+  of runtime scores, fitted models, and fallbacks.
+- [Multilingual contract](MULTILINGUAL_CONTRACT.md) — language-neutral cognition and
+  source-derived language behavior.
 
-## Developer tooling
+## Build and debug
 
-- [`SCCE_DEBUGGING.md`](SCCE_DEBUGGING.md): targeted debugging workflow.
-- [`SCCE_DEV_MCP.md`](SCCE_DEV_MCP.md): bounded MCP repository and trace tools.
+- [Engineering guide](ENGINEERING_GUIDE.md) — mathematical spine, runtime
+  boundaries, important files, and diagnosis order.
+- [Source map](SCCE_MAP.md) — compact package and source-file map.
+- [Debugging guide](SCCE_DEBUGGING.md) — focused commands, traces, and coding-agent
+  workflow.
+- [Developer MCP](SCCE_DEV_MCP.md) — installation and bounded repository, database,
+  test, and trace tools.
 
-## Status and review records
+## Safety and review contracts
 
-- [`PUBLIC_REVIEW_CONTRACT.md`](PUBLIC_REVIEW_CONTRACT.md): evidence required before making a reproducible public-review claim.
+- [Patch transaction contract](PATCH_TRANSACTION_CONTRACT.md) — exact-byte plans,
+  authorization, validation, mutation, rollback, and receipts.
+- [Public review contract](PUBLIC_REVIEW_CONTRACT.md) — evidence required before a
+  reproducible public-review claim.
+- [Fluent-engine roadmap](FLUENT_COGNITIVE_ENGINE_PLAN.md) — unachieved behavioral
+  targets and qualification criteria; it is a roadmap, not a status record.
 
-Source, tests, current status records, and focused contracts are the maintained references. This is a proprietary source release for inspection, not an open-source distribution.
+## Document authority
+
+When documentation and implementation differ, source code, package manifests, route
+manifests, schemas, and fresh command output for the exact revision take precedence.
+The serious-version math, multilingual, patch-transaction, spreadsheet, and public
+review documents are normative contracts; a source change that intentionally alters
+one of those boundaries must update its contract in the same change.
+
+Status and roadmap documents never establish benchmark, production, security, or
+calibration claims. Such claims require the dated, revision-bound evidence named in
+the public review contract. Historical audits, agent work logs, generated source maps,
+and superseded delivery checklists belong in git history rather than this directory.
