@@ -86,6 +86,22 @@ export function createRuntimeAcquisition(options: {
           const ingest = await ingestSource({
             uri: canonicalUri,
             namespace: "runtime-acquisition",
+            sourceAdmission: {
+              sourceClass: "runtime_web",
+              intendedUse: "direct_evidence",
+              promotionAuthority: "automatic"
+            },
+            sourceTrust: {
+              identity: 0.68,
+              integrity: 1,
+              parserReliability: 0.78,
+              directness: 0.72,
+              authority: 0.52,
+              freshness: 0.9,
+              independenceGroup: runtimeWebIndependenceGroup(canonicalUri),
+              accessScope: "public",
+              licenseStatus: "unknown"
+            },
             content: fetched.bytes,
             mediaType: fetched.mediaType || "application/octet-stream",
             metadata: toJsonValue({
@@ -156,6 +172,14 @@ export function createRuntimeAcquisition(options: {
       payload: toJsonValue(motion)
     })));
     return motion;
+  }
+
+  function runtimeWebIndependenceGroup(uri: string): string {
+    try {
+      return `runtime-web:${new URL(uri).hostname.toLocaleLowerCase()}`;
+    } catch {
+      return `runtime-web:${hasher.digestHex(uri).slice(0, 24)}`;
+    }
   }
 
 

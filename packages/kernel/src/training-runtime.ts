@@ -10,6 +10,7 @@ import { createLearningLoop } from "./learning-loop.js";
 import { createLearningController } from "./learning.js";
 import { createPredictionLayer } from "./prediction.js";
 import { createClock, toJsonValue } from "./primitives.js";
+import { joinInformationLabels } from "./information-flow.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
 import type { ScceKernelDeps } from "./storage.js";
@@ -99,10 +100,21 @@ export function createTrainingRuntime(options: {
       const first = spans[0];
       if (!first) continue;
       const sourceVersionId = first.sourceVersionId;
+      if (spans.some(span => !span.informationLabel)) {
+        throw new Error(`training evidence for ${sourceVersionId} is missing an information label`);
+      }
+      const existingProfile = profileBySourceVersion.get(String(sourceVersionId));
+      const informationLabel = joinInformationLabels(
+        [
+          ...spans.map(span => span.informationLabel!),
+          ...(existingProfile?.informationLabel ? [existingProfile.informationLabel] : [])
+        ],
+        { explicitMergeAuthority: deps.informationAccess?.explicitMergeAuthority === true }
+      );
       const text = spans.map(span => span.text).join("\n");
-      let profile = profileBySourceVersion.get(String(sourceVersionId));
+      let profile = existingProfile;
       if (!profile) {
-        profile = language.acquire({ sourceVersionId, text, createdAt: clock.now() });
+        profile = { ...language.acquire({ sourceVersionId, text, createdAt: clock.now() }), informationLabel };
         await deps.storage.model.putLanguageProfile(profile);
         profiles.push(profile);
         profileBySourceVersion.set(String(sourceVersionId), profile);
@@ -119,11 +131,11 @@ export function createTrainingRuntime(options: {
         maxCountersPerOrder: 12000,
         vocabularyLimit: 24000
       });
-      await deps.storage.languageMemory.putNgramObservationsBatch(memory.observations);
-      for (const model of memory.models) await deps.storage.languageMemory.putNgramModel(model);
-      for (const unit of memory.units) await deps.storage.languageMemory.putLanguageUnit(unit);
-      for (const pattern of memory.patterns) await deps.storage.languageMemory.putLanguagePattern(pattern);
-      for (const frame of memory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame(frame);
+      await deps.storage.languageMemory.putNgramObservationsBatch(memory.observations.map(record => ({ ...record, informationLabel })));
+      for (const model of memory.models) await deps.storage.languageMemory.putNgramModel({ ...model, informationLabel });
+      for (const unit of memory.units) await deps.storage.languageMemory.putLanguageUnit({ ...unit, informationLabel });
+      for (const pattern of memory.patterns) await deps.storage.languageMemory.putLanguagePattern({ ...pattern, informationLabel });
+      for (const frame of memory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame({ ...frame, informationLabel });
       observations += memory.observations.length;
       models += memory.models.length;
       units += memory.units.length;

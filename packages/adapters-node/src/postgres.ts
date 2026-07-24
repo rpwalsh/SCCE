@@ -1,10 +1,15 @@
 import { Pool, type PoolClient } from "pg";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   POSTGRES_REQUIRED_TABLES,
   POSTGRES_SCHEMA_VERSION,
   createAlphaLayer,
   featureSet,
+  informationLabelAllowsRead,
+  joinInformationLabels,
   normalizeSourceLanguageAlias,
+  normalizeInformationLabel,
+  toJsonValue,
   type AlphaTraceRecord,
   type AlphaTrace,
   type BenchmarkStore,
@@ -42,6 +47,8 @@ import {
   type GraphSliceQuery,
   type GraphStore,
   type Hyperedge,
+  type InformationAccessContext,
+  type InformationLabel,
   type IngestionCheckpoint,
   type IngestionCheckpointStore,
   type InteractionStateRecord,
@@ -77,6 +84,7 @@ import {
   type WorkspaceStore,
   type ResponseCandidateRecord,
   type SourceId,
+  type SourceTrust,
   type SourceVersion,
   type SourceVersionId,
   type TargetProfilePatternRecord,
@@ -91,6 +99,7 @@ export interface PostgresStorageOptions {
   url: string;
   schema: string;
   ssl?: boolean | { rejectUnauthorized?: boolean };
+  informationAccess?: InformationAccessContext;
 }
 
 export class PostgresStorageAdapter implements ScceStorage {
@@ -98,6 +107,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly schema: string;
   readonly q: string;
   readonly url: string;
+  readonly informationAccess?: InformationAccessContext;
   readonly events: EventLedger;
   readonly conversation: ConversationStore;
   readonly ingestion: IngestionCheckpointStore;
@@ -119,6 +129,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly selfRewrite: SelfRewriteStore;
   readonly workspace: WorkspaceStore;
   readonly dialogueMemory: DialogueMemoryStore;
+  private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
     if (!/^postgres(?:ql)?:\/\//i.test(options.url)) throw new Error("SCCE v3 requires PostgreSQL; storage adapter received a non-Postgres URL.");
@@ -126,6 +137,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.schema = options.schema;
     this.q = `"${options.schema}"`;
     this.url = options.url;
+    this.informationAccess = options.informationAccess;
     this.pool = new Pool({ connectionString: options.url, ssl: options.ssl });
     this.events = createEventLedger(this);
     this.conversation = createConversationStore(this);
@@ -163,7 +175,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      for (const statement of schemaStatements(this.q)) await client.query(statement);
+      for (const statement of schemaStatements(this.q, this.informationAccess)) await client.query(statement);
       const schemaErrors = await requiredSchemaErrors(client, this.schema);
       if (schemaErrors.length) throw new Error(`schema migration incomplete: ${schemaErrors.slice(0, 12).join("; ")}`);
       await client.query(
@@ -298,6 +310,46 @@ export class PostgresStorageAdapter implements ScceStorage {
     };
   }
 
+  requireInformationAccess(): InformationAccessContext {
+    const access = this.informationAccess;
+    if (!access?.tenantId.trim() || !access.principalId.trim()) {
+      throw new Error("active cognitive storage query requires an explicit information access context");
+    }
+    return access;
+  }
+
+  requireWritableInformationLabel(label: InformationLabel | undefined): InformationLabel {
+    if (!label) throw new Error("new durable cognitive record requires an information label");
+    const normalized = normalizeInformationLabel(label);
+    if (!informationLabelAllowsRead(normalized, this.requireInformationAccess())) {
+      throw new Error("information label write denied for active access context");
+    }
+    return normalized;
+  }
+
+  informationAccessPredicate(alias: string, firstParameter: number): { sql: string; params: unknown[] } {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) throw new Error("unsafe information-label SQL alias");
+    const access = this.requireInformationAccess();
+    const exportClasses = informationExportClassesThrough(access.maximumExportClass);
+    return {
+      sql: `(
+        (${alias}.information_label->>'exportClass' = 'public' OR ${alias}.information_label->>'tenantId' = $${firstParameter})
+        AND ${alias}.information_label->>'exportClass' = ANY($${firstParameter + 1}::text[])
+        AND (
+          JSONB_ARRAY_LENGTH(${alias}.information_label->'principals') = 0
+          OR (${alias}.information_label->'principals') ? $${firstParameter + 2}
+        )
+        AND (${alias}.information_label->'compartments') <@ $${firstParameter + 3}::jsonb
+      )`,
+      params: [
+        access.tenantId.trim(),
+        exportClasses,
+        access.principalId.trim(),
+        JSON.stringify([...new Set(access.compartments.map(value => value.normalize("NFKC").trim()).filter(Boolean))])
+      ]
+    };
+  }
+
   async resetLocalDevOnly(input: { confirmLocalDevOnly: boolean }): Promise<JsonValue> {
     if (!input.confirmLocalDevOnly) throw new Error("reset requires --confirm-local-dev-only");
     if (!isLocalDatabaseUrl(this.url)) throw new Error("reset refused: database host is not local");
@@ -312,11 +364,19 @@ export class PostgresStorageAdapter implements ScceStorage {
   }
 
   async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const result = await this.pool.query(sql, params);
+    const result = await (this.transactionContext.getStore() ?? this.pool).query(sql, params);
     return result.rows as T[];
   }
 
+  async transaction<T>(operation: () => Promise<T>): Promise<T> {
+    const active = this.transactionContext.getStore();
+    if (active) return operation();
+    return this.tx(client => this.transactionContext.run(client, operation));
+  }
+
   async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const active = this.transactionContext.getStore();
+    if (active) return fn(active);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -336,7 +396,360 @@ export function createPostgresStorageAdapter(options: PostgresStorageOptions): P
   return new PostgresStorageAdapter(options);
 }
 
-function schemaStatements(q: string): string[] {
+type InformationLabeledTable =
+  | "source_versions"
+  | "evidence_spans"
+  | "graph_nodes"
+  | "graph_edges"
+  | "graph_hyperedges"
+  | "language_profiles"
+  | "ngram_observations"
+  | "ngram_models"
+  | "language_units"
+  | "language_patterns"
+  | "semantic_frames"
+  | "translation_alignments";
+
+async function joinDurableRecordLabels(
+  storage: PostgresStorageAdapter,
+  table: InformationLabeledTable,
+  records: readonly { id: string; informationLabel?: InformationLabel }[]
+): Promise<Map<string, InformationLabel>> {
+  const access = storage.requireInformationAccess();
+  const labelsById = new Map<string, InformationLabel[]>();
+  for (const record of records) {
+    const label = storage.requireWritableInformationLabel(record.informationLabel);
+    labelsById.set(record.id, [...(labelsById.get(record.id) ?? []), label]);
+  }
+  const ids = [...labelsById.keys()].sort();
+  await storage.query(
+    `SELECT pg_advisory_xact_lock(hashtextextended(record_id, 0))
+     FROM unnest($1::text[]) AS record(record_id)
+     ORDER BY record_id`,
+    [ids]
+  );
+  const existing = await storage.query<{ id: string; information_label: InformationLabel }>(
+    `SELECT id, information_label
+     FROM ${storage.table(table)}
+     WHERE id=ANY($1)
+     FOR UPDATE`,
+    [ids]
+  );
+  for (const row of existing) {
+    labelsById.set(row.id, [normalizeInformationLabel(row.information_label), ...(labelsById.get(row.id) ?? [])]);
+  }
+  return new Map([...labelsById].map(([id, labels]) => {
+    const joined = joinInformationLabels(labels, {
+      explicitMergeAuthority: access.explicitMergeAuthority === true
+    });
+    return [id, storage.requireWritableInformationLabel(joined)];
+  }));
+}
+
+function appendInformationAccess(
+  storage: PostgresStorageAdapter,
+  alias: string,
+  params: unknown[],
+  where: string[]
+): void {
+  const access = storage.informationAccessPredicate(alias, params.length + 1);
+  where.push(access.sql);
+  params.push(...access.params);
+}
+
+function informationExportClassesThrough(maximum: InformationAccessContext["maximumExportClass"]): string[] {
+  const ordered: InformationAccessContext["maximumExportClass"][] = [
+    "public",
+    "internal",
+    "confidential",
+    "restricted"
+  ];
+  return ordered.slice(0, ordered.indexOf(maximum) + 1);
+}
+
+function sameEvidenceLabelBackfillStatements(
+  q: string,
+  unlabeledOrLocked: (alias: string) => string
+): string[] {
+  const evidenceBackfill = (
+    table: string,
+    alias: string,
+    evidenceColumn: string
+  ) => `UPDATE ${q}.${table} ${alias}
+        SET information_label=(
+          SELECT MIN(e.information_label::text)::jsonb
+          FROM unnest(${alias}.${evidenceColumn}) AS ref(evidence_id)
+          JOIN ${q}.evidence_spans e ON e.id=ref.evidence_id
+        )
+        WHERE ${unlabeledOrLocked(alias)}
+          AND CARDINALITY(${alias}.${evidenceColumn})>0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM unnest(${alias}.${evidenceColumn}) AS ref(evidence_id)
+            LEFT JOIN ${q}.evidence_spans e ON e.id=ref.evidence_id
+            WHERE e.id IS NULL
+               OR e.information_label IS NULL
+               OR e.information_label->>'tenantId'='migration.unassigned'
+          )
+          AND (
+            SELECT COUNT(DISTINCT e.information_label::text)
+            FROM unnest(${alias}.${evidenceColumn}) AS ref(evidence_id)
+            JOIN ${q}.evidence_spans e ON e.id=ref.evidence_id
+          )=1`;
+  return [
+    evidenceBackfill("graph_nodes", "n", "evidence_ids"),
+    evidenceBackfill("graph_edges", "g", "evidence_ids"),
+    `UPDATE ${q}.graph_edges g
+     SET information_label=source_node.information_label
+     FROM ${q}.graph_nodes source_node, ${q}.graph_nodes target_node
+     WHERE source_node.id=g.source_node_id
+       AND target_node.id=g.target_node_id
+       AND CARDINALITY(g.evidence_ids)=0
+       AND ${unlabeledOrLocked("g")}
+       AND source_node.information_label=target_node.information_label
+       AND source_node.information_label->>'tenantId'<>'migration.unassigned'`,
+    evidenceBackfill("graph_hyperedges", "h", "provenance_refs"),
+    `UPDATE ${q}.graph_hyperedges h
+     SET information_label=(
+       SELECT MIN(n.information_label::text)::jsonb
+       FROM unnest(h.member_node_ids) AS ref(node_id)
+       JOIN ${q}.graph_nodes n ON n.id=ref.node_id
+     )
+     WHERE CARDINALITY(h.provenance_refs)=0
+       AND CARDINALITY(h.member_node_ids)>0
+       AND ${unlabeledOrLocked("h")}
+       AND NOT EXISTS (
+         SELECT 1
+         FROM unnest(h.member_node_ids) AS ref(node_id)
+         LEFT JOIN ${q}.graph_nodes n ON n.id=ref.node_id
+         WHERE n.id IS NULL
+            OR n.information_label IS NULL
+            OR n.information_label->>'tenantId'='migration.unassigned'
+       )
+       AND (
+         SELECT COUNT(DISTINCT n.information_label::text)
+         FROM unnest(h.member_node_ids) AS ref(node_id)
+         JOIN ${q}.graph_nodes n ON n.id=ref.node_id
+       )=1`,
+    `UPDATE ${q}.ngram_observations o
+     SET information_label=e.information_label
+     FROM ${q}.evidence_spans e
+     WHERE e.id=o.evidence_id
+       AND ${unlabeledOrLocked("o")}
+       AND e.information_label->>'tenantId'<>'migration.unassigned'
+       AND (
+         o.source_version_id IS NULL
+         OR EXISTS (
+           SELECT 1 FROM ${q}.source_versions sv
+           WHERE sv.id=o.source_version_id
+             AND sv.information_label=e.information_label
+         )
+       )`,
+    `UPDATE ${q}.ngram_observations o
+     SET information_label=sv.information_label
+     FROM ${q}.source_versions sv
+     WHERE sv.id=o.source_version_id
+       AND o.evidence_id IS NULL
+       AND ${unlabeledOrLocked("o")}
+       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
+    `UPDATE ${q}.ngram_models m
+     SET information_label=(
+       SELECT MIN(o.information_label::text)::jsonb
+       FROM ${q}.ngram_observations o
+       WHERE o.stream_id=m.stream_id
+     )
+     WHERE ${unlabeledOrLocked("m")}
+       AND EXISTS (SELECT 1 FROM ${q}.ngram_observations o WHERE o.stream_id=m.stream_id)
+       AND NOT EXISTS (
+         SELECT 1 FROM ${q}.ngram_observations o
+         WHERE o.stream_id=m.stream_id
+           AND (o.information_label IS NULL OR o.information_label->>'tenantId'='migration.unassigned')
+       )
+       AND (
+         SELECT COUNT(DISTINCT o.information_label::text)
+         FROM ${q}.ngram_observations o
+         WHERE o.stream_id=m.stream_id
+       )=1`,
+    evidenceBackfill("language_units", "u", "evidence_ids"),
+    `UPDATE ${q}.language_units u
+     SET information_label=sv.information_label
+     FROM ${q}.source_versions sv
+     WHERE sv.id=u.source_version_id
+       AND CARDINALITY(u.evidence_ids)=0
+       AND ${unlabeledOrLocked("u")}
+       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
+    evidenceBackfill("language_patterns", "p", "evidence_ids"),
+    `UPDATE ${q}.language_patterns p
+     SET information_label=lp.information_label
+     FROM ${q}.language_profiles lp
+     WHERE lp.id=p.profile_id
+       AND CARDINALITY(p.evidence_ids)=0
+       AND ${unlabeledOrLocked("p")}
+       AND lp.information_label->>'tenantId'<>'migration.unassigned'`,
+    evidenceBackfill("semantic_frames", "f", "evidence_ids"),
+    evidenceBackfill("translation_alignments", "a", "evidence_ids")
+  ];
+}
+
+function informationLabelMigrationStatements(
+  q: string,
+  informationAccess?: InformationAccessContext
+): string[] {
+  const tables = [
+    "source_versions",
+    "evidence_spans",
+    "graph_nodes",
+    "graph_edges",
+    "graph_hyperedges",
+    "language_profiles",
+    "ngram_observations",
+    "ngram_models",
+    "language_units",
+    "language_patterns",
+    "semantic_frames",
+    "translation_alignments"
+  ];
+  const lockedLegacyLabel = JSON.stringify({
+    tenantId: "migration.unassigned",
+    principals: ["migration.explicit-backfill-required"],
+    compartments: ["legacy.unlabeled"],
+    exportClass: "restricted",
+    mergePolicy: "isolated"
+  }).replaceAll("'", "''");
+  const publicCorpusLabel = JSON.stringify({
+    tenantId: "scce.public.corpus",
+    principals: [],
+    compartments: [],
+    exportClass: "public",
+    mergePolicy: "same_owner"
+  }).replaceAll("'", "''");
+  const ownerCorrectionsLabel = informationAccess
+    ? JSON.stringify({
+      tenantId: informationAccess.tenantId.normalize("NFKC").trim(),
+      principals: [informationAccess.principalId.normalize("NFKC").trim()],
+      compartments: [...new Set(informationAccess.compartments.map(value => value.normalize("NFKC").trim()).filter(Boolean))].sort(),
+      exportClass: "restricted",
+      mergePolicy: "isolated"
+    }).replaceAll("'", "''")
+    : undefined;
+  const unlabeledOrLocked = (alias: string) =>
+    `(${alias}.information_label IS NULL OR ${alias}.information_label->>'tenantId'='migration.unassigned')`;
+  return [
+    ...tables.map(table => `ALTER TABLE ${q}.${table} ADD COLUMN IF NOT EXISTS information_label JSONB`),
+    `DELETE FROM ${q}.translation_alignments a
+     WHERE CARDINALITY(a.evidence_ids)>0
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(a.evidence_ids) AND e.status<>'promoted')`,
+    `DELETE FROM ${q}.semantic_frames f
+     WHERE CARDINALITY(f.evidence_ids)>0
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(f.evidence_ids) AND e.status<>'promoted')`,
+    `DELETE FROM ${q}.language_patterns p
+     WHERE (
+       CARDINALITY(p.evidence_ids)>0
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(p.evidence_ids) AND e.status<>'promoted')
+     ) OR EXISTS (
+       SELECT 1 FROM ${q}.language_profiles lp
+       WHERE lp.id=p.profile_id
+         AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=lp.source_version_id AND e.status<>'promoted')
+     )`,
+    `DELETE FROM ${q}.language_units u
+     WHERE (
+       CARDINALITY(u.evidence_ids)>0
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(u.evidence_ids) AND e.status<>'promoted')
+     ) OR (
+       EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=u.source_version_id)
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=u.source_version_id AND e.status<>'promoted')
+     )`,
+    `DELETE FROM ${q}.ngram_models m
+     WHERE EXISTS (
+       SELECT 1
+       FROM ${q}.ngram_observations o
+       WHERE o.stream_id=m.stream_id
+         AND (
+           EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=o.evidence_id AND e.status<>'promoted')
+           OR EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=o.source_version_id AND e.status<>'promoted')
+         )
+     )`,
+    `DELETE FROM ${q}.ngram_observations o
+     WHERE (
+       o.evidence_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=o.evidence_id AND e.status<>'promoted')
+     ) OR (
+       o.source_version_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=o.source_version_id AND e.status<>'promoted')
+     )`,
+    `DELETE FROM ${q}.language_profiles lp
+     WHERE EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=lp.source_version_id AND e.status<>'promoted')`,
+    `DELETE FROM ${q}.graph_hyperedges h
+     WHERE (
+       EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(h.provenance_refs) AND e.status<>'promoted')
+     ) OR (
+       EXISTS (
+         SELECT 1 FROM ${q}.graph_nodes n
+         JOIN ${q}.evidence_spans e ON e.id=ANY(n.evidence_ids)
+         WHERE n.id=ANY(h.member_node_ids) AND e.status<>'promoted'
+       )
+     )`,
+    `DELETE FROM ${q}.graph_edges g
+     WHERE (
+       CARDINALITY(g.evidence_ids)>0
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(g.evidence_ids) AND e.status<>'promoted')
+     ) OR (
+       EXISTS (
+         SELECT 1 FROM ${q}.graph_nodes n
+         JOIN ${q}.evidence_spans e ON e.id=ANY(n.evidence_ids)
+         WHERE n.id IN (g.source_node_id,g.target_node_id) AND e.status<>'promoted'
+       )
+     )`,
+    `DELETE FROM ${q}.graph_nodes n
+     WHERE CARDINALITY(n.evidence_ids)>0
+       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(n.evidence_ids) AND e.status<>'promoted')`,
+    `UPDATE ${q}.source_versions sv
+     SET information_label='${publicCorpusLabel}'::jsonb
+     FROM ${q}.sources s
+     WHERE s.id=sv.source_id
+       AND ${unlabeledOrLocked("sv")}
+       AND (
+         (s.namespace LIKE 'wikipedia-%' AND sv.metadata_json->>'sourceSystem' IN ('wikipedia','wikipedia-v3'))
+         OR (s.namespace LIKE 'gutenberg%' AND sv.metadata_json->>'sourceSystem' IN ('gutenberg','gutenberg-corpus'))
+       )`,
+    ...(ownerCorrectionsLabel ? [
+      `UPDATE ${q}.source_versions sv
+       SET information_label='${ownerCorrectionsLabel}'::jsonb
+       FROM ${q}.sources s
+       WHERE s.id=sv.source_id
+         AND ${unlabeledOrLocked("sv")}
+         AND s.namespace IN ('corrections','local-corrections','scce-corrections','local-file')
+         AND sv.metadata_json->>'sourceSystem' IN ('corrections','local-corrections')`
+    ] : []),
+    `UPDATE ${q}.evidence_spans e
+     SET information_label=sv.information_label
+     FROM ${q}.source_versions sv
+     WHERE sv.id=e.source_version_id
+       AND ${unlabeledOrLocked("e")}
+       AND sv.information_label IS NOT NULL
+       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
+    `UPDATE ${q}.language_profiles lp
+     SET information_label=sv.information_label,
+         profile_json=lp.profile_json || jsonb_build_object('informationLabel',sv.information_label)
+     FROM ${q}.source_versions sv
+     WHERE sv.id=lp.source_version_id
+       AND ${unlabeledOrLocked("lp")}
+       AND sv.information_label IS NOT NULL
+       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
+    ...sameEvidenceLabelBackfillStatements(q, unlabeledOrLocked),
+    ...tables.map(table => `UPDATE ${q}.${table} SET information_label='${lockedLegacyLabel}'::jsonb WHERE information_label IS NULL`),
+    ...tables.map(table => `ALTER TABLE ${q}.${table} ALTER COLUMN information_label SET NOT NULL`),
+    `INSERT INTO ${q}.storage_meta(key,value_json,updated_at)
+     VALUES(
+       'information_label_migration_policy',
+       '{"schema":"scce.information_label_migration.v2","legacyPolicy":"deterministic_allowlist_else_locked","publicCorpusRule":"matching wikipedia/gutenberg namespace and sourceSystem","ownerCorrectionRule":"matching corrections namespace and sourceSystem with configured owner","derivativeRule":"all dependencies must share one non-locked label","legacyTenant":"migration.unassigned","legacyPrincipal":"migration.explicit-backfill-required","quarantineInfluenceCleanup":"delete any derivative with any non-promoted dependency transactionally"}'::jsonb,
+       NOW()
+     )
+     ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()`
+  ];
+}
+
+function schemaStatements(q: string, informationAccess?: InformationAccessContext): string[] {
   return [
     `CREATE EXTENSION IF NOT EXISTS vector`,
     `CREATE SCHEMA IF NOT EXISTS ${q}`,
@@ -346,12 +759,15 @@ function schemaStatements(q: string): string[] {
     `CREATE TABLE IF NOT EXISTS ${q}.ingestion_checkpoints (id TEXT PRIMARY KEY, root_uri TEXT NOT NULL, item_uri TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, offset_bytes BIGINT NOT NULL, content_hash TEXT, byte_length BIGINT, reason TEXT, metadata_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.blobs (content_hash TEXT PRIMARY KEY, media_type TEXT NOT NULL, byte_length BIGINT NOT NULL, content BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.sources (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, canonical_uri TEXT NOT NULL, first_seen_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.source_versions (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, byte_length BIGINT NOT NULL, trust DOUBLE PRECISION NOT NULL, metadata_json JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.source_versions (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, byte_length BIGINT NOT NULL, trust_vector JSONB NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
+    `ALTER TABLE ${q}.source_versions ADD COLUMN IF NOT EXISTS trust_vector JSONB NOT NULL DEFAULT '{"identity":0.5,"integrity":0.9,"parserReliability":0.5,"directness":0.4,"authority":0.4,"freshness":0.3,"independenceGroup":"legacy:migrated","accessScope":"unknown","licenseStatus":"unknown"}'::jsonb`,
+    `ALTER TABLE ${q}.source_versions ALTER COLUMN trust_vector DROP DEFAULT`,
+    `ALTER TABLE ${q}.source_versions DROP COLUMN IF EXISTS trust`,
+    `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, relation_id TEXT NOT NULL, member_node_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, relation_id TEXT NOT NULL, member_node_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.quarantine_sources (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, source_version_id TEXT NOT NULL, uri TEXT NOT NULL, content_hash TEXT NOT NULL, media_type TEXT NOT NULL, fetched_at TIMESTAMPTZ NOT NULL, trust_vector JSONB NOT NULL, permission_vector JSONB NOT NULL, license_hint TEXT, decision TEXT NOT NULL, decision_json JSONB)`,
     `CREATE TABLE IF NOT EXISTS ${q}.semantic_proofs (id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, verdict TEXT NOT NULL, confidence_json JSONB NOT NULL, proof_graph_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, transform_ids TEXT[] NOT NULL, scores_json JSONB NOT NULL, validator_version TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.construct_graphs (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, force_vector JSONB NOT NULL, graph_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -362,7 +778,7 @@ function schemaStatements(q: string): string[] {
     `CREATE TABLE IF NOT EXISTS ${q}.forecast_states (id TEXT PRIMARY KEY, episode_id TEXT, t BIGINT NOT NULL, state_vector DOUBLE PRECISION[] NOT NULL, alpha_surface_json JSONB NOT NULL, spectrum_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.forecast_envelopes (id TEXT PRIMARY KEY, source_state_id TEXT NOT NULL, horizon INT NOT NULL, mean_vector DOUBLE PRECISION[] NOT NULL, covariance_json JSONB NOT NULL, interval_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.learning_needs (id TEXT PRIMARY KEY, episode_id TEXT, goal TEXT NOT NULL, gap_json JSONB NOT NULL, source_plan_json JSONB NOT NULL, status TEXT NOT NULL, priority DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
-    `CREATE TABLE IF NOT EXISTS ${q}.language_profiles (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, profile_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.language_profiles (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, profile_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_profile_aliases (
        alias_key TEXT NOT NULL,
        alias_surface TEXT NOT NULL,
@@ -413,12 +829,13 @@ function schemaStatements(q: string): string[] {
        source_version_refs=EXCLUDED.source_version_refs,
        confidence=EXCLUDED.confidence,
        updated_at=EXCLUDED.updated_at`,
-    `CREATE TABLE IF NOT EXISTS ${q}.ngram_observations (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, order_n INT NOT NULL, history TEXT[] NOT NULL, symbol TEXT NOT NULL, count BIGINT NOT NULL, field_weight DOUBLE PRECISION NOT NULL, source_version_id TEXT, evidence_id TEXT, observed_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.semantic_frames (id TEXT PRIMARY KEY, frame_json JSONB NOT NULL, embedding VECTOR(64) NOT NULL, evidence_ids TEXT[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.translation_alignments (id TEXT PRIMARY KEY, source_frame_id TEXT NOT NULL, target_frame_id TEXT NOT NULL, source_language TEXT NOT NULL, target_language TEXT NOT NULL, force TEXT NOT NULL, loss_vector JSONB NOT NULL, alignment_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.ngram_observations (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, order_n INT NOT NULL, history TEXT[] NOT NULL, symbol TEXT NOT NULL, count BIGINT NOT NULL, field_weight DOUBLE PRECISION NOT NULL, source_version_id TEXT, evidence_id TEXT, observed_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.semantic_frames (id TEXT PRIMARY KEY, frame_json JSONB NOT NULL, embedding VECTOR(64) NOT NULL, evidence_ids TEXT[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.translation_alignments (id TEXT PRIMARY KEY, source_frame_id TEXT NOT NULL, target_frame_id TEXT NOT NULL, source_language TEXT NOT NULL, target_language TEXT NOT NULL, force TEXT NOT NULL, loss_vector JSONB NOT NULL, alignment_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    ...informationLabelMigrationStatements(q, informationAccess),
     `CREATE TABLE IF NOT EXISTS ${q}.scce2_import_ledger (id TEXT PRIMARY KEY, import_run_id TEXT NOT NULL, brain_version TEXT NOT NULL, root_path TEXT NOT NULL, section_id TEXT NOT NULL, section_kind TEXT NOT NULL, force_class TEXT NOT NULL, source_path TEXT, file_hash TEXT, shard_hash TEXT, source_version_id TEXT, evidence_ids TEXT[] NOT NULL, node_ids TEXT[] NOT NULL, row_counts_json JSONB NOT NULL, warnings TEXT[] NOT NULL, metadata_json JSONB NOT NULL, imported_at TIMESTAMPTZ NOT NULL, UNIQUE(import_run_id, section_id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.brain_import_lifecycle (import_run_id TEXT PRIMARY KEY, brain_version TEXT NOT NULL, root_path TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('CREATED','IMPORTING','VALIDATING','READY','ACTIVE','STOPPED','FAILED','QUARANTINED','INCOMPATIBLE')), manifest_json JSONB NOT NULL, validation_json JSONB, reason TEXT, revision BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `WITH legacy_runs AS (
@@ -625,24 +1042,24 @@ function requiredHydrationColumns(): Record<string, string[]> {
     conversation_turns: ["id", "session_id", "episode_id", "turn_index", "role_id", "text", "evidence_ids", "metadata_json"],
     blobs: ["content_hash", "media_type", "byte_length", "content"],
     sources: ["id", "namespace", "canonical_uri"],
-    source_versions: ["id", "source_id", "content_hash", "media_type", "observed_at", "byte_length", "trust", "metadata_json"],
-    evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "trust_vector", "provenance_json", "features", "status", "alpha"],
+    source_versions: ["id", "source_id", "content_hash", "media_type", "observed_at", "byte_length", "trust_vector", "metadata_json", "information_label"],
+    evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
     evidence_anchor_index: ["evidence_id", "features"],
-    graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json"],
-    graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json"],
-    graph_hyperedges: ["id", "relation_id", "member_node_ids", "weight_vector", "provenance_refs"],
+    graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json", "information_label"],
+    graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json", "information_label"],
+    graph_hyperedges: ["id", "relation_id", "member_node_ids", "weight_vector", "provenance_refs", "information_label"],
     semantic_proofs: ["id", "claim_id", "verdict", "proof_graph_json", "evidence_ids", "scores_json"],
     construct_graphs: ["id", "episode_id", "force_vector", "graph_json"],
     validation_graphs: ["id", "construct_id", "graph_json", "passed"],
     emission_graphs: ["id", "construct_id", "graph_json", "output_refs"],
-    language_profiles: ["id", "source_version_id", "profile_json"],
+    language_profiles: ["id", "source_version_id", "profile_json", "information_label"],
     language_profile_aliases: ["alias_key", "alias_surface", "profile_id", "source_version_id", "evidence_refs", "source_version_refs", "confidence", "updated_at"],
-    ngram_observations: ["id", "stream_id", "language_hint", "order_n", "history", "symbol", "count", "metadata_json"],
-    ngram_models: ["id", "stream_id", "language_hint", "max_order", "discount", "model_json"],
-    language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json"],
-    language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids"],
-    semantic_frames: ["id", "frame_json", "embedding", "evidence_ids", "alpha"],
-    translation_alignments: ["id", "source_frame_id", "target_frame_id", "source_language", "target_language", "force", "alignment_json", "evidence_ids"],
+    ngram_observations: ["id", "stream_id", "language_hint", "order_n", "history", "symbol", "count", "metadata_json", "information_label"],
+    ngram_models: ["id", "stream_id", "language_hint", "max_order", "discount", "model_json", "information_label"],
+    language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"],
+    language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids", "information_label"],
+    semantic_frames: ["id", "frame_json", "embedding", "evidence_ids", "alpha", "information_label"],
+    translation_alignments: ["id", "source_frame_id", "target_frame_id", "source_language", "target_language", "force", "alignment_json", "evidence_ids", "information_label"],
     scce2_import_ledger: ["id", "import_run_id", "brain_version", "root_path", "section_id", "section_kind", "force_class", "row_counts_json", "warnings", "metadata_json"],
     brain_import_lifecycle: ["import_run_id", "brain_version", "root_path", "state", "manifest_json", "revision", "created_at", "updated_at"],
     correction_rules: ["id", "episode_id", "rule_kind", "scope", "pattern", "weight", "context_json", "provenance_json"],
@@ -831,8 +1248,16 @@ function createBlobStore(storage: PostgresStorageAdapter): BlobStore {
 function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
   return {
     async putSourceVersion(source) {
-      await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
-      await storage.query(`INSERT INTO ${storage.table("source_versions")}(id, source_id, content_hash, media_type, observed_at, byte_length, trust, metadata_json) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7,$8::jsonb) ON CONFLICT(id) DO NOTHING`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, source.trust, JSON.stringify(source.metadata)]);
+      await storage.transaction(async () => {
+        const labels = await joinDurableRecordLabels(
+          storage,
+          "source_versions",
+          [{ id: source.sourceVersionId, informationLabel: source.informationLabel }]
+        );
+        const informationLabel = labels.get(source.sourceVersionId)!;
+        await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
+        await storage.query(`INSERT INTO ${storage.table("source_versions")}(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
+      });
     },
     async putEvidenceSpan(span) {
       await putEvidenceSpansBatch(storage, [span]);
@@ -846,17 +1271,20 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       return rows.length;
     },
     async getEvidence(id) {
-      const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} WHERE id=$1`, [id]);
+      const access = storage.informationAccessPredicate("evidence", 2);
+      const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} evidence WHERE id=$1 AND ${access.sql}`, [id, ...access.params]);
       return rows[0] ? rowToEvidence(rows[0]) : null;
     },
     async getEvidenceBatch(ids) {
       if (ids.length === 0) return [];
-      const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} WHERE id=ANY($1)`, [ids]);
+      const access = storage.informationAccessPredicate("evidence", 2);
+      const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} evidence WHERE id=ANY($1) AND ${access.sql}`, [ids, ...access.params]);
       return rows.map(rowToEvidence);
     },
     async searchEvidence(query: EvidenceQuery) {
       const features = evidenceQueryFeatures(query.features ?? []);
       if (features.length && features.every(isEvidenceAnchorFeature) && !query.sourceId && !query.sourceVersionId) {
+        const access = storage.informationAccessPredicate("evidence", 3);
         const rows = await storage.query<EvidenceRow>(
           `WITH requested_features AS (
              SELECT feature, feature_ord
@@ -874,13 +1302,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            SELECT evidence.*
            FROM candidate_hits hits
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
+           WHERE ${evidenceStatusCondition("evidence", query.status)}
+             AND ${access.sql}
            ORDER BY hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
                     CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
                     evidence.alpha DESC,
                     evidence.observed_at DESC
            LIMIT $2`,
-          [features, query.limit ?? 80]
+          [features, query.limit ?? 80, ...access.params]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting evidence search" }));
       }
@@ -889,6 +1319,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
           `SELECT id, ${index + 1}::bigint AS feature_ord FROM ${storage.table("evidence_spans")} WHERE features @> ARRAY[$${index + 1}]::text[]`
         );
         const limitIndex = features.length + 1;
+        const access = storage.informationAccessPredicate("ev", limitIndex + 1);
         const rows = await storage.query<EvidenceRow>(
           `WITH feature_hits AS MATERIALIZED (
              ${featureBranches.join("\nUNION ALL\n")}
@@ -901,13 +1332,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            SELECT ev.*
            FROM candidate_hits hits
            JOIN ${storage.table("evidence_spans")} ev ON ev.id=hits.id
+           WHERE ${evidenceStatusCondition("ev", query.status)}
+             AND ${access.sql}
            ORDER BY hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
                     CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC,
                     ev.alpha DESC,
                     ev.observed_at DESC
            LIMIT $${limitIndex}`,
-          [...features, query.limit ?? 80]
+          [...features, query.limit ?? 80, ...access.params]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres GIN feature-hit evidence search" }));
       }
@@ -922,6 +1355,10 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         where.push(`ev.features && $${featureParamIndex}`);
       }
       if (where.length === 0) return [];
+      where.push(evidenceStatusCondition("ev", query.status));
+      const access = storage.informationAccessPredicate("ev", params.length + 1);
+      where.push(access.sql);
+      params.push(...access.params);
       params.push(query.limit ?? 80);
       const overlap = featureParamIndex > 0
         ? `(SELECT COUNT(*) FROM unnest(ev.features) AS f(feature) WHERE f.feature = ANY($${featureParamIndex}::text[]))`
@@ -931,9 +1368,11 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     },
     async sourceVersionsForEvidence(ids) {
       if (ids.length === 0) return [];
+      const evidenceAccess = storage.informationAccessPredicate("e", 2);
+      const versionAccess = storage.informationAccessPredicate("sv", 6);
       const rows = await storage.query<SourceVersionRow>(
-        `SELECT DISTINCT sv.*, s.namespace, s.canonical_uri FROM ${storage.table("source_versions")} sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id JOIN ${storage.table("evidence_spans")} e ON e.source_version_id=sv.id WHERE e.id=ANY($1)`,
-        [ids]
+        `SELECT DISTINCT sv.*, s.namespace, s.canonical_uri FROM ${storage.table("source_versions")} sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id JOIN ${storage.table("evidence_spans")} e ON e.source_version_id=sv.id WHERE e.id=ANY($1) AND ${evidenceAccess.sql} AND ${versionAccess.sql}`,
+        [ids, ...evidenceAccess.params, ...versionAccess.params]
       );
       return rows.map(rowToSourceVersion);
     }
@@ -942,7 +1381,9 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
 
 async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: readonly EvidenceSpan[]): Promise<void> {
   if (!spans.length) return;
-  const payload = spans.map(span => ({
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(storage, "evidence_spans", spans.map(span => ({ id: span.id, informationLabel: span.informationLabel })));
+    const payload = spans.map(span => ({
     id: span.id,
     source_id: span.sourceId,
     source_version_id: span.sourceVersionId,
@@ -962,11 +1403,12 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
     features_json: span.features,
     status: span.status,
     alpha: span.alpha,
-    observed_at_ms: span.observedAt
-  }));
-  await storage.query(
+    observed_at_ms: span.observedAt,
+      information_label: labels.get(span.id)!
+    }));
+    await storage.query(
     `WITH upserted AS (
-       INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at)
+       INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at, information_label)
      SELECT
        r.id,
        r.source_id,
@@ -987,7 +1429,8 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.features_json) AS v(value)),
        r.status,
        r.alpha,
-       TO_TIMESTAMP(r.observed_at_ms/1000.0)
+       TO_TIMESTAMP(r.observed_at_ms/1000.0),
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        source_id text,
@@ -1008,13 +1451,15 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        features_json jsonb,
        status text,
        alpha double precision,
-       observed_at_ms double precision
+       observed_at_ms double precision,
+       information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET
        status=EXCLUDED.status,
        alpha=GREATEST(ev.alpha, EXCLUDED.alpha),
        trust_vector=ev.trust_vector || EXCLUDED.trust_vector,
        provenance_json=ev.provenance_json || EXCLUDED.provenance_json,
+       information_label=EXCLUDED.information_label,
        features=ARRAY(SELECT DISTINCT value FROM unnest(ev.features || EXCLUDED.features) AS merged(value) ORDER BY value)
      RETURNING id,features
      )
@@ -1038,8 +1483,9 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
          FROM unnest(anchor_index.features || EXCLUDED.features) AS feature
          ORDER BY feature
        )`,
-    [JSON.stringify(payload)]
-  );
+      [JSON.stringify(payload)]
+    );
+  });
 }
 
 function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
@@ -1067,6 +1513,7 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
       const ids = nodes.map(node => node.id);
       const edgeLimit = query.limitEdges ?? 2000;
       const perSeedEdgeLimit = ids.length ? Math.max(4, Math.ceil(edgeLimit / ids.length)) : 0;
+      const edgeAccess = storage.informationAccessPredicate("ranked_candidates", 4);
       const edges = ids.length
         ? (await storage.query<GraphEdgeRow>(
           `WITH seeds(seed_id, seed_ord) AS (
@@ -1106,14 +1553,24 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
            SELECT *
            FROM ranked_candidates
            WHERE edge_rank=1
+             AND ${edgeAccess.sql}
            ORDER BY seed_ord, alpha DESC, updated_at DESC, id
            LIMIT $2`,
-          [ids, edgeLimit, perSeedEdgeLimit]
+          [ids, edgeLimit, perSeedEdgeLimit, ...edgeAccess.params]
         )).map(rowToGraphEdge)
         : [];
       const hyperedgeMemberIds = ids.slice(0, Math.max(32, Math.min(ids.length, Math.floor((query.limitNodes ?? 800) / 3))));
+      const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
       const hyperedges = ids.length
-        ? (await storage.query<HyperedgeRow>(`SELECT * FROM ${storage.table("graph_hyperedges")} WHERE member_node_ids && $1 ORDER BY updated_at DESC LIMIT $2`, [hyperedgeMemberIds, Math.max(64, Math.floor((query.limitEdges ?? 2000) / 4))])).map(rowToHyperedge)
+        ? (await storage.query<HyperedgeRow>(
+          `SELECT *
+           FROM ${storage.table("graph_hyperedges")} hyperedge
+           WHERE member_node_ids && $1
+             AND ${hyperedgeAccess.sql}
+           ORDER BY updated_at DESC
+           LIMIT $2`,
+          [hyperedgeMemberIds, Math.max(64, Math.floor((query.limitEdges ?? 2000) / 4)), ...hyperedgeAccess.params]
+        )).map(rowToHyperedge)
         : [];
       return { nodes, edges, hyperedges, bounded: true, query };
     },
@@ -1130,19 +1587,26 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
 
 async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: readonly GraphNode[]): Promise<void> {
   if (!nodes.length) return;
-  const payload = nodes.map(node => ({
-    id: node.id,
-    type_id: node.typeId,
-    representation_json: node.representation,
-    alpha: node.alpha,
-    evidence_ids_json: node.evidenceIds,
-    features_json: node.features,
-    created_at_ms: node.createdAt,
-    updated_at_ms: node.updatedAt,
-    metadata_json: node.metadata
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("graph_nodes")} AS n(id,type_id,representation_json,alpha,evidence_ids,features,created_at,updated_at,metadata_json)
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(
+      storage,
+      "graph_nodes",
+      nodes.map(node => ({ id: node.id, informationLabel: node.informationLabel }))
+    );
+    const payload = nodes.map(node => ({
+      id: node.id,
+      type_id: node.typeId,
+      representation_json: node.representation,
+      alpha: node.alpha,
+      evidence_ids_json: node.evidenceIds,
+      features_json: node.features,
+      created_at_ms: node.createdAt,
+      updated_at_ms: node.updatedAt,
+      metadata_json: node.metadata,
+      information_label: labels.get(node.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("graph_nodes")} AS n(id,type_id,representation_json,alpha,evidence_ids,features,created_at,updated_at,metadata_json,information_label)
      SELECT
        r.id,
        r.type_id,
@@ -1152,7 +1616,8 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.features_json) AS v(value)),
        TO_TIMESTAMP(r.created_at_ms/1000.0),
        TO_TIMESTAMP(r.updated_at_ms/1000.0),
-       r.metadata_json
+       r.metadata_json,
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        type_id text,
@@ -1162,30 +1627,39 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
        features_json jsonb,
        created_at_ms double precision,
        updated_at_ms double precision,
-       metadata_json jsonb
+       metadata_json jsonb,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: readonly GraphEdge[]): Promise<void> {
   if (!edges.length) return;
-  const payload = edges.map(edge => ({
-    id: edge.id,
-    source_node_id: edge.source,
-    target_node_id: edge.target,
-    relation_id: edge.relationId,
-    alpha: edge.alpha,
-    weight: edge.weight,
-    temporal_scope: edge.temporalScope,
-    evidence_ids_json: edge.evidenceIds,
-    created_at_ms: edge.createdAt,
-    updated_at_ms: edge.updatedAt,
-    metadata_json: edge.metadata
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("graph_edges")} AS e(id,source_node_id,target_node_id,relation_id,alpha,weight,temporal_scope,evidence_ids,created_at,updated_at,metadata_json)
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(
+      storage,
+      "graph_edges",
+      edges.map(edge => ({ id: edge.id, informationLabel: edge.informationLabel }))
+    );
+    const payload = edges.map(edge => ({
+      id: edge.id,
+      source_node_id: edge.source,
+      target_node_id: edge.target,
+      relation_id: edge.relationId,
+      alpha: edge.alpha,
+      weight: edge.weight,
+      temporal_scope: edge.temporalScope,
+      evidence_ids_json: edge.evidenceIds,
+      created_at_ms: edge.createdAt,
+      updated_at_ms: edge.updatedAt,
+      metadata_json: edge.metadata,
+      information_label: labels.get(edge.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("graph_edges")} AS e(id,source_node_id,target_node_id,relation_id,alpha,weight,temporal_scope,evidence_ids,created_at,updated_at,metadata_json,information_label)
      SELECT
        r.id,
        r.source_node_id,
@@ -1197,7 +1671,8 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
        TO_TIMESTAMP(r.created_at_ms/1000.0),
        TO_TIMESTAMP(r.updated_at_ms/1000.0),
-       r.metadata_json
+       r.metadata_json,
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        source_node_id text,
@@ -1209,27 +1684,36 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
        evidence_ids_json jsonb,
        created_at_ms double precision,
        updated_at_ms double precision,
-       metadata_json jsonb
+       metadata_json jsonb,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(e.alpha,EXCLUDED.alpha), weight=GREATEST(e.weight,EXCLUDED.weight), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(e.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, metadata_json=e.metadata_json || EXCLUDED.metadata_json`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(e.alpha,EXCLUDED.alpha), weight=GREATEST(e.weight,EXCLUDED.weight), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(e.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, metadata_json=e.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges: readonly Hyperedge[]): Promise<void> {
   if (!edges.length) return;
-  const payload = edges.map(edge => ({
-    id: edge.id,
-    relation_id: edge.relationId,
-    member_node_ids_json: edge.memberNodeIds,
-    weight_vector: edge.weightVector,
-    temporal_scope: edge.temporalScope,
-    provenance_refs_json: edge.provenanceRefs,
-    created_at_ms: edge.createdAt,
-    updated_at_ms: edge.updatedAt
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("graph_hyperedges")} AS h(id,relation_id,member_node_ids,weight_vector,temporal_scope,provenance_refs,created_at,updated_at)
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(
+      storage,
+      "graph_hyperedges",
+      edges.map(edge => ({ id: edge.id, informationLabel: edge.informationLabel }))
+    );
+    const payload = edges.map(edge => ({
+      id: edge.id,
+      relation_id: edge.relationId,
+      member_node_ids_json: edge.memberNodeIds,
+      weight_vector: edge.weightVector,
+      temporal_scope: edge.temporalScope,
+      provenance_refs_json: edge.provenanceRefs,
+      created_at_ms: edge.createdAt,
+      updated_at_ms: edge.updatedAt,
+      information_label: labels.get(edge.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("graph_hyperedges")} AS h(id,relation_id,member_node_ids,weight_vector,temporal_scope,provenance_refs,created_at,updated_at,information_label)
      SELECT
        r.id,
        r.relation_id,
@@ -1238,7 +1722,8 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        r.temporal_scope,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.provenance_refs_json) AS v(value)),
        TO_TIMESTAMP(r.created_at_ms/1000.0),
-       TO_TIMESTAMP(r.updated_at_ms/1000.0)
+       TO_TIMESTAMP(r.updated_at_ms/1000.0),
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        relation_id text,
@@ -1247,33 +1732,54 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        temporal_scope jsonb,
        provenance_refs_json jsonb,
        created_at_ms double precision,
-       updated_at_ms double precision
+       updated_at_ms double precision,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET weight_vector=EXCLUDED.weight_vector, updated_at=EXCLUDED.updated_at`,
+     ON CONFLICT(id) DO UPDATE SET weight_vector=EXCLUDED.weight_vector, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuery): Promise<GraphNode[]> {
-  if (query.seedNodeIds?.length) return (await storage.query<GraphNodeRow>(`SELECT * FROM ${storage.table("graph_nodes")} WHERE id=ANY($1) LIMIT $2`, [query.seedNodeIds, query.limitNodes ?? 800])).map(rowToGraphNode);
-  if (query.evidenceIds?.length) return (await storage.query<GraphNodeRow>(
+  if (query.seedNodeIds?.length) {
+    const access = storage.informationAccessPredicate("node", 3);
+    return (await storage.query<GraphNodeRow>(
+      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE id=ANY($1) AND ${access.sql} LIMIT $2`,
+      [query.seedNodeIds, query.limitNodes ?? 800, ...access.params]
+    )).map(rowToGraphNode);
+  }
+  if (query.evidenceIds?.length) {
+    const access = storage.informationAccessPredicate("node", 3);
+    return (await storage.query<GraphNodeRow>(
     `WITH evidence_candidates AS MATERIALIZED (
        SELECT *
-       FROM ${storage.table("graph_nodes")}
+       FROM ${storage.table("graph_nodes")} node
        WHERE evidence_ids && $1
+         AND ${access.sql}
      )
      SELECT *
      FROM evidence_candidates
      ORDER BY alpha DESC, updated_at DESC
      LIMIT $2`,
-    [query.evidenceIds, query.limitNodes ?? 800]
-  )).map(rowToGraphNode);
+    [query.evidenceIds, query.limitNodes ?? 800, ...access.params]
+    )).map(rowToGraphNode);
+  }
   const features = graphQueryFeatures(query);
-  if (features.length) return (await storage.query<GraphNodeRow>(
-    `SELECT * FROM ${storage.table("graph_nodes")} WHERE features && $1 ORDER BY (SELECT COALESCE(SUM(1.0 / GREATEST(1, array_position($1::text[], feature))), 0) FROM unnest(features) feature WHERE feature=ANY($1)) DESC, alpha DESC, updated_at DESC LIMIT $2`,
-    [features, query.limitNodes ?? 800]
-  )).map(rowToGraphNode);
-  if (query.allowLatestFallback) return (await storage.query<GraphNodeRow>(`SELECT * FROM ${storage.table("graph_nodes")} ORDER BY alpha DESC, updated_at DESC, id LIMIT $1`, [query.limitNodes ?? 800])).map(rowToGraphNode);
+  if (features.length) {
+    const access = storage.informationAccessPredicate("node", 3);
+    return (await storage.query<GraphNodeRow>(
+      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE features && $1 AND ${access.sql} ORDER BY (SELECT COALESCE(SUM(1.0 / GREATEST(1, array_position($1::text[], feature))), 0) FROM unnest(features) feature WHERE feature=ANY($1)) DESC, alpha DESC, updated_at DESC LIMIT $2`,
+      [features, query.limitNodes ?? 800, ...access.params]
+    )).map(rowToGraphNode);
+  }
+  if (query.allowLatestFallback) {
+    const access = storage.informationAccessPredicate("node", 2);
+    return (await storage.query<GraphNodeRow>(
+      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE ${access.sql} ORDER BY alpha DESC, updated_at DESC, id LIMIT $1`,
+      [query.limitNodes ?? 800, ...access.params]
+    )).map(rowToGraphNode);
+  }
   return [];
 }
 
@@ -1456,8 +1962,9 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
                OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
              )`
           : "";
+        const access = storage.informationAccessPredicate("lp", 3);
         return (await storage.query<{ profile_json: LanguageProfile }>(
-          `SELECT lp.profile_json
+          `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profile_aliases")} alias
            JOIN ${storage.table("language_profiles")} lp
              ON lp.id=alias.profile_id
@@ -1473,28 +1980,38 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
                )
              )
              ${referencedFilter}
+             AND ${access.sql}
            ORDER BY alias.confidence DESC,alias.updated_at DESC,lp.id ASC
            LIMIT $2`,
-          [aliasKeys, boundedLimit]
+          [aliasKeys, boundedLimit, ...access.params]
         )).map(row => row.profile_json);
       }
       if (typeof query === "object" && query?.referencedByLanguageMemory) {
+        const access = storage.informationAccessPredicate("lp", 2);
         return (await storage.query<{ profile_json: LanguageProfile }>(
-          `SELECT lp.profile_json
+          `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profiles")} lp
-           WHERE EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
-              OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
-              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
-              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
-              OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
+           WHERE (
+                EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
+             OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
+             OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
+             OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+             OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
+           )
+             AND ${access.sql}
            ORDER BY lp.created_at DESC, lp.id ASC
            LIMIT $1`,
-          [boundedLimit]
+          [boundedLimit, ...access.params]
         )).map(row => row.profile_json);
       }
+      const access = storage.informationAccessPredicate("lp", 2);
       return (await storage.query<{ profile_json: LanguageProfile }>(
-        `SELECT profile_json FROM ${storage.table("language_profiles")} ORDER BY created_at DESC, id ASC LIMIT $1`,
-        [boundedLimit]
+        `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
+         FROM ${storage.table("language_profiles")} lp
+         WHERE ${access.sql}
+         ORDER BY created_at DESC, id ASC
+         LIMIT $1`,
+        [boundedLimit, ...access.params]
       )).map(row => row.profile_json);
     }
   };
@@ -1502,32 +2019,43 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
 
 async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profiles: readonly LanguageProfile[]): Promise<void> {
   if (!profiles.length) return;
-  const payload = profiles.map(profile => ({
-    id: profile.id,
-    source_version_id: profile.sourceVersionId,
-    profile_json: profile,
-    created_at_ms: profile.createdAt
-  }));
-  const aliases = sourceOwnedLanguageAliasRows(profiles);
-  await storage.tx(async client => {
-    await client.query(
-      `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,created_at)
-       SELECT r.id, r.source_version_id, r.profile_json, TO_TIMESTAMP(r.created_at_ms/1000.0)
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(
+      storage,
+      "language_profiles",
+      profiles.map(profile => ({ id: profile.id, informationLabel: profile.informationLabel }))
+    );
+    const labeledProfiles = profiles.map(profile => ({
+      ...profile,
+      informationLabel: labels.get(profile.id)!
+    }));
+    const payload = labeledProfiles.map(profile => ({
+      id: profile.id,
+      source_version_id: profile.sourceVersionId,
+      profile_json: profile,
+      created_at_ms: profile.createdAt,
+      information_label: profile.informationLabel
+    }));
+    const aliases = sourceOwnedLanguageAliasRows(labeledProfiles);
+    await storage.query(
+      `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,created_at,information_label)
+       SELECT r.id, r.source_version_id, r.profile_json, TO_TIMESTAMP(r.created_at_ms/1000.0), r.information_label
        FROM jsonb_to_recordset($1::jsonb) AS r(
          id text,
          source_version_id text,
          profile_json jsonb,
-         created_at_ms double precision
+         created_at_ms double precision,
+         information_label jsonb
        )
-       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json`,
+       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json, information_label=EXCLUDED.information_label`,
       [JSON.stringify(payload)]
     );
-    await client.query(
+    await storage.query(
       `DELETE FROM ${storage.table("language_profile_aliases")} WHERE profile_id=ANY($1)`,
       [profiles.map(profile => profile.id)]
     );
     if (aliases.length) {
-      await client.query(
+      await storage.query(
         `WITH rows AS (
            SELECT *
            FROM jsonb_to_recordset($1::jsonb) AS r(
@@ -1636,6 +2164,7 @@ interface NgramObservationBatchRow {
   evidence_id: string | null;
   observed_at_ms: number;
   metadata_json: JsonValue;
+  information_label: InformationLabel;
 }
 
 function ngramObservationBatchRow(observation: NgramObservation): NgramObservationBatchRow {
@@ -1651,7 +2180,8 @@ function ngramObservationBatchRow(observation: NgramObservation): NgramObservati
     source_version_id: observation.sourceVersionId ?? null,
     evidence_id: observation.evidenceId ?? null,
     observed_at_ms: observation.observedAt,
-    metadata_json: observation.metadata
+    metadata_json: observation.metadata,
+    information_label: normalizeInformationLabel(observation.informationLabel!)
   };
 }
 
@@ -1685,24 +2215,44 @@ function* serializedNgramObservationBatches(observations: readonly NgramObservat
 function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMemoryStore {
   return {
     async putNgramObservation(observation) {
-      await storage.query(
-        `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TO_TIMESTAMP($11/1000.0),$12::jsonb)
+      await storage.transaction(async () => {
+        const labels = await joinDurableRecordLabels(
+          storage,
+          "ngram_observations",
+          [{ id: observation.id, informationLabel: observation.informationLabel }]
+        );
+        const informationLabel = labels.get(observation.id)!;
+        await storage.query(
+        `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json,information_label)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TO_TIMESTAMP($11/1000.0),$12::jsonb,$13::jsonb)
          ON CONFLICT(id) DO UPDATE
          SET count=EXCLUDED.count,
              field_weight=GREATEST(n.field_weight,EXCLUDED.field_weight),
-             metadata_json=EXCLUDED.metadata_json
+             metadata_json=EXCLUDED.metadata_json,
+             information_label=EXCLUDED.information_label
          WHERE n.count IS DISTINCT FROM EXCLUDED.count
             OR n.field_weight IS DISTINCT FROM GREATEST(n.field_weight,EXCLUDED.field_weight)
-            OR n.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json`,
-        [observation.id, observation.streamId, observation.languageHint, observation.order, observation.history, observation.symbol, observation.count, observation.fieldWeight, observation.sourceVersionId ?? null, observation.evidenceId ?? null, observation.observedAt, JSON.stringify(observation.metadata)]
-      );
+            OR n.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json
+            OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
+        [observation.id, observation.streamId, observation.languageHint, observation.order, observation.history, observation.symbol, observation.count, observation.fieldWeight, observation.sourceVersionId ?? null, observation.evidenceId ?? null, observation.observedAt, JSON.stringify(observation.metadata), JSON.stringify(informationLabel)]
+        );
+      });
     },
     async putNgramObservationsBatch(observations) {
       if (!observations.length) return;
-      for (const payload of serializedNgramObservationBatches(observations)) {
-        await storage.query(
-          `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json)
+      await storage.transaction(async () => {
+        const labels = await joinDurableRecordLabels(
+          storage,
+          "ngram_observations",
+          observations.map(observation => ({ id: observation.id, informationLabel: observation.informationLabel }))
+        );
+        const labeledObservations = observations.map(observation => ({
+          ...observation,
+          informationLabel: labels.get(observation.id)!
+        }));
+        for (const payload of serializedNgramObservationBatches(labeledObservations)) {
+          await storage.query(
+          `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json,information_label)
          SELECT
            r.id,
            r.stream_id,
@@ -1715,7 +2265,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            r.source_version_id,
            r.evidence_id,
            TO_TIMESTAMP(r.observed_at_ms/1000.0),
-           r.metadata_json
+           r.metadata_json,
+           r.information_label
          FROM jsonb_to_recordset($1::jsonb) AS r(
            id text,
            stream_id text,
@@ -1728,18 +2279,22 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            source_version_id text,
            evidence_id text,
            observed_at_ms double precision,
-           metadata_json jsonb
+           metadata_json jsonb,
+           information_label jsonb
          )
          ON CONFLICT(id) DO UPDATE
          SET count=EXCLUDED.count,
              field_weight=GREATEST(n.field_weight,EXCLUDED.field_weight),
-             metadata_json=EXCLUDED.metadata_json
+             metadata_json=EXCLUDED.metadata_json,
+             information_label=EXCLUDED.information_label
          WHERE n.count IS DISTINCT FROM EXCLUDED.count
             OR n.field_weight IS DISTINCT FROM GREATEST(n.field_weight,EXCLUDED.field_weight)
-            OR n.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json`,
+            OR n.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json
+            OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
           [payload]
-        );
-      }
+          );
+        }
+      });
     },
     async putNgramModel(model) {
       await putNgramModelsBatch(storage, [model]);
@@ -1766,26 +2321,34 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       await putSemanticFramesBatch(storage, frames);
     },
     async putTranslationAlignment(alignment) {
-      await storage.query(
-        `INSERT INTO ${storage.table("translation_alignments")} AS ta(id,source_frame_id,target_frame_id,source_language,target_language,force,loss_vector,alignment_json,evidence_ids,updated_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,TO_TIMESTAMP($10/1000.0))
-         ON CONFLICT(id) DO UPDATE SET force=EXCLUDED.force, loss_vector=EXCLUDED.loss_vector, alignment_json=EXCLUDED.alignment_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(ta.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at`,
-        [alignment.id, alignment.sourceFrameId, alignment.targetFrameId, alignment.sourceLanguage, alignment.targetLanguage, alignment.force, JSON.stringify(alignment.lossVector), JSON.stringify(alignment.alignmentJson), alignment.evidenceIds, alignment.updatedAt]
-      );
+      await storage.transaction(async () => {
+        const labels = await joinDurableRecordLabels(
+          storage,
+          "translation_alignments",
+          [{ id: alignment.id, informationLabel: alignment.informationLabel }]
+        );
+        await storage.query(
+          `INSERT INTO ${storage.table("translation_alignments")} AS ta(id,source_frame_id,target_frame_id,source_language,target_language,force,loss_vector,alignment_json,evidence_ids,updated_at,information_label)
+           VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,TO_TIMESTAMP($10/1000.0),$11::jsonb)
+           ON CONFLICT(id) DO UPDATE SET force=EXCLUDED.force, loss_vector=EXCLUDED.loss_vector, alignment_json=EXCLUDED.alignment_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(ta.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
+          [alignment.id, alignment.sourceFrameId, alignment.targetFrameId, alignment.sourceLanguage, alignment.targetLanguage, alignment.force, JSON.stringify(alignment.lossVector), JSON.stringify(alignment.alignmentJson), alignment.evidenceIds, alignment.updatedAt, JSON.stringify(labels.get(alignment.id)!)]
+        );
+      });
     },
     async listNgramModels(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
-      if (query.streamId) { params.push(query.streamId); where.push(`stream_id=$${params.length}`); }
-      if (query.languageHint) { params.push(query.languageHint); where.push(`language_hint=$${params.length}`); }
+      if (query.streamId) { params.push(query.streamId); where.push(`model.stream_id=$${params.length}`); }
+      if (query.languageHint) { params.push(query.languageHint); where.push(`model.language_hint=$${params.length}`); }
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
-        where.push(`model_json->>'profileId'=ANY($${params.length}::text[])`);
+        where.push(`model.model_json->>'profileId'=ANY($${params.length}::text[])`);
       }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model_json->>'sourceSystem'=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model.model_json->>'sourceSystem'=$${params.length}`); }
+      appendInformationAccess(storage, "model", params, where);
       params.push(query.limit ?? 100);
-      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramModel);
+      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramModel);
     },
     async listNgramObservations(query = {}) {
       const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
@@ -1800,6 +2363,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         if (query.streamId) { params.push(query.streamId); sharedWhere.push(`observation.stream_id=$${params.length}`); }
         if (query.languageHint) { params.push(query.languageHint); sharedWhere.push(`observation.language_hint=$${params.length}`); }
         if (query.sourceSystem) { params.push(query.sourceSystem); sharedWhere.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
+        appendInformationAccess(storage, "observation", params, sharedWhere);
         params.push([...ownerIds]);
         const ownersParam = params.length;
         params.push(limit);
@@ -1825,13 +2389,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       const params: unknown[] = [];
       const where: string[] = [];
-      if (query.streamId) { params.push(query.streamId); where.push(`stream_id=$${params.length}`); }
-      if (query.languageHint) { params.push(query.languageHint); where.push(`language_hint=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`metadata_json->>'sourceSystem'=$${params.length}`); }
+      if (query.streamId) { params.push(query.streamId); where.push(`observation.stream_id=$${params.length}`); }
+      if (query.languageHint) { params.push(query.languageHint); where.push(`observation.language_hint=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
+      appendInformationAccess(storage, "observation", params, where);
       params.push(limit);
       return (await storage.query<NgramObservationRow>(
-        `SELECT * FROM ${table}
-         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+        `SELECT * FROM ${table} observation
+         WHERE ${where.join(" AND ")}
          ORDER BY count DESC, observed_at DESC, id ASC
          LIMIT $${params.length}`,
         params
@@ -1843,12 +2408,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
-        where.push(`profile_id=ANY($${params.length}::text[])`);
-      } else if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
-      if (query.script) { params.push(query.script); where.push(`script=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`metadata_json->>'sourceSystem'=$${params.length}`); }
+        where.push(`unit.profile_id=ANY($${params.length}::text[])`);
+      } else if (query.profileId) { params.push(query.profileId); where.push(`unit.profile_id=$${params.length}`); }
+      if (query.script) { params.push(query.script); where.push(`unit.script=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`unit.metadata_json->>'sourceSystem'=$${params.length}`); }
+      appendInformationAccess(storage, "unit", params, where);
       params.push(query.limit ?? 1000);
-      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC, id ASC LIMIT $${params.length}`, params)).map(rowToLanguageUnit);
+      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${params.length}`, params)).map(rowToLanguageUnit);
     },
     async listLanguagePatterns(query = {}) {
       const params: unknown[] = [];
@@ -1856,9 +2422,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
-        where.push(`profile_id=ANY($${params.length}::text[])`);
-      } else if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern_json->>'sourceSystem'=$${params.length}`); }
+        where.push(`pattern.profile_id=ANY($${params.length}::text[])`);
+      } else if (query.profileId) { params.push(query.profileId); where.push(`pattern.profile_id=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern.pattern_json->>'sourceSystem'=$${params.length}`); }
+      appendInformationAccess(storage, "pattern", params, where);
       params.push(query.limit ?? 1000);
       return (await storage.query<LanguagePatternRow>(
         `WITH scoped_patterns AS MATERIALIZED (
@@ -1908,41 +2475,46 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async listSemanticFrames(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame_json->>'sourceSystem'=$${params.length}`); }
-      if (query.surface) { params.push(query.surface); where.push(`frame_json->>'surface'=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame.frame_json->>'sourceSystem'=$${params.length}`); }
+      if (query.surface) { params.push(query.surface); where.push(`frame.frame_json->>'surface'=$${params.length}`); }
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
-        where.push(`frame_json->>'profileId'=ANY($${params.length}::text[])`);
+        where.push(`frame.frame_json->>'profileId'=ANY($${params.length}::text[])`);
       }
+      appendInformationAccess(storage, "frame", params, where);
       params.push(query.limit ?? 500);
-      return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at FROM ${storage.table("semantic_frames")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
+      return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
     },
     async listTranslationAlignments(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
-      if (query.sourceLanguage) { params.push(query.sourceLanguage); where.push(`source_language=$${params.length}`); }
-      if (query.targetLanguage) { params.push(query.targetLanguage); where.push(`target_language=$${params.length}`); }
+      if (query.sourceLanguage) { params.push(query.sourceLanguage); where.push(`alignment.source_language=$${params.length}`); }
+      if (query.targetLanguage) { params.push(query.targetLanguage); where.push(`alignment.target_language=$${params.length}`); }
+      appendInformationAccess(storage, "alignment", params, where);
       params.push(query.limit ?? 100);
-      return (await storage.query<TranslationAlignmentRow>(`SELECT * FROM ${storage.table("translation_alignments")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT $${params.length}`, params)).map(rowToTranslationAlignment);
+      return (await storage.query<TranslationAlignmentRow>(`SELECT * FROM ${storage.table("translation_alignments")} alignment WHERE ${where.join(" AND ")} ORDER BY updated_at DESC LIMIT $${params.length}`, params)).map(rowToTranslationAlignment);
     }
   };
 }
 
 async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: readonly NgramModelRecord[]): Promise<void> {
   if (!models.length) return;
-  const payload = models.map(model => ({
-    id: model.id,
-    stream_id: model.streamId,
-    language_hint: model.languageHint,
-    max_order: model.maxOrder,
-    discount: model.discount,
-    model_json: model.modelJson,
-    updated_at_ms: model.updatedAt
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("ngram_models")}(id,stream_id,language_hint,max_order,discount,model_json,updated_at)
-     SELECT r.id, r.stream_id, r.language_hint, r.max_order, r.discount, r.model_json, TO_TIMESTAMP(r.updated_at_ms/1000.0)
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(storage, "ngram_models", models.map(model => ({ id: model.id, informationLabel: model.informationLabel })));
+    const payload = models.map(model => ({
+      id: model.id,
+      stream_id: model.streamId,
+      language_hint: model.languageHint,
+      max_order: model.maxOrder,
+      discount: model.discount,
+      model_json: model.modelJson,
+      updated_at_ms: model.updatedAt,
+      information_label: labels.get(model.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("ngram_models")}(id,stream_id,language_hint,max_order,discount,model_json,updated_at,information_label)
+     SELECT r.id, r.stream_id, r.language_hint, r.max_order, r.discount, r.model_json, TO_TIMESTAMP(r.updated_at_ms/1000.0), r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        stream_id text,
@@ -1950,16 +2522,20 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
        max_order integer,
        discount double precision,
        model_json jsonb,
-       updated_at_ms double precision
+       updated_at_ms double precision,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=EXCLUDED.model_json, updated_at=EXCLUDED.updated_at`,
+     ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=EXCLUDED.model_json, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: readonly LanguageUnitRecord[]): Promise<void> {
   if (!units.length) return;
-  const payload = units.map(unit => ({
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(storage, "language_units", units.map(unit => ({ id: unit.id, informationLabel: unit.informationLabel })));
+    const payload = units.map(unit => ({
     id: unit.id,
     profile_id: unit.profileId,
     source_version_id: unit.sourceVersionId,
@@ -1970,10 +2546,11 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
     competence_vector_json: unit.competenceVector,
     alpha: unit.alpha,
     evidence_ids_json: unit.evidenceIds,
-    metadata_json: unit.metadata
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("language_units")} AS lu(id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json)
+      metadata_json: unit.metadata,
+      information_label: labels.get(unit.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("language_units")} AS lu(id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json,information_label)
      SELECT
        r.id,
        r.profile_id,
@@ -1985,7 +2562,8 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
        (SELECT COALESCE(array_agg((v.value)::double precision), ARRAY[]::double precision[]) FROM jsonb_array_elements_text(r.competence_vector_json) AS v(value)),
        r.alpha,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
-       r.metadata_json
+       r.metadata_json,
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        profile_id text,
@@ -1997,16 +2575,20 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
        competence_vector_json jsonb,
        alpha double precision,
        evidence_ids_json jsonb,
-       metadata_json jsonb
+       metadata_json jsonb,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=lu.metadata_json || EXCLUDED.metadata_json`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=lu.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, patterns: readonly LanguagePatternRecord[]): Promise<void> {
   if (!patterns.length) return;
-  const payload = patterns.map(pattern => ({
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(storage, "language_patterns", patterns.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
+    const payload = patterns.map(pattern => ({
     id: pattern.id,
     profile_id: pattern.profileId,
     pattern_kind: pattern.patternKind,
@@ -2014,10 +2596,11 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
     entropy: pattern.entropy,
     pattern_json: pattern.patternJson,
     evidence_ids_json: pattern.evidenceIds,
-    updated_at_ms: pattern.updatedAt
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("language_patterns")} AS lp(id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at)
+      updated_at_ms: pattern.updatedAt,
+      information_label: labels.get(pattern.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("language_patterns")} AS lp(id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label)
      SELECT
        r.id,
        r.profile_id,
@@ -2026,7 +2609,8 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
        r.entropy,
        r.pattern_json,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
-       TO_TIMESTAMP(r.updated_at_ms/1000.0)
+       TO_TIMESTAMP(r.updated_at_ms/1000.0),
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        profile_id text,
@@ -2035,43 +2619,51 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
        entropy double precision,
        pattern_json jsonb,
        evidence_ids_json jsonb,
-       updated_at_ms double precision
+       updated_at_ms double precision,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET support=GREATEST(lp.support,EXCLUDED.support), entropy=EXCLUDED.entropy, pattern_json=EXCLUDED.pattern_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lp.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at`,
+     ON CONFLICT(id) DO UPDATE SET support=GREATEST(lp.support,EXCLUDED.support), entropy=EXCLUDED.entropy, pattern_json=EXCLUDED.pattern_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lp.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: readonly SemanticFrameRecord[]): Promise<void> {
   if (!frames.length) return;
-  const payload = frames.map(frame => ({
+  await storage.transaction(async () => {
+    const labels = await joinDurableRecordLabels(storage, "semantic_frames", frames.map(frame => ({ id: frame.id, informationLabel: frame.informationLabel })));
+    const payload = frames.map(frame => ({
     id: frame.id,
     frame_json: frame.frameJson,
     embedding: vectorLiteral(frame.embedding, 64),
     evidence_ids_json: frame.evidenceIds,
     alpha: frame.alpha,
-    created_at_ms: frame.createdAt
-  }));
-  await storage.query(
-    `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,embedding,evidence_ids,alpha,created_at)
+      created_at_ms: frame.createdAt,
+      information_label: labels.get(frame.id)!
+    }));
+    await storage.query(
+    `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,embedding,evidence_ids,alpha,created_at,information_label)
      SELECT
        r.id,
        r.frame_json,
        r.embedding::vector,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
        r.alpha,
-       TO_TIMESTAMP(r.created_at_ms/1000.0)
+       TO_TIMESTAMP(r.created_at_ms/1000.0),
+       r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        frame_json jsonb,
        embedding text,
        evidence_ids_json jsonb,
        alpha double precision,
-       created_at_ms double precision
+       created_at_ms double precision,
+       information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids)))`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids))), information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
-  );
+    );
+  });
 }
 
 function createBrainImportStore(storage: PostgresStorageAdapter): BrainImportStore {
@@ -2921,17 +3513,97 @@ function rowToIngestionCheckpoint(row: IngestionCheckpointRow): IngestionCheckpo
 interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date }
 function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime() }; }
 
-interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust: string; metadata_json: JsonValue; namespace: string; canonical_uri: string }
-function rowToSourceVersion(row: SourceVersionRow): SourceVersion { return { sourceId: row.source_id as SourceId, sourceVersionId: row.id as SourceVersionId, namespace: row.namespace, canonicalUri: row.canonical_uri, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, observedAt: row.observed_at.getTime(), byteLength: Number(row.byte_length), trust: Number(row.trust), metadata: row.metadata_json }; }
+interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust_vector: JsonValue; metadata_json: JsonValue; namespace: string; canonical_uri: string }
+function rowToSourceVersion(row: SourceVersionRow): SourceVersion {
+  const storedMetadata = sourceVersionMetadataRecord(row.metadata_json);
+  const internal = sourceVersionMetadataRecord(storedMetadata._scceSourceVersion);
+  const metadata = { ...storedMetadata };
+  delete metadata._scceSourceVersion;
+  return {
+    sourceId: row.source_id as SourceId,
+    sourceVersionId: row.id as SourceVersionId,
+    namespace: row.namespace,
+    canonicalUri: row.canonical_uri,
+    contentHash: row.content_hash as ContentHash,
+    mediaType: row.media_type,
+    observedAt: row.observed_at.getTime(),
+    byteLength: Number(row.byte_length),
+    sourceTrust: sourceTrustFromJson(row.trust_vector),
+    metadata,
+    role: internal.role === "original" || internal.role === "evidence-derivative"
+      ? internal.role
+      : undefined,
+    derivation: internal.derivation && typeof internal.derivation === "object" && !Array.isArray(internal.derivation)
+      ? internal.derivation as unknown as SourceVersion["derivation"]
+      : undefined
+  };
+}
 
-interface GraphNodeRow { id: string; type_id: string; representation_json: JsonValue; alpha: string; evidence_ids: string[]; features: string[]; created_at: Date; updated_at: Date; metadata_json: JsonValue }
-function rowToGraphNode(row: GraphNodeRow): GraphNode { return { id: row.id as never, typeId: row.type_id as never, representation: row.representation_json, alpha: Number(row.alpha), evidenceIds: row.evidence_ids as EvidenceId[], features: row.features, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), metadata: row.metadata_json }; }
+function sourceVersionStorageMetadata(source: SourceVersion): JsonValue {
+  return {
+    ...sourceVersionMetadataRecord(source.metadata),
+    _scceSourceVersion: {
+      role: source.role ?? null,
+      derivation: source.derivation ? toJsonValue(source.derivation) : null
+    }
+  };
+}
 
-interface GraphEdgeRow { id: string; source_node_id: string; target_node_id: string; relation_id: string; alpha: string; weight: string; temporal_scope: JsonValue; evidence_ids: string[]; created_at: Date; updated_at: Date; metadata_json: JsonValue }
-function rowToGraphEdge(row: GraphEdgeRow): GraphEdge { return { id: row.id as never, source: row.source_node_id as never, target: row.target_node_id as never, relationId: row.relation_id as never, alpha: Number(row.alpha), weight: Number(row.weight), temporalScope: row.temporal_scope as never, evidenceIds: row.evidence_ids as EvidenceId[], createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), metadata: row.metadata_json }; }
+function sourceVersionMetadataRecord(value: JsonValue | undefined): Record<string, JsonValue> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, JsonValue>
+    : {};
+}
 
-interface HyperedgeRow { id: string; relation_id: string; member_node_ids: string[]; weight_vector: JsonValue; temporal_scope: JsonValue; provenance_refs: string[]; created_at: Date; updated_at: Date }
-function rowToHyperedge(row: HyperedgeRow): Hyperedge { return { id: row.id as never, relationId: row.relation_id as never, memberNodeIds: row.member_node_ids as never[], weightVector: row.weight_vector, temporalScope: row.temporal_scope, provenanceRefs: row.provenance_refs, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime() }; }
+function sourceTrustFromJson(value: JsonValue): SourceTrust {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("source version trust_vector must be an object");
+  }
+  const record = value as Record<string, JsonValue>;
+  const score = (key: "identity" | "integrity" | "parserReliability" | "directness" | "authority" | "freshness"): number => {
+    const item = record[key];
+    if (typeof item !== "number" || !Number.isFinite(item) || item < 0 || item > 1) {
+      throw new Error(`source version trust_vector.${key} must be a finite number in [0,1]`);
+    }
+    return item;
+  };
+  const text = (key: "independenceGroup" | "accessScope" | "licenseStatus"): string => {
+    const item = record[key];
+    if (typeof item !== "string" || !item.trim()) {
+      throw new Error(`source version trust_vector.${key} must be a non-empty string`);
+    }
+    return item;
+  };
+  return {
+    identity: score("identity"),
+    integrity: score("integrity"),
+    parserReliability: score("parserReliability"),
+    directness: score("directness"),
+    authority: score("authority"),
+    freshness: score("freshness"),
+    independenceGroup: text("independenceGroup"),
+    accessScope: text("accessScope"),
+    licenseStatus: text("licenseStatus")
+  };
+}
+
+function evidenceStatusCondition(
+  alias: string,
+  status: EvidenceQuery["status"]
+): string {
+  if (status === "any") return "TRUE";
+  if (status === "quarantined") return `${alias}.status='quarantined'`;
+  return `${alias}.status='promoted'`;
+}
+
+interface GraphNodeRow { id: string; type_id: string; representation_json: JsonValue; alpha: string; evidence_ids: string[]; features: string[]; created_at: Date; updated_at: Date; metadata_json: JsonValue; information_label: InformationLabel }
+function rowToGraphNode(row: GraphNodeRow): GraphNode { return { id: row.id as never, typeId: row.type_id as never, representation: row.representation_json, alpha: Number(row.alpha), evidenceIds: row.evidence_ids as EvidenceId[], features: row.features, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
+
+interface GraphEdgeRow { id: string; source_node_id: string; target_node_id: string; relation_id: string; alpha: string; weight: string; temporal_scope: JsonValue; evidence_ids: string[]; created_at: Date; updated_at: Date; metadata_json: JsonValue; information_label: InformationLabel }
+function rowToGraphEdge(row: GraphEdgeRow): GraphEdge { return { id: row.id as never, source: row.source_node_id as never, target: row.target_node_id as never, relationId: row.relation_id as never, alpha: Number(row.alpha), weight: Number(row.weight), temporalScope: row.temporal_scope as never, evidenceIds: row.evidence_ids as EvidenceId[], createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
+
+interface HyperedgeRow { id: string; relation_id: string; member_node_ids: string[]; weight_vector: JsonValue; temporal_scope: JsonValue; provenance_refs: string[]; created_at: Date; updated_at: Date; information_label: InformationLabel }
+function rowToHyperedge(row: HyperedgeRow): Hyperedge { return { id: row.id as never, relationId: row.relation_id as never, memberNodeIds: row.member_node_ids as never[], weightVector: row.weight_vector, temporalScope: row.temporal_scope, provenanceRefs: row.provenance_refs, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface QuarantineRow { id: string; source_id: string; source_version_id: string; uri: string; content_hash: string; media_type: string; fetched_at: Date; trust_vector: JsonValue; permission_vector: JsonValue; license_hint: string | null; decision: "pending" | "promoted" | "rejected"; decision_json: JsonValue | null }
 function rowToQuarantine(row: QuarantineRow): QuarantineSource { return { id: row.id, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, uri: row.uri, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, fetchedAt: row.fetched_at.getTime(), trustVector: row.trust_vector, permissionVector: row.permission_vector, licenseHint: row.license_hint ?? undefined, decision: row.decision, decisionJson: row.decision_json ?? undefined }; }
@@ -2945,20 +3617,20 @@ function rowToCapability(row: CapabilityRow): CapabilityPlan { return { id: row.
 interface ForecastRow { id: string; episode_id: string | null; t: string; state_vector: number[]; alpha_surface_json: AlphaTrace["surfaces"]; spectrum_json: ForecastState["spectrum"] }
 function rowToForecast(row: ForecastRow): ForecastState { return { id: row.id as never, episodeId: row.episode_id ? row.episode_id as EpisodeId : undefined, t: Number(row.t), stateVector: row.state_vector.map(Number), alphaSurface: row.alpha_surface_json, spectrum: row.spectrum_json }; }
 
-interface NgramModelRow { id: string; stream_id: string; language_hint: string; max_order: number; discount: string; model_json: JsonValue; updated_at: Date }
-function rowToNgramModel(row: NgramModelRow): NgramModelRecord { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, maxOrder: Number(row.max_order), discount: Number(row.discount), modelJson: row.model_json, updatedAt: row.updated_at.getTime() }; }
+interface NgramModelRow { id: string; stream_id: string; language_hint: string; max_order: number; discount: string; model_json: JsonValue; updated_at: Date; information_label: InformationLabel }
+function rowToNgramModel(row: NgramModelRow): NgramModelRecord { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, maxOrder: Number(row.max_order), discount: Number(row.discount), modelJson: row.model_json, updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
-interface NgramObservationRow { id: string; stream_id: string; language_hint: string; order_n: number; history: string[]; symbol: string; count: string; field_weight: string; source_version_id: string | null; evidence_id: string | null; observed_at: Date; metadata_json: JsonValue }
-function rowToNgramObservation(row: NgramObservationRow): NgramObservation { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, order: Number(row.order_n), history: row.history, symbol: row.symbol, count: Number(row.count), fieldWeight: Number(row.field_weight), sourceVersionId: row.source_version_id ? row.source_version_id as SourceVersionId : undefined, evidenceId: row.evidence_id ? row.evidence_id as EvidenceId : undefined, observedAt: row.observed_at.getTime(), metadata: row.metadata_json }; }
+interface NgramObservationRow { id: string; stream_id: string; language_hint: string; order_n: number; history: string[]; symbol: string; count: string; field_weight: string; source_version_id: string | null; evidence_id: string | null; observed_at: Date; metadata_json: JsonValue; information_label: InformationLabel }
+function rowToNgramObservation(row: NgramObservationRow): NgramObservation { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, order: Number(row.order_n), history: row.history, symbol: row.symbol, count: Number(row.count), fieldWeight: Number(row.field_weight), sourceVersionId: row.source_version_id ? row.source_version_id as SourceVersionId : undefined, evidenceId: row.evidence_id ? row.evidence_id as EvidenceId : undefined, observedAt: row.observed_at.getTime(), metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
 
-interface LanguageUnitRow { id: string; profile_id: string; source_version_id: string; script: string; unit_kind: LanguageUnitRecord["unitKind"]; unit_text: string; features: string[]; competence_vector: number[]; alpha: string; evidence_ids: string[]; metadata_json: JsonValue }
-function rowToLanguageUnit(row: LanguageUnitRow): LanguageUnitRecord { return { id: row.id, profileId: row.profile_id, sourceVersionId: row.source_version_id as SourceVersionId, script: row.script, unitKind: row.unit_kind, text: row.unit_text, features: row.features, competenceVector: row.competence_vector.map(Number), alpha: Number(row.alpha), evidenceIds: row.evidence_ids as EvidenceId[], metadata: row.metadata_json }; }
+interface LanguageUnitRow { id: string; profile_id: string; source_version_id: string; script: string; unit_kind: LanguageUnitRecord["unitKind"]; unit_text: string; features: string[]; competence_vector: number[]; alpha: string; evidence_ids: string[]; metadata_json: JsonValue; information_label: InformationLabel }
+function rowToLanguageUnit(row: LanguageUnitRow): LanguageUnitRecord { return { id: row.id, profileId: row.profile_id, sourceVersionId: row.source_version_id as SourceVersionId, script: row.script, unitKind: row.unit_kind, text: row.unit_text, features: row.features, competenceVector: row.competence_vector.map(Number), alpha: Number(row.alpha), evidenceIds: row.evidence_ids as EvidenceId[], metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
 
-interface LanguagePatternRow { id: string; profile_id: string; pattern_kind: LanguagePatternRecord["patternKind"]; support: string; entropy: string; pattern_json: JsonValue; evidence_ids: string[]; updated_at: Date }
-function rowToLanguagePattern(row: LanguagePatternRow): LanguagePatternRecord { return { id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy), patternJson: row.pattern_json, evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime() }; }
+interface LanguagePatternRow { id: string; profile_id: string; pattern_kind: LanguagePatternRecord["patternKind"]; support: string; entropy: string; pattern_json: JsonValue; evidence_ids: string[]; updated_at: Date; information_label: InformationLabel }
+function rowToLanguagePattern(row: LanguagePatternRow): LanguagePatternRecord { return { id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy), patternJson: row.pattern_json, evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
-interface SemanticFrameRow { id: string; frame_json: JsonValue; embedding: string; evidence_ids: string[]; alpha: string; created_at: Date }
-function rowToSemanticFrame(row: SemanticFrameRow): SemanticFrameRecord { return { id: row.id, frameJson: row.frame_json, embedding: parseVectorText(row.embedding, 64), evidenceIds: row.evidence_ids as EvidenceId[], alpha: Number(row.alpha), createdAt: row.created_at.getTime() }; }
+interface SemanticFrameRow { id: string; frame_json: JsonValue; embedding: string; evidence_ids: string[]; alpha: string; created_at: Date; information_label: InformationLabel }
+function rowToSemanticFrame(row: SemanticFrameRow): SemanticFrameRecord { return { id: row.id, frameJson: row.frame_json, embedding: parseVectorText(row.embedding, 64), evidenceIds: row.evidence_ids as EvidenceId[], alpha: Number(row.alpha), createdAt: row.created_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 function parseVectorText(value: string, dimensions: number): number[] {
   const body = value.trim().replace(/^\[/u, "").replace(/\]$/u, "");
@@ -2967,8 +3639,8 @@ function parseVectorText(value: string, dimensions: number): number[] {
   return parsed;
 }
 
-interface TranslationAlignmentRow { id: string; source_frame_id: string; target_frame_id: string; source_language: string; target_language: string; force: TranslationAlignmentRecord["force"]; loss_vector: JsonValue; alignment_json: JsonValue; evidence_ids: string[]; updated_at: Date }
-function rowToTranslationAlignment(row: TranslationAlignmentRow): TranslationAlignmentRecord { return { id: row.id, sourceFrameId: row.source_frame_id, targetFrameId: row.target_frame_id, sourceLanguage: row.source_language, targetLanguage: row.target_language, force: row.force, lossVector: row.loss_vector, alignmentJson: row.alignment_json, evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime() }; }
+interface TranslationAlignmentRow { id: string; source_frame_id: string; target_frame_id: string; source_language: string; target_language: string; force: TranslationAlignmentRecord["force"]; loss_vector: JsonValue; alignment_json: JsonValue; evidence_ids: string[]; updated_at: Date; information_label: InformationLabel }
+function rowToTranslationAlignment(row: TranslationAlignmentRow): TranslationAlignmentRecord { return { id: row.id, sourceFrameId: row.source_frame_id, targetFrameId: row.target_frame_id, sourceLanguage: row.source_language, targetLanguage: row.target_language, force: row.force, lossVector: row.loss_vector, alignmentJson: row.alignment_json, evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface BrainImportLedgerRow { id: string; import_run_id: string; brain_version: string; root_path: string; section_id: string; section_kind: BrainImportLedgerRecord["sectionKind"]; force_class: BrainImportLedgerRecord["forceClass"]; source_path: string | null; file_hash: string | null; shard_hash: string | null; source_version_id: string | null; evidence_ids: string[]; node_ids: string[]; row_counts_json: JsonValue; warnings: string[]; metadata_json: JsonValue; imported_at: Date }
 function rowToBrainImportLedger(row: BrainImportLedgerRow): BrainImportLedgerRecord {

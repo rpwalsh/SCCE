@@ -1,5 +1,6 @@
-import type { Capability, CapabilityCallId, CapabilityPlan, EpisodeId, EvidenceSpan, FieldState, Hasher, JsonValue, PolicyProfile } from "./types.js";
-import { clamp01, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import type { Capability, CapabilityCallId, CapabilityPlan, Clock, EpisodeId, EvidenceSpan, FieldState, Hasher, JsonValue, PolicyProfile } from "./types.js";
+import { clamp01, createClock, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import type { FunctionalSelectionGate } from "./functional-cognition.js";
 
 export type ToolIntentKind =
   | "observe"
@@ -104,9 +105,10 @@ export interface ToolLearningSignal {
   notes: string[];
 }
 
-export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: () => number } = {}) {
+export function createAutonomousToolCognition(options: { hasher?: Hasher; clock?: Clock; now?: () => number } = {}) {
   const hasher = options.hasher ?? createHasher();
-  const now = options.now ?? (() => Date.now());
+  const clock = options.clock ?? createClock();
+  const now = options.now ?? (() => clock.now());
 
   return {
     analyze(input: { request: string; evidence?: EvidenceSpan[]; field?: FieldState; actionCommitment?: number }): ToolObjective[] {
@@ -122,13 +124,15 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
       field?: FieldState;
       actionCommitment?: number;
       temporaryOperatorGrant?: { enabled: boolean; until?: number };
+      functionalGate?: FunctionalSelectionGate;
     }): ToolCognitionPlan {
       const t = now();
       const actionCommitment = clamp01(input.actionCommitment ?? 0);
       const objectives = analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher, actionCommitment);
       const operatorGrant = Boolean(input.temporaryOperatorGrant?.enabled && (!input.temporaryOperatorGrant.until || input.temporaryOperatorGrant.until > t));
       const scored = scoreCapabilities({ objectives, capabilities: input.capabilities, policy: input.policy, operatorGrant, now: t });
-      const selected = selectCapabilityScores(scored, input.policy, objectives, actionCommitment);
+      const selectedBeforeFunctionalGate = selectCapabilityScores(scored, input.policy, objectives, actionCommitment);
+      const selected = selectedBeforeFunctionalGate.filter(score => functionalCapabilityAdmissible(score, input.functionalGate));
       const capabilityPlans = materializePlans({ selected, objectives, episodeId: input.episodeId, request: input.request, policy: input.policy, operatorGrant, hasher, t });
       const approvals = buildApprovalControls(capabilityPlans, selected, operatorGrant, t);
       const residualNeeds = residualNeedsFor(objectives, selected, input.capabilities);
@@ -148,7 +152,13 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
           { id: `ledger_${hasher.digestHex(`selected:${selected.map(s => s.capabilityId).join("|")}`).slice(0, 18)}`, t, event: "capabilities_selected", payload: toJsonValue({ selected }) },
           { id: `ledger_${hasher.digestHex(`approval:${approvals.map(a => a.id).join("|")}`).slice(0, 18)}`, t, event: "approvals_prepared", payload: toJsonValue({ approvalIds: approvals.map(a => a.id), operatorGrant }) }
         ],
-        policyAudit: toJsonValue(policyAudit(input.policy, selected, capabilityPlans, approvals, actionCommitment)),
+        policyAudit: toJsonValue({
+          ...policyAudit(input.policy, selected, capabilityPlans, approvals, actionCommitment),
+          functionalGate: input.functionalGate ?? null,
+          functionalGateRejected: selectedBeforeFunctionalGate
+            .filter(score => !selected.includes(score))
+            .map(score => ({ capabilityId: score.capabilityId, objectiveId: score.objectiveId, phase: score.phase }))
+        }),
         residualNeeds,
         session: {
           operatorGrant,
@@ -165,6 +175,16 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; now?: 
       return input.outcomes.map(outcome => learningSignalFor(input.plan, outcome));
     }
   };
+}
+
+function functionalCapabilityAdmissible(
+  score: CapabilityScore,
+  gate: FunctionalSelectionGate | undefined
+): boolean {
+  if (!gate) return false;
+  if (!gate.gov || !gate.fc) return false;
+  if (score.phase === "read") return true;
+  return gate.efc && Boolean(gate.selectedGoalId);
 }
 
 function analyzeObjectives(request: string, evidence: readonly EvidenceSpan[], field: FieldState | undefined, hasher: Hasher, actionCommitment = 0): ToolObjective[] {

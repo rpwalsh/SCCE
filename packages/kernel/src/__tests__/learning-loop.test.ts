@@ -311,7 +311,7 @@ describe("Phase 7 tool-driven learning loop", () => {
       mediaType: "text/plain",
       observedAt: clock.now(),
       byteLength: uri.length,
-      trust: 1,
+      sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "fixture:learning-loop", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }

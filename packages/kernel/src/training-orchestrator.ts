@@ -1,5 +1,5 @@
-import type { EvidenceSpan, Hasher, JsonValue, ModelState, PolicyProfile, SemanticEntailmentResult, TrainInput } from "./types.js";
-import { clamp01, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import type { Clock, EvidenceSpan, Hasher, JsonValue, ModelState, PolicyProfile, SemanticEntailmentResult, TrainInput } from "./types.js";
+import { clamp01, createClock, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createLanguageInductionEngine, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
 import type { SemanticProofResult } from "./semantic-proof-system.js";
 import { SEMANTIC_VERDICT } from "./semantic-codes.js";
@@ -102,9 +102,10 @@ export interface TrainingPlan {
   audit: JsonValue;
 }
 
-export function createTrainingOrchestrator(options: { hasher?: Hasher; now?: () => number } = {}) {
+export function createTrainingOrchestrator(options: { hasher?: Hasher; clock?: Clock; now?: () => number } = {}) {
   const hasher = options.hasher ?? createHasher();
-  const now = options.now ?? (() => Date.now());
+  const clock = options.clock ?? createClock();
+  const now = options.now ?? (() => clock.now());
   const language = createLanguageInductionEngine({ hasher });
   return {
     plan(input: {

@@ -1534,7 +1534,17 @@ function sourceVersionFor(input: { file: ScceRuntimeFixtureFile; workspace: Work
     mediaType: input.file.mediaType,
     observedAt: input.now,
     byteLength: bytes.byteLength,
-    trust: 0.9,
+    sourceTrust: {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 0.95,
+      directness: 1,
+      authority: 1,
+      freshness: 1,
+      independenceGroup: `workspace:${input.workspace.id}`,
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    },
     metadata: toJsonValue({ ...(jsonRecord(input.file.metadata)), workspaceId: input.workspace.id })
   };
 }
@@ -1557,7 +1567,7 @@ function evidenceSpanFor(input: { file: ScceRuntimeFixtureFile; sourceVersion: S
     textPreview: input.file.text.slice(0, 320),
     languageHints: jsonRecord(input.file.metadata).languageHints ?? {},
     scriptHints: jsonRecord(input.file.metadata).scriptHints ?? {},
-    trustVector: toJsonValue({ trust: 0.9, forceClass: "direct_evidence" }),
+    trustVector: toJsonValue({ sourceTrust: input.sourceVersion.sourceTrust, forceClass: "direct_evidence" }),
     provenance: toJsonValue({ uri: input.file.path, metadata: input.file.metadata ?? null }),
     features: featureSet(input.file.text, 512),
     status: "promoted",
@@ -1788,7 +1798,8 @@ function sourceOnlyTurnTrace(input: {
     scoreTraces,
     preservationChecked: Boolean(input.answer.spoken.realizationTrace.preservation),
     unsupportedContentBlocked: input.answer.mouthInput.unsupported || input.answer.statusId === "workspace.kernel.answer.unsupported",
-    now: input.answer.mouthInput.speakInput.evidence.reduce((max, span) => Math.max(max, span.observedAt), 0) || Date.now()
+    now: input.answer.mouthInput.speakInput.evidence.reduce((max, span) => Math.max(max, span.observedAt), 0)
+      || input.promotion.createdAt
   });
   const trace: SourceOnlyTurnSimulationTrace = {
     schema: "scce.runtime.turn_trace.v1",

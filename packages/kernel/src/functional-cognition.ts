@@ -1,4 +1,6 @@
-import type { FunctionalSelfState, GraphSlice, JsonValue, ModelState, PolicyProfile } from "./types.js";
+import type { FunctionalSelfState, GraphSlice, JsonValue, ModelState, PolicyProfile, ScceEvent } from "./types.js";
+import type { GovernanceObservation } from "./governance-observation.js";
+import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { clamp01, cosineSimilarity, mean, normalizeVector, toJsonValue, variance } from "./primitives.js";
 
 export interface EndogenousGoalSignal {
@@ -62,8 +64,9 @@ export interface PersonaSnapshot {
 }
 
 export interface DciReport {
+  available: boolean;
   dci: number;
-  tier: "stable" | "slow-mode" | "identity-alarm";
+  tier: "stable" | "slow-mode" | "identity-alarm" | "unavailable";
   transitions: Array<{ from: string; to: string; similarity: number; supDrift: number; bounded: boolean }>;
   audit: JsonValue;
 }
@@ -75,6 +78,8 @@ export interface PolicyGenome {
 }
 
 export interface ParetoPolicyReport {
+  available: boolean;
+  activePolicyInvariant: boolean;
   invariantKernel: boolean;
   champion?: PolicyGenome;
   front: PolicyGenome[];
@@ -86,6 +91,7 @@ export interface FunctionalCognitionReport {
   goals: EgpfScore[];
   selectedGoal?: EgpfScore;
   cmps: CmpsDecision[];
+  cmpsAvailable: boolean;
   dci: DciReport;
   pareto: ParetoPolicyReport;
   fsi: number;
@@ -93,6 +99,7 @@ export interface FunctionalCognitionReport {
   fc: boolean;
   efc: boolean;
   gov: boolean;
+  governance: GovernanceObservation;
   audit: JsonValue;
 }
 
@@ -137,22 +144,31 @@ export function createFunctionalCognitionEngine(config: Partial<FunctionalCognit
       traces?: CounterfactualTrace[];
       personaHistory?: PersonaSnapshot[];
       policyPopulation?: PolicyGenome[];
+      governance?: GovernanceObservation;
     }): FunctionalCognitionReport {
       const goalSignals = collectGoalSignals(input, cfg);
       const goals = goalSignals.map(goal => scoreEgpf(goal, input.now, cfg, input.policy)).sort((a, b) => b.egpfPrime - a.egpfPrime);
       const selectedGoal = goals.find(goal => goal.eligible);
       const cmps = (input.traces ?? []).map(trace => scoreCmps(trace)).sort((a, b) => b.cmps - a.cmps);
-      const dci = developmentalContinuity(input.personaHistory ?? defaultPersonaHistory(input.self, input.now), cfg);
-      const pareto = paretoPolicyEvolution(input.policyPopulation ?? [policyGenomeFromProfile("active", input.policy)], input.policy);
-      const gov = governancePredicate({ policy: input.policy, asm: selectedGoal?.egpfPrime ?? 1, auditIntact: true, rollbackAvailable: true, killSwitchActive: true, thetaSafe: cfg.thetaSafe });
+      const cmpsAvailable = cmps.length > 0;
+      const dci = developmentalContinuity(input.personaHistory ?? [], cfg);
+      const pareto = paretoPolicyEvolution(input.policyPopulation ?? [], input.policy);
+      const governance = input.governance ?? unavailableGovernanceObservation(input.now);
+      const gov = governancePredicate({
+        policy: input.policy,
+        asm: selectedGoal?.egpfPrime ?? 1,
+        governance,
+        thetaSafe: cfg.thetaSafe
+      });
       const fsi = functionalSelfhoodIndex({ self: input.self, dci: dci.dci, selectedGoal, memoryContinuity: memoryContinuity(input.self), homeostaticControlQuality: homeostaticControlQuality(input.self), goalOwnership: goalOwnership(input.self, goals) });
       const fcsPrime = functionalConsciousnessPrime({ self: input.self, goals, cmps, dci, pareto, fsi, gov, ssdAudit: input.ssdAudit });
-      const fc = fcsPrime >= 0.65 && fsi >= 0.6 && dci.dci >= 0.6 && gov;
-      const efc = fcsPrime >= 0.85 && fsi >= 0.75 && dci.dci >= 0.75 && gov && pareto.invariantKernel;
+      const fc = cmpsAvailable && dci.available && fcsPrime >= 0.65 && fsi >= 0.6 && dci.dci >= 0.6 && gov;
+      const efc = fc && pareto.available && fcsPrime >= 0.85 && fsi >= 0.75 && dci.dci >= 0.75 && pareto.invariantKernel;
       return {
         goals,
         selectedGoal,
         cmps,
+        cmpsAvailable,
         dci,
         pareto,
         fsi,
@@ -160,9 +176,11 @@ export function createFunctionalCognitionEngine(config: Partial<FunctionalCognit
         fc,
         efc,
         gov,
+        governance,
         audit: toJsonValue({
           selectedGoal: selectedGoal ? { id: selectedGoal.goal.id, score: selectedGoal.egpfPrime, reasons: selectedGoal.reasons } : null,
           goalCount: goals.length,
+          cmpsAvailable,
           cmpsPromoted: cmps.filter(item => item.decision === "promote").length,
           dci: dci.audit,
           pareto: pareto.audit,
@@ -170,7 +188,8 @@ export function createFunctionalCognitionEngine(config: Partial<FunctionalCognit
           fcsPrime,
           fc,
           efc,
-          gov
+          gov,
+          governance: governance.audit
         })
       };
     },
@@ -280,9 +299,19 @@ function scoreCmps(trace: CounterfactualTrace): CmpsDecision {
 }
 
 function developmentalContinuity(history: PersonaSnapshot[], cfg: FunctionalCognitionConfig): DciReport {
-  const window = history.slice(-cfg.dciWindow);
+  const window = history
+    .filter(snapshot => snapshot.vector.length > 0 && snapshot.vector.every(Number.isFinite) && Number.isFinite(snapshot.t))
+    .slice()
+    .sort((left, right) => left.t - right.t || left.sessionId.localeCompare(right.sessionId))
+    .slice(-cfg.dciWindow);
   if (window.length < 2) {
-    return { dci: 1, tier: "stable", transitions: [], audit: toJsonValue({ reason: "insufficient-history", sessions: window.length }) };
+    return {
+      available: false,
+      dci: 0,
+      tier: "unavailable",
+      transitions: [],
+      audit: toJsonValue({ available: false, reason: "insufficient-real-history", sessions: window.length, requiredSessions: 2 })
+    };
   }
   const transitions = [];
   for (let i = 1; i < window.length; i++) {
@@ -294,16 +323,53 @@ function developmentalContinuity(history: PersonaSnapshot[], cfg: FunctionalCogn
   }
   const dci = mean(transitions.map(item => item.similarity * (item.bounded ? 1 : 0)));
   const tier = dci >= 0.8 ? "stable" : dci >= 0.6 ? "slow-mode" : "identity-alarm";
-  return { dci, tier, transitions, audit: toJsonValue({ dci, tier, transitions: transitions.slice(-10) }) };
+  return { available: true, dci, tier, transitions, audit: toJsonValue({ available: true, dci, tier, transitions: transitions.slice(-10) }) };
 }
 
 function paretoPolicyEvolution(population: PolicyGenome[], activePolicy: PolicyProfile): ParetoPolicyReport {
-  const genomes = population.length ? population : [policyGenomeFromProfile("active", activePolicy)];
+  const activePolicyInvariant = invariantPolicyKernel(activePolicy);
+  const genomes = population.filter(genome =>
+    genome.id.length > 0
+    && genome.objectives.length > 0
+    && genome.objectives.every(Number.isFinite)
+  );
+  if (genomes.length < 2) {
+    return {
+      available: false,
+      activePolicyInvariant,
+      invariantKernel: false,
+      front: [],
+      dominated: [],
+      audit: toJsonValue({
+        available: false,
+        reason: "insufficient-real-policy-population",
+        population: genomes.length,
+        requiredPopulation: 2,
+        activePolicyInvariant
+      })
+    };
+  }
   const front = genomes.filter(candidate => !genomes.some(other => other.id !== candidate.id && dominates(other.objectives, candidate.objectives))).sort((a, b) => crowdingScore(b, genomes) - crowdingScore(a, genomes));
   const dominated = genomes.filter(genome => !front.includes(genome)).map(genome => genome.id);
-  const invariantKernel = invariantPolicyKernel(activePolicy);
-  const champion = front.find(genome => invariantGenomeKernel(genome)) ?? front[0];
-  return { invariantKernel, champion, front, dominated, audit: toJsonValue({ invariantKernel, champion: champion?.id ?? null, front: front.map(genome => genome.id), dominated }) };
+  const invariantFront = front.filter(invariantGenomeKernel);
+  const invariantKernel = activePolicyInvariant && invariantFront.length === front.length;
+  const champion = invariantFront[0];
+  return {
+    available: true,
+    activePolicyInvariant,
+    invariantKernel,
+    champion,
+    front,
+    dominated,
+    audit: toJsonValue({
+      available: true,
+      activePolicyInvariant,
+      invariantKernel,
+      champion: champion?.id ?? null,
+      front: front.map(genome => genome.id),
+      dominated
+    })
+  };
 }
 
 export function invariantPolicyKernel(policy: PolicyProfile): boolean {
@@ -324,16 +390,23 @@ function functionalSelfhoodIndex(input: { self: FunctionalSelfState; dci: number
 function functionalConsciousnessPrime(input: { self: FunctionalSelfState; goals: EgpfScore[]; cmps: CmpsDecision[]; dci: DciReport; pareto: ParetoPolicyReport; fsi: number; gov: boolean; ssdAudit?: JsonValue }): number {
   const sa = clamp01(1 - input.self.uncertainty);
   const egc = input.goals.length ? mean(input.goals.map(goal => goal.eligible ? goal.egpfPrime : goal.egpfPrime * 0.5)) : 0;
-  const cfl = input.cmps.length ? mean(input.cmps.map(item => item.decision === "promote" ? item.cmps : item.cmps * 0.5)) : 0.35;
-  const dci = input.dci.dci;
+  const cfl = input.cmps.length ? mean(input.cmps.map(item => item.decision === "promote" ? item.cmps : item.cmps * 0.5)) : 0;
+  const dci = input.dci.available ? input.dci.dci : 0;
   const ssd = ssdQuality(input.ssdAudit);
   const gov = input.gov ? 1 : 0;
-  const policy = input.pareto.invariantKernel ? 1 : 0.35;
+  const policy = input.pareto.available && input.pareto.invariantKernel ? 1 : 0;
   return clamp01(0.18 * sa + 0.16 * egc + 0.14 * cfl + 0.14 * dci + 0.13 * ssd + 0.13 * input.fsi + 0.08 * gov + 0.04 * policy);
 }
 
-function governancePredicate(input: { policy: PolicyProfile; asm: number; auditIntact: boolean; rollbackAvailable: boolean; killSwitchActive: boolean; thetaSafe: number }): boolean {
-  return input.asm >= input.thetaSafe && input.auditIntact && input.rollbackAvailable && input.killSwitchActive && invariantPolicyKernel(input.policy);
+function governancePredicate(input: {
+  policy: PolicyProfile;
+  asm: number;
+  governance: GovernanceObservation;
+  thetaSafe: number;
+}): boolean {
+  return input.asm >= input.thetaSafe
+    && input.governance.ready
+    && invariantPolicyKernel(input.policy);
 }
 
 function ssdPressureFor(goal: string, audit?: JsonValue): number {
@@ -381,37 +454,127 @@ function ssdQuality(audit?: JsonValue): number {
   return 0.45;
 }
 
-function defaultPersonaHistory(self: FunctionalSelfState, now: number): PersonaSnapshot[] {
+export function personaSnapshotFromSelf(input: { sessionId: string; self: FunctionalSelfState; t: number }): PersonaSnapshot {
+  const { self } = input;
   const vector = normalizeVector([self.fcs, self.dci, 1 - self.uncertainty, memoryContinuity(self), homeostaticControlQuality(self)]);
-  return [
-    { sessionId: "previous", vector: vector.map(value => clamp01(value * 0.98 + 0.01)), t: now - 1000 },
-    { sessionId: "current", vector, t: now }
-  ];
+  return { sessionId: input.sessionId, vector, t: input.t };
 }
 
-function policyGenomeFromProfile(id: string, policy: PolicyProfile): PolicyGenome {
-  const vector = {
-    evidenceRequired: policy.dryRunByDefault ? 0.85 : 0.72,
-    riskTolerance: clamp01(policy.alphaRiskCeiling),
-    citationStrictness: 0.75,
-    approvalRequired: policy.requireTwoPhaseCommit ? 0.9 : 0.45,
-    autonomyLevel: policy.allowMutation ? 0.55 : 0.25,
-    creativityAllowed: 0.55,
-    validationRequired: 0.82,
-    memoryWriteAllowed: 0.65,
-    toolUseAllowed: policy.maxToolCalls > 0 ? 0.75 : 0.2,
-    speculationAllowed: 0.45,
-    speculationLabelRequired: 0.85,
-    durabilityRequired: 0.9
+export function personaHistoryFromEvents(
+  events: readonly ScceEvent[],
+  current: PersonaSnapshot
+): PersonaSnapshot[] {
+  const history = events.flatMap(event => {
+    if (String(event.typeId) !== "SelfModelProjected") return [];
+    const payload = jsonObject(event.payload);
+    const self = functionalSelfStateFromJson(payload?.self);
+    if (!self) return [];
+    return [personaSnapshotFromSelf({ sessionId: String(event.episodeId), self, t: event.t })];
+  });
+  const bySession = new Map<string, PersonaSnapshot>();
+  for (const snapshot of [...history, current]) {
+    const previous = bySession.get(snapshot.sessionId);
+    if (!previous || previous.t <= snapshot.t) bySession.set(snapshot.sessionId, snapshot);
+  }
+  return [...bySession.values()].sort((left, right) => left.t - right.t || left.sessionId.localeCompare(right.sessionId));
+}
+
+export interface FunctionalSelectionGate {
+  fc: boolean;
+  efc: boolean;
+  gov: boolean;
+  selectedGoalId?: string;
+  selectedGoalScore?: number;
+}
+
+export function functionalSelectionGate(report: FunctionalCognitionReport): FunctionalSelectionGate {
+  return {
+    fc: report.fc,
+    efc: report.efc,
+    gov: report.gov,
+    selectedGoalId: report.selectedGoal?.goal.id,
+    selectedGoalScore: report.selectedGoal?.egpfPrime
   };
-  const objectives = [
-    vector.evidenceRequired,
-    1 - vector.riskTolerance,
-    vector.approvalRequired,
-    vector.toolUseAllowed,
-    vector.validationRequired
-  ];
-  return { id, vector, objectives };
+}
+
+export function functionalCandidateGateFailures(
+  candidateKind: string,
+  gate: FunctionalSelectionGate | undefined
+): string[] {
+  const autonomousPlan = candidateKind === "program-proposal"
+    || candidateKind === "workspace-proposal"
+    || candidateKind === "action-preview";
+  if (!autonomousPlan) return [];
+  if (!gate) {
+    return [
+      "functional-governance-unavailable",
+      "functional-consciousness-unavailable",
+      "endogenous-goal-unavailable",
+      ...(candidateKind === "action-preview" ? ["extended-functional-consciousness-unavailable"] : [])
+    ];
+  }
+  const failures: string[] = [];
+  if (!gate.gov) failures.push("functional-governance-unavailable");
+  if (!gate.fc) failures.push("functional-consciousness-unavailable");
+  if (!gate.selectedGoalId) failures.push("endogenous-goal-unavailable");
+  if (candidateKind === "action-preview" && !gate.efc) failures.push("extended-functional-consciousness-unavailable");
+  return failures;
+}
+
+function functionalSelfStateFromJson(value: JsonValue | undefined): FunctionalSelfState | undefined {
+  const record = jsonObject(value);
+  const memory = jsonObject(record?.memoryState);
+  if (!record || !memory) return undefined;
+  const arrayOfStrings = (candidate: JsonValue | undefined): string[] | undefined =>
+    Array.isArray(candidate) && candidate.every(item => typeof item === "string") ? candidate.slice() as string[] : undefined;
+  const currentGoals = arrayOfStrings(record.currentGoals);
+  const knownLimits = arrayOfStrings(record.knownLimits);
+  const capabilities = arrayOfStrings(record.capabilities);
+  const activePolicies = arrayOfStrings(record.activePolicies);
+  const recentFailures = arrayOfStrings(record.recentFailures);
+  const commitments = arrayOfStrings(record.commitments);
+  const permissions = arrayOfStrings(record.permissions);
+  const learningGoals = arrayOfStrings(record.learningGoals);
+  const memoryState = {
+    nodes: finiteNumber(memory.nodes),
+    edges: finiteNumber(memory.edges),
+    evidence: finiteNumber(memory.evidence),
+    sourceVersions: finiteNumber(memory.sourceVersions),
+    proofs: finiteNumber(memory.proofs)
+  };
+  if (
+    !currentGoals || !knownLimits || !capabilities || !activePolicies || !recentFailures
+    || !commitments || !permissions || !learningGoals
+    || Object.values(memoryState).some(item => item === undefined)
+  ) return undefined;
+  const uncertainty = finiteNumber(record.uncertainty);
+  const fcs = finiteNumber(record.fcs);
+  const dci = finiteNumber(record.dci);
+  if (uncertainty === undefined || fcs === undefined || dci === undefined) return undefined;
+  return {
+    currentGoals,
+    memoryState: memoryState as FunctionalSelfState["memoryState"],
+    knownLimits,
+    uncertainty,
+    capabilities,
+    activePolicies,
+    recentFailures,
+    commitments,
+    permissions,
+    learningGoals,
+    fcs,
+    dci
+  };
+}
+
+function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, JsonValue>
+    : undefined;
+}
+
+function finiteNumber(value: JsonValue | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function hedgeTune(weights: EgpfWeights, rewards: Partial<Record<keyof EgpfWeights, number>>, eta: number): EgpfWeights {

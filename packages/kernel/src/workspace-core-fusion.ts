@@ -1,6 +1,9 @@
-import { canonicalStringify, clamp01, createHasher, toJsonValue } from "./primitives.js";
+import type { IdFactory } from "./ids.js";
+import { createIdFactory } from "./ids.js";
+import { canonicalStringify, clamp01, createClock, createHasher, toJsonValue } from "./primitives.js";
 import type {
   ChunkId,
+  Clock,
   ContentHash,
   EdgeId,
   EvidenceId,
@@ -352,12 +355,34 @@ const DESTINATIONS: Record<WorkspaceCoreRecordType, string> = {
   WorkspaceReplayEventRecord: "store.events"
 };
 
-export function promoteWorkspaceAnalysisToCoreRecords(input: WorkspaceCoreAnalysisInput): WorkspaceCorePromotionResult {
-  const createdAt = Date.now();
+export interface WorkspaceCoreFusionOptions {
+  clock?: Clock;
+  idFactory?: Pick<IdFactory, "semanticId">;
+}
+
+export function createWorkspaceCoreFusion(options: WorkspaceCoreFusionOptions = {}) {
+  const runtime = workspaceCoreRuntime(options);
+  return {
+    promote(input: WorkspaceCoreAnalysisInput): WorkspaceCorePromotionResult {
+      return promoteWorkspaceAnalysisToCoreRecords(input, runtime);
+    }
+  };
+}
+
+export function promoteWorkspaceAnalysisToCoreRecords(
+  input: WorkspaceCoreAnalysisInput,
+  options: WorkspaceCoreFusionOptions = {}
+): WorkspaceCorePromotionResult {
+  const { clock, idFactory } = workspaceCoreRuntime(options);
+  const createdAt = clock.now();
   const ctx: WorkspaceCorePromotionContext = {
     workspace: input.workspace,
     sourceByPath: new Map(input.sources.map(source => [normalizePath(source.path), source])),
-    replayTraceId: coreId("workspace.replay", input.workspace.id, input.rootPath, String(createdAt)),
+    replayTraceId: idFactory.semanticId("workspace.replay", {
+      workspaceId: input.workspace.id,
+      rootPath: input.rootPath,
+      createdAt
+    }),
     createdAt
   };
   const rejected: WorkspaceCoreRejectedRecord[] = [];
@@ -1094,6 +1119,19 @@ function edgeId(...parts: unknown[]): EdgeId {
 
 function idempotency(...parts: unknown[]): string {
   return coreId("workspace.idempotency", ...parts);
+}
+
+function workspaceCoreRuntime(options: WorkspaceCoreFusionOptions): {
+  clock: Clock;
+  idFactory: Pick<IdFactory, "semanticId">;
+} {
+  const clock = options.clock ?? createClock();
+  const idFactory = options.idFactory ?? createIdFactory({
+    clock,
+    hasher: createHasher(),
+    deterministicReplay: true
+  });
+  return { clock, idFactory };
 }
 
 function coreId(...parts: unknown[]): string {

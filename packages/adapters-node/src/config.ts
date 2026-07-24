@@ -8,7 +8,12 @@ import {
   type RelationPotentialModel
 } from "@scce/kernel";
 
-import type { PolicyProfile, JsonValue } from "@scce/kernel";
+import type {
+  InformationAccessContext,
+  InformationLabel,
+  PolicyProfile,
+  JsonValue
+} from "@scce/kernel";
 import { normalizeSpreadsheetExtractionLimits, type SpreadsheetExtractionLimitOverrides } from "./spreadsheet-contract.js";
 
 export interface CorpusNgramRuntimeConfig {
@@ -129,6 +134,8 @@ export interface ScceRuntimeConfig {
     apiBearerToken?: string;
     mentalHealthRails?: boolean;
     redactPublicConfig?: boolean;
+    informationAccess?: InformationAccessContext;
+    defaultSourceInformationLabel?: InformationLabel;
   };
   policy: PolicyProfile;
   metadata?: JsonValue;
@@ -167,6 +174,8 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   if (!config.runtime?.workspaceRoot) throw new Error(`${source}: missing runtime.workspaceRoot`);
   if (!config.runtime?.tempRoot) throw new Error(`${source}: missing runtime.tempRoot`);
   if (!Array.isArray(config.runtime.allowedRoots) || config.runtime.allowedRoots.length === 0) throw new Error(`${source}: runtime.allowedRoots must be non-empty`);
+  if (!config.security?.informationAccess) throw new Error(`${source}: security.informationAccess is required`);
+  if (!config.security.defaultSourceInformationLabel) throw new Error(`${source}: security.defaultSourceInformationLabel is required`);
   try {
     normalizeSpreadsheetExtractionLimits(config.runtime.spreadsheet);
   } catch (error) {

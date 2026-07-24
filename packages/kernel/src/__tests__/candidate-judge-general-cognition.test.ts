@@ -760,7 +760,13 @@ function engineFixture(evidenceRows: EvidenceSpan[]) {
     field: fieldState(),
     ccr: ccr(),
     proofAnswer: evidenceIds.length ? "The observed source supports the claim." : "No certified answer is available.",
-    learningNeeds: [] as string[]
+    learningNeeds: [] as string[],
+    functionalGate: {
+      fc: true,
+      efc: true,
+      gov: true,
+      selectedGoalId: "goal.observed"
+    }
   };
 }
 

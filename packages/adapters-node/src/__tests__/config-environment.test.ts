@@ -39,6 +39,7 @@ function config(databaseUrl: string): ScceRuntimeConfig {
       tools: {}
     },
     connectors: {},
+    security: fixtureInformationSecurity(),
     policy: {
       allowMutation: false,
       requireTwoPhaseCommit: true,
@@ -49,5 +50,12 @@ function config(databaseUrl: string): ScceRuntimeConfig {
       alphaRiskCeiling: 0.5,
       encryptSecretsAtRest: false
     }
+  };
+}
+
+function fixtureInformationSecurity(): NonNullable<ScceRuntimeConfig["security"]> {
+  return {
+    informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" },
+    defaultSourceInformationLabel: { tenantId: "fixture", principals: ["owner"], compartments: ["test"], exportClass: "restricted", mergePolicy: "isolated" }
   };
 }

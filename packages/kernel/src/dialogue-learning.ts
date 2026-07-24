@@ -1,4 +1,4 @@
-import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, createClock, toJsonValue } from "./primitives.js";
 import { provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import type {
   ConversationOutcomeRecord,
@@ -10,7 +10,7 @@ import type {
   TargetProfilePatternRecord,
   UserCorrectionRecord
 } from "./storage.js";
-import type { EvidenceId, JsonValue } from "./types.js";
+import type { Clock, EvidenceId, JsonValue } from "./types.js";
 import {
   DEFAULT_USER_STYLE_PROFILE,
   INTERACTION_FEATURE_IDS,
@@ -95,8 +95,9 @@ export function buildDialoguePersistenceBatch(input: {
   result: DialoguePragmaticsResult;
   answerGraphHash?: string;
   now?: number;
+  clock?: Clock;
 }): DialoguePersistenceBatch {
-  const now = input.now ?? Date.now();
+  const now = resolveNow(input.now, input.clock);
   const scoreTraceRefs = uniqueStrings(input.result.policyDecision.rankedActions.flatMap(action => action.scoreTrace.map(trace => trace.id)));
   return {
     interactionState: {
@@ -148,8 +149,9 @@ export function conversationOutcomeFromPragmatics(input: {
   satisfiedConstraintRefs?: readonly string[];
   failedConstraintRefs?: readonly string[];
   now?: Date;
+  clock?: Clock;
 }): ConversationOutcomeRecord {
-  const createdAt = (input.now ?? new Date()).toISOString();
+  const createdAt = (input.now ?? new Date(resolveNow(undefined, input.clock))).toISOString();
   const selectedScoreTraceRefs = uniqueStrings(input.result.policyDecision.rankedActions.flatMap(action => action.scoreTrace.map(trace => trace.id)));
   return {
     id: `conversation_outcome.${hashText(canonicalStringify({ turn: input.result.state.turnId, response: input.result.selected.textHash, createdAt }))}`,
@@ -177,6 +179,7 @@ export function userCorrectionFromOutcome(input: {
   acceptedSurface?: string;
   preferenceDelta?: JsonValue;
   now?: number;
+  clock?: Clock;
 }): UserCorrectionRecord {
   return {
     id: `user_correction.${hashText(canonicalStringify({ outcome: input.outcome.id, correction: input.correctionText }))}`,
@@ -188,7 +191,7 @@ export function userCorrectionFromOutcome(input: {
     rejectedSurfaceHash: input.rejectedSurface ? hashText(input.rejectedSurface) : undefined,
     acceptedSurfaceHash: input.acceptedSurface ? hashText(input.acceptedSurface) : undefined,
     preferenceDeltaJson: input.preferenceDelta ?? toJsonValue({ sourceOutcomeId: input.outcome.id }),
-    createdAt: input.now ?? Date.now()
+    createdAt: resolveNow(input.now, input.clock)
   };
 }
 
@@ -197,6 +200,7 @@ export function learnDialoguePolicyWeights(input: {
   outcome: ConversationOutcomeRecord;
   learningRate?: number;
   now?: number;
+  clock?: Clock;
 }): DialoguePolicyLearningUpdate {
   const prior = cloneProfile(input.profile ?? DEFAULT_USER_STYLE_PROFILE);
   const learningRate = input.learningRate ?? 0.18;
@@ -215,7 +219,7 @@ export function learnDialoguePolicyWeights(input: {
     next.weights[INTERACTION_FEATURE_IDS.responseLead] = clamp01((next.weights[INTERACTION_FEATURE_IDS.responseLead] ?? 0.5) + learningRate * 0.12);
   }
   const nextHash = hashText(canonicalStringify(next));
-  const now = input.now ?? Date.now();
+  const now = resolveNow(input.now, input.clock);
   const scoreTrace = Object.entries(features).map(([featureId, value]) => provisionalHeuristicScore({
     value: clamp01(value),
     range: [0, 1],
@@ -251,8 +255,9 @@ export function targetProfilePatternRecord(input: {
   evidenceIds?: readonly EvidenceId[];
   alpha?: number;
   now?: number;
+  clock?: Clock;
 }): TargetProfilePatternRecord {
-  const now = input.now ?? Date.now();
+  const now = resolveNow(input.now, input.clock);
   return {
     id: `target_profile_pattern.${hashText(canonicalStringify({ target: input.targetProfileId, family: input.patternFamilyId, pattern: input.patternJson }))}`,
     targetProfileId: input.targetProfileId,
@@ -354,6 +359,7 @@ export async function persistDialogueOutcomeFromMemory(input: {
   taskClass?: string;
   creativePreferencePair?: DialogueCreativePreferencePair;
   now?: number;
+  clock?: Clock;
 }): Promise<{ replay: DialogueMemoryPragmaticsReplay; outcome: ConversationOutcomeRecord; correction?: UserCorrectionRecord; learning: DialoguePolicyLearningUpdate; calibrationObservations: CalibrationObservationRecord[] }> {
   const replay = await latestDialoguePragmaticsFromMemory(input.store, { conversationId: input.conversationId, turnId: input.turnId });
   if (!replay) throw new Error("dialogue.outcome requires a persisted dialogue turn");
@@ -373,7 +379,8 @@ export async function persistDialogueOutcomeFromMemory(input: {
     failedConstraintRefs: input.failedConstraintRefs,
     taskClass: input.taskClass,
     creativePreferencePair: input.creativePreferencePair,
-    now: input.now
+    now: input.now,
+    clock: input.clock
   });
   return { replay, ...learned };
 }
@@ -383,8 +390,9 @@ export async function persistDialogueTurn(input: {
   result: DialoguePragmaticsResult;
   answerGraphHash?: string;
   now?: number;
+  clock?: Clock;
 }): Promise<DialoguePersistenceBatch> {
-  const batch = buildDialoguePersistenceBatch({ result: input.result, answerGraphHash: input.answerGraphHash, now: input.now });
+  const batch = buildDialoguePersistenceBatch({ result: input.result, answerGraphHash: input.answerGraphHash, now: input.now, clock: input.clock });
   await persistDialogueBatch(input.store, batch);
   return batch;
 }
@@ -405,7 +413,9 @@ export async function persistDialogueOutcomeAndLearn(input: {
   taskClass?: string;
   creativePreferencePair?: DialogueCreativePreferencePair;
   now?: number;
+  clock?: Clock;
 }): Promise<{ outcome: ConversationOutcomeRecord; correction?: UserCorrectionRecord; learning: DialoguePolicyLearningUpdate; calibrationObservations: CalibrationObservationRecord[] }> {
+  const now = resolveNow(input.now, input.clock);
   const outcome = conversationOutcomeFromPragmatics({
     result: input.result,
     promptText: input.promptText,
@@ -417,13 +427,13 @@ export async function persistDialogueOutcomeAndLearn(input: {
     requestedConstraintRefs: input.requestedConstraintRefs,
     satisfiedConstraintRefs: input.satisfiedConstraintRefs,
     failedConstraintRefs: input.failedConstraintRefs,
-    now: input.now ? new Date(input.now) : undefined
+    now: new Date(now)
   });
   const correction = input.correctionText
-    ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, now: input.now })
+    ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, now })
     : undefined;
-  const learning = learnDialoguePolicyWeights({ profile: input.currentProfile ?? input.result.state.userStyleProfile, outcome, now: input.now });
-  const ordinaryCalibrationObservations = calibrationObservationsFromDialogueOutcome({ result: input.result, outcome, taskClass: input.taskClass, createdAt: input.now });
+  const learning = learnDialoguePolicyWeights({ profile: input.currentProfile ?? input.result.state.userStyleProfile, outcome, now });
+  const ordinaryCalibrationObservations = calibrationObservationsFromDialogueOutcome({ result: input.result, outcome, taskClass: input.taskClass, createdAt: now });
   const creativePreferenceObservations = input.creativePreferencePair
     ? creativePreferenceObservationPair({
         pairId: `${outcome.id}:${input.creativePreferencePair.pairId ?? "creative_preference"}`,
@@ -432,7 +442,7 @@ export async function persistDialogueOutcomeAndLearn(input: {
         preferenceKind: input.creativePreferencePair.preferenceKind ?? (input.corrected ? "corrected_original" : "accepted_rejected"),
         sourceTraceId: input.result.id,
         sourceRecordId: outcome.id,
-        createdAt: input.now
+        createdAt: now
       })
     : [];
   const calibrationObservations = [...ordinaryCalibrationObservations, ...creativePreferenceObservations];
@@ -446,13 +456,13 @@ export async function persistDialogueOutcomeAndLearn(input: {
       taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration,
       limit: 5_000
     });
-    const model = buildCreativePreferenceModels({ observations: persistedPairs, createdAt: input.now })[CALIBRATION_TASK_CLASS_IDS.creativeGeneration];
+    const model = buildCreativePreferenceModels({ observations: persistedPairs, createdAt: now })[CALIBRATION_TASK_CLASS_IDS.creativeGeneration];
     if (model) {
       const snapshot = creativePreferenceModelSnapshotObservation({
         model,
         sourceTraceId: input.result.id,
         sourceRecordId: outcome.id,
-        createdAt: input.now
+        createdAt: now
       });
       await input.store.putCalibrationObservation(snapshot);
       calibrationObservations.push(snapshot);
@@ -671,6 +681,12 @@ function newest<T>(items: T[], limit: number, time: (item: T) => number): T[] {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function resolveNow(now: number | undefined, clock?: Clock): number {
+  return typeof now === "number" && Number.isFinite(now)
+    ? now
+    : (clock ?? createClock()).now();
 }
 
 function hashText(value: string): string {

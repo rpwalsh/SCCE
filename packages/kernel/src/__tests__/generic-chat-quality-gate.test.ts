@@ -335,7 +335,7 @@ describe("Phase 10 generic chat quality gate", () => {
       mediaType,
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.94,
+      sourceTrust: { identity: 0.94, integrity: 0.94, parserReliability: 0.94, directness: 0.94, authority: 0.94, freshness: 0.94, independenceGroup: "fixture:generic-chat", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }
@@ -360,7 +360,7 @@ describe("Phase 10 generic chat quality gate", () => {
       textPreview: text,
       languageHints: {},
       scriptHints: {},
-      trustVector: { sourceTrust: source.trust, forceClass: evidenceForceClass },
+      trustVector: { sourceTrust: source.sourceTrust, forceClass: evidenceForceClass },
       provenance: { sourceSystem: "fixture", provenanceClass: evidenceForceClass, uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, text.length] },
       features: featureSet(text, 128),
       status: "promoted",

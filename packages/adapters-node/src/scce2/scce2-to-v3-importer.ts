@@ -40,6 +40,7 @@ import {
   type ScceStorage,
   type SemanticFrameRecord,
   type SourceVersion,
+  type SourceTrust,
   type SourceVersionId
 } from "@scce/kernel";
 import {
@@ -1344,7 +1345,7 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       mediaType: "text/plain",
       observedAt: input.observedAt,
       byteLength: bytes.byteLength,
-      trust: input.trust,
+      sourceTrust: scce2SourceTrust(canonicalUri, input.forceClass),
       metadata: toJsonValue({ title: input.title, profileSourceVersionId: input.sourceVersionId, provenanceClass: input.forceClass, provenance: input.provenance })
     };
     await this.storage.evidence.putSourceVersion(sourceVersion);
@@ -1364,7 +1365,7 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       textPreview: input.text.slice(0, 600),
       languageHints: toJsonValue({ source: "scce2-language-profile", provenanceClass: input.forceClass }),
       scriptHints: toJsonValue({}),
-      trustVector: toJsonValue({ trust: input.trust, sourceTrust: input.trust, imported: true, provenanceClass: input.forceClass }),
+      trustVector: toJsonValue({ sourceTrust: sourceVersion.sourceTrust, imported: true, provenanceClass: input.forceClass }),
       provenance: input.provenance,
       features: featureSet(input.text, 512),
       status: "promoted",
@@ -1425,12 +1426,26 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       mediaType: input.mediaType,
       observedAt: input.observedAt,
       byteLength: input.bytes.byteLength,
-      trust: input.trust,
+      sourceTrust: scce2SourceTrust(input.canonicalUri, String(asRecord(input.metadata).provenanceClass ?? "unknown_prior")),
       metadata: toJsonValue(input.metadata)
     };
     await this.storage.evidence.putSourceVersion(sourceVersion);
     return { sourceVersion, bytes: input.bytes };
   }
+}
+
+function scce2SourceTrust(canonicalUri: string, provenanceClass: string): SourceTrust {
+  return {
+    identity: 0.72,
+    integrity: 0.94,
+    parserReliability: 0.68,
+    directness: provenanceClass === "direct_evidence" ? 0.62 : 0.38,
+    authority: 0.46,
+    freshness: 0.24,
+    independenceGroup: `legacy-scce2:${canonicalUri}`,
+    accessScope: "owner_private",
+    licenseStatus: "owner_authorized"
+  };
 }
 
 export function createScce2ToV3Importer(options: Scce2ToV3ImporterOptions): Scce2ToV3Importer {

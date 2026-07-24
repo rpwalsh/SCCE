@@ -28,6 +28,10 @@ import {
 import { boltzmannDistribution, freeEnergyObjective, leastActionPath } from "./equation-operators.js";
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import type { CandidateField, CandidateQuality, CandidateSurface } from "./candidate-contract.js";
+import {
+  functionalCandidateGateFailures,
+  type FunctionalSelectionGate
+} from "./functional-cognition.js";
 export type { CandidateField, CandidateQuality, CandidateSurface } from "./candidate-contract.js";
 
 export interface CandidateGenerationInput {
@@ -50,6 +54,7 @@ export interface CandidateGenerationInput {
   dialogueState?: JsonValue;
   workspacePlans?: readonly JsonValue[];
   actionPlans?: readonly JsonValue[];
+  functionalGate?: FunctionalSelectionGate;
 }
 
 export function createCandidateEngine() {
@@ -61,7 +66,7 @@ export function createCandidateEngine() {
       const hasCompatibleCognitiveProposal = input.requestedAuthority
         ? proposalCandidates.some(candidate => candidateCompatibleWithAuthority(candidate, input.requestedAuthority!))
         : proposalCandidates.length > 0;
-      const supportedCandidates = [
+      const candidatesBeforeFunctionalGate = [
         ...(input.requestedAuthority === "factual" && input.evidence.length > 0
           || operatorSupported(input, [COGNITIVE_OPERATOR_IDS.semanticProof, COGNITIVE_OPERATOR_IDS.evidenceActivation, COGNITIVE_OPERATOR_IDS.clarification])
           ? [proofAnswer(input)]
@@ -95,6 +100,15 @@ export function createCandidateEngine() {
           ? (input.inventionCandidates ?? []).map((construct, index) => creativeCandidate(input, construct, index))
           : []),
       ].filter((candidate): candidate is CandidateSurface => Boolean(candidate));
+      const functionallyRejected = candidatesBeforeFunctionalGate
+        .map(candidate => ({
+          candidate,
+          failures: functionalCandidateGateFailures(candidate.kind, input.functionalGate)
+        }))
+        .filter(row => row.failures.length > 0);
+      const supportedCandidates = candidatesBeforeFunctionalGate.filter(candidate =>
+        functionalCandidateGateFailures(candidate.kind, input.functionalGate).length === 0
+      );
       const fallbackCandidates = supportedCandidates.length === 0
         ? [proofAnswer(input)]
         : [];
@@ -165,6 +179,12 @@ export function createCandidateEngine() {
           rawMass,
           candidateOperators,
           operatorRoutingFallback: supportedCandidates.length === 0,
+          functionalGate: input.functionalGate ?? null,
+          functionalGateRejected: functionallyRejected.map(row => ({
+            candidateId: row.candidate.id,
+            kind: row.candidate.kind,
+            failures: row.failures
+          })),
           scoreTrace: allTraces
         })
       };

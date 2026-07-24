@@ -474,7 +474,7 @@ function sourceVersion(ids: ReturnType<typeof createIdFactory>, now: number): So
     mediaType: "text/plain",
     observedAt: now,
     byteLength: bytes.length,
-    trust: 0.94,
+    sourceTrust: { identity: 0.94, integrity: 0.94, parserReliability: 0.94, directness: 0.94, authority: 0.94, freshness: 0.94, independenceGroup: "fixture:walsh-surface", accessScope: "fixture", licenseStatus: "fixture" },
     metadata: {}
   };
 }
@@ -497,7 +497,7 @@ function directEvidence(ids: ReturnType<typeof createIdFactory>, source: SourceV
     textPreview: mouthFixture.evidenceText,
     languageHints: {},
     scriptHints: {},
-    trustVector: { sourceTrust: source.trust, forceClass: "direct_evidence" },
+    trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
     provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, mouthFixture.evidenceText.length] },
     features: featureSet(mouthFixture.evidenceText, 128),
     status: "promoted",

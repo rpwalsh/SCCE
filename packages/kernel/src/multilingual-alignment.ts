@@ -1,5 +1,7 @@
-import type { EvidenceId, SourceVersionId } from "./types.js";
-import { mean, toJsonValue } from "./primitives.js";
+import type { Clock, EvidenceId, SourceVersionId } from "./types.js";
+import type { IdFactory } from "./ids.js";
+import { createIdFactory } from "./ids.js";
+import { createClock, createHasher, mean, toJsonValue } from "./primitives.js";
 import type {
   AlignmentObservation,
   LexicalAlignmentModel,
@@ -75,13 +77,24 @@ const EMPTY_PHRASE_MODEL: PhraseAlignmentModel = {
   updatedAt: 0
 };
 
-export function createAlignmentEngine(options?: { idFactory?: { next(): string } }) {
-  const idFactory = options?.idFactory ?? {
-    next: () => `align_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-  };
+export function createAlignmentEngine(options: {
+  clock?: Clock;
+  idFactory?: Pick<IdFactory, "semanticId"> | { next(): string };
+} = {}) {
+  const clock = options.clock ?? createClock();
+  const idFactory = options.idFactory ?? createIdFactory({
+    clock,
+    hasher: createHasher(),
+    deterministicReplay: true
+  });
+  const nextId = (kind: string, representation: unknown): string =>
+    "semanticId" in idFactory
+      ? idFactory.semanticId(kind, representation)
+      : idFactory.next();
 
   return {
     trainLexicalAlignment(corpus: AlignmentCorpusInput): LexicalAlignmentModel {
+      const updatedAt = clock.now();
       const lexicalTable: Record<string, Record<string, number>> = {};
       const reverseTable: Record<string, Record<string, number>> = {};
       const cooccurrence: Map<string, Map<string, number>> = new Map();
@@ -161,7 +174,14 @@ export function createAlignmentEngine(options?: { idFactory?: { next(): string }
         .reduce((sum, targets) => sum + Object.values(targets).length, 0);
 
       return {
-        id: idFactory.next(),
+        id: nextId("lexical_alignment_model", {
+          sourceLanguage: corpus.sourceLanguage,
+          targetLanguage: corpus.targetLanguage,
+          corpusType: corpus.corpusType,
+          sourceVersionId: corpus.sourceVersionId,
+          evidenceIds: corpus.evidenceIds,
+          updatedAt
+        }),
         sourceLanguage: corpus.sourceLanguage,
         targetLanguage: corpus.targetLanguage,
         alignmentVersion: 1,
@@ -174,11 +194,12 @@ export function createAlignmentEngine(options?: { idFactory?: { next(): string }
         },
         perplexity: computePerplexity(lexicalTable, corpus.sentencePairs),
         trainingCorpora: [`corpus_${corpus.corpusType}`],
-        updatedAt: Date.now()
+        updatedAt
       };
     },
 
     trainPhraseAlignment(corpus: AlignmentCorpusInput, lexicalModel: LexicalAlignmentModel): PhraseAlignmentModel {
+      const updatedAt = clock.now();
       const phraseTable: Map<string, Map<string, { fwd: number; rev: number; cooc: number }>> = new Map();
       const maxPhraseLength = 4;
 
@@ -256,14 +277,22 @@ export function createAlignmentEngine(options?: { idFactory?: { next(): string }
       });
 
       return {
-        id: idFactory.next(),
+        id: nextId("phrase_alignment_model", {
+          lexicalModelId: lexicalModel.id,
+          sourceLanguage: corpus.sourceLanguage,
+          targetLanguage: corpus.targetLanguage,
+          corpusType: corpus.corpusType,
+          sourceVersionId: corpus.sourceVersionId,
+          evidenceIds: corpus.evidenceIds,
+          updatedAt
+        }),
         sourceLanguage: corpus.sourceLanguage,
         targetLanguage: corpus.targetLanguage,
         alignmentVersion: 1,
         phraseTable: phraseArray.slice(0, 10000),
         topPhraseCoverage: topCoverage,
         trainingCorpora: [`corpus_${corpus.corpusType}`],
-        updatedAt: Date.now()
+        updatedAt
       };
     },
 
@@ -308,6 +337,7 @@ export function createAlignmentEngine(options?: { idFactory?: { next(): string }
     },
 
     extractAlignmentObservations(corpus: AlignmentCorpusInput): AlignmentObservation[] {
+      const observedAt = clock.now();
       const observations: AlignmentObservation[] = [];
       const cooccurrence: Map<string, Map<string, number>> = new Map();
 
@@ -343,7 +373,7 @@ export function createAlignmentEngine(options?: { idFactory?: { next(): string }
             corpusId: `corpus_${corpus.corpusType}`,
             sourceVersionId: corpus.sourceVersionId,
             evidenceIds: corpus.evidenceIds,
-            observedAt: Date.now()
+            observedAt
           });
         }
       }

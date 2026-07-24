@@ -58,6 +58,30 @@ export interface Clock {
   now(): number;
 }
 
+export type InformationExportClass =
+  | "public"
+  | "internal"
+  | "confidential"
+  | "restricted";
+
+export type InformationMergePolicy = "isolated" | "same_owner" | "explicit";
+
+export interface InformationLabel {
+  tenantId: string;
+  principals: string[];
+  compartments: string[];
+  exportClass: InformationExportClass;
+  mergePolicy: InformationMergePolicy;
+}
+
+export interface InformationAccessContext {
+  tenantId: string;
+  principalId: string;
+  compartments: string[];
+  maximumExportClass: InformationExportClass;
+  explicitMergeAuthority?: boolean;
+}
+
 export interface Hasher {
   digestHex(input: string | Uint8Array): string;
 }
@@ -120,6 +144,39 @@ export const EVENT_TYPES = [
 
 export type KnownEventType = (typeof EVENT_TYPES)[number];
 
+export interface SourceRedactionInterval {
+  originalCharStart: number;
+  originalCharEnd: number;
+  originalByteStart: number;
+  originalByteEnd: number;
+  derivativeCharStart: number;
+  derivativeCharEnd: number;
+  derivativeByteStart: number;
+  derivativeByteEnd: number;
+  replacement: string;
+}
+
+export interface SourceVersionDerivation {
+  kind: "redacted-text" | "extracted-text";
+  transformId: string;
+  derivedFromSourceVersionId: SourceVersionId;
+  originalCoordinateSpace: "source-bytes" | "extracted-text-utf8";
+  redactionMap: SourceRedactionInterval[];
+}
+
+export interface SourceTrust {
+  [key: string]: JsonValue;
+  identity: number;
+  integrity: number;
+  parserReliability: number;
+  directness: number;
+  authority: number;
+  freshness: number;
+  independenceGroup: string;
+  accessScope: string;
+  licenseStatus: string;
+}
+
 export interface SourceVersion {
   sourceId: SourceId;
   sourceVersionId: SourceVersionId;
@@ -129,8 +186,11 @@ export interface SourceVersion {
   mediaType: string;
   observedAt: number;
   byteLength: number;
-  trust: number;
+  sourceTrust: SourceTrust;
   metadata: JsonValue;
+  role?: "original" | "evidence-derivative";
+  derivation?: SourceVersionDerivation;
+  informationLabel?: InformationLabel;
 }
 
 export interface EvidenceSpan {
@@ -154,6 +214,7 @@ export interface EvidenceSpan {
   status: "quarantined" | "promoted";
   alpha: number;
   observedAt: number;
+  informationLabel?: InformationLabel;
 }
 
 export interface GraphNode {
@@ -166,6 +227,7 @@ export interface GraphNode {
   createdAt: number;
   updatedAt: number;
   metadata: JsonValue;
+  informationLabel?: InformationLabel;
 }
 
 export interface GraphEdge {
@@ -180,6 +242,7 @@ export interface GraphEdge {
   createdAt: number;
   updatedAt: number;
   metadata: JsonValue;
+  informationLabel?: InformationLabel;
 }
 
 export interface Hyperedge {
@@ -191,6 +254,7 @@ export interface Hyperedge {
   provenanceRefs: string[];
   createdAt: number;
   updatedAt: number;
+  informationLabel?: InformationLabel;
 }
 
 export interface GraphSnapshot {
@@ -444,6 +508,7 @@ export interface SemanticEntailmentResult {
   contradiction: number;
   faithfulnessLcb: number;
   confidence: SemanticEntailmentConfidence;
+  sourceAssessment?: SourceEvidenceAssessment;
   scores: SemanticEntailmentScores;
   obligations: SemanticObligationRecord[];
   mappings: SemanticProofMapping[];
@@ -678,6 +743,18 @@ export interface LanguageProfile {
   ngramProfile?: JsonValue;
   /** Provisional learned-artifact support used only for deterministic fallback routing. */
   artifactSupport?: number;
+  informationLabel?: InformationLabel;
+}
+
+export interface SourceEvidenceAssessment {
+  sourceFidelity: number;
+  sourceAttribution: number;
+  externalTruth: "supported" | "contradicted" | "unknown";
+  causalSupport: "identified" | "not_identified" | "not_applicable";
+  independentCorroboration: {
+    status: "measured" | "not_measured";
+    independentGroupCount: number | null;
+  };
 }
 
 export interface LanguageCompetenceVector {
@@ -925,6 +1002,21 @@ export interface TurnTiming {
   budgetExceeded: string[];
 }
 
+export interface SourceAdmissionContext {
+  sourceClass:
+    | "owner_local"
+    | "trusted_corpus"
+    | "connector_private"
+    | "runtime_web"
+    | "generated";
+  intendedUse:
+    | "direct_evidence"
+    | "learned_prior"
+    | "language_only"
+    | "quarantine_only";
+  promotionAuthority: "automatic" | "training" | "owner";
+}
+
 export interface IngestInput {
   path?: string;
   uri?: string;
@@ -932,6 +1024,9 @@ export interface IngestInput {
   content?: string | Uint8Array;
   mediaType?: string;
   metadata?: JsonValue;
+  sourceAdmission: SourceAdmissionContext;
+  sourceTrust: SourceTrust;
+  informationLabel?: InformationLabel;
 }
 
 export interface IngestResult {

@@ -1,13 +1,17 @@
-import type { EvidenceSpan, JsonValue, SourceVersion } from "./types.js";
+import type { EvidenceSpan, JsonValue, SourceAdmissionContext, SourceTrust, SourceVersion } from "./types.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
 
 export interface SourceAdmissionPolicy {
-  minimumTrust: number;
+  minimumIdentity: number;
+  minimumIntegrity: number;
+  minimumParserReliability: number;
+  minimumDiagnosticParserReliability: number;
+  minimumDirectnessForEvidence: number;
+  minimumAuthorityForEvidence: number;
   maximumBinaryRatio: number;
   requireText: boolean;
   allowNetworkSources: boolean;
   allowOpaqueLicenses: boolean;
-  promoteNamespaces: string[];
   rejectNamespaces: string[];
   sensitiveFeatureIds: string[];
   maxEvidenceAlphaForSensitiveUnpromoted: number;
@@ -15,7 +19,14 @@ export interface SourceAdmissionPolicy {
 
 export interface SourceAdmissionDecision {
   disposition: "quarantine" | "promote" | "reject";
-  trust: number;
+  context: SourceAdmissionContext;
+  sourceTrust: SourceTrust;
+  trustChecks: Record<string, boolean>;
+  parserDiagnosticReliability: number;
+  activeInfluence: {
+    graph: boolean;
+    language: boolean;
+  };
   risk: number;
   reasons: string[];
   safetyRails: string[];
@@ -24,12 +35,16 @@ export interface SourceAdmissionDecision {
 }
 
 export const DEFAULT_ADMISSION_POLICY: SourceAdmissionPolicy = {
-  minimumTrust: 0.5,
+  minimumIdentity: 0.5,
+  minimumIntegrity: 0.7,
+  minimumParserReliability: 0.5,
+  minimumDiagnosticParserReliability: 0.4,
+  minimumDirectnessForEvidence: 0.45,
+  minimumAuthorityForEvidence: 0.4,
   maximumBinaryRatio: 0.12,
   requireText: true,
-  allowNetworkSources: false,
+  allowNetworkSources: true,
   allowOpaqueLicenses: true,
-  promoteNamespaces: [],
   rejectNamespaces: [],
   sensitiveFeatureIds: [],
   maxEvidenceAlphaForSensitiveUnpromoted: 0.42
@@ -38,48 +53,126 @@ export const DEFAULT_ADMISSION_POLICY: SourceAdmissionPolicy = {
 export function createSourceAdmissionController(policy: Partial<SourceAdmissionPolicy> = {}) {
   const p: SourceAdmissionPolicy = { ...DEFAULT_ADMISSION_POLICY, ...policy };
   return {
-    decide(input: { source: SourceVersion; evidence: readonly EvidenceSpan[]; metadata?: JsonValue }): SourceAdmissionDecision {
+    decide(input: {
+      source: SourceVersion;
+      evidence: readonly EvidenceSpan[];
+      context: SourceAdmissionContext;
+      metadata?: JsonValue;
+    }): SourceAdmissionDecision {
       const reasons: string[] = [];
       const safetyRails: string[] = [];
       const namespaceRejected = p.rejectNamespaces.includes(input.source.namespace);
-      const namespacePromoted = p.promoteNamespaces.includes(input.source.namespace);
       const metadata = normalizeMetadata(input.metadata ?? input.source.metadata);
       const diagnosticTrust = diagnosticTrustFrom(metadata);
       const textTrust = input.evidence.length > 0 || !p.requireText ? 1 : 0;
-      const licenseTrust = p.allowOpaqueLicenses || Boolean(metadata.licenseHint) ? 1 : 0.4;
-      const namespaceTrust = namespaceRejected ? 0 : namespacePromoted ? 1 : 0.72;
-      const trust = clamp01(0.35 * input.source.trust + 0.25 * diagnosticTrust + 0.2 * textTrust + 0.1 * licenseTrust + 0.1 * namespaceTrust);
+      const promotionAuthorized = sourceContextAuthorizesPromotion(input.context);
+      const networkSourceAllowed = input.context.sourceClass !== "runtime_web" || p.allowNetworkSources;
+      const sourceTrust = input.source.sourceTrust;
+      const trustVectorValid = sourceTrustDimensionsValid(sourceTrust);
+      const directEvidence = input.context.intendedUse === "direct_evidence";
+      const licenseAllowed = sourceTrust.licenseStatus !== "restricted"
+        && (p.allowOpaqueLicenses || sourceTrust.licenseStatus !== "unknown");
+      const trustChecks: Record<string, boolean> = {
+        vectorValid: trustVectorValid,
+        identity: sourceTrust.identity >= p.minimumIdentity,
+        integrity: sourceTrust.integrity >= p.minimumIntegrity,
+        parserReliability: sourceTrust.parserReliability >= p.minimumParserReliability,
+        parserDiagnostics: diagnosticTrust >= p.minimumDiagnosticParserReliability,
+        directness: !directEvidence || sourceTrust.directness >= p.minimumDirectnessForEvidence,
+        authority: !directEvidence || sourceTrust.authority >= p.minimumAuthorityForEvidence,
+        independenceGroup: Boolean(sourceTrust.independenceGroup.trim()),
+        accessScope: Boolean(sourceTrust.accessScope.trim()),
+        licenseStatus: Boolean(sourceTrust.licenseStatus.trim()) && licenseAllowed,
+        textPresent: Boolean(textTrust)
+      };
+      const trustGatePassed = Object.values(trustChecks).every(Boolean);
       if (namespaceRejected) reasons.push("namespace rejected by policy");
       if (input.evidence.length === 0 && p.requireText) reasons.push("no extracted text evidence");
       if (diagnosticTrust < 0.5) reasons.push("extractor diagnostics reduced trust");
-      if (!p.allowNetworkSources && input.source.namespace.startsWith("network")) reasons.push("network sources disabled by policy");
+      if (!networkSourceAllowed) reasons.push("runtime web sources disabled by policy");
+      if (input.context.intendedUse === "quarantine_only") reasons.push("source context requires quarantine");
+      if (!promotionAuthorized) reasons.push("source context lacks promotion authority");
+      for (const [dimension, passed] of Object.entries(trustChecks)) {
+        if (!passed) reasons.push(`source trust check failed: ${dimension}`);
+      }
       const sensitive = sensitivityScore(input.evidence, metadata, p);
       const binaryRatio = typeof metadata.binaryRatio === "number" ? metadata.binaryRatio : 0;
-      const risk = clamp01(0.28 * sensitive + 0.22 * binaryRatio + 0.22 * (1 - trust) + 0.14 * (namespaceRejected ? 1 : 0) + 0.14 * (input.evidence.length ? 0 : 1));
+      const risk = clamp01(0.45 * sensitive + 0.35 * binaryRatio + 0.2 * (input.evidence.length ? 0 : 1));
       if (sensitive > 0.15) safetyRails.push("safety.rail.structured_sensitive_source");
       if (binaryRatio > p.maximumBinaryRatio) reasons.push("binary ratio exceeds policy");
-      const disposition = namespaceRejected || binaryRatio > p.maximumBinaryRatio
+      const disposition = namespaceRejected || binaryRatio > p.maximumBinaryRatio || !trustVectorValid
         ? "reject"
-        : trust >= p.minimumTrust && risk < 0.55 && namespacePromoted
+        : trustGatePassed
+          && risk < 0.55
+          && networkSourceAllowed
+          && promotionAuthorized
+          && input.context.intendedUse !== "quarantine_only"
           ? "promote"
           : "quarantine";
+      const activeInfluence = {
+        graph: disposition === "promote" && input.context.intendedUse !== "language_only",
+        language: disposition === "promote"
+          && input.context.intendedUse !== "direct_evidence"
+      };
       const evidenceActions = input.evidence.map(span => {
         const containsSensitive = sensitivityScore([span], metadata, p) > 0;
-        if (disposition === "promote") return { evidenceId: String(span.id), action: "promote" as const, alpha: span.alpha, reason: "source admission promoted namespace and trust threshold" };
+        if (disposition === "promote") return { evidenceId: String(span.id), action: "promote" as const, alpha: span.alpha, reason: "typed source context authorized promotion and trust threshold passed" };
         if (containsSensitive && span.alpha > p.maxEvidenceAlphaForSensitiveUnpromoted) return { evidenceId: String(span.id), action: "lower-alpha" as const, alpha: p.maxEvidenceAlphaForSensitiveUnpromoted, reason: "sensitive unpromoted evidence alpha ceiling" };
         return { evidenceId: String(span.id), action: "quarantine" as const, alpha: span.alpha, reason: reasons[0] ?? "default quarantine until explicit training promotion" };
       });
       return {
         disposition,
-        trust,
+        context: input.context,
+        sourceTrust,
+        trustChecks,
+        parserDiagnosticReliability: diagnosticTrust,
+        activeInfluence,
         risk,
         reasons: reasons.length ? reasons : [`source ${disposition}`],
         safetyRails,
         evidenceActions,
-        audit: toJsonValue({ sourceVersionId: input.source.sourceVersionId, namespace: input.source.namespace, trust, risk, disposition, reasons, safetyRails, evidenceActions })
+        audit: toJsonValue({
+          sourceVersionId: input.source.sourceVersionId,
+          namespace: input.source.namespace,
+          context: input.context,
+          sourceTrust,
+          trustChecks,
+          parserDiagnosticReliability: diagnosticTrust,
+          activeInfluence,
+          risk,
+          disposition,
+          reasons,
+          safetyRails,
+          evidenceActions
+        })
       };
     }
   };
+}
+
+function sourceContextAuthorizesPromotion(context: SourceAdmissionContext): boolean {
+  switch (context.sourceClass) {
+    case "owner_local":
+      return context.promotionAuthority === "owner";
+    case "trusted_corpus":
+      return context.promotionAuthority === "training" || context.promotionAuthority === "owner";
+    case "connector_private":
+    case "runtime_web":
+      return context.promotionAuthority === "automatic" || context.promotionAuthority === "owner";
+    case "generated":
+      return context.intendedUse === "language_only" && context.promotionAuthority === "owner";
+  }
+}
+
+function sourceTrustDimensionsValid(trust: SourceTrust): boolean {
+  return [
+    trust.identity,
+    trust.integrity,
+    trust.parserReliability,
+    trust.directness,
+    trust.authority,
+    trust.freshness
+  ].every(value => Number.isFinite(value) && value >= 0 && value <= 1);
 }
 
 function normalizeMetadata(value: JsonValue): Record<string, JsonValue> {

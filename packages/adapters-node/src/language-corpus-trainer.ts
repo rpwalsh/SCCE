@@ -11,11 +11,14 @@ import {
   CORPUS_SOURCE_SYSTEM_IDS,
   canonicalCorpusSourceSystemId,
   corpusSourceAlias,
+  joinInformationLabels,
+  normalizeInformationLabel,
   toJsonValue,
   type Clock,
   type CreativeEventConstructionCompiler,
   type EvidenceSpan,
   type IdFactory,
+  type InformationLabel,
   type JsonValue,
   type LanguagePatternRecord,
   type LanguageProfile,
@@ -24,6 +27,7 @@ import {
   type NgramObservation,
   type ScceStorage,
   type SemanticFrameRecord,
+  type SourceTrust,
   type SourceVersion,
   type SourceVersionId,
   type SourceBoundLanguageConstructionTrainingSet
@@ -53,6 +57,7 @@ export interface LanguageCorpusTrainingInput {
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
   clock?: Clock;
+  informationLabel?: InformationLabel;
 }
 
 export interface LanguageCorpusTrainingReport {
@@ -79,6 +84,9 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   const clock = input.clock ?? createClock();
   const hasher = createHasher();
   const sourceSystemId = canonicalCorpusSourceSystemId(input.sourceSystem);
+  const sourceInformationLabel = normalizeInformationLabel(
+    input.informationLabel ?? verifiedPublicCorpusLabel(sourceSystemId)
+  );
   const sourceSystem = corpusSourceAlias(input.sourceSystem);
   const ids = input.idFactory ?? createIdFactory({ clock, hasher, namespace: `corpus-${hasher.digestHex(sourceSystemId).slice(0, 12)}` });
   const events = createEventFactory({ idFactory: ids, clock, hasher });
@@ -91,7 +99,10 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   const bytes = Buffer.from(text, "utf8");
   const sourceVersionId = input.sourceVersionId ?? ids.sourceVersionId(`${sourceUri}\u001f${hasher.digestHex(bytes)}`);
   const sourceId = ids.sourceId(namespace, sourceUri);
-  let profile = input.profile ?? language.acquire({ sourceVersionId, text, createdAt });
+  let profile: LanguageProfile = {
+    ...(input.profile ?? language.acquire({ sourceVersionId, text, createdAt })),
+    informationLabel: sourceInformationLabel
+  };
   const metadata = toJsonValue({
     ...jsonRecord(input.corpusMetadata),
     ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {}),
@@ -118,7 +129,8 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
       mediaType,
       observedAt: createdAt,
       byteLength: bytes.byteLength,
-      trust: corpusSourceTrust(sourceSystemId),
+      sourceTrust: corpusSourceTrust(sourceSystemId),
+      informationLabel: sourceInformationLabel,
       metadata
     };
     const extracted = extractor.extract({
@@ -129,11 +141,14 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
       mediaType,
       text,
       languageProfile: profile,
+      sourceTrust: source.sourceTrust,
       observedAt: createdAt,
       maxChunkBytes: input.maxEvidenceChunkBytes ?? 64 * 1024,
-      metadata
+      metadata,
+      exactSourceText: true
     });
-    evidence = stampEvidence(extracted.spans, sourceSystem, sourceSystemId, metadata);
+    evidence = stampEvidence(extracted.spans, sourceSystem, sourceSystemId, metadata)
+      .map(span => ({ ...span, informationLabel: sourceInformationLabel }));
     for (const span of evidence) {
       await input.storage.blobs.put(Buffer.from(span.text, "utf8"), mediaType);
     }
@@ -142,7 +157,16 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     else for (const span of evidence) await input.storage.evidence.putEvidenceSpan(span);
   }
 
+  if (evidence.some(span => !span.informationLabel)) {
+    throw new Error("language corpus evidence requires information labels");
+  }
+  const informationLabel = joinInformationLabels(
+    [sourceInformationLabel, ...evidence.map(span => span.informationLabel!)],
+    { explicitMergeAuthority: false }
+  );
+  evidence = evidence.map(span => ({ ...span, informationLabel }));
   profile = attachSourceDerivedLanguageAliases({ profile, metadata, evidence });
+  profile = { ...profile, informationLabel };
   await input.storage.model.putLanguageProfile(profile);
 
   const memory = languageMemory.observe({
@@ -157,9 +181,9 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     vocabularyLimit: input.ngramVocabularyLimit
   });
 
-  const observations = memory.observations.map(item => stampObservation(item, sourceSystem, sourceSystemId, metadata));
-  const models = memory.models.map(item => stampModel(item, sourceSystem, sourceSystemId, metadata));
-  const units = memory.units.map(item => stampUnit(item, sourceSystem, sourceSystemId, metadata));
+  const observations = memory.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const models = memory.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const units = memory.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [];
   const constructionWarnings: string[] = [];
   for (const set of input.constructionSets ?? []) {
@@ -189,8 +213,8 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     }
   }
   const patterns = [...memory.patterns, ...compiledConstructionPatterns]
-    .map(item => stampPattern(item, sourceSystem, sourceSystemId, metadata));
-  const frames = memory.semanticFrames.map(item => stampFrame(item, sourceSystem, sourceSystemId, metadata));
+    .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const frames = memory.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
 
   await input.storage.languageMemory.putNgramObservationsBatch(observations);
   if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(models);
@@ -280,14 +304,55 @@ function stampFrame(frame: SemanticFrameRecord, sourceSystem: string, sourceSyst
   return { ...frame, frameJson: toJsonValue({ ...jsonRecord(frame.frameJson), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "learned_language_prior" }) };
 }
 
-function corpusSourceTrust(sourceSystem: string): number {
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.wikipedia) return 0.82;
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.workspace) return 0.78;
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections) return 0.76;
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs) return 0.72;
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode) return 0.66;
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.gutenberg) return 0.58;
-  return 0.5;
+function corpusSourceTrust(sourceSystem: string): SourceTrust {
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.wikipedia) return {
+    identity: 0.98, integrity: 1, parserReliability: 0.92, directness: 0.84,
+    authority: 0.88, freshness: 0.68, independenceGroup: "wikimedia:wikipedia",
+    accessScope: "public", licenseStatus: "licensed"
+  };
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.workspace) return {
+    identity: 1, integrity: 1, parserReliability: 0.94, directness: 1,
+    authority: 1, freshness: 0.98, independenceGroup: "owner:workspace",
+    accessScope: "owner_private", licenseStatus: "owner_authorized"
+  };
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections) return {
+    identity: 1, integrity: 1, parserReliability: 1, directness: 1,
+    authority: 1, freshness: 1, independenceGroup: "owner:corrections",
+    accessScope: "owner_private", licenseStatus: "owner_authorized"
+  };
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs) return {
+    identity: 0.9, integrity: 1, parserReliability: 0.9, directness: 0.82,
+    authority: 0.76, freshness: 0.72, independenceGroup: "corpus:oss-docs",
+    accessScope: "public", licenseStatus: "licensed"
+  };
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode) return {
+    identity: 0.9, integrity: 1, parserReliability: 0.94, directness: 0.9,
+    authority: 0.72, freshness: 0.72, independenceGroup: "corpus:oss-code",
+    accessScope: "public", licenseStatus: "licensed"
+  };
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.gutenberg) return {
+    identity: 0.96, integrity: 1, parserReliability: 0.88, directness: 0.72,
+    authority: 0.7, freshness: 0.2, independenceGroup: "corpus:gutenberg",
+    accessScope: "public", licenseStatus: "public_domain"
+  };
+  return {
+    identity: 0.5, integrity: 1, parserReliability: 0.7, directness: 0.5,
+    authority: 0.4, freshness: 0.5, independenceGroup: `corpus:${sourceSystem}`,
+    accessScope: "unknown", licenseStatus: "unknown"
+  };
+}
+
+function verifiedPublicCorpusLabel(sourceSystem: string): InformationLabel {
+  if (sourceSystem !== CORPUS_SOURCE_SYSTEM_IDS.wikipedia && sourceSystem !== CORPUS_SOURCE_SYSTEM_IDS.gutenberg) {
+    throw new Error(`language corpus ${sourceSystem} requires an explicit information label`);
+  }
+  return {
+    tenantId: "scce.public.corpus",
+    principals: [],
+    compartments: [],
+    exportClass: "public",
+    mergePolicy: "same_owner"
+  };
 }
 
 function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {

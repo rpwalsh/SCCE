@@ -269,7 +269,7 @@ describe("Developer Intelligence kernel runtime", () => {
       mediaType: "application/vnd.scce.developer-intelligence.snapshot",
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.9,
+      sourceTrust: { identity: 0.9, integrity: 0.9, parserReliability: 0.9, directness: 0.9, authority: 0.9, freshness: 0.9, independenceGroup: "fixture:developer-intelligence", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }

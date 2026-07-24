@@ -24,6 +24,7 @@ export * from "./connectors.js";
 export * from "./connector-policy.js";
 export * from "./secrets.js";
 export * from "./approval-session.js";
+export * from "./governance-probe.js";
 export * from "./language-control-hygiene.js";
 export * from "./runtime.js";
 export * from "./hydration-runtime.js";

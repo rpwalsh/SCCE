@@ -1,7 +1,7 @@
-import { canonicalStringify, clamp01, featureSet, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, createClock, featureSet, toJsonValue } from "./primitives.js";
 import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, type CalibrationModel } from "./scoring/calibration.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
-import type { JsonValue } from "./types.js";
+import type { Clock, JsonValue } from "./types.js";
 
 export const CALIBRATION_IDS = {
   proofForceProved: "proof.force.proved",
@@ -201,8 +201,9 @@ export function calibrationObservationRecord(input: {
   metadata?: JsonValue;
   createdAt?: number;
   idSeed?: string;
+  clock?: Clock;
 }): CalibrationObservationRecord {
-  const createdAt = input.createdAt ?? Date.now();
+  const createdAt = resolveCreatedAt(input.createdAt, input.clock);
   const finalOutcome = input.finalOutcome ?? outcomeId({
     accepted: input.accepted,
     rejected: input.rejected,
@@ -250,8 +251,9 @@ export function creativePreferenceObservationPair(input: {
   sourceTraceId?: string;
   sourceRecordId?: string;
   createdAt?: number;
+  clock?: Clock;
 }): [CalibrationObservationRecord, CalibrationObservationRecord] {
-  const createdAt = input.createdAt ?? Date.now();
+  const createdAt = resolveCreatedAt(input.createdAt, input.clock);
   const preferenceKind = input.preferenceKind ?? "accepted_rejected";
   const common = {
     calibrationId: CALIBRATION_IDS.creativeCandidatePreference,
@@ -374,6 +376,7 @@ export function calibrationObservationsFromDialogueOutcome(input: {
   outcome: DialogueCalibrationOutcome;
   taskClass?: string;
   createdAt?: number;
+  clock?: Clock;
 }): CalibrationObservationRecord[] {
   const critic = selectedCritic(input.result);
   const outcome = outcomeBoolean(input.outcome);
@@ -384,7 +387,7 @@ export function calibrationObservationsFromDialogueOutcome(input: {
     ? surfaceDistance(input.result.finalText, input.outcome.correctionText)
     : undefined;
   const createdAt = input.createdAt ?? Date.parse(input.outcome.createdAt);
-  const at = Number.isFinite(createdAt) ? createdAt : Date.now();
+  const at = Number.isFinite(createdAt) ? createdAt : resolveCreatedAt(undefined, input.clock);
   const common = {
     taskClass: input.taskClass ?? taskClassFromDialogue(input.result),
     outcome,
@@ -471,8 +474,14 @@ export function buildCalibrationModelsById(input: {
   minPoints?: number;
   binCount?: number;
   createdAt?: number;
+  clock?: Clock;
 }): Record<string, CalibrationModel> {
   const minPoints = input.minPoints ?? 2;
+  const createdAt = resolveCreatedAt(
+    input.createdAt,
+    input.clock,
+    latestCreatedAt(input.observations)
+  );
   const groups = new Map<string, CalibrationObservationRecord[]>();
   for (const observation of input.observations) {
     const key = `${observation.calibrationId}|${observation.taskClass}`;
@@ -488,7 +497,7 @@ export function buildCalibrationModelsById(input: {
       taskClass,
       points: observations.map(observation => ({ raw: observation.rawScore, outcome: observation.outcome })),
       binCount: input.binCount,
-      createdAt: input.createdAt
+      createdAt
     });
   }
   return models;
@@ -501,6 +510,7 @@ export function buildCreativePreferenceModels(input: {
   iterations?: number;
   learningRate?: number;
   createdAt?: number;
+  clock?: Clock;
 }): Record<string, CreativePreferenceModel> {
   const pairs = creativePreferencePairs(input.observations);
   if (pairs.length < Math.max(1, input.minPairs ?? 2)) return {};
@@ -531,7 +541,11 @@ export function buildCreativePreferenceModels(input: {
   const trainingPairIds = pairs.map(pair => pair.pairId).sort();
   const trainingRecordIds = [...new Set(pairs.flatMap(pair => pair.recordIds))].sort();
   const trainingLoss = pairwisePreferenceLoss({ deltas, theta, l2 });
-  const createdAt = input.createdAt ?? Date.now();
+  const createdAt = resolveCreatedAt(
+    input.createdAt,
+    input.clock,
+    latestCreatedAt(input.observations)
+  );
   const modelBody = {
     taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration,
     featureSchemaId: CREATIVE_PREFERENCE_FEATURE_SCHEMA.id,
@@ -567,8 +581,13 @@ export function buildCalibrationModelSet(input: {
   minPoints?: number;
   binCount?: number;
   createdAt?: number;
+  clock?: Clock;
 }): CalibrationModelSet {
-  const createdAt = input.createdAt ?? Date.now();
+  const createdAt = resolveCreatedAt(
+    input.createdAt,
+    input.clock,
+    latestCreatedAt(input.observations)
+  );
   const models = buildCalibrationModelsById({
     observations: input.observations,
     minPoints: input.minPoints,
@@ -600,13 +619,15 @@ export async function loadCalibrationModelSet(input: {
   minPoints?: number;
   binCount?: number;
   createdAt?: number;
+  clock?: Clock;
 }): Promise<CalibrationModelSet> {
   const observations = await input.store.listCalibrationObservations({ limit: input.limit ?? 5000 });
   return buildCalibrationModelSet({
     observations,
     minPoints: input.minPoints,
     binCount: input.binCount,
-    createdAt: input.createdAt
+    createdAt: input.createdAt,
+    clock: input.clock
   });
 }
 
@@ -837,6 +858,17 @@ function softplus(value: number): number {
 function finiteCoefficient(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(-8, Math.min(8, value));
+}
+
+function resolveCreatedAt(createdAt: number | undefined, clock?: Clock, fallback?: number): number {
+  if (typeof createdAt === "number" && Number.isFinite(createdAt)) return createdAt;
+  if (typeof fallback === "number" && Number.isFinite(fallback)) return fallback;
+  return (clock ?? createClock()).now();
+}
+
+function latestCreatedAt(observations: readonly CalibrationObservationRecord[]): number | undefined {
+  const times = observations.map(observation => observation.createdAt).filter(Number.isFinite);
+  return times.length ? Math.max(...times) : undefined;
 }
 
 function newestObservation(

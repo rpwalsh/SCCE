@@ -184,10 +184,10 @@ function exactSourceExcerptEntailment(input: {
     roleCoverage: 1,
     relationCompatibility: 1,
     transformationSupport: 1,
-    causalMass: 1,
+    causalMass: 0,
     faithfulnessLCB: 1,
     contradiction: 0,
-    stability: 1
+    stability: 0
   };
   const confidence = {
     verdict: "entailed" as const,
@@ -200,8 +200,8 @@ function exactSourceExcerptEntailment(input: {
     roleCoverage: 1,
     relationCompatibility: 1,
     transformationSupport: 1,
-    causalMass: 1,
-    stability: 1,
+    causalMass: 0,
+    stability: 0,
     satisfiedObligations: 1,
     requiredObligations: 1
   };
@@ -216,6 +216,16 @@ function exactSourceExcerptEntailment(input: {
     contradiction: 0,
     faithfulnessLcb: 1,
     confidence,
+    sourceAssessment: {
+      sourceFidelity: 1,
+      sourceAttribution: 1,
+      externalTruth: "unknown",
+      causalSupport: "not_applicable",
+      independentCorroboration: {
+        status: "not_measured",
+        independentGroupCount: null
+      }
+    },
     scores,
     obligations: [{
       id: obligationId,
@@ -288,6 +298,16 @@ function exactSourceExcerptEntailment(input: {
       transformIds,
       scores: toJsonValue({
         sourceExcerptExact: true,
+        sourceAssessment: {
+          sourceFidelity: 1,
+          sourceAttribution: 1,
+          externalTruth: "unknown",
+          causalSupport: "not_applicable",
+          independentCorroboration: {
+            status: "not_measured",
+            independentGroupCount: null
+          }
+        },
         semanticProofEngine: input.gate
       }),
       validatorVersion: VALIDATOR_VERSION,

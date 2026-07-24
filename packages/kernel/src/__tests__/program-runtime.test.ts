@@ -479,7 +479,7 @@ describe("ProgramGraph runtime and artifact emission", () => {
       mediaType,
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.9,
+      sourceTrust: { identity: 0.9, integrity: 0.9, parserReliability: 0.9, directness: 0.9, authority: 0.9, freshness: 0.9, independenceGroup: "fixture:program-runtime", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }

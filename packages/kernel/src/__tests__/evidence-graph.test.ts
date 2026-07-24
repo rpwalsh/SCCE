@@ -26,6 +26,11 @@ describe("evidence extraction and graph build", () => {
       mediaType: "text/markdown",
       text: "# Alpha Layer\n\nEvidence links proof, provenance, and graph pressure.\n\n## ProgramGraph\n\nThe construct emits files and tests.",
       languageProfile: language,
+      sourceTrust: {
+        identity: 1, integrity: 1, parserReliability: 1, directness: 1,
+        authority: 1, freshness: 1, independenceGroup: "fixture:evidence-graph",
+        accessScope: "fixture", licenseStatus: "fixture"
+      },
       observedAt: clock.now(),
       maxChunkBytes: 48
     });
@@ -56,6 +61,11 @@ describe("evidence extraction and graph build", () => {
       mediaType: "text/markdown",
       text: inputText,
       languageProfile: language,
+      sourceTrust: {
+        identity: 1, integrity: 1, parserReliability: 1, directness: 1,
+        authority: 1, freshness: 1, independenceGroup: "fixture:evidence-unicode",
+        accessScope: "fixture", licenseStatus: "fixture"
+      },
       observedAt: clock.now(),
       maxChunkBytes: 9
     });

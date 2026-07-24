@@ -317,7 +317,7 @@ describe("semantic proof adapter", () => {
       mediaType: "text/plain",
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.92,
+      sourceTrust: { identity: 0.92, integrity: 0.92, parserReliability: 0.92, directness: 0.92, authority: 0.92, freshness: 0.92, independenceGroup: "fixture:semantic-proof-adapter", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }

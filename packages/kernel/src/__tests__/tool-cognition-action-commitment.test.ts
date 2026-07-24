@@ -39,7 +39,8 @@ describe("tool cognition action commitment", () => {
       request: "Create a command action plan to restart pump alpha without executing it.",
       capabilities,
       policy: DEFAULT_POLICY,
-      actionCommitment: 0.95
+      actionCommitment: 0.95,
+      functionalGate: FUNCTIONAL_GATE
     });
 
     expect(plan.capabilityPlans.map(capabilityPlan => ({
@@ -61,7 +62,8 @@ describe("tool cognition action commitment", () => {
       request: "owner@example.test",
       capabilities: capabilities(),
       policy: DEFAULT_POLICY,
-      actionCommitment: 0.95
+      actionCommitment: 0.95,
+      functionalGate: FUNCTIONAL_GATE
     });
 
     expect(plan.objectives.some(objective => objective.kind === "execute")).toBe(false);
@@ -77,9 +79,17 @@ function cognitionPlan(actionCommitment: number) {
     request: "\u03b1\u03b2\u03b3",
     capabilities: capabilities(),
     policy: DEFAULT_POLICY,
-    actionCommitment
+    actionCommitment,
+    functionalGate: FUNCTIONAL_GATE
   });
 }
+
+const FUNCTIONAL_GATE = {
+  fc: true,
+  efc: true,
+  gov: true,
+  selectedGoalId: "goal.observed"
+} as const;
 
 function capabilities(): Capability[] {
   return [

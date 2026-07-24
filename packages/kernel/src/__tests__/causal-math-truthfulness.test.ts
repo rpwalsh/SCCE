@@ -1,9 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { createPfaceEstimator } from "../causal-estimation.js";
+import { createCausalDiscoveryEngine } from "../causal.js";
 import { assessStabilityAdjustedSupport, createCausalMath, mediatorPathRedundancyPruning } from "../causal-math.js";
 import type { FieldState, GraphEdge, GraphNode } from "../types.js";
 
 describe("causal math truthfulness contracts", () => {
+  it("derives temporal association mass from the injected replay clock", () => {
+    const { nodes, edges } = graphFixture();
+    const old = createCausalDiscoveryEngine({ now: () => 1 }).discover({
+      nodes,
+      edges,
+      activeNodeIds: [nodes[0]!.id]
+    });
+    const later = createCausalDiscoveryEngine({ now: () => 1 + 1000 * 60 * 60 * 24 * 365 }).discover({
+      nodes,
+      edges,
+      activeNodeIds: [nodes[0]!.id]
+    });
+
+    expect(old[0]!.mass).toBeGreaterThan(later[0]!.mass);
+    expect(createCausalDiscoveryEngine({ now: () => 1 }).discover({
+      nodes,
+      edges,
+      activeNodeIds: [nodes[0]!.id]
+    })).toEqual(old);
+  });
+
   it("does not identify a numerical causal effect from graph-only inputs", () => {
     const { nodes, edges, field } = graphFixture();
     const estimate = createPfaceEstimator().estimate({

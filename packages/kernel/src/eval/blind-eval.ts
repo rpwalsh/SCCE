@@ -1,4 +1,4 @@
-import { canonicalStringify, clamp01, toJsonValue } from "../primitives.js";
+import { canonicalStringify, clamp01, createClock, toJsonValue } from "../primitives.js";
 import {
   CALIBRATION_IDS,
   CALIBRATION_SUBSYSTEM_IDS,
@@ -6,7 +6,7 @@ import {
   calibrationObservationRecord,
   type CalibrationObservationRecord
 } from "../calibration-spine.js";
-import type { JsonValue } from "../types.js";
+import type { Clock, JsonValue } from "../types.js";
 
 export const EVAL_CATEGORY_IDS = {
   coding: "evalcat.1f2a70c9",
@@ -111,6 +111,8 @@ export async function runBlindPairwiseEval(input: {
   providers: readonly EvalProvider[];
   judgeId?: string;
   baselineProviderId?: string;
+  createdAt?: number;
+  clock?: Clock;
 }): Promise<{ answers: EvalAnswer[]; judgments: BlindEvalJudgment[]; report: BlindEvalReport; calibrationObservations: CalibrationObservationRecord[] }> {
   const answers: EvalAnswer[] = [];
   for (const prompt of input.prompts) {
@@ -127,7 +129,14 @@ export async function runBlindPairwiseEval(input: {
     }
   }
   const report = summarizeBlindEval({ prompts: input.prompts, answers, judgments, baselineProviderId: input.baselineProviderId });
-  const calibrationObservations = calibrationObservationsFromBlindEval({ prompts: input.prompts, answers, judgments, report });
+  const calibrationObservations = calibrationObservationsFromBlindEval({
+    prompts: input.prompts,
+    answers,
+    judgments,
+    report,
+    createdAt: input.createdAt,
+    clock: input.clock
+  });
   return { answers, judgments, report, calibrationObservations };
 }
 
@@ -137,10 +146,11 @@ export function calibrationObservationsFromBlindEval(input: {
   judgments: readonly BlindEvalJudgment[];
   report?: BlindEvalReport;
   createdAt?: number;
+  clock?: Clock;
 }): CalibrationObservationRecord[] {
   const promptById = new Map(input.prompts.map(prompt => [prompt.id, prompt]));
   const answerById = new Map(input.answers.map(answer => [answer.id, answer]));
-  const createdAt = input.createdAt ?? Date.now();
+  const createdAt = input.createdAt ?? (input.clock ?? createClock()).now();
   const observations: CalibrationObservationRecord[] = [];
   for (const judgment of input.judgments) {
     const prompt = promptById.get(judgment.promptId);

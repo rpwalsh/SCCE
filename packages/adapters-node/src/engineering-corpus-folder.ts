@@ -1306,7 +1306,19 @@ function evidenceForText(input: {
     textPreview: input.text.slice(0, 500),
     languageHints: {},
     scriptHints: {},
-    trustVector: { trust: 0.82 },
+    trustVector: {
+      sourceTrust: {
+        identity: 1,
+        integrity: 1,
+        parserReliability: 0.9,
+        directness: 0.9,
+        authority: 1,
+        freshness: 0.95,
+        independenceGroup: `engineering:${input.namespace}`,
+        accessScope: "owner_private",
+        licenseStatus: "owner_authorized"
+      }
+    },
     provenance: toJsonValue({ uri: input.uri, namespace: input.namespace }),
     features: [],
     status: "promoted",

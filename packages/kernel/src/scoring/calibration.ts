@@ -1,6 +1,7 @@
-import { clamp01 } from "../primitives.js";
+import { clamp01, createClock } from "../primitives.js";
 import { calibratedScore, type ScoreTrace } from "./score-trace.js";
 import { regularizedCalibrationLoss } from "../equation-operators.js";
+import type { Clock } from "../types.js";
 
 export interface CalibrationBin {
   lower: number;
@@ -22,7 +23,7 @@ export interface CalibrationPoint {
   outcome: boolean;
 }
 
-export function buildCalibrationModel(input: { id: string; taskClass: string; points: CalibrationPoint[]; binCount?: number; createdAt?: number }): CalibrationModel {
+export function buildCalibrationModel(input: { id: string; taskClass: string; points: CalibrationPoint[]; binCount?: number; createdAt?: number; clock?: Clock }): CalibrationModel {
   const binCount = Math.max(2, Math.min(50, input.binCount ?? 10));
   const bins: CalibrationBin[] = [];
   for (let i = 0; i < binCount; i++) {
@@ -42,7 +43,7 @@ export function buildCalibrationModel(input: { id: string; taskClass: string; po
       outcomes: input.points.map(point => point.outcome),
       weights: bins.map(bin => bin.empirical)
     }),
-    createdAt: input.createdAt ?? Date.now()
+    createdAt: input.createdAt ?? (input.clock ?? createClock()).now()
   };
 }
 

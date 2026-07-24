@@ -423,7 +423,26 @@ async function codebase(runtime: ReturnType<typeof createNodeRuntime>, args: str
   const sub = args[0];
   const target = args[1];
   if (sub !== "ingest" || !target) return usage("scce codebase ingest <repo-or-folder-path>");
-  printJson(await runtime.kernel.ingest({ path: target, metadata: { sourceKind: "developer_intelligence", ingestionLane: "codebase" } }));
+  printJson(await runtime.kernel.ingest({
+    path: target,
+    sourceAdmission: {
+      sourceClass: "owner_local",
+      intendedUse: "direct_evidence",
+      promotionAuthority: "owner"
+    },
+    sourceTrust: {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 0.94,
+      directness: 1,
+      authority: 1,
+      freshness: 0.98,
+      independenceGroup: "owner-local-codebase",
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    },
+    metadata: { sourceKind: "developer_intelligence", ingestionLane: "codebase" }
+  }));
 }
 
 async function hydrate(runtime: ReturnType<typeof createNodeRuntime>, args: string[]): Promise<void> {

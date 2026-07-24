@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { proveClaim } from "../semantic-proof-engine.js";
+import { createClock } from "../primitives.js";
 import {
   promoteWorkspaceAnalysisToCoreRecords,
   workspaceCommandToActionRecord,
@@ -84,9 +85,14 @@ describe("workspace core fusion", () => {
   });
 
   it("keeps idempotency deterministic across repeated promotion", () => {
-    const first = promoteWorkspaceAnalysisToCoreRecords(fixtureAnalysis());
-    const second = promoteWorkspaceAnalysisToCoreRecords(fixtureAnalysis());
+    const first = promoteWorkspaceAnalysisToCoreRecords(fixtureAnalysis(), {
+      clock: createClock({ fixedTime: 1_750_000_000_000 })
+    });
+    const second = promoteWorkspaceAnalysisToCoreRecords(fixtureAnalysis(), {
+      clock: createClock({ fixedTime: 1_750_000_000_000 })
+    });
 
+    expect(second).toEqual(first);
     expect(second.contract.idempotencyKeys).toEqual(first.contract.idempotencyKeys);
     expect(second.graph.nodes.map(node => node.id)).toEqual(first.graph.nodes.map(node => node.id));
     expect(second.graph.edges.map(edge => edge.id)).toEqual(first.graph.edges.map(edge => edge.id));

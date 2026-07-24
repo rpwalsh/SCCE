@@ -5,7 +5,7 @@ import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness } from "./startup.js";
@@ -657,7 +657,10 @@ async function dispatch(
 
 function validateIngest(value: unknown): IngestInput {
   if (!isRecord(value)) throw new HttpError(400, "ingest body must be an object");
-  const input: IngestInput = {};
+  const input: IngestInput = {
+    sourceAdmission: validateSourceAdmissionContext(value.sourceAdmission),
+    sourceTrust: validateSourceTrust(value.sourceTrust)
+  };
   if (value.path !== undefined) input.path = boundedString(value.path, "path", 4096);
   if (value.uri !== undefined) input.uri = boundedString(value.uri, "uri", 4096);
   if (value.namespace !== undefined) input.namespace = boundedString(value.namespace, "namespace", 256);
@@ -670,7 +673,72 @@ function validateIngest(value: unknown): IngestInput {
 
 function validateCodebaseIngest(value: unknown): IngestInput {
   if (!isRecord(value) || typeof value.path !== "string" || !value.path.trim()) throw new HttpError(400, "codebase ingest requires { path }");
-  return { path: value.path, metadata: { ...(isRecord(value.metadata) ? value.metadata as Record<string, JsonValue> : {}), sourceKind: "developer_intelligence", ingestionLane: "codebase" } };
+  return {
+    path: value.path,
+    sourceAdmission: {
+      sourceClass: "owner_local",
+      intendedUse: "direct_evidence",
+      promotionAuthority: "owner"
+    },
+    sourceTrust: {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 0.94,
+      directness: 1,
+      authority: 1,
+      freshness: 0.98,
+      independenceGroup: "owner-local-codebase",
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    },
+    metadata: { ...(isRecord(value.metadata) ? value.metadata as Record<string, JsonValue> : {}), sourceKind: "developer_intelligence", ingestionLane: "codebase" }
+  };
+}
+
+function validateSourceAdmissionContext(value: unknown): SourceAdmissionContext {
+  if (!isRecord(value)) throw new HttpError(400, "ingest requires sourceAdmission");
+  const sourceClass = value.sourceClass;
+  const intendedUse = value.intendedUse;
+  const promotionAuthority = value.promotionAuthority;
+  if (!["owner_local", "trusted_corpus", "connector_private", "runtime_web", "generated"].includes(String(sourceClass))) {
+    throw new HttpError(400, "sourceAdmission.sourceClass is invalid");
+  }
+  if (!["direct_evidence", "learned_prior", "language_only", "quarantine_only"].includes(String(intendedUse))) {
+    throw new HttpError(400, "sourceAdmission.intendedUse is invalid");
+  }
+  if (!["automatic", "training", "owner"].includes(String(promotionAuthority))) {
+    throw new HttpError(400, "sourceAdmission.promotionAuthority is invalid");
+  }
+  return {
+    sourceClass: sourceClass as SourceAdmissionContext["sourceClass"],
+    intendedUse: intendedUse as SourceAdmissionContext["intendedUse"],
+    promotionAuthority: promotionAuthority as SourceAdmissionContext["promotionAuthority"]
+  };
+}
+
+function validateSourceTrust(value: unknown): SourceTrust {
+  if (!isRecord(value)) throw new HttpError(400, "ingest requires sourceTrust");
+  const dimensions = ["identity", "integrity", "parserReliability", "directness", "authority", "freshness"] as const;
+  for (const dimension of dimensions) {
+    const score = value[dimension];
+    if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
+      throw new HttpError(400, `sourceTrust.${dimension} must be a finite number in [0,1]`);
+    }
+  }
+  const independenceGroup = boundedString(value.independenceGroup, "sourceTrust.independenceGroup", 512);
+  const accessScope = boundedString(value.accessScope, "sourceTrust.accessScope", 128);
+  const licenseStatus = boundedString(value.licenseStatus, "sourceTrust.licenseStatus", 128);
+  return {
+    identity: value.identity as number,
+    integrity: value.integrity as number,
+    parserReliability: value.parserReliability as number,
+    directness: value.directness as number,
+    authority: value.authority as number,
+    freshness: value.freshness as number,
+    independenceGroup,
+    accessScope,
+    licenseStatus
+  };
 }
 
 function workspaceOptions(value: Record<string, unknown>): WorkspaceRuntimeOptions {
