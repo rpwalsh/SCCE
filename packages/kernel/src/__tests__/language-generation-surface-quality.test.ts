@@ -19,7 +19,7 @@ describe("learned language generation surface quality", () => {
     expect(languageGenerationSurfaceAdequate(generation(text, 0.06))).toBe(true);
   });
 
-  it("propagates a learned absolute response extent beyond the old 48-symbol cap", () => {
+  it("keeps learned fallback generation bounded while the structural lane owns long-form extent", () => {
     const requestText = "write a 20 page short story about albert einstein fighting dragons";
     const unitStart = [...requestText.slice(0, requestText.indexOf("page"))].length;
 
@@ -35,7 +35,7 @@ describe("learned language generation surface quality", () => {
         sourcePatternId: "pattern.fixture.page-extent"
       }],
       plannedExtent: 48
-    })).toBe(256);
+    })).toBe(64);
   });
 });
 

@@ -445,7 +445,7 @@ interface MouthGenerationWorkBudget {
 }
 
 const MOUTH_GENERATION_CALL_LIMIT = 1;
-const MOUTH_GENERATION_EXTENT_LIMIT = 256;
+const MOUTH_GENERATION_EXTENT_LIMIT = 64;
 const MOUTH_GENERATION_WINDOW_MS = 2_500;
 
 function createMouthGenerationWorkBudget(startedAtMs: number): MouthGenerationWorkBudget {
