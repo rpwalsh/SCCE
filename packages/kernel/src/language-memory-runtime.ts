@@ -162,6 +162,18 @@ export interface LanguageGenerationResult {
   audit: JsonValue;
 }
 
+/**
+ * A source-neutral structural gate for learned language surfaces. Imported
+ * prior use is checked by the Mouth; this gate checks only whether the
+ * generated discourse is complete enough to speak.
+ */
+export function languageGenerationSurfaceAdequate(
+  generation: Pick<LanguageGenerationResult, "discourse" | "symbols">
+): boolean {
+  const extent = Math.max(1, generation.symbols.length);
+  return discourseSurfaceAdequate(generation.discourse, extent);
+}
+
 export const RHETORICAL_MOVE_IDS = {
   lead: "rmove.94c0e1b7",
   support: "rmove.27f59d04",
@@ -730,12 +742,15 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     styleProfileId: input.styleProfileId
   });
   const firstDiscourse = latticeGeneration?.discourse ?? weaveDiscourse({ state: input.state, pieces: candidatePieces, requiredTerms, frameAtoms, frames: input.frames ?? [], contextSymbols, generationExtent });
-  const continuationDiscourse = discourseSurfaceAdequate(firstDiscourse, generationExtent)
+  const firstDiscourseAdequate = discourseSurfaceAdequate(firstDiscourse, generationExtent);
+  const continuationDiscourse = firstDiscourseAdequate
     ? undefined
     : learnedContinuationDiscourse({ state: input.state, contextSymbols, contextText, requiredTerms, frameAtoms, generationExtent, pieces: candidatePieces });
-  const discourse = discourseSurfaceAdequate(firstDiscourse, generationExtent)
+  const discourse = firstDiscourseAdequate
     ? firstDiscourse
-    : continuationDiscourse ?? firstDiscourse;
+    : continuationDiscourse && discourseSurfaceAdequate(continuationDiscourse, generationExtent)
+      ? continuationDiscourse
+      : firstDiscourse;
   const selectedMovePieceIds = new Set(discourse.moves.flatMap(move => move.sourcePieceIds));
   const selected = candidatePieces.filter(piece => {
     const clean = tidyInline(piece.text);
@@ -2602,7 +2617,7 @@ function learnedContinuationDiscourse(input: {
     for (const row of prompts) {
       const continuationModel = model.order > 3 ? { ...model, order: 3 } : model;
       const continuation = continueBoundedProse(continuationModel, row.prompt, {
-        generationExtent: Math.max(8, Math.min(28, input.generationExtent)),
+        generationExtent: Math.max(8, Math.min(256, input.generationExtent)),
         probabilityFloor: 1e-12,
         temperature: 0.92,
         blockedSymbols: ["<unk>"],
@@ -2717,7 +2732,29 @@ function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationE
   if (lexicalSymbols.length < minimum) return false;
   const normalized = lexicalSymbols.map(symbol => symbol.normalize("NFKC").toLocaleLowerCase());
   const diversity = new Set(normalized).size / Math.max(1, normalized.length);
-  return diversity >= 0.42 && discourse.repetitionPenalty < 0.72;
+  const multiPointLexicalMass = lexicalSymbols
+    .filter(symbol => [...symbol].length > 1)
+    .length / Math.max(1, lexicalSymbols.length);
+  const diversityFloor = multiPointLexicalMass >= 0.5 ? 0.42 : 0.22;
+  return diversity >= diversityFloor
+    && discourse.repetitionPenalty < 0.72
+    && !fragmentHeavyDiscourseSurface(discourse.text);
+}
+
+function fragmentHeavyDiscourseSurface(text: string): boolean {
+  const fragments = text
+    .split(/[\p{Punctuation}\p{Symbol}]+/gu)
+    .map(fragment => symbolizeData(fragment)
+      .filter(symbol => [...symbol].some(char => isLetterLike(char) || isDigitLike(char))))
+    .filter(fragment => fragment.length > 0);
+  if (fragments.length < 5) return false;
+  const lexicalTokenCount = fragments.reduce((sum, fragment) => sum + fragment.length, 0);
+  if (lexicalTokenCount < 12) return false;
+  const shortFragmentCount = fragments.filter(fragment => fragment.length <= 2).length;
+  const shortFragmentRatio = shortFragmentCount / fragments.length;
+  const punctuationRuns = text.match(/[\p{Punctuation}\p{Symbol}]+/gu)?.length ?? 0;
+  const punctuationDensity = punctuationRuns / Math.max(1, lexicalTokenCount);
+  return shortFragmentRatio >= 0.5 && punctuationDensity >= 0.24;
 }
 
 function naturalJoin(values: readonly string[], finalJoiner = ";"): string {
@@ -3264,12 +3301,11 @@ function containsLoose(text: string, surface: string): boolean {
 }
 
 function isLetterLike(char: string): boolean {
-  return char.toLocaleLowerCase() !== char.toLocaleUpperCase();
+  return /\p{Letter}|\p{Mark}/u.test(char);
 }
 
 function isDigitLike(char: string): boolean {
-  const code = char.charCodeAt(0);
-  return code >= 48 && code <= 57;
+  return /\p{Number}/u.test(char);
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
