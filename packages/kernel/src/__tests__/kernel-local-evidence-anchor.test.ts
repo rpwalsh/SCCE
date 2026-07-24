@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createClock,
   createHasher,
   createIdFactory,
+  createEnglishCreativeEventConstructionCompiler,
   createEvaluationCondition,
+  createLanguageAcquisitionEngine,
   createScceKernel,
   anchorFeatureSet,
   featureSet,
@@ -15,6 +17,8 @@ import {
   type EvidenceSpan,
   type GraphSlice,
   type JsonValue,
+  type LanguagePatternRecord,
+  type LanguageProfile,
   type ModelState,
   type ScceEvent,
   type ScceStorage,
@@ -25,6 +29,93 @@ import {
   type EvaluationTraceEvent
 } from "../index.js";
 import { sourceAnchoredEvidenceForRequest } from "../local-evidence-runtime.js";
+
+const proofEngineCalls = vi.hoisted(() => ({
+  ablatedSupport: 0,
+  entailment: 0,
+  semanticProof: 0,
+  ccr: 0,
+  pface: 0
+}));
+
+vi.mock("../entailment.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../entailment.js")>();
+  return {
+    ...actual,
+    createSemanticEntailmentEngine: (...args: Parameters<typeof actual.createSemanticEntailmentEngine>) => {
+      const engine = actual.createSemanticEntailmentEngine(...args);
+      return {
+        ...engine,
+        check: (...checkArgs: Parameters<typeof engine.check>) => {
+          proofEngineCalls.entailment += 1;
+          return engine.check(...checkArgs);
+        }
+      };
+    }
+  };
+});
+
+vi.mock("../semantic-proof-system.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../semantic-proof-system.js")>();
+  return {
+    ...actual,
+    createSemanticProofSystem: (...args: Parameters<typeof actual.createSemanticProofSystem>) => {
+      const engine = actual.createSemanticProofSystem(...args);
+      return {
+        ...engine,
+        prove: (...proveArgs: Parameters<typeof engine.prove>) => {
+          proofEngineCalls.semanticProof += 1;
+          return engine.prove(...proveArgs);
+        }
+      };
+    }
+  };
+});
+
+vi.mock("../ccr.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../ccr.js")>();
+  return {
+    ...actual,
+    createCcrEngine: (...args: Parameters<typeof actual.createCcrEngine>) => {
+      const engine = actual.createCcrEngine(...args);
+      return {
+        ...engine,
+        run: (...runArgs: Parameters<typeof engine.run>) => {
+          proofEngineCalls.ccr += 1;
+          return engine.run(...runArgs);
+        }
+      };
+    }
+  };
+});
+
+vi.mock("../causal-estimation.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../causal-estimation.js")>();
+  return {
+    ...actual,
+    createPfaceEstimator: (...args: Parameters<typeof actual.createPfaceEstimator>) => {
+      const engine = actual.createPfaceEstimator(...args);
+      return {
+        ...engine,
+        estimate: (...estimateArgs: Parameters<typeof engine.estimate>) => {
+          proofEngineCalls.pface += 1;
+          return engine.estimate(...estimateArgs);
+        }
+      };
+    }
+  };
+});
+
+vi.mock("../evaluation-runtime-bypass.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../evaluation-runtime-bypass.js")>();
+  return {
+    ...actual,
+    createAblatedSupportEntailment: (...args: Parameters<typeof actual.createAblatedSupportEntailment>) => {
+      proofEngineCalls.ablatedSupport += 1;
+      return actual.createAblatedSupportEntailment(...args);
+    }
+  };
+});
 
 describe("kernel local evidence source anchoring", () => {
   it("keeps punctuation-neutral multi-token source anchors ahead of generic features", () => {
@@ -719,12 +810,37 @@ describe("kernel local evidence source anchoring", () => {
   it("creates and speaks an invention construct from an ordinary creative request", async () => {
     const clock = createClock({ fixedTime: 9_000, stepMs: 1 });
     const hasher = createHasher();
-    const fixture = storageFixture({ evidence: [] });
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const source = evidenceSpan({
+      id: "evidence:creative-construction-without-compatibility",
+      sourceVersionId: "source:creative-construction-without-compatibility:v1" as SourceVersionId,
+      title: "Creative construction source",
+      uri: "fixture://creative-construction-source",
+      text: "He considered the impossible bargain. She attributed the signal to a damaged instrument. I searched through the ruined laboratory. He carried the heavy lantern. They opened the narrow gate. We crossed the silent valley.",
+      alpha: 0.9
+    });
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({
+      sourceVersionId: source.sourceVersionId,
+      text: source.text,
+      createdAt: clock.now()
+    });
+    const compiled = createEnglishCreativeEventConstructionCompiler().compile({
+      profileId: profile.id,
+      evidence: [source],
+      hasher,
+      updatedAt: clock.now()
+    });
+    if (compiled.status !== "compiled") throw new Error("creative construction fixture did not compile");
+    const fixture = storageFixture({
+      evidence: [source],
+      languageProfiles: [profile],
+      languagePatterns: [compiled.pattern]
+    });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
       buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
-      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      idFactory: ids,
       clock,
       deterministicReplay: true
     });
@@ -748,6 +864,66 @@ describe("kernel local evidence source anchoring", () => {
     })).toBeGreaterThan(24);
     expect(result.answer.trim().startsWith("{")).toBe(false);
     expect(result.answer).not.toContain("scce.invention_construct");
+  });
+
+  it("bypasses factual proof engines for creative authority but invokes them for factual authority", async () => {
+    const premise = evidenceSpan({
+      id: "evidence:proof-authority-boundary",
+      sourceVersionId: "source:proof-authority-boundary:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.94
+    });
+    const resetProofEngineCalls = () => {
+      proofEngineCalls.ablatedSupport = 0;
+      proofEngineCalls.entailment = 0;
+      proofEngineCalls.semanticProof = 0;
+      proofEngineCalls.ccr = 0;
+      proofEngineCalls.pface = 0;
+    };
+    const kernelFor = (storage: ScceStorage, fixedTime: number) => {
+      const clock = createClock({ fixedTime, stepMs: 1 });
+      const hasher = createHasher();
+      return createScceKernel({
+        storage,
+        files: { streamPath: async function* () { /* unused */ } },
+        buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+        idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+        clock,
+        deterministicReplay: true
+      });
+    };
+
+    const creativeFixture = storageFixture({ evidence: [] });
+    const creativeKernel = kernelFor(creativeFixture.storage, 9_250);
+    resetProofEngineCalls();
+    const creativeResult = await creativeKernel.turn({
+      text: "Invent a new indexing algorithm for this graph",
+      requestedAuthority: "creative"
+    });
+    expect(creativeResult.answer.trim()).not.toBe("");
+    expect(proofEngineCalls).toEqual({
+      ablatedSupport: 1,
+      entailment: 0,
+      semanticProof: 0,
+      ccr: 0,
+      pface: 0
+    });
+
+    const factualFixture = storageFixture({ evidence: [premise] });
+    const factualKernel = kernelFor(factualFixture.storage, 9_350);
+    resetProofEngineCalls();
+    const factualResult = await factualKernel.turn({
+      text: "What did Ada Lovelace write notes about?",
+      requestedAuthority: "factual"
+    });
+    expect(factualResult.answer.trim()).not.toBe("");
+    expect(proofEngineCalls.ablatedSupport).toBe(0);
+    expect(proofEngineCalls.entailment).toBeGreaterThan(0);
+    expect(proofEngineCalls.semanticProof).toBeGreaterThan(0);
+    expect(proofEngineCalls.ccr).toBeGreaterThan(0);
+    expect(proofEngineCalls.pface).toBeGreaterThan(0);
   });
 
   it("keeps a source-inspired request creative while retaining only its factual premise evidence", async () => {
@@ -1033,7 +1209,13 @@ function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; tit
   };
 }
 
-function storageFixture(input: { evidence: EvidenceSpan[]; graph?: GraphSlice; semanticFrames?: SemanticFrameRecord[] }): { storage: ScceStorage; events: ScceEvent[]; metrics: { graphReads: number; languageMemoryReads: number } } {
+function storageFixture(input: {
+  evidence: EvidenceSpan[];
+  graph?: GraphSlice;
+  semanticFrames?: SemanticFrameRecord[];
+  languageProfiles?: LanguageProfile[];
+  languagePatterns?: LanguagePatternRecord[];
+}): { storage: ScceStorage; events: ScceEvent[]; metrics: { graphReads: number; languageMemoryReads: number } } {
   const events: ScceEvent[] = [];
   const metrics = { graphReads: 0, languageMemoryReads: 0 };
   const currentGraph = () => input.graph ?? graphSlice(input.evidence);
@@ -1078,7 +1260,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; graph?: GraphSlice; s
       readModel: async (): Promise<ModelState> => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
       writeModel: async () => undefined,
       putLanguageProfile: async () => undefined,
-      listLanguageProfiles: async () => []
+      listLanguageProfiles: async () => input.languageProfiles ?? []
     },
     languageMemory: {
       putNgramObservation: async () => undefined,
@@ -1091,7 +1273,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; graph?: GraphSlice; s
       listNgramModels: async () => { metrics.languageMemoryReads++; return []; },
       listNgramObservations: async () => { metrics.languageMemoryReads++; return []; },
       listLanguageUnits: async () => { metrics.languageMemoryReads++; return []; },
-      listLanguagePatterns: async () => { metrics.languageMemoryReads++; return []; },
+      listLanguagePatterns: async () => { metrics.languageMemoryReads++; return input.languagePatterns ?? []; },
       listSemanticFrames: async () => { metrics.languageMemoryReads++; return input.semanticFrames ?? []; },
       listTranslationAlignments: async () => { metrics.languageMemoryReads++; return []; }
     },

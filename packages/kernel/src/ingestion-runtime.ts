@@ -1,4 +1,9 @@
 import { createSourceAdmissionController } from "./admission.js";
+import {
+  compileCreativeEventCompatibilityCorpus,
+  creativeEventCompatibilityCorpusLanguageText,
+  parseCreativeEventCompatibilityCorpus
+} from "./creative-event-compatibility.js";
 import { createEventFactory } from "./events.js";
 import { createEvidenceExtractor } from "./evidence.js";
 import { createSourceGraphBuilder } from "./graphbuild.js";
@@ -94,6 +99,7 @@ export function createIngestionRuntime(options: {
           metadata: file.metadata
         };
         const requestRequirementCorpus = parseRequestRequirementCorpus(file.text);
+        const creativeEventCompatibilityCorpus = parseCreativeEventCompatibilityCorpus(file.text);
         await deps.storage.evidence.putSourceVersion(source);
         events.push(await append(eventFactory.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace } })));
         events.push(await append(eventFactory.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } })));
@@ -101,6 +107,8 @@ export function createIngestionRuntime(options: {
         const preview = typedIngest.preview({ uri: file.uri, mediaType: file.mediaType, text: file.text, metadata: file.metadata });
         const languageSurface = requestRequirementCorpus
           ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
+          : creativeEventCompatibilityCorpus
+            ? creativeEventCompatibilityCorpusLanguageText(creativeEventCompatibilityCorpus)
           : preview.languageText || (preview.suppressRawLanguageTraining ? "" : file.text);
         const profile = language.acquire({ sourceVersionId, text: languageSurface, createdAt: now });
         if (deps.storage.model.putLanguageProfiles) await deps.storage.model.putLanguageProfiles([profile]);
@@ -175,6 +183,8 @@ export function createIngestionRuntime(options: {
 
         const languageTrainingText = requestRequirementCorpus
           ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
+          : creativeEventCompatibilityCorpus
+            ? creativeEventCompatibilityCorpusLanguageText(creativeEventCompatibilityCorpus)
           : typedProjection.languageText;
         const languageMemory = languageTrainingText.trim() ? languageMemoryRuntime.observe({
           streamId: file.uri,
@@ -200,14 +210,28 @@ export function createIngestionRuntime(options: {
             makeId: representation => String(idFactory.semanticId("request_requirement_pattern", representation))
           })
           : undefined;
+        const creativeEventCompatibilityLearning = creativeEventCompatibilityCorpus
+          ? compileCreativeEventCompatibilityCorpus({
+            corpus: creativeEventCompatibilityCorpus,
+            profileId: profile.id,
+            evidenceIds: admittedSpans.map(span => span.id),
+            updatedAt: now,
+            makeId: representation => String(idFactory.semanticId(
+              "creative_event_compatibility_pattern",
+              representation
+            ))
+          })
+          : undefined;
         await deps.storage.languageMemory.putNgramObservationsBatch(languageMemory.observations);
         if (deps.storage.languageMemory.putNgramModels) await deps.storage.languageMemory.putNgramModels(languageMemory.models);
         else for (const model of languageMemory.models) await deps.storage.languageMemory.putNgramModel(model);
         if (deps.storage.languageMemory.putLanguageUnits) await deps.storage.languageMemory.putLanguageUnits(languageMemory.units);
         else for (const unit of languageMemory.units) await deps.storage.languageMemory.putLanguageUnit(unit);
-        const learnedPatterns = requestRequirementLearning
-          ? [...languageMemory.patterns, ...requestRequirementLearning.patterns]
-          : languageMemory.patterns;
+        const learnedPatterns = [
+          ...languageMemory.patterns,
+          ...(requestRequirementLearning?.patterns ?? []),
+          ...(creativeEventCompatibilityLearning?.patterns ?? [])
+        ];
         if (deps.storage.languageMemory.putLanguagePatterns) await deps.storage.languageMemory.putLanguagePatterns(learnedPatterns);
         else for (const pattern of learnedPatterns) await deps.storage.languageMemory.putLanguagePattern(pattern);
         if (deps.storage.languageMemory.putSemanticFrames) await deps.storage.languageMemory.putSemanticFrames(languageMemory.semanticFrames);
@@ -215,8 +239,16 @@ export function createIngestionRuntime(options: {
         events.push(await append(eventFactory.create({
           episodeId,
           typeId: "SymbolPatternLearned",
-          payload: requestRequirementLearning
-            ? toJsonValue({ languageMemory: languageMemory.audit, requestRequirements: requestRequirementLearning.audit })
+          payload: requestRequirementLearning || creativeEventCompatibilityLearning
+            ? toJsonValue({
+              languageMemory: languageMemory.audit,
+              ...(requestRequirementLearning
+                ? { requestRequirements: requestRequirementLearning.audit }
+                : {}),
+              ...(creativeEventCompatibilityLearning
+                ? { creativeEventCompatibility: creativeEventCompatibilityLearning.audit }
+                : {})
+            })
             : languageMemory.audit
         })));
         } else {

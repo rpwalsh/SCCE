@@ -72,6 +72,7 @@ export function emptySurfaceLanguageMemory(): {
       importedObservations: [],
       importedSemanticFrames: [],
       importedConstructionBundles: [],
+      creativeEventCompatibilityModels: [],
       rejectedConstructionPatterns: [],
       importedLanguagePriorCount: 0,
       competenceVector,

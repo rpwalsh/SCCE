@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyRequestedAuthority,
+  CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+  CREATIVE_REQUEST_FRAME_SCHEMA,
   createClock,
   createHasher,
   createIdFactory,
@@ -12,6 +14,8 @@ import {
   planInventions,
   updateDialogueState,
   type ConstructGraph,
+  type CreativeEventCompatibilityModel,
+  type CreativeRequestFrame,
   type DurableLanguageConstructionBundle,
   type EvidenceSpan,
   type FieldState,
@@ -186,7 +190,184 @@ describe("invention planner", () => {
     })).toBe(false);
   });
 
-  it("fails closed for creative authority when the construction cluster is impure", () => {
+  it("fails only the structural event route when calibrated compatibility is unavailable", () => {
+    const fixture = plannerFixtureWithStructuralCreativeBundle("Ï†-request without learned compatibility");
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      languageMemoryState: {
+        ...fixture.languageMemoryState,
+        creativeEventCompatibilityModels: []
+      },
+      samplingDisabled: true
+    });
+
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const realization = traceRecord(candidate).proposalRealization as Record<string, JsonValue>;
+      expect(realization.path).not.toBe("mouth_realization_deferred");
+      expect(realization.structuralEventPlan ?? []).toEqual([]);
+    }
+  });
+
+  it("does not admit low-posterior source-adjacent events", () => {
+    const fixture = plannerFixtureWithStructuralCreativeBundle("Ï†-adjacency invariant");
+    const bundle = fixture.languageMemoryState.importedConstructionBundles[0]!;
+    const admittedEventIds = new Set([
+      bundle.creativeEvents![0]!.id,
+      bundle.creativeEvents![2]!.id,
+      bundle.creativeEvents![4]!.id,
+      bundle.creativeEvents![5]!.id
+    ]);
+    const model = fixture.languageMemoryState.creativeEventCompatibilityModels[0]!;
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      languageMemoryState: {
+        ...fixture.languageMemoryState,
+        creativeEventCompatibilityModels: [{
+          ...model,
+          eventCompatibilities: model.eventCompatibilities.map(row => {
+            const event = bundle.creativeEvents!.find(candidate => candidate.relationId === row.eventRelationId)!;
+            return {
+              ...row,
+              posterior: admittedEventIds.has(event.id) ? 0.94 : 0.18
+            };
+          })
+        }]
+      },
+      samplingDisabled: true
+    });
+
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const selected = structuralEventRows(candidate).map(row => String(row.eventId));
+      expect(new Set(selected)).toEqual(admittedEventIds);
+    }
+  });
+
+  it("selects by opaque IDs independently of request and event surfaces", () => {
+    const left = plannerFixtureWithStructuralCreativeBundle("ab12 cd34");
+    const right = plannerFixtureWithStructuralCreativeBundle("í•œê¸€ í‘œë©´");
+    const rightBundle = right.languageMemoryState.importedConstructionBundles[0]!;
+    rightBundle.creativeEvents = rightBundle.creativeEvents?.map((event, index) => ({
+      ...event,
+      sourceLabel: `í‘œë©´-${index}`,
+      forms: {
+        infinitive: `í‘œë©´${index}`,
+        past: `í‘œë©´${index}`,
+        present: `í‘œë©´${index}`,
+        gerund: `í‘œë©´${index}`,
+        participle: `í‘œë©´${index}`
+      }
+    }));
+
+    const leftPlans = planInventions({
+      ...left,
+      requestedAuthority: "creative",
+      samplingDisabled: true
+    }).map(candidate => structuralEventRows(candidate).map(row => row.eventId).join("|")).sort();
+    const rightPlans = planInventions({
+      ...right,
+      requestedAuthority: "creative",
+      samplingDisabled: true
+    }).map(candidate => structuralEventRows(candidate).map(row => row.eventId).join("|")).sort();
+
+    expect(rightPlans).toEqual(leftPlans);
+  });
+
+  it("requires an injective request binding for every event argument", () => {
+    const requestText = "Ï† focus omega";
+    const fixture = plannerFixtureWithStructuralCreativeBundle(requestText);
+    const frame = creativeRequestFrameFor(requestText, "ignored", "omega");
+    const bundle = fixture.languageMemoryState.importedConstructionBundles[0]!;
+    bundle.creativeEvents = bundle.creativeEvents?.map((event, index) => ({
+      ...event,
+      valencyId: "scce.valency.agent_patient",
+      roleIds: index === 1
+        ? ["scce.role.agent", "scce.role.patient", "scce.role.complement"]
+        : ["scce.role.agent", "scce.role.patient"],
+      argumentFrame: {
+        ...event.argumentFrame,
+        roleIds: index === 1
+          ? ["scce.role.agent", "scce.role.patient", "scce.role.complement"]
+          : ["scce.role.agent", "scce.role.patient"],
+        bindings: [
+          {
+            roleId: "scce.role.patient",
+            surface: `source-only-${index}`,
+            surfaceDigest: `digest.source-only.${index}`,
+            startCodePoint: index * 10,
+            endCodePoint: index * 10 + 1
+          },
+          ...(index === 1
+            ? [{
+              roleId: "scce.role.complement" as const,
+              surface: "second-source-only",
+              surfaceDigest: "digest.second-source-only",
+              startCodePoint: 20,
+              endCodePoint: 21,
+              connector: {
+                surface: "to",
+                surfaceDigest: "digest.connector.to",
+                startCodePoint: 19,
+                endCodePoint: 20
+              }
+            }]
+            : [])
+        ]
+      }
+    }));
+    const model = fixture.languageMemoryState.creativeEventCompatibilityModels[0]!;
+    const roleCompatibilities: CreativeEventCompatibilityModel["roleCompatibilities"] = [
+      {
+        requestFrameId: frame.id,
+        requestRoleId: frame.arguments[0]!.roleId,
+        eventRoleId: "scce.role.patient",
+        posterior: 0.95,
+        support: 12,
+        sourceActivationIds: ["activation.role.patient"]
+      },
+      {
+        requestFrameId: frame.id,
+        requestRoleId: frame.arguments[0]!.roleId,
+        eventRoleId: "scce.role.complement",
+        posterior: 0.95,
+        support: 12,
+        sourceActivationIds: ["activation.role.complement"]
+      }
+    ];
+    const planned = planInventions({
+      ...fixture,
+      creativeRequestFrame: frame,
+      requestedAuthority: "creative",
+      languageMemoryState: {
+        ...fixture.languageMemoryState,
+        creativeEventCompatibilityModels: [{ ...model, roleCompatibilities }]
+      },
+      samplingDisabled: true
+    });
+
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const rows = structuralEventRows(candidate);
+      expect(rows.some(row => row.eventId === bundle.creativeEvents![1]!.id)).toBe(false);
+      expect(rows.length).toBe(5);
+      for (const row of rows) {
+        const bindings = row.requestRoleBindings as Array<Record<string, JsonValue>>;
+        expect(bindings).toHaveLength(1);
+        expect(bindings[0]).toMatchObject({
+          requestArgumentId: frame.arguments[0]!.id,
+          requestRoleId: frame.arguments[0]!.roleId,
+          requestSpan: { text: "omega" },
+          admissible: true
+        });
+        expect(JSON.stringify(bindings)).not.toContain("source-only");
+      }
+    }
+  });
+
+  it("fails only the structural event route when the construction cluster is impure", () => {
     const fixture = plannerFixtureWithStructuralCreativeBundle(
       "Write a fictional story about a cartographer crossing a storm."
     );
@@ -204,17 +385,29 @@ describe("invention planner", () => {
       samplingDisabled: true
     });
 
-    expect(planned).toEqual([]);
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const realization = traceRecord(candidate).proposalRealization as Record<string, JsonValue>;
+      expect(realization.path).not.toBe("mouth_realization_deferred");
+      expect(realization.structuralEventPlan ?? []).toEqual([]);
+    }
   });
 
-  it("returns no creative inventions without verified current structural bundles", () => {
+  it("keeps the non-event creative route available without verified current structural bundles", () => {
     const fixture = plannerFixture("Write a fictional story about a cartographer crossing a storm.");
 
-    expect(planInventions({
+    const planned = planInventions({
       ...fixture,
       requestedAuthority: "creative",
       samplingDisabled: true
-    })).toEqual([]);
+    });
+
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const realization = traceRecord(candidate).proposalRealization as Record<string, JsonValue>;
+      expect(realization.path).not.toBe("mouth_realization_deferred");
+      expect(realization.structuralEventPlan ?? []).toEqual([]);
+    }
   });
 
   it("rejects exact source reconstruction in the non-creative invention lane", () => {
@@ -274,7 +467,7 @@ describe("invention planner", () => {
     expect(JSON.stringify(nonEnglish.map(item => item.proposalSurface))).toContain("그래프");
   });
 
-  it("does not emit multilingual cold-start composition without structural memory", () => {
+  it("keeps multilingual non-event composition available without structural memory", () => {
     const requestText = "નવી રચના જાંબલી પંપ";
     const premise = evidenceSpan("જાંબલી પંપ શાંત લયમાં ગૂંજ્યો.");
     const source = graphNode("node.source.multilingual", "જાંબલી પંપ", [premise.id]);
@@ -293,7 +486,12 @@ describe("invention planner", () => {
 
     const planned = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
 
-    expect(planned).toEqual([]);
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const realization = traceRecord(candidate).proposalRealization as Record<string, JsonValue>;
+      expect(realization.path).not.toBe("mouth_realization_deferred");
+      expect(realization.structuralEventPlan ?? []).toEqual([]);
+    }
   });
 
   it("admits opaque invention through numeric learned requirements", () => {
@@ -462,11 +660,33 @@ function plannerFixtureWithStructuralCreativeBundle(requestText: string) {
     })),
     contentDigest: "digest.bundle.structural-authority"
   };
+  const creativeRequestFrame = creativeRequestFrameFor(requestText, profileId);
+  const compatibilityModel: CreativeEventCompatibilityModel = {
+    schema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
+    id: "model.structural-authority",
+    version: "fixture.v1",
+    requestCompilerId: "compiler.request.fixture",
+    eventCompilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    calibrationId: "calibration.structural-authority",
+    reliability: "calibrated",
+    minimumAdmissiblePosterior: 0.72,
+    minimumRolePosterior: 0.72,
+    eventCompatibilities: (bundle.creativeEvents ?? []).map(event => ({
+      requestFrameId: creativeRequestFrame.id,
+      eventRelationId: event.relationId,
+      posterior: 0.94,
+      support: 8,
+      sourceActivationIds: ["activation.structural-authority"]
+    })),
+    roleCompatibilities: []
+  };
   return {
     ...fixture,
+    creativeRequestFrame,
     languageMemoryState: {
       ...fixture.languageMemoryState,
       importedConstructionBundles: [bundle],
+      creativeEventCompatibilityModels: [compatibilityModel],
       scope: {
         mode: "cluster" as const,
         clusterId: "cluster.structural-authority",
@@ -476,6 +696,46 @@ function plannerFixtureWithStructuralCreativeBundle(requestText: string) {
         degraded: false
       }
     }
+  };
+}
+
+function creativeRequestFrameFor(
+  requestText: string,
+  _profileId: string,
+  argumentText?: string
+): CreativeRequestFrame {
+  const focusSpan = exactSpan(requestText, requestText);
+  const argumentSpan = argumentText ? exactSpan(requestText, argumentText) : undefined;
+  return {
+    schema: CREATIVE_REQUEST_FRAME_SCHEMA,
+    id: "request.frame.structural-authority",
+    compilerId: "compiler.request.fixture",
+    focus: {
+      id: "request.focus.structural-authority",
+      roleId: "request.role.structural-authority.focus",
+      span: focusSpan
+    },
+    arguments: argumentSpan
+      ? [{
+        id: "request.argument.structural-authority",
+        roleId: "request.role.structural-authority.argument",
+        span: argumentSpan
+      }]
+      : [],
+    sourceActivationIds: ["activation.structural-authority"]
+  };
+}
+
+function exactSpan(requestText: string, surface: string) {
+  const utf16Start = requestText.indexOf(surface);
+  if (utf16Start < 0) throw new Error(`fixture surface not found: ${surface}`);
+  const prefix = requestText.slice(0, utf16Start);
+  return {
+    text: surface,
+    charStart: [...prefix].length,
+    charEnd: [...prefix + surface].length,
+    byteStart: Buffer.byteLength(prefix),
+    byteEnd: Buffer.byteLength(prefix + surface)
   };
 }
 
@@ -686,6 +946,11 @@ function traceRecord(construct: InventionConstruct): Record<string, JsonValue> {
   expect(Array.isArray(construct.trace)).toBe(false);
   expect(typeof construct.trace).toBe("object");
   return construct.trace as Record<string, JsonValue>;
+}
+
+function structuralEventRows(construct: InventionConstruct): Array<Record<string, JsonValue>> {
+  const realization = traceRecord(construct).proposalRealization as Record<string, JsonValue>;
+  return (realization.structuralEventPlan as JsonValue[]).map(row => row as Record<string, JsonValue>);
 }
 
 function semanticPlanId(construct: InventionConstruct): string {

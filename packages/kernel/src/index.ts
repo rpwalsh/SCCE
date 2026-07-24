@@ -48,6 +48,7 @@ export * from "./surface-quality.js";
 export * from "./surface-linguistics.js";
 export * from "./language-construction.js";
 export * from "./language-construction-memory.js";
+export * from "./creative-event-compatibility.js";
 export * from "./calibration-spine.js";
 export * from "./calibration-evaluation.js";
 export * from "./dialogue-pragmatics.js";

@@ -95,6 +95,21 @@ describe("English structural response-form layout", () => {
     expect(realized?.text).toContain("new kind of clock");
     expect(realized?.text).toContain("city under the ocean");
   });
+
+  it("fails closed instead of realizing source arguments missing from an admitted plan", () => {
+    const requestText = "Invent a new kind of clock for a city under the ocean.";
+    const realized = realizeEnglishStructuralCreative({
+      requestText,
+      contentTerms: ["new", "kind", "clock", "city", "ocean"],
+      plannedEvents: fixtureEvents(true).map(event => ({
+        ...event,
+        requestRoleBindings: []
+      })),
+      defaultTargetWords: 120
+    });
+
+    expect(realized).toBeUndefined();
+  });
 });
 
 function fixtureInput(surfaceLayout?: ResponseFormSurfaceLayout) {
@@ -121,6 +136,9 @@ function responseForm(surfaceLayout: ResponseFormSurfaceLayout): ActivatedRespon
 }
 
 function fixtureEvents(bindRequestContext = false): EnglishStructuralPlannedEvent[] {
+  const requestText = "Invent a new kind of clock for a city under the ocean.";
+  const requestArgumentText = "a city under the ocean";
+  const requestArgumentStart = [...requestText.slice(0, requestText.indexOf(requestArgumentText))].length;
   const verbs = [
     ["search", "searched"],
     ["cross", "crossed"],
@@ -140,7 +158,19 @@ function fixtureEvents(bindRequestContext = false): EnglishStructuralPlannedEven
     requestRoleBindings: bindRequestContext
       ? [{
         eventRoleId: "scce.role.patient" as const,
-        requestRoleId: "scce.request.role.antagonist" as const,
+        requestArgumentId: "request.argument.fixture.context",
+        requestRoleId: "request.role.fixture.context",
+        requestSpan: {
+          text: requestArgumentText,
+          charStart: requestArgumentStart,
+          charEnd: requestArgumentStart + [...requestArgumentText].length,
+          byteStart: Buffer.byteLength(requestText.slice(0, requestText.indexOf(requestArgumentText))),
+          byteEnd: Buffer.byteLength(
+            requestText.slice(0, requestText.indexOf(requestArgumentText)) + requestArgumentText
+          )
+        },
+        rolePosterior: 0.94,
+        roleThreshold: 0.72,
         admissible: true as const
       }]
       : [],

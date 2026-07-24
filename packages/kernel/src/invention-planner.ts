@@ -6,6 +6,13 @@ import {
   isEnglishCreativeEventStructurallyRealizable,
   MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS
 } from "./english-structural-realizer.js";
+import {
+  creativeEventCompatibilityDecision,
+  creativeEventRolePosterior,
+  type CreativeEventCompatibilityDecision,
+  type CreativeRequestFrame,
+  type CreativeRequestSpan
+} from "./creative-event-compatibility.js";
 import type { LanguageGenerationResult, LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createInventionConstruct, type InventionConstruct } from "./prediction.js";
 import { canonicalStringify, clamp01, createHasher, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -245,6 +252,8 @@ export interface PlanInventionsInput {
   > & Partial<Pick<TurnRequirementField, "requiredFeatures">>;
   /** Numeric operator state; learned IDs select the invention lane. */
   operatorActivations?: readonly ActivatedOperator[];
+  /** Source-language adapter output. IDs are opaque to cognitive planning. */
+  creativeRequestFrame?: CreativeRequestFrame;
   temperature?: number;
   samplingDisabled?: boolean;
   maxCandidates?: number;
@@ -340,9 +349,17 @@ interface StructuralCreativeEventPlanRecord {
   discourseBeatId: string;
   requestRoleBindings: Array<{
     eventRoleId: "scce.role.patient" | "scce.role.complement";
-    requestRoleId: "scce.request.role.antagonist";
+    requestArgumentId: string;
+    requestRoleId: string;
+    requestSpan: CreativeRequestSpan;
+    rolePosterior: number;
+    roleThreshold: number;
     admissible: true;
   }>;
+  compatibilityModelId: string;
+  compatibilityModelVersion: string;
+  compatibilityCalibrationId: string;
+  compatibilityThreshold: number;
   requestFit: number;
   graphFit: number;
   routeFit: number;
@@ -449,15 +466,14 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
   const planningActivation = inventionPlanningActivation(input);
   if (!planningActivation.admissible) return [];
   const structuralBundles = productionStructuralCreativeBundles(input);
-  if (input.requestedAuthority === "creative" && structuralBundles.length === 0) return [];
   const maxCandidates = boundedInteger(input.maxCandidates ?? 4, 1, 8);
   const constraints = extractConstraints(input).slice(0, 16);
   const graphIngredients = graphCompositionIngredients(input).slice(0, 12);
   const languageIngredients = languageCompositionIngredients(input).slice(0, 18);
   const requestIngredients = requestCompositionIngredients(input.requestText);
   const ingredients = uniqueIngredients([...graphIngredients, ...languageIngredients, ...requestIngredients]);
-  const productionStructuralAuthority = structuralBundles.length > 0;
-  const structuralCandidateLimit = productionStructuralAuthority
+  const structuralMemoryAvailable = structuralBundles.length > 0;
+  const structuralCandidateLimit = structuralMemoryAvailable
     ? Math.min(maxCandidates, 3)
     : maxCandidates;
   const uniqueDrafts = Array.from({ length: structuralCandidateLimit + 2 }, (_, index) =>
@@ -473,6 +489,7 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
     && (draft.proposalRealization.structuralBundleIds?.length ?? 0) > 0
     && draft.proposalRealization.structuralBundleIds?.every(id => admittedStructuralBundleIds.has(id))
   ));
+  const productionStructuralAuthority = structuralDrafts.length > 0;
   const learnedDrafts = uniqueDrafts.filter(draft => draft.proposalRealization.path !== "composition_fallback");
   const coldStartFallbackActive = !productionStructuralAuthority && learnedDrafts.length === 0;
   const drafts = (
@@ -862,72 +879,90 @@ function buildStructuralCreativeEventPlan(
   variant: number,
   structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"]
 ): StructuralCreativeEventPlanRecord[] {
-  const requestFeatures = featureSet(input.requestText, 256);
+  const requestFrame = input.creativeRequestFrame;
+  if (!requestFrame || !validCreativeRequestFrame(input.requestText, requestFrame)) return [];
+  const compatibilityModels = input.languageMemoryState.creativeEventCompatibilityModels;
+  if (!compatibilityModels.some(model => (
+    model.reliability === "calibrated"
+    && model.requestCompilerId === requestFrame.compilerId
+  ))) return [];
   const structuralEventLimit = structuralCreativeEventLimit(input);
-  const groups = structuralBundles
+  const admitted = structuralBundles
     .flatMap(bundle => {
       const events = englishCreativeStructuralRouteEvents(bundle.creativeEvents ?? [])
-        .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || left.id.localeCompare(right.id))
-        .map((event, routeIndex) => {
-          const requestFit = weightedJaccard(
-            requestFeatures,
-            featureSet(`${event.forms.infinitive} ${event.sourceLabel}`, 64)
-          );
-          const graphFit = structuralCreativeEventGraphFit(input, event);
-          return {
-            bundleId: bundle.id,
-            event,
-            routeIndex,
-            requestFit,
-            graphFit,
-            routeFit: clamp01(1 - (1 - requestFit) * (1 - graphFit))
-          };
-        });
-      if (!events.length) return [];
-      const anchor = [...events].sort((left, right) =>
-        right.routeFit - left.routeFit
-        || right.requestFit - left.requestFit
-        || right.graphFit - left.graphFit
-        || left.event.sourceOrdinal - right.event.sourceOrdinal
-        || left.event.id.localeCompare(right.event.id)
-      )[0]!;
-      return [{
-        bundleId: bundle.id,
-        events,
-        anchor,
-        routeId: stableId("semantic.creative.event.route", {
+        .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || left.id.localeCompare(right.id));
+      const routeIndexByEventId = new Map(events.map((event, routeIndex) => [event.id, routeIndex]));
+      const compatible = events.flatMap(event => {
+        const compatibility = creativeEventCompatibilityDecision(
+          compatibilityModels,
+          requestFrame,
+          event
+        );
+        if (!compatibility || compatibility.posterior < compatibility.threshold) return [];
+        const requestRoleBindings = creativeRequestRoleBindings(
+          compatibilityModels,
+          requestFrame,
+          event
+        );
+        if (!requestRoleBindings) return [];
+        const routeIndex = routeIndexByEventId.get(event.id);
+        if (routeIndex === undefined) return [];
+        const graphFit = structuralCreativeEventGraphFit(input, event);
+        return [{
           bundleId: bundle.id,
-          anchorEventId: anchor.event.id,
-          eventIds: events.map(row => row.event.id)
-        })
-      }];
-    })
-    .sort((left, right) =>
-      right.anchor.routeFit - left.anchor.routeFit
-      || right.anchor.requestFit - left.anchor.requestFit
-      || right.anchor.graphFit - left.anchor.graphFit
-      || right.events.length - left.events.length
-      || left.bundleId.localeCompare(right.bundleId)
-    );
-  if (!groups.length) return [];
-  const orderedGroups = rotate(groups, variant % groups.length);
-  const selected: Array<typeof orderedGroups[number]["events"][number] & {
-    routeId: string;
-    routeAnchorEventId: string;
-  }> = [];
-  for (const group of orderedGroups) {
-    const remaining = structuralEventLimit - selected.length;
-    if (remaining <= 0) break;
-    const route = boundedSourceAdjacentRoute(
-      group.events,
-      group.anchor.routeIndex,
-      remaining
-    );
-    selected.push(...route.map(row => ({
-      ...row,
-      routeId: group.routeId,
-      routeAnchorEventId: group.anchor.event.id
-    })));
+          event,
+          routeIndex,
+          requestRoleBindings,
+          compatibility,
+          requestFit: compatibility.posterior,
+          graphFit,
+          routeFit: clamp01(
+            1 - (1 - compatibility.posterior) * (1 - graphFit)
+          )
+        }];
+      });
+      if (!compatible.length) return [];
+      const anchor = [...compatible].sort(compareCompatibleCreativeEvents)[0]!;
+      const routeId = stableId("semantic.creative.event.route", {
+        bundleId: bundle.id,
+        requestFrameId: requestFrame.id,
+        compatibilityModelId: anchor.compatibility.modelId,
+        admittedEventIds: compatible.map(row => row.event.id)
+      });
+      return compatible.map(row => ({
+        ...row,
+        routeId,
+        routeAnchorEventId: anchor.event.id
+      }));
+    });
+  if (admitted.length < 4) return [];
+  const rowsByRelationId = new Map<string, typeof admitted>();
+  for (const row of admitted) {
+    const rows = rowsByRelationId.get(row.event.relationId) ?? [];
+    rows.push(row);
+    rowsByRelationId.set(row.event.relationId, rows);
+  }
+  const relationGroups = [...rowsByRelationId.entries()]
+    .map(([relationId, rows]) => ({
+      relationId,
+      rows: [...rows].sort(compareCompatibleCreativeEvents)
+    }))
+    .sort((left, right) => (
+      compareCompatibleCreativeEvents(left.rows[0]!, right.rows[0]!)
+      || left.relationId.localeCompare(right.relationId)
+    ));
+  const orderedGroups = rotate(relationGroups, variant % relationGroups.length);
+  const selected: typeof admitted = [];
+  for (let round = 0; selected.length < structuralEventLimit; round++) {
+    let added = false;
+    for (const group of orderedGroups) {
+      const row = group.rows[round];
+      if (!row) continue;
+      selected.push(row);
+      added = true;
+      if (selected.length >= structuralEventLimit) break;
+    }
+    if (!added) break;
   }
   return selected.map((row, outputIndex) => {
     const previous = selected[outputIndex - 1];
@@ -938,18 +973,6 @@ function buildStructuralCreativeEventPlan(
       discourseRelationId,
       discourseBeatOrdinal
     });
-    const requestBindableRoleId = row.event.argumentFrame.bindings
-      .map(binding => binding.roleId)
-      .find((roleId): roleId is "scce.role.patient" | "scce.role.complement" => (
-        roleId === "scce.role.patient" || roleId === "scce.role.complement"
-      ));
-    const requestRoleBindings = requestBindableRoleId
-      ? [{
-        eventRoleId: requestBindableRoleId,
-        requestRoleId: "scce.request.role.antagonist" as const,
-        admissible: true as const
-      }]
-      : [];
     const sourceAdjacent = Boolean(
       previous
       && previous.bundleId === row.bundleId
@@ -969,7 +992,11 @@ function buildStructuralCreativeEventPlan(
         ? "scce.discourse.bridge.source_adjacency"
         : "scce.discourse.bridge.invented_macro",
       discourseBeatId,
-      requestRoleBindings,
+      requestRoleBindings: row.requestRoleBindings,
+      compatibilityModelId: row.compatibility.modelId,
+      compatibilityModelVersion: row.compatibility.modelVersion,
+      compatibilityCalibrationId: row.compatibility.calibrationId,
+      compatibilityThreshold: row.compatibility.threshold,
       requestFit: row.requestFit,
       graphFit: row.graphFit,
       routeFit: row.routeFit,
@@ -980,6 +1007,111 @@ function buildStructuralCreativeEventPlan(
       evidenceId: row.event.evidenceId
     };
   });
+}
+
+function compareCompatibleCreativeEvents(
+  left: {
+    compatibility: CreativeEventCompatibilityDecision;
+    graphFit: number;
+    event: DurableCreativeEvent;
+  },
+  right: {
+    compatibility: CreativeEventCompatibilityDecision;
+    graphFit: number;
+    event: DurableCreativeEvent;
+  }
+): number {
+  return right.compatibility.posterior - left.compatibility.posterior
+    || right.graphFit - left.graphFit
+    || left.event.sourceOrdinal - right.event.sourceOrdinal
+    || left.event.id.localeCompare(right.event.id);
+}
+
+function creativeRequestRoleBindings(
+  models: ReadonlyArray<LanguageMemoryRuntimeState["creativeEventCompatibilityModels"][number]>,
+  frame: CreativeRequestFrame,
+  event: DurableCreativeEvent
+): StructuralCreativeEventPlanRecord["requestRoleBindings"] | undefined {
+  const bindings = event.argumentFrame.bindings
+    .filter((binding): binding is typeof binding & {
+      roleId: "scce.role.patient" | "scce.role.complement";
+    } => binding.roleId === "scce.role.patient" || binding.roleId === "scce.role.complement");
+  if (bindings.length !== event.argumentFrame.bindings.length) return undefined;
+  if (!bindings.length) return [];
+  const orderedBindings = [...bindings].sort((left, right) => left.roleId.localeCompare(right.roleId));
+  const matchFrom = (
+    bindingIndex: number,
+    usedArguments: ReadonlySet<string>
+  ): StructuralCreativeEventPlanRecord["requestRoleBindings"] | undefined => {
+    const binding = orderedBindings[bindingIndex];
+    if (!binding) return [];
+    const candidates = frame.arguments
+      .filter(argument => !usedArguments.has(argument.id))
+      .flatMap(argument => {
+        const compatibility = creativeEventRolePosterior(
+          models,
+          frame,
+          argument.roleId,
+          binding.roleId
+        );
+        return compatibility && compatibility.posterior >= compatibility.threshold
+          ? [{ argument, compatibility }]
+          : [];
+      })
+      .sort((left, right) => (
+        right.compatibility.posterior - left.compatibility.posterior
+        || left.argument.id.localeCompare(right.argument.id)
+      ));
+    const selected = candidates[0];
+    if (!selected) return undefined;
+    for (const candidate of candidates) {
+      const nextUsed = new Set(usedArguments);
+      nextUsed.add(candidate.argument.id);
+      const remaining = matchFrom(bindingIndex + 1, nextUsed);
+      if (!remaining) continue;
+      return [{
+        eventRoleId: binding.roleId,
+        requestArgumentId: candidate.argument.id,
+        requestRoleId: candidate.argument.roleId,
+        requestSpan: { ...candidate.argument.span },
+        rolePosterior: candidate.compatibility.posterior,
+        roleThreshold: candidate.compatibility.threshold,
+        admissible: true
+      }, ...remaining];
+    }
+    return undefined;
+  };
+  return matchFrom(0, new Set());
+}
+
+function validCreativeRequestFrame(
+  requestText: string,
+  frame: CreativeRequestFrame
+): boolean {
+  if (!frame.id || !frame.compilerId || !frame.focus.id || !frame.focus.roleId) return false;
+  const roles = [frame.focus, ...frame.arguments];
+  if (new Set(roles.map(role => role.id)).size !== roles.length) return false;
+  return roles.every(role => (
+    Boolean(role.roleId)
+    && exactCreativeRequestSpan(requestText, role.span)
+  ));
+}
+
+function exactCreativeRequestSpan(
+  requestText: string,
+  span: CreativeRequestSpan
+): boolean {
+  const points = [...requestText];
+  if (!Number.isSafeInteger(span.charStart)
+    || !Number.isSafeInteger(span.charEnd)
+    || span.charStart < 0
+    || span.charEnd <= span.charStart
+    || span.charEnd > points.length) return false;
+  const surface = points.slice(span.charStart, span.charEnd).join("");
+  const prefix = points.slice(0, span.charStart).join("");
+  return surface === span.text
+    && new TextEncoder().encode(prefix).byteLength === span.byteStart
+    && new TextEncoder().encode(prefix + surface).byteLength === span.byteEnd;
 }
 
 function structuralCreativeEventLimit(input: PlanInventionsInput): number {
@@ -1026,24 +1158,6 @@ function structuralCreativeEventGraphFit(
     .map(edgeRelationPotential));
 }
 
-function boundedSourceAdjacentRoute<T extends { routeIndex: number }>(
-  events: readonly T[],
-  anchorIndex: number,
-  limit: number
-): T[] {
-  const boundedLimit = Math.max(0, Math.min(events.length, Math.floor(limit)));
-  if (boundedLimit === 0) return [];
-  if (boundedLimit === events.length) {
-    return [
-      ...events.slice(anchorIndex),
-      ...events.slice(0, anchorIndex)
-    ];
-  }
-  const centeredStart = anchorIndex - Math.floor((boundedLimit - 1) / 2);
-  const start = Math.max(0, Math.min(events.length - boundedLimit, centeredStart));
-  return events.slice(start, start + boundedLimit);
-}
-
 function structurallyUsableCreativeEvent(event: DurableCreativeEvent): boolean {
   return isEnglishCreativeEventStructurallyRealizable(event);
 }
@@ -1079,7 +1193,10 @@ function buildDraft(
   variant: number,
   structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"]
 ): DraftComposition {
-  const deferSurfaceRealization = structuralBundles.length > 0;
+  const structuralEventPlan = structuralBundles.length > 0
+    ? buildStructuralCreativeEventPlan(input, variant, structuralBundles)
+    : [];
+  const deferSurfaceRealization = structuralEventPlan.length >= 4;
   const requestTerms = requestSurfaceUnits(input.requestText);
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
   const title = surfaceTitle(activatedSlots?.continuationSlot.text ?? requestTerms.slice(0, 6).join(" "));
@@ -1102,9 +1219,6 @@ function buildDraft(
   const learnedProposal = deferSurfaceRealization
     ? undefined
     : learnedProposalFromMemory(input, requestTerms, variant);
-  const structuralEventPlan = deferSurfaceRealization
-    ? buildStructuralCreativeEventPlan(input, variant, structuralBundles)
-    : [];
   const structuralBundleIds = uniqueStrings(structuralEventPlan.map(event => event.bundleId));
   const shapedProposal = deferSurfaceRealization
     ? title

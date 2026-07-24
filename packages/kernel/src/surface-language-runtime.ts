@@ -1,4 +1,5 @@
 import { createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
+import { isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { isLanguageConstructionPattern } from "./language-construction-memory.js";
 import { createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, scopeLanguageMemoryStateToCluster } from "./language-memory-runtime.js";
@@ -105,6 +106,8 @@ export function createSurfaceLanguageRuntime(options: {
       deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
     ]);
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
+    const requestControlCompatibilityPatterns = requestControlPatterns
+      .filter(isCreativeEventCompatibilityPattern);
     if (!cluster) {
       const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
         importRunId: active.activeImportRunIds[0],
@@ -185,7 +188,10 @@ export function createSurfaceLanguageRuntime(options: {
       models,
       observations,
       units,
-      patterns,
+      patterns: uniqueRecordsById([
+        ...patterns,
+        ...requestControlCompatibilityPatterns
+      ], Math.max(256, boundedLimit * 64)),
       semanticFrames,
       constructionEvidence
     });

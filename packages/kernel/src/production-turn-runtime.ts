@@ -21,6 +21,10 @@ import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
+import {
+  compileEnglishCreativeRequestFrame,
+  ENGLISH_CREATIVE_REQUEST_COMPILER_ID
+} from "./english-structural-realizer.js";
 import { EVALUATION_COMPONENT_IDS, type EvaluationComponentId } from "./evaluation-flags.js";
 import {
   createAblatedSupportEntailment,
@@ -498,6 +502,19 @@ export function createProductionTurnRuntime(options: {
         languageMemoryState: requestRequirementLanguageState,
         contextContribution: requirementContextFromMetadata(input.metadata)
       });
+      const creativeRequestFrame = authorityLanguage.state.creativeEventCompatibilityModels.some(model => (
+        model.reliability === "calibrated"
+        && model.requestCompilerId === ENGLISH_CREATIVE_REQUEST_COMPILER_ID
+      ))
+        ? compileEnglishCreativeRequestFrame({
+          requestText: input.text,
+          learnedRequirements: requirementField.requiredFeatures,
+          activatedFrameOrPatternIds: uniqueKernelStrings([
+            ...requirementField.activatedFrameIds,
+            ...requirementField.activatedPatternIds
+          ])
+        })
+        : undefined;
       let operatorActivations = activateCognitiveOperators({
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
@@ -1150,6 +1167,7 @@ export function createProductionTurnRuntime(options: {
         construct: candidateConstructSeed,
         requirementField,
         operatorActivations,
+        creativeRequestFrame,
         samplingDisabled: deps.deterministicReplay === true
       });
       kernelTrace({
@@ -1183,6 +1201,7 @@ export function createProductionTurnRuntime(options: {
             ])
           },
           operatorActivations,
+          creativeRequestFrame,
           samplingDisabled: true,
           maxCandidates: 1
         }).filter(invention => runtimeTerminalInventionIsAdmissible({

@@ -50,6 +50,7 @@ import {
   MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS,
   realizeEnglishStructuralCreative,
   type EnglishStructuralPlannedEvent,
+  type EnglishStructuralRequestRoleBinding,
   type LearnedResponseExtentHint,
   type NarrativeBridgeRelationId
 } from "./english-structural-realizer.js";
@@ -281,11 +282,11 @@ interface StructuralCreativeEventSelector {
     | "scce.discourse.bridge.source_adjacency"
     | "scce.discourse.bridge.invented_macro";
   discourseBeatId: string;
-  requestRoleBindings: Array<{
-    eventRoleId: "scce.role.patient" | "scce.role.complement";
-    requestRoleId: "scce.request.role.antagonist";
-    admissible: true;
-  }>;
+  requestRoleBindings: EnglishStructuralRequestRoleBinding[];
+  compatibilityModelId: string;
+  compatibilityModelVersion: string;
+  compatibilityCalibrationId: string;
+  compatibilityThreshold: number;
   requestFit: number;
   graphFit: number;
   routeFit: number;
@@ -490,14 +491,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("correction_influence");
       const structuralCreativeProductionLane = input.requestedAuthority === "creative";
       const structuralCreativeSelection = selectedStructuralCreativePlan(input);
-      const structuralCreativeBound = structuralCreativeProductionLane;
-      const structuralCreativePreflight = Boolean(structuralCreativeSelection)
+      const structuralCreativePreflight = structuralCreativeProductionLane
+        && Boolean(structuralCreativeSelection)
         && hasHydratedStructuralCreativePrior(
           input.languageMemory,
           input.languageProfile,
           structuralCreativeSelection
         );
-      const basePriorPieces = structuralCreativeBound
+      const basePriorPieces = structuralCreativePreflight
         ? []
         : importedSurfacePieces(input, undefined, undefined);
       markMouthPhase("base_prior_pieces");
@@ -511,7 +512,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? sourceStructuralCreativeCandidate(plan, discoursePlan, input, structuralCreativeSelection)
         : undefined;
       markMouthPhase("structural_creative_realization");
-      const structuralCreativeFailClosed = structuralCreativeProductionLane && !structuralCreativeCandidate;
+      const structuralCreativeBound = Boolean(structuralCreativeCandidate);
+      const structuralCreativeFailClosed = false;
       markMouthPhase("structural_admission");
       const priorPieces = structuralCreativeBound
         ? basePriorPieces
@@ -2723,6 +2725,10 @@ function structuralCreativeEventSelectors(
     const discourseBridgeBasisId = stringFrom(row.discourseBridgeBasisId);
     const discourseBeatId = stringFrom(row.discourseBeatId);
     const requestRoleBindings = structuralCreativeRequestRoleBindings(row.requestRoleBindings);
+    const compatibilityModelId = stringFrom(row.compatibilityModelId);
+    const compatibilityModelVersion = stringFrom(row.compatibilityModelVersion);
+    const compatibilityCalibrationId = stringFrom(row.compatibilityCalibrationId);
+    const compatibilityThreshold = unitIntervalJsonNumber(row.compatibilityThreshold);
     const routeId = stringFrom(row.routeId);
     const routeAnchorEventId = stringFrom(row.routeAnchorEventId);
     const sourceVersionId = stringFrom(row.sourceVersionId);
@@ -2746,6 +2752,10 @@ function structuralCreativeEventSelectors(
       || !evidenceId
       || !discourseBeatId
       || requestRoleBindings === undefined
+      || !compatibilityModelId
+      || !compatibilityModelVersion
+      || !compatibilityCalibrationId
+      || compatibilityThreshold === undefined
       || eventIds.has(eventId)
       || !roleIds.includes("scce.role.agent")
       || requestFit === undefined
@@ -2767,6 +2777,10 @@ function structuralCreativeEventSelectors(
       discourseBridgeBasisId,
       discourseBeatId,
       requestRoleBindings,
+      compatibilityModelId,
+      compatibilityModelVersion,
+      compatibilityCalibrationId,
+      compatibilityThreshold,
       requestFit,
       graphFit,
       routeFit,
@@ -2788,16 +2802,50 @@ function structuralCreativeRequestRoleBindings(
   if (rows.length !== value.length) return undefined;
   const bindings: StructuralCreativeEventSelector["requestRoleBindings"] = [];
   const eventRoleIds = new Set<string>();
+  const requestArgumentIds = new Set<string>();
   for (const row of rows) {
     const eventRoleId = stringFrom(row.eventRoleId);
+    const requestArgumentId = stringFrom(row.requestArgumentId);
+    const requestRoleId = stringFrom(row.requestRoleId);
+    const requestSpan = jsonRecord(row.requestSpan);
+    const requestSpanText = stringFrom(requestSpan.text);
+    const requestSpanCharStart = safeNonNegativeInteger(requestSpan.charStart);
+    const requestSpanCharEnd = safeNonNegativeInteger(requestSpan.charEnd);
+    const requestSpanByteStart = safeNonNegativeInteger(requestSpan.byteStart);
+    const requestSpanByteEnd = safeNonNegativeInteger(requestSpan.byteEnd);
+    const rolePosterior = unitIntervalJsonNumber(row.rolePosterior);
+    const roleThreshold = unitIntervalJsonNumber(row.roleThreshold);
     if ((eventRoleId !== "scce.role.patient" && eventRoleId !== "scce.role.complement")
-      || row.requestRoleId !== "scce.request.role.antagonist"
+      || !requestArgumentId
+      || !requestRoleId
+      || !requestSpanText
+      || requestSpanCharStart === undefined
+      || requestSpanCharEnd === undefined
+      || requestSpanByteStart === undefined
+      || requestSpanByteEnd === undefined
+      || requestSpanCharEnd <= requestSpanCharStart
+      || requestSpanByteEnd <= requestSpanByteStart
+      || rolePosterior === undefined
+      || roleThreshold === undefined
+      || rolePosterior < roleThreshold
       || row.admissible !== true
-      || eventRoleIds.has(eventRoleId)) return undefined;
+      || eventRoleIds.has(eventRoleId)
+      || requestArgumentIds.has(requestArgumentId)) return undefined;
     eventRoleIds.add(eventRoleId);
+    requestArgumentIds.add(requestArgumentId);
     bindings.push({
       eventRoleId,
-      requestRoleId: "scce.request.role.antagonist",
+      requestArgumentId,
+      requestRoleId,
+      requestSpan: {
+        text: requestSpanText,
+        charStart: requestSpanCharStart,
+        charEnd: requestSpanCharEnd,
+        byteStart: requestSpanByteStart,
+        byteEnd: requestSpanByteEnd
+      },
+      rolePosterior,
+      roleThreshold,
       admissible: true
     });
   }
@@ -2822,6 +2870,12 @@ function isStructuralCreativeDiscourseBridgeBasisId(
 
 function unitIntervalJsonNumber(value: JsonValue | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : undefined;
+}
+
+function safeNonNegativeInteger(value: JsonValue | undefined): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : undefined;
 }
@@ -2905,8 +2959,12 @@ function resolveHydratedStructuralCreativeEvents(
     const expectedBridgeBasisId = sourceAdjacent
       ? "scce.discourse.bridge.source_adjacency"
       : "scce.discourse.bridge.invented_macro";
+    const eventArgumentRoleIds = event.argumentFrame.bindings.map(binding => binding.roleId).sort();
+    const plannedArgumentRoleIds = selector.requestRoleBindings.map(binding => binding.eventRoleId).sort();
     if (selector.discourseBridgeBasisId !== expectedBridgeBasisId
       || (sourceAdjacent && previous!.sourceOrdinal >= selector.sourceOrdinal)
+      || selector.requestFit < selector.compatibilityThreshold
+      || canonicalStringify(eventArgumentRoleIds) !== canonicalStringify(plannedArgumentRoleIds)
       || Math.abs(selector.routeFit - clamp01(
         1 - (1 - selector.requestFit) * (1 - selector.graphFit)
       )) > 1e-12) return undefined;

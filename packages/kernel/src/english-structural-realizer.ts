@@ -5,9 +5,15 @@ import {
   type DurableCreativeEventConstruction
 } from "./language-construction-memory.js";
 import {
+  CREATIVE_REQUEST_FRAME_SCHEMA,
+  type CreativeRequestFrame,
+  type CreativeRequestSpan
+} from "./creative-event-compatibility.js";
+import {
   normalizeResponseFormSurfaceLayout,
   type ActivatedResponseForm,
-  type ResponseFormSurfaceLayout
+  type ResponseFormSurfaceLayout,
+  type TurnRequirement
 } from "./turn-requirements.js";
 import type { JsonValue } from "./types.js";
 
@@ -81,7 +87,11 @@ export interface EnglishStructuralPlannedEvent {
 
 export interface EnglishStructuralRequestRoleBinding {
   eventRoleId: "scce.role.patient" | "scce.role.complement";
-  requestRoleId: "scce.request.role.antagonist";
+  requestArgumentId: string;
+  requestRoleId: string;
+  requestSpan: CreativeRequestSpan;
+  rolePosterior: number;
+  roleThreshold: number;
   admissible: true;
 }
 
@@ -124,6 +134,8 @@ interface RealizedBeat {
 export const MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS = 1_800;
 const MAX_TARGET_WORDS = 6_000;
 const MAX_OUTPUT_SENTENCES = MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS;
+export const ENGLISH_CREATIVE_REQUEST_COMPILER_ID =
+  "surface.creative_request.compiler.en.v1";
 const structuralEventRealizabilityCache = new WeakMap<DurableCreativeEventConstruction, boolean>();
 const sourceArgumentSurfaceCache = new Map<string, string | null>();
 
@@ -179,11 +191,63 @@ export function englishCreativeStructuralRouteEvents<
   ));
 }
 
+export function compileEnglishCreativeRequestFrame(input: {
+  requestText: string;
+  learnedRequirements: readonly TurnRequirement[];
+  activatedFrameOrPatternIds?: readonly string[];
+}): CreativeRequestFrame | undefined {
+  const learned = [...input.learnedRequirements]
+    .filter(requirement => (
+      Boolean(requirement.origin.learnedFrameOrPatternId)
+      && Boolean(requirement.sourceActivationId)
+    ))
+    .sort((left, right) => (
+      Math.max(right.confidence, right.value) - Math.max(left.confidence, left.value)
+      || left.origin.requestSpan.charStart - right.origin.requestSpan.charStart
+      || left.id.localeCompare(right.id)
+    ));
+  const selected = learned[0];
+  if (!selected) return undefined;
+  const role = requestRole([], input.requestText);
+  if (!role) return undefined;
+  const focusSpan = requestSpanForSurface(input.requestText, role.protagonist);
+  if (!focusSpan) return undefined;
+  const argumentSpan = role.antagonist
+    ? requestSpanForSurface(input.requestText, role.antagonist)
+    : undefined;
+  const frameId = selected.origin.learnedFrameOrPatternId;
+  const sourceActivationIds = uniqueStrings([
+    frameId,
+    selected.sourceActivationId,
+    ...(input.activatedFrameOrPatternIds ?? []),
+    ...learned.map(requirement => requirement.origin.learnedFrameOrPatternId),
+    ...learned.map(requirement => requirement.sourceActivationId)
+  ]);
+  return {
+    schema: CREATIVE_REQUEST_FRAME_SCHEMA,
+    id: frameId,
+    compilerId: ENGLISH_CREATIVE_REQUEST_COMPILER_ID,
+    focus: {
+      id: `${frameId}:focus`,
+      roleId: `${frameId}:role:focus`,
+      span: focusSpan
+    },
+    arguments: argumentSpan
+      ? [{
+        id: `${frameId}:argument:0`,
+        roleId: `${frameId}:role:argument:0`,
+        span: argumentSpan
+      }]
+      : [],
+    sourceActivationIds
+  };
+}
+
 /**
  * English Mouth adapter over hydrated, verified construction/event memory.
  * It never reads evidence bodies or source clauses. Source-derived lexical
- * material is limited to event morphology and independently verified argument
- * heads/connectors compiled at ingest.
+ * material is limited to event morphology and compatible connectors compiled
+ * at ingest. Planned argument surfaces remain exact request-owned spans.
  */
 export function realizeEnglishStructuralCreative(
   input: EnglishStructuralCreativeInput
@@ -197,7 +261,13 @@ export function realizeEnglishStructuralCreative(
   const events = input.plannedEvents;
   const typedHydrationMs = performance.now() - hydrateStart;
   if (events.length < 4
-    || events.some(row => !isEnglishCreativeEventStructurallyRealizable(row.event))) return undefined;
+    || events.some(row => (
+      !isEnglishCreativeEventStructurallyRealizable(row.event)
+      || row.requestRoleBindings.some(binding => !exactCreativeRequestSpan(
+        input.requestText,
+        binding.requestSpan
+      ))
+    ))) return undefined;
 
   const planStart = performance.now();
   const beats = microplanEnglishBeats(events, role);
@@ -343,7 +413,7 @@ function microplanEnglishBeats(
   let previous: EnglishStructuralPlannedEvent | undefined;
   let active: RealizedBeat | undefined;
   for (const row of events) {
-    const clause = realizeTypedEvent(row, role, previous);
+    const clause = realizeTypedEvent(row, previous);
     previous = row;
     if (!clause) continue;
     const beatId = row.discourseBeatId;
@@ -363,7 +433,6 @@ function microplanEnglishBeats(
 
 function realizeTypedEvent(
   row: EnglishStructuralPlannedEvent,
-  role: RequestRole,
   previous: EnglishStructuralPlannedEvent | undefined
 ): Omit<RealizedClause, "beatId"> | undefined {
   const form = row.event.forms.past;
@@ -375,40 +444,24 @@ function realizeTypedEvent(
   const replacedRoles = ["scce.role.agent", "scce.role.request_action"];
   const sourceBoundRoles: string[] = [];
   let unchangedTokenRun = 0;
-  const requestBoundArgument = frame.bindings.find(binding =>
-    row.requestRoleBindings?.some(candidate =>
-      candidate.admissible
-      && candidate.requestRoleId === "scce.request.role.antagonist"
-      && candidate.eventRoleId === binding.roleId
-    )
-  );
-  const sourceBoundArgument = frame.bindings.find(binding => binding.roleId === "scce.role.patient")
-    ?? frame.bindings[0];
-  const realizedBindings = requestBoundArgument
-    ? [requestBoundArgument]
-    : sourceBoundArgument
-      ? [sourceBoundArgument]
-      : [];
-  for (const binding of realizedBindings) {
+  if (frame.bindings.length !== row.requestRoleBindings.length) return undefined;
+  const requestArgumentIds = new Set(row.requestRoleBindings.map(binding => binding.requestArgumentId));
+  if (requestArgumentIds.size !== row.requestRoleBindings.length) return undefined;
+  for (const binding of frame.bindings) {
     const plannedRequestBinding = row.requestRoleBindings?.find(candidate =>
       candidate.admissible
-      && candidate.requestRoleId === "scce.request.role.antagonist"
       && candidate.eventRoleId === binding.roleId
     );
+    if (!plannedRequestBinding
+      || plannedRequestBinding.rolePosterior < plannedRequestBinding.roleThreshold) return undefined;
     const connector = binding.connector && admissibleEnglishArgumentConnector(binding.connector.surface)
       ? binding.connector.surface
       : undefined;
-    if (plannedRequestBinding && role.antagonistSurface) {
-      argumentSurfaces.push([connector, role.antagonistSurface].filter(Boolean).join(" "));
-      replacedRoles.push(binding.roleId);
-      continue;
-    }
-    const sourceSurface = sourceBoundEnglishArgumentSurface(binding.surface);
-    if (!sourceSurface) continue;
+    const requestSurface = requestBoundEnglishArgumentSurface(plannedRequestBinding.requestSpan.text);
+    if (!requestSurface) return undefined;
     if (binding.roleId === "scce.role.complement" && !connector) continue;
-    argumentSurfaces.push([connector, sourceSurface].filter(Boolean).join(" "));
-    sourceBoundRoles.push(binding.roleId);
-    unchangedTokenRun = Math.max(unchangedTokenRun, connector ? 2 : 1);
+    argumentSurfaces.push([connector, requestSurface].filter(Boolean).join(" "));
+    replacedRoles.push(binding.roleId);
   }
   if (row.event.valencyId === "scce.valency.agent_patient" && !argumentSurfaces.length) {
     return undefined;
@@ -978,6 +1031,49 @@ function sourceBoundEnglishArgumentSurface(value: string): string | undefined {
     : englishDefiniteSurface(clean);
   cacheSourceArgumentSurface(cacheKey, surface);
   return surface;
+}
+
+function requestBoundEnglishArgumentSurface(value: string): string | undefined {
+  const clean = cleanInline(value);
+  const words = surfaceTokens(clean);
+  return clean && words.length >= 1 && words.length <= 12
+    ? clean
+    : undefined;
+}
+
+function exactCreativeRequestSpan(requestText: string, span: CreativeRequestSpan): boolean {
+  const points = [...requestText];
+  if (!Number.isSafeInteger(span.charStart)
+    || !Number.isSafeInteger(span.charEnd)
+    || span.charStart < 0
+    || span.charEnd <= span.charStart
+    || span.charEnd > points.length) return false;
+  const surface = points.slice(span.charStart, span.charEnd).join("");
+  const prefix = points.slice(0, span.charStart).join("");
+  return surface === span.text
+    && new TextEncoder().encode(prefix).byteLength === span.byteStart
+    && new TextEncoder().encode(prefix + surface).byteLength === span.byteEnd;
+}
+
+function requestSpanForSurface(
+  requestText: string,
+  surface: string
+): CreativeRequestSpan | undefined {
+  const normalizedRequest = requestText.normalize("NFC");
+  const normalizedSurface = surface.normalize("NFC");
+  const utf16Start = normalizedRequest.toLocaleLowerCase().indexOf(
+    normalizedSurface.toLocaleLowerCase()
+  );
+  if (utf16Start < 0) return undefined;
+  const prefix = normalizedRequest.slice(0, utf16Start);
+  const exactSurface = normalizedRequest.slice(utf16Start, utf16Start + normalizedSurface.length);
+  return {
+    text: exactSurface,
+    charStart: [...prefix].length,
+    charEnd: [...prefix + exactSurface].length,
+    byteStart: new TextEncoder().encode(prefix).byteLength,
+    byteEnd: new TextEncoder().encode(prefix + exactSurface).byteLength
+  };
 }
 
 function cacheSourceArgumentSurface(key: string, value: string | undefined): void {

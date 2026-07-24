@@ -12,6 +12,12 @@ import {
   type DurableLanguageConstructionBundle,
   type LanguageConstructionMemoryIssue
 } from "./language-construction-memory.js";
+import {
+  creativeEventCompatibilityModelsFromPatterns,
+  isCreativeEventCompatibilityPattern,
+  normalizeCreativeEventCompatibilityModels,
+  type CreativeEventCompatibilityModel
+} from "./creative-event-compatibility.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, stripTerminalSentenceBoundary } from "./surface-linguistics.js";
 import {
   ANSWER_ROLE_IDS,
@@ -35,6 +41,7 @@ export interface LanguageMemoryRuntimeState {
   importedObservations: NgramObservation[];
   importedSemanticFrames: SemanticFrameRecord[];
   importedConstructionBundles: DurableLanguageConstructionBundle[];
+  creativeEventCompatibilityModels: CreativeEventCompatibilityModel[];
   rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
   importedLanguagePriorCount: number;
   competenceVector: LanguageCompetenceVector;
@@ -313,8 +320,8 @@ export interface LanguageMemoryCorrection {
 }
 
 export interface LanguageMemoryRuntime {
-  hydrate(input: { models: readonly NgramModelRecord[]; observations?: readonly NgramObservation[]; units?: readonly LanguageUnitRecord[]; patterns?: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; constructionEvidence?: readonly EvidenceSpan[]; importRunId?: string }): LanguageMemoryRuntimeState;
-  hydrateFromImportedBrain(input: { importRunId?: string; models: readonly NgramModelRecord[]; observations: readonly NgramObservation[]; units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; constructionEvidence?: readonly EvidenceSpan[] }): LanguageMemoryRuntimeState;
+  hydrate(input: { models: readonly NgramModelRecord[]; observations?: readonly NgramObservation[]; units?: readonly LanguageUnitRecord[]; patterns?: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; constructionEvidence?: readonly EvidenceSpan[]; creativeEventCompatibilityModels?: readonly CreativeEventCompatibilityModel[]; importRunId?: string }): LanguageMemoryRuntimeState;
+  hydrateFromImportedBrain(input: { importRunId?: string; models: readonly NgramModelRecord[]; observations: readonly NgramObservation[]; units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames?: readonly SemanticFrameRecord[]; constructionEvidence?: readonly EvidenceSpan[]; creativeEventCompatibilityModels?: readonly CreativeEventCompatibilityModel[] }): LanguageMemoryRuntimeState;
   profile(input: { state: LanguageMemoryRuntimeState }): JsonValue;
   observe(input: {
     streamId: string;
@@ -366,15 +373,24 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
       const importedUnits = [...(input.units ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.text, b.text) || compareCodePoint(a.id, b.id)).slice(0, 4096);
       const persistedPatterns = [...(input.patterns ?? [])].sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id)).slice(0, 1024);
-      const importedPatterns = persistedPatterns.filter(pattern => !isLanguageConstructionPattern(pattern));
+      const importedPatterns = persistedPatterns.filter(pattern => (
+        !isLanguageConstructionPattern(pattern)
+        && !isCreativeEventCompatibilityPattern(pattern)
+      ));
       const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.id, b.id)).slice(0, 2048);
       const constructionMemory = hydrateLanguageConstructionPatterns({
         patterns: persistedPatterns,
         evidence: input.constructionEvidence ?? [],
         hasher: options.hasher
       });
+      const creativeEventCompatibilityModels = normalizeCreativeEventCompatibilityModels(
+        [
+          ...(input.creativeEventCompatibilityModels ?? []),
+          ...creativeEventCompatibilityModelsFromPatterns(persistedPatterns)
+        ]
+      );
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
-      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + input.models.filter(isImportedLanguagePriorModel).length;
+      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + creativeEventCompatibilityModels.length + input.models.filter(isImportedLanguagePriorModel).length;
       const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
       return {
         models,
@@ -389,6 +405,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedObservations,
         importedSemanticFrames,
         importedConstructionBundles: constructionMemory.bundles,
+        creativeEventCompatibilityModels,
         rejectedConstructionPatterns: constructionMemory.rejected,
         importedLanguagePriorCount,
         competenceVector,
@@ -412,6 +429,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           importedObservations: importedObservations.length,
           importedSemanticFrames: importedSemanticFrames.length,
           importedConstructionBundles: constructionMemory.bundles.length,
+          creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
           rejectedConstructionPatterns: constructionMemory.rejected,
           importedLanguagePriorCount,
           orders: models.map(model => model.order),
@@ -447,6 +465,14 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           targetProfileId: bundle.targetProfileId,
           sourceVersionIds: bundle.sourceVersionIds,
           evidenceIds: bundle.evidenceIds
+        })),
+        creativeEventCompatibilityModels: input.state.creativeEventCompatibilityModels.slice(0, 24).map(model => ({
+          id: model.id,
+          version: model.version,
+          requestCompilerId: model.requestCompilerId,
+          eventCompilerId: model.eventCompilerId,
+          calibrationId: model.calibrationId,
+          reliability: model.reliability
         })),
         rejectedConstructionPatterns: input.state.rejectedConstructionPatterns.slice(0, 24),
         competenceVector: input.state.competenceVector,
@@ -1402,6 +1428,12 @@ export function scopeLanguageMemoryStateToCluster(
       && bundle.evidenceIds.includes(example.evidenceId)
     ))
   ));
+  const retainedCreativeCompilerIds = new Set(importedConstructionBundles.flatMap(bundle => (
+    (bundle.creativeEvents ?? []).map(event => event.compilerId)
+  )));
+  const creativeEventCompatibilityModels = state.creativeEventCompatibilityModels.filter(model => (
+    retainedCreativeCompilerIds.has(model.eventCompilerId)
+  ));
   const rejectedConstructionPatterns = state.rejectedConstructionPatterns.filter(issue => (
     issue.profileId ? profileIds.has(issue.profileId) : false
   ));
@@ -1419,6 +1451,7 @@ export function scopeLanguageMemoryStateToCluster(
     + importedObservations.length
     + importedSemanticFrames.length
     + importedConstructionBundles.length
+    + creativeEventCompatibilityModels.length
     + records.filter(isImportedLanguagePriorModel).length;
   const competenceVector = competenceFromRuntime({
     models,
@@ -1447,6 +1480,7 @@ export function scopeLanguageMemoryStateToCluster(
     importedObservations,
     importedSemanticFrames,
     importedConstructionBundles,
+    creativeEventCompatibilityModels,
     rejectedConstructionPatterns,
     importedLanguagePriorCount,
     competenceVector,
@@ -1473,7 +1507,8 @@ export function scopeLanguageMemoryStateToCluster(
         units: importedUnits.length,
         patterns: importedPatterns.length,
         semanticFrames: importedSemanticFrames.length,
-        constructionBundles: importedConstructionBundles.length
+        constructionBundles: importedConstructionBundles.length,
+        creativeEventCompatibilityModels: creativeEventCompatibilityModels.length
       },
       rejected: {
         modelRecords: state.records.length - records.length,
@@ -1481,7 +1516,9 @@ export function scopeLanguageMemoryStateToCluster(
         units: state.importedUnits.length - importedUnits.length,
         patterns: state.importedPatterns.length - importedPatterns.length,
         semanticFrames: state.importedSemanticFrames.length - importedSemanticFrames.length,
-        constructionBundles: state.importedConstructionBundles.length - importedConstructionBundles.length
+        constructionBundles: state.importedConstructionBundles.length - importedConstructionBundles.length,
+        creativeEventCompatibilityModels:
+          state.creativeEventCompatibilityModels.length - creativeEventCompatibilityModels.length
       }
     })
   };
@@ -1514,6 +1551,7 @@ export function markLanguageMemoryStateUnscoped(
     importedObservations: [],
     importedSemanticFrames: [],
     importedConstructionBundles: [],
+    creativeEventCompatibilityModels: [],
     rejectedConstructionPatterns: [],
     importedLanguagePriorCount: 0,
     competenceVector,
@@ -1538,7 +1576,8 @@ export function markLanguageMemoryStateUnscoped(
           units: 0,
           patterns: 0,
           semanticFrames: 0,
-          constructionBundles: 0
+          constructionBundles: 0,
+          creativeEventCompatibilityModels: 0
         },
         rejected: {
           modelRecords: state.records.length,
@@ -1546,7 +1585,8 @@ export function markLanguageMemoryStateUnscoped(
           units: state.importedUnits.length,
           patterns: state.importedPatterns.length,
           semanticFrames: state.importedSemanticFrames.length,
-          constructionBundles: state.importedConstructionBundles.length
+          constructionBundles: state.importedConstructionBundles.length,
+          creativeEventCompatibilityModels: state.creativeEventCompatibilityModels.length
         }
       }
     })
