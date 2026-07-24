@@ -29,8 +29,8 @@ describe("corpus registry", () => {
 
     const plan = languageMemoryHydrationPlan(registry, { ngramModels: 10 });
     expect(plan.find(item => item.sourceSystem === "gutenberg")?.limits.ngramModels).toBe(7);
-    expect(plan.find(item => item.sourceSystem === "gutenberg")?.querySourceSystems).toEqual([canonicalCorpusSourceSystemId("gutenberg")]);
-    expect(plan.find(item => item.sourceSystem === "wikipedia")?.querySourceSystems).toEqual([canonicalCorpusSourceSystemId("wikipedia")]);
+    expect(plan.find(item => item.sourceSystem === "gutenberg")?.querySourceSystems).toEqual(["gutenberg"]);
+    expect(plan.find(item => item.sourceSystem === "wikipedia")?.querySourceSystems).toEqual(["wikipedia"]);
     expect(plan.every(item => item.limits.ngramModels <= 10)).toBe(true);
   });
 

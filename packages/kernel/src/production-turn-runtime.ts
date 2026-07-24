@@ -999,14 +999,20 @@ export function createProductionTurnRuntime(options: {
           (bundle.creativeEvents?.length ?? 0) > 0
         )
       );
-      const residentEvidenceLanguage = residentSurfaceLanguageMemory(
-        evidenceSurfaceCluster,
-        preferredSurfaceCorpusRole
-      );
+      const residentEvidenceLanguage = residentSurfaceLanguageMemory(evidenceSurfaceCluster);
+      const creativeOutputLanguage = preferredSurfaceCorpusRole
+        ? await hydrateSurfaceLanguageMemoryCached(
+          12,
+          selectedSurfaceCluster,
+          "creative-output-language-unresolved",
+          preferredSurfaceCorpusRole,
+          input.text
+        )
+        : undefined;
       let surfaceLanguage = preferredSurfaceCorpusRole
         ? exactCreativeAuthorityReady
           ? authorityLanguage
-          : residentEvidenceLanguage ?? authorityLanguage
+          : creativeOutputLanguage ?? authorityLanguage
         : evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
           ? residentEvidenceLanguage ?? authorityLanguage
           : authorityLanguage;
