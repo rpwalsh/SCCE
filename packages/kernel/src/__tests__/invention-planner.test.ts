@@ -211,24 +211,59 @@ describe("invention planner", () => {
   });
 
   it("hands no-model creative realization to Mouth without phrase salad or repeated generation", () => {
+    const requestText = "Invent a new indexing algorithm for this graph.";
     const fixture = plannerFixtureWithLanguageCorpus(
-      "Invent a new indexing algorithm for this graph.",
+      requestText,
       "At dusk, the old pump hummed beside the quiet harbor. It dreamed of carrying starlight across the sleeping town. Before dawn, its steady rhythm became a silver melody and woke the patient bells."
     );
     const generate = vi.spyOn(fixture.languageMemory, "generate");
+    const creativeRequestFrame: CreativeRequestFrame = {
+      schema: CREATIVE_REQUEST_FRAME_SCHEMA,
+      id: "request.frame.no-model-handoff",
+      compilerId: "compiler.request.fixture",
+      focus: {
+        id: "request.focus.algorithm",
+        roleId: "request.role.focus",
+        span: exactSpan(requestText, "algorithm")
+      },
+      arguments: [{
+        id: "request.argument.graph",
+        roleId: "request.role.argument",
+        span: exactSpan(requestText, "this graph")
+      }],
+      sourceActivationIds: ["activation.request.no-model-handoff"]
+    };
 
     const planned = planInventions({
       ...fixture,
       requestedAuthority: "creative",
+      creativeRequestFrame,
       maxCandidates: 4,
       samplingDisabled: true
     });
 
     expect(generate.mock.calls.length).toBeLessThanOrEqual(1);
     expect(planned).toHaveLength(1);
+    expect(planned[0]!.proposalSurface).toBe("Invent a new indexing algorithm for this graph");
     expect(planned[0]!.proposalSurface).not.toContain(";");
-    expect((traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>).path)
+    const realization = traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>;
+    expect(realization.path)
       .toBe("mouth_non_event_realization_deferred");
+    expect(realization.requestRoleBindings).toEqual([
+      expect.objectContaining({
+        id: "request.focus.algorithm",
+        roleId: "request.role.focus",
+        text: "algorithm",
+        source: "creative_request_frame"
+      }),
+      expect.objectContaining({
+        id: "request.argument.graph",
+        roleId: "request.role.argument",
+        text: "this graph",
+        source: "creative_request_frame"
+      })
+    ]);
+    expect(realization.contextSymbols).toEqual(expect.arrayContaining(["algorithm", "this graph"]));
     expect(fixture.languageMemoryState.creativeEventCompatibilityModels).toEqual([]);
   });
 

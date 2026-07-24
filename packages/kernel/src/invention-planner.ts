@@ -297,10 +297,24 @@ interface DraftComposition {
   untestedPerformanceClaim: boolean;
 }
 
+interface ProposalRequestRoleBindingTrace {
+  id: string;
+  roleId: string;
+  text: string;
+  charStart: number;
+  charEnd: number;
+  byteStart: number;
+  byteEnd: number;
+  sourceActivationIds: string[];
+  source: "creative_request_frame" | "turn_requirement";
+}
+
 interface ProposalRealizationTrace {
   path: "learned_continuation" | "learned_structural_composition" | "mouth_realization_deferred" | "mouth_non_event_realization_deferred";
   semanticPlanId?: string;
   contextSymbols: string[];
+  requestFrameId?: string;
+  requestRoleBindings?: ProposalRequestRoleBindingTrace[];
   generationTextHash?: string;
   generationConfidence?: number;
   discourseScore?: number;
@@ -769,6 +783,56 @@ function requestOwnedCreativeConstraints(input: PlanInventionsInput): RequestOwn
   ));
 }
 
+function requestOwnedCreativeRoleBindings(input: PlanInventionsInput): ProposalRequestRoleBindingTrace[] {
+  const rows: ProposalRequestRoleBindingTrace[] = [];
+  const frame = input.creativeRequestFrame;
+  if (frame && validCreativeRequestFrame(input.requestText, frame)) {
+    for (const role of [frame.focus, ...frame.arguments]) {
+      rows.push({
+        id: role.id,
+        roleId: role.roleId,
+        text: role.span.text,
+        charStart: role.span.charStart,
+        charEnd: role.span.charEnd,
+        byteStart: role.span.byteStart,
+        byteEnd: role.span.byteEnd,
+        sourceActivationIds: [...frame.sourceActivationIds],
+        source: "creative_request_frame"
+      });
+    }
+  }
+  for (const constraint of requestOwnedCreativeConstraints(input)) {
+    rows.push({
+      id: constraint.id,
+      roleId: constraint.semanticRoleId,
+      text: constraint.surface,
+      charStart: constraint.requestSpan.charStart,
+      charEnd: constraint.requestSpan.charEnd,
+      byteStart: constraint.requestSpan.byteStart,
+      byteEnd: constraint.requestSpan.byteEnd,
+      sourceActivationIds: uniqueStrings([
+        constraint.learnedFrameOrPatternId,
+        constraint.sourceActivationId
+      ]),
+      source: "turn_requirement"
+    });
+  }
+  const byBinding = new Map<string, ProposalRequestRoleBindingTrace>();
+  for (const row of rows) {
+    const key = `${row.charStart}\u0001${row.charEnd}\u0001${row.roleId}`;
+    const previous = byBinding.get(key);
+    if (!previous || (previous.source === "turn_requirement" && row.source === "creative_request_frame")) {
+      byBinding.set(key, row);
+    }
+  }
+  return [...byBinding.values()].sort((left, right) => (
+    left.charStart - right.charStart
+    || left.charEnd - right.charEnd
+    || left.roleId.localeCompare(right.roleId)
+    || left.id.localeCompare(right.id)
+  ));
+}
+
 function extractConstraints(input: PlanInventionsInput): ConstraintSeed[] {
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
   const requestTerms = activatedSlots
@@ -1214,13 +1278,18 @@ function buildDraft(
   const deferSurfaceRealization = structuralEventPlan.length >= 4;
   const requestTerms = requestSurfaceUnits(input.requestText);
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
-  const requestFrameFocus = input.creativeRequestFrame && validCreativeRequestFrame(input.requestText, input.creativeRequestFrame)
-    ? input.creativeRequestFrame.focus.span.text
+  const requestRoleBindings = requestOwnedCreativeRoleBindings(input);
+  const requestFrameId = requestRoleBindings.some(binding => binding.source === "creative_request_frame")
+    ? input.creativeRequestFrame?.id
     : undefined;
+  const requestFrameSurface = tidyProposal(uniqueStrings(
+    requestRoleBindings.map(binding => binding.text)
+  ).join(" "));
   const requestBoundSurface = tidyProposal(
-    requestFrameFocus
-    ?? activatedSlots?.continuationSlot.text
-    ?? requestTerms.slice(0, 8).join(" ")
+    requestTerms.join(" ")
+    || requestFrameSurface
+    || activatedSlots?.continuationSlot.text
+    || ""
   );
   const title = surfaceTitle(requestBoundSurface);
   const rotated = rotate(ingredients, variant).slice(0, 3);
@@ -1255,7 +1324,12 @@ function buildDraft(
         constraintIds: constraints.map(row => row.id),
         variant
       }),
-      contextSymbols: requestTerms,
+      contextSymbols: uniqueStrings([
+        ...requestRoleBindings.map(binding => binding.text),
+        ...requestTerms
+      ]),
+      requestFrameId,
+      requestRoleBindings,
       requestConstraintIds: constraints.map(row => row.id),
       requestConstraintCoverage: 1,
       structuralBundleIds,
@@ -1265,7 +1339,21 @@ function buildDraft(
     }
     : learnedProposal && normalizeSurface(proposalSurface) === normalizeSurface(learnedProposal.surface)
       ? learnedProposal.trace
-      : { path: "mouth_non_event_realization_deferred", contextSymbols: symbolizeData(requestBoundSurface).filter(Boolean) };
+      : {
+        path: "mouth_non_event_realization_deferred",
+        contextSymbols: uniqueStrings([
+          ...requestRoleBindings.map(binding => binding.text),
+          ...symbolizeData(requestBoundSurface).filter(Boolean)
+        ]),
+        requestFrameId,
+        requestRoleBindings,
+        requestConstraintIds: requestRoleBindings
+          .filter(binding => binding.source === "turn_requirement")
+          .map(binding => binding.id),
+        requestConstraintSourceActivationIds: uniqueStrings(requestRoleBindings
+          .filter(binding => binding.source === "turn_requirement")
+          .flatMap(binding => binding.sourceActivationIds))
+      };
   const selectedGraphNodeIds = uniqueStrings(rotated.filter(row => row.graphNodeId).map(row => row.graphNodeId!));
   const selectedEdges = selectCompositionEdges(input.graph.edges, selectedGraphNodeIds, variant);
   for (const edge of selectedEdges) {
