@@ -164,6 +164,69 @@ describe("runtime hot graph retrieval", () => {
     expect(closureQuery?.limitNodes).toBe(2);
     expect(closureQuery?.limitEdges).toBe(0);
     expect(fixture.searchEvidence).not.toHaveBeenCalled();
+    expect(fixture.kernelTrace.mock.calls
+      .map(call => call[0])
+      .find(event => event.label === "kernel.hot_neighborhood")
+      ?.counts?.closureNodes).toBe(2);
+  });
+
+  it("uses unused closure capacity for already-closed resident nodes", async () => {
+    vi.stubEnv("SCCE_HOT_NEIGHBORHOOD_NODES", "4");
+    vi.stubEnv("SCCE_HOT_NEIGHBORHOOD_EDGES", "8");
+    try {
+      const graph = graphSlice([
+        graphNode("node:first", ["sym:first"]),
+        graphNode("node:second", ["sym:second"]),
+        graphNode("node:third", ["sym:third"]),
+        graphNode("node:tail", ["sym:tailmarker"])
+      ], [], []);
+      const fixture = runtimeFixture(graph);
+
+      const result = await fixture.runtime.graphForText("tailmarker", {
+        sourceAnchoringRequired: false,
+        residentOnly: true
+      });
+
+      expect(fixture.getSlice).toHaveBeenCalledTimes(1);
+      expect(fixture.getSlice.mock.calls[0]?.[0].limitNodes).toBe(4);
+      expect(result.graph.nodes.map(node => String(node.id))).toContain("node:tail");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("traces retained closure nodes when they replace resident anchors", async () => {
+    vi.stubEnv("SCCE_HOT_NEIGHBORHOOD_NODES", "4");
+    vi.stubEnv("SCCE_HOT_NEIGHBORHOOD_EDGES", "8");
+    try {
+      const seed = graphNode("node:clock", ["sym:clock"]);
+      const mechanism = graphNode("node:mechanism", ["sym:mechanism"]);
+      const edge = graphEdge("edge:clock-mechanism", seed, mechanism, 0.9);
+      const graph = graphSlice([
+        seed,
+        graphNode("node:second", ["sym:second"]),
+        graphNode("node:third", ["sym:third"]),
+        graphNode("node:fourth", ["sym:fourth"])
+      ], [edge], []);
+      const fixture = runtimeFixture(
+        graph,
+        [],
+        graphSlice([mechanism], [], [])
+      );
+
+      const result = await fixture.runtime.graphForText("clock", {
+        sourceAnchoringRequired: false,
+        residentOnly: true
+      });
+
+      expect(result.graph.nodes.map(node => String(node.id))).toContain("node:mechanism");
+      expect(fixture.kernelTrace.mock.calls
+        .map(call => call[0])
+        .find(event => event.label === "kernel.hot_neighborhood")
+        ?.counts?.closureNodes).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -172,12 +235,18 @@ function runtimeFixture(
   evidence: EvidenceSpan[] = [],
   closureGraph?: GraphSlice
 ) {
-  const getSlice = vi.fn(async (query: GraphSliceQuery) =>
-    query.seedNodeIds?.length && closureGraph ? closureGraph : graph);
+  const getSlice = vi.fn(async (query: GraphSliceQuery) => {
+    const selected = query.seedNodeIds?.length && closureGraph ? closureGraph : graph;
+    return {
+      ...selected,
+      nodes: selected.nodes.slice(0, query.limitNodes ?? selected.nodes.length)
+    };
+  });
   const getEvidenceBatch = vi.fn(async () => evidence);
   const searchEvidence = vi.fn(async () => {
     throw new Error("resident creative graph retrieval must not search evidence");
   });
+  const kernelTrace = vi.fn();
   const storage = {
     graph: { getSlice },
     evidence: { getEvidenceBatch, searchEvidence }
@@ -190,10 +259,10 @@ function runtimeFixture(
     candidates: undefined as never,
     failures,
     cacheMs: 60_000,
-    kernelTrace: () => undefined,
+    kernelTrace,
     sourceAnchorSemanticFramesCached: async () => []
   });
-  return { runtime, failures, getSlice, getEvidenceBatch, searchEvidence };
+  return { runtime, failures, getSlice, getEvidenceBatch, searchEvidence, kernelTrace };
 }
 
 function graphSlice(nodes: GraphNode[], edges: GraphEdge[], hyperedges: Hyperedge[]): GraphSlice {
