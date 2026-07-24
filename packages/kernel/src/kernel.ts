@@ -31,7 +31,7 @@ import type {
   TrainResult,
   TurnResult
 } from "./types.js";
-import type { IngestedSourceFile, IngestionCheckpoint, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
+import type { IngestedSourceFile, IngestionCheckpoint, LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import { createClock, createHasher, featureSet, mean, redactSecrets, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createIdFactory, type IdFactory } from "./ids.js";
 import { createEventFactory, extractReplayValue } from "./events.js";
@@ -42,7 +42,7 @@ import {
   buildLanguageProfileClusters,
   createLanguageAcquisitionEngine,
   languageProfileClusterCacheKey,
-  selectDominantLanguageProfileCluster,
+  normalizeSourceLanguageAlias,
   selectLanguageProfileClusterForSurface,
   selectLanguageProfileClusterForSourceVersions,
   type LanguageProfileCluster
@@ -87,6 +87,7 @@ import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { createRuntimeOrchestrator } from "./runtime-orchestrator.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
+import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-governance.js";
 import { composeEvidenceGroundedAnswer } from "./answer-emitter.js";
@@ -111,7 +112,7 @@ import {
   type QuestionEdgeFit
 } from "./question-cognitive-edge.js";
 import { planQuestionSlots, type QuestionSlotAssignment, type QuestionSlotPlan } from "./question-slot-planner.js";
-import { createCorpusRegistry, languageMemoryHydrationPlan } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { CALIBRATION_TASK_CLASS_IDS, buildCalibrationModelSet, loadCalibrationModelSet, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   ANSWER_ROLE_GROUPS,
@@ -151,6 +152,12 @@ import {
   requestOperatorDialogueSupport,
   requestOperatorGraphSupport
 } from "./request-authority.js";
+import {
+  compileRequestRequirementCorpus,
+  isRequestRequirementPattern,
+  parseRequestRequirementCorpus,
+  requestRequirementCorpusLanguageText
+} from "./request-requirement-learning.js";
 import { planCognitiveProposals, type CognitiveActionPlan, type CognitiveProposal } from "./cognitive-planner.js";
 import {
   createAnswerRevisionCoordinator,
@@ -373,6 +380,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const hotNeighborhoodPostingCap = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_POSTING_CAP", 512);
   const sourceAnchorHotNodeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_NODES", 64);
   const sourceAnchorHotEdgeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_EDGES", 128);
+  const sourceAnchorEvidenceCacheMaxEntries = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_ENTRIES", 512);
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);
   const activeBrainMarkerCacheMs = positiveRuntimeInt("SCCE_ACTIVE_BRAIN_MARKER_CACHE_MS", 300_000);
   const surfaceLanguageMemoryCacheMs = positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_CACHE_MS", 600_000);
@@ -386,10 +394,16 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   let hotNeighborhoodLoad: Promise<HotGraphNeighborhood | undefined> | undefined;
   let activeBrainMarkerCache: { loadedAt: number; value: JsonValue } | undefined;
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
+  const sourceOwnedAliasProfileCache = new Map<string, {
+    loadedAt: number;
+    profiles: LanguageProfile[];
+    clusters: LanguageProfileCluster[];
+  }>();
   let sourceAnchorSemanticFrameCache: {
     loadedAt: number;
     value: Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>;
   } | undefined;
+  const sourceAnchorEvidenceCache = new Map<string, { loadedAt: number; value: EvidenceSpan }>();
   let calibrationModelCache: { loadedAt: number; value: CalibrationModelSet } | undefined;
   let correctionRuleCache: { loadedAt: number; value: Awaited<ReturnType<typeof deps.storage.corrections.listRules>> } | undefined;
 
@@ -419,9 +433,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     hotNeighborhood = undefined;
     hotNeighborhoodLoad = undefined;
     surfaceLanguageMemoryCache.clear();
+    sourceOwnedAliasProfileCache.clear();
     activeBrainMarkerCache = undefined;
     surfaceProfileCache = undefined;
     sourceAnchorSemanticFrameCache = undefined;
+    sourceAnchorEvidenceCache.clear();
     calibrationModelCache = undefined;
   }
 
@@ -499,19 +515,33 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   async function hydrateSurfaceLanguageMemory(
     limit = 36,
     cluster?: LanguageProfileCluster,
-    unscopedReason = "no-language-cluster-selected"
+    unscopedReason = "no-language-cluster-selected",
+    preferredCorpusRoleId?: CorpusRoleId,
+    preferredSurface = ""
   ) {
     const boundedLimit = Math.max(1, Math.min(64, Math.floor(limit)));
-    const profileIds = cluster?.profileIds;
-    const sourceVersionIds = cluster?.sourceVersionIds.map(String);
-    const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, {
+    const profileIds = preferredCorpusRoleId ? undefined : cluster?.profileIds;
+    const hydrationLimits = {
       ngramModels: Math.max(12, boundedLimit * Math.max(1, corpusRegistry.length)),
       ngramObservations: Math.max(1200, boundedLimit * 320),
       languageUnits: Math.max(512, boundedLimit * 128),
       languagePatterns: Math.max(256, boundedLimit * 64),
       semanticFrames: Math.max(512, boundedLimit * 96)
-    });
-    const active = await deps.storage.brainImports.active();
+    };
+    const exactProfileOwnerCount = Math.max(1, profileIds?.length ?? 0);
+    const exactProfileHydrationLimits = {
+      ngramModels: Math.max(12, exactProfileOwnerCount * 4),
+      ngramObservations: Math.max(256, exactProfileOwnerCount * 256),
+      languageUnits: Math.max(256, exactProfileOwnerCount * 256),
+      languagePatterns: Math.max(96, exactProfileOwnerCount * 96),
+      semanticFrames: Math.max(128, exactProfileOwnerCount * 128)
+    };
+    const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, hydrationLimits);
+    const [active, requestControlPatterns] = await Promise.all([
+      deps.storage.brainImports.active(),
+      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+    ]);
+    const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     if (!cluster) {
       const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
         importRunId: active.activeImportRunIds[0],
@@ -528,24 +558,56 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         units: [],
         patterns: [],
         semanticFrames: [],
+        requestControlPatterns: learnedRequestControlPatterns,
         state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
+        surfaceProfile: undefined as LanguageProfile | undefined,
         active,
         corpusPlan
       };
     }
-    const corpusQueries = corpusPlan.flatMap(item => item.querySourceSystems.map(sourceSystem => ({ ...item, sourceSystem })));
-    const [modelsBySource, observationsBySource, unitsBySource, patternsBySource, semanticFramesBySource] = await Promise.all([
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds, sourceVersionIds, limit: Math.min(limit, item.limits.ngramModels) }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds, sourceVersionIds, limit: item.limits.ngramObservations }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))),
-      Promise.all(corpusQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds, sourceVersionIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames })))
+    const roleScopedCorpusPlan = preferredCorpusRoleId
+      ? corpusPlan.filter(item => corpusRegistry.some(entry =>
+        entry.sourceSystemId === item.sourceSystemId
+        && entry.corpusRoleId === preferredCorpusRoleId
+      ))
+      : corpusPlan;
+    const orderedCorpusPlan = [...roleScopedCorpusPlan].sort((left, right) =>
+      right.priority - left.priority
+      || left.sourceSystem.localeCompare(right.sourceSystem)
+    );
+    const corpusQueries = orderedCorpusPlan.flatMap(item => item.querySourceSystems.map(sourceSystem => ({ ...item, sourceSystem })));
+    const hydrationQueries: Array<{
+      sourceSystem?: string;
+      profileIds?: readonly string[];
+      limits: typeof hydrationLimits;
+    }> = profileIds?.length
+      ? [{ profileIds, limits: exactProfileHydrationLimits }]
+      : corpusQueries;
+    const [
+      modelsBySource,
+      observationsBySource,
+      unitsBySource,
+      patternsBySource,
+      semanticFramesBySource,
+      persistedProfiles
+    ] = await Promise.all([
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels) }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))),
+      preferredCorpusRoleId
+        ? surfaceProfileCache
+          ? Promise.resolve(surfaceProfileCache.value)
+          : deps.storage.model.listLanguageProfiles({ limit: surfaceLanguageProfileLimit, referencedByLanguageMemory: true })
+        : Promise.resolve([] as LanguageProfile[])
     ]);
     const models = uniqueRecordsById(modelsBySource.flat(), Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
     const observations = uniqueRecordsById(observationsBySource.flat(), Math.max(1200, boundedLimit * 320));
     const units = uniqueRecordsById(unitsBySource.flat(), Math.max(512, boundedLimit * 128));
     const patterns = uniqueRecordsById(patternsBySource.flat(), Math.max(256, boundedLimit * 64));
-    const semanticFrames = uniqueRecordsById(semanticFramesBySource.flat(), Math.max(512, boundedLimit * 96));
+    const queriedSemanticFrames = uniqueRecordsById(semanticFramesBySource.flat(), Math.max(512, boundedLimit * 96));
+    const semanticFrames = queriedSemanticFrames;
     const constructionEvidenceIds = [...new Set(patterns
       .filter(isLanguageConstructionPattern)
       .flatMap(pattern => pattern.evidenceIds.map(String)))]
@@ -564,8 +626,102 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       semanticFrames,
       constructionEvidence
     });
-    const state = scopeLanguageMemoryStateToCluster(hydrated, cluster);
-    return { models, observations, units, patterns, semanticFrames, constructionEvidence, state, active, corpusPlan };
+    const roleProfileIds = new Set<string>([
+      ...units.map(unit => unit.profileId),
+      ...patterns.map(pattern => pattern.profileId),
+      ...models.map(model => {
+        const record = jsonRecord(model.modelJson);
+        return typeof record.profileId === "string" ? record.profileId : "";
+      }).filter(Boolean),
+      ...semanticFrames.map(frame => {
+        const record = jsonRecord(frame.frameJson);
+        return typeof record.profileId === "string" ? record.profileId : "";
+      }).filter(Boolean)
+    ]);
+    const roleCluster = preferredCorpusRoleId
+      ? corpusRoleLanguageCluster({
+        roleId: preferredCorpusRoleId,
+        target: cluster,
+        profiles: persistedProfiles.filter(profile => roleProfileIds.has(profile.id)),
+        surface: preferredSurface
+      })
+      : undefined;
+    const effectiveCluster = roleCluster ?? cluster;
+    const state = scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster);
+    return {
+      models,
+      observations,
+      units,
+      patterns,
+      semanticFrames,
+      constructionEvidence,
+      requestControlPatterns: learnedRequestControlPatterns,
+      state,
+      surfaceProfile: effectiveCluster.members[0] as LanguageProfile | undefined,
+      active,
+      corpusPlan
+    };
+  }
+
+  function corpusRoleLanguageCluster(input: {
+    roleId: CorpusRoleId;
+    target?: LanguageProfileCluster;
+    profiles: readonly LanguageProfile[];
+    surface?: string;
+  }): LanguageProfileCluster | undefined {
+    const targetScripts = new Set((input.target?.scripts ?? [])
+      .filter(row => row.mass >= 0.12)
+      .map(row => row.script));
+    const targetLanguageOwners = new Set((input.target?.discoveredNames ?? [])
+      .filter(row => row.confidence > 0)
+      .map(row => normalizePriorKey(row.surface))
+      .filter(Boolean));
+    const ownerCompatible = input.profiles
+      .filter(profile => !input.target || (
+        profile.direction === input.target.direction
+        && profile.scripts.some(script => script.mass >= 0.12 && targetScripts.has(script.script))
+        && targetLanguageOwners.size > 0
+        && (profile.discoveredNames ?? []).some(name =>
+          name.confidence > 0
+          && targetLanguageOwners.has(normalizePriorKey(name.surface))
+        )
+      ));
+    const surfaceSelected = !ownerCompatible.length && input.surface?.trim()
+      ? selectLanguageProfileClusterForSurface(buildLanguageProfileClusters(input.profiles), input.surface)?.cluster
+      : undefined;
+    const surfaceSelectedOwners = new Set((surfaceSelected?.discoveredNames ?? [])
+      .filter(row => row.confidence > 0)
+      .map(row => normalizePriorKey(row.surface))
+      .filter(Boolean));
+    const surfaceCompatible = surfaceSelectedOwners.size
+      ? input.profiles.filter(profile => (profile.discoveredNames ?? []).some(name =>
+        name.confidence > 0 && surfaceSelectedOwners.has(normalizePriorKey(name.surface))
+      ))
+      : surfaceSelected?.members ?? [];
+    const compatible = (ownerCompatible.length ? ownerCompatible : surfaceCompatible)
+      .filter(profile => !input.target || (
+        profile.direction === input.target.direction
+        && profile.scripts.some(script => script.mass >= 0.12 && targetScripts.has(script.script))
+      ))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    if (!compatible.length) return undefined;
+    const base = buildLanguageProfileClusters(compatible)[0];
+    if (!base) return undefined;
+    const profileIds = compatible.map(profile => profile.id);
+    const sourceVersionIds = compatible.map(profile => profile.sourceVersionId);
+    return {
+      ...base,
+      id: `language-cluster:corpus-role:${hasher.digestHex(`${input.roleId}\u001f${profileIds.join("\u001f")}`).slice(0, 32)}`,
+      members: compatible,
+      profileIds,
+      sourceVersionIds,
+      discoveredNames: base.discoveredNames,
+      scripts: input.target?.scripts ?? base.scripts,
+      symbolShapes: input.target?.symbolShapes ?? base.symbolShapes,
+      charNgrams: input.target?.charNgrams ?? base.charNgrams,
+      direction: input.target?.direction ?? base.direction,
+      artifactSupport: compatible.reduce((sum, profile) => sum + Math.max(1, profile.charNgrams.reduce((mass, row) => mass + row.count, 0)), 0)
+    };
   }
 
   function uniqueRecordsById<T extends { id: string }>(records: readonly T[], limit: number): T[] {
@@ -574,47 +730,165 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return [...byId.values()].slice(0, limit);
   }
 
+  function latestRequestRequirementPatterns(records: readonly LanguagePatternRecord[]): LanguagePatternRecord[] {
+    const requestPatterns = records
+      .filter(isRequestRequirementPattern)
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    const latest = requestPatterns[0];
+    if (!latest) return [];
+    const latestSourceVersionId = kernelString(jsonRecord(latest.patternJson).sourceVersionId);
+    const current = latestSourceVersionId
+      ? requestPatterns.filter(pattern => kernelString(jsonRecord(pattern.patternJson).sourceVersionId) === latestSourceVersionId)
+      : requestPatterns.filter(pattern => pattern.updatedAt === latest.updatedAt);
+    return uniqueRecordsById(current, 2048);
+  }
+
   async function hydrateSurfaceLanguageMemoryCached(
     limit = 36,
     cluster?: LanguageProfileCluster,
-    unscopedReason = "no-language-cluster-selected"
+    unscopedReason = "no-language-cluster-selected",
+    preferredCorpusRoleId?: CorpusRoleId,
+    preferredSurface = ""
   ) {
     const now = clock.now();
-    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}`;
+    if (preferredCorpusRoleId && preferredSurface.trim() && surfaceProfileCache) {
+      const roleKey = `\u001f${preferredCorpusRoleId}\u001f`;
+      const residentRoleMatch = [...surfaceLanguageMemoryCache.entries()]
+        .filter(([key, entry]) => (
+          key.includes(roleKey)
+          && entry.value.state.importedConstructionBundles.length > 0
+          && entry.value.state.scope.mode === "cluster"
+          && entry.value.state.scope.purityProven
+        ))
+        .map(([, entry]) => {
+          const profileIds = new Set(entry.value.state.scope.profileIds);
+          const profiles = surfaceProfileCache!.value.filter(profile => profileIds.has(profile.id));
+          const clusterCompatible = cluster
+            && entry.value.surfaceProfile
+            && languageProfileMatchesCluster(entry.value.surfaceProfile, cluster);
+          if (clusterCompatible) return { entry, score: 1, margin: 1 };
+          const match = selectLanguageProfileClusterForSurface(buildLanguageProfileClusters(profiles), preferredSurface);
+          return match ? { entry, score: match.score, margin: match.margin } : undefined;
+        })
+        .filter((row): row is NonNullable<typeof row> => Boolean(row))
+        .sort((left, right) => right.score - left.score || right.margin - left.margin)[0];
+      if (residentRoleMatch) return residentRoleMatch.entry.value;
+    }
+    const preferredSurfaceKey = preferredSurface.trim()
+      ? hasher.digestHex(preferredSurface.normalize("NFC"))
+      : "surface:none";
+    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${preferredSurfaceKey}`;
     const cached = surfaceLanguageMemoryCache.get(cacheKey);
     if (cached && cached.limit >= limit && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) {
       return cached.value;
     }
-    const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason);
+    const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
     surfaceLanguageMemoryCache.set(cacheKey, { limit, loadedAt: now, value });
     return value;
   }
 
-  async function surfaceLanguageProfilesCached(): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
+  function languageProfileMatchesCluster(
+    profile: LanguageProfile,
+    cluster: LanguageProfileCluster
+  ): boolean {
+    if (profile.direction !== cluster.direction) return false;
+    const targetScripts = new Set(cluster.scripts
+      .filter(row => row.mass >= 0.12)
+      .map(row => row.script));
+    if (!profile.scripts.some(row => row.mass >= 0.12 && targetScripts.has(row.script))) return false;
+    const profileOwners = new Set((profile.discoveredNames ?? [])
+      .filter(row => row.confidence > 0)
+      .map(row => normalizePriorKey(row.surface))
+      .filter(Boolean));
+    const targetOwners = new Set((cluster.discoveredNames ?? [])
+      .filter(row => row.confidence > 0)
+      .map(row => normalizePriorKey(row.surface))
+      .filter(Boolean));
+    if (!profileOwners.size || !targetOwners.size) return false;
+    return [...profileOwners].some(owner => targetOwners.has(owner));
+  }
+
+  async function surfaceLanguageProfilesCached(
+    residentOnly = false
+  ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
     const now = clock.now();
-    if (surfaceProfileCache && now - surfaceProfileCache.loadedAt < 60_000) {
+    if (surfaceProfileCache && (residentOnly || now - surfaceProfileCache.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return { profiles: surfaceProfileCache.value, clusters: surfaceProfileCache.clusters };
     }
-    const profiles = (await deps.storage.model.listLanguageProfiles({
-      limit: surfaceLanguageProfileLimit,
-      referencedByLanguageMemory: true
-    }))
+    if (residentOnly) return { profiles: [], clusters: [] };
+    const [persistedProfiles, requestControlPatterns] = await Promise.all([
+      deps.storage.model.listLanguageProfiles({
+        limit: surfaceLanguageProfileLimit,
+        referencedByLanguageMemory: true
+      }),
+      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+    ]);
+    const requestControlProfileIds = new Set(
+      latestRequestRequirementPatterns(requestControlPatterns).map(pattern => pattern.profileId)
+    );
+    const profiles = persistedProfiles
+      .filter(profile => !requestControlProfileIds.has(profile.id))
       .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     const clusters = buildLanguageProfileClusters(profiles);
     surfaceProfileCache = { loadedAt: now, value: profiles, clusters };
     return { profiles, clusters };
   }
 
-  async function surfaceLanguageClusterCached(surface: string): Promise<LanguageProfileCluster | undefined> {
-    const { clusters } = await surfaceLanguageProfilesCached();
-    return (surface.trim() ? selectLanguageProfileClusterForSurface(clusters, surface)?.cluster : undefined)
-      ?? selectDominantLanguageProfileCluster(clusters);
+  async function sourceOwnedLanguageProfilesCached(
+    aliases: readonly string[]
+  ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
+    const aliasKeys = [...new Set(aliases.map(normalizeSourceLanguageAlias).filter(Boolean))].sort();
+    if (!aliasKeys.length) return { profiles: [], clusters: [] };
+    const cacheKey = aliasKeys.join("\u001f");
+    const now = clock.now();
+    const cached = sourceOwnedAliasProfileCache.get(cacheKey);
+    if (cached && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) {
+      return { profiles: cached.profiles, clusters: cached.clusters };
+    }
+    const profiles = (await deps.storage.model.listLanguageProfiles({
+      limit: surfaceLanguageProfileLimit,
+      referencedByLanguageMemory: true,
+      sourceDerivedAliases: aliasKeys
+    })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+    const clusters = buildLanguageProfileClusters(profiles);
+    sourceOwnedAliasProfileCache.set(cacheKey, { loadedAt: now, profiles, clusters });
+    return { profiles, clusters };
+  }
+
+  async function sourceOwnedLanguageClusterForAlias(
+    alias: string,
+    surface: string
+  ): Promise<LanguageProfileCluster | undefined> {
+    const { clusters } = await sourceOwnedLanguageProfilesCached([alias]);
+    if (clusters.length === 1) return clusters[0];
+    return surface.trim()
+      ? selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
+      : undefined;
+  }
+
+  async function sourceOwnedLanguageClustersForWarmup(): Promise<LanguageProfileCluster[]> {
+    const { profiles } = await surfaceLanguageProfilesCached();
+    const sourceOwnedProfiles = profiles.filter(profile =>
+      (profile.discoveredNames ?? []).some(name =>
+        (name.sourceVersionRefs ?? []).some(sourceVersionId =>
+          String(sourceVersionId) === String(profile.sourceVersionId)
+        )
+      )
+    );
+    return buildLanguageProfileClusters(sourceOwnedProfiles);
+  }
+
+  async function surfaceLanguageClusterCached(surface: string, residentOnly = false): Promise<LanguageProfileCluster | undefined> {
+    const { clusters } = await surfaceLanguageProfilesCached(residentOnly);
+    if (!surface.trim()) return undefined;
+    return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster;
   }
 
   async function requestSemanticFrames(surface: string): Promise<SemanticFrameRecord[]> {
     const normalizedSurface = normalizePriorKey(surface);
     if (!normalizedSurface) return [];
-    const frames = await deps.storage.languageMemory.listSemanticFrames({ surface, limit: 128 }).catch(() => []);
+    const frames = (await sourceAnchorSemanticFramesCached().catch(() => []))
+      .map(row => row.frame);
     return uniqueRecordsById(frames.filter(frame => {
       const frameSurface = kernelString(jsonRecord(frame.frameJson).surface);
       return frameSurface ? normalizePriorKey(frameSurface) === normalizedSurface : false;
@@ -637,6 +911,47 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     });
     sourceAnchorSemanticFrameCache = { loadedAt: now, value };
     return value;
+  }
+
+  async function sourceAnchorEvidenceBatchCached(ids: readonly EvidenceSpan["id"][]): Promise<EvidenceSpan[]> {
+    const boundedIds = uniqueKernelStrings(ids.map(String))
+      .slice(0, sourceAnchorEvidenceCacheMaxEntries);
+    if (!boundedIds.length) return [];
+    const now = clock.now();
+    const selected = new Map<string, EvidenceSpan>();
+    const hot = await hotNeighborhoodIfResident();
+    for (const id of boundedIds) {
+      const cached = sourceAnchorEvidenceCache.get(id);
+      if (cached && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) {
+        selected.set(id, cached.value);
+        continue;
+      }
+      const resident = hot?.evidenceById.get(id);
+      if (resident) {
+        selected.set(id, resident);
+        sourceAnchorEvidenceCache.set(id, { loadedAt: now, value: resident });
+      }
+    }
+    const missing = boundedIds
+      .filter(id => !selected.has(id))
+      .map(id => id as EvidenceSpan["id"]);
+    if (missing.length) {
+      const loaded = await deps.storage.evidence.getEvidenceBatch(missing);
+      for (const span of loaded) {
+        const id = String(span.id);
+        selected.set(id, span);
+        sourceAnchorEvidenceCache.set(id, { loadedAt: now, value: span });
+      }
+    }
+    while (sourceAnchorEvidenceCache.size > sourceAnchorEvidenceCacheMaxEntries) {
+      const oldest = [...sourceAnchorEvidenceCache.entries()]
+        .sort((left, right) => left[1].loadedAt - right[1].loadedAt)[0];
+      if (!oldest) break;
+      sourceAnchorEvidenceCache.delete(oldest[0]);
+    }
+    return boundedIds
+      .map(id => selected.get(id))
+      .filter((span): span is EvidenceSpan => Boolean(span));
   }
 
   async function correctionRulesCached() {
@@ -836,14 +1151,26 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     }
   }
 
-  async function graphForText(text: string, options: { allowSemanticFrameEvidence?: boolean } = {}) {
+  async function graphForText(text: string, options: {
+    allowSemanticFrameEvidence?: boolean;
+    sourceAnchoringRequired?: boolean;
+    residentOnly?: boolean;
+  } = {}) {
     const features = graphRetrievalFeatures(text);
     const topicTerms = graphTopicTermsForText(text);
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
-    const cacheKey = hasher.digestHex(JSON.stringify({ features, topicTerms, allowSemanticFrameEvidence })).slice(0, 32);
+    const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
+    const residentOnly = options.residentOnly === true;
+    const cacheKey = hasher.digestHex(JSON.stringify({
+      features,
+      topicTerms,
+      allowSemanticFrameEvidence,
+      sourceAnchoringRequired,
+      residentOnly
+    })).slice(0, 32);
     const exact = cachedGraphSlice(cacheKey);
     if (exact) return exact;
-    if (requestNeedsSourceAnchoredEvidence(text)) {
+    if (sourceAnchoringRequired) {
       const residentHot = await hotNeighborhoodIfResident();
       if (residentHot) {
         const hotAnchoredEvidence = sourceAnchoredEvidenceFromHot(residentHot, text);
@@ -851,6 +1178,27 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           ? graphSliceFromHotEvidence(residentHot, hotAnchoredEvidence, features, topicTerms)
           : undefined;
         if (hotSlice && !temporalCounterexampleExpected(text, hotAnchoredEvidence)) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
+      }
+      if (residentOnly) {
+        const semanticSelection = allowSemanticFrameEvidence
+          ? await sourceAnchorSemanticFrameEvidence(text)
+          : { evidence: [], semanticFrameBoundEvidenceIds: [] };
+        const semanticIds = new Set(semanticSelection.semanticFrameBoundEvidenceIds);
+        const anchored = sourceAnchoredEvidenceForRequest(text, semanticSelection.evidence, semanticIds);
+        const evidence = anchored.evidence.slice(0, 24);
+        const admittedIds = new Set(evidence.map(span => String(span.id)));
+        return cacheGraphSlice(cacheKey, emptyRuntimeGraphSlice(
+          {
+            evidenceIds: evidence.map(span => span.id),
+            features: [...features],
+            topicTerms,
+            radius: 0,
+            limitNodes: 0,
+            limitEdges: 0
+          },
+          evidence,
+          semanticSelection.semanticFrameBoundEvidenceIds.filter(id => admittedIds.has(id))
+        ), "hot-neighborhood");
       }
       const anchoredEvidenceStarted = Date.now();
       const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
@@ -900,10 +1248,17 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       };
       return cacheGraphSlice(cacheKey, value, "postgres");
     }
-    if (!requireDurableGraphLookup && !requestNeedsSourceAnchoredEvidence(text)) {
+    if (!requireDurableGraphLookup && !sourceAnchoringRequired) {
       const hot = await hotNeighborhoodCached();
       const hotSlice = hot ? graphSliceFromHotNeighborhood(hot, features, topicTerms) : undefined;
       if (hotSlice) return cacheGraphSlice(cacheKey, hotSlice, "hot-neighborhood");
+    }
+    if (residentOnly) {
+      return cacheGraphSlice(
+        cacheKey,
+        emptyRuntimeGraphSlice({ evidenceIds: [], features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 }, []),
+        "hot-neighborhood"
+      );
     }
     const value = await graphForTextUncached(text, features, topicTerms);
     requireDurableGraphLookup = false;
@@ -1044,7 +1399,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       .slice(0, 64);
     const evidenceIds = semanticFrameBoundEvidenceIds as EvidenceSpan["id"][];
     return {
-      evidence: evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [],
+      evidence: evidenceIds.length ? await sourceAnchorEvidenceBatchCached(evidenceIds) : [],
       semanticFrameBoundEvidenceIds
     };
   }
@@ -1732,6 +2087,40 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     return motion;
   }
 
+  function runtimeMotionDeferredByDeadline(input: {
+    episodeId: EpisodeId;
+    requestedAuthority: RequestedAuthority;
+    trigger: RuntimeReplanTrigger;
+    requestText: string;
+    connectorConfigured: boolean;
+    decision?: RuntimeDeadlineDecision;
+  }): RuntimeReplanMotion {
+    const queryHash = hasher.digestHex(input.requestText);
+    const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}\u001fdeadline`).slice(0, 32)}`;
+    const reason = input.decision
+      ? `deadline_guard:not_started:${input.decision.phase}:${input.decision.reason}`
+      : "deadline_guard:not_started";
+    return {
+      schema: "scce.runtime_motion.learn_hydrate_replan.v1",
+      motionId: "motion.learn_hydrate_replan",
+      guardId,
+      attempt: 1,
+      trigger: input.trigger,
+      requestedAuthority: input.requestedAuthority,
+      parentEpisodeId: String(input.episodeId),
+      queryHash,
+      connectorConfigured: input.connectorConfigured,
+      status: "unavailable",
+      searchResultCount: 0,
+      fetchedSourceCount: 0,
+      ingestedSourceCount: 0,
+      ingestedEvidenceCount: 0,
+      sourceUris: [],
+      sourceSurfaces: [],
+      failures: [reason]
+    };
+  }
+
   const kernel: ScceKernel = {
     async warmup(input: RuntimeWarmupInput = {}): Promise<RuntimeWarmupResult> {
       const started = clock.now();
@@ -1765,22 +2154,27 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
 
       if (input.language ?? true) {
         tasks.push(Promise.all([
-          surfaceLanguageClusterCached("")
-            .then(cluster => hydrateSurfaceLanguageMemoryCached(
-              languageLimit,
-              cluster,
-              cluster ? "warmup-dominant-language-cluster" : "warmup-no-owned-language-cluster"
-            )),
+          sourceOwnedLanguageClustersForWarmup()
+            .then(clusters => Promise.all(clusters.map(cluster =>
+              hydrateSurfaceLanguageMemoryCached(
+                languageLimit,
+                cluster,
+                "warmup-source-owned-language-cluster"
+              )
+            ))),
           sourceAnchorSemanticFramesCached()
         ])
-          .then(([language, sourceAnchorFrames]) => {
+          .then(([languages, sourceAnchorFrames]) => {
             result.language = {
               loaded: true,
-              models: language.models.length,
-              observations: language.observations.length,
-              units: language.units.length,
-              patterns: language.patterns.length,
-              semanticFrames: Math.max(language.semanticFrames.length, sourceAnchorFrames.length)
+              models: languages.reduce((sum, language) => sum + language.models.length, 0),
+              observations: languages.reduce((sum, language) => sum + language.observations.length, 0),
+              units: languages.reduce((sum, language) => sum + language.units.length, 0),
+              patterns: languages.reduce((sum, language) => sum + language.patterns.length, 0),
+              semanticFrames: Math.max(
+                languages.reduce((sum, language) => sum + language.semanticFrames.length, 0),
+                sourceAnchorFrames.length
+              )
             };
           })
           .catch(error => {
@@ -1817,6 +2211,43 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
 
       await Promise.all(tasks);
+      if (input.language ?? true) {
+        const sourceLanguageStarted = clock.now();
+        try {
+          const sourceFrames = await sourceAnchorSemanticFramesCached();
+          const sourceEvidenceIds = uniqueKernelStrings(sourceFrames
+            .flatMap(row => row.frame.evidenceIds.map(String)))
+            .slice(0, sourceAnchorEvidenceCacheMaxEntries)
+            .map(id => id as EvidenceSpan["id"]);
+          await sourceAnchorEvidenceBatchCached(sourceEvidenceIds);
+          const cluster = await surfaceLanguageClusterCached("");
+          const creativeLanguage = await hydrateSurfaceLanguageMemoryCached(
+            languageLimit,
+            cluster,
+            cluster ? "warmup-creative-language-cluster" : "warmup-creative-language-unscoped",
+            CORPUS_ROLE_IDS.publicDomainProse
+          );
+          if (result.language) {
+            result.language.models = Math.max(result.language.models, creativeLanguage.models.length);
+            result.language.observations = Math.max(result.language.observations, creativeLanguage.observations.length);
+            result.language.units = Math.max(result.language.units, creativeLanguage.units.length);
+            result.language.patterns = Math.max(result.language.patterns, creativeLanguage.patterns.length);
+            result.language.semanticFrames = Math.max(result.language.semanticFrames, creativeLanguage.semanticFrames.length);
+          }
+          kernelTrace({
+            stage: "runtime.start",
+            label: "kernel.warmup.source_language",
+            durationMs: Math.max(0, clock.now() - sourceLanguageStarted),
+            counts: {
+              sourceFrames: sourceFrames.length,
+              sourceEvidence: sourceEvidenceIds.length,
+              creativeFrames: creativeLanguage.semanticFrames.length
+            }
+          });
+        } catch (error) {
+          failures.push(`source language warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       result.totalMs = Math.max(0, clock.now() - started);
       kernelTrace({
         stage: "runtime.start",
@@ -1876,12 +2307,15 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           trust: 0.82,
           metadata: file.metadata
         };
+        const requestRequirementCorpus = parseRequestRequirementCorpus(file.text);
         await deps.storage.evidence.putSourceVersion(source);
         events.push(await append(eventFactory.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace } })));
         events.push(await append(eventFactory.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } })));
         sources++;
         const preview = typedIngest.preview({ uri: file.uri, mediaType: file.mediaType, text: file.text, metadata: file.metadata });
-        const languageSurface = preview.languageText || (preview.suppressRawLanguageTraining ? "" : file.text);
+        const languageSurface = requestRequirementCorpus
+          ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
+          : preview.languageText || (preview.suppressRawLanguageTraining ? "" : file.text);
         const profile = language.acquire({ sourceVersionId, text: languageSurface, createdAt: now });
         if (deps.storage.model.putLanguageProfiles) await deps.storage.model.putLanguageProfiles([profile]);
         else await deps.storage.model.putLanguageProfile(profile);
@@ -1953,12 +2387,15 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         graphEdges += typedProjection.graphEdges.length;
         events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { typedIngest: typedProjection.diagnostics } })));
 
-        const languageMemory = typedProjection.languageText.trim() ? languageMemoryRuntime.observe({
+        const languageTrainingText = requestRequirementCorpus
+          ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
+          : typedProjection.languageText;
+        const languageMemory = languageTrainingText.trim() ? languageMemoryRuntime.observe({
           streamId: file.uri,
           sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem),
           profile,
           sourceVersionId,
-          text: typedProjection.languageText,
+          text: languageTrainingText,
           evidence: admittedSpans,
           createdAt: now,
           maxOrder: 6,
@@ -1966,16 +2403,36 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           vocabularyLimit: 24000
         }) : undefined;
         if (languageMemory) {
+        const requestRequirementLearning = requestRequirementCorpus
+          ? compileRequestRequirementCorpus({
+            corpus: requestRequirementCorpus,
+            profileId: profile.id,
+            sourceVersionId,
+            evidenceIds: admittedSpans.map(span => span.id),
+            sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem) ?? "corrections",
+            updatedAt: now,
+            makeId: representation => String(idFactory.semanticId("request_requirement_pattern", representation))
+          })
+          : undefined;
         await deps.storage.languageMemory.putNgramObservationsBatch(languageMemory.observations);
         if (deps.storage.languageMemory.putNgramModels) await deps.storage.languageMemory.putNgramModels(languageMemory.models);
         else for (const model of languageMemory.models) await deps.storage.languageMemory.putNgramModel(model);
         if (deps.storage.languageMemory.putLanguageUnits) await deps.storage.languageMemory.putLanguageUnits(languageMemory.units);
         else for (const unit of languageMemory.units) await deps.storage.languageMemory.putLanguageUnit(unit);
-        if (deps.storage.languageMemory.putLanguagePatterns) await deps.storage.languageMemory.putLanguagePatterns(languageMemory.patterns);
-        else for (const pattern of languageMemory.patterns) await deps.storage.languageMemory.putLanguagePattern(pattern);
+        const learnedPatterns = requestRequirementLearning
+          ? [...languageMemory.patterns, ...requestRequirementLearning.patterns]
+          : languageMemory.patterns;
+        if (deps.storage.languageMemory.putLanguagePatterns) await deps.storage.languageMemory.putLanguagePatterns(learnedPatterns);
+        else for (const pattern of learnedPatterns) await deps.storage.languageMemory.putLanguagePattern(pattern);
         if (deps.storage.languageMemory.putSemanticFrames) await deps.storage.languageMemory.putSemanticFrames(languageMemory.semanticFrames);
         else for (const frame of languageMemory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame(frame);
-        events.push(await append(eventFactory.create({ episodeId, typeId: "SymbolPatternLearned", payload: languageMemory.audit })));
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "SymbolPatternLearned",
+          payload: requestRequirementLearning
+            ? toJsonValue({ languageMemory: languageMemory.audit, requestRequirements: requestRequirementLearning.audit })
+            : languageMemory.audit
+        })));
         } else {
           events.push(await append(eventFactory.create({ episodeId, typeId: "SymbolPatternLearned", payload: { skipped: "no language-bearing observations", uri: file.uri, typedIngest: typedProjection.diagnostics } })));
         }
@@ -2110,21 +2567,72 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       };
       const events: ScceEvent[] = [];
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
+      const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
+      const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
+      const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
+        const decision = runtimeDeadline?.checkpoint(phase, requiredMs);
+        const deadlineMetadata = runtimeDeadline?.metadata;
+        if (decision && deadlineMetadata) {
+          kernelTrace({
+            stage: "runtime.deadline.check",
+            label: phase,
+            durationMs: decision.observedAtMonotonicMs - deadlineMetadata.startedMonotonicMs,
+            support: { ...decision },
+            ...(decision.allowed ? {} : { warnings: [`deadline guard did not admit ${phase}`] })
+          });
+        }
+        return decision;
+      };
+      deadlineCheckpoint("kernel.turn.start", 0);
       const locale = localeFromMetadata(input.metadata, input.text);
       const translationTarget = translationTargetFromMetadata(input.metadata);
+      const sourceLanguageAlias = sourceLanguageAliasFromMetadata(input.metadata);
+      const surfaceClusterStarted = Date.now();
       const selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
-        : await surfaceLanguageClusterCached(input.text);
+        : sourceLanguageAlias
+          ? await sourceOwnedLanguageClusterForAlias(sourceLanguageAlias, input.text)
+          : await surfaceLanguageClusterCached(input.text, fastRuntimeBudget);
+      kernelTrace({
+        stage: "runtime.seed.surface_cluster",
+        label: "kernel.turn",
+        durationMs: Date.now() - surfaceClusterStarted,
+        counts: { profiles: selectedSurfaceCluster?.profileIds.length ?? 0 },
+        support: {
+          residentOnly: fastRuntimeBudget,
+          durableProfileScanAllowed: !fastRuntimeBudget,
+          sourceLanguageAlias: sourceLanguageAlias ?? null,
+          sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null
+        }
+      });
       const selectedSurfaceProfile = selectedSurfaceCluster?.members[0];
+      const authorityLanguageStarted = Date.now();
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
         () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal"),
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
+      kernelTrace({
+        stage: "runtime.seed.language",
+        label: "kernel.turn",
+        durationMs: Date.now() - authorityLanguageStarted,
+        counts: {
+          models: baseAuthorityLanguage.models.length,
+          patterns: baseAuthorityLanguage.patterns.length,
+          semanticFrames: baseAuthorityLanguage.semanticFrames.length
+        }
+      });
+      const exactRequestFramesStarted = Date.now();
       const exactRequestFrames = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
         : await requestSemanticFrames(input.text);
+      kernelTrace({
+        stage: "runtime.seed.request_frames",
+        label: "kernel.turn",
+        durationMs: Date.now() - exactRequestFramesStarted,
+        counts: { semanticFrames: exactRequestFrames.length }
+      });
       const authorityLanguage = exactRequestFrames.length
         ? {
           ...baseAuthorityLanguage,
@@ -2152,6 +2660,13 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const inheritedRuntimeMotion = runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
       const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
+      const requestRequirementLanguageState: LanguageMemoryRuntimeState = {
+        ...authorityLanguage.state,
+        importedPatterns: uniqueRecordsById([
+          ...authorityLanguage.requestControlPatterns,
+          ...authorityLanguage.state.importedPatterns
+        ], 2048)
+      };
       const requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
@@ -2159,7 +2674,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           ...workspacePlanContext.explicitRequirements
         ],
         dialogueState: authorityDialogueState,
-        languageMemoryState: authorityLanguage.state,
+        languageMemoryState: requestRequirementLanguageState,
         contextContribution: requirementContextFromMetadata(input.metadata)
       });
       let operatorActivations = activateCognitiveOperators({
@@ -2284,7 +2799,13 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         () => evaluationComponent(
           "shard-router",
           "graph.resolve.shard-router",
-          () => discourseEvidenceBound ? graphForEvidenceIds([...metadataEvidenceIds]) : graphForText(retrievalText, { allowSemanticFrameEvidence }),
+          () => discourseEvidenceBound
+            ? graphForEvidenceIds([...metadataEvidenceIds])
+            : graphForText(retrievalText, {
+              allowSemanticFrameEvidence,
+              sourceAnchoringRequired: requestedAuthority !== "creative",
+              residentOnly: fastRuntimeBudget
+            }),
           () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText)
         ),
         () => discourseEvidenceBound ? evidenceOnlyForIds([...metadataEvidenceIds]) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence)
@@ -2303,7 +2824,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const calibrationModels = await calibrationModelsCached();
       const sourceAnchorAudit = discourseEvidenceBound
         ? { required: false, anchors: [] as string[], evidence }
-        : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
+        : requestedAuthority === "creative"
+          ? { required: false, anchors: [] as string[], evidence }
+          : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
       const admissibleEvidence = sourceAnchorAudit.required ? sourceAnchorAudit.evidence : evidence;
       if (sourceAnchorAudit.required) graph = graphFilteredToEvidence(graph, sourceAnchorAudit.evidence);
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
@@ -2389,20 +2912,27 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         support: discourseObjectTrace ? { discourseObject: discourseObjectTrace, queryConcatenationUsed: false } : { queryConcatenationUsed: false }
       });
       markTiming("graphSliceMs");
-      const preProofSourceEvidence = evidenceForRequest(input.text, admissibleEvidence, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
+      const factualProofRequired = requestedAuthority !== "creative";
+      const preProofSourceEvidence = factualProofRequired
+        ? evidenceForRequest(input.text, admissibleEvidence, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds)
+        : [];
       const preProofSelectedEvidence = runtimeEvidenceWindowsForRequest(input.text, preProofSourceEvidence);
-      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit));
+      const supportCandidates = factualProofRequired
+        ? runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit))
+        : [];
+      const proofNodes = factualProofRequired ? graph.nodes : [];
+      const proofEdges = factualProofRequired ? graph.edges : [];
       const supportBundle = evaluationComponent(
         "support-engine",
         "proof.support-engine",
         () => {
-          const entailmentResult = entailment.check({ text: input.text, evidence: supportCandidates, nodes: graph.nodes, field, createdAt: clock.now(), calibrationModels });
+          const entailmentResult = entailment.check({ text: input.text, evidence: supportCandidates, nodes: proofNodes, field, createdAt: clock.now(), calibrationModels });
           return {
             promoted: supportCandidates,
             entailmentResult,
-            semanticProof: semanticProofSystem.prove({ claimText: input.text, evidence: supportCandidates, nodes: graph.nodes, field }),
-            ccrResult: ccr.run({ text: input.text, evidence: supportCandidates, nodes: graph.nodes, edges: graph.edges, field, entailment: entailmentResult }),
-            pfaceEstimate: pface.estimate({ nodes: graph.nodes, edges: graph.edges, field })
+            semanticProof: semanticProofSystem.prove({ claimText: input.text, evidence: supportCandidates, nodes: proofNodes, field }),
+            ccrResult: ccr.run({ text: input.text, evidence: supportCandidates, nodes: proofNodes, edges: proofEdges, field, entailment: entailmentResult }),
+            pfaceEstimate: factualProofRequired ? pface.estimate({ nodes: proofNodes, edges: proofEdges, field }) : undefined
           };
         },
         () => ({
@@ -2514,15 +3044,40 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }
         });
       }
+      const candidateLanguageStarted = Date.now();
       const evidenceSurfaceCluster = selectLanguageProfileClusterForSourceVersions(
-        (await surfaceLanguageProfilesCached()).clusters,
+        (await surfaceLanguageProfilesCached(fastRuntimeBudget)).clusters,
         selectedEvidence.map(span => span.sourceVersionId)
       );
-      let surfaceLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
-        ? await hydrateSurfaceLanguageMemoryCached(12, evidenceSurfaceCluster, "admitted-evidence-cluster-selected")
-        : authorityLanguage;
+      const preferredSurfaceCorpusRole = requestedAuthority === "creative"
+        ? CORPUS_ROLE_IDS.publicDomainProse
+        : undefined;
+      const exactCreativeAuthorityReady = Boolean(
+        preferredSurfaceCorpusRole
+        && selectedSurfaceCluster
+        && authorityLanguage.state.scope.mode === "cluster"
+        && authorityLanguage.state.scope.purityProven
+        && [...authorityLanguage.state.scope.profileIds].sort().join("\u001f")
+          === [...selectedSurfaceCluster.profileIds].sort().join("\u001f")
+        && authorityLanguage.state.importedConstructionBundles.some(bundle =>
+          (bundle.creativeEvents?.length ?? 0) > 0
+        )
+      );
+      let surfaceLanguage = preferredSurfaceCorpusRole
+        ? exactCreativeAuthorityReady
+          ? authorityLanguage
+          : await hydrateSurfaceLanguageMemoryCached(
+            12,
+            selectedSurfaceCluster,
+            selectedSurfaceCluster ? "creative-source-cluster-selected" : "creative-source-surface-ambiguous-or-no-signal",
+            preferredSurfaceCorpusRole,
+            input.text
+          )
+        : evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
+          ? await hydrateSurfaceLanguageMemoryCached(12, evidenceSurfaceCluster, "admitted-evidence-cluster-selected")
+          : authorityLanguage;
       const productionTranslationProfiles = translationTarget
-        ? (await surfaceLanguageProfilesCached()).profiles
+        ? (await sourceOwnedLanguageProfilesCached([translationTarget])).profiles
         : [];
       let productionTranslationPlan: TranslationPlan | undefined;
       if (translationTarget) {
@@ -2543,12 +3098,33 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
       const surfaceLanguageModels = surfaceLanguage.models;
       const surfaceLanguageMemory = surfaceLanguage.state;
+      kernelTrace({
+        stage: "candidate.language.hydrate",
+        label: "kernel.turn",
+        durationMs: Date.now() - candidateLanguageStarted,
+        counts: {
+          models: surfaceLanguageModels.length,
+          patterns: surfaceLanguage.patterns.length,
+          semanticFrames: surfaceLanguage.semanticFrames.length
+        },
+        support: {
+          requestedAuthority,
+          corpusRole: preferredSurfaceCorpusRole ?? null
+        }
+      });
+      const candidatePriorStarted = Date.now();
       const brain = await activeBrainMarker();
       events.push(await append(eventFactory.create({ episodeId, typeId: "BrainInfluenceObserved", payload: { ...brain as Record<string, JsonValue>, languageMemory: surfaceLanguageMemoryProfile(surfaceLanguageMemory, deps.evaluationCondition?.flags.disableLanguageMemory === true) } })));
       const correctionRules = correctionMemory.retrieve({
         rules: mergeCorrectionRules(await correctionRulesCached(), detectedCorrections),
         context: { targetLanguageId: translationTarget ?? locale, targetScriptId: undefined },
         limit: 96
+      });
+      kernelTrace({
+        stage: "candidate.prior.bind",
+        label: "kernel.turn",
+        durationMs: Date.now() - candidatePriorStarted,
+        counts: { correctionRules: correctionRules.length }
       });
       const answerSurface = longPathBasisAnswer
         ? {
@@ -2589,6 +3165,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           executionState: "not_executed"
         })
       }));
+      const inventionPlanStarted = Date.now();
       const plannedInventionCandidates = planInventions({
         requestText: input.text,
         requestedAuthority,
@@ -2602,6 +3179,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         requirementField,
         operatorActivations,
         samplingDisabled: deps.deterministicReplay === true
+      });
+      kernelTrace({
+        stage: "candidate.invention.plan",
+        label: "kernel.turn",
+        durationMs: Date.now() - inventionPlanStarted,
+        counts: { candidates: plannedInventionCandidates.length }
       });
       const runtimeTerminalPriorContext = inheritedRuntimeMotion
         && inheritedRuntimeMotion.status !== "hydrated"
@@ -2666,6 +3249,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           maxPaths: 32
         }
       });
+      const cognitiveProposalStarted = Date.now();
       const cognitiveProposals = planCognitiveProposals({
         requestText: input.text,
         requirements: requirementField,
@@ -2682,6 +3266,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         actionPlans: cognitiveActionPlans,
         maxProposals: 8
       });
+      kernelTrace({
+        stage: "candidate.cognitive.plan",
+        label: "kernel.turn",
+        durationMs: Date.now() - cognitiveProposalStarted,
+        counts: { proposals: cognitiveProposals.length }
+      });
       events.push(await append(eventFactory.create({
         episodeId,
         typeId: "CognitiveProposalsBuilt",
@@ -2697,6 +3287,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }))
         })
       })));
+      const candidateFieldStarted = Date.now();
       const candidateField = candidates.generate({
         requestText: input.text,
         requestedAuthority,
@@ -2726,6 +3317,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         calibrationModels,
         calibrationTaskClass
       });
+      kernelTrace({
+        stage: "candidate.field.generate",
+        label: "kernel.turn",
+        durationMs: Date.now() - candidateFieldStarted,
+        counts: { candidates: candidateField.candidates.length }
+      });
       let authorityCandidateField = admitCandidatesForAuthority(candidateField, requestedAuthority);
       let runtimeSurfaceMotion: RuntimeReplanMotion | undefined;
       const candidateMotionTrigger = requestedAuthority === "creative" || runtimeDiagnosticRequested
@@ -2737,21 +3334,42 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       // still required.
       if (candidateMotionTrigger) {
         const trigger = candidateMotionTrigger ?? inheritedRuntimeMotion?.trigger ?? "coherence_support_failure";
-        if (!inheritedRuntimeMotion) {
-          const motion = await learnHydrateReplan({
-            ownerInput: input,
+        let motion = inheritedRuntimeMotion;
+        if (!motion) {
+          const recoveryDecision = deadlineCheckpoint("runtime.replan.acquire", 5_000);
+          if (recoveryDecision?.allowed !== false) {
+            motion = await learnHydrateReplan({
+              ownerInput: input,
+              episodeId,
+              requestedAuthority,
+              trigger,
+              events
+            });
+            lastField = undefined;
+            return kernel.turn({
+              ...input,
+              metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+            });
+          }
+          motion = runtimeMotionDeferredByDeadline({
             episodeId,
             requestedAuthority,
             trigger,
-            events
+            requestText: input.text,
+            connectorConfigured: Boolean(deps.connectors),
+            decision: recoveryDecision
           });
-          lastField = undefined;
-          return kernel.turn({
-            ...input,
-            metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-          });
+          events.push(await append(eventFactory.create({
+            episodeId,
+            typeId: "ActionPrepared",
+            payload: toJsonValue({
+              runtimeMotion: motion,
+              deadlineDecision: recoveryDecision,
+              acquisitionStarted: false
+            })
+          })));
         }
-        runtimeSurfaceMotion = inheritedRuntimeMotion;
+        runtimeSurfaceMotion = motion;
         const terminalInvention = runtimeTerminalInventions[0];
         const terminalInventionCandidate = terminalInvention
           ? candidateField.candidates.find(candidate => candidate.constructIds?.includes(terminalInvention.id)
@@ -2761,7 +3379,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           base: authorityCandidateField,
           requestText: input.text,
           authority: requestedAuthority,
-          motion: inheritedRuntimeMotion,
+          motion,
           inventionCandidate: terminalInventionCandidate,
           unresolvedSlots: authorityDialogueState.unresolvedSlots,
           learnedLanguageFrameIds: surfaceLanguageMemory.importedSemanticFrames.map(frame => frame.id),
@@ -2909,7 +3527,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           await deps.approvals?.observePending(plan);
           events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityPlanned", payload: plan })));
           const permission = plan.permission as { allowed?: boolean; dryRun?: boolean; reason?: string };
-          if (permission.allowed && !permission.dryRun) {
+          const buildTestDecision = permission.allowed && !permission.dryRun
+            ? deadlineCheckpoint("build_test.execute", 5_000)
+            : undefined;
+          if (permission.allowed && !permission.dryRun && buildTestDecision?.allowed !== false) {
             events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: capability.id, planId: plan.id } })));
             buildTest = await deps.buildTest.executeProgram({ episodeId, construct });
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
@@ -2917,7 +3538,16 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { code: buildTest.test.code, passed: buildTest.passed, repairAttempted: buildTest.repairAttempted } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: buildTest.passed ? "CapabilitySucceeded" : "CapabilityFailed", payload: { capabilityId: capability.id, planId: plan.id, passed: buildTest.passed } })));
           } else {
-            events.push(await append(eventFactory.create({ episodeId, typeId: "ActionPrepared", payload: { capabilityId: capability.id, planId: plan.id, reason: permission.reason ?? "approval-required" } })));
+            events.push(await append(eventFactory.create({
+              episodeId,
+              typeId: "ActionPrepared",
+              payload: {
+                capabilityId: capability.id,
+                planId: plan.id,
+                reason: buildTestDecision?.allowed === false ? "runtime-deadline-reserve" : permission.reason ?? "approval-required",
+                ...(buildTestDecision ? { deadlineDecision: toJsonValue(buildTestDecision) } : {})
+              }
+            })));
           }
         }
       }
@@ -2984,7 +3614,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const speakInput = {
         construct: spokenConstructGraph,
         field,
-        languageProfile: productionTranslationPlan?.targetProfile ?? selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()),
+        languageProfile: translationTarget
+          ? productionTranslationPlan?.targetProfile ?? runtimeLanguageProfile(clock.now())
+          : surfaceLanguage.surfaceProfile ?? selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()),
         evidence: selectedEvidence,
         entailment: answerEntailment,
         languageMemory: surfaceLanguageMemory,
@@ -3017,28 +3649,44 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }
           : undefined
       };
+      const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", 750);
       let spoken = await evaluationComponent(
         "learned-mouth",
         "mouth.realize",
-        () => mouth.speak(speakInput),
+        () => learnedMouthDecision?.allowed === false
+          ? deterministicMouth.speak(speakInput)
+          : mouth.speak(speakInput),
         () => deterministicMouth.speak(speakInput)
       );
       const emptyAuthoritySurface = !spoken.text.trim()
         && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         && !runtimeDiagnosticRequested;
       if (emptyAuthoritySurface && !inheritedRuntimeMotion) {
-        const motion = await learnHydrateReplan({
-          ownerInput: input,
+        const recoveryDecision = deadlineCheckpoint("runtime.replan.empty_mouth", 5_000);
+        if (recoveryDecision?.allowed !== false) {
+          const motion = await learnHydrateReplan({
+            ownerInput: input,
+            episodeId,
+            requestedAuthority,
+            trigger: "coherence_support_failure",
+            events
+          });
+          lastField = undefined;
+          return kernel.turn({
+            ...input,
+            metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+          });
+        }
+        events.push(await append(eventFactory.create({
           episodeId,
-          requestedAuthority,
-          trigger: "coherence_support_failure",
-          events
-        });
-        lastField = undefined;
-        return kernel.turn({
-          ...input,
-          metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-        });
+          typeId: "ActionPrepared",
+          payload: toJsonValue({
+            runtimeMotion: "not_started",
+            reason: "runtime-deadline-reserve",
+            deadlineDecision: recoveryDecision
+          })
+        })));
+        spoken = await deterministicMouth.speak(speakInput);
       }
       if (emptyAuthoritySurface && inheritedRuntimeMotion) {
         // Learned Mouth remains the primary realization lane. The
@@ -3079,7 +3727,15 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           uncertainty: spoken.uncertainty.length,
           inspectRefs: spoken.inspectRefs.length
         },
-        support: { selectedCandidateId: judged.selected.id, force: spoken.force, assistantForce: mouthAssistantForce.force }
+        support: {
+          selectedCandidateId: judged.selected.id,
+          semanticCandidateId: spoken.realizationTrace.selected.semanticCandidateId ?? judged.selected.id,
+          semanticPlanId: spoken.realizationTrace.selected.semanticPlanId ?? null,
+          surfaceRealizationId: spoken.realizationTrace.selected.surfaceRealizationId ?? spoken.realizationTrace.selected.id,
+          force: spoken.force,
+          assistantForce: mouthAssistantForce.force,
+          learnedMouthAdmitted: learnedMouthDecision?.allowed ?? true
+        }
       });
       timingParts.mouthMs = Date.now() - mouthStarted;
       timingStageStarted = Date.now();
@@ -3095,7 +3751,22 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       let validation = validationBuilder.build({ construct: spokenConstructGraph, entailment: answerEntailment, buildTest, pca: pcaReport as unknown as JsonValue });
       let rawEmission = emissionEngine.emit({ construct: spokenConstructGraph, validation, entailment: answerEntailment, answer, pca: pcaReport as unknown as JsonValue });
       let answerRevisionTrace: JsonValue | undefined;
-      if (selectedProposal && !deps.evaluationCondition) {
+      const sourceStructuralCreativeSurface = Boolean(
+        selectedInvention
+        && spoken.realizationTrace.selected.semanticCandidateId === judged.selected.id
+        && spoken.realizationTrace.selected.semanticPlanId
+        && spoken.realizationTrace.selected.surfaceRealizationId === spoken.realizationTrace.selected.id
+      );
+      const answerRevisionEligible = Boolean(
+        selectedProposal
+        && requestedAuthority !== "creative"
+        && !deps.evaluationCondition
+        && !sourceStructuralCreativeSurface
+      );
+      const answerRevisionDecision = answerRevisionEligible
+        ? deadlineCheckpoint("answer.revision", 900)
+        : undefined;
+      if (selectedProposal && answerRevisionEligible && answerRevisionDecision?.allowed !== false) {
         const revisionArtifacts = new Map<string, { spoken: SpokenOutput; validation: TurnResult["validationGraph"]; pca: ReturnType<typeof pca.certify> }>();
         const baselineVersion = revisionAnswerVersion({
           id: "revision:" + String(episodeId) + ":baseline",
@@ -3224,18 +3895,31 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         && !runtimeDiagnosticRequested
         && !inheritedRuntimeMotion
       ) {
-        const motion = await learnHydrateReplan({
-          ownerInput: input,
+        const recoveryDecision = deadlineCheckpoint("runtime.replan.coherence", 5_000);
+        if (recoveryDecision?.allowed !== false) {
+          const motion = await learnHydrateReplan({
+            ownerInput: input,
+            episodeId,
+            requestedAuthority,
+            trigger: "coherence_support_failure",
+            events
+          });
+          lastField = undefined;
+          return kernel.turn({
+            ...input,
+            metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+          });
+        }
+        events.push(await append(eventFactory.create({
           episodeId,
-          requestedAuthority,
-          trigger: "coherence_support_failure",
-          events
-        });
-        lastField = undefined;
-        return kernel.turn({
-          ...input,
-          metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-        });
+          typeId: "ActionPrepared",
+          payload: toJsonValue({
+            runtimeMotion: "not_started",
+            reason: "runtime-deadline-reserve",
+            deadlineDecision: recoveryDecision,
+            coherence: runtimeCoherenceTrace
+          })
+        })));
       }
       await deps.storage.constructs.putValidation(validation);
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
@@ -4187,9 +4871,14 @@ function attachInventionConstruct(input: { construct: ConstructGraph; invention?
 
 function selectedInventionForCandidate(candidate: CandidateSurface, inventions: readonly InventionConstruct[]): InventionConstruct | undefined {
   if (candidate.kind !== "creative-candidate") return undefined;
-  const inventionId = kernelString(jsonRecord(candidate.audit).inventionConstructId)
-    ?? kernelString(jsonRecord(candidate.audit).constructId);
-  return inventions.find(invention => invention.id === inventionId) ?? inventions[0];
+  const audit = jsonRecord(candidate.audit);
+  const candidateConstructIds = new Set([
+    ...(candidate.constructIds ?? []),
+    kernelString(audit.inventionConstructId),
+    kernelString(audit.constructId)
+  ].filter((id): id is string => Boolean(id)));
+  const matches = inventions.filter(invention => candidateConstructIds.has(invention.id));
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function evaluationQuestionId(metadata: JsonValue | undefined, episodeId: EpisodeId): string {
@@ -4206,6 +4895,8 @@ function emptySurfaceLanguageMemory(): {
   units: never[];
   patterns: never[];
   semanticFrames: never[];
+  requestControlPatterns: never[];
+  surfaceProfile: LanguageProfile | undefined;
   state: LanguageMemoryRuntimeState;
   active: { activeImportRunIds: never[] };
   corpusPlan: never[];
@@ -4229,6 +4920,8 @@ function emptySurfaceLanguageMemory(): {
     units: [],
     patterns: [],
     semanticFrames: [],
+    requestControlPatterns: [],
+    surfaceProfile: undefined,
     state: {
       models: [],
       records: [],
@@ -7334,6 +8027,12 @@ function explicitRuntimeDiagnosticRequest(metadata: JsonValue | undefined): bool
   return record.runtimeDiagnostic === true || control.runtimeDiagnostic === true;
 }
 
+function fastRuntimeBudgetRequested(metadata: JsonValue | undefined): boolean {
+  const record = jsonRecord(metadata);
+  const runtime = jsonRecord(record.runtime);
+  return record.fastLocalEvidenceAnswer === true || runtime.fastLocalEvidenceAnswer === true;
+}
+
 function previousDialogueStateFromMetadata(metadata: JsonValue | undefined): DialogueState | undefined {
   const record = jsonRecord(metadata);
   const dialogue = jsonRecord(record.dialogue);
@@ -9793,6 +10492,18 @@ function translationTargetFromMetadata(metadata: JsonValue | undefined): string 
   for (const key of ["translationTarget", "targetLanguage", "target_language", "translateTo"]) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function sourceLanguageAliasFromMetadata(metadata: JsonValue | undefined): string | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const record = metadata as Record<string, JsonValue>;
+  for (const key of ["sourceLanguage", "source_language", "language", "languageTag", "locale"]) {
+    const value = record[key];
+    if (typeof value !== "string") continue;
+    const alias = normalizeSourceLanguageAlias(value);
+    if (alias) return alias;
   }
   return undefined;
 }

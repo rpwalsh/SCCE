@@ -13,6 +13,7 @@ import {
   corpusSourceAlias,
   toJsonValue,
   type Clock,
+  type CreativeEventConstructionCompiler,
   type EvidenceSpan,
   type IdFactory,
   type JsonValue,
@@ -47,6 +48,7 @@ export interface LanguageCorpusTrainingInput {
   corpusMetadata?: JsonValue;
   languageAliases?: readonly string[];
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
+  creativeEventCompiler?: CreativeEventConstructionCompiler;
   persistSource?: boolean;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
@@ -103,13 +105,17 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   let evidence = [...(input.evidence ?? [])];
   if (!evidence.length && input.persistSource !== false) {
     const extractor = createEvidenceExtractor({ idFactory: ids, hasher });
+    const mediaType = input.mediaType ?? "text/plain";
+    // Source-version and evidence rows are FK-bound to canonical blob hashes.
+    // Persist those blobs before inserting either referencing record.
+    const contentHash = await input.storage.blobs.put(bytes, mediaType);
     const source: SourceVersion = {
       sourceId,
       sourceVersionId,
       namespace,
       canonicalUri: sourceUri,
-      contentHash: ids.contentHash(bytes),
-      mediaType: input.mediaType ?? "text/plain",
+      contentHash,
+      mediaType,
       observedAt: createdAt,
       byteLength: bytes.byteLength,
       trust: corpusSourceTrust(sourceSystemId),
@@ -120,7 +126,7 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
       sourceVersionId,
       namespace,
       uri: sourceUri,
-      mediaType: input.mediaType ?? "text/plain",
+      mediaType,
       text,
       languageProfile: profile,
       observedAt: createdAt,
@@ -128,6 +134,9 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
       metadata
     });
     evidence = stampEvidence(extracted.spans, sourceSystem, sourceSystemId, metadata);
+    for (const span of evidence) {
+      await input.storage.blobs.put(Buffer.from(span.text, "utf8"), mediaType);
+    }
     await input.storage.evidence.putSourceVersion(source);
     if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(evidence);
     else for (const span of evidence) await input.storage.evidence.putEvidenceSpan(span);
@@ -164,6 +173,20 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     });
     if (compiled.status === "compiled") compiledConstructionPatterns.push(compiled.pattern);
     else constructionWarnings.push(...compiled.issues.map(issue => issue.code));
+  }
+  if (input.creativeEventCompiler) {
+    const creativeEventCompilation = input.creativeEventCompiler.compile({
+      profileId: profile.id,
+      evidence,
+      hasher,
+      updatedAt: createdAt
+    });
+    if (creativeEventCompilation.status === "compiled") {
+      compiledConstructionPatterns.push(creativeEventCompilation.pattern);
+    } else if (creativeEventCompilation.issues.some(issue =>
+      issue.code !== "surface.construction_memory.reject.induction")) {
+      constructionWarnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
+    }
   }
   const patterns = [...memory.patterns, ...compiledConstructionPatterns]
     .map(item => stampPattern(item, sourceSystem, sourceSystemId, metadata));
@@ -225,7 +248,20 @@ function stampEvidence(spans: readonly EvidenceSpan[], sourceSystem: string, sou
 }
 
 function stampObservation(observation: NgramObservation, sourceSystem: string, sourceSystemId: string, metadata: JsonValue): NgramObservation {
-  return { ...observation, metadata: toJsonValue({ ...jsonRecord(observation.metadata), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "learned_language_prior" }) };
+  const observationMetadata = jsonRecord(observation.metadata);
+  const corpusMetadata = jsonRecord(metadata);
+  return {
+    ...observation,
+    metadata: toJsonValue({
+      ...(observationMetadata.profileId !== undefined ? { profileId: observationMetadata.profileId } : {}),
+      sourceSystem,
+      sourceSystemId,
+      provenanceClass: corpusMetadata.provenanceClass ?? "learned_language_prior",
+      forceClass: "learned_language_prior",
+      ...(observationMetadata.error !== undefined ? { error: observationMetadata.error } : {}),
+      ...(observationMetadata.approximate !== undefined ? { approximate: observationMetadata.approximate } : {})
+    })
+  };
 }
 
 function stampModel(model: NgramModelRecord, sourceSystem: string, sourceSystemId: string, metadata: JsonValue): NgramModelRecord {

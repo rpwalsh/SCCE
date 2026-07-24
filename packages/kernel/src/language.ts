@@ -52,6 +52,10 @@ const MIN_CLUSTER_DISTRIBUTION_FIT = 0.55;
 const MAX_CLUSTER_CANDIDATES_PER_BUCKET = 16;
 const MIN_SURFACE_SELECTION_SCORE = 0.48;
 const MIN_SURFACE_SELECTION_MARGIN = 0.12;
+const MIN_SOURCE_ANCHORED_SURFACE_SCORE = 0.72;
+const MIN_SOURCE_ANCHORED_TRIGRAM_COVERAGE = 0.55;
+const MIN_SOURCE_ANCHORED_REPERTOIRE_COVERAGE = 0.9;
+const MAX_SOURCE_ANCHORED_TOP_GAP = 0.06;
 
 /**
  * Ranks persisted language profiles from their learned surface statistics.
@@ -143,8 +147,63 @@ export function selectLanguageProfileClusterForSurface(
   const selected = ranked[0];
   if (!selected || selected.score < MIN_SURFACE_SELECTION_SCORE) return undefined;
   const margin = selected.score - (ranked[1]?.score ?? 0);
-  if (margin < MIN_SURFACE_SELECTION_MARGIN) return undefined;
-  return { ...selected, margin };
+  if (margin >= MIN_SURFACE_SELECTION_MARGIN) return { ...selected, margin };
+  const sourceAnchored = sourceAnchoredSurfaceSelection(ranked, selected.score);
+  return sourceAnchored ? {
+    ...sourceAnchored,
+    margin: Math.max(0, sourceAnchored.score - (ranked.find(row => row.cluster.id !== sourceAnchored.cluster.id)?.score ?? 0))
+  } : undefined;
+}
+
+/**
+ * A large corpus can split one language into several topic-sensitive
+ * distribution clusters. When the surface fit is already strong, prefer the
+ * nearby cluster carrying the sole source-owned language identity instead of
+ * failing closed on a small topic-cluster margin. This is not a default or a
+ * script-to-locale map: unknown scripts and weak surfaces still remain
+ * unresolved, and competing source identities remain ambiguous.
+ */
+function sourceAnchoredSurfaceSelection(
+  ranked: readonly LanguageProfileClusterSurfaceMatch[],
+  topScore: number
+): LanguageProfileClusterSurfaceMatch | undefined {
+  const nearby = ranked.filter(row =>
+    row.score >= MIN_SOURCE_ANCHORED_SURFACE_SCORE
+    && topScore - row.score <= MAX_SOURCE_ANCHORED_TOP_GAP
+  );
+  const anchored = nearby.flatMap(row => {
+    const aliases = verifiedClusterAliasKeys(row.cluster);
+    return aliases.size === 1
+      && row.trigramCoverage >= MIN_SOURCE_ANCHORED_TRIGRAM_COVERAGE
+      && row.repertoireCoverage >= MIN_SOURCE_ANCHORED_REPERTOIRE_COVERAGE
+      ? [{ row, alias: [...aliases][0]! }]
+      : [];
+  });
+  if (!anchored.length || new Set(anchored.map(item => item.alias)).size !== 1) return undefined;
+  const winner = anchored.sort((left, right) =>
+    right.row.score - left.row.score
+    || compareCodePoint(left.row.cluster.id, right.row.cluster.id)
+  )[0]!;
+  const sourceOwnedMembers = winner.row.cluster.members
+    .filter(profile => verifiedProfileAliasKeys(profile).has(winner.alias));
+  if (!sourceOwnedMembers.length) return undefined;
+  return {
+    ...winner.row,
+    cluster: aggregateLanguageProfileCluster(sourceOwnedMembers)
+  };
+}
+
+function verifiedClusterAliasKeys(cluster: LanguageProfileCluster): Set<string> {
+  const aliases = new Set<string>();
+  for (const name of cluster.discoveredNames) {
+    if (!name.owners.some(owner =>
+      owner.evidenceRefs.length > 0
+      || owner.sourceVersionRefs.includes(owner.sourceVersionId)
+    )) continue;
+    const alias = normalizeSourceLanguageAlias(name.surface);
+    if (alias) aliases.add(alias);
+  }
+  return aliases;
 }
 
 export function selectLanguageProfileForSurface(
@@ -181,6 +240,10 @@ export function languageAliasSurfacesFromMetadata(metadata: JsonValue | undefine
     ...aliasStrings(row.locale),
     ...aliasStrings(row.languageAliases)
   ]);
+}
+
+export function normalizeSourceLanguageAlias(value: string): string {
+  return value.replace(/\u0000/gu, " ").normalize("NFC").trim().toLowerCase();
 }
 
 export function attachSourceDerivedLanguageAliases(input: {
@@ -545,7 +608,7 @@ function verifiedAliasesConflict(left: LanguageProfile, right: LanguageProfile):
 function verifiedProfileAliasKeys(profile: LanguageProfile): Set<string> {
   return new Set((profile.discoveredNames ?? [])
     .filter(name => name.evidenceRefs.length > 0 || (name.sourceVersionRefs ?? []).includes(profile.sourceVersionId))
-    .map(name => name.surface.normalize("NFC").trim().toLowerCase())
+    .map(name => normalizeSourceLanguageAlias(name.surface))
     .filter(Boolean));
 }
 
@@ -566,7 +629,7 @@ function normalizedDiscoveredNames(
       ...(sourceVersionRefs.length ? { sourceVersionRefs } : {}),
       confidence: clamp01(name.confidence)
     };
-    const key = surface.toLowerCase();
+    const key = normalizeSourceLanguageAlias(surface);
     const existing = bySurface.get(key);
     if (!existing || candidate.confidence > existing.confidence) bySurface.set(key, candidate);
   }

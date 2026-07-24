@@ -3,9 +3,10 @@ import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
+import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RuntimeDeadlineMetadata, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness } from "./startup.js";
 
@@ -22,6 +23,31 @@ export interface ApiContext {
 }
 
 type LoadedConfig = Awaited<ReturnType<typeof readScceRuntimeConfig>>;
+
+type HydratedRuntimeMarker = {
+  readonly activeBrainVersion: string;
+  readonly activeImportRunIds: string[];
+};
+
+type DialogueShadowPersistence = Awaited<ReturnType<typeof persistDialogueCognitiveShadowV2>>;
+type TurnPersistence = {
+  readonly cognitiveShadow: DialogueShadowPersistence;
+  readonly sessionAudit?: JsonValue;
+};
+type ScceTraceHandle = Parameters<typeof traceEvent>[0];
+
+const HYDRATED_RUNTIME_READY_TTL_MS = 5 * 60 * 1000;
+const PRODUCTION_TURN_DEADLINE_MS = 5_000;
+const PRODUCTION_TURN_RESPONSE_RESERVE_MS = 1_000;
+const hydratedRuntimeReadyByStorage = new WeakMap<object, { marker: HydratedRuntimeMarker; verifiedAt: number; epoch: number }>();
+const hydratedRuntimeEpochByStorage = new WeakMap<object, number>();
+const dialoguePersistenceTails = new Map<string, Promise<void>>();
+
+interface RequestTiming {
+  readonly startedMonotonicMs: number;
+}
+
+type ProductionTurnDeadline = RuntimeDeadlineMetadata;
 
 export const ROUTES = [
   { method: "GET", path: "/", label: "workbench", mutates: false, requiresDb: false },
@@ -89,12 +115,16 @@ export const ROUTES = [
 export async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse, context: ApiContext): Promise<void> {
   const requestId = req.headers["x-request-id"]?.toString() ?? randomUUID();
   const started = Date.now();
+  const requestTiming: RequestTiming = { startedMonotonicMs: performance.now() };
   const trace = (globalThis as any).__sccTrace;
   if (trace) traceEvent(trace, { stage: 'api.request', label: req.method + ' ' + (req.url ?? '/') });
   try {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
     assertAuthorizedRequest(req, url, context);
-    const response = await dispatch(req, url, context);
+    const readinessMutation = invalidatesHydratedRuntimeReadiness(req.method, url.pathname);
+    if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
+    const response = await dispatch(req, url, context, requestTiming);
+    if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
     send(res, response.status, response.body, response.contentType, { requestId, started });
     if (trace) traceEvent(trace, { stage: 'api.response', label: `${response.status} ${req.method} ${req.url}`, durationMs: Date.now() - started });
   } catch (error) {
@@ -174,7 +204,12 @@ function timingSafeStringEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext): Promise<{ status: number; body: string; contentType: string }> {
+async function dispatch(
+  req: http.IncomingMessage,
+  url: URL,
+  context: ApiContext,
+  requestTiming: RequestTiming
+): Promise<{ status: number; body: string; contentType: string }> {
   if (req.method === "GET" && url.pathname === "/") return html(renderWorkbench(context.config.server.url));
   if (req.method === "GET" && url.pathname === "/health") {
     const status = { verify: await context.runtime.storage.verify() };
@@ -190,6 +225,8 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
       : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
     const exactCounts = hasExactPostgresCounts(postgres);
     const ok = warmup.ok && healthOk(postgres) && exactCounts;
+    if (ok) rememberHydratedRuntimeMarker(context, postgres);
+    else invalidateHydratedRuntimeReadiness(context);
     return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
   }
   if (req.method === "POST" && url.pathname === "/api/db/init") {
@@ -370,42 +407,63 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
     try {
       const body = await readBody(req, context.maxBodyBytes);
       const turn = validateTurn(body);
+      const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
+      const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
+      const productionDeadline = createProductionTurnDeadline(requestTiming.startedMonotonicMs);
+      const productionDeadlineRuntime = productionTurnDeadlineMetadata(productionDeadline);
       const workspaceCodingInput = parseTurnWorkspaceCodingRequest(
         isRecord(body) ? body.workspaceCoding : undefined,
         turn.text
       );
       const sessionId = conversationSessionId(body);
       const conversationId = dialogueConversationId(body, sessionId);
-      await assertSurfaceLanguageReady(context, turn.text);
-      const recentTurns = sessionId
-        ? await context.runtime.storage.conversation.listTurns({ sessionId, limit: conversationContextLimit(body) })
-        : [];
+      const readinessStarted = Date.now();
+      const [
+        ,
+        recentTurns,
+        hydratedRuntime,
+        workspaceCoding,
+        learnedDialogueProfile,
+        previousDialogue
+      ] = await Promise.all([
+        assertSurfaceLanguageReady(context, turn.text),
+        sessionId
+          ? context.runtime.storage.conversation.listTurns({ sessionId, limit: conversationContextLimit(body) })
+          : Promise.resolve([]),
+        hydratedRuntimeForTurn(context),
+        workspaceCodingInput
+          ? planWorkspaceCodingPatchApiRequest(context, {
+            schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+            input: workspaceCodingInput
+          })
+          : Promise.resolve(undefined),
+        latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
+        latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId })
+      ]);
+      traceEvent(trace, {
+        stage: "turn.runtime.readiness",
+        label: "api.turn",
+        durationMs: Date.now() - readinessStarted,
+        counts: { cached: hydratedRuntime.source === "startup_verified_cache" ? 1 : 0 },
+        support: { source: hydratedRuntime.source }
+      });
       const recentTurnsForMetadata = recentTurns.map(conversationTurnForMetadata);
       const recentEvidenceIds = uniqueServerStrings(recentTurns.flatMap(record => record.evidenceIds.map(String)));
       const discourseObject = sessionId
         ? buildDiscourseObjectState({ sessionId, currentText: turn.text, recentTurns: recentTurnsForMetadata, now: Date.now() })
         : undefined;
       const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0 && !sourceSurfaceStrongEnough(turn.text);
-      const active = await assertHydratedRuntimeReady(context.runtime.storage);
-      const workspaceCoding = workspaceCodingInput
-        ? await planWorkspaceCodingPatchApiRequest(context, {
-          schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
-          input: workspaceCodingInput
-        })
-        : undefined;
+      const active = hydratedRuntime.marker;
       const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
       const webRequested = webLearningRequested(body);
-      const learnedDialogueProfile = await latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId);
-      const previousDialogue = await latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId });
       traceEvent(trace, { stage: "turn.input", label: "api.turn", input: previewText(turn.text), counts: { textChars: turn.text.length } });
       traceEvent(trace, { stage: "turn.runtime.start", label: "api.turn" });
-      const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
-      const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
-      const { workspacePlans: _untrustedWorkspacePlans, ...trustedOriginalRuntime } = originalRuntime;
+      const {
+        workspacePlans: _untrustedWorkspacePlans,
+        deadline: _untrustedDeadline,
+        ...trustedOriginalRuntime
+      } = originalRuntime;
       const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
-      const fastLocalEvidenceAnswer = originalMetadata.fastLocalEvidenceAnswer === true
-        || originalRuntime.fastLocalEvidenceAnswer === true
-        || url.searchParams.get("fast") === "1";
       const discourseEvidenceIds = discourseObject ? uniqueServerStrings(discourseObject.evidenceIds) : [];
       const runtimeEvidenceIds = uniqueServerStrings([
         ...optionalStringArray(originalMetadata.runtimeEvidenceIds),
@@ -420,7 +478,9 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
           ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
           runtime: {
             ...trustedOriginalRuntime,
-            ...(fastLocalEvidenceAnswer ? { fastLocalEvidenceAnswer: true } : {}),
+            fastLocalEvidenceAnswer: true,
+            productionBoundedAnswer: true,
+            deadline: productionDeadlineRuntime,
             ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
             workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
           },
@@ -436,6 +496,12 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
           activeImportRunIds: active.activeImportRunIds
         }
       };
+      traceEvent(trace, {
+        stage: "turn.deadline.propagated",
+        label: "api.turn",
+        durationMs: performance.now() - productionDeadline.startedMonotonicMs,
+        support: productionDeadlineRuntime
+      });
       const result = await context.runtime.kernel.turn(turnInput);
       if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(500, "runtime produced no answer surface");
       const calibrationModels = await loadCalibrationModelSet({
@@ -453,32 +519,38 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
         calibrationModels,
         calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome
       });
-      const [, cognitiveShadow, sessionAudit] = await Promise.all([
-        persistDialogueTurn({
-          store: context.runtime.storage.dialogueMemory,
-          result: dialogue.pragmatics,
-          answerGraphHash: dialogue.answerGraphHash,
-          now: Date.now()
-        }),
-        persistDialogueCognitiveShadowV2({
-          context,
-          conversationId,
-          sessionId,
-          requestText: turn.text,
-          result,
-          now: Date.now()
-        }),
-        sessionId
-          ? persistConversationTurnPair(context, sessionId, turn, result)
-          : Promise.resolve(undefined)
-      ]);
-      traceEvent(trace, {
-        stage: "dialogue.shadow",
-        label: "api.turn.discourse-v2",
-        counts: cognitiveShadow.counts,
-        support: cognitiveShadow.support,
-        ...(cognitiveShadow.warning ? { warnings: [cognitiveShadow.warning] } : {})
+      const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
+        const [, cognitiveShadow, storedSession] = await Promise.all([
+          persistDialogueTurn({
+            store: context.runtime.storage.dialogueMemory,
+            result: dialogue.pragmatics,
+            answerGraphHash: dialogue.answerGraphHash,
+            now: Date.now()
+          }),
+          persistDialogueCognitiveShadowV2({
+            context,
+            conversationId,
+            sessionId,
+            requestText: turn.text,
+            result,
+            now: Date.now()
+          }),
+          sessionId
+            ? persistConversationTurnPair(context, sessionId, turn, result)
+            : Promise.resolve(undefined)
+        ]);
+        return {
+          cognitiveShadow,
+          ...(storedSession === undefined ? {} : { sessionAudit: storedSession })
+        };
       });
+      traceEvent(trace, {
+        stage: "dialogue.persistence.queued",
+        label: "api.turn.dialogue",
+        counts: { queued: 1 },
+        support: { status: "queued", mode: "deferred_ordered", ordering: "conversation", sessionIncluded: Boolean(sessionId) }
+      });
+      observeDeferredDialoguePersistence(trace, dialoguePersistence);
       traceEvent(trace, {
         stage: "turn.runtime.end",
         label: "api.turn",
@@ -503,12 +575,38 @@ async function dispatch(req: http.IncomingMessage, url: URL, context: ApiContext
         : undefined;
       const turnResponse = url.searchParams.get("full") === "1" ? result : compactTurnResult(result);
       const dialogueResponse = compactTurnDialogue(dialogue);
+      const deadlineStatus = productionTurnDeadlineStatus(productionDeadline);
+      traceEvent(trace, {
+        stage: "turn.deadline.observed",
+        label: "api.turn",
+        durationMs: Number(deadlineStatus.elapsedMs),
+        support: deadlineStatus,
+        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its monotonic response deadline"] } : {})
+      });
       const baseResponse = {
         ...turnResponse,
         dialogue: dialogueResponse,
+        deadline: deadlineStatus,
+        persistence: {
+          schema: "scce.turn_persistence.v1",
+          dialogue: {
+            status: "queued",
+            mode: "deferred_ordered",
+            durableWritesPending: true,
+            ordering: "conversation"
+          },
+          ...(sessionId ? {
+            session: {
+              status: "queued",
+              mode: "deferred_ordered",
+              durableWritesPending: true,
+              ordering: "conversation"
+            }
+          } : {})
+        },
         ...(workspaceCoding ? { workspaceCoding: toJsonValue(workspaceCoding) } : {})
       };
-      return json(webLearning ? { ...baseResponse, webLearning, session: sessionAudit } : sessionAudit ? { ...baseResponse, session: sessionAudit } : baseResponse);
+      return json(webLearning ? { ...baseResponse, webLearning } : baseResponse);
     } catch (error) {
       traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
       throw error;
@@ -827,6 +925,174 @@ function conversationTurnForMetadata(record: ConversationTurnRecord): JsonValue 
     } : {}),
     createdAt: record.createdAt
   };
+}
+
+async function hydratedRuntimeForTurn(
+  context: ApiContext
+): Promise<{ marker: HydratedRuntimeMarker; source: "startup_verified_cache" | "durable_verification" }> {
+  const storageKey = context.runtime.storage as object;
+  const epoch = hydratedRuntimeEpoch(storageKey);
+  const startup = context.startupReadiness.snapshot();
+  const cached = hydratedRuntimeReadyByStorage.get(storageKey);
+  if (
+    startup.ok
+    && cached
+    && cached.epoch === epoch
+    && Date.now() - cached.verifiedAt <= HYDRATED_RUNTIME_READY_TTL_MS
+  ) {
+    return { marker: cached.marker, source: "startup_verified_cache" };
+  }
+  const marker = await assertHydratedRuntimeReady(context.runtime.storage);
+  if (startup.ok && hydratedRuntimeEpoch(storageKey) === epoch) {
+    hydratedRuntimeReadyByStorage.set(storageKey, { marker, verifiedAt: Date.now(), epoch });
+  }
+  return { marker, source: "durable_verification" };
+}
+
+function rememberHydratedRuntimeMarker(context: ApiContext, status: unknown): void {
+  if (!isRecord(status) || !isRecord(status.activeBrain)) return;
+  const activeBrainVersion = status.activeBrain.activeBrainVersion;
+  const activeImportRunIds = optionalStringArray(status.activeBrain.activeImportRunIds);
+  if (typeof activeBrainVersion !== "string" || !activeBrainVersion.trim() || activeImportRunIds.length === 0) return;
+  const storageKey = context.runtime.storage as object;
+  const epoch = hydratedRuntimeEpoch(storageKey);
+  hydratedRuntimeReadyByStorage.set(storageKey, {
+    marker: { activeBrainVersion: activeBrainVersion.trim(), activeImportRunIds },
+    verifiedAt: Date.now(),
+    epoch
+  });
+}
+
+function hydratedRuntimeEpoch(storageKey: object): number {
+  return hydratedRuntimeEpochByStorage.get(storageKey) ?? 0;
+}
+
+function invalidateHydratedRuntimeReadiness(context: ApiContext): void {
+  const storageKey = context.runtime.storage as object;
+  hydratedRuntimeEpochByStorage.set(storageKey, hydratedRuntimeEpoch(storageKey) + 1);
+  hydratedRuntimeReadyByStorage.delete(storageKey);
+}
+
+function invalidatesHydratedRuntimeReadiness(method: string | undefined, pathname: string): boolean {
+  if (method !== "POST") return false;
+  return pathname === "/api/db/init"
+    || pathname === "/api/db/migrate"
+    || pathname === "/api/ingest"
+    || pathname === "/api/codebase/ingest"
+    || pathname === "/api/workspace/init"
+    || pathname === "/api/workspace/ingest"
+    || pathname === "/api/train";
+}
+
+function createProductionTurnDeadline(startedMonotonicMs: number): ProductionTurnDeadline {
+  const deadlineMonotonicMs = startedMonotonicMs + PRODUCTION_TURN_DEADLINE_MS;
+  return {
+    schema: RUNTIME_DEADLINE_SCHEMA,
+    clock: "node.performance.v1",
+    budgetMs: PRODUCTION_TURN_DEADLINE_MS,
+    responseReserveMs: PRODUCTION_TURN_RESPONSE_RESERVE_MS,
+    startedMonotonicMs,
+    deadlineMonotonicMs,
+    computeDeadlineMonotonicMs: deadlineMonotonicMs - PRODUCTION_TURN_RESPONSE_RESERVE_MS
+  };
+}
+
+function productionTurnDeadlineMetadata(deadline: ProductionTurnDeadline): Record<string, JsonValue> {
+  const propagatedAtMonotonicMs = performance.now();
+  return {
+    schema: deadline.schema,
+    clock: deadline.clock,
+    budgetMs: deadline.budgetMs,
+    responseReserveMs: deadline.responseReserveMs,
+    startedMonotonicMs: deadline.startedMonotonicMs,
+    deadlineMonotonicMs: deadline.deadlineMonotonicMs,
+    computeDeadlineMonotonicMs: deadline.computeDeadlineMonotonicMs,
+    propagatedAtMonotonicMs,
+    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - propagatedAtMonotonicMs),
+    computeRemainingMs: Math.max(0, deadline.computeDeadlineMonotonicMs - propagatedAtMonotonicMs)
+  };
+}
+
+function productionTurnDeadlineStatus(deadline: ProductionTurnDeadline): Record<string, JsonValue> {
+  const observedAtMonotonicMs = performance.now();
+  const elapsedMs = Math.max(0, observedAtMonotonicMs - deadline.startedMonotonicMs);
+  return {
+    schema: deadline.schema,
+    budgetMs: deadline.budgetMs,
+    responseReserveMs: deadline.responseReserveMs,
+    elapsedMs,
+    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - observedAtMonotonicMs),
+    computeRemainingMs: Math.max(0, deadline.computeDeadlineMonotonicMs - observedAtMonotonicMs),
+    status: observedAtMonotonicMs <= deadline.deadlineMonotonicMs ? "met" : "exceeded",
+    outputSource: "runtime"
+  };
+}
+
+function enqueueDialoguePersistence<T>(
+  conversationId: string,
+  persist: () => Promise<T>
+): Promise<T> {
+  const previous = dialoguePersistenceTails.get(conversationId) ?? Promise.resolve();
+  const ready = previous
+    .catch(() => undefined)
+    .then(() => new Promise<void>(resolve => setImmediate(resolve)));
+  const current = ready.then(persist);
+  const tail = current.then(() => undefined, () => undefined);
+  dialoguePersistenceTails.set(conversationId, tail);
+  void tail.then(() => {
+    if (dialoguePersistenceTails.get(conversationId) === tail) dialoguePersistenceTails.delete(conversationId);
+  });
+  return current;
+}
+
+export async function drainDeferredDialoguePersistence(): Promise<{ drainedConversations: number }> {
+  let drainedConversations = 0;
+  while (dialoguePersistenceTails.size > 0) {
+    const pending = [...dialoguePersistenceTails.values()];
+    drainedConversations += pending.length;
+    await Promise.all(pending);
+  }
+  return { drainedConversations };
+}
+
+function observeDeferredDialoguePersistence(trace: ScceTraceHandle, persistence: Promise<TurnPersistence>): void {
+  void persistence.then(persisted => {
+    const cognitiveShadow = persisted.cognitiveShadow;
+    traceEvent(trace, {
+      stage: "dialogue.persistence.completed",
+      label: "api.turn.dialogue",
+      counts: { queued: 0, persisted: cognitiveShadow.counts.persisted ?? 0 },
+      support: { status: cognitiveShadow.warning ? "completed_with_warning" : "completed", mode: "deferred_ordered" },
+      ...(cognitiveShadow.warning ? { warnings: [cognitiveShadow.warning] } : {})
+    });
+    traceDialogueShadow(trace, cognitiveShadow);
+    if (cognitiveShadow.warning) writeDeferredPersistenceError(cognitiveShadow.warning);
+  }, error => {
+    const warning = error instanceof Error ? error.stack ?? error.message : String(error);
+    traceEvent(trace, {
+      stage: "dialogue.persistence.error",
+      label: "api.turn.dialogue",
+      counts: { queued: 0, persisted: 0 },
+      support: { status: "error", mode: "deferred_ordered" },
+      warnings: [warning]
+    });
+    writeDeferredPersistenceError(warning);
+  });
+}
+
+function traceDialogueShadow(trace: ScceTraceHandle, cognitiveShadow: DialogueShadowPersistence): void {
+  traceEvent(trace, {
+    stage: "dialogue.shadow",
+    label: "api.turn.discourse-v2",
+    counts: cognitiveShadow.counts,
+    support: cognitiveShadow.support,
+    ...(cognitiveShadow.warning ? { warnings: [cognitiveShadow.warning] } : {})
+  });
+}
+
+function writeDeferredPersistenceError(error: string): void {
+  const bounded = error.length <= 2000 ? error : `${error.slice(0, 2000)}...`;
+  process.stderr.write(`SCCE deferred dialogue persistence failed: ${bounded}\n`);
 }
 
 async function persistDialogueCognitiveShadowV2(input: {

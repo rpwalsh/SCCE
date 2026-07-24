@@ -1,6 +1,10 @@
 import { DIALOGUE_ACTION_IDS, type DialogueState } from "./dialogue-pragmatics.js";
 import { boltzmannDistribution } from "./equation-operators.js";
 import { kneserNeyProbability } from "./kneser-ney.js";
+import {
+  englishCreativeStructuralRouteEvents,
+  isEnglishCreativeEventStructurallyRealizable
+} from "./english-structural-realizer.js";
 import type { LanguageGenerationResult, LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createInventionConstruct, type InventionConstruct } from "./prediction.js";
 import { canonicalStringify, clamp01, createHasher, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -284,7 +288,8 @@ interface DraftComposition {
 }
 
 interface ProposalRealizationTrace {
-  path: "learned_continuation" | "learned_structural_composition" | "composition_fallback";
+  path: "learned_continuation" | "learned_structural_composition" | "mouth_realization_deferred" | "composition_fallback";
+  semanticPlanId?: string;
   contextSymbols: string[];
   generationTextHash?: string;
   generationConfidence?: number;
@@ -304,10 +309,51 @@ interface ProposalRealizationTrace {
     sourceActivationId: string;
   }>;
   structuralSourceIds?: string[];
+  structuralBundleIds?: string[];
+  structuralEventPlan?: StructuralCreativeEventPlanRecord[];
   structuralSentenceCount?: number;
   structuralRealizability?: number;
   stoppedBy?: LanguageGenerationResult["stoppedBy"];
 }
+
+type StructuralCreativeDiscourseRelationId =
+  | "scce.relation.concurrent"
+  | "scce.relation.subsequent"
+  | "scce.relation.contrastive"
+  | "scce.relation.resolution";
+
+type StructuralCreativeDiscourseBridgeBasisId =
+  | "scce.discourse.bridge.source_adjacency"
+  | "scce.discourse.bridge.invented_macro";
+
+interface StructuralCreativeEventPlanRecord {
+  outputIndex: number;
+  bundleId: string;
+  eventId: string;
+  profileId: string;
+  constructionId: string;
+  relationId: string;
+  roleIds: string[];
+  discourseRelationId: StructuralCreativeDiscourseRelationId;
+  discourseBridgeBasisId: StructuralCreativeDiscourseBridgeBasisId;
+  discourseBeatId: string;
+  requestRoleBindings: Array<{
+    eventRoleId: "scce.role.patient" | "scce.role.complement";
+    requestRoleId: "scce.request.role.antagonist";
+    admissible: true;
+  }>;
+  requestFit: number;
+  graphFit: number;
+  routeFit: number;
+  routeId: string;
+  routeAnchorEventId: string;
+  sourceOrdinal: number;
+  sourceVersionId: string;
+  evidenceId: string;
+}
+
+type DurableCreativeEvent =
+  NonNullable<LanguageMemoryRuntimeState["importedConstructionBundles"][number]["creativeEvents"]>[number];
 
 interface RequestOwnedCreativeConstraint {
   id: string;
@@ -361,6 +407,37 @@ interface ScoredComposition extends DraftComposition {
 }
 
 const CREATIVE_TEMPERATURE = 0.28;
+const MAX_STRUCTURAL_CREATIVE_EVENTS = 720;
+
+function productionStructuralCreativeBundles(
+  input: PlanInventionsInput
+): LanguageMemoryRuntimeState["importedConstructionBundles"] {
+  const scope = input.languageMemoryState.scope;
+  if (input.requestedAuthority !== "creative"
+    || scope.mode !== "cluster"
+    || !scope.purityProven
+    || scope.degraded
+    || !scope.profileIds.length
+    || !scope.sourceVersionIds.length) return [];
+  const profileIds = new Set(scope.profileIds);
+  const sourceVersionIds = new Set(scope.sourceVersionIds);
+  return input.languageMemoryState.importedConstructionBundles.filter(bundle => {
+    if (!profileIds.has(bundle.sourceProfileId)
+      || !profileIds.has(bundle.targetProfileId)
+      || !bundle.sourceVersionIds.length
+      || bundle.sourceVersionIds.some(id => !sourceVersionIds.has(id))) return false;
+    const evidenceIds = new Set(bundle.evidenceIds);
+    const events = bundle.creativeEvents?.filter(structurallyUsableCreativeEvent) ?? [];
+    return events.length >= 4
+      && events.every(event => (
+        event.profileId === bundle.sourceProfileId
+        && profileIds.has(event.profileId)
+        && sourceVersionIds.has(event.sourceVersionId)
+        && bundle.sourceVersionIds.includes(event.sourceVersionId)
+        && evidenceIds.has(event.evidenceId)
+      ));
+  });
+}
 
 /**
  * Builds bounded, inspectable invention constructs in the existing construct
@@ -370,18 +447,36 @@ const CREATIVE_TEMPERATURE = 0.28;
 export function planInventions(input: PlanInventionsInput): InventionConstruct[] {
   const planningActivation = inventionPlanningActivation(input);
   if (!planningActivation.admissible) return [];
+  const structuralBundles = productionStructuralCreativeBundles(input);
+  if (input.requestedAuthority === "creative" && structuralBundles.length === 0) return [];
   const maxCandidates = boundedInteger(input.maxCandidates ?? 4, 1, 8);
   const constraints = extractConstraints(input).slice(0, 16);
   const graphIngredients = graphCompositionIngredients(input).slice(0, 12);
   const languageIngredients = languageCompositionIngredients(input).slice(0, 18);
   const requestIngredients = requestCompositionIngredients(input.requestText);
   const ingredients = uniqueIngredients([...graphIngredients, ...languageIngredients, ...requestIngredients]);
-  const uniqueDrafts = Array.from({ length: maxCandidates + 2 }, (_, index) => buildDraft(input, constraints, ingredients, graphIngredients, index))
+  const productionStructuralAuthority = structuralBundles.length > 0;
+  const uniqueDrafts = Array.from({ length: maxCandidates + 2 }, (_, index) =>
+    buildDraft(input, constraints, ingredients, graphIngredients, index, structuralBundles)
+  )
     .filter(draft => Boolean(draft.proposalSurface) && !containsInternalSurfaceIdentifier(draft.proposalSurface))
-    .filter((draft, index, all) => all.findIndex(candidate => normalizeSurface(candidate.proposalSurface) === normalizeSurface(draft.proposalSurface)) === index);
+    .filter((draft, index, all) => all.findIndex(candidate => draftCompositionIdentity(candidate) === draftCompositionIdentity(draft)) === index);
+  const admittedStructuralBundleIds = new Set(structuralBundles.map(bundle => bundle.id));
+  const structuralDrafts = uniqueDrafts.filter(draft => (
+    draft.proposalRealization.path === "mouth_realization_deferred"
+    && Boolean(draft.proposalRealization.semanticPlanId)
+    && (draft.proposalRealization.structuralEventPlan?.length ?? 0) >= 4
+    && (draft.proposalRealization.structuralBundleIds?.length ?? 0) > 0
+    && draft.proposalRealization.structuralBundleIds?.every(id => admittedStructuralBundleIds.has(id))
+  ));
   const learnedDrafts = uniqueDrafts.filter(draft => draft.proposalRealization.path !== "composition_fallback");
-  const coldStartFallbackActive = learnedDrafts.length === 0;
-  const drafts = (coldStartFallbackActive ? uniqueDrafts : learnedDrafts).slice(0, maxCandidates);
+  const coldStartFallbackActive = !productionStructuralAuthority && learnedDrafts.length === 0;
+  const drafts = (
+    productionStructuralAuthority
+      ? structuralDrafts
+      : coldStartFallbackActive ? uniqueDrafts : learnedDrafts
+  ).slice(0, maxCandidates);
+  if (productionStructuralAuthority && drafts.length === 0) return [];
   const memorySurfaces = existingMemorySurfaces(input);
   const preliminary = drafts.map((draft, index) => scoreDraft(input, draft, constraints, memorySurfaces, drafts, index));
   const temperature = boundedCreativeTemperature(input.temperature ?? CREATIVE_TEMPERATURE);
@@ -421,8 +516,13 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         untestedPerformanceClaim: candidate.untestedPerformanceClaim,
         selectionProbability: candidate.probability,
         probability: candidate.probability,
+        selectionCalibration: {
+          calibrated: false,
+          status: "provisional_uncalibrated",
+          finalSelectionAuthority: "candidate_engine_and_judge"
+        },
         rank: index + 1,
-        selected: index === 0,
+        plannerPreferred: index === 0,
         diversity: candidate.diversity,
         temperature,
         samplingDisabled: input.samplingDisabled ?? true,
@@ -430,11 +530,27 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         selectedGraphEdgeIds: candidate.selectedEdges.map(edge => String(edge.id)),
         selectedLanguagePriorIds: candidate.selectedLanguagePriorIds,
         proposalRealization: candidate.proposalRealization,
+        structuralSemanticPlan: candidate.proposalRealization.path === "mouth_realization_deferred"
+          ? {
+            schema: "scce.structural_semantic_plan.v2",
+            id: candidate.proposalRealization.semanticPlanId ?? null,
+            sourceBundleIds: candidate.proposalRealization.structuralBundleIds ?? [],
+            events: candidate.proposalRealization.structuralEventPlan ?? [],
+            contextSymbols: candidate.proposalRealization.contextSymbols,
+            selectionAuthority: "candidate_engine_and_judge",
+            surfaceRealizationCompetitive: false,
+            featureStatus: "provisional_uncalibrated"
+          }
+          : null,
         proposalSelectionGuard: {
-          id: "guard.invention.learned_realization_priority.v1",
+          id: productionStructuralAuthority
+            ? "guard.invention.production_structural_authority.v1"
+            : "guard.invention.learned_realization_priority.v1",
+          productionStructuralAuthority,
           coldStartFallbackActive,
-          learnedCandidateCount: learnedDrafts.length,
-          fallbackCandidateCount: uniqueDrafts.length - learnedDrafts.length
+          learnedCandidateCount: productionStructuralAuthority ? 0 : learnedDrafts.length,
+          structuralCandidateCount: structuralDrafts.length,
+          fallbackCandidateCount: productionStructuralAuthority ? 0 : uniqueDrafts.length - learnedDrafts.length
         },
         bootstrapCoefficients: {
           constraintCoverage: 0.28,
@@ -460,6 +576,12 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
       })
     });
   });
+}
+
+function draftCompositionIdentity(draft: DraftComposition): string {
+  return draft.proposalRealization.path === "mouth_realization_deferred"
+    ? draft.proposalRealization.semanticPlanId ?? canonicalStringify(toJsonValue(draft.proposalRealization.structuralEventPlan ?? []))
+    : normalizeSurface(draft.proposalSurface);
 }
 
 function legacyAuthorityRow(intercept: number, patch: Partial<Record<RequestedAuthorityFeatureId, number>>): RequestedAuthorityModel["coefficients"][RequestedAuthority] {
@@ -656,18 +778,26 @@ function graphCompositionIngredients(input: PlanInventionsInput): CompositionIng
   const active = new Map(input.field.active.map(row => [String(row.nodeId), row.activation]));
   const ppf = new Map(input.field.ppf.map(row => [String(row.nodeId), row.mass]));
   const availableEvidenceIds = new Set(input.evidence.map(span => String(span.id)));
+  const requestFeatures = featureSet(input.requestText, 512);
   return input.graph.nodes.map(node => {
     const text = graphNodeSurface(node, input.evidence, input.requestText);
+    const requestFit = text ? weightedJaccard(requestFeatures, featureSet(text, 256)) : 0;
     return {
       id: String(node.id),
       text,
       source: "graph" as const,
-      weight: clamp01(0.46 * (active.get(String(node.id)) ?? 0) + 0.34 * (ppf.get(String(node.id)) ?? 0) + 0.2 * node.alpha),
+      weight: clamp01((
+        0.46 * (active.get(String(node.id)) ?? 0)
+        + 0.34 * (ppf.get(String(node.id)) ?? 0)
+        + 0.2 * node.alpha
+      ) * (0.25 + 0.75 * requestFit)),
       evidenceIds: node.evidenceIds.map(String).filter(id => availableEvidenceIds.has(id)),
-      graphNodeId: String(node.id)
+      graphNodeId: String(node.id),
+      requestFit
     };
-  }).filter(row => Boolean(row.text))
-    .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id));
+  }).filter(row => Boolean(row.text) && row.requestFit >= 0.04)
+    .sort((left, right) => right.requestFit - left.requestFit || right.weight - left.weight || left.id.localeCompare(right.id))
+    .map(({ requestFit: _requestFit, ...row }) => row);
 }
 
 function languageCompositionIngredients(input: PlanInventionsInput): CompositionIngredient[] {
@@ -723,7 +853,197 @@ function uniqueIngredients(rows: readonly CompositionIngredient[]): CompositionI
   return [...bySurface.values()].sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id));
 }
 
-function buildDraft(input: PlanInventionsInput, constraints: readonly ConstraintSeed[], ingredients: readonly CompositionIngredient[], graphIngredients: readonly CompositionIngredient[], variant: number): DraftComposition {
+function buildStructuralCreativeEventPlan(
+  input: PlanInventionsInput,
+  variant: number,
+  structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"]
+): StructuralCreativeEventPlanRecord[] {
+  const requestFeatures = featureSet(input.requestText, 256);
+  const groups = structuralBundles
+    .flatMap(bundle => {
+      const events = englishCreativeStructuralRouteEvents(bundle.creativeEvents ?? [])
+        .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || left.id.localeCompare(right.id))
+        .map((event, routeIndex) => {
+          const requestFit = weightedJaccard(
+            requestFeatures,
+            featureSet(`${event.forms.infinitive} ${event.sourceLabel}`, 64)
+          );
+          const graphFit = structuralCreativeEventGraphFit(input, event);
+          return {
+            bundleId: bundle.id,
+            event,
+            routeIndex,
+            requestFit,
+            graphFit,
+            routeFit: clamp01(1 - (1 - requestFit) * (1 - graphFit))
+          };
+        });
+      if (!events.length) return [];
+      const anchor = [...events].sort((left, right) =>
+        right.routeFit - left.routeFit
+        || right.requestFit - left.requestFit
+        || right.graphFit - left.graphFit
+        || left.event.sourceOrdinal - right.event.sourceOrdinal
+        || left.event.id.localeCompare(right.event.id)
+      )[0]!;
+      return [{
+        bundleId: bundle.id,
+        events,
+        anchor,
+        routeId: stableId("semantic.creative.event.route", {
+          bundleId: bundle.id,
+          anchorEventId: anchor.event.id,
+          eventIds: events.map(row => row.event.id)
+        })
+      }];
+    })
+    .sort((left, right) =>
+      right.anchor.routeFit - left.anchor.routeFit
+      || right.anchor.requestFit - left.anchor.requestFit
+      || right.anchor.graphFit - left.anchor.graphFit
+      || right.events.length - left.events.length
+      || left.bundleId.localeCompare(right.bundleId)
+    );
+  if (!groups.length) return [];
+  const orderedGroups = rotate(groups, variant % groups.length);
+  const selected: Array<typeof orderedGroups[number]["events"][number] & {
+    routeId: string;
+    routeAnchorEventId: string;
+  }> = [];
+  for (const group of orderedGroups) {
+    const remaining = MAX_STRUCTURAL_CREATIVE_EVENTS - selected.length;
+    if (remaining <= 0) break;
+    const route = boundedSourceAdjacentRoute(
+      group.events,
+      group.anchor.routeIndex,
+      remaining
+    );
+    selected.push(...route.map(row => ({
+      ...row,
+      routeId: group.routeId,
+      routeAnchorEventId: group.anchor.event.id
+    })));
+  }
+  return selected.map((row, outputIndex) => {
+    const previous = selected[outputIndex - 1];
+    const discourseRelationId = structuralCreativeDiscourseRelation(outputIndex, selected.length);
+    const discourseBeatOrdinal = Math.floor(outputIndex / 18);
+    const discourseBeatId = stableId("semantic.creative.discourse.beat", {
+      routeId: row.routeId,
+      discourseRelationId,
+      discourseBeatOrdinal
+    });
+    const requestBindableRoleId = row.event.argumentFrame.bindings
+      .map(binding => binding.roleId)
+      .find((roleId): roleId is "scce.role.patient" | "scce.role.complement" => (
+        roleId === "scce.role.patient" || roleId === "scce.role.complement"
+      ));
+    const requestRoleBindings = outputIndex % 18 === 0 && requestBindableRoleId
+      ? [{
+        eventRoleId: requestBindableRoleId,
+        requestRoleId: "scce.request.role.antagonist" as const,
+        admissible: true as const
+      }]
+      : [];
+    const sourceAdjacent = Boolean(
+      previous
+      && previous.bundleId === row.bundleId
+      && previous.routeId === row.routeId
+      && previous.routeIndex + 1 === row.routeIndex
+    );
+    return {
+      outputIndex,
+      bundleId: row.bundleId,
+      eventId: row.event.id,
+      profileId: row.event.profileId,
+      constructionId: row.event.constructionId,
+      relationId: row.event.relationId,
+      roleIds: [...row.event.roleIds],
+      discourseRelationId,
+      discourseBridgeBasisId: sourceAdjacent
+        ? "scce.discourse.bridge.source_adjacency"
+        : "scce.discourse.bridge.invented_macro",
+      discourseBeatId,
+      requestRoleBindings,
+      requestFit: row.requestFit,
+      graphFit: row.graphFit,
+      routeFit: row.routeFit,
+      routeId: row.routeId,
+      routeAnchorEventId: row.routeAnchorEventId,
+      sourceOrdinal: row.event.sourceOrdinal,
+      sourceVersionId: row.event.sourceVersionId,
+      evidenceId: row.event.evidenceId
+    };
+  });
+}
+
+function structuralCreativeEventGraphFit(
+  input: PlanInventionsInput,
+  event: DurableCreativeEvent
+): number {
+  const evidenceId = String(event.evidenceId);
+  return Math.max(0, ...input.graph.edges
+    .filter(edge => (
+      String(edge.relationId) === event.relationId
+      || edge.evidenceIds.some(id => String(id) === evidenceId)
+    ))
+    .map(edgeRelationPotential));
+}
+
+function boundedSourceAdjacentRoute<T extends { routeIndex: number }>(
+  events: readonly T[],
+  anchorIndex: number,
+  limit: number
+): T[] {
+  const boundedLimit = Math.max(0, Math.min(events.length, Math.floor(limit)));
+  if (boundedLimit === 0) return [];
+  if (boundedLimit === events.length) {
+    return [
+      ...events.slice(anchorIndex),
+      ...events.slice(0, anchorIndex)
+    ];
+  }
+  const centeredStart = anchorIndex - Math.floor((boundedLimit - 1) / 2);
+  const start = Math.max(0, Math.min(events.length - boundedLimit, centeredStart));
+  return events.slice(start, start + boundedLimit);
+}
+
+function structurallyUsableCreativeEvent(event: DurableCreativeEvent): boolean {
+  return isEnglishCreativeEventStructurallyRealizable(event);
+}
+
+function structuralCreativeDiscourseRelation(
+  outputIndex: number,
+  eventCount: number
+): StructuralCreativeDiscourseRelationId {
+  const progress = outputIndex / Math.max(1, eventCount - 1);
+  if (progress < 0.34) return "scce.relation.concurrent";
+  if (progress < 0.68) return "scce.relation.subsequent";
+  if (progress < 0.88) return "scce.relation.contrastive";
+  return "scce.relation.resolution";
+}
+
+function structuralCreativePlanRealizability(
+  events: readonly StructuralCreativeEventPlanRecord[]
+): number {
+  if (events.length < 4) return 0;
+  return clamp01(mean(events.map(event => mean([
+    Number(event.roleIds.includes("scce.role.agent")),
+    Number(Boolean(event.relationId)),
+    Number(Boolean(event.constructionId)),
+    Number(event.discourseRelationId.startsWith("scce.relation."))
+  ]))));
+}
+
+function buildDraft(
+  input: PlanInventionsInput,
+  constraints: readonly ConstraintSeed[],
+  ingredients: readonly CompositionIngredient[],
+  graphIngredients: readonly CompositionIngredient[],
+  variant: number,
+  structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"]
+): DraftComposition {
+  const deferSurfaceRealization = structuralBundles.length > 0;
   const requestTerms = requestSurfaceUnits(input.requestText);
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
   const title = surfaceTitle(activatedSlots?.continuationSlot.text ?? requestTerms.slice(0, 6).join(" "));
@@ -743,12 +1063,40 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
   const requestChoice = ingredients.find(row => row.source === "request");
   if (requestChoice && !rotated.some(row => row.source === "request")) rotated[2] = requestChoice;
   const constraintSurface = constraints.slice(0, 6).map(row => row.surface).join("; ") || requestTerms.slice(0, 6).join("; ") || title;
-  const learnedProposal = learnedProposalFromMemory(input, requestTerms, variant);
-  const shapedProposal = proposalShape(variant, title, rotated.map(row => row.text), constraintSurface);
-  const proposalSurface = evidenceSafeProposal(learnedProposal?.surface ?? shapedProposal, input.evidence, requestTerms, variant, title);
-  const proposalRealization: ProposalRealizationTrace = learnedProposal && normalizeSurface(proposalSurface) === normalizeSurface(learnedProposal.surface)
-    ? learnedProposal.trace
-    : { path: "composition_fallback", contextSymbols: learnedProposal?.trace.contextSymbols ?? [] };
+  const learnedProposal = deferSurfaceRealization
+    ? undefined
+    : learnedProposalFromMemory(input, requestTerms, variant);
+  const structuralEventPlan = deferSurfaceRealization
+    ? buildStructuralCreativeEventPlan(input, variant, structuralBundles)
+    : [];
+  const structuralBundleIds = uniqueStrings(structuralEventPlan.map(event => event.bundleId));
+  const shapedProposal = deferSurfaceRealization
+    ? title
+    : proposalShape(variant, title, rotated.map(row => row.text), constraintSurface);
+  const proposalSurface = deferSurfaceRealization
+    ? title
+    : evidenceSafeProposal(learnedProposal?.surface ?? shapedProposal, input.evidence, requestTerms, variant, title);
+  const proposalRealization: ProposalRealizationTrace = deferSurfaceRealization
+    ? {
+      path: "mouth_realization_deferred",
+      semanticPlanId: stableId("semantic.realization.plan", {
+        requestTerms,
+        structuralBundleIds,
+        structuralEventPlan,
+        constraintIds: constraints.map(row => row.id),
+        variant
+      }),
+      contextSymbols: requestTerms,
+      requestConstraintIds: constraints.map(row => row.id),
+      requestConstraintCoverage: 1,
+      structuralBundleIds,
+      structuralEventPlan,
+      structuralSentenceCount: structuralEventPlan.length,
+      structuralRealizability: structuralCreativePlanRealizability(structuralEventPlan)
+    }
+    : learnedProposal && normalizeSurface(proposalSurface) === normalizeSurface(learnedProposal.surface)
+      ? learnedProposal.trace
+      : { path: "composition_fallback", contextSymbols: learnedProposal?.trace.contextSymbols ?? [] };
   const selectedGraphNodeIds = uniqueStrings(rotated.filter(row => row.graphNodeId).map(row => row.graphNodeId!));
   const selectedEdges = selectCompositionEdges(input.graph.edges, selectedGraphNodeIds, variant);
   for (const edge of selectedEdges) {
@@ -788,7 +1136,9 @@ function buildDraft(input: PlanInventionsInput, constraints: readonly Constraint
   const selectedLanguagePriorIds = uniqueStrings([
     ...rotated.filter(row => row.source !== "request" && row.source !== "graph").map(row => row.id),
     ...(proposalRealization.sourcePieceIds ?? []),
-    ...(proposalRealization.structuralSourceIds ?? [])
+    ...(proposalRealization.structuralSourceIds ?? []),
+    ...(proposalRealization.structuralBundleIds ?? []),
+    ...(proposalRealization.structuralEventPlan?.map(event => event.eventId) ?? [])
   ]);
   const basisPriorIds = uniqueStrings([...selectedGraphNodeIds, ...selectedLanguagePriorIds, ...selectedEdges.map(edge => String(edge.relationId))]);
   return {
@@ -1137,29 +1487,65 @@ function alignSurfaceCase(surface: string, template: string): string {
 
 function scoreDraft(input: PlanInventionsInput, draft: DraftComposition, constraints: readonly ConstraintSeed[], memorySurfaces: readonly string[], drafts: readonly DraftComposition[], index: number): ScoredComposition {
   const proposalFeatures = featureSet(draft.proposalSurface, 512);
+  const structuralEvents = draft.proposalRealization.structuralEventPlan ?? [];
+  const structuralPlanBound = structuralEvents.length > 0;
+  const boundConstraintIds = new Set(draft.proposalRealization.requestConstraintIds ?? []);
   const constraintRows: InventionConstraintTrace[] = constraints.map(constraint => ({
     ...constraint,
-    satisfied: normalizeSurface(draft.proposalSurface).includes(normalizeSurface(constraint.surface)) || weightedJaccard(proposalFeatures, featureSet(constraint.surface, 128)) >= 0.22
+    satisfied: structuralPlanBound
+      ? boundConstraintIds.has(constraint.id)
+      : normalizeSurface(draft.proposalSurface).includes(normalizeSurface(constraint.surface))
+        || weightedJaccard(proposalFeatures, featureSet(constraint.surface, 128)) >= 0.22
   }));
   const constraintWeight = constraintRows.reduce((sum, row) => sum + row.weight, 0);
   const constraintCoverage = constraintWeight > 0
     ? constraintRows.reduce((sum, row) => sum + row.weight * Number(row.satisfied), 0) / constraintWeight
     : 1;
-  const graphCoherence = mean(draft.selectedEdges.map(edgeRelationPotential));
-  const memorySimilarities = memorySurfaces.map(surface => weightedJaccard(proposalFeatures, featureSet(surface, 512)));
+  const graphCoherence = structuralPlanBound
+    ? mean(structuralEvents.map(event => mean([
+      event.graphFit,
+      event.routeFit,
+      Number(Boolean(event.discourseBeatId)),
+      Number(event.discourseBridgeBasisId === "scce.discourse.bridge.source_adjacency"
+        || event.discourseBridgeBasisId === "scce.discourse.bridge.invented_macro")
+    ])))
+    : mean(draft.selectedEdges.map(edgeRelationPotential));
+  const structuralPlanSimilarities = structuralPlanBound
+    ? drafts
+      .filter((_, otherIndex) => otherIndex !== index)
+      .map(other => structuralCreativePlanSimilarity(
+        structuralEvents,
+        other.proposalRealization.structuralEventPlan ?? []
+      ))
+    : [];
+  const memorySimilarities = structuralPlanBound
+    ? structuralPlanSimilarities
+    : memorySurfaces.map(surface => weightedJaccard(proposalFeatures, featureSet(surface, 512)));
   const novelty = clamp01(1 - Math.max(0, ...memorySimilarities));
-  const languageRealizability = kneserNeyRealizability(input.languageMemoryState, draft.proposalSurface);
-  const requestFit = weightedJaccard(featureSet(input.requestText, 512), proposalFeatures);
+  const languageRealizability = structuralPlanBound
+    ? structuralCreativePlanRealizability(structuralEvents)
+    : kneserNeyRealizability(input.languageMemoryState, draft.proposalSurface);
+  const requestFit = structuralPlanBound
+    ? mean(structuralEvents.map(event => event.requestFit))
+    : weightedJaccard(featureSet(input.requestText, 512), proposalFeatures);
   const actionability = clamp01(input.field.alphaTrace.surfaces.actionability);
   const completionPotential = constraintCoverage;
   const usefulness = mean([actionability, requestFit, completionPotential]);
   const contradictionPressure = clamp01(Math.max(input.field.alphaTrace.contradictionMass, input.field.alphaTrace.surfaces.contradiction));
-  const internalConflict = Math.max(0, ...input.dialogueState.rejectedAssumptions.map(surface => weightedJaccard(proposalFeatures, featureSet(surface, 128))));
+  const internalConflict = structuralPlanBound
+    ? 0
+    : Math.max(0, ...input.dialogueState.rejectedAssumptions.map(surface => weightedJaccard(proposalFeatures, featureSet(surface, 128))));
   const infeasibility = clamp01(Math.max(input.field.alphaTrace.surfaces.risk, input.dialogueState.unresolvedSlots.length / 16));
   const risk = Math.max(contradictionPressure, internalConflict, infeasibility);
-  const repetition = Math.max(0, ...drafts
-    .filter((_, otherIndex) => otherIndex !== index)
-    .map(other => weightedJaccard(proposalFeatures, featureSet(other.proposalSurface, 512))));
+  const surfaceRepetition = structuralPlanBound
+    ? 0
+    : Math.max(0, ...drafts
+      .filter((_, otherIndex) => otherIndex !== index)
+      .map(other => weightedJaccard(proposalFeatures, featureSet(other.proposalSurface, 512))));
+  const structuralRepetition = structuralPlanBound
+    ? 1 - new Set(structuralEvents.map(event => event.eventId)).size / structuralEvents.length
+    : 0;
+  const repetition = Math.max(surfaceRepetition, structuralRepetition);
   const unsupportedFactualAssertion = clamp01(draft.claimBasis
     .filter(record => record.kind === "factual_premise" && record.evidenceIds.length === 0)
     .length / Math.max(1, draft.claimBasis.filter(record => record.kind === "factual_premise").length));
@@ -1189,15 +1575,40 @@ function scoreDraft(input: PlanInventionsInput, draft: DraftComposition, constra
   };
 }
 
+function structuralCreativePlanSimilarity(
+  left: readonly StructuralCreativeEventPlanRecord[],
+  right: readonly StructuralCreativeEventPlanRecord[]
+): number {
+  if (!left.length || !right.length) return 0;
+  const length = Math.max(left.length, right.length);
+  let aligned = 0;
+  for (let index = 0; index < length; index++) {
+    if (left[index]?.eventId === right[index]?.eventId) aligned += 1;
+  }
+  return clamp01(aligned / length);
+}
+
 function diversityRank(candidates: readonly ScoredComposition[]): ScoredComposition[] {
   const remaining = [...candidates];
   const selected: ScoredComposition[] = [];
   while (remaining.length) {
     const ranked = remaining.map(candidate => {
-      const maxSimilarity = Math.max(0, ...selected.map(prior => weightedJaccard(featureSet(candidate.proposalSurface, 512), featureSet(prior.proposalSurface, 512))));
+      const candidateStructuralEvents = candidate.proposalRealization.structuralEventPlan ?? [];
+      const maxSimilarity = Math.max(0, ...selected.map(prior => (
+        candidateStructuralEvents.length
+          ? structuralCreativePlanSimilarity(
+            candidateStructuralEvents,
+            prior.proposalRealization.structuralEventPlan ?? []
+          )
+          : weightedJaccard(featureSet(candidate.proposalSurface, 512), featureSet(prior.proposalSurface, 512))
+      )));
       const diversity = 1 - maxSimilarity;
       return { candidate, diversity, score: candidate.probability * (0.72 + 0.28 * diversity) };
-    }).sort((left, right) => right.score - left.score || right.candidate.bootstrapScore - left.candidate.bootstrapScore || left.candidate.proposalSurface.localeCompare(right.candidate.proposalSurface));
+    }).sort((left, right) =>
+      right.score - left.score
+      || right.candidate.bootstrapScore - left.candidate.bootstrapScore
+      || draftCompositionIdentity(left.candidate).localeCompare(draftCompositionIdentity(right.candidate))
+    );
     const next = ranked[0]!;
     selected.push({ ...next.candidate, diversity: next.diversity });
     remaining.splice(remaining.indexOf(next.candidate), 1);

@@ -37,6 +37,73 @@ export interface ProjectRequestAuthorityInput {
 }
 
 /**
+ * Language-neutral requirement prototypes shared by explicit structured
+ * authority and source-backed request-language learning.
+ */
+export function authorityRequirementCoefficients(
+  authority: RequestedAuthority
+): Partial<Record<TurnRequirementDimension, number>> {
+  if (authority === "creative") {
+    return {
+      noveltyDemand: 4.8,
+      inferentialDepth: 1.2,
+      uncertaintyTolerance: 2.0,
+      counterfactualDemand: 0.9,
+      externalTruthAuthority: -4.0,
+      sourceDependence: -3.4,
+      executableArtifactDemand: -1.8,
+      actionCommitment: -1.8
+    };
+  }
+  if (authority === "translation") {
+    return {
+      semanticPreservation: 4.8,
+      surfaceTransformation: 4.6,
+      audienceAdaptation: 1.5,
+      externalTruthAuthority: -2.2,
+      noveltyDemand: -1.8
+    };
+  }
+  if (authority === "program") {
+    return {
+      executableArtifactDemand: 4.8,
+      formatConstraintStrength: 2.8,
+      inferentialDepth: 1.7,
+      actionCommitment: 0.7,
+      externalTruthAuthority: -1.2
+    };
+  }
+  if (authority === "action") {
+    return {
+      actionCommitment: 4.9,
+      executableArtifactDemand: 2.0,
+      externalTruthAuthority: 0.8,
+      sourceDependence: 0.5,
+      noveltyDemand: -2.2
+    };
+  }
+  if (authority === "reasoned") {
+    return {
+      inferentialDepth: 4.4,
+      causalReasoningDemand: 1.6,
+      temporalReasoningDemand: 0.7,
+      externalTruthAuthority: 1.0,
+      sourceDependence: 0.5,
+      noveltyDemand: -1.2
+    };
+  }
+  return {
+    externalTruthAuthority: 4.6,
+    sourceDependence: 3.7,
+    uncertaintyTolerance: -1.2,
+    inferentialDepth: -0.8,
+    noveltyDemand: -3.4,
+    executableArtifactDemand: -2.4,
+    actionCommitment: -2.2
+  };
+}
+
+/**
  * Keeps the judge on the candidate family licensed by the projected request
  * authority. Missing families are handed back to the runtime continuation
  * boundary; unrelated answer families are never reopened as a fallback.

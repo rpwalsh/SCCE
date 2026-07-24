@@ -102,7 +102,10 @@ describe("turn session metadata projection", () => {
           }
         }
       },
-      config: {}
+      config: {},
+      startupReadiness: {
+        snapshot: () => ({ phase: "running", ok: false, complete: false })
+      }
     } as unknown as ApiContext;
     const server = createServer((request, response) => {
       void handleRequest(request, response, context);
@@ -118,7 +121,18 @@ describe("turn session metadata projection", () => {
     const response = await fetch(`http://127.0.0.1:${address.port}/api/turn`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "Continue the session", sessionId: "session.fixture" })
+      body: JSON.stringify({
+        text: "Continue the session",
+        sessionId: "session.fixture",
+        metadata: {
+          fastLocalEvidenceAnswer: false,
+          runtime: {
+            fastLocalEvidenceAnswer: false,
+            productionBoundedAnswer: false,
+            deadline: { schema: "untrusted.deadline" }
+          }
+        }
+      })
     });
 
     expect(response.status).toBe(500);
@@ -135,5 +149,15 @@ describe("turn session metadata projection", () => {
     expect(recentTurns[1]).not.toHaveProperty("metadata");
     expect(JSON.stringify(recentTurns)).not.toContain("activation.untrusted.lookalike");
     expect(JSON.stringify(recentTurns)).not.toContain("slot.untrusted");
+    const runtime = metadata.runtime as Record<string, unknown>;
+    expect(runtime.fastLocalEvidenceAnswer).toBe(true);
+    expect(runtime.productionBoundedAnswer).toBe(true);
+    expect(runtime.deadline).toMatchObject({
+      schema: "scce.runtime_deadline.v1",
+      clock: "node.performance.v1",
+      budgetMs: 5_000,
+      responseReserveMs: 1_000
+    });
+    expect(runtime.deadline).not.toMatchObject({ schema: "untrusted.deadline" });
   });
 });

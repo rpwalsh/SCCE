@@ -55,6 +55,7 @@
     "load:gate": "node tools/runtime-load-gate.mjs",
     "runtime:authority-matrix": "node tools/runtime-authority-matrix.mjs",
     "cognition:gate": "node tools/focused-cognition-gate.mjs",
+    "questions:live": "node tools/production-live-question-gate.mjs",
     "mcp:build": "pnpm --dir tools/scce-dev-mcp build",
     "mcp:start": "pnpm --dir tools/scce-dev-mcp start",
     "mcp:dev": "pnpm --dir tools/scce-dev-mcp dev",

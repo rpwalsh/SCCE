@@ -1,3 +1,5 @@
+import nlp from "compromise";
+
 import {
   induceLearnedConstructions,
   type AlignedSurfaceExample,
@@ -9,6 +11,10 @@ import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
 export const LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA = "scce.language_construction_pattern.v1" as const;
+export const LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
+export const CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA = "scce.creative_event_construction_pattern.v3" as const;
+export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argument_frame.v1" as const;
+export const ENGLISH_CREATIVE_EVENT_COMPILER_ID = "surface.compiler.en.compromise.v4" as const;
 
 export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   input: "surface.construction_memory.reject.input",
@@ -19,7 +25,8 @@ export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   identity: "surface.construction_memory.reject.identity",
   digest: "surface.construction_memory.reject.digest",
   member: "surface.construction_memory.reject.member",
-  duplicate: "surface.construction_memory.reject.duplicate"
+  duplicate: "surface.construction_memory.reject.duplicate",
+  legacyCreativeV2: "surface.construction_memory.reject.legacy_creative_v2"
 } as const;
 
 export type LanguageConstructionMemoryRejectionId =
@@ -102,11 +109,67 @@ export interface DurableLanguageConstructionBundleContent {
   sourceExamples: DurableSourceConstructionExample[];
   constructions: LearnedConstruction[];
   formClasses: LearnedFormClass[];
+  creativeEvents?: DurableCreativeEventConstruction[];
 }
 
 export interface DurableLanguageConstructionBundle extends DurableLanguageConstructionBundleContent {
   id: string;
   contentDigest: string;
+}
+
+export interface DurableCreativeEventConstruction {
+  id: string;
+  compilerId: string;
+  constructionId: string;
+  profileId: string;
+  sourceVersionId: string;
+  evidenceId: string;
+  evidenceContentHash: string;
+  evidenceCharStart: number;
+  evidenceCharEnd: number;
+  labelStartCodePoint: number;
+  labelEndCodePoint: number;
+  sourceOrdinal: number;
+  relationId: string;
+  sourceLabel: string;
+  sourceLabelDigest: string;
+  tenseId: "scce.tense.past" | "scce.tense.present" | "scce.tense.future" | "scce.tense.unknown";
+  valencyId: "scce.valency.agent" | "scce.valency.agent_patient";
+  roleIds: string[];
+  argumentFrame: DurableCreativeEventArgumentFrame;
+  forms: {
+    infinitive: string;
+    past: string;
+    present: string;
+    gerund: string;
+    participle: string;
+  };
+}
+
+export interface DurableCreativeEventArgumentFrame {
+  id: string;
+  schema: typeof CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA;
+  compilerId: typeof ENGLISH_CREATIVE_EVENT_COMPILER_ID;
+  sourceSentenceStartCodePoint: number;
+  sourceSentenceEndCodePoint: number;
+  roleIds: string[];
+  bindings: DurableCreativeEventArgumentBinding[];
+}
+
+export interface DurableCreativeEventArgumentBinding {
+  roleId: "scce.role.patient" | "scce.role.complement";
+  surface: string;
+  surfaceDigest: string;
+  startCodePoint: number;
+  endCodePoint: number;
+  connector?: DurableCreativeEventClosedClassConnector;
+}
+
+export interface DurableCreativeEventClosedClassConnector {
+  surface: string;
+  surfaceDigest: string;
+  startCodePoint: number;
+  endCodePoint: number;
 }
 
 export interface LanguageConstructionMemoryIssue {
@@ -127,6 +190,31 @@ export type LanguageConstructionPatternCompilation =
       status: "rejected";
       issues: readonly LanguageConstructionMemoryIssue[];
     };
+
+export interface CreativeEventConstructionCompilerInput {
+  profileId: string;
+  evidence: readonly EvidenceSpan[];
+  hasher: Hasher;
+  updatedAt: number;
+  maxEvents?: number;
+}
+
+/**
+ * Corpus adapters select a source-language compiler from source metadata. The
+ * cognitive/storage contract remains profile- and role-ID based; a language
+ * name is never used as an internal relation or ontology identifier.
+ */
+export interface CreativeEventConstructionCompiler {
+  id: string;
+  compile(input: CreativeEventConstructionCompilerInput): LanguageConstructionPatternCompilation;
+}
+
+export function createEnglishCreativeEventConstructionCompiler(): CreativeEventConstructionCompiler {
+  return {
+    id: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    compile: compileEnglishCreativeEventConstructionPattern
+  };
+}
 
 export interface HydratedLanguageConstructions {
   bundles: DurableLanguageConstructionBundle[];
@@ -235,6 +323,392 @@ export function compileLanguageConstructionPattern(input: {
   return { status: "compiled", pattern, bundle };
 }
 
+export function compileEnglishCreativeEventConstructionPattern(
+  input: CreativeEventConstructionCompilerInput
+): LanguageConstructionPatternCompilation {
+  if (!nonempty(input.profileId) || !Number.isFinite(input.updatedAt)) {
+    return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
+  }
+  const promotedEvidence = input.evidence
+    .filter(span => span.status === "promoted")
+    .sort((left, right) => left.charStart - right.charStart || compareText(String(left.id), String(right.id)));
+  if (!promotedEvidence.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
+  const maxEvents = Math.max(1, Math.min(2048, Math.floor(input.maxEvents ?? 768)));
+  const events: DurableCreativeEventConstruction[] = [];
+  for (const evidence of promotedEvidence) {
+    if (events.length >= maxEvents) break;
+    for (const range of sourceSentenceRanges(evidence.text)) {
+      if (events.length >= maxEvents) break;
+      const compiled = compileCreativeEvent({
+        profileId: input.profileId,
+        evidence,
+        range,
+        hasher: input.hasher
+      });
+      if (compiled) events.push(compiled);
+    }
+  }
+  if (events.length < 4) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
+  const orderedEvents = events.sort((left, right) =>
+    left.sourceOrdinal - right.sourceOrdinal || compareText(left.id, right.id)
+  );
+  const sourceVersionIds = uniqueSorted(orderedEvents.map(event => event.sourceVersionId));
+  const evidenceIds = uniqueSorted(orderedEvents.map(event => event.evidenceId));
+  const evidenceContentHashes = uniqueSorted(orderedEvents.map(event => event.evidenceContentHash));
+  const persistedContent = {
+    schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA,
+    compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    profileId: input.profileId,
+    sourceVersionIds,
+    evidenceIds,
+    evidenceContentHashes,
+    events: orderedEvents
+  };
+  const contentDigest = input.hasher.digestHex(canonicalStringify(persistedContent));
+  const id = `surface.creative_event.bundle.${contentDigest}`;
+  const bundle: DurableLanguageConstructionBundle = {
+    id,
+    contentDigest,
+    schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+    bindingId: `surface.creative_event.binding.${input.hasher.digestHex(input.profileId)}`,
+    sourceProfileId: input.profileId,
+    targetProfileId: input.profileId,
+    sourceVersionIds,
+    evidenceIds,
+    evidenceContentHashes,
+    sourceExamples: [],
+    constructions: [],
+    formClasses: [],
+    creativeEvents: orderedEvents
+  };
+  const pattern: LanguagePatternRecord = {
+    id,
+    profileId: input.profileId,
+    patternKind: "semantic_role",
+    support: orderedEvents.length,
+    entropy: 0,
+    patternJson: {
+      schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA,
+      contentDigest,
+      bundle: persistedContent as unknown as JsonValue
+    },
+    evidenceIds: evidenceIds as EvidenceSpan["id"][],
+    updatedAt: input.updatedAt
+  };
+  return { status: "compiled", pattern, bundle };
+}
+
+interface SourceSentenceRange {
+  surface: string;
+  startCodePoint: number;
+  endCodePoint: number;
+}
+
+interface CreativeSourceTerm {
+  text: string;
+  tags: string[];
+  chunk?: string;
+  termIndex: number;
+  startCodePoint: number;
+  endCodePoint: number;
+}
+
+function compileCreativeEvent(input: {
+  profileId: string;
+  evidence: EvidenceSpan;
+  range: SourceSentenceRange;
+  hasher: Hasher;
+}): DurableCreativeEventConstruction | undefined {
+  const surface = input.range.surface;
+  const subject = surface.match(/^(?:i|he|she)\b/iu)?.[0];
+  if (!subject) return undefined;
+  const words = surface.match(/[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*/gu) ?? [];
+  if (words.length < 4 || words.length > 38) return undefined;
+  if (/["“”‘’]/u.test(surface)
+    || /\b(?:we|us|our|ours|you|your|yours)\b/iu.test(surface)
+    || /\b\p{Lu}\p{Ll}{2,}\b/u.test(surface.slice(subject.length))) return undefined;
+  const document = nlp(surface);
+  const sentenceRow = recordUnknown(arrayUnknown(document.sentences().json())[0]);
+  const parsed = recordUnknown(sentenceRow.sentence);
+  const predicate = stringUnknown(parsed.predicate);
+  if (!predicate) return undefined;
+  const rawVerb = recordUnknown(arrayUnknown(document.verbs().json({ terms: { tags: true } }))[0]);
+  const verb = recordUnknown(rawVerb.verb);
+  if (verb.negative === true) return undefined;
+  const lexicalTerm = arrayUnknown(rawVerb.terms)
+    .map(recordUnknown)
+    .filter(term => {
+      const tags = arrayUnknown(term.tags).map(String);
+      return tags.includes("Verb") && !tags.includes("Auxiliary") && !tags.includes("Modal");
+    })
+    .at(-1);
+  if (!lexicalTerm) return undefined;
+  const lexicalConfidence = numberUnknown(lexicalTerm.confidence);
+  if (lexicalConfidence !== undefined && lexicalConfidence < 0.5) return undefined;
+  const lexicalTags = arrayUnknown(lexicalTerm.tags).map(String);
+  if (lexicalTags.includes("Participle") && !lexicalTags.includes("PastTense")) return undefined;
+  const verbSurface = stringUnknown(lexicalTerm.text);
+  const lexicalTermIndex = termIndexUnknown(lexicalTerm.index);
+  const infinitive = stringUnknown(verb.infinitive) || verbSurface;
+  if (!verbSurface || lexicalTermIndex === undefined
+    || !infinitive || normalizeMemorySurface(infinitive) === "be") return undefined;
+  if (!singleLexicalWord(verbSurface) || !singleLexicalWord(infinitive)) return undefined;
+  const localVerbUtf16 = surface.toLocaleLowerCase().indexOf(verbSurface.toLocaleLowerCase());
+  if (localVerbUtf16 < 0) return undefined;
+  const labelStartCodePoint = input.range.startCodePoint + codePointOffsetAtUtf16(surface, localVerbUtf16);
+  const labelEndCodePoint = labelStartCodePoint + [...verbSurface].length;
+  const forms = creativeVerbForms(infinitive, verbSurface, lexicalTags);
+  if (!forms || !Object.values(forms).every(singleLexicalWord)) return undefined;
+  const tense = stringUnknown(recordUnknown(verb.grammar).tense);
+  const tenseId = creativeTenseId(tense);
+  const relationId = stableId(input.hasher, "language.source_relation", [
+    input.profileId,
+    normalizeMemorySurface(infinitive)
+  ]);
+  const argumentFrame = compileCreativeArgumentFrame({
+    profileId: input.profileId,
+    relationId,
+    range: input.range,
+    sentenceRow,
+    lexicalTermIndex,
+    hasher: input.hasher
+  });
+  if (!argumentFrame) return undefined;
+  const valencyId = argumentFrame.bindings.length
+    ? "scce.valency.agent_patient"
+    : "scce.valency.agent";
+  const constructionId = stableId(input.hasher, "surface.creative_event.construction", [
+    ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    input.profileId,
+    tenseId,
+    valencyId
+  ]);
+  const sourceVersionId = String(input.evidence.sourceVersionId);
+  const evidenceId = String(input.evidence.id);
+  const evidenceContentHash = String(input.evidence.contentHash);
+  const sourceLabelDigest = input.hasher.digestHex(verbSurface);
+  const id = stableId(input.hasher, "surface.creative_event", [
+    ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    constructionId,
+    sourceVersionId,
+    evidenceId,
+    evidenceContentHash,
+    labelStartCodePoint,
+    labelEndCodePoint,
+    relationId,
+    sourceLabelDigest,
+    argumentFrame,
+    forms
+  ]);
+  return {
+    id,
+    compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    constructionId,
+    profileId: input.profileId,
+    sourceVersionId,
+    evidenceId,
+    evidenceContentHash,
+    evidenceCharStart: input.evidence.charStart,
+    evidenceCharEnd: input.evidence.charEnd,
+    labelStartCodePoint,
+    labelEndCodePoint,
+    sourceOrdinal: input.evidence.charStart + input.range.startCodePoint,
+    relationId,
+    sourceLabel: verbSurface,
+    sourceLabelDigest,
+    tenseId,
+    valencyId,
+    roleIds: [...argumentFrame.roleIds],
+    argumentFrame,
+    forms
+  };
+}
+
+function compileCreativeArgumentFrame(input: {
+  profileId: string;
+  relationId: string;
+  range: SourceSentenceRange;
+  sentenceRow: Record<string, unknown>;
+  lexicalTermIndex: number;
+  hasher: Hasher;
+}): DurableCreativeEventArgumentFrame | undefined {
+  const terms = creativeSourceTerms(input.sentenceRow, input.range.surface);
+  if (!terms.length || !terms.some(term => term.termIndex === input.lexicalTermIndex)) return undefined;
+  const rawNounHeads = terms
+    .filter(term => term.termIndex > input.lexicalTermIndex)
+    .filter(term => term.tags.includes("Noun"))
+    .filter(term => !term.tags.includes("Pronoun") && !term.tags.includes("ProperNoun"));
+  const nounHeads = rawNounHeads
+    .filter(term => term.tags.includes("Singular") || term.tags.includes("Plural"))
+    .filter(term => !term.tags.some(tag => [
+      "Possessive",
+      "Determiner",
+      "Adjective",
+      "Adverb",
+      "Verb",
+      "Auxiliary",
+      "Modal",
+      "Preposition",
+      "Particle",
+      "Conjunction",
+      "Value"
+    ].includes(tag)))
+    .filter(term => singleLexicalWord(term.text))
+    .slice(0, 3);
+  if (rawNounHeads.length > 0 && nounHeads.length === 0) return undefined;
+  const bindings: DurableCreativeEventArgumentBinding[] = [];
+  let previousHeadIndex = input.lexicalTermIndex;
+  for (const head of nounHeads) {
+    const connectorTerm = terms
+      .filter(term => term.termIndex > previousHeadIndex && term.termIndex < head.termIndex)
+      .filter(isClosedClassConnectorTerm)
+      .at(-1);
+    const roleId: DurableCreativeEventArgumentBinding["roleId"] =
+      connectorTerm ? "scce.role.complement" : "scce.role.patient";
+    previousHeadIndex = head.termIndex;
+    if (bindings.some(binding => binding.roleId === roleId)) continue;
+    const connector = connectorTerm
+      ? creativeClosedClassConnector(input.range, connectorTerm, input.hasher)
+      : undefined;
+    bindings.push({
+      roleId,
+      surface: head.text,
+      surfaceDigest: input.hasher.digestHex(head.text),
+      startCodePoint: input.range.startCodePoint + head.startCodePoint,
+      endCodePoint: input.range.startCodePoint + head.endCodePoint,
+      ...(connector ? { connector } : {})
+    });
+    if (bindings.length >= 2) break;
+  }
+  const roleIds = [
+    "scce.role.agent",
+    ...bindings.map(binding => binding.roleId)
+  ];
+  const id = stableId(input.hasher, "surface.creative_event.argument_frame", [
+    ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    input.profileId,
+    input.relationId,
+    roleIds,
+    bindings.map(binding => ({
+      roleId: binding.roleId,
+      connector: binding.connector
+        ? normalizeMemorySurface(binding.connector.surface)
+        : null
+    }))
+  ]);
+  return {
+    id,
+    schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+    compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    sourceSentenceStartCodePoint: input.range.startCodePoint,
+    sourceSentenceEndCodePoint: input.range.endCodePoint,
+    roleIds,
+    bindings
+  };
+}
+
+function creativeSourceTerms(
+  sentenceRow: Record<string, unknown>,
+  surface: string
+): CreativeSourceTerm[] {
+  const rawTerms = arrayUnknown(sentenceRow.terms);
+  const out: CreativeSourceTerm[] = [];
+  let cursorUtf16 = 0;
+  for (const raw of rawTerms) {
+    const term = recordUnknown(raw);
+    const text = stringUnknown(term.text);
+    const termIndex = termIndexUnknown(term.index);
+    if (!text || termIndex === undefined) return [];
+    const startUtf16 = surface.indexOf(text, cursorUtf16);
+    if (startUtf16 < 0) return [];
+    const endUtf16 = startUtf16 + text.length;
+    out.push({
+      text,
+      tags: arrayUnknown(term.tags).map(String),
+      ...(stringUnknown(term.chunk) ? { chunk: stringUnknown(term.chunk) } : {}),
+      termIndex,
+      startCodePoint: codePointOffsetAtUtf16(surface, startUtf16),
+      endCodePoint: codePointOffsetAtUtf16(surface, endUtf16)
+    });
+    cursorUtf16 = endUtf16;
+  }
+  return out;
+}
+
+function isClosedClassConnectorTerm(term: CreativeSourceTerm): boolean {
+  return term.tags.includes("Preposition") || term.tags.includes("Particle");
+}
+
+function creativeClosedClassConnector(
+  range: SourceSentenceRange,
+  term: CreativeSourceTerm,
+  hasher: Hasher
+): DurableCreativeEventClosedClassConnector | undefined {
+  if (!singleLexicalWord(term.text)) return undefined;
+  return {
+    surface: term.text,
+    surfaceDigest: hasher.digestHex(term.text),
+    startCodePoint: range.startCodePoint + term.startCodePoint,
+    endCodePoint: range.startCodePoint + term.endCodePoint
+  };
+}
+
+function sourceSentenceRanges(text: string): SourceSentenceRange[] {
+  const rows: SourceSentenceRange[] = [];
+  const expression = /[^.!?]+[.!?]+/gu;
+  for (const match of text.matchAll(expression)) {
+    const raw = match[0];
+    const leading = raw.match(/^\s*/u)?.[0] ?? "";
+    const trailing = raw.match(/\s*$/u)?.[0] ?? "";
+    const surface = raw.slice(leading.length, raw.length - trailing.length).normalize("NFC");
+    if (!surface) continue;
+    const startUtf16 = (match.index ?? 0) + leading.length;
+    const endUtf16 = startUtf16 + surface.length;
+    rows.push({
+      surface,
+      startCodePoint: codePointOffsetAtUtf16(text, startUtf16),
+      endCodePoint: codePointOffsetAtUtf16(text, endUtf16)
+    });
+  }
+  return rows;
+}
+
+function creativeVerbForms(
+  infinitive: string,
+  sourceSurface: string,
+  sourceTags: readonly string[]
+): DurableCreativeEventConstruction["forms"] | undefined {
+  const document = nlp(infinitive);
+  document.match(infinitive).tag("Verb");
+  const row = recordUnknown(arrayUnknown(document.verbs().conjugate())[0]);
+  // The sentence parser already supplied the source-bound lemma. Re-running
+  // infinitive discovery on a detached token can truncate valid lemmas
+  // ("own" -> "ow", "encompass" -> "encompas"), which breaks relation
+  // identity and persisted-event verification.
+  const root = infinitive;
+  if (!root) return undefined;
+  const sourcePast = sourceTags.includes("PastTense") && !sourceTags.includes("Participle")
+    ? sourceSurface
+    : "";
+  return {
+    infinitive: root,
+    past: sourcePast || stringUnknown(row.PastTense) || root,
+    present: stringUnknown(row.PresentTense) || root,
+    gerund: stringUnknown(row.Gerund) || root,
+    participle: stringUnknown(row.Participle) || stringUnknown(row.PastTense) || root
+  };
+}
+
+function creativeTenseId(
+  tense: string
+): DurableCreativeEventConstruction["tenseId"] {
+  const normalized = normalizeMemorySurface(tense);
+  if (normalized.includes("past")) return "scce.tense.past";
+  if (normalized.includes("present")) return "scce.tense.present";
+  if (normalized.includes("future")) return "scce.tense.future";
+  return "scce.tense.unknown";
+}
+
 export function hydrateLanguageConstructionPatterns(input: {
   patterns: readonly LanguagePatternRecord[];
   evidence: readonly EvidenceSpan[];
@@ -269,7 +743,11 @@ export function hydrateLanguageConstructionPatterns(input: {
       rejectedIssues.push({ code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence, patternId: pattern.id, profileId: pattern.profileId });
       continue;
     }
-    const verified = verifyPersistedPattern(pattern, evidenceById, input.hasher);
+    const verified = isCreativeEventConstructionPattern(pattern)
+      ? verifyCreativeEventPattern(pattern, evidenceById, input.hasher)
+      : isLegacyCreativeEventConstructionPatternV2(pattern)
+        ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.legacyCreativeV2)
+        : verifyPersistedPattern(pattern, evidenceById, input.hasher);
     if ("issue" in verified) rejectedIssues.push(verified.issue);
     else bundles.push(verified.bundle);
   }
@@ -285,7 +763,17 @@ export function hydrateLanguageConstructionPatterns(input: {
 
 export function isLanguageConstructionPattern(pattern: LanguagePatternRecord): boolean {
   const row = recordOf(pattern.patternJson);
-  return row.schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA;
+  return row.schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
+    || row.schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA
+    || (typeof row.schema === "string" && row.schema.startsWith("scce.creative_event_construction_pattern."));
+}
+
+export function isCreativeEventConstructionPattern(pattern: LanguagePatternRecord): boolean {
+  return recordOf(pattern.patternJson).schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA;
+}
+
+function isLegacyCreativeEventConstructionPatternV2(pattern: LanguagePatternRecord): boolean {
+  return recordOf(pattern.patternJson).schema === LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
 }
 
 function prepareObservation(input: {
@@ -424,6 +912,300 @@ function prepareObservation(input: {
     }))
   };
   return { durable, aligned };
+}
+
+function verifyCreativeEventPattern(
+  pattern: LanguagePatternRecord,
+  evidenceById: ReadonlyMap<string, EvidenceSpan>,
+  hasher: Hasher
+): { bundle: DurableLanguageConstructionBundle } | { issue: LanguageConstructionMemoryIssue } {
+  const row = recordOf(pattern.patternJson);
+  const rawBundle = recordOf(row.bundle);
+  if (row.schema !== CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA
+    || rawBundle.schema !== CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA
+    || stringOf(rawBundle.compilerId) !== ENGLISH_CREATIVE_EVENT_COMPILER_ID
+    || stringOf(rawBundle.profileId) !== pattern.profileId) {
+    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
+  }
+  const rawEvents = arrayOfRecords(rawBundle.events);
+  if (rawEvents.length < 4 || rawEvents.length > 2048) {
+    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
+  }
+  const events: DurableCreativeEventConstruction[] = [];
+  for (const rawEvent of rawEvents) {
+    const parsed = creativeEventFromPersisted(rawEvent, pattern.profileId, evidenceById, hasher);
+    if (!parsed) return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
+    events.push(parsed);
+  }
+  const orderedEvents = events.sort((left, right) =>
+    left.sourceOrdinal - right.sourceOrdinal || compareText(left.id, right.id)
+  );
+  const sourceVersionIds = uniqueSorted(orderedEvents.map(event => event.sourceVersionId));
+  const evidenceIds = uniqueSorted(orderedEvents.map(event => event.evidenceId));
+  const evidenceContentHashes = uniqueSorted(orderedEvents.map(event => event.evidenceContentHash));
+  const persistedContent = {
+    schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA,
+    compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    profileId: pattern.profileId,
+    sourceVersionIds,
+    evidenceIds,
+    evidenceContentHashes,
+    events: orderedEvents
+  };
+  const contentDigest = hasher.digestHex(canonicalStringify(persistedContent));
+  const id = `surface.creative_event.bundle.${contentDigest}`;
+  if (stringOf(row.contentDigest) !== contentDigest
+    || pattern.id !== id
+    || pattern.patternKind !== "semantic_role"
+    || pattern.support !== orderedEvents.length
+    || pattern.entropy !== 0
+    || !sameStrings(pattern.evidenceIds.map(String), evidenceIds)
+    || canonicalStringify(rawBundle) !== canonicalStringify(persistedContent)) {
+    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.digest);
+  }
+  return {
+    bundle: {
+      id,
+      contentDigest,
+      schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+      bindingId: `surface.creative_event.binding.${hasher.digestHex(pattern.profileId)}`,
+      sourceProfileId: pattern.profileId,
+      targetProfileId: pattern.profileId,
+      sourceVersionIds,
+      evidenceIds,
+      evidenceContentHashes,
+      sourceExamples: [],
+      constructions: [],
+      formClasses: [],
+      creativeEvents: orderedEvents
+    }
+  };
+}
+
+function creativeEventFromPersisted(
+  raw: Record<string, JsonValue>,
+  profileId: string,
+  evidenceById: ReadonlyMap<string, EvidenceSpan>,
+  hasher: Hasher
+): DurableCreativeEventConstruction | undefined {
+  const evidenceId = stringOf(raw.evidenceId);
+  const compilerId = stringOf(raw.compilerId);
+  const sourceVersionId = stringOf(raw.sourceVersionId);
+  const evidenceContentHash = stringOf(raw.evidenceContentHash);
+  const sourceLabel = stringOf(raw.sourceLabel);
+  const relationId = stringOf(raw.relationId);
+  const tenseId = stringOf(raw.tenseId);
+  const valencyId = stringOf(raw.valencyId);
+  const formsRaw = recordOf(raw.forms);
+  if (!evidenceId || compilerId !== ENGLISH_CREATIVE_EVENT_COMPILER_ID
+    || !sourceVersionId || !evidenceContentHash || !sourceLabel || !relationId
+    || stringOf(raw.profileId) !== profileId
+    || !["scce.tense.past", "scce.tense.present", "scce.tense.future", "scce.tense.unknown"].includes(tenseId ?? "")
+    || !["scce.valency.agent", "scce.valency.agent_patient"].includes(valencyId ?? "")) return undefined;
+  const evidence = evidenceById.get(evidenceId);
+  const evidenceCharStart = numberOf(raw.evidenceCharStart);
+  const evidenceCharEnd = numberOf(raw.evidenceCharEnd);
+  const labelStartCodePoint = numberOf(raw.labelStartCodePoint);
+  const labelEndCodePoint = numberOf(raw.labelEndCodePoint);
+  const sourceOrdinal = numberOf(raw.sourceOrdinal);
+  if (!evidence
+    || evidence.status !== "promoted"
+    || String(evidence.sourceVersionId) !== sourceVersionId
+    || String(evidence.contentHash) !== evidenceContentHash
+    || evidence.charStart !== evidenceCharStart
+    || evidence.charEnd !== evidenceCharEnd
+    || !validRange(labelStartCodePoint, labelEndCodePoint, [...evidence.text].length)
+    || !Number.isSafeInteger(sourceOrdinal)) return undefined;
+  const boundLabel = [...evidence.text].slice(labelStartCodePoint, labelEndCodePoint).join("");
+  if (boundLabel !== sourceLabel || hasher.digestHex(sourceLabel) !== stringOf(raw.sourceLabelDigest)) return undefined;
+  const argumentFrame = creativeArgumentFrameFromPersisted({
+    raw: recordOf(raw.argumentFrame),
+    evidence,
+    profileId,
+    relationId,
+    labelStartCodePoint,
+    labelEndCodePoint,
+    hasher
+  });
+  if (!argumentFrame) return undefined;
+  const forms: DurableCreativeEventConstruction["forms"] = {
+    infinitive: stringOf(formsRaw.infinitive) ?? "",
+    past: stringOf(formsRaw.past) ?? "",
+    present: stringOf(formsRaw.present) ?? "",
+    gerund: stringOf(formsRaw.gerund) ?? "",
+    participle: stringOf(formsRaw.participle) ?? ""
+  };
+  if (Object.values(forms).some(value => !value || !singleLexicalWord(value))) return undefined;
+  const expectedRelationId = stableId(hasher, "language.source_relation", [
+    profileId,
+    normalizeMemorySurface(forms.infinitive)
+  ]);
+  const expectedConstructionId = stableId(hasher, "surface.creative_event.construction", [
+    ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    profileId,
+    tenseId,
+    valencyId
+  ]);
+  const expectedValencyId = argumentFrame.bindings.length
+    ? "scce.valency.agent_patient"
+    : "scce.valency.agent";
+  if (valencyId !== expectedValencyId) return undefined;
+  const expectedRoleIds = argumentFrame.roleIds;
+  const roleIds = arrayOfStrings(raw.roleIds);
+  const expectedId = stableId(hasher, "surface.creative_event", [
+    ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    expectedConstructionId,
+    sourceVersionId,
+    evidenceId,
+    evidenceContentHash,
+    labelStartCodePoint,
+    labelEndCodePoint,
+    expectedRelationId,
+    hasher.digestHex(sourceLabel),
+    argumentFrame,
+    forms
+  ]);
+  if (relationId !== expectedRelationId
+    || stringOf(raw.constructionId) !== expectedConstructionId
+    || stringOf(raw.id) !== expectedId
+    || !sameStrings(roleIds, expectedRoleIds)) return undefined;
+  return {
+    id: expectedId,
+    compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    constructionId: expectedConstructionId,
+    profileId,
+    sourceVersionId,
+    evidenceId,
+    evidenceContentHash,
+    evidenceCharStart,
+    evidenceCharEnd,
+    labelStartCodePoint,
+    labelEndCodePoint,
+    sourceOrdinal,
+    relationId: expectedRelationId,
+    sourceLabel,
+    sourceLabelDigest: hasher.digestHex(sourceLabel),
+    tenseId: tenseId as DurableCreativeEventConstruction["tenseId"],
+    valencyId: valencyId as DurableCreativeEventConstruction["valencyId"],
+    roleIds: expectedRoleIds,
+    argumentFrame,
+    forms
+  };
+}
+
+function creativeArgumentFrameFromPersisted(input: {
+  raw: Record<string, JsonValue>;
+  evidence: EvidenceSpan;
+  profileId: string;
+  relationId: string;
+  labelStartCodePoint: number;
+  labelEndCodePoint: number;
+  hasher: Hasher;
+}): DurableCreativeEventArgumentFrame | undefined {
+  const sourceSentenceStartCodePoint = numberOf(input.raw.sourceSentenceStartCodePoint);
+  const sourceSentenceEndCodePoint = numberOf(input.raw.sourceSentenceEndCodePoint);
+  const evidencePoints = [...input.evidence.text];
+  if (input.raw.schema !== CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA
+    || input.raw.compilerId !== ENGLISH_CREATIVE_EVENT_COMPILER_ID
+    || !validRange(sourceSentenceStartCodePoint, sourceSentenceEndCodePoint, evidencePoints.length)
+    || input.labelStartCodePoint < sourceSentenceStartCodePoint
+    || input.labelEndCodePoint > sourceSentenceEndCodePoint) return undefined;
+  const rawBindings = arrayOfRecords(input.raw.bindings);
+  if (rawBindings.length > 2) return undefined;
+  const bindings: DurableCreativeEventArgumentBinding[] = [];
+  const seenRoles = new Set<string>();
+  for (const rawBinding of rawBindings) {
+    const roleId = stringOf(rawBinding.roleId);
+    const surface = stringOf(rawBinding.surface);
+    const startCodePoint = numberOf(rawBinding.startCodePoint);
+    const endCodePoint = numberOf(rawBinding.endCodePoint);
+    if ((roleId !== "scce.role.patient" && roleId !== "scce.role.complement")
+      || seenRoles.has(roleId)
+      || !surface
+      || !singleLexicalWord(surface)
+      || !validRange(startCodePoint, endCodePoint, evidencePoints.length)
+      || startCodePoint < input.labelEndCodePoint
+      || startCodePoint < sourceSentenceStartCodePoint
+      || endCodePoint > sourceSentenceEndCodePoint
+      || evidencePoints.slice(startCodePoint, endCodePoint).join("") !== surface
+      || input.hasher.digestHex(surface) !== stringOf(rawBinding.surfaceDigest)) return undefined;
+    const connectorRaw = recordOf(rawBinding.connector);
+    const connector = Object.keys(connectorRaw).length
+      ? creativeClosedClassConnectorFromPersisted({
+        raw: connectorRaw,
+        evidencePoints,
+        sourceSentenceStartCodePoint,
+        sourceSentenceEndCodePoint,
+        labelEndCodePoint: input.labelEndCodePoint,
+        bindingStartCodePoint: startCodePoint,
+        hasher: input.hasher
+      })
+      : undefined;
+    if (Object.keys(connectorRaw).length && !connector) return undefined;
+    if (connector && roleId !== "scce.role.complement") return undefined;
+    seenRoles.add(roleId);
+    bindings.push({
+      roleId,
+      surface,
+      surfaceDigest: input.hasher.digestHex(surface),
+      startCodePoint,
+      endCodePoint,
+      ...(connector ? { connector } : {})
+    });
+  }
+  const roleIds = ["scce.role.agent", ...bindings.map(binding => binding.roleId)];
+  if (!sameStrings(arrayOfStrings(input.raw.roleIds), roleIds)) return undefined;
+  const expectedId = stableId(input.hasher, "surface.creative_event.argument_frame", [
+    ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    input.profileId,
+    input.relationId,
+    roleIds,
+    bindings.map(binding => ({
+      roleId: binding.roleId,
+      connector: binding.connector
+        ? normalizeMemorySurface(binding.connector.surface)
+        : null
+    }))
+  ]);
+  if (stringOf(input.raw.id) !== expectedId) return undefined;
+  return {
+    id: expectedId,
+    schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+    compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+    sourceSentenceStartCodePoint,
+    sourceSentenceEndCodePoint,
+    roleIds,
+    bindings
+  };
+}
+
+function creativeClosedClassConnectorFromPersisted(input: {
+  raw: Record<string, JsonValue>;
+  evidencePoints: string[];
+  sourceSentenceStartCodePoint: number;
+  sourceSentenceEndCodePoint: number;
+  labelEndCodePoint: number;
+  bindingStartCodePoint: number;
+  hasher: Hasher;
+}): DurableCreativeEventClosedClassConnector | undefined {
+  const surface = stringOf(input.raw.surface);
+  const startCodePoint = numberOf(input.raw.startCodePoint);
+  const endCodePoint = numberOf(input.raw.endCodePoint);
+  if (!surface
+    || !singleLexicalWord(surface)
+    || !validRange(startCodePoint, endCodePoint, input.evidencePoints.length)
+    || startCodePoint < input.labelEndCodePoint
+    || startCodePoint < input.sourceSentenceStartCodePoint
+    || endCodePoint > input.sourceSentenceEndCodePoint
+    || endCodePoint > input.bindingStartCodePoint
+    || input.evidencePoints.slice(startCodePoint, endCodePoint).join("") !== surface
+    || input.hasher.digestHex(surface) !== stringOf(input.raw.surfaceDigest)) return undefined;
+  return {
+    surface,
+    surfaceDigest: input.hasher.digestHex(surface),
+    startCodePoint,
+    endCodePoint
+  };
 }
 
 function verifyPersistedPattern(
@@ -586,6 +1368,10 @@ function utf16OffsetAtCodePoint(surface: string, offset: number): number {
   return [...surface].slice(0, offset).join("").length;
 }
 
+function codePointOffsetAtUtf16(surface: string, offset: number): number {
+  return [...surface.slice(0, offset)].length;
+}
+
 function uniqueEvidenceById(evidence: readonly EvidenceSpan[]): Map<string, EvidenceSpan> | undefined {
   const out = new Map<string, EvidenceSpan>();
   for (const span of evidence) {
@@ -639,6 +1425,45 @@ function arrayOfRecords(value: JsonValue | undefined): Array<Record<string, Json
   return Array.isArray(value)
     ? value.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
     : [];
+}
+
+function arrayOfStrings(value: JsonValue | undefined): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+}
+
+function arrayUnknown(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function recordUnknown(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringUnknown(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberUnknown(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function termIndexUnknown(value: unknown): number | undefined {
+  const index = arrayUnknown(value).at(-1);
+  return typeof index === "number" && Number.isSafeInteger(index) && index >= 0
+    ? index
+    : undefined;
+}
+
+function singleLexicalWord(value: string): boolean {
+  return /^[\p{L}\p{M}]+(?:['’\-][\p{L}\p{M}]+)*$/u.test(value.normalize("NFC"));
+}
+
+function normalizeMemorySurface(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, " ").trim();
 }
 
 function stringOf(value: JsonValue | undefined): string | undefined {

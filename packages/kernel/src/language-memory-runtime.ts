@@ -704,9 +704,12 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     styleProfileId: input.styleProfileId
   });
   const firstDiscourse = latticeGeneration?.discourse ?? weaveDiscourse({ state: input.state, pieces: candidatePieces, requiredTerms, frameAtoms, frames: input.frames ?? [], contextSymbols, generationExtent });
-  const discourse = speechBearingSurface(firstDiscourse.text)
+  const continuationDiscourse = discourseSurfaceAdequate(firstDiscourse, generationExtent)
+    ? undefined
+    : learnedContinuationDiscourse({ state: input.state, contextSymbols, contextText, requiredTerms, frameAtoms, generationExtent, pieces: candidatePieces });
+  const discourse = discourseSurfaceAdequate(firstDiscourse, generationExtent)
     ? firstDiscourse
-    : learnedContinuationDiscourse({ state: input.state, contextSymbols, contextText, requiredTerms, frameAtoms, generationExtent, pieces: candidatePieces }) ?? firstDiscourse;
+    : continuationDiscourse ?? firstDiscourse;
   const selectedMovePieceIds = new Set(discourse.moves.flatMap(move => move.sourcePieceIds));
   const selected = candidatePieces.filter(piece => {
     const clean = tidyInline(piece.text);
@@ -937,7 +940,7 @@ function generationRequiredTerms(input: LanguageGenerationInput): LanguageGenera
   };
   for (const term of input.requiredTerms ?? []) add(term);
   for (const frame of input.frames ?? []) for (const term of frame.requiredTerms ?? []) add(term);
-  return [...terms.values()].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || a.text.localeCompare(b.text)).slice(0, 48);
+  return [...terms.values()].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, 48);
 }
 
 function generationFrameAtoms(input: LanguageGenerationInput): LanguageGenerationAtom[] {
@@ -1380,19 +1383,15 @@ export function scopeLanguageMemoryStateToCluster(
   const sourceVersionIds = new Set(cluster.sourceVersionIds.map(String));
   const records = state.records.filter(record => ownedLanguageArtifact(
     modelProfileId(record),
-    modelSourceVersionId(record),
-    profileIds,
-    sourceVersionIds
+    profileIds
   ));
   const importedObservations = state.importedObservations.filter(record => ownedLanguageArtifact(
     observationProfileId(record),
-    String(record.sourceVersionId ?? ""),
-    profileIds,
-    sourceVersionIds
+    profileIds
   ));
   const importedUnits = state.importedUnits.filter(record => profileIds.has(record.profileId));
   const importedPatterns = state.importedPatterns.filter(record => profileIds.has(record.profileId));
-  const importedSemanticFrames = state.importedSemanticFrames.filter(frame => semanticFrameBelongsToCluster(frame, profileIds, sourceVersionIds));
+  const importedSemanticFrames = state.importedSemanticFrames.filter(frame => semanticFrameBelongsToCluster(frame, profileIds));
   const importedConstructionBundles = state.importedConstructionBundles.filter(bundle => (
     profileIds.has(bundle.targetProfileId)
     && profileIds.has(bundle.sourceProfileId)
@@ -2544,22 +2543,32 @@ function learnedContinuationDiscourse(input: {
     .map(piece => piece.text)
     .filter(surface => speechBearingSurface(surface) && isDiscourseBearingPriorSurface(surface))
     .slice(0, 12);
+  const requiredSeed = uniqueStrings(input.requiredTerms
+    .filter(term => (term.weight ?? 0) >= 0.7)
+    .map(term => tidyInline(term.text))
+    .filter(Boolean))
+    .slice(0, 4)
+    .join(" ");
   for (const model of models) {
     const predictedSeeds = predictKneserNey(model, input.contextSymbols.slice(-(model.order - 1)), 16)
       .map(item => item.symbol)
       .filter(symbol => symbol !== "</s>" && symbol !== "<s>" && symbol !== "<unk>")
       .filter(isGenerationSeedSurface)
       .slice(0, 1);
-    const seeds = uniqueStrings([...pieceSeeds.slice(0, 1), ...predictedSeeds]).slice(0, 1);
+    const seeds = uniqueStrings([requiredSeed, ...predictedSeeds, ...pieceSeeds.slice(0, 1)].filter(Boolean)).slice(0, 1);
     const prompts: Array<{ prompt: readonly string[]; seed?: string }> = [
       ...(seeds.length ? seeds.map(seed => ({ prompt: [...input.contextSymbols, ...symbolizeData(seed)], seed })) : [{ prompt: input.contextSymbols }])
     ];
     for (const row of prompts) {
-      const continuation = continueBoundedProse(model, row.prompt, {
+      const continuationModel = model.order > 3 ? { ...model, order: 3 } : model;
+      const continuation = continueBoundedProse(continuationModel, row.prompt, {
         generationExtent: Math.max(8, Math.min(28, input.generationExtent)),
         probabilityFloor: 1e-12,
         temperature: 0.92,
-        blockedSymbols: ["<unk>"]
+        blockedSymbols: ["<unk>"],
+        deterministicChoiceSeed: `${input.contextText}\u0001${requiredSeed}\u0001${model.observedSymbolCount}`,
+        minSymbolsBeforeEos: Math.min(12, Math.max(6, Math.floor(input.generationExtent * 0.3))),
+        repetitionWindow: 12
       });
       const text = learnedContinuationSurface(row.seed, continuation.text, input.contextText, input.generationExtent);
       if (!text) continue;
@@ -2654,9 +2663,21 @@ function learnedContinuationSurface(seed: string | undefined, continuationText: 
 }
 
 function continuationCandidateScore(input: { text: string; support: number; score: LanguageMemoryScore; continuationAverageLogProbability: number }): number {
-  const compactness = clamp01(1 / Math.max(1, symbolizeData(input.text).length / 24));
+  const symbolCount = symbolizeData(input.text).length;
+  const extentFit = clamp01(1 - Math.abs(symbolCount - 28) / 28);
   const probability = clamp01(Math.exp(Math.max(-24, input.continuationAverageLogProbability)));
-  return clamp01(0.42 * input.support + 0.28 * input.score.activation + 0.18 * compactness + 0.12 * probability);
+  return clamp01(0.42 * input.support + 0.28 * input.score.activation + 0.18 * extentFit + 0.12 * probability);
+}
+
+function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationExtent: number): boolean {
+  if (!speechBearingSurface(discourse.text)) return false;
+  const lexicalSymbols = symbolizeData(discourse.text)
+    .filter(symbol => [...symbol].some(char => isLetterLike(char) || isDigitLike(char)));
+  const minimum = Math.max(4, Math.min(12, Math.floor(generationExtent * 0.2)));
+  if (lexicalSymbols.length < minimum) return false;
+  const normalized = lexicalSymbols.map(symbol => symbol.normalize("NFKC").toLocaleLowerCase());
+  const diversity = new Set(normalized).size / Math.max(1, normalized.length);
+  return diversity >= 0.42 && discourse.repetitionPenalty < 0.72;
 }
 
 function naturalJoin(values: readonly string[], finalJoiner = ";"): string {
@@ -3468,11 +3489,6 @@ function selectRuntimeModels(records: readonly NgramModelRecord[], reconstructed
     .map(candidate => candidate.model);
 }
 
-function modelSourceVersionId(record: NgramModelRecord): string | undefined {
-  const row = jsonRecord(record.modelJson);
-  return typeof row.sourceVersionId === "string" && row.sourceVersionId ? row.sourceVersionId : undefined;
-}
-
 function modelProfileId(record: NgramModelRecord): string | undefined {
   const row = jsonRecord(record.modelJson);
   return typeof row.profileId === "string" && row.profileId ? row.profileId : undefined;
@@ -3485,22 +3501,19 @@ function observationProfileId(record: NgramObservation): string | undefined {
 
 function ownedLanguageArtifact(
   profileId: string | undefined,
-  sourceVersionId: string | undefined,
-  profileIds: ReadonlySet<string>,
-  sourceVersionIds: ReadonlySet<string>
+  profileIds: ReadonlySet<string>
 ): boolean {
-  if (profileId) return profileIds.has(profileId);
-  return Boolean(sourceVersionId) && sourceVersionIds.has(sourceVersionId!);
+  return Boolean(profileId) && profileIds.has(profileId!);
 }
 
 function semanticFrameBelongsToCluster(
   frame: SemanticFrameRecord,
-  profileIds: ReadonlySet<string>,
-  sourceVersionIds: ReadonlySet<string>
+  profileIds: ReadonlySet<string>
 ): boolean {
   const row = jsonRecord(frame.frameJson);
-  if (typeof row.profileId === "string" && row.profileId) return profileIds.has(row.profileId);
-  return typeof row.sourceVersionId === "string" && sourceVersionIds.has(row.sourceVersionId);
+  return typeof row.profileId === "string"
+    && row.profileId.length > 0
+    && profileIds.has(row.profileId);
 }
 
 function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {

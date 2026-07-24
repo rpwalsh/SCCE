@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CORPUS_SOURCE_SYSTEM_IDS, type ScceStorage } from "@scce/kernel";
+import {
+  CORPUS_SOURCE_SYSTEM_IDS,
+  createEnglishCreativeEventConstructionCompiler,
+  type CreativeEventConstructionCompiler,
+  type ScceStorage
+} from "@scce/kernel";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
 export interface GutenbergCorpusTrainOptions {
@@ -14,6 +19,8 @@ export interface GutenbergCorpusTrainOptions {
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
+  languageAliases?: readonly string[];
+  creativeEventCompiler?: CreativeEventConstructionCompiler;
 }
 
 export interface GutenbergCorpusTrainReport {
@@ -64,6 +71,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       skipped.push({ path: file.relativePath, reason: "empty_after_boilerplate_strip", byteLength: file.byteLength });
       continue;
     }
+    const languageAliases = sourceLanguageAliases(raw, input.languageAliases);
     reports.push(await trainLanguageCorpusText({
       storage: input.storage,
       sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
@@ -76,10 +84,13 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       ngramMaxOrder: input.ngramMaxOrder,
       ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
       ngramVocabularyLimit: input.ngramVocabularyLimit,
+      languageAliases,
+      creativeEventCompiler: input.creativeEventCompiler ?? builtInCreativeCompiler(languageAliases),
       corpusMetadata: {
         relativePath: normalizeRelative(file.relativePath),
         sourceHash: sha256(raw),
-        boilerplateStripped: text.length !== raw.trim().length
+        boilerplateStripped: text.length !== raw.trim().length,
+        languageAliases
       }
     }));
   }
@@ -92,6 +103,28 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     totals: sumReports(reports),
     reports
   };
+}
+
+function sourceLanguageAliases(raw: string, supplied: readonly string[] | undefined): string[] {
+  const explicit = supplied?.map(value => value.trim()).filter(Boolean) ?? [];
+  if (explicit.length) return [...new Set(explicit)].sort(compareCodePoint);
+  const header = raw.slice(0, Math.min(raw.length, 32_768));
+  const declared = /^Language:\s*(.+?)\s*$/imu.exec(header)?.[1]
+    ?.split(/[,;/]/u)
+    .map(value => value.trim())
+    .filter(Boolean) ?? [];
+  return [...new Set(declared)].sort(compareCodePoint);
+}
+
+function builtInCreativeCompiler(aliases: readonly string[]): CreativeEventConstructionCompiler | undefined {
+  const normalized = new Set(aliases.map(alias => alias.normalize("NFKC").trim().toLocaleLowerCase()));
+  return normalized.has("en") || normalized.has("eng") || normalized.has("english")
+    ? createEnglishCreativeEventConstructionCompiler()
+    : undefined;
+}
+
+function compareCodePoint(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function stripGutenbergBoilerplate(text: string): string {

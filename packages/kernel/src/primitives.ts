@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Clock, Hasher, JsonValue } from "./types.js";
+import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 
 export function createCanonicalJson() {
   return { stringify: canonicalStringify };
@@ -105,8 +106,10 @@ export function weightedJaccard(left: readonly string[], right: readonly string[
 }
 
 export function symbolizeData(text: string): string[] {
-  const normalized = text.replace(/\u0000/g, " ").normalize("NFC").toLowerCase();
-  return (normalized.match(/[\p{Letter}\p{Number}_]+|[^\s]/gu) ?? []).filter(Boolean).slice(0, 200000);
+  return unicodeSymbolSegments(text)
+    .map(segment => segment.normalized)
+    .filter(Boolean)
+    .slice(0, 200000);
 }
 
 export function featureSet(text: string, limit = 2000): string[] {

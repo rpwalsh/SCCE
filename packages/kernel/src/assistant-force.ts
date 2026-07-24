@@ -98,15 +98,15 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
   }
   let force: AssistantForceClass;
   const reasonIds: string[] = [];
-  if (contradicted) {
+  if (creative) {
+    force = "creative_answer";
+    reasonIds.push(input.requestedAuthority === "creative" ? "assistant_force.requested_creative_authority" : "assistant_force.creative_construct");
+  } else if (contradicted) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.contradiction_pressure");
   } else if (translation) {
     force = "translation_answer";
     reasonIds.push(input.requestedAuthority === "translation" ? "assistant_force.requested_translation_authority" : "assistant_force.translation_surface");
-  } else if (creative) {
-    force = "creative_answer";
-    reasonIds.push(input.requestedAuthority === "creative" ? "assistant_force.requested_creative_authority" : "assistant_force.creative_construct");
   } else if ((input.epistemicForce === "proved" || truthState === "truth.certified" || proof === "scce.verdict.002") && hasDirectEvidence) {
     force = "certified_fact";
     reasonIds.push("assistant_force.certified_direct_evidence");
@@ -175,14 +175,18 @@ function proposalForceDecision(input: {
     receipt: claim.actionReceiptId ? receipts.get(claim.actionReceiptId) : undefined
   }));
   const invalidActionClaims = claimDecisions.filter(decision => decision.basis === "action_result" && !decision.verifiedActionReceipt);
+  const inventedClaims = claimDecisions.filter(decision => decision.basis === "invented");
   let force: AssistantForceClass;
   const reasonIds: string[] = [];
-  if (input.contradicted) {
-    force = "insufficient_support";
-    reasonIds.push("assistant_force.contradiction_pressure");
-  } else if (invalidActionClaims.length > 0) {
+  if (invalidActionClaims.length > 0) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.action_result_without_durable_receipt");
+  } else if (input.input.requestedAuthority === "creative" && inventedClaims.length > 0) {
+    force = "creative_answer";
+    reasonIds.push("assistant_force.proposal.requested_invention");
+  } else if (input.contradicted) {
+    force = "insufficient_support";
+    reasonIds.push("assistant_force.contradiction_pressure");
   } else {
     force = selectProposalForce(claimDecisions);
     reasonIds.push(reasonForProposalForce(force));

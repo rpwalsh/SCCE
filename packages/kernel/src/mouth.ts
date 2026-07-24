@@ -37,7 +37,21 @@ import {
   type SurfaceRevisionConstraint,
   type SurfaceTransformationBaseline
 } from "./walsh-surface-energy.js";
-import { semanticFrameSurfaces, type LanguageGenerationResult, type LanguageMemoryRuntime, type LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
+import {
+  semanticFrameSurfaces,
+  type LanguageGenerationResult,
+  type LanguageMemoryRuntime,
+  type LanguageMemoryRuntimeState,
+  type LanguageMemoryScore
+} from "./language-memory-runtime.js";
+import {
+  englishCreativeStructuralRouteEvents,
+  isEnglishCreativeEventStructurallyRealizable,
+  realizeEnglishStructuralCreative,
+  type EnglishStructuralPlannedEvent,
+  type LearnedResponseExtentHint,
+  type NarrativeBridgeRelationId
+} from "./english-structural-realizer.js";
 import type { CorrectionMemory, CorrectionStyleInfluence, MeterPattern, RegisterVector } from "./correction-memory.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import {
@@ -70,6 +84,7 @@ import {
 import { rankLanguageProfilesForSurface } from "./language.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
+  sourceQuote: "rel.1f7c4a92",
   polarityReject: "rel.8d64be21",
   temporalCounterexample: "rel.7f1c2a90"
 } as const;
@@ -243,6 +258,55 @@ interface SurfaceCandidate {
   audit?: JsonValue;
 }
 
+interface StructuralCreativeSelectionBinding {
+  semanticCandidateId: string;
+  cognitiveProposalId?: string;
+  invention: InventionConstructState;
+  semanticPlanId: string;
+  sourceBundleIds: string[];
+  events: StructuralCreativeEventSelector[];
+}
+
+interface StructuralCreativeEventSelector {
+  outputIndex: number;
+  bundleId: string;
+  eventId: string;
+  profileId: string;
+  constructionId: string;
+  relationId: string;
+  roleIds: string[];
+  discourseRelationId: NarrativeBridgeRelationId;
+  discourseBridgeBasisId:
+    | "scce.discourse.bridge.source_adjacency"
+    | "scce.discourse.bridge.invented_macro";
+  discourseBeatId: string;
+  requestRoleBindings: Array<{
+    eventRoleId: "scce.role.patient" | "scce.role.complement";
+    requestRoleId: "scce.request.role.antagonist";
+    admissible: true;
+  }>;
+  requestFit: number;
+  graphFit: number;
+  routeFit: number;
+  routeId: string;
+  routeAnchorEventId: string;
+  sourceOrdinal: number;
+  sourceVersionId: string;
+  evidenceId: string;
+}
+
+type HydratedStructuralCreativeEvent = EnglishStructuralPlannedEvent & Pick<
+  StructuralCreativeEventSelector,
+  | "discourseBridgeBasisId"
+  | "discourseBeatId"
+  | "graphFit"
+  | "requestRoleBindings"
+  | "routeFit"
+  | "routeId"
+  | "routeAnchorEventId"
+  | "sourceOrdinal"
+>;
+
 interface SentenceCandidate {
   unitId: string;
   role: DiscourseUnitRole;
@@ -286,8 +350,8 @@ export interface RealizationTrace {
   surfacePlan: JsonValue;
   discoursePlan: JsonValue;
   realizationFrames: JsonValue;
-  candidates: Array<{ id: string; style: string; path: SurfaceCandidatePath; textHash: string; score: number; changedByCorrections: number; preservation: number; forbiddenHits: number; importedPieceIds: string[]; audit?: JsonValue }>;
-  selected: { id: string; path: SurfaceCandidatePath; textHash: string; languageActivation: number; semanticPreservation: number };
+  candidates: Array<{ id: string; style: string; path: SurfaceCandidatePath; textHash: string; score: number; changedByCorrections: number; preservation: number; forbiddenHits: number; importedPieceIds: string[]; semanticCandidateId?: string; semanticPlanId?: string; surfaceRealizationId?: string; audit?: JsonValue }>;
+  selected: { id: string; path: SurfaceCandidatePath; textHash: string; languageActivation: number; semanticPreservation: number; semanticCandidateId?: string; semanticPlanId?: string; surfaceRealizationId?: string };
   languageMemory: JsonValue;
   brainInfluence: JsonValue;
   corrections: JsonValue;
@@ -368,6 +432,40 @@ export interface Mouth {
   speak(input: SpeakInput): Promise<SpokenOutput>;
 }
 
+interface MouthGenerationWorkBudget {
+  readonly startedAtMs: number;
+  readonly deadlineAtMs: number;
+  readonly maxExtent: number;
+  remainingCalls: number;
+  admittedCalls: number;
+  deniedCalls: number;
+}
+
+const MOUTH_GENERATION_CALL_LIMIT = 1;
+const MOUTH_GENERATION_EXTENT_LIMIT = 48;
+const MOUTH_GENERATION_WINDOW_MS = 2_500;
+
+function createMouthGenerationWorkBudget(startedAtMs: number): MouthGenerationWorkBudget {
+  return {
+    startedAtMs,
+    deadlineAtMs: startedAtMs + MOUTH_GENERATION_WINDOW_MS,
+    maxExtent: MOUTH_GENERATION_EXTENT_LIMIT,
+    remainingCalls: MOUTH_GENERATION_CALL_LIMIT,
+    admittedCalls: 0,
+    deniedCalls: 0
+  };
+}
+
+function claimMouthGenerationWork(budget: MouthGenerationWorkBudget, requestedExtent: number): number | undefined {
+  if (budget.remainingCalls <= 0 || Date.now() >= budget.deadlineAtMs) {
+    budget.deniedCalls += 1;
+    return undefined;
+  }
+  budget.remainingCalls -= 1;
+  budget.admittedCalls += 1;
+  return Math.max(1, Math.min(budget.maxExtent, Math.floor(requestedExtent)));
+}
+
 export function createMouth(options: { languageMemory: LanguageMemoryRuntime; correctionMemory: CorrectionMemory; hashText: (text: string) => string; hasher?: Hasher }): Mouth {
   const constructionHasher: Hasher = options.hasher ?? { digestHex: options.hashText };
   return {
@@ -375,32 +473,77 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       if (input.selectedCandidate && kernelCandidateCarriesTerminalRuntimeMotionSurface(input.selectedCandidate)) {
         return createDeterministicMouth({ hashText: options.hashText }).speak(input);
       }
+      const mouthStartedAt = Date.now();
+      const generationWorkBudget = createMouthGenerationWorkBudget(mouthStartedAt);
+      let mouthPhaseStartedAt = mouthStartedAt;
+      const mouthPhaseMs: Record<string, number> = {};
+      const markMouthPhase = (id: string) => {
+        const now = Date.now();
+        mouthPhaseMs[id] = now - mouthPhaseStartedAt;
+        mouthPhaseStartedAt = now;
+      };
       const correctionInfluence = options.correctionMemory.styleFromRules({
         rules: input.correctionRules ?? [],
         context: { targetLanguageId: input.targetLanguage, targetScriptId: input.targetScript, registerVector: input.registerVector, meterPattern: input.meterPattern, surfaceKind: input.construct.program ? "program" : "answer" }
       });
-      const basePriorPieces = importedSurfacePieces(input, undefined, undefined);
+      markMouthPhase("correction_influence");
+      const structuralCreativeProductionLane = input.requestedAuthority === "creative";
+      const structuralCreativeSelection = selectedStructuralCreativePlan(input);
+      const structuralCreativeBound = structuralCreativeProductionLane;
+      const structuralCreativePreflight = Boolean(structuralCreativeSelection)
+        && hasHydratedStructuralCreativePrior(
+          input.languageMemory,
+          input.languageProfile,
+          structuralCreativeSelection
+        );
+      const basePriorPieces = structuralCreativeBound
+        ? []
+        : importedSurfacePieces(input, undefined, undefined);
+      markMouthPhase("base_prior_pieces");
       const rawPlan = buildSurfacePlan(input, correctionInfluence, options.hashText, basePriorPieces);
+      markMouthPhase("surface_plan");
       const plan = applySurfacePlanCorrections(rawPlan, input.correctionRules ?? [], correctionInfluence, options.hashText);
+      markMouthPhase("surface_plan_corrections");
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
-      const priorPieces = importedSurfacePieces(input, plan, options.languageMemory, basePriorPieces);
-      const kernelSelectedCandidate = input.selectedCandidate ? surfaceCandidateFromKernelCandidate(input.selectedCandidate, discoursePlan, input) : undefined;
-      const governedActionPreview = governedActionPreviewCandidate(input, discoursePlan);
-      const semanticSourceCandidate = semanticSourceAnswerCandidate(input, discoursePlan);
-      const learnedConstructionCandidate = semanticLearnedConstructionCandidate(input, plan, discoursePlan, constructionHasher);
-      const constructAnchored = constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
+      markMouthPhase("discourse_plan");
+      const structuralCreativeCandidate = structuralCreativePreflight && structuralCreativeSelection
+        ? sourceStructuralCreativeCandidate(plan, discoursePlan, input, structuralCreativeSelection)
+        : undefined;
+      markMouthPhase("structural_creative_realization");
+      const structuralCreativeFailClosed = structuralCreativeProductionLane && !structuralCreativeCandidate;
+      markMouthPhase("structural_admission");
+      const priorPieces = structuralCreativeBound
+        ? basePriorPieces
+        : importedSurfacePieces(input, plan, options.languageMemory, basePriorPieces);
+      const kernelSelectedCandidate = structuralCreativeBound
+        ? undefined
+        : input.selectedCandidate ? surfaceCandidateFromKernelCandidate(input.selectedCandidate, discoursePlan, input) : undefined;
+      const governedActionPreview = structuralCreativeBound ? undefined : governedActionPreviewCandidate(input, discoursePlan);
+      const semanticSourceCandidate = structuralCreativeBound ? undefined : semanticSourceAnswerCandidate(input, discoursePlan);
+      const learnedConstructionCandidate = structuralCreativeBound
+        ? undefined
+        : semanticLearnedConstructionCandidate(input, plan, discoursePlan, constructionHasher);
+      const constructAnchored = structuralCreativeBound
+        ? undefined
+        : constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
       const preserveEvidenceBackedKernelCandidate = Boolean(
         kernelSelectedCandidate &&
         input.requestedAuthority !== "creative" &&
+        !semanticAnswerConstructState(input.construct) &&
         input.selectedCandidate &&
         (input.selectedCandidate.kind === "proof-answer"
           || kernelCandidateCarriesExactBoundSourceSurface(input.selectedCandidate, input)) &&
         input.selectedCandidate.evidenceIds.length > 0 &&
         kernelCandidateCanPreempt(input, kernelSelectedCandidate)
       );
-      const generatedCandidates = preserveEvidenceBackedKernelCandidate ? [] : generatedCandidatesFromFrames(plan, discoursePlan, input, options.languageMemory, priorPieces);
+      const generatedCandidates = structuralCreativeCandidate
+        ? [structuralCreativeCandidate]
+        : structuralCreativeFailClosed || preserveEvidenceBackedKernelCandidate
+          ? []
+          : generatedCandidatesFromFrames(plan, discoursePlan, input, options.languageMemory, priorPieces, generationWorkBudget);
+      markMouthPhase("candidate_setup");
       const creativeRequested = isCreativeRequested(input, plan);
-      const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory);
+      const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
       const rawCandidates = [
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
@@ -412,14 +555,16 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       ].filter(candidate => admissibleMouthSurface(candidate.text));
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
-        const corrected = candidate.exactSurface
+        const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
+        const protectedCandidateSurface = candidate.exactSurface || structuralCandidateSurface;
+        const corrected = protectedCandidateSurface
           ? { text: candidate.text, applied: appliedCorrection.applied }
           : appliedCorrection;
-        const factualSurfaceControl = !candidate.exactSurface && appliesFactualSurfaceControl(input, candidate, plan);
+        const factualSurfaceControl = !protectedCandidateSurface && appliesFactualSurfaceControl(input, candidate, plan);
         const repetitionControlled = factualSurfaceControl
           ? preserveRequiredSurfaceValues(corrected.text, collapseRepeatedTokenSpans(corrected.text), plan)
           : corrected.text;
-        const bounded = candidate.exactSurface
+        const bounded = protectedCandidateSurface
           ? candidate.text
           : preserveSurfaceExtent(
             repetitionControlled,
@@ -427,22 +572,27 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             plan
           );
         const preservation = semanticPreservation({ text: bounded, plan, entailment: input.entailment });
-        const score = options.languageMemory.score({ state: input.languageMemory, text: bounded, contextText: input.entailment.claim.text });
+        const score = structuralCreativeSelectionBindingFromSurface(candidate)
+          ? structuralCreativeLanguageScore(candidate, input)
+          : options.languageMemory.score({ state: input.languageMemory, text: bounded, contextText: input.entailment.claim.text });
         const workspaceAnchoredCandidate = candidate.id === "candidate:generated:construct-anchored"
           && (isWorkspaceKernelSpeakInput(input) || input.requestedAuthority === "program");
         const governedActionCandidate = candidate.id === "candidate:generated:governed-action-preview";
         const proofBoundaryCandidate = candidate.id === "candidate:generated:proof-boundary";
         const semanticLearnedConstructionCandidate = candidate.id.startsWith("candidate:generated:learned-construction:");
-        const exactConstraintHits = candidate.exactSurface
+        const exactConstraintHits = protectedCandidateSurface
           ? exactSurfaceConstraintHits(candidate.text, input, plan, appliedCorrection.applied)
           : [];
         const conversationMemoryCandidate = candidate.id === "candidate:generated:conversation-memory";
         const conversationContextCandidate = conversationMemoryCandidate && !candidate.generation;
         const creativeSurfaceCandidate = creativeRequested || candidate.claimBasis === "invented";
+        const structuralCreativeCandidateBound = Boolean(
+          structuralCreativeSelectionBindingFromSurface(candidate)
+        );
         const forbiddenHits = creativeSurfaceCandidate
           ? uniqueStrings([
             ...forbiddenSurfaceHits(bounded, plan),
-            ...creativeSemanticDriftHits(bounded, input)
+            ...(structuralCreativeCandidateBound ? [] : creativeSemanticDriftHits(bounded, input))
           ])
           : workspaceAnchoredCandidate || governedActionCandidate
           ? []
@@ -473,8 +623,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         const adjustedFit = forbiddenHits.length ? candidate.fit * 0.1 : candidate.fit;
         return { ...candidate, fit: adjustedFit, text: bounded, correction: corrected, preservation, score, forbiddenHits };
       });
+      markMouthPhase("candidate_scoring");
       const energyContext = walshSurfaceEnergyContext(input, plan, discoursePlan, correctionInfluence, basePriorPieces);
       const energyRows = rankBySurfaceEnergy(scoredCandidates.map(candidate => surfaceEnergyCandidate(candidate, plan)), energyContext);
+      markMouthPhase("candidate_energy");
       const byCandidateId = new Map(scoredCandidates.map(candidate => [candidate.id, candidate]));
       const validEnergyRows = energyRows.filter(row => row.result.valid);
       const correctedCandidates = energyRows.map(row => byCandidateId.get(row.candidate.id)).filter((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate));
@@ -496,7 +648,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const semanticTemporalCounterexampleCandidate = semanticAnswerState
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:semantic-temporal-counterexample" && !candidate.forbiddenHits.length)
         : undefined;
-      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
+      const semanticDirectEvidenceCandidate = semanticAnswerState
+        ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:semantic-direct-evidence" && !candidate.forbiddenHits.length)
+        : undefined;
+      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticDirectEvidenceCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
         ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
         : undefined);
       const structuredConstructCandidate = generatedConstructSurface(input.construct) && !creativeRequested
@@ -520,15 +675,23 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           && energyRows.some(row => row.candidate.id === candidate.id && row.result.valid)
         ))
         : undefined;
+      const realizedCreativeCandidate = creativeRequested
+        ? energyRows
+          .filter(row => row.result.valid && row.candidate.id.startsWith("candidate:generated:creative:"))
+          .map(row => byCandidateId.get(row.candidate.id))
+          .find((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate && !candidate.forbiddenHits.length))
+        : undefined;
       const selected = semanticGraphCandidate ??
         structuredConstructCandidate ??
         proofBoundarySelectedCandidate ??
         governedActionDraftCandidate ??
         workspaceDraftCandidate ??
         learnedCreativeProposal ??
+        realizedCreativeCandidate ??
         (selectedKernelCandidate && (!creativeRequested || !learnedCreativeCandidateAvailable) && !selectedKernelCandidate.forbiddenHits.length && kernelCandidateCanPreempt(input, selectedKernelCandidate) ? selectedKernelCandidate : undefined) ??
         (energySelected && !energySelected.forbiddenHits.length ? energySelected : undefined);
       const selectedEnergy = energyRows.find(row => row.candidate.id === selected?.id)?.result;
+      markMouthPhase("candidate_selection");
       const selectedBoundSourceSurface = Boolean(
         selected &&
         input.selectedCandidate?.id === selected.id &&
@@ -550,7 +713,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         evidenceIds: selected?.evidenceIds.map(String) ?? [],
         score: selected?.score ?? options.languageMemory.score({ state: input.languageMemory, text: "", contextText: input.entailment.claim.text }),
         audit: toJsonValue({
-          source: "mouth.generated-selection",
+          source: structuralCreativeFailClosed
+            ? "surface.boundary.structural_realization_unavailable"
+            : "mouth.generated-selection",
           discoursePlan: selected?.discoursePlan ? discoursePlanSummary(selected.discoursePlan) : null,
           boundaryDecisions: selected?.boundaryDecisions ?? [],
           generatedSentences: selected?.sentenceCandidates?.map(sentence => sentenceSummary(sentence, options.hashText)) ?? [],
@@ -566,27 +731,36 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       };
       const selectedPreservation = selected?.preservation ?? semanticPreservation({ text: realization.text, plan, entailment: input.entailment });
       const exactSelectedSurface = selected?.exactSurface === true;
-      const preservationText = !exactSelectedSurface && (selectedPreservation.score < preservationFloor(plan) || Boolean(selected?.forbiddenHits.length))
+      const sourceStructuralCreativeSurface = Boolean(
+        selected && structuralCreativeSelectionBindingFromSurface(selected)
+      );
+      const protectedSelectedSurface = exactSelectedSurface || sourceStructuralCreativeSurface;
+      const preservationText = !protectedSelectedSurface && (selectedPreservation.score < preservationFloor(plan) || Boolean(selected?.forbiddenHits.length))
         ? repairPreservation({ text: realization.text, plan, preservation: selectedPreservation })
         : realization.text;
       const preservationChecked = preservationText === realization.text ? selectedPreservation : semanticPreservation({ text: preservationText, plan, entailment: input.entailment });
-      const readabilityRepair: SurfaceRepairResult = exactSelectedSurface
+      const readabilityRepair: SurfaceRepairResult = exactSelectedSurface || sourceStructuralCreativeSurface
         ? {
           text: preservationText,
           changed: false,
-          audit: toJsonValue({ skipped: true, reasonId: "surface.repair.exact_learned_construction" })
+          audit: toJsonValue({
+            skipped: true,
+            reasonId: exactSelectedSurface
+              ? "surface.repair.exact_learned_construction"
+              : "surface.repair.source_structural_invariants"
+          })
         }
         : repairSurfaceReadability({ text: preservationText, plan, discoursePlan, preservation: preservationChecked });
       const repairedPreservation = readabilityRepair.changed ? semanticPreservation({ text: readabilityRepair.text, plan, entailment: input.entailment }) : preservationChecked;
-      const finalText = exactSelectedSurface
+      const finalText = protectedSelectedSurface
         ? realization.text
         : repairedPreservation.score < preservationFloor(plan) ? preservationText : readabilityRepair.text;
       const finalPreservation = finalText === preservationText ? preservationChecked : repairedPreservation;
-      const caveatCheckedText = exactSelectedSurface ? finalText : ensureRuntimeCaveats(finalText, plan);
-      const artifactCleanedText = exactSelectedSurface ? caveatCheckedText : stripInternalSurfaceArtifacts(tidySurface(caveatCheckedText));
-      const repairedFinalSurfaceText = exactSelectedSurface ? artifactCleanedText : repairSemanticAnswerFinalSurface(artifactCleanedText, input.construct);
-      const finalFactualSurfaceControl = Boolean(selected && !exactSelectedSurface && appliesFactualSurfaceControl(input, selected, plan));
-      const finalSurfaceText = exactSelectedSurface
+      const caveatCheckedText = protectedSelectedSurface ? finalText : ensureRuntimeCaveats(finalText, plan);
+      const artifactCleanedText = protectedSelectedSurface ? caveatCheckedText : stripInternalSurfaceArtifacts(tidySurface(caveatCheckedText));
+      const repairedFinalSurfaceText = protectedSelectedSurface ? artifactCleanedText : repairSemanticAnswerFinalSurface(artifactCleanedText, input.construct);
+      const finalFactualSurfaceControl = Boolean(selected && !protectedSelectedSurface && appliesFactualSurfaceControl(input, selected, plan));
+      const finalSurfaceText = protectedSelectedSurface
         ? repairedFinalSurfaceText
         : preserveSurfaceExtent(
           repairedFinalSurfaceText,
@@ -594,10 +768,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           plan
         );
       const finalSurfacePreservation = finalSurfaceText === finalText ? finalPreservation : semanticPreservation({ text: finalSurfaceText, plan, entailment: input.entailment });
-      const protectedSurfaceText = exactSelectedSurface ? finalSurfaceText : protectedImportSummarySurface(plan, finalSurfaceText);
+      const protectedSurfaceText = protectedSelectedSurface ? finalSurfaceText : protectedImportSummarySurface(plan, finalSurfaceText);
       const protectedSurfacePreservation = protectedSurfaceText === finalSurfaceText ? finalSurfacePreservation : semanticPreservation({ text: protectedSurfaceText, plan, entailment: input.entailment });
       const evidenceRefs = outputEvidenceRefs(input, plan, selected?.evidenceIds);
-      const formatProtectedSurfaceText = exactSelectedSurface
+      const formatProtectedSurfaceText = protectedSelectedSurface
         ? selected?.text
         : selected?.text ? finalFormattedSurface(selected.text, input, plan) : undefined;
       const unmarkedOutputSurfaceText = admissibleMouthSurface(formatProtectedSurfaceText ?? protectedSurfaceText)
@@ -605,7 +779,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         : "";
       const proofSurface = proofSurfaceMarker({ evidenceRefs, entailment: input.entailment });
       const preserveRequestedFormat = Boolean(formatProtectedSurfaceText);
-      let outputSurfaceText = exactSelectedSurface
+      let outputSurfaceText = protectedSelectedSurface
         ? unmarkedOutputSurfaceText
         : applyProofSurfaceMarker(unmarkedOutputSurfaceText, proofSurface, { exposeMarker: Boolean(input.style?.exposeProofTerms), preserveFormatting: preserveRequestedFormat });
       let outputSurfacePreservation = outputSurfaceText === protectedSurfaceText ? protectedSurfacePreservation : semanticPreservation({ text: outputSurfaceText, plan, entailment: input.entailment });
@@ -623,7 +797,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         boundaryDecisions: selected?.boundaryDecisions ?? [],
         metadata: toJsonValue({ path: selected?.path ?? "generated", style: selected?.style ?? "surface.path.generated.emitted", emittedSurface: true, selectedCandidateId: selected?.id ?? null })
       }, finalEnergyContext);
-      if (!emittedSurfaceEnergy.valid && selected?.text && !exactSelectedSurface) {
+      if (!emittedSurfaceEnergy.valid && selected?.text && !protectedSelectedSurface) {
         const conservativeFormatted = finalFormattedSurface(selected.text, input, plan);
         const conservativeUnmarked = conservativeFormatted ?? stripInternalSurfaceArtifacts(tidySurface(ensureRuntimeCaveats(selected.text, plan)));
         const conservativeText = applyProofSurfaceMarker(conservativeUnmarked, proofSurface, { exposeMarker: Boolean(input.style?.exposeProofTerms), preserveFormatting: Boolean(conservativeFormatted) });
@@ -654,7 +828,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           .join(", ");
         throw new Error(`final mouth surface failed hard validity gate${violations ? `: ${violations}` : ""}`);
       }
+      markMouthPhase("final_surface");
       const selectedSurfaceEnergy = selectedEnergy?.valid ? selectedEnergy : emittedSurfaceEnergy;
+      const selectedStructuralBinding = selected
+        ? structuralCreativeSelectionBindingFromSurface(selected)
+        : undefined;
       return {
         text: outputSurfaceText,
         language: plan.targetLanguage,
@@ -673,27 +851,68 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           surfacePlan: surfacePlanSummary(plan),
           discoursePlan: discoursePlanSummary(discoursePlan),
           realizationFrames: realizationFrameSummary(plan),
-          candidates: correctedCandidates.map(candidate => ({
-            id: candidate.id,
-            style: candidate.style,
-            path: candidate.path,
-            textHash: options.hashText(candidate.text),
-            score: Number(candidate.score.activation.toFixed(6)),
-            changedByCorrections: candidate.correction.applied.filter(item => item.changed).length,
-            preservation: Number(candidate.preservation.score.toFixed(6)),
-            forbiddenHits: candidate.forbiddenHits.length,
-            importedPieceIds: candidate.importedPieceIds,
-            audit: candidate.audit
-          })),
+          candidates: correctedCandidates.map(candidate => {
+            const binding = structuralCreativeSelectionBindingFromSurface(candidate);
+            return {
+              id: candidate.id,
+              style: candidate.style,
+              path: candidate.path,
+              textHash: options.hashText(candidate.text),
+              score: Number(candidate.score.activation.toFixed(6)),
+              changedByCorrections: candidate.correction.applied.filter(item => item.changed).length,
+              preservation: Number(candidate.preservation.score.toFixed(6)),
+              forbiddenHits: candidate.forbiddenHits.length,
+              forbiddenHitIds: candidate.forbiddenHits.slice(0, 8),
+              importedPieceIds: candidate.importedPieceIds,
+              semanticCandidateId: binding?.semanticCandidateId,
+              semanticPlanId: binding?.semanticPlanId,
+              surfaceRealizationId: binding?.surfaceRealizationId,
+              audit: candidate.audit
+            };
+          }),
           selected: {
-            id: selected?.id ?? "language-memory-selected",
+            id: selected?.id ?? (structuralCreativeFailClosed
+              ? "surface.boundary.structural_realization_unavailable"
+              : "language-memory-selected"),
             path: selected?.path ?? "generated",
             textHash: options.hashText(outputSurfaceText),
             languageActivation: realization.score.activation,
             semanticPreservation: outputSurfacePreservation.score,
+            semanticCandidateId: selectedStructuralBinding?.semanticCandidateId,
+            semanticPlanId: selectedStructuralBinding?.semanticPlanId,
+            surfaceRealizationId: selectedStructuralBinding?.surfaceRealizationId,
             proofSurface
           },
-          languageMemory: toJsonValue({ realization: realization.audit, selectedGeneration: selected?.generation?.audit ?? null }),
+          languageMemory: toJsonValue({
+            realization: realization.audit,
+            selectedGeneration: selected?.generation?.audit ?? null,
+            structuralCreative: {
+              selectionBound: Boolean(structuralCreativeSelection),
+              preflightAdmitted: structuralCreativePreflight,
+              realizationAdmitted: Boolean(structuralCreativeCandidate),
+              failClosed: structuralCreativeFailClosed,
+              unavailableReasonId: structuralCreativeFailClosed
+                ? "surface.boundary.structural_realization_unavailable"
+                : null,
+              languageProfileId: input.languageProfile.id,
+              scope: input.languageMemory.scope,
+              hydratedBundleIds: input.languageMemory.importedConstructionBundles.map(bundle => bundle.id),
+              selectedBundleIds: structuralCreativeSelection?.sourceBundleIds ?? [],
+              selectedEventCount: structuralCreativeSelection?.events.length ?? 0
+            },
+            mouthPerformance: {
+              phaseMs: mouthPhaseMs,
+              measuredMs: Date.now() - mouthStartedAt,
+              generationWorkBudget: {
+                callLimit: MOUTH_GENERATION_CALL_LIMIT,
+                extentLimit: generationWorkBudget.maxExtent,
+                windowMs: MOUTH_GENERATION_WINDOW_MS,
+                admittedCalls: generationWorkBudget.admittedCalls,
+                deniedCalls: generationWorkBudget.deniedCalls,
+                remainingCalls: generationWorkBudget.remainingCalls
+              }
+            }
+          }),
           brainInfluence: toJsonValue({
             activeBrainVersion: jsonRecord(input.brainMarker).activeBrainVersion ?? null,
             activeImportRunIds: jsonRecord(input.brainMarker).activeImportRunIds ?? [],
@@ -2065,7 +2284,14 @@ function evidenceLanguageCompatibleWithMouth(span: EvidenceSpan, input: SpeakInp
   return learnedProfileAcceptsSurface(input.languageProfile, span.text || span.textPreview);
 }
 
-function generatedCandidatesFromFrames(plan: SurfacePlan, discoursePlan: DiscoursePlan, input: SpeakInput, languageMemory: LanguageMemoryRuntime, priorPieces: readonly ImportedSurfacePiece[]): SurfaceCandidate[] {
+function generatedCandidatesFromFrames(
+  plan: SurfacePlan,
+  discoursePlan: DiscoursePlan,
+  input: SpeakInput,
+  languageMemory: LanguageMemoryRuntime,
+  priorPieces: readonly ImportedSurfacePiece[],
+  generationWorkBudget: MouthGenerationWorkBudget
+): SurfaceCandidate[] {
   const preflightCreative = isCreativeRequested(input, plan);
   const preflightSemanticState = preflightCreative ? undefined : semanticAnswerConstructState(input.construct);
   const preflightTemporalCounterexample = preflightSemanticState
@@ -2075,19 +2301,29 @@ function generatedCandidatesFromFrames(plan: SurfacePlan, discoursePlan: Discour
     const learned = learnedTemporalCounterexampleCandidate(discoursePlan, input);
     return learned ? [learned] : [];
   }
-  const conversationMemory = conversationMemoryCandidate(input, discoursePlan, languageMemory);
+  const conversationMemory = preflightCreative
+    ? undefined
+    : conversationMemoryCandidate(input, discoursePlan, languageMemory, generationWorkBudget);
   if (!discoursePlan.units.length) return conversationMemory ? [conversationMemory] : [];
   const creativeRequested = isCreativeRequested(input, plan);
   const semanticAnswerState = creativeRequested ? undefined : semanticAnswerConstructState(input.construct);
   const isSemanticAnswer = Boolean(semanticAnswerState);
-  const rhetoricalLattice = isSemanticAnswer ? rhetoricalLatticeCandidateFromFrames(plan, discoursePlan, input, languageMemory, priorPieces) : undefined;
+  const directEvidence = semanticAnswerState
+    ? semanticDirectEvidenceCandidate(semanticAnswerState, discoursePlan, input)
+    : undefined;
+  const rhetoricalLattice = isSemanticAnswer
+    ? rhetoricalLatticeCandidateFromFrames(plan, discoursePlan, input, languageMemory, priorPieces, generationWorkBudget)
+    : undefined;
   const isInsufficientSupport = !creativeRequested && Boolean(insufficientSupportConstructState(input.construct));
   const isImportSummary = plan.constructForces.some(force => force.id === "ImportSummaryConstruct");
-  if (isSemanticAnswer) return rhetoricalLattice ? [rhetoricalLattice] : [];
+  if (isSemanticAnswer) return uniqueSurfaceCandidates([
+    ...(directEvidence ? [directEvidence] : []),
+    ...(rhetoricalLattice ? [rhetoricalLattice] : [])
+  ]);
   if (isInsufficientSupport) return [];
   if (isImportSummary) return [];
   const creativeVariants = creativeRequested
-    ? creativeCandidatesFromFrames(plan, discoursePlan, input, languageMemory, priorPieces)
+    ? creativeCandidatesFromFrames(plan, discoursePlan, input, languageMemory, priorPieces, generationWorkBudget)
     : [];
   if (!shouldAttemptGenerated(plan, input.languageMemory)) {
     return uniqueSurfaceCandidates([...creativeVariants, ...(conversationMemory ? [conversationMemory] : [])]);
@@ -2099,6 +2335,8 @@ function generatedCandidatesFromFrames(plan: SurfacePlan, discoursePlan: Discour
     const unitTerms = requiredTermsForDiscourseUnit(unit, frames, plan);
     const unitPlan: SurfacePlan = { ...plan, realizationFrames: frames, requiredTerms: unitTerms };
     const contextSymbols = [input.entailment.claim.text, ...sentences.map(sentence => sentence.text)].filter(Boolean);
+    const generationExtent = claimMouthGenerationWork(generationWorkBudget, unit.generationExtent);
+    if (generationExtent === undefined) break;
     const generation = languageMemory.generate({
       state: input.languageMemory,
       targetLanguageProfile: input.languageProfile,
@@ -2106,7 +2344,7 @@ function generatedCandidatesFromFrames(plan: SurfacePlan, discoursePlan: Discour
       requiredTerms: unitTerms,
       semanticFrameIds: input.languageMemory.importedSemanticFrames.map(frame => frame.id).slice(0, 64),
       frames,
-      generationExtent: unit.generationExtent,
+      generationExtent,
       styleProfileId: unit.targetStyleProfileId,
       registerVector: unit.registerVector,
       detailProfileId: unit.targetDetailProfileId
@@ -2159,12 +2397,89 @@ function generatedCandidatesFromFrames(plan: SurfacePlan, discoursePlan: Discour
   ]);
 }
 
+function semanticDirectEvidenceCandidate(
+  state: SemanticAnswerConstructState,
+  discoursePlan: DiscoursePlan,
+  input: SpeakInput
+): SurfaceCandidate | undefined {
+  if (!state.certificationBoundary.externalFactCertification) return undefined;
+  if (state.forceId !== "output.force.source_bound_answer" || state.boundaryId !== "output.force.source_bound") return undefined;
+  const certifiedEvidenceIds = new Set(state.certificationBoundary.evidenceSpanIds);
+  const certifiedSourceVersionIds = new Set(state.certificationBoundary.sourceVersionIds);
+  if (!certifiedEvidenceIds.size || !certifiedSourceVersionIds.size) return undefined;
+  const rows = uniquePriorBoundFacts(state.selectedFacts)
+    .filter(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.sourceQuote)
+    .filter(fact => fact.forceClass === "direct_evidence")
+    .map(fact => {
+      const evidenceIds = uniqueStrings((fact.evidenceIds ?? []).filter(id => certifiedEvidenceIds.has(id)));
+      const sourceCertified = Boolean(fact.sourceVersionId && certifiedSourceVersionIds.has(fact.sourceVersionId));
+      const surface = stripInternalSurfaceArtifacts(tidySurface(fact.object || fact.predicate));
+      return {
+        fact,
+        evidenceIds,
+        sourceCertified,
+        surface: ensureSurfaceSentence(surface)
+      };
+    })
+    .filter(row => row.evidenceIds.length > 0 && row.sourceCertified && admissibleMouthSurface(row.surface))
+    .sort((left, right) => (
+      semanticFactImportanceRank(left.fact.questionSlotImportance) - semanticFactImportanceRank(right.fact.questionSlotImportance)
+      || (right.fact.questionSlotScore ?? 0) - (left.fact.questionSlotScore ?? 0)
+      || right.fact.support - left.fact.support
+      || compareSurfaceText(left.surface, right.surface)
+    ));
+  const selected: typeof rows = [];
+  for (const row of rows) {
+    if (selected.some(existing => (
+      containsSurface(existing.surface, row.surface)
+      || containsSurface(row.surface, existing.surface)
+      || weightedJaccard(featureSet(existing.surface, 256), featureSet(row.surface, 256)) > 0.88
+    ))) continue;
+    selected.push(row);
+    if (selected.length >= Math.max(1, Math.min(4, discoursePlan.units.length || 2))) break;
+  }
+  if (!selected.length) return undefined;
+  const text = joinSurfaceSentences(selected.map(row => row.surface));
+  if (!text || !admissibleMouthSurface(text)) return undefined;
+  const evidenceIds = uniqueEvidenceIds(selected.flatMap(row => row.evidenceIds.map(id => id as EvidenceId)));
+  if (!evidenceIds.length || evidenceIds.some(id => !input.evidence.some(span => span.id === id && span.status === "promoted"))) return undefined;
+  return {
+    id: "candidate:generated:semantic-direct-evidence",
+    style: "surface.path.generated.semantic_direct_evidence",
+    path: "generated",
+    text,
+    evidenceIds,
+    fit: clamp01(0.82 + mean(selected.map(row => row.fact.support)) * 0.14),
+    importedPieceIds: [],
+    discoursePlan,
+    boundaryDecisions: [],
+    audit: toJsonValue({
+      schema: "scce.mouth.semantic_direct_evidence.v1",
+      factKeys: selected.map(row => semanticAnswerFactKey(row.fact)),
+      evidenceIds: evidenceIds.map(String),
+      sourceVersionIds: uniqueStrings(selected.map(row => row.fact.sourceVersionId ?? "").filter(Boolean)),
+      externalFactCertification: true
+    })
+  };
+}
+
+function semanticFactImportanceRank(value: string | undefined): number {
+  if (value === "core") return 0;
+  if (value === "secondary") return 1;
+  return 2;
+}
+
+function semanticAnswerFactKey(fact: Pick<SemanticAnswerFact, "sourceNodeId" | "relationId" | "targetNodeId">): string {
+  return `${fact.sourceNodeId}\u0001${fact.relationId}\u0001${fact.targetNodeId}`;
+}
+
 function creativeCandidatesFromFrames(
   plan: SurfacePlan,
   discoursePlan: DiscoursePlan,
   input: SpeakInput,
   languageMemory: LanguageMemoryRuntime,
-  priorPieces: readonly ImportedSurfacePiece[]
+  priorPieces: readonly ImportedSurfacePiece[],
+  generationWorkBudget: MouthGenerationWorkBudget
 ): SurfaceCandidate[] {
   const invention = inventionConstructState(input.construct);
   if (!invention) {
@@ -2205,20 +2520,26 @@ function creativeCandidatesFromFrames(
     }
   ];
   const evidenceIds = invention.basisEvidenceIds.filter(id => input.evidence.some(span => String(span.id) === String(id)));
+  const creativeRequiredTerms = creativeRequestContentTerms(input);
   const out: SurfaceCandidate[] = learnedProposal ? [learnedProposal] : [];
   for (const variant of variants) {
     const anchoredAssembly = creativeAnchoredAssembly(variant.id, variant.frames, discoursePlan, input.languageMemory);
+    const generationExtent = claimMouthGenerationWork(
+      generationWorkBudget,
+      Math.max(24, Math.min(128, discoursePlan.units.reduce((total, unit) => total + unit.generationExtent, 0) || 64))
+    );
+    if (generationExtent === undefined) break;
     const generation = languageMemory.generate({
       state: input.languageMemory,
       targetLanguageProfile: input.languageProfile,
       contextSymbols: uniqueStrings(variant.contextSymbols.filter(Boolean)),
-      requiredTerms: plan.requiredTerms,
+      requiredTerms: creativeRequiredTerms,
       semanticFrameIds: uniqueStrings([
         ...variant.frames.flatMap(frame => frame.semanticFrameIds),
         ...input.languageMemory.importedSemanticFrames.map(frame => frame.id).slice(0, 64)
       ]),
       frames: variant.frames,
-      generationExtent: Math.max(24, Math.min(128, discoursePlan.units.reduce((total, unit) => total + unit.generationExtent, 0) || 64)),
+      generationExtent,
       styleProfileId: discoursePlan.targetStyleProfileId,
       registerVector: discoursePlan.registerVector,
       detailProfileId: discoursePlan.targetDetailProfileId
@@ -2269,6 +2590,484 @@ function creativeCandidatesFromFrames(
     });
   }
   return out;
+}
+
+function selectedStructuralCreativePlan(input: SpeakInput): StructuralCreativeSelectionBinding | undefined {
+  const candidate = input.selectedCandidate;
+  if (!candidate || candidate.kind !== "creative-candidate") return undefined;
+  if (!candidate.claimBases?.includes("invented")) return undefined;
+  if (input.selectedProposal && candidate.proposalId !== input.selectedProposal.id) return undefined;
+  const proposalConstructIds = new Set(
+    input.selectedProposal?.constructIds ?? candidate.constructIds ?? []
+  );
+  const selectedInventionNodeIds = uniqueStrings(candidate.constructIds ?? [])
+    .filter(id => proposalConstructIds.has(id))
+    .filter(id => input.construct.nodes.some(node => (
+      String(node.id) === id
+      && (node.kind === "construct:invention" || jsonRecord(node.metadata).schema === "scce.invention_construct.v1")
+    )));
+  if (selectedInventionNodeIds.length !== 1) return undefined;
+  const invention = inventionConstructState(input.construct, selectedInventionNodeIds[0]);
+  if (!invention) return undefined;
+  const trace = jsonRecord(invention.trace);
+  const proposalRealization = jsonRecord(trace.proposalRealization);
+  const semanticPlan = jsonRecord(trace.structuralSemanticPlan);
+  if (proposalRealization.path !== "mouth_realization_deferred") return undefined;
+  const semanticPlanId = stringFrom(proposalRealization.semanticPlanId);
+  if (!semanticPlanId || semanticPlan.id !== semanticPlanId) return undefined;
+  if (semanticPlan.schema !== "scce.structural_semantic_plan.v2"
+    || semanticPlan.selectionAuthority !== "candidate_engine_and_judge"
+    || semanticPlan.surfaceRealizationCompetitive !== false) return undefined;
+  const sourceBundleIds = uniqueStrings([
+    ...stringArrayFromJson(proposalRealization.structuralBundleIds),
+    ...stringArrayFromJson(semanticPlan.sourceBundleIds)
+  ]);
+  const proposalEvents = structuralCreativeEventSelectors(proposalRealization.structuralEventPlan);
+  const events = structuralCreativeEventSelectors(semanticPlan.events);
+  if (!sourceBundleIds.length
+    || events.length < 4
+    || proposalEvents.length !== events.length
+    || canonicalStringify(toJsonValue(proposalEvents)) !== canonicalStringify(toJsonValue(events))) return undefined;
+  const eventBundleIds = uniqueStrings(events.map(event => event.bundleId));
+  if (canonicalStringify([...sourceBundleIds].sort()) !== canonicalStringify([...eventBundleIds].sort())) return undefined;
+  return {
+    semanticCandidateId: candidate.id,
+    cognitiveProposalId: candidate.proposalId,
+    invention,
+    semanticPlanId,
+    sourceBundleIds,
+    events
+  };
+}
+
+function structuralCreativeEventSelectors(
+  value: JsonValue | undefined
+): StructuralCreativeEventSelector[] {
+  if (!Array.isArray(value) || value.length < 4 || value.length > 720) return [];
+  const rows = arrayRecords(value);
+  if (rows.length !== value.length) return [];
+  const out: StructuralCreativeEventSelector[] = [];
+  const eventIds = new Set<string>();
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index]!;
+    const outputIndex = typeof row.outputIndex === "number" && Number.isSafeInteger(row.outputIndex)
+      ? row.outputIndex
+      : -1;
+    const bundleId = stringFrom(row.bundleId);
+    const eventId = stringFrom(row.eventId);
+    const profileId = stringFrom(row.profileId);
+    const constructionId = stringFrom(row.constructionId);
+    const relationId = stringFrom(row.relationId);
+    const discourseRelationId = stringFrom(row.discourseRelationId);
+    const discourseBridgeBasisId = stringFrom(row.discourseBridgeBasisId);
+    const discourseBeatId = stringFrom(row.discourseBeatId);
+    const requestRoleBindings = structuralCreativeRequestRoleBindings(row.requestRoleBindings);
+    const routeId = stringFrom(row.routeId);
+    const routeAnchorEventId = stringFrom(row.routeAnchorEventId);
+    const sourceVersionId = stringFrom(row.sourceVersionId);
+    const evidenceId = stringFrom(row.evidenceId);
+    const roleIds = stringArrayFromJson(row.roleIds);
+    const requestFit = unitIntervalJsonNumber(row.requestFit);
+    const graphFit = unitIntervalJsonNumber(row.graphFit);
+    const routeFit = unitIntervalJsonNumber(row.routeFit);
+    const sourceOrdinal = typeof row.sourceOrdinal === "number" && Number.isSafeInteger(row.sourceOrdinal)
+      ? row.sourceOrdinal
+      : -1;
+    if (outputIndex !== index
+      || !bundleId
+      || !eventId
+      || !profileId
+      || !constructionId
+      || !relationId
+      || !routeId
+      || !routeAnchorEventId
+      || !sourceVersionId
+      || !evidenceId
+      || !discourseBeatId
+      || requestRoleBindings === undefined
+      || eventIds.has(eventId)
+      || !roleIds.includes("scce.role.agent")
+      || requestFit === undefined
+      || graphFit === undefined
+      || routeFit === undefined
+      || sourceOrdinal < 0
+      || !isStructuralCreativeDiscourseBridgeBasisId(discourseBridgeBasisId)
+      || !isNarrativeBridgeRelationId(discourseRelationId)) return [];
+    eventIds.add(eventId);
+    out.push({
+      outputIndex,
+      bundleId,
+      eventId,
+      profileId,
+      constructionId,
+      relationId,
+      roleIds,
+      discourseRelationId,
+      discourseBridgeBasisId,
+      discourseBeatId,
+      requestRoleBindings,
+      requestFit,
+      graphFit,
+      routeFit,
+      routeId,
+      routeAnchorEventId,
+      sourceOrdinal,
+      sourceVersionId,
+      evidenceId
+    });
+  }
+  return out;
+}
+
+function structuralCreativeRequestRoleBindings(
+  value: JsonValue | undefined
+): StructuralCreativeEventSelector["requestRoleBindings"] | undefined {
+  if (!Array.isArray(value) || value.length > 2) return undefined;
+  const rows = arrayRecords(value);
+  if (rows.length !== value.length) return undefined;
+  const bindings: StructuralCreativeEventSelector["requestRoleBindings"] = [];
+  const eventRoleIds = new Set<string>();
+  for (const row of rows) {
+    const eventRoleId = stringFrom(row.eventRoleId);
+    if ((eventRoleId !== "scce.role.patient" && eventRoleId !== "scce.role.complement")
+      || row.requestRoleId !== "scce.request.role.antagonist"
+      || row.admissible !== true
+      || eventRoleIds.has(eventRoleId)) return undefined;
+    eventRoleIds.add(eventRoleId);
+    bindings.push({
+      eventRoleId,
+      requestRoleId: "scce.request.role.antagonist",
+      admissible: true
+    });
+  }
+  return bindings;
+}
+
+function isNarrativeBridgeRelationId(
+  value: string | undefined
+): value is NarrativeBridgeRelationId {
+  return value === "scce.relation.concurrent"
+    || value === "scce.relation.subsequent"
+    || value === "scce.relation.contrastive"
+    || value === "scce.relation.resolution";
+}
+
+function isStructuralCreativeDiscourseBridgeBasisId(
+  value: string | undefined
+): value is StructuralCreativeEventSelector["discourseBridgeBasisId"] {
+  return value === "scce.discourse.bridge.source_adjacency"
+    || value === "scce.discourse.bridge.invented_macro";
+}
+
+function unitIntervalJsonNumber(value: JsonValue | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : undefined;
+}
+
+function resolveHydratedStructuralCreativeEvents(
+  state: LanguageMemoryRuntimeState,
+  languageProfile: LanguageProfile,
+  binding: StructuralCreativeSelectionBinding
+): HydratedStructuralCreativeEvent[] | undefined {
+  if (state.scope.mode !== "cluster" || !state.scope.purityProven) return undefined;
+  const scopedProfileIds = new Set(state.scope.profileIds);
+  const bundleById = new Map(state.importedConstructionBundles.map(bundle => [bundle.id, bundle]));
+  const admittedBundleIds = new Set(binding.sourceBundleIds);
+  const bindingSelectorByEventId = new Map(binding.events.map(selector => [selector.eventId, selector]));
+  const structuralRouteByBundleId = new Map<string, {
+    eventById: Map<string, NonNullable<LanguageMemoryRuntimeState["importedConstructionBundles"][number]["creativeEvents"]>[number]>;
+    indexByEventId: Map<string, number>;
+  }>();
+  for (const bundleId of admittedBundleIds) {
+    const bundle = bundleById.get(bundleId);
+    if (!bundle) return undefined;
+    const routeEvents = englishCreativeStructuralRouteEvents(bundle.creativeEvents ?? [])
+      .sort((left, right) =>
+        left.sourceOrdinal - right.sourceOrdinal || left.id.localeCompare(right.id)
+      );
+    if (routeEvents.length < 4) return undefined;
+    structuralRouteByBundleId.set(bundleId, {
+      eventById: new Map(routeEvents.map(event => [event.id, event])),
+      indexByEventId: new Map(routeEvents.map((event, index) => [event.id, index]))
+    });
+  }
+  const routeBundleIds = new Map<string, string>();
+  const routeAnchorEventIds = new Map<string, string>();
+  const resolved: HydratedStructuralCreativeEvent[] = [];
+  for (let index = 0; index < binding.events.length; index++) {
+    const selector = binding.events[index]!;
+    const previous = binding.events[index - 1];
+    if (!admittedBundleIds.has(selector.bundleId) || !scopedProfileIds.has(selector.profileId)) return undefined;
+    const bundle = bundleById.get(selector.bundleId);
+    const structuralRoute = structuralRouteByBundleId.get(selector.bundleId);
+    if (!bundle
+      || !structuralRoute
+      || bundle.sourceProfileId !== selector.profileId
+      || bundle.targetProfileId !== selector.profileId
+      || !bundle.sourceVersionIds.includes(selector.sourceVersionId)
+      || !bundle.evidenceIds.includes(selector.evidenceId)) return undefined;
+    const event = structuralRoute.eventById.get(selector.eventId);
+    if (!event
+      || !isEnglishCreativeEventStructurallyRealizable(event)
+      || event.profileId !== selector.profileId
+      || event.constructionId !== selector.constructionId
+      || event.relationId !== selector.relationId
+      || event.sourceVersionId !== selector.sourceVersionId
+      || event.evidenceId !== selector.evidenceId
+      || event.sourceOrdinal !== selector.sourceOrdinal
+      || canonicalStringify(event.roleIds) !== canonicalStringify(selector.roleIds)) return undefined;
+    const routeAnchor = structuralRoute.eventById.get(selector.routeAnchorEventId);
+    const routeAnchorSelector = bindingSelectorByEventId.get(selector.routeAnchorEventId);
+    if (!routeAnchor
+      || !routeAnchorSelector
+      || routeAnchor.profileId !== selector.profileId
+      || routeAnchorSelector.routeId !== selector.routeId
+      || routeAnchorSelector.bundleId !== selector.bundleId) return undefined;
+    const existingRouteBundleId = routeBundleIds.get(selector.routeId);
+    const existingRouteAnchorEventId = routeAnchorEventIds.get(selector.routeId);
+    if ((existingRouteBundleId && existingRouteBundleId !== selector.bundleId)
+      || (existingRouteAnchorEventId && existingRouteAnchorEventId !== selector.routeAnchorEventId)) return undefined;
+    routeBundleIds.set(selector.routeId, selector.bundleId);
+    routeAnchorEventIds.set(selector.routeId, selector.routeAnchorEventId);
+    const currentBundleEventIndex = structuralRoute.indexByEventId.get(selector.eventId) ?? -1;
+    const previousBundleEventIndex = previous?.bundleId === selector.bundleId
+      ? structuralRoute.indexByEventId.get(previous.eventId) ?? -1
+      : -1;
+    const sourceAdjacent = Boolean(
+      previous
+      && previous.bundleId === selector.bundleId
+      && previous.routeId === selector.routeId
+      && previousBundleEventIndex >= 0
+      && currentBundleEventIndex === previousBundleEventIndex + 1
+    );
+    const expectedBridgeBasisId = sourceAdjacent
+      ? "scce.discourse.bridge.source_adjacency"
+      : "scce.discourse.bridge.invented_macro";
+    if (selector.discourseBridgeBasisId !== expectedBridgeBasisId
+      || (sourceAdjacent && previous!.sourceOrdinal >= selector.sourceOrdinal)
+      || Math.abs(selector.routeFit - clamp01(
+        1 - (1 - selector.requestFit) * (1 - selector.graphFit)
+      )) > 1e-12) return undefined;
+    resolved.push({
+      outputIndex: selector.outputIndex,
+      bundleId: selector.bundleId,
+      event,
+      discourseRelationId: selector.discourseRelationId,
+      discourseBridgeBasisId: selector.discourseBridgeBasisId,
+      discourseBeatId: selector.discourseBeatId,
+      requestRoleBindings: selector.requestRoleBindings,
+      requestFit: selector.requestFit,
+      graphFit: selector.graphFit,
+      routeFit: selector.routeFit,
+      routeId: selector.routeId,
+      routeAnchorEventId: selector.routeAnchorEventId,
+      sourceOrdinal: selector.sourceOrdinal
+    });
+  }
+  const resolvedBundleIds = uniqueStrings(resolved.map(row => row.bundleId)).sort();
+  if (canonicalStringify(resolvedBundleIds) !== canonicalStringify([...admittedBundleIds].sort())) return undefined;
+  return resolved;
+}
+
+function hasHydratedStructuralCreativePrior(
+  state: LanguageMemoryRuntimeState,
+  languageProfile: LanguageProfile,
+  binding: StructuralCreativeSelectionBinding | undefined
+): boolean {
+  return Boolean(binding && resolveHydratedStructuralCreativeEvents(state, languageProfile, binding));
+}
+
+function sourceStructuralCreativeCandidate(
+  plan: SurfacePlan,
+  discoursePlan: DiscoursePlan,
+  input: SpeakInput,
+  binding: StructuralCreativeSelectionBinding
+): SurfaceCandidate | undefined {
+  if (!plan.realizationFrames.length) return undefined;
+  const plannedEvents = resolveHydratedStructuralCreativeEvents(
+    input.languageMemory,
+    input.languageProfile,
+    binding
+  );
+  if (!plannedEvents) return undefined;
+  const creativeRequiredTerms = creativeRequestContentTerms(input);
+  const structural = realizeEnglishStructuralCreative({
+    requestText: input.entailment.claim.text,
+    contentTerms: creativeRequiredTerms.map(term => term.text),
+    plannedEvents,
+    ...(input.requirementField?.responseForm ? {
+      responseForm: input.requirementField.responseForm
+    } : {}),
+    responseExtentHints: creativeResponseExtentHints(input),
+    defaultTargetWords: creativeDefaultTargetWords(input)
+  });
+  if (!structural || !admissibleMouthSurface(structural.text)) return undefined;
+  const surfaceRealizationId = `surface:creative-structural:${hash32([
+    binding.semanticCandidateId,
+    binding.semanticPlanId,
+    structural.text
+  ].join("\u0001")).toString(16)}`;
+  const semanticRealizability = clamp01(
+    input.selectedCandidate?.scores.languageRealizability
+    ?? input.selectedCandidate?.scores.realizability
+    ?? 0
+  );
+  return {
+    id: surfaceRealizationId,
+    style: "surface.path.generated.creative.structural_source",
+    path: "generated",
+    claimBasis: "invented",
+    text: structural.text,
+    evidenceIds: [],
+    fit: semanticRealizability,
+    importedPieceIds: structural.importedBundleIds,
+    discoursePlan,
+    boundaryDecisions: [],
+    audit: toJsonValue({
+      ...jsonRecord(structural.audit),
+      selectionBinding: {
+        semanticCandidateId: binding.semanticCandidateId,
+        cognitiveProposalId: binding.cognitiveProposalId ?? null,
+        inventionConstructId: binding.invention.nodeId,
+        semanticPlanId: binding.semanticPlanId,
+        surfaceRealizationId,
+        selectedEventIds: plannedEvents.map(row => row.event.id),
+        selectedBundleIds: structural.importedBundleIds
+      },
+      realizationFeature: {
+        value: structural.confidence,
+        calibrated: false,
+        selectionCompetitive: false,
+        status: "provisional_uncalibrated"
+      },
+      responseForm: input.requirementField?.responseForm ?? null,
+      constructionMemory: {
+        bundleCount: input.languageMemory.importedConstructionBundles.length,
+        creativeEventCount: input.languageMemory.importedConstructionBundles
+          .reduce((sum, bundle) => sum + (bundle.creativeEvents?.length ?? 0), 0),
+        selectedEventCount: plannedEvents.length,
+        selectedBundleIds: binding.sourceBundleIds,
+        rawEvidenceBodyRead: false
+      }
+    })
+  };
+}
+
+function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
+  const controlSpans = (input.requirementField?.requiredFeatures ?? [])
+    .filter(requirement => requirement.origin.semanticRoleId === "role.request.requirement.v1")
+    .map(requirement => requirement.origin.requestSpan)
+    .filter(span => span.charEnd > span.charStart);
+  const controlBoundary = controlSpans.reduce((end, span) => Math.max(end, span.charEnd), 0);
+  const requestText = input.entailment.claim.text;
+  const tokens = [...requestText.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)].map(match => {
+    const utf16Start = match.index ?? 0;
+    const text = match[0];
+    const start = [...requestText.slice(0, utf16Start)].length;
+    return { text, start, end: start + [...text].length };
+  });
+  const selected = tokens
+    .filter(token => token.start >= controlBoundary)
+    .filter(token => [...token.text].length >= 3 || [...token.text].every(char => /\p{Number}/u.test(char)))
+    .slice(-12);
+  const bySurface = new Map<string, SurfaceTerm>();
+  for (const token of selected) {
+    const key = token.text.normalize("NFKC").toLocaleLowerCase();
+    if (!key || bySurface.has(key)) continue;
+    bySurface.set(key, {
+      id: `surface.term:${hash32(`creative:${key}`).toString(16)}`,
+      text: token.text,
+      source: "construct",
+      weight: 0.88
+    });
+  }
+  return [...bySurface.values()];
+}
+
+function creativeResponseExtentHints(input: SpeakInput): LearnedResponseExtentHint[] {
+  const hints: LearnedResponseExtentHint[] = [];
+  const seen = new Set<string>();
+  for (const requirement of input.requirementField?.requiredFeatures ?? []) {
+    const trace = jsonRecord(requirement.trace);
+    const activationTrace = jsonRecord(trace.activationTrace);
+    const responseExtent = jsonRecord(activationTrace.responseExtent);
+    const unitSurface = stringFrom(responseExtent.unitSurface);
+    const wordsPerUnit = typeof responseExtent.wordsPerUnit === "number"
+      && Number.isFinite(responseExtent.wordsPerUnit)
+      ? responseExtent.wordsPerUnit
+      : 0;
+    if (!unitSurface || !Number.isFinite(wordsPerUnit) || wordsPerUnit <= 0) continue;
+    const key = `${requirement.origin.learnedFrameOrPatternId}\u0001${requirement.origin.requestSpan.charStart}\u0001${unitSurface}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hints.push({
+      unitSurface,
+      wordsPerUnit,
+      requestSpan: {
+        charStart: requirement.origin.requestSpan.charStart,
+        charEnd: requirement.origin.requestSpan.charEnd
+      },
+      sourcePatternId: requirement.origin.learnedFrameOrPatternId
+    });
+  }
+  return hints;
+}
+
+function creativeDefaultTargetWords(input: SpeakInput): number {
+  const detail = clamp01(input.requirementField?.brevityDetailBalance ?? 0.5);
+  const format = clamp01(input.requirementField?.formatConstraintStrength ?? 0);
+  return Math.round(120 + detail * 80 + format * 40);
+}
+
+function structuralCreativeSelectionBindingFromSurface(candidate: Pick<SurfaceCandidate, "id" | "audit">): {
+  semanticCandidateId: string;
+  semanticPlanId: string;
+  surfaceRealizationId: string;
+} | undefined {
+  const binding = jsonRecord(jsonRecord(candidate.audit).selectionBinding);
+  const semanticCandidateId = stringFrom(binding.semanticCandidateId);
+  const semanticPlanId = stringFrom(binding.semanticPlanId);
+  const surfaceRealizationId = stringFrom(binding.surfaceRealizationId);
+  if (!semanticCandidateId || !semanticPlanId || !surfaceRealizationId) return undefined;
+  if (surfaceRealizationId !== candidate.id) return undefined;
+  return { semanticCandidateId, semanticPlanId, surfaceRealizationId };
+}
+
+function structuralCreativeLanguageScore(candidate: SurfaceCandidate, input: SpeakInput): LanguageMemoryScore {
+  const audit = jsonRecord(candidate.audit);
+  const typedEventGraph = jsonRecord(audit.typedEventGraph);
+  const importedBundleIds = uniqueStrings(
+    arrayRecords(typedEventGraph.events)
+      .map(event => stringFrom(event.constructionBundleId))
+      .filter((id): id is string => Boolean(id))
+  );
+  const semanticSelectionValue = clamp01(
+    input.selectedCandidate?.scores.languageRealizability
+    ?? input.selectedCandidate?.scores.realizability
+    ?? candidate.fit
+  );
+  const binding = structuralCreativeSelectionBindingFromSurface(candidate);
+  return {
+    activation: semanticSelectionValue,
+    information: 0,
+    fit: semanticSelectionValue,
+    orderScores: [],
+    audit: toJsonValue({
+      source: "mouth.english_structural_creative.score",
+      role: "selected_semantic_plan_realization_feature",
+      selectionCompetitive: false,
+      calibrated: false,
+      featureStatus: "provisional_uncalibrated",
+      semanticCandidateId: binding?.semanticCandidateId ?? null,
+      semanticPlanId: binding?.semanticPlanId ?? null,
+      surfaceRealizationId: binding?.surfaceRealizationId ?? null,
+      value: semanticSelectionValue,
+      candidateScoreTrace: input.selectedCandidate?.scoreTrace ?? [],
+      importedConstructionBundleIdsUsed: importedBundleIds,
+      hiddenWeights: false
+    })
+  };
 }
 
 function learnedCreativeProposalCandidate(
@@ -2375,20 +3174,30 @@ function uniqueSurfaceCandidates(candidates: readonly SurfaceCandidate[]): Surfa
   return out;
 }
 
-function conversationMemoryCandidate(input: SpeakInput, discoursePlan: DiscoursePlan, languageMemory: LanguageMemoryRuntime): SurfaceCandidate | undefined {
+function conversationMemoryCandidate(
+  input: SpeakInput,
+  discoursePlan: DiscoursePlan,
+  languageMemory: LanguageMemoryRuntime,
+  generationWorkBudget: MouthGenerationWorkBudget
+): SurfaceCandidate | undefined {
   if (semanticAnswerConstructState(input.construct)) return undefined;
   if (generatedConstructSurface(input.construct)) return undefined;
   if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return undefined;
   if (input.evidence.length || input.entailment.evidenceIds.length) return undefined;
   if (importSummaryRequested(input.entailment.claim.text)) return undefined;
   if (input.entailment.force !== "invented" && (input.entailment.verdict === "unknown" || input.entailment.verdict === "underdetermined")) return undefined;
+  const generationExtent = claimMouthGenerationWork(
+    generationWorkBudget,
+    Math.max(18, Math.min(72, discoursePlan.units[0]?.generationExtent ?? 36))
+  );
+  if (generationExtent === undefined) return undefined;
   const generation = languageMemory.generate({
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
     contextSymbols: [input.entailment.claim.text],
     requiredTerms: [],
     frames: [],
-    generationExtent: Math.max(18, Math.min(72, discoursePlan.units[0]?.generationExtent ?? 36)),
+    generationExtent,
     styleProfileId: discoursePlan.targetStyleProfileId,
     registerVector: discoursePlan.registerVector,
     detailProfileId: discoursePlan.targetDetailProfileId
@@ -2688,7 +3497,14 @@ function surfaceEntityUnits(text: string): string[] {
     .filter(unit => [...unit].length >= 3);
 }
 
-function rhetoricalLatticeCandidateFromFrames(plan: SurfacePlan, discoursePlan: DiscoursePlan, input: SpeakInput, languageMemory: LanguageMemoryRuntime, priorPieces: readonly ImportedSurfacePiece[]): SurfaceCandidate | undefined {
+function rhetoricalLatticeCandidateFromFrames(
+  plan: SurfacePlan,
+  discoursePlan: DiscoursePlan,
+  input: SpeakInput,
+  languageMemory: LanguageMemoryRuntime,
+  priorPieces: readonly ImportedSurfacePiece[],
+  generationWorkBudget: MouthGenerationWorkBudget
+): SurfaceCandidate | undefined {
   const frames = plan.realizationFrames.filter(frame => semanticFactFromRealizationConstraints(frame.realizationConstraints));
   if (!frames.length) return undefined;
   const contextSymbols = uniqueStrings([
@@ -2696,6 +3512,11 @@ function rhetoricalLatticeCandidateFromFrames(plan: SurfacePlan, discoursePlan: 
     semanticAnswerConstructState(input.construct)?.selectedSubject ?? "",
     ...frames.flatMap(frame => frame.propositionAtoms.map(atom => atom.text))
   ].filter(Boolean));
+  const generationExtent = claimMouthGenerationWork(
+    generationWorkBudget,
+    Math.max(56, Math.min(192, discoursePlan.units.reduce((sum, unit) => sum + unit.generationExtent, 0) || 96))
+  );
+  if (generationExtent === undefined) return undefined;
   const generation = languageMemory.generate({
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
@@ -2703,7 +3524,7 @@ function rhetoricalLatticeCandidateFromFrames(plan: SurfacePlan, discoursePlan: 
     requiredTerms: [],
     semanticFrameIds: input.languageMemory.importedSemanticFrames.map(frame => frame.id).slice(0, 64),
     frames,
-    generationExtent: Math.max(56, Math.min(192, discoursePlan.units.reduce((sum, unit) => sum + unit.generationExtent, 0) || 96)),
+    generationExtent,
     styleProfileId: discoursePlan.targetStyleProfileId,
     registerVector: discoursePlan.registerVector,
     detailProfileId: discoursePlan.targetDetailProfileId
@@ -2909,7 +3730,12 @@ function programOrArtifactSurfacePoint(point: SurfacePoint): boolean {
     || typeof constraints.programSurface === "object" && constraints.programSurface !== null;
 }
 
-function supportBoundaryCandidate(input: SpeakInput, discoursePlan: DiscoursePlan, languageMemory: LanguageMemoryRuntime): SurfaceCandidate | undefined {
+function supportBoundaryCandidate(
+  input: SpeakInput,
+  discoursePlan: DiscoursePlan,
+  languageMemory: LanguageMemoryRuntime,
+  generationWorkBudget: MouthGenerationWorkBudget
+): SurfaceCandidate | undefined {
   const supportState = insufficientSupportConstructState(input.construct);
   const importedLanguagePriorCount = input.languageMemory.importedLanguagePriorCount || numberFromJson(jsonRecord(input.brainMarker).importedLanguagePriorCount);
   const unanchoredImportedPrior = input.evidence.length === 0 && input.entailment.evidenceIds.length === 0 && importedLanguagePriorCount > 0;
@@ -2943,6 +3769,11 @@ function supportBoundaryCandidate(input: SpeakInput, discoursePlan: DiscoursePla
     registerVector: discoursePlan.registerVector,
     detailProfileId: discoursePlan.targetDetailProfileId
   };
+  const generationExtent = claimMouthGenerationWork(
+    generationWorkBudget,
+    Math.max(24, Math.min(56, discoursePlan.units[0]?.generationExtent ?? 36))
+  );
+  if (generationExtent === undefined) return undefined;
   const generation = languageMemory.generate({
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
@@ -2954,7 +3785,7 @@ function supportBoundaryCandidate(input: SpeakInput, discoursePlan: DiscoursePla
     ]),
     requiredTerms: [requiredTerm],
     frames: [frame],
-    generationExtent: Math.max(24, Math.min(56, discoursePlan.units[0]?.generationExtent ?? 36)),
+    generationExtent,
     styleProfileId: discoursePlan.targetStyleProfileId,
     registerVector: discoursePlan.registerVector,
     detailProfileId: discoursePlan.targetDetailProfileId
@@ -3641,7 +4472,10 @@ function outputEvidenceRefs(input: SpeakInput, plan: SurfacePlan, selectedEviden
   if (!invention) return [...new Set((selectedEvidenceIds ?? planEvidenceIds).map(id => id as EvidenceId))];
   const allowed = new Set(invention.basisEvidenceIds.map(String));
   const available = new Set(input.evidence.map(span => String(span.id)));
-  return [...new Set([...(selectedEvidenceIds ?? []), ...planEvidenceIds])]
+  const participatingIds = selectedEvidenceIds === undefined
+    ? planEvidenceIds
+    : selectedEvidenceIds;
+  return [...new Set(participatingIds)]
     .filter(id => allowed.has(String(id)) && available.has(String(id)))
     .map(id => id as EvidenceId);
 }
@@ -4206,8 +5040,7 @@ function admissibleMouthSurface(text: string): boolean {
 }
 
 function admissibleLearnedSurface(text: string, generation: LanguageGenerationResult): boolean {
-  void generation;
-  return admissibleMouthSurface(text);
+  return admissibleMouthSurface(text) && generationImportedPriorIds(generation).length > 0;
 }
 
 function forceFromEntailment(entailment: SemanticEntailmentResult): OutputForce {
@@ -4688,6 +5521,14 @@ function repairPreservation(input: { text: string; plan: SurfacePlan; preservati
 
 function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {
   if (!isCreativeRequested(input)) return [];
+  const requestTerms = creativeRequestContentTerms(input)
+    .map(term => term.text)
+    .filter(term => [...term].length >= 3);
+  if (requestTerms.length) {
+    const covered = requestTerms.filter(term => containsSurface(text, term));
+    const requiredCoverage = requestTerms.length <= 2 ? requestTerms.length : Math.max(2, Math.ceil(requestTerms.length * 0.5));
+    if (covered.length < requiredCoverage) return ["surface.reject.creative_request_drift"];
+  }
   const invention = inventionConstructState(input.construct);
   const anchors = uniqueStrings([
     invention?.proposalSurface ?? "",
@@ -4695,6 +5536,7 @@ function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {
     ...input.construct.artifacts.flatMap(artifact => [artifact.path, artifact.content])
   ].map(normalizeEvidenceSentence).filter(Boolean));
   if (!anchors.length) return [];
+  if (requestTerms.some(term => containsSurface(text, term))) return [];
   const aligned = anchors.some(anchor =>
     containsSurface(text, anchor) ||
     containsSurface(anchor, text) ||
@@ -5074,10 +5916,13 @@ function generatedConstructSurface(construct: ConstructGraph): GeneratedConstruc
   return undefined;
 }
 
-function inventionConstructState(construct: ConstructGraph): InventionConstructState | undefined {
+function inventionConstructState(construct: ConstructGraph, selectedNodeId?: string): InventionConstructState | undefined {
   const row = construct.nodes
     .map(node => ({ node, metadata: jsonRecord(node.metadata) }))
-    .find(item => item.node.kind === "construct:invention" || item.metadata.schema === "scce.invention_construct.v1");
+    .find(item => (
+      (!selectedNodeId || String(item.node.id) === selectedNodeId)
+      && (item.node.kind === "construct:invention" || item.metadata.schema === "scce.invention_construct.v1")
+    ));
   if (!row) return undefined;
   const trace = jsonRecord(row.metadata.trace);
   const proposalSurface = tidySurface(stringFrom(row.metadata.proposalSurface) || stringFrom(row.metadata.title) || row.node.label);

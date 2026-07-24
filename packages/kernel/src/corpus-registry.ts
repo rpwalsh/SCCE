@@ -233,10 +233,7 @@ export function corpusSourceAlias(value: string): string {
 }
 
 function corpusQuerySourceSystems(item: CorpusRegistryEntry): string[] {
-  const compatibleLabels = Object.entries(CORPUS_SOURCE_ALIASES)
-    .filter(([, sourceSystemId]) => sourceSystemId === item.sourceSystemId)
-    .map(([label]) => label);
-  return [...new Set([item.sourceSystem, item.sourceSystemId, item.sourceAlias, ...compatibleLabels].filter((value): value is string => Boolean(value)))];
+  return [item.sourceSystemId];
 }
 
 function entry(

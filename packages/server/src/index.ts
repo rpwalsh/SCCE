@@ -1,6 +1,6 @@
 import http from "node:http";
 import { createNodeRuntime, readScceRuntimeConfig } from "@scce/adapters-node";
-import { handleRequest, serverPatchValidationRuntime } from "./routes.js";
+import { drainDeferredDialoguePersistence, handleRequest, serverPatchValidationRuntime } from "./routes.js";
 import { createTrace, traceEvent } from "@scce/kernel";
 import { createRuntimeStartupReadiness, startRuntimeSurface } from "./startup.js";
 
@@ -50,12 +50,24 @@ async function main(): Promise<void> {
     readiness: startupReadiness
   });
 
-  const shutdown = async () => {
-    server.close();
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => shutdownPromise ??= (async () => {
+    await closeServer(server);
+    const drained = await drainDeferredDialoguePersistence();
+    if (drained.drainedConversations > 0) {
+      process.stdout.write(`SCCE drained deferred dialogue persistence for ${drained.drainedConversations} conversation(s)\n`);
+    }
     await runtime.close();
-  };
-  process.on("SIGINT", () => void shutdown().then(() => process.exit(0)));
-  process.on("SIGTERM", () => void shutdown().then(() => process.exit(0)));
+  })();
+  const terminate = () => void shutdown().then(
+    () => process.exit(0),
+    error => {
+      process.stderr.write(`SCCE shutdown failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+  );
+  process.on("SIGINT", terminate);
+  process.on("SIGTERM", terminate);
 }
 
 function listen(server: http.Server, port: number, host: string, url: string): Promise<void> {
@@ -67,6 +79,13 @@ function listen(server: http.Server, port: number, host: string, url: string): P
       process.stdout.write(`SCCE v3 server listening on ${url}\n`);
       resolve();
     });
+  });
+}
+
+function closeServer(server: http.Server): Promise<void> {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
   });
 }
 

@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyRequestedAuthority,
+  CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
   createClock,
   createHasher,
   createIdFactory,
   createLanguageMemoryRuntime,
   createNgramMemoryCompiler,
+  ENGLISH_CREATIVE_EVENT_COMPILER_ID,
   featureSet,
   planInventions,
   updateDialogueState,
   type ConstructGraph,
+  type DurableLanguageConstructionBundle,
   type EvidenceSpan,
   type FieldState,
   type GraphEdge,
@@ -61,15 +64,15 @@ describe("requested authority classification", () => {
 });
 
 describe("invention planner", () => {
-  it("creates multiple citation-free constructs without evidence and is deterministic", () => {
-    const fixture = plannerFixture("Invent a new indexing algorithm for this graph");
+  it("creates deterministic citation-free structural constructs from exact production memory", () => {
+    const fixture = plannerFixtureWithStructuralCreativeBundle("Invent a new indexing algorithm for this graph");
     const first = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
     const second = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
 
     expect(first.length).toBeGreaterThanOrEqual(3);
     expect(first.map(item => item.id)).toEqual(second.map(item => item.id));
     expect(first.map(item => item.trace)).toEqual(second.map(item => item.trace));
-    expect(new Set(first.map(item => item.proposalSurface)).size).toBe(first.length);
+    expect(new Set(first.map(semanticPlanId)).size).toBe(first.length);
     for (const construct of first) {
       const trace = traceRecord(construct);
       expect(construct.proofStatusId).toBe("proof.status.generated_not_evidence");
@@ -103,78 +106,7 @@ describe("invention planner", () => {
     expect(first.reduce((sum, item) => sum + Number(traceRecord(item).selectionProbability), 0)).toBeCloseTo(1, 12);
   });
 
-  it("realizes hydrated inventions through learned prose instead of the cold-start punctuation lattice", () => {
-    const fixture = plannerFixtureWithLanguageCorpus(
-      "write a fictional scene about a purple pump",
-      "At dusk, the violet pump hummed beside the empty canal. It dreamed of carrying starlight instead of water. Before dawn, the patient machine sent one silver reflection across the sleeping town."
-    );
-    const learnedMemory = fixture.languageMemory;
-    fixture.languageMemory = {
-      ...learnedMemory,
-      generate(input) {
-        const generated = learnedMemory.generate(input);
-        return input.contextSymbols?.[0] === "pump"
-          ? generated
-          : {
-            ...generated,
-            discourse: {
-              ...generated.discourse,
-              repetitionPenalty: 1
-            }
-          };
-      }
-    };
-
-    const planned = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
-    const realization = traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>;
-
-    expect(realization.path).toBe("learned_continuation");
-    expect(realization.sourcePieceIds).toEqual(expect.arrayContaining([expect.stringMatching(/^language_unit_/u)]));
-    expect(Number(realization.cohesion)).toBeGreaterThan(0);
-    expect(Number(realization.discourseScore)).toBeGreaterThan(0);
-    expect(planned[0]!.proposalSurface).not.toContain(";");
-    expect(planned[0]!.proposalSurface.split(/\s+/u).length).toBeGreaterThan(4);
-    expect(planned.every(candidate => (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path === "learned_continuation")).toBe(true);
-    expect(traceRecord(planned[0]!).proposalSelectionGuard).toMatchObject({
-      id: "guard.invention.learned_realization_priority.v1",
-      coldStartFallbackActive: false,
-      learnedCandidateCount: 1,
-      fallbackCandidateCount: 5
-    });
-  });
-
-  it("carries an exact request-owned semantic span into learned creative realization without calling it evidence", () => {
-    const requestText = "write a fictional scene about a purple pump";
-    const requestConstraint = "purple pump";
-    const fixture = plannerFixtureWithLanguageCorpus(
-      requestText,
-      "At dusk, the violet pump hummed beside the empty canal. It dreamed of carrying starlight instead of water."
-    );
-
-    const planned = planInventions({
-      ...fixture,
-      requestedAuthority: "creative",
-      requirementField: creativeRequestConstraintField(requestText, requestConstraint),
-      samplingDisabled: true
-    });
-    const trace = traceRecord(planned[0]!);
-    const realization = trace.proposalRealization as Record<string, JsonValue>;
-    const claims = trace.claimBasis as Array<{ kind: string; evidenceIds: string[] }>;
-
-    expect(planned[0]!.proposalSurface).toBe("purple pump hummed beside the empty canal.");
-    expect(realization).toMatchObject({
-      path: "learned_continuation",
-      contextSymbols: ["purple", "pump"],
-      requestConstraintIds: ["requirement.creative-fixture"],
-      requestConstraintSourceActivationIds: ["activation.creative-fixture"],
-      requestConstraintCoverage: 1
-    });
-    expect(planned[0]!.basisEvidenceIds).toEqual([]);
-    expect(claims.find(claim => claim.kind === "invention")?.evidenceIds).toEqual([]);
-    expect(planned[0]!.proposalSurface).not.toContain("It dreamed of carrying starlight instead of water.");
-  });
-
-  it("binds activated request spans into source-owned narrative structure without copying a source sentence", () => {
+  it("binds activated request spans in the non-creative learned structure lane", () => {
     const requestText = "Write a fictional two-sentence story about a purple pump that learns to sing.";
     const corpus = "At dusk, the old pump hummed beside the quiet harbor. It dreamed of carrying starlight across the sleeping town. Before dawn, its steady rhythm became a silver melody and woke the patient bells.";
     const fixture = plannerFixtureWithLanguageCorpus(requestText, corpus);
@@ -182,10 +114,11 @@ describe("invention planner", () => {
       .filter(unit => unit.unitKind === "symbol" && unit.text.normalize("NFKC").toLocaleLowerCase() === "pump")
       .map(unit => unit.id);
     const fullRequestControl = creativeRequestConstraintField(requestText, requestText);
+    fixture.construct.nodes.push({ id: "invention", kind: "construct:invention", label: "construct", metadata: {} });
 
     const planned = planInventions({
       ...fixture,
-      requestedAuthority: "creative",
+      requestedAuthority: "factual",
       requirementField: {
         ...fullRequestControl,
         activatedPhraseUnitIds: pumpUnitIds,
@@ -213,14 +146,86 @@ describe("invention planner", () => {
     expect(planned[0]!.basisEvidenceIds).toEqual([]);
   });
 
-  it("rejects a learned proposal that reconstructs an exact source-owned sentence", () => {
-    const requestText = "compose a violet pump";
-    const sourceSentence = "violet pump hummed beside the empty canal.";
-    const fixture = plannerFixtureWithLanguageCorpus(requestText, sourceSentence);
+  it("gives an exact purity-proven compiler-v4 cluster exclusive structural authority", () => {
+    const fixture = plannerFixtureWithStructuralCreativeBundle(
+      "Write a fictional story about a cartographer crossing a storm."
+    );
 
     const planned = planInventions({
       ...fixture,
       requestedAuthority: "creative",
+      samplingDisabled: true
+    });
+
+    expect(planned.length).toBeGreaterThan(0);
+    for (const candidate of planned) {
+      const trace = traceRecord(candidate);
+      const realization = trace.proposalRealization as Record<string, JsonValue>;
+      expect(realization.path).toBe("mouth_realization_deferred");
+      expect(realization.semanticPlanId).toEqual(expect.any(String));
+      expect(realization.structuralBundleIds).toEqual(["bundle.structural-authority"]);
+      expect((realization.structuralEventPlan as JsonValue[]).length).toBeGreaterThanOrEqual(4);
+      expect(trace.structuralSemanticPlan).toMatchObject({
+        schema: "scce.structural_semantic_plan.v2",
+        selectionAuthority: "candidate_engine_and_judge",
+        surfaceRealizationCompetitive: false
+      });
+      expect(trace.proposalSelectionGuard).toMatchObject({
+        id: "guard.invention.production_structural_authority.v1",
+        productionStructuralAuthority: true,
+        coldStartFallbackActive: false,
+        learnedCandidateCount: 0,
+        fallbackCandidateCount: 0
+      });
+    }
+    expect(planned.some(candidate => {
+      const path = (traceRecord(candidate).proposalRealization as Record<string, JsonValue>).path;
+      return path === "learned_continuation"
+        || path === "learned_structural_composition"
+        || path === "composition_fallback";
+    })).toBe(false);
+  });
+
+  it("fails closed for creative authority when the construction cluster is impure", () => {
+    const fixture = plannerFixtureWithStructuralCreativeBundle(
+      "Write a fictional story about a cartographer crossing a storm."
+    );
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      languageMemoryState: {
+        ...fixture.languageMemoryState,
+        scope: {
+          ...fixture.languageMemoryState.scope,
+          purityProven: false,
+          degraded: true
+        }
+      },
+      samplingDisabled: true
+    });
+
+    expect(planned).toEqual([]);
+  });
+
+  it("returns no creative inventions without verified compiler-v4 structural bundles", () => {
+    const fixture = plannerFixture("Write a fictional story about a cartographer crossing a storm.");
+
+    expect(planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      samplingDisabled: true
+    })).toEqual([]);
+  });
+
+  it("rejects exact source reconstruction in the non-creative invention lane", () => {
+    const requestText = "compose a violet pump";
+    const sourceSentence = "violet pump hummed beside the empty canal.";
+    const fixture = plannerFixtureWithLanguageCorpus(requestText, sourceSentence);
+    fixture.construct.nodes.push({ id: "invention", kind: "construct:invention", label: "construct", metadata: {} });
+
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "factual",
       requirementField: creativeRequestConstraintField(requestText, "violet pump"),
       samplingDisabled: true
     });
@@ -245,22 +250,22 @@ describe("invention planner", () => {
     expect(planInventions({ ...fixture, requestedAuthority: "factual" })).toEqual([]);
   });
 
-  it("plans multiple constructs for opaque and non-English surfaces from structured authority", () => {
+  it("plans structural constructs for opaque and non-English surfaces without lexical routing", () => {
     const opaque = planInventions({
-      ...plannerFixture("zxq_91f7 qv_22"),
+      ...plannerFixtureWithStructuralCreativeBundle("zxq_91f7 qv_22"),
       requestedAuthority: "creative",
       samplingDisabled: true
     });
     const nonEnglish = planInventions({
-      ...plannerFixture("그래프 제약을 결합한 새로운 구조"),
+      ...plannerFixtureWithStructuralCreativeBundle("그래프 제약을 결합한 새로운 구조"),
       requestedAuthority: "creative",
       samplingDisabled: true
     });
 
     expect(opaque.length).toBeGreaterThanOrEqual(3);
     expect(nonEnglish.length).toBeGreaterThanOrEqual(3);
-    expect(new Set(opaque.map(item => item.proposalSurface)).size).toBe(opaque.length);
-    expect(new Set(nonEnglish.map(item => item.proposalSurface)).size).toBe(nonEnglish.length);
+    expect(new Set(opaque.map(semanticPlanId)).size).toBe(opaque.length);
+    expect(new Set(nonEnglish.map(semanticPlanId)).size).toBe(nonEnglish.length);
     for (const construct of [...opaque, ...nonEnglish]) {
       const trace = traceRecord(construct);
       expect(trace.lexicalRoutingUsed).toBe(false);
@@ -269,7 +274,7 @@ describe("invention planner", () => {
     expect(JSON.stringify(nonEnglish.map(item => item.proposalSurface))).toContain("그래프");
   });
 
-  it("keeps multilingual cold-start composition free of graph feature and control identifiers", () => {
+  it("does not emit multilingual cold-start composition without structural memory", () => {
     const requestText = "નવી રચના જાંબલી પંપ";
     const premise = evidenceSpan("જાંબલી પંપ શાંત લયમાં ગૂંજ્યો.");
     const source = graphNode("node.source.multilingual", "જાંબલી પંપ", [premise.id]);
@@ -288,17 +293,7 @@ describe("invention planner", () => {
 
     const planned = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true });
 
-    expect(planned.length).toBeGreaterThan(0);
-    for (const construct of planned) {
-      const trace = traceRecord(construct);
-      const claimBasis = trace.claimBasis as Array<{ surface?: string }>;
-      const publicSurfaces = JSON.stringify([construct.proposalSurface, ...claimBasis.map(claim => claim.surface)]);
-      expect(construct.proposalSurface.trim().length).toBeGreaterThan(0);
-      expect(construct.proposalSurface).toContain("જાંબલી");
-      expect(publicSurfaces).not.toMatch(/(?:^|[\s"])(?:sym:[^\s|"]+|bi:[^\s|"]+\|[^\s|"]+|tri:[^\s|"]+\|[^\s|"]+\|[^\s|"]+|char:[^\s"]+)/u);
-      expect(publicSurfaces).not.toMatch(/(?:node|edge|relation|hyperedge)_[0-9a-f]{24,}/iu);
-      expect(publicSurfaces).not.toContain("language_memory");
-    }
+    expect(planned).toEqual([]);
   });
 
   it("admits opaque invention through numeric learned requirements", () => {
@@ -371,8 +366,9 @@ describe("invention planner", () => {
       graph: graphSlice([sourceNode, targetNode], [edge]),
       activeNodeIds: [String(sourceNode.id), String(targetNode.id)]
     });
+    fixture.construct.nodes.push({ id: "invention", kind: "construct:invention", label: "construct", metadata: {} });
 
-    const planned = planInventions({ ...fixture, requestedAuthority: "creative" });
+    const planned = planInventions({ ...fixture, requestedAuthority: "factual" });
 
     expect(planned.length).toBeGreaterThan(1);
     for (const construct of planned) {
@@ -389,7 +385,7 @@ describe("invention planner", () => {
   });
 
   it("marks untested performance predictions conjectural without fake evidence", () => {
-    const fixture = plannerFixture("Invent an indexing algorithm with 2x faster lookup performance");
+    const fixture = plannerFixtureWithStructuralCreativeBundle("Invent an indexing algorithm with 2x faster lookup performance");
     const lexicalOnly = planInventions({ ...fixture, requestedAuthority: "creative" });
     const lexicalClaims = traceRecord(lexicalOnly[0]!).claimBasis as Array<{ kind: string }>;
     expect(lexicalClaims.some(claim => claim.kind === "performance_prediction")).toBe(false);
@@ -410,6 +406,78 @@ describe("invention planner", () => {
     expect(planned[0]!.basisEvidenceIds).toEqual([]);
   });
 });
+
+function plannerFixtureWithStructuralCreativeBundle(requestText: string) {
+  const fixture = plannerFixture(requestText);
+  const profileId = "profile.structural-authority";
+  const sourceVersionId = "source-version.structural-authority";
+  const evidenceId = "evidence.structural-authority";
+  const bundle: DurableLanguageConstructionBundle = {
+    id: "bundle.structural-authority",
+    schema: "scce.language_construction_pattern.v1",
+    bindingId: "binding.structural-authority",
+    sourceProfileId: profileId,
+    targetProfileId: profileId,
+    sourceVersionIds: [sourceVersionId],
+    evidenceIds: [evidenceId],
+    evidenceContentHashes: ["hash.structural-authority"],
+    sourceExamples: [],
+    constructions: [],
+    formClasses: [],
+    creativeEvents: Array.from({ length: 6 }, (_, index) => ({
+      id: `event.structural-authority.${index}`,
+      compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+      constructionId: `construction.structural-authority.${index}`,
+      profileId,
+      sourceVersionId,
+      evidenceId,
+      evidenceContentHash: "hash.structural-authority",
+      evidenceCharStart: 0,
+      evidenceCharEnd: 64,
+      labelStartCodePoint: index,
+      labelEndCodePoint: index + 1,
+      sourceOrdinal: index,
+      relationId: `relation.structural-authority.${index}`,
+      sourceLabel: "crossed",
+      sourceLabelDigest: `digest.structural-authority.${index}`,
+      tenseId: "scce.tense.past",
+      valencyId: "scce.valency.agent",
+      roleIds: ["scce.role.agent"],
+      argumentFrame: {
+        id: `argument-frame.structural-authority.${index}`,
+        schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+        compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+        sourceSentenceStartCodePoint: 0,
+        sourceSentenceEndCodePoint: 64,
+        roleIds: ["scce.role.agent"],
+        bindings: []
+      },
+      forms: {
+        infinitive: "cross",
+        past: "crossed",
+        present: "crosses",
+        gerund: "crossing",
+        participle: "crossed"
+      }
+    })),
+    contentDigest: "digest.bundle.structural-authority"
+  };
+  return {
+    ...fixture,
+    languageMemoryState: {
+      ...fixture.languageMemoryState,
+      importedConstructionBundles: [bundle],
+      scope: {
+        mode: "cluster" as const,
+        clusterId: "cluster.structural-authority",
+        profileIds: [profileId],
+        sourceVersionIds: [sourceVersionId],
+        purityProven: true,
+        degraded: false
+      }
+    }
+  };
+}
 
 function plannerFixture(requestText: string, options: { evidence?: EvidenceSpan[]; graph?: GraphSlice; activeNodeIds?: string[] } = {}) {
   const languageMemory = createLanguageMemoryRuntime();
@@ -618,4 +686,9 @@ function traceRecord(construct: InventionConstruct): Record<string, JsonValue> {
   expect(Array.isArray(construct.trace)).toBe(false);
   expect(typeof construct.trace).toBe("object");
   return construct.trace as Record<string, JsonValue>;
+}
+
+function semanticPlanId(construct: InventionConstruct): string {
+  const realization = traceRecord(construct).proposalRealization as Record<string, JsonValue>;
+  return String(realization.semanticPlanId);
 }

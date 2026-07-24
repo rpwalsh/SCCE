@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundaryProfileFor,
+  CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
   createClock,
   createCorrectionMemory,
   createHasher,
@@ -10,16 +11,19 @@ import {
   createMouth,
   createSemanticEntailmentEngine,
   detailPolicyForProfile,
+  ENGLISH_CREATIVE_EVENT_COMPILER_ID,
   featureSet,
   inventionConstructNode,
   scoreSurfaceEnergy,
   toJsonValue,
   type CandidateSurface,
+  type CognitiveProposal,
   type ConstructGraph,
   type EvidenceId,
   type EvidenceSpan,
   type FieldState,
   type JsonValue,
+  type DurableLanguageConstructionBundle,
   type LanguageProfile,
   type SourceVersion,
   type SurfaceEnergyComponent,
@@ -85,7 +89,7 @@ describe("creative Mouth production boundary", () => {
     expect(raw(new Map(externallyAssertive.components.map(component => [component.id, component])), "surface.creative.fake_factual_authority")).toBe(1);
   });
 
-  it("ranks bounded creative realizations, binds only premise evidence, and traces conjectural performance", async () => {
+  it("does not realize a creative candidate without a selected production structural plan", async () => {
     const clock = createClock({ fixedTime: 87000, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
@@ -130,27 +134,234 @@ describe("creative Mouth production boundary", () => {
 
     const first = await mouth.speak(input);
     const second = await mouth.speak(input);
-    const walshTrace = record(first.realizationTrace.walshSurfaceEnergy);
-    const ranked = Array.isArray(walshTrace.ranked) ? walshTrace.ranked : [];
-    const creativeVariants = first.realizationTrace.candidates.filter(candidate => candidate.id.startsWith("candidate:generated:creative:"));
+    const structuralTrace = record(record(first.realizationTrace.languageMemory).structuralCreative);
 
     expect(first.force).toBe("creative");
-    expect(first.text).toBe("Constraint-safe graph index with bounded updates and a validation pass.");
-    expect(first.evidenceRefs).toEqual([premise.id]);
-    expect(first.evidenceRefs).not.toContain(unrelated.id);
+    expect(first.text).toBe("");
     expect(first.text).toBe(second.text);
-    expect(first.text.trim().startsWith("{")).toBe(false);
-    expect(first.text).not.toContain("basisEvidenceIds");
-    expect(first.text).not.toContain("scce.invention_construct.v1");
-    expect(creativeVariants.length).toBeGreaterThanOrEqual(2);
-    expect(creativeVariants.some(candidate => candidate.id === "candidate:generated:creative:learned-proposal")).toBe(true);
-    expect(new Set(creativeVariants.map(candidate => candidate.textHash)).size).toBeGreaterThanOrEqual(2);
-    expect(ranked.length).toBeGreaterThanOrEqual(creativeVariants.length);
-    expect(JSON.stringify(walshTrace)).toContain("surface.creative.bootstrap.v1");
-    expect(first.uncertainty.some(marker => marker.reason === "surface.uncertainty.untested_performance_claim")).toBe(true);
-    expect(JSON.stringify(first.surfacePlan.forceBindings)).toContain("underdetermined");
+    expect(first.realizationTrace.candidates).toEqual([]);
+    expect(structuralTrace).toMatchObject({
+      selectionBound: false,
+      preflightAdmitted: false,
+      realizationAdmitted: false,
+      failClosed: true,
+      unavailableReasonId: "surface.boundary.structural_realization_unavailable"
+    });
+  });
+
+  it("fails closed when an admitted structural creative plan cannot be realized", async () => {
+    const clock = createClock({ fixedTime: 88_000, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const source = sourceVersion(ids, clock.now());
+    const premise = evidenceSpan(ids, source, "The graph uses bounded-degree adjacency lists.", 0, clock.now());
+    const profile = languageProfile(source, clock.now());
+    const fixture = structuralCreativeFixture({
+      construct: creativeConstruct(premise.id, ids),
+      candidate: creativeCandidate(creativeConstruct(premise.id, ids), premise.id, premise.id),
+      profile,
+      premise
+    });
+    const field = emptyField("", 0.68);
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: "",
+      evidence: [premise],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const unscopedLanguageMemory = languageRuntime.hydrateFromImportedBrain({
+      importRunId: "creative-mouth-structural-boundary",
+      models: [],
+      observations: [],
+      units: [],
+      patterns: [],
+      semanticFrames: []
+    });
+    const mouth = createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    });
+
+    const spoken = await mouth.speak({
+      construct: fixture.construct,
+      field,
+      selectedProposal: fixture.proposal,
+      languageProfile: profile,
+      evidence: [premise],
+      entailment: { ...entailment, force: "invented", evidenceIds: [premise.id] },
+      languageMemory: {
+        ...unscopedLanguageMemory,
+        importedConstructionBundles: [fixture.bundle],
+        scope: {
+          mode: "cluster",
+          clusterId: "cluster:creative-mouth-structural",
+          profileIds: [profile.id],
+          sourceVersionIds: [String(source.sourceVersionId)],
+          purityProven: true,
+          degraded: false
+        }
+      },
+      selectedCandidate: fixture.candidate,
+      requestedAuthority: "creative"
+    });
+
+    const languageMemoryTrace = record(record(spoken.realizationTrace.languageMemory).structuralCreative);
+    const performanceTrace = record(record(spoken.realizationTrace.languageMemory).mouthPerformance);
+    const phaseMs = record(performanceTrace.phaseMs);
+
+    expect(spoken.text).toBe("");
+    expect(spoken.realizationTrace.candidates).toEqual([]);
+    expect(spoken.realizationTrace.selected).toMatchObject({
+      id: "surface.boundary.structural_realization_unavailable",
+      path: "generated"
+    });
+    expect(languageMemoryTrace).toMatchObject({
+      selectionBound: true,
+      preflightAdmitted: false,
+      realizationAdmitted: false,
+      failClosed: true,
+      unavailableReasonId: "surface.boundary.structural_realization_unavailable"
+    });
+    expect(phaseMs).toHaveProperty("structural_admission");
+    expect(phaseMs).not.toHaveProperty("structural_fallback_plan");
   });
 });
+
+function structuralCreativeFixture(input: {
+  construct: ConstructGraph;
+  candidate: CandidateSurface;
+  profile: LanguageProfile;
+  premise: EvidenceSpan;
+}): {
+  construct: ConstructGraph;
+  candidate: CandidateSurface;
+  proposal: CognitiveProposal;
+  bundle: DurableLanguageConstructionBundle;
+} {
+  const bundleId = "bundle:creative-mouth-structural";
+  const routeId = "route:creative-mouth-structural";
+  const semanticPlanId = "semantic-plan:creative-mouth-structural";
+  const inventionNodeId = "invention:bounded-index";
+  const requestFit = 0.8;
+  const graphFit = 0.7;
+  const routeFit = 1 - (1 - requestFit) * (1 - graphFit);
+  const eventIds = Array.from({ length: 4 }, (_, index) => `event:creative-mouth:${index}`);
+  const selectors = eventIds.map((eventId, index) => ({
+    outputIndex: index,
+    bundleId,
+    eventId,
+    profileId: input.profile.id,
+    constructionId: `construction:creative-mouth:${index}`,
+    relationId: `relation:creative-mouth:${index}`,
+    roleIds: ["scce.role.agent"],
+    discourseRelationId: index === 0 ? "scce.relation.concurrent" : "scce.relation.subsequent",
+    discourseBridgeBasisId: index === 0
+      ? "scce.discourse.bridge.invented_macro"
+      : "scce.discourse.bridge.source_adjacency",
+    discourseBeatId: "beat:creative-mouth:0",
+    requestRoleBindings: [],
+    requestFit,
+    graphFit,
+    routeFit,
+    routeId,
+    routeAnchorEventId: eventIds[0],
+    sourceOrdinal: index,
+    sourceVersionId: String(input.premise.sourceVersionId),
+    evidenceId: String(input.premise.id)
+  }));
+  const bundle: DurableLanguageConstructionBundle = {
+    id: bundleId,
+    schema: "scce.language_construction_pattern.v1",
+    bindingId: "binding:creative-mouth-structural",
+    sourceProfileId: input.profile.id,
+    targetProfileId: input.profile.id,
+    sourceVersionIds: [String(input.premise.sourceVersionId)],
+    evidenceIds: [String(input.premise.id)],
+    evidenceContentHashes: [String(input.premise.contentHash)],
+    sourceExamples: [],
+    constructions: [],
+    formClasses: [],
+    creativeEvents: selectors.map((selector, index) => ({
+      id: selector.eventId,
+      compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+      constructionId: selector.constructionId,
+      profileId: selector.profileId,
+      sourceVersionId: selector.sourceVersionId,
+      evidenceId: selector.evidenceId,
+      evidenceContentHash: String(input.premise.contentHash),
+      evidenceCharStart: input.premise.charStart,
+      evidenceCharEnd: input.premise.charEnd,
+      labelStartCodePoint: 0,
+      labelEndCodePoint: 1,
+      sourceOrdinal: index,
+      relationId: selector.relationId,
+      sourceLabel: "",
+      sourceLabelDigest: "digest:empty",
+      tenseId: "scce.tense.past",
+      valencyId: "scce.valency.agent",
+      roleIds: ["scce.role.agent"],
+      argumentFrame: {
+        id: `argument-frame:creative-mouth:${index}`,
+        schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+        compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
+        sourceSentenceStartCodePoint: 0,
+        sourceSentenceEndCodePoint: 1,
+        roleIds: ["scce.role.agent"],
+        bindings: []
+      },
+      forms: { infinitive: "", past: "", present: "", gerund: "", participle: "" }
+    })),
+    contentDigest: "digest:creative-mouth-structural"
+  };
+  const construct = {
+    ...input.construct,
+    nodes: input.construct.nodes.map(node => {
+      if (String(node.id) !== inventionNodeId) return node;
+      const metadata = record(node.metadata);
+      return {
+        ...node,
+        metadata: toJsonValue({
+          ...metadata,
+          trace: {
+            ...record(metadata.trace),
+            proposalRealization: {
+              path: "mouth_realization_deferred",
+              semanticPlanId,
+              structuralBundleIds: [bundleId],
+              structuralEventPlan: selectors
+            },
+            structuralSemanticPlan: {
+              id: semanticPlanId,
+              schema: "scce.structural_semantic_plan.v2",
+              selectionAuthority: "candidate_engine_and_judge",
+              surfaceRealizationCompetitive: false,
+              sourceBundleIds: [bundleId],
+              events: selectors
+            }
+          }
+        })
+      };
+    })
+  };
+  const proposal = {
+    id: "proposal:creative-mouth-structural",
+    constructIds: [inventionNodeId]
+  } as unknown as CognitiveProposal;
+  return {
+    construct,
+    proposal,
+    bundle,
+    candidate: {
+      ...input.candidate,
+      proposalId: proposal.id,
+      constructIds: [inventionNodeId],
+      claimBases: ["invented"]
+    }
+  };
+}
 
 function creativeConstruct(basisEvidenceId: EvidenceId, ids?: ReturnType<typeof createIdFactory>): ConstructGraph {
   const invention = {

@@ -137,7 +137,15 @@ export function summarizeKneserNey(model: KneserNeyModel, sampleText?: string): 
   };
 }
 
-export function continueBoundedProse(model: KneserNeyModel, prompt: string | readonly string[], options: { generationExtent?: number; probabilityFloor?: number; temperature?: number; blockedSymbols?: string[] } = {}): BoundedProseContinuation {
+export function continueBoundedProse(model: KneserNeyModel, prompt: string | readonly string[], options: {
+  generationExtent?: number;
+  probabilityFloor?: number;
+  temperature?: number;
+  blockedSymbols?: string[];
+  deterministicChoiceSeed?: string;
+  minSymbolsBeforeEos?: number;
+  repetitionWindow?: number;
+} = {}): BoundedProseContinuation {
   const context = normalizeSymbols(prompt);
   const generated: string[] = [];
   const trace: KneserNeyPrediction[] = [];
@@ -146,13 +154,28 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
   const generationExtent = options.generationExtent ?? 80;
   const floor = options.probabilityFloor ?? 1e-7;
   const temperature = Math.max(0.05, options.temperature ?? 1);
+  const minimumBeforeEos = Math.max(0, Math.floor(options.minSymbolsBeforeEos ?? 0));
+  const repetitionWindow = Math.max(1, Math.floor(options.repetitionWindow ?? 10));
   let stoppedBy: BoundedProseContinuation["stoppedBy"] = "generationExtent";
   for (let i = 0; i < generationExtent; i++) {
     const predictions = predictKneserNey(model, [...context, ...generated].slice(-(model.order - 1)), 64)
-      .filter(item => !blocked.has(item.symbol) && item.symbol !== "<s>");
-    const adjusted = predictions.map(item => ({ ...item, probability: Math.pow(item.probability, 1 / temperature) }));
+      .filter(item => !blocked.has(item.symbol) && item.symbol !== "<s>")
+      .filter(item => item.symbol !== "</s>" || generated.length >= minimumBeforeEos);
+    const recent = generated.slice(-repetitionWindow);
+    const adjusted = predictions.map(item => {
+      const repetitionCount = recent.reduce((count, symbol) => count + Number(symbol === item.symbol), 0);
+      const repetitionPenalty = repetitionCount ? Math.pow(0.18, repetitionCount) : 1;
+      return { ...item, probability: Math.pow(item.probability, 1 / temperature) * repetitionPenalty };
+    }).sort((left, right) => right.probability - left.probability || left.symbol.localeCompare(right.symbol));
     const total = adjusted.reduce((sum, item) => sum + item.probability, 0);
-    const best = adjusted.length ? { ...adjusted[0]!, probability: adjusted[0]!.probability / Math.max(1e-300, total) } : undefined;
+    const best = options.deterministicChoiceSeed
+      ? deterministicWeightedChoice(
+        adjusted.slice(0, 16),
+        `${options.deterministicChoiceSeed}\u0001${i}\u0001${[...context, ...generated].slice(-(model.order - 1)).join("\u0001")}`
+      )
+      : adjusted.length
+        ? { ...adjusted[0]!, probability: adjusted[0]!.probability / Math.max(1e-300, total) }
+        : undefined;
     if (!best || best.probability < floor) {
       stoppedBy = "probabilityFloor";
       break;
@@ -175,6 +198,31 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
     stoppedBy,
     trace
   };
+}
+
+function deterministicWeightedChoice(
+  values: readonly KneserNeyPrediction[],
+  seed: string
+): KneserNeyPrediction | undefined {
+  const total = values.reduce((sum, item) => sum + item.probability, 0);
+  if (!values.length || total <= 0) return undefined;
+  const threshold = stableUnitInterval(seed) * total;
+  let cumulative = 0;
+  for (const item of values) {
+    cumulative += item.probability;
+    if (cumulative >= threshold) return { ...item, probability: item.probability / total };
+  }
+  const last = values[values.length - 1]!;
+  return { ...last, probability: last.probability / total };
+}
+
+function stableUnitInterval(value: string): number {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 0x1_0000_0000;
 }
 
 export function compactKneserNeyForProfile(model: KneserNeyModel, text: string): JsonValue {

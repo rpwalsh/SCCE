@@ -5,9 +5,11 @@ import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue, we
 import {
   buildLanguageProfileClusters,
   learnedScriptIdForCharacter,
+  normalizeSourceLanguageAlias,
   selectLanguageProfileClusterForSurface,
   type LanguageProfileCluster
 } from "./language.js";
+import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 
 export type TranslationForce = "direct" | "approximate" | "gloss" | "unknown";
 
@@ -330,19 +332,11 @@ interface SourceSurfaceSymbol {
 }
 
 function sourceSurfaceSymbols(text: string): SourceSurfaceSymbol[] {
-  const safe = text.replace(/\u0000/gu, " ");
-  const out: SourceSurfaceSymbol[] = [];
-  const pattern = /[\p{Letter}\p{Mark}\p{Number}_]+|[^\s]/gu;
-  for (const match of safe.matchAll(pattern)) {
-    const start = match.index;
-    if (start === undefined) continue;
-    out.push({
-      canonical: match[0].normalize("NFC").toLowerCase(),
-      start,
-      end: start + match[0].length
-    });
-  }
-  return out;
+  return unicodeSymbolSegments(text).map(segment => ({
+    canonical: segment.normalized,
+    start: segment.utf16Start,
+    end: segment.utf16End
+  }));
 }
 
 function sourceSurfaceSlice(text: string, surfaceSymbols: readonly SourceSurfaceSymbol[], window: SemanticWindow): string {
@@ -474,7 +468,7 @@ export function selectTargetLanguageProfileCluster(
   evidence: readonly EvidenceSpan[] = []
 ): TranslationTargetSelection | undefined {
   const opaqueTarget = targetLanguage.normalize("NFC").trim();
-  const nameTarget = opaqueTarget.toLowerCase();
+  const nameTarget = normalizeSourceLanguageAlias(opaqueTarget);
   if (!opaqueTarget) return undefined;
   const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
   const candidates = new Map<string, Omit<TranslationTargetSelection, "margin">>();
@@ -493,7 +487,7 @@ export function selectTargetLanguageProfileCluster(
       };
     }
     const names = cluster.discoveredNames
-      .filter(name => name.surface.normalize("NFC").trim().toLowerCase() === nameTarget && name.confidence > 0)
+      .filter(name => normalizeSourceLanguageAlias(name.surface) === nameTarget && name.confidence > 0)
       .sort((left, right) => right.confidence - left.confidence || compareCodePoint(left.surface, right.surface));
     for (const name of names) {
       for (const owner of name.owners) {
@@ -534,7 +528,7 @@ export function selectTargetLanguageProfileCluster(
 }
 
 export function canonicalTranslationTargetKey(targetLanguage: string): string {
-  return targetLanguage.normalize("NFC").trim().toLowerCase();
+  return normalizeSourceLanguageAlias(targetLanguage);
 }
 
 function targetEvidenceAdmission(

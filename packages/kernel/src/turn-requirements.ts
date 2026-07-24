@@ -76,6 +76,7 @@ export interface TurnRequirementField {
   activatedDialogueMoveIds: string[];
   activatedConstructIds: string[];
 
+  responseForm?: ActivatedResponseForm;
   confidence: number;
   trace: JsonValue;
 }
@@ -104,7 +105,42 @@ export interface LearnedRequirementActivation {
   status?: "explicit" | "inferred";
   polarity?: "required" | "prohibited";
   requirementCoefficients?: Partial<Record<TurnRequirementDimension, number>>;
+  responseForm?: LearnedResponseFormActivation;
   trace?: JsonValue;
+}
+
+export interface LearnedResponseFormActivation {
+  id: string;
+  posterior: number;
+  margin: number;
+  exampleSupport: number;
+  annotatedExamples: number;
+  sourceLabel?: string;
+  surfaceLayout?: ResponseFormSurfaceLayout;
+}
+
+/**
+ * Language-neutral surface geometry learned with a corpus-owned form ID.
+ * It controls grouping only; it cannot add, remove, or select semantic events.
+ */
+export interface ResponseFormSurfaceLayout {
+  sentencesPerBlock: number;
+  wordsPerLine?: number;
+  orderedBlocks?: boolean;
+  subjectCuePerBlock?: boolean;
+  subjectSignature?: boolean;
+}
+
+export interface ActivatedResponseForm {
+  id: string;
+  activation: number;
+  posterior: number;
+  selectionMargin: number;
+  exampleSupport: number;
+  sourceActivationIds: string[];
+  sourceLabel?: string;
+  surfaceLayout?: ResponseFormSurfaceLayout;
+  trace: JsonValue;
 }
 
 export interface ExplicitTurnRequirement {
@@ -337,6 +373,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     ...explicitRequirements.map(row => row.requirement.confidence)
   ];
   const confidence = clamp01(mean(confidenceTerms));
+  const responseForm = selectResponseForm(activations);
   const field: TurnRequirementField = {
     ...values,
     requiredFeatures: uniqueRequirements(requiredFeatures),
@@ -346,6 +383,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     activatedPhraseUnitIds: activatedIds(activations, "phrase_unit"),
     activatedDialogueMoveIds: activatedIds(activations, "dialogue_move"),
     activatedConstructIds: activatedIds(activations, "construct"),
+    ...(responseForm ? { responseForm } : {}),
     confidence,
     trace: toJsonValue({
       schema: "scce.turn_requirement.field_trace.v1",
@@ -361,6 +399,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
         span: spanFor(requestText, activation.span)
       })),
       dimensions: dimensionTrace,
+      responseForm: responseForm ?? null,
       confidence,
       confidenceReliability: model.reliability
     })
@@ -434,6 +473,8 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
   if (!state) return;
   for (const unit of state.importedUnits) {
     const metadata = jsonRecord(unit.metadata);
+    const coefficients = requirementCoefficients(metadata.requirementCoefficients);
+    if (!hasRequirementCoefficients(coefficients)) continue;
     const kind: RequirementActivationKind = unit.unitKind === "semantic_frame" ? "frame" : unit.unitKind === "syntax_pattern" ? "pattern" : "phrase_unit";
     for (const matchedSpan of learnedSurfaceSpans(requestText, unit.text)) {
       out.push(normalizeActivation(requestText, {
@@ -444,7 +485,7 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
         span: matchedSpan,
         semanticRoleId: jsonString(metadata.semanticRoleId),
         learnedFrameOrPatternId: jsonString(metadata.frameId) ?? jsonString(metadata.patternId) ?? unit.id,
-        requirementCoefficients: requirementCoefficients(metadata.requirementCoefficients),
+        requirementCoefficients: coefficients,
         trace: toJsonValue({ source: "language_unit", profileId: unit.profileId, unitKind: unit.unitKind, evidenceIds: unit.evidenceIds })
       }));
     }
@@ -452,7 +493,10 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
   for (const pattern of state.importedPatterns) {
     const record = jsonRecord(pattern.patternJson);
     const surface = jsonString(record.surface);
-    for (const matchedSpan of surface ? learnedSurfaceSpans(requestText, surface) : []) {
+    const coefficients = requirementCoefficients(record.requirementCoefficients);
+    const responseForm = learnedResponseForm(record.responseForm);
+    if (!hasRequirementCoefficients(coefficients) && !responseForm) continue;
+    for (const matchedSpan of surface ? learnedPatternSpans(requestText, surface, jsonString(record.anchor)) : []) {
       out.push(normalizeActivation(requestText, {
         id: pattern.id,
         kind: "pattern",
@@ -461,14 +505,23 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
         span: matchedSpan,
         semanticRoleId: jsonString(record.semanticRoleId),
         learnedFrameOrPatternId: pattern.id,
-        requirementCoefficients: requirementCoefficients(record.requirementCoefficients),
-        trace: toJsonValue({ source: "language_pattern", profileId: pattern.profileId, patternKind: pattern.patternKind, evidenceIds: pattern.evidenceIds })
+        requirementCoefficients: coefficients,
+        ...(responseForm ? { responseForm } : {}),
+        trace: toJsonValue({
+          source: "language_pattern",
+          profileId: pattern.profileId,
+          patternKind: pattern.patternKind,
+          evidenceIds: pattern.evidenceIds,
+          responseExtent: record.responseExtent ?? null
+        })
       }));
     }
   }
   for (const frame of state.importedSemanticFrames) {
     const record = jsonRecord(frame.frameJson);
     const surface = jsonString(record.surface);
+    const coefficients = requirementCoefficients(record.requirementCoefficients);
+    if (!hasRequirementCoefficients(coefficients)) continue;
     for (const matchedSpan of surface ? learnedSurfaceSpans(requestText, surface) : []) {
       out.push(normalizeActivation(requestText, {
         id: frame.id,
@@ -478,7 +531,7 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
         span: matchedSpan,
         semanticRoleId: jsonString(record.semanticRoleId),
         learnedFrameOrPatternId: frame.id,
-        requirementCoefficients: requirementCoefficients(record.requirementCoefficients),
+        requirementCoefficients: coefficients,
         trace: toJsonValue({ source: "semantic_frame", evidenceIds: frame.evidenceIds })
       }));
     }
@@ -579,8 +632,154 @@ function normalizeActivation(requestText: string, input: LearnedRequirementActiv
     status: input.status ?? "inferred",
     polarity: input.polarity ?? "required",
     requirementCoefficients: finiteCoefficientVector(input.requirementCoefficients),
+    ...(normalizeLearnedResponseForm(input.responseForm)
+      ? { responseForm: normalizeLearnedResponseForm(input.responseForm) }
+      : {}),
     trace: input.trace ?? toJsonValue({ source: "structural_activation" })
   };
+}
+
+function selectResponseForm(activations: readonly LearnedRequirementActivation[]): ActivatedResponseForm | undefined {
+  const byId = new Map<string, {
+    id: string;
+    activation: number;
+    posterior: number;
+    exampleSupport: number;
+    sourceActivationIds: Set<string>;
+    sourceLabel?: string;
+    surfaceLayout?: ResponseFormSurfaceLayout;
+  }>();
+  for (const activation of activations) {
+    const form = normalizeLearnedResponseForm(activation.responseForm);
+    if (!form) continue;
+    const strength = Math.min(
+      clamp01(activation.activation),
+      clamp01(finiteOr(activation.confidence, activation.activation)),
+      form.posterior,
+      form.margin
+    );
+    const previous = byId.get(form.id);
+    if (!previous) {
+      byId.set(form.id, {
+        id: form.id,
+        activation: strength,
+        posterior: form.posterior,
+        exampleSupport: form.exampleSupport,
+        sourceActivationIds: new Set([activation.id]),
+        ...(form.sourceLabel ? { sourceLabel: form.sourceLabel } : {}),
+        ...(form.surfaceLayout ? { surfaceLayout: form.surfaceLayout } : {})
+      });
+      continue;
+    }
+    previous.activation = Math.max(previous.activation, strength);
+    previous.posterior = Math.max(previous.posterior, form.posterior);
+    previous.exampleSupport = Math.max(previous.exampleSupport, form.exampleSupport);
+    previous.sourceActivationIds.add(activation.id);
+    if (!previous.sourceLabel && form.sourceLabel) previous.sourceLabel = form.sourceLabel;
+    if (!previous.surfaceLayout && form.surfaceLayout) previous.surfaceLayout = form.surfaceLayout;
+  }
+  const ranked = [...byId.values()]
+    .sort((left, right) => right.activation - left.activation || left.id.localeCompare(right.id));
+  const winner = ranked[0];
+  const runnerUp = ranked[1];
+  if (!winner || winner.activation <= 0 || (runnerUp && winner.activation <= runnerUp.activation)) return undefined;
+  const selectionMargin = clamp01(winner.activation - (runnerUp?.activation ?? 0));
+  const sourceActivationIds = [...winner.sourceActivationIds].sort();
+  return {
+    id: winner.id,
+    activation: winner.activation,
+    posterior: winner.posterior,
+    selectionMargin,
+    exampleSupport: winner.exampleSupport,
+    sourceActivationIds,
+    ...(winner.sourceLabel ? { sourceLabel: winner.sourceLabel } : {}),
+    ...(winner.surfaceLayout ? { surfaceLayout: winner.surfaceLayout } : {}),
+    trace: toJsonValue({
+      schema: "scce.response_form.activation_trace.v1",
+      equation: "winner = argmax_form(max_activation(min(pattern_activation, pattern_support, posterior, training_margin)))",
+      selectionGuard: "winner_activation_strictly_exceeds_runner_up",
+      reliability: "uncalibrated_frequency_estimate",
+      candidates: ranked.map(row => ({
+        id: row.id,
+        activation: row.activation,
+        posterior: row.posterior,
+        exampleSupport: row.exampleSupport,
+        sourceActivationIds: [...row.sourceActivationIds].sort()
+      }))
+    })
+  };
+}
+
+function learnedResponseForm(value: JsonValue | undefined): LearnedResponseFormActivation | undefined {
+  const record = jsonRecord(value);
+  return normalizeLearnedResponseForm({
+    id: jsonString(record.id) ?? "",
+    posterior: jsonNumber(record.posterior) ?? Number.NaN,
+    margin: jsonNumber(record.margin) ?? Number.NaN,
+    exampleSupport: jsonNumber(record.exampleSupport) ?? Number.NaN,
+    annotatedExamples: jsonNumber(record.annotatedExamples) ?? Number.NaN,
+    ...(jsonString(record.sourceLabel) ? { sourceLabel: jsonString(record.sourceLabel) } : {}),
+    ...(responseFormSurfaceLayoutFromJson(record.surfaceLayout)
+      ? { surfaceLayout: responseFormSurfaceLayoutFromJson(record.surfaceLayout) }
+      : {})
+  });
+}
+
+function normalizeLearnedResponseForm(
+  value: LearnedResponseFormActivation | undefined
+): LearnedResponseFormActivation | undefined {
+  if (!value || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u.test(value.id)) return undefined;
+  if (
+    !Number.isFinite(value.posterior)
+    || !Number.isFinite(value.margin)
+    || !Number.isFinite(value.exampleSupport)
+    || !Number.isFinite(value.annotatedExamples)
+    || value.posterior < 0.68
+    || value.margin < 0.34
+    || value.exampleSupport < 2
+    || value.annotatedExamples < 2
+  ) return undefined;
+  const sourceLabel = value.sourceLabel?.normalize("NFKC").trim();
+  const surfaceLayout = normalizeResponseFormSurfaceLayout(value.surfaceLayout);
+  return {
+    id: value.id,
+    posterior: clamp01(value.posterior),
+    margin: clamp01(value.margin),
+    exampleSupport: Math.max(2, Math.trunc(value.exampleSupport)),
+    annotatedExamples: Math.max(2, Math.trunc(value.annotatedExamples)),
+    ...(sourceLabel && [...sourceLabel].length <= 256 ? { sourceLabel } : {}),
+    ...(surfaceLayout ? { surfaceLayout } : {})
+  };
+}
+
+export function normalizeResponseFormSurfaceLayout(
+  value: ResponseFormSurfaceLayout | undefined
+): ResponseFormSurfaceLayout | undefined {
+  if (!value || !Number.isFinite(value.sentencesPerBlock)) return undefined;
+  const sentencesPerBlock = Math.max(1, Math.min(12, Math.trunc(value.sentencesPerBlock)));
+  const wordsPerLine = value.wordsPerLine === undefined
+    ? undefined
+    : Math.max(0, Math.min(40, Math.trunc(finiteOr(value.wordsPerLine, 0))));
+  return {
+    sentencesPerBlock,
+    ...(wordsPerLine && wordsPerLine >= 4 ? { wordsPerLine } : {}),
+    ...(value.orderedBlocks ? { orderedBlocks: true } : {}),
+    ...(value.subjectCuePerBlock ? { subjectCuePerBlock: true } : {}),
+    ...(value.subjectSignature ? { subjectSignature: true } : {})
+  };
+}
+
+function responseFormSurfaceLayoutFromJson(value: JsonValue | undefined): ResponseFormSurfaceLayout | undefined {
+  const record = jsonRecord(value);
+  const sentencesPerBlock = jsonNumber(record.sentencesPerBlock);
+  if (sentencesPerBlock === undefined) return undefined;
+  return normalizeResponseFormSurfaceLayout({
+    sentencesPerBlock,
+    ...(jsonNumber(record.wordsPerLine) !== undefined ? { wordsPerLine: jsonNumber(record.wordsPerLine) } : {}),
+    ...(record.orderedBlocks === true ? { orderedBlocks: true } : {}),
+    ...(record.subjectCuePerBlock === true ? { subjectCuePerBlock: true } : {}),
+    ...(record.subjectSignature === true ? { subjectSignature: true } : {})
+  });
 }
 
 function normalizeExplicitRequirement(requestText: string, input: ExplicitTurnRequirement, model: TurnRequirementCoefficientModel): { requirement: TurnRequirement; polarity: "required" | "prohibited"; logitContribution: number } {
@@ -676,6 +875,11 @@ function clampRequirementField(field: TurnRequirementField): TurnRequirementFiel
     requirement.value = clamp01(finiteOr(requirement.value, 0));
     requirement.confidence = clamp01(finiteOr(requirement.confidence, 0));
   }
+  if (field.responseForm) {
+    field.responseForm.activation = clamp01(finiteOr(field.responseForm.activation, 0));
+    field.responseForm.posterior = clamp01(finiteOr(field.responseForm.posterior, 0));
+    field.responseForm.selectionMargin = clamp01(finiteOr(field.responseForm.selectionMargin, 0));
+  }
   return field;
 }
 
@@ -730,17 +934,53 @@ function fullRequestSpan(text: string): RequirementActivationSpan {
 function learnedSurfaceSpans(text: string, surface: string): RequirementActivationSpan[] {
   if (!surface) return [];
   const spans: RequirementActivationSpan[] = [];
-  let fromIndex = 0;
-  while (fromIndex <= text.length - surface.length) {
-    const utf16Start = text.indexOf(surface, fromIndex);
+  const normalizedText = text.normalize("NFKC");
+  const foldedText = normalizedText.toLocaleLowerCase();
+  const foldedSurface = surface.normalize("NFKC").toLocaleLowerCase();
+  if (!foldedSurface) return [];
+  let cursor = 0;
+  while (cursor <= foldedText.length - foldedSurface.length) {
+    const utf16Start = foldedText.indexOf(foldedSurface, cursor);
     if (utf16Start < 0) break;
+    const utf16End = utf16Start + foldedSurface.length;
+    cursor = utf16Start + Math.max(1, foldedSurface.length);
+    if (!unicodeTokenBoundary(normalizedText, utf16Start, utf16End)) continue;
     spans.push({
-      charStart: codePoints(text.slice(0, utf16Start)).length,
-      charEnd: codePoints(text.slice(0, utf16Start + surface.length)).length
+      charStart: codePoints(normalizedText.slice(0, utf16Start)).length,
+      charEnd: codePoints(normalizedText.slice(0, utf16End)).length
     });
-    fromIndex = utf16Start + surface.length;
+    if (spans.length >= 32) break;
   }
   return spans;
+}
+
+function learnedPatternSpans(
+  text: string,
+  surface: string,
+  anchor: string | undefined
+): RequirementActivationSpan[] {
+  const spans = learnedSurfaceSpans(text, surface);
+  const leading = codePoints(text).length - codePoints(text.trimStart()).length;
+  const trimmedLength = codePoints(text.trim()).length;
+  if (anchor === "start") return spans.filter(span => span.charStart === leading);
+  if (anchor === "end") return spans.filter(span => span.charEnd === leading + trimmedLength);
+  return spans;
+}
+
+function unicodeTokenBoundary(text: string, start: number, end: number): boolean {
+  const before = start > 0 ? text.slice(0, start).match(/.$/u)?.[0] : undefined;
+  const after = end < text.length ? text.slice(end).match(/^./u)?.[0] : undefined;
+  return !isUnicodeWordPoint(before) && !isUnicodeWordPoint(after);
+}
+
+function isUnicodeWordPoint(value: string | undefined): boolean {
+  return value !== undefined && /[\p{L}\p{N}]/u.test(value);
+}
+
+function hasRequirementCoefficients(
+  value: Partial<Record<TurnRequirementDimension, number>>
+): boolean {
+  return TURN_REQUIREMENT_DIMENSIONS.some(dimension => value[dimension] !== undefined);
 }
 
 function jsonSpan(value: JsonValue | undefined): RequirementActivationSpan | undefined {

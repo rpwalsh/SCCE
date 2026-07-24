@@ -29,15 +29,14 @@ describe("corpus registry", () => {
 
     const plan = languageMemoryHydrationPlan(registry, { ngramModels: 10 });
     expect(plan.find(item => item.sourceSystem === "gutenberg")?.limits.ngramModels).toBe(7);
-    expect(plan.find(item => item.sourceSystem === "gutenberg")?.querySourceSystems).toEqual(expect.arrayContaining(["gutenberg", canonicalCorpusSourceSystemId("gutenberg")]));
-    expect(plan.find(item => item.sourceSystem === "wikipedia")?.querySourceSystems).toEqual(expect.arrayContaining(["wikipedia", "wikimedia", canonicalCorpusSourceSystemId("wikipedia")]));
+    expect(plan.find(item => item.sourceSystem === "gutenberg")?.querySourceSystems).toEqual([canonicalCorpusSourceSystemId("gutenberg")]);
+    expect(plan.find(item => item.sourceSystem === "wikipedia")?.querySourceSystems).toEqual([canonicalCorpusSourceSystemId("wikipedia")]);
     expect(plan.every(item => item.limits.ngramModels <= 10)).toBe(true);
   });
 
-  it("hydrates the Mouth language path from non-Wikipedia source systems", async () => {
-    const queried: string[] = [];
-    const queriedProfileIds: string[][] = [];
-    const storage = corpusQueryStorage(queried, queriedProfileIds);
+  it("does not guess a dominant Mouth language profile during surface-free warmup", async () => {
+    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const storage = corpusQueryStorage(queried);
     const kernel = createScceKernel({
       storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -52,20 +51,45 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: true, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.language?.loaded).toBe(true);
-    expect(queried).toContain("gutenberg");
-    expect(queried).toContain("oss_docs");
-    expect(queried).toContain("oss_code");
-    expect(queried.filter(source => source === "wikipedia").length).toBeGreaterThan(0);
-    expect(queriedProfileIds.length).toBeGreaterThan(0);
-    expect(queriedProfileIds.every(profileIds => profileIds.includes("profile.corpus-registry"))).toBe(true);
+    const exactProfileQueries = queried.filter(query => query.profileIds.length > 0);
+    expect(exactProfileQueries).toEqual([]);
+    expect(queried.some(query => query.sourceSystem === "corrections")).toBe(true);
+  });
+
+  it("warms an explicitly source-owned language cluster once by exact profile", async () => {
+    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const kernel = createScceKernel({
+      storage: corpusQueryStorage(queried, true),
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async () => ({ build: commandResult(), test: commandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      corpusRegistry: createCorpusRegistry([{ sourceSystem: "gutenberg", enabled: true }])
+    });
+
+    await kernel.warmup({ language: true, graph: false, brain: false, profile: false, corrections: false });
+
+    const exactProfileQueries = queried.filter(query => query.profileIds.length > 0);
+    expect(exactProfileQueries).toHaveLength(5);
+    expect(exactProfileQueries.every(query => query.sourceSystem === undefined)).toBe(true);
+    expect(exactProfileQueries.every(query => query.profileIds.includes("profile.corpus-registry"))).toBe(true);
   });
 });
 
-function corpusQueryStorage(queried: string[], queriedProfileIds: string[][]): ScceStorage {
+function corpusQueryStorage(
+  queried: Array<{ sourceSystem?: string; profileIds: string[] }>,
+  sourceOwned = false
+): ScceStorage {
   const events: ScceEvent[] = [];
   const profile: LanguageProfile = {
     id: "profile.corpus-registry",
     sourceVersionId: "source.corpus-registry" as never,
+    ...(sourceOwned ? {
+      discoveredNames: [{
+        surface: "language.fixture",
+        evidenceRefs: [],
+        sourceVersionRefs: ["source.corpus-registry" as never],
+        confidence: 1
+      }]
+    } : {}),
     scripts: [{ script: "script.opaque", mass: 1 }],
     symbolShapes: [],
     charNgrams: [],
@@ -74,10 +98,10 @@ function corpusQueryStorage(queried: string[], queriedProfileIds: string[][]): S
     createdAt: 1
   };
   const remember = async (query?: { sourceSystem?: string; profileIds?: readonly string[] }) => {
-    if (query?.sourceSystem) {
-      queried.push(query.sourceSystem);
-      queriedProfileIds.push([...(query.profileIds ?? [])]);
-    }
+    queried.push({
+      sourceSystem: query?.sourceSystem,
+      profileIds: [...(query?.profileIds ?? [])]
+    });
     return [];
   };
   return {

@@ -21,7 +21,7 @@ describe("language-memory profile scope", () => {
       patterns: [pattern(selected, "pattern.selected"), pattern(other, "pattern.other")],
       semanticFrames: [
         frame("frame.profile", { profileId: selected.id, sourceVersionId: "source.unrelated" }),
-        frame("frame.source", { sourceVersionId: selected.sourceVersionId }),
+        frame("frame.source-only", { sourceVersionId: selected.sourceVersionId }),
         frame("frame.other", { profileId: other.id, sourceVersionId: other.sourceVersionId }),
         frame("frame.unscoped", {})
       ]
@@ -31,12 +31,12 @@ describe("language-memory profile scope", () => {
 
     expect(scoped.importedUnits.map(row => row.id)).toEqual(["unit.selected"]);
     expect(scoped.importedPatterns.map(row => row.id)).toEqual(["pattern.selected"]);
-    expect(scoped.importedSemanticFrames.map(row => row.id)).toEqual(["frame.profile", "frame.source"]);
+    expect(scoped.importedSemanticFrames.map(row => row.id)).toEqual(["frame.profile"]);
     expect(scoped.audit).toMatchObject({
       profileId: selected.id,
       purityProven: true,
-      retained: { units: 1, patterns: 1, semanticFrames: 2 },
-      rejected: { units: 1, patterns: 1, semanticFrames: 2 }
+      retained: { units: 1, patterns: 1, semanticFrames: 1 },
+      rejected: { units: 1, patterns: 1, semanticFrames: 3 }
     });
   });
 
@@ -57,7 +57,7 @@ describe("language-memory profile scope", () => {
       patterns: [pattern(first, "pattern.a"), pattern(second, "pattern.b"), pattern(other, "pattern.other")],
       semanticFrames: [
         frame("frame.explicit-member", { profileId: first.id, sourceVersionId: "source.unrelated" }),
-        frame("frame.source-fallback", { sourceVersionId: second.sourceVersionId }),
+        frame("frame.source-only", { sourceVersionId: second.sourceVersionId }),
         frame("frame.explicit-other", { profileId: other.id, sourceVersionId: first.sourceVersionId }),
         frame("frame.unowned", {})
       ]
@@ -69,7 +69,7 @@ describe("language-memory profile scope", () => {
     expect(scoped.importedObservations.map(row => row.id).sort()).toEqual(["observation.a", "observation.b"]);
     expect(scoped.importedUnits.map(row => row.id).sort()).toEqual(["unit.a", "unit.b"]);
     expect(scoped.importedPatterns.map(row => row.id).sort()).toEqual(["pattern.a", "pattern.b"]);
-    expect(scoped.importedSemanticFrames.map(row => row.id).sort()).toEqual(["frame.explicit-member", "frame.source-fallback"]);
+    expect(scoped.importedSemanticFrames.map(row => row.id)).toEqual(["frame.explicit-member"]);
     expect(scoped.scope).toMatchObject({
       mode: "cluster",
       clusterId: selected.id,
@@ -80,8 +80,8 @@ describe("language-memory profile scope", () => {
     });
     expect(scoped.audit).toMatchObject({
       purityProven: true,
-      retained: { modelRecords: 2, observations: 2, units: 2, patterns: 2, semanticFrames: 2 },
-      rejected: { modelRecords: 1, observations: 1, units: 1, patterns: 1, semanticFrames: 2 }
+      retained: { modelRecords: 2, observations: 2, units: 2, patterns: 2, semanticFrames: 1 },
+      rejected: { modelRecords: 1, observations: 1, units: 1, patterns: 1, semanticFrames: 3 }
     });
   });
 
@@ -130,10 +130,16 @@ describe("language-memory profile scope", () => {
   it("gives explicit n-gram profile ownership precedence over a shared source version", () => {
     const selected = profile("profile.selected", "source.shared");
     const other = profile("profile.other", "source.shared");
+    const sourceOnlyModel = model(selected, "model.source-only");
+    delete (sourceOnlyModel.modelJson as Record<string, unknown>).profileId;
+    const sourceOnlyObservation = {
+      ...observation(selected, "observation.source-only"),
+      metadata: null
+    };
     const runtime = createLanguageMemoryRuntime();
     const state = runtime.hydrate({
-      models: [model(selected, "model.selected"), model(other, "model.other")],
-      observations: [observation(selected, "observation.selected"), observation(other, "observation.other")]
+      models: [model(selected, "model.selected"), model(other, "model.other"), sourceOnlyModel],
+      observations: [observation(selected, "observation.selected"), observation(other, "observation.other"), sourceOnlyObservation]
     });
 
     const scoped = scopeLanguageMemoryStateToCluster(state, cluster("cluster.selected", [selected]));

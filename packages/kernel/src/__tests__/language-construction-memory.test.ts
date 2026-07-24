@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+  CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA,
+  ENGLISH_CREATIVE_EVENT_COMPILER_ID,
   LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2,
+  compileEnglishCreativeEventConstructionPattern,
   compileLanguageConstructionPattern,
   hydrateLanguageConstructionPatterns
 } from "../language-construction-memory.js";
@@ -170,6 +175,152 @@ describe("durable language-construction memory", () => {
     expect(surfaceMaterial).not.toContain(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
     expect(surfaceMaterial).not.toContain(compiled.id);
     expect(surfaceMaterial).not.toContain(String((compiled.patternJson as Record<string, JsonValue>).contentDigest));
+  });
+});
+
+describe("source-verified English creative argument frames", () => {
+  it("persists and re-verifies patient and complement heads without a source sentence body", () => {
+    const evidence = evidenceSpan(
+      "source.en",
+      "He considered the impossible bargain. She attributed the signal to a damaged instrument. I searched through the ruined laboratory. He carried the heavy lantern.",
+      0
+    );
+    const compiled = compileEnglishCreativeEventConstructionPattern({
+      profileId: "profile.en",
+      evidence: [evidence],
+      hasher,
+      updatedAt: 91_500
+    });
+
+    expect(compiled.status).toBe("compiled");
+    if (compiled.status !== "compiled") return;
+    const hydrated = hydrateLanguageConstructionPatterns({
+      patterns: [compiled.pattern],
+      evidence: [evidence],
+      hasher
+    });
+    expect(hydrated.rejected).toEqual([]);
+    const attributed = hydrated.bundles[0]?.creativeEvents
+      ?.find(event => event.forms.infinitive === "attribute");
+    expect(attributed?.compilerId).toBe(ENGLISH_CREATIVE_EVENT_COMPILER_ID);
+    expect(attributed?.argumentFrame).toMatchObject({
+      schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
+      roleIds: ["scce.role.agent", "scce.role.patient", "scce.role.complement"],
+      bindings: [
+        {
+          roleId: "scce.role.patient",
+          surface: "signal"
+        },
+        {
+          roleId: "scce.role.complement",
+          surface: "instrument",
+          connector: {
+            surface: "to"
+          }
+        }
+      ]
+    });
+    const persisted = (compiled.pattern.patternJson as Record<string, JsonValue>).bundle as Record<string, JsonValue>;
+    expect(JSON.stringify(persisted)).not.toContain("She attributed the signal to a damaged instrument.");
+    for (const binding of attributed?.argumentFrame.bindings ?? []) {
+      expect([...evidence.text].slice(binding.startCodePoint, binding.endCodePoint).join(""))
+        .toBe(binding.surface);
+      if (binding.connector) {
+        expect([...evidence.text].slice(binding.connector.startCodePoint, binding.connector.endCodePoint).join(""))
+          .toBe(binding.connector.surface);
+      }
+    }
+  });
+
+  it("preserves source-bound lemmas through conjugation and hydration", () => {
+    const evidence = evidenceSpan(
+      "source.en",
+      "He owned the lantern. She encompassed the valley. He considered the map. She attributed the signal to an instrument. I searched through the laboratory. He carried the letter.",
+      0
+    );
+    const compiled = compileEnglishCreativeEventConstructionPattern({
+      profileId: "profile.en",
+      evidence: [evidence],
+      hasher,
+      updatedAt: 91_500
+    });
+
+    expect(compiled.status).toBe("compiled");
+    if (compiled.status !== "compiled") return;
+    const hydrated = hydrateLanguageConstructionPatterns({
+      patterns: [compiled.pattern],
+      evidence: [evidence],
+      hasher
+    });
+
+    expect(hydrated.rejected).toEqual([]);
+    expect(hydrated.bundles).toHaveLength(1);
+    expect(hydrated.bundles[0]?.creativeEvents?.map(event => event.forms.infinitive))
+      .toEqual(expect.arrayContaining(["own", "encompass", "consider", "attribute", "search", "carry"]));
+  });
+
+  it("rejects a tampered argument binding atomically", () => {
+    const evidence = evidenceSpan(
+      "source.en",
+      "He considered the impossible bargain. She attributed the signal to a damaged instrument. I searched through the ruined laboratory. He carried the heavy lantern.",
+      0
+    );
+    const compiled = compileEnglishCreativeEventConstructionPattern({
+      profileId: "profile.en",
+      evidence: [evidence],
+      hasher,
+      updatedAt: 91_500
+    });
+    if (compiled.status !== "compiled") throw new Error(JSON.stringify(compiled.issues));
+    const tampered = structuredClone(compiled.pattern);
+    const patternJson = tampered.patternJson as Record<string, JsonValue>;
+    const bundle = patternJson.bundle as Record<string, JsonValue>;
+    const events = bundle.events as Array<Record<string, JsonValue>>;
+    const frame = events[0]?.argumentFrame as Record<string, JsonValue>;
+    const bindings = frame.bindings as Array<Record<string, JsonValue>>;
+    bindings[0]!.surface = "counterfeit";
+
+    const hydrated = hydrateLanguageConstructionPatterns({
+      patterns: [tampered],
+      evidence: [evidence],
+      hasher
+    });
+    expect(hydrated.bundles).toEqual([]);
+    expect(hydrated.rejected).toEqual([expect.objectContaining({
+      code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member
+    })]);
+  });
+
+  it("rejects the incompatible v2 creative schema with an explicit reason", () => {
+    const evidence = evidenceSpan(
+      "source.en",
+      "He considered the impossible bargain. She attributed the signal to a damaged instrument. I searched through the ruined laboratory. He carried the heavy lantern.",
+      0
+    );
+    const compiled = compileEnglishCreativeEventConstructionPattern({
+      profileId: "profile.en",
+      evidence: [evidence],
+      hasher,
+      updatedAt: 91_500
+    });
+    if (compiled.status !== "compiled") throw new Error(JSON.stringify(compiled.issues));
+    const legacy = structuredClone(compiled.pattern);
+    const patternJson = legacy.patternJson as Record<string, JsonValue>;
+    const bundle = patternJson.bundle as Record<string, JsonValue>;
+    patternJson.schema = LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
+    bundle.schema = LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
+
+    const hydrated = hydrateLanguageConstructionPatterns({
+      patterns: [legacy],
+      evidence: [evidence],
+      hasher
+    });
+    expect(CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA)
+      .not.toBe(LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2);
+    expect(hydrated.bundles).toEqual([]);
+    expect(hydrated.rejected).toEqual([expect.objectContaining({
+      code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.legacyCreativeV2
+    })]);
   });
 });
 

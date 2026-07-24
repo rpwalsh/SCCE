@@ -60,6 +60,42 @@ describe("learned language-profile surface selection", () => {
     expect(selectLanguageProfileClusterForSurface(clusters, "a")).toBeUndefined();
   });
 
+  it("uses a sole source-owned identity to resolve nearby topic clusters", () => {
+    const surface = "write a short story about an inventor fighting dragons";
+    const owned = sourceOwnedProfile(
+      profile("profile.owned", `${surface} ${"qelari ".repeat(30)}`, "script.shared"),
+      "source-language-id"
+    );
+    const unowned = profile(
+      "profile.unowned",
+      `${surface} ${"zomiku ".repeat(30)}`,
+      "script.shared"
+    );
+    const selected = selectLanguageProfileClusterForSurface(
+      buildLanguageProfileClusters([unowned, owned]),
+      surface
+    );
+
+    expect(selected?.cluster.profileIds).toEqual([owned.id]);
+  });
+
+  it("keeps competing source-owned identities ambiguous", () => {
+    const surface = "write a short story about an inventor fighting dragons";
+    const first = sourceOwnedProfile(
+      profile("profile.first-owned", `${surface} qelari qelari qelari qelari`, "script.shared"),
+      "source-language-a"
+    );
+    const second = sourceOwnedProfile(
+      profile("profile.second-owned", `${surface} zomiku zomiku zomiku zomiku`, "script.shared"),
+      "source-language-b"
+    );
+
+    expect(selectLanguageProfileClusterForSurface(
+      buildLanguageProfileClusters([first, second]),
+      surface
+    )).toBeUndefined();
+  });
+
   it("selects learned unknown and mixed-script clusters without script-name routing", () => {
     const learned = profile("profile.mixed", "აბგᎠᎡᎢაბგᎠᎡᎢ", "script.unregistered");
     learned.scripts = [
@@ -150,5 +186,17 @@ function profile(
     direction,
     entropy: 1,
     createdAt: 1
+  };
+}
+
+function sourceOwnedProfile(profile: LanguageProfile, alias: string): LanguageProfile {
+  return {
+    ...profile,
+    discoveredNames: [{
+      surface: alias,
+      evidenceRefs: [],
+      sourceVersionRefs: [profile.sourceVersionId],
+      confidence: 1
+    }]
   };
 }

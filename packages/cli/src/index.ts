@@ -355,7 +355,7 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
     if (!runtime) return usage("scce corpus train <gutenberg|oss> <path> [limits]");
     const kind = args[1];
     const target = args[2];
-    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss> <path> [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
+    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss> <path> [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
     const options = parseCorpusTrainOptions(args.slice(3));
     if (kind === "gutenberg") {
       printJson(await trainGutenbergCorpus({
@@ -366,7 +366,8 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
         maxDepth: options.maxDepth,
         ngramMaxOrder: options.ngramMaxOrder,
         ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
-        ngramVocabularyLimit: options.ngramVocabularyLimit
+        ngramVocabularyLimit: options.ngramVocabularyLimit,
+        languageAliases: options.languageAliases
       }));
       return;
     }
@@ -1103,6 +1104,7 @@ function parseCorpusTrainOptions(args: string[]): {
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
+  languageAliases?: string[];
 } {
   const out: {
     maxFiles?: number;
@@ -1113,6 +1115,7 @@ function parseCorpusTrainOptions(args: string[]): {
     ngramMaxOrder?: number;
     ngramMaxCountersPerOrder?: number;
     ngramVocabularyLimit?: number;
+    languageAliases?: string[];
   } = {};
   for (const arg of args) {
     const [flag, raw] = arg.split("=", 2);
@@ -1123,6 +1126,9 @@ function parseCorpusTrainOptions(args: string[]): {
     else if (flag === "--ngram-max-order" && Number.isFinite(num)) out.ngramMaxOrder = Math.max(1, Math.min(6, Math.floor(num)));
     else if (flag === "--ngram-max-counters" && Number.isFinite(num)) out.ngramMaxCountersPerOrder = Math.max(32, Math.floor(num));
     else if (flag === "--ngram-vocabulary-limit" && Number.isFinite(num)) out.ngramVocabularyLimit = Math.max(128, Math.floor(num));
+    else if (flag === "--language" && raw?.trim()) {
+      out.languageAliases = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
+    }
     else if (arg === "--docs-only") {
       out.includeDocs = true;
       out.includeSource = false;

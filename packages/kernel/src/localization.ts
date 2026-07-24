@@ -15,13 +15,14 @@ export function registerMessageBundle(locale: LocaleId, bundle: MessageBundle): 
 }
 
 export function localeFromMetadata(metadata: JsonValue | undefined, text = ""): LocaleId {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return inferLocaleFromText(text) ?? DEFAULT_LOCALE;
+  void text;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return DEFAULT_LOCALE;
   const record = metadata as Record<string, JsonValue>;
   for (const key of ["locale", "language", "languageTag", "uiLocale", "responseLocale"]) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) return normalizeLocale(value);
   }
-  return inferLocaleFromText(text) ?? DEFAULT_LOCALE;
+  return DEFAULT_LOCALE;
 }
 
 export function formatSurfaceMessage(key: MessageKey, vars: MessageVars = {}, locale: LocaleId = DEFAULT_LOCALE): string {
@@ -36,15 +37,6 @@ export function formatSurfaceMessage(key: MessageKey, vars: MessageVars = {}, lo
 function normalizeLocale(locale: LocaleId): LocaleId {
   const clean = String(locale || DEFAULT_LOCALE).trim().toLocaleLowerCase();
   return clean.split(/[-_]/u)[0] || DEFAULT_LOCALE;
-}
-
-function inferLocaleFromText(text: string): LocaleId | undefined {
-  if (!text) return undefined;
-  if (/\p{Script=Hangul}/u.test(text)) return "ko";
-  if (/\p{Script=Hiragana}|\p{Script=Katakana}/u.test(text)) return "ja";
-  if (/\p{Script=Han}/u.test(text)) return "zh";
-  if (/\p{Script=Arabic}/u.test(text)) return "ar";
-  return undefined;
 }
 
 export function validationMessageKey(key: MessageKey): string {

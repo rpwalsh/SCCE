@@ -22,38 +22,35 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls[1]?.sql.indexOf("profile_id=ANY")).toBeLessThan(calls[1]!.sql.indexOf("LIMIT"));
   });
 
-  it("filters model and observation ownership by member source versions", async () => {
+  it("requires exact profile ownership for model and observation reads", async () => {
     const { adapter, calls } = fixture();
 
-    await adapter.languageMemory.listNgramModels({ profileIds: ["profile.a"], sourceVersionIds: ["source.a", "source.b"], limit: 7 });
-    await adapter.languageMemory.listNgramObservations({ profileIds: ["profile.a"], sourceVersionIds: ["source.a", "source.b"], limit: 7 });
+    await adapter.languageMemory.listNgramModels({ profileIds: ["profile.a"], limit: 7 });
+    await adapter.languageMemory.listNgramObservations({ profileIds: ["profile.a"], limit: 7 });
 
     expect(calls[0]?.sql).toContain("model_json->>'profileId'=ANY($1::text[])");
-    expect(calls[0]?.sql).toContain("NULLIF(model_json->>'profileId','') IS NULL");
-    expect(calls[0]?.sql).toContain("model_json->>'sourceVersionId'=ANY($2::text[])");
-    expect(calls[0]?.sql.indexOf("sourceVersionId")).toBeLessThan(calls[0]!.sql.indexOf("LIMIT"));
-    expect(calls[1]?.sql).toContain("metadata_json->>'profileId'=ANY($1::text[])");
-    expect(calls[1]?.sql).toContain("NULLIF(metadata_json->>'profileId','') IS NULL");
-    expect(calls[1]?.sql).toContain("source_version_id=ANY($2::text[])");
-    expect(calls[1]?.sql.indexOf("source_version_id")).toBeLessThan(calls[1]!.sql.indexOf("LIMIT"));
+    expect(calls[0]?.sql).not.toContain("sourceVersionId");
+    expect(calls[0]?.params).toEqual([["profile.a"], 7]);
+    expect(calls[1]?.sql).toContain("FROM unnest($1::text[]) AS owner(owner_id)");
+    expect(calls[1]?.sql).toContain("metadata_json->>'profileId'=owner.owner_id");
+    expect(calls[1]?.params).toEqual([["profile.a"], 7]);
+    expect(calls).toHaveLength(2);
   });
 
-  it("gives explicit semantic-frame profile ownership precedence over source fallback", async () => {
+  it("requires exact profile ownership for semantic-frame reads", async () => {
     const { adapter, calls } = fixture();
 
     await adapter.languageMemory.listSemanticFrames({
       profileIds: ["profile.a"],
-      sourceVersionIds: ["source.a"],
       sourceSystem: "fixture",
       limit: 9
     });
 
     const sql = calls[0]!.sql;
     expect(sql).toContain("frame_json->>'profileId'=ANY");
-    expect(sql).toContain("NULLIF(frame_json->>'profileId','') IS NULL");
-    expect(sql).toContain("frame_json->>'sourceVersionId'=ANY");
+    expect(sql).not.toContain("sourceVersionId");
     expect(sql.indexOf("profileId")).toBeLessThan(sql.indexOf("LIMIT"));
-    expect(calls[0]?.params).toEqual(["fixture", ["profile.a"], ["source.a"], 9]);
+    expect(calls[0]?.params).toEqual(["fixture", ["profile.a"], 9]);
   });
 
   it("filters exact semantic-frame surfaces before the matching rank limit", async () => {

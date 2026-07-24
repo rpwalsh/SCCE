@@ -664,6 +664,11 @@ export interface LanguageProfileQuery {
   limit: number;
   /** Retain only profiles that own at least one durable language-memory artifact. */
   referencedByLanguageMemory?: boolean;
+  /**
+   * Exact source-derived language aliases. Adapters must resolve these through
+   * durable alias ownership rather than scanning recent profile JSON.
+   */
+  sourceDerivedAliases?: readonly string[];
 }
 
 export interface LanguageMemoryStore {
@@ -678,11 +683,11 @@ export interface LanguageMemoryStore {
   putSemanticFrame(frame: SemanticFrameRecord): Promise<void>;
   putSemanticFrames?(frames: readonly SemanticFrameRecord[]): Promise<void>;
   putTranslationAlignment(alignment: TranslationAlignmentRecord): Promise<void>;
-  listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramModelRecord[]>;
-  listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
+  listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramModelRecord[]>;
+  listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number }): Promise<LanguageUnitRecord[]>;
   listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<LanguagePatternRecord[]>;
-  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceVersionIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
+  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
 
@@ -824,7 +829,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 12;
+export const POSTGRES_SCHEMA_VERSION = 13;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -849,6 +854,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "forecast_envelopes",
   "learning_needs",
   "language_profiles",
+  "language_profile_aliases",
   "ngram_observations",
   "ngram_models",
   "language_units",

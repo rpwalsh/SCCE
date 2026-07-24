@@ -4,6 +4,7 @@ import {
   POSTGRES_SCHEMA_VERSION,
   createAlphaLayer,
   featureSet,
+  normalizeSourceLanguageAlias,
   type AlphaTraceRecord,
   type AlphaTrace,
   type BenchmarkStore,
@@ -181,18 +182,20 @@ export class PostgresStorageAdapter implements ScceStorage {
   }
 
   async verify(): Promise<{ ok: boolean; tables: string[]; errors: string[] }> {
-    const rows = await this.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema=$1 ORDER BY table_name`,
-      [this.schema]
-    );
-    const vector = await this.query<{ installed: boolean }>(`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector') AS installed`);
+    const [rows, vector, columns] = await Promise.all([
+      this.query<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema=$1 ORDER BY table_name`,
+        [this.schema]
+      ),
+      this.query<{ installed: boolean }>(`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector') AS installed`),
+      this.query<{ table_name: string; column_name: string }>(
+        `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=$1`,
+        [this.schema]
+      )
+    ]);
     const tables = rows.map(row => row.table_name);
     const missing = POSTGRES_REQUIRED_TABLES.filter(table => !tables.includes(table));
     const errors = missing.map(table => `missing table: ${table}`);
-    const columns = await this.query<{ table_name: string; column_name: string }>(
-      `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=$1`,
-      [this.schema]
-    );
     const columnMap = new Map<string, Set<string>>();
     for (const row of columns) {
       let set = columnMap.get(row.table_name);
@@ -218,22 +221,28 @@ export class PostgresStorageAdapter implements ScceStorage {
   async status(): Promise<JsonValue> {
     try {
       const verify = await this.verify();
-      const meta = await this.query<{ value_json: JsonValue; updated_at: Date }>(
-        `SELECT value_json, updated_at FROM ${this.table("storage_meta")} WHERE key='schema_version'`
-      ).catch(() => []);
-      const active = await this.brainImports.active().catch(() => ({ activeImportRunIds: [] }));
+      const [meta, active] = await Promise.all([
+        this.query<{ value_json: JsonValue; updated_at: Date }>(
+          `SELECT value_json, updated_at FROM ${this.table("storage_meta")} WHERE key='schema_version'`
+        ).catch(() => []),
+        this.brainImports.active().catch(() => ({ activeImportRunIds: [] }))
+      ]);
       const counts: Record<string, number> = {};
       const countErrors: string[] = [];
-      for (const table of POSTGRES_REQUIRED_TABLES) {
-        if (!verify.tables.includes(table)) continue;
+      const countResults = await Promise.all(POSTGRES_REQUIRED_TABLES.map(async table => {
+        if (!verify.tables.includes(table)) return { table };
         try {
           const rows = await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${this.table(table)}`);
           const count = Number(rows[0]?.count);
           if (!Number.isSafeInteger(count) || count < 0) throw new Error("invalid exact row count");
-          counts[table] = count;
+          return { table, count };
         } catch (error) {
-          countErrors.push(`exact count failed for ${table}: ${error instanceof Error ? error.message : String(error)}`);
+          return { table, error: `exact count failed for ${table}: ${error instanceof Error ? error.message : String(error)}` };
         }
+      }));
+      for (const result of countResults) {
+        if (result.count !== undefined) counts[result.table] = result.count;
+        if (result.error) countErrors.push(result.error);
       }
       const schemaVersion = meta[0]?.value_json && typeof meta[0].value_json === "object" && !Array.isArray(meta[0].value_json)
         ? (meta[0].value_json as Record<string, JsonValue>).version
@@ -353,6 +362,56 @@ function schemaStatements(q: string): string[] {
     `CREATE TABLE IF NOT EXISTS ${q}.forecast_envelopes (id TEXT PRIMARY KEY, source_state_id TEXT NOT NULL, horizon INT NOT NULL, mean_vector DOUBLE PRECISION[] NOT NULL, covariance_json JSONB NOT NULL, interval_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.learning_needs (id TEXT PRIMARY KEY, episode_id TEXT, goal TEXT NOT NULL, gap_json JSONB NOT NULL, source_plan_json JSONB NOT NULL, status TEXT NOT NULL, priority DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_profiles (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, profile_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.language_profile_aliases (
+       alias_key TEXT NOT NULL,
+       alias_surface TEXT NOT NULL,
+       profile_id TEXT NOT NULL REFERENCES ${q}.language_profiles(id) ON DELETE CASCADE,
+       source_version_id TEXT NOT NULL,
+       evidence_refs TEXT[] NOT NULL,
+       source_version_refs TEXT[] NOT NULL,
+       confidence DOUBLE PRECISION NOT NULL,
+       updated_at TIMESTAMPTZ NOT NULL,
+       PRIMARY KEY(alias_key,profile_id)
+     )`,
+    `WITH candidates AS (
+       SELECT LOWER(BTRIM(name->>'surface')) AS alias_key,
+              BTRIM(name->>'surface') AS alias_surface,
+              lp.id AS profile_id,
+              lp.source_version_id,
+              ARRAY(SELECT jsonb_array_elements_text(COALESCE(name->'evidenceRefs','[]'::jsonb))) AS evidence_refs,
+              ARRAY(SELECT jsonb_array_elements_text(COALESCE(name->'sourceVersionRefs','[]'::jsonb))) AS source_version_refs,
+              GREATEST(0, LEAST(1, COALESCE((name->>'confidence')::DOUBLE PRECISION,0))) AS confidence,
+              lp.created_at AS updated_at
+       FROM ${q}.language_profiles lp
+       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(lp.profile_json->'discoveredNames','[]'::jsonb)) name
+       WHERE BTRIM(COALESCE(name->>'surface',''))<>''
+     ), owned AS (
+       SELECT *
+       FROM candidates c
+       WHERE c.source_version_id=ANY(c.source_version_refs)
+          OR EXISTS (
+            SELECT 1
+            FROM ${q}.evidence_spans e
+            WHERE e.id=ANY(c.evidence_refs)
+              AND e.source_version_id=c.source_version_id
+          )
+     ), selected AS (
+       SELECT DISTINCT ON (alias_key,profile_id) *
+       FROM owned
+       ORDER BY alias_key,profile_id,confidence DESC,alias_surface
+     )
+     INSERT INTO ${q}.language_profile_aliases(
+       alias_key,alias_surface,profile_id,source_version_id,evidence_refs,source_version_refs,confidence,updated_at
+     )
+     SELECT alias_key,alias_surface,profile_id,source_version_id,evidence_refs,source_version_refs,confidence,updated_at
+     FROM selected
+     ON CONFLICT(alias_key,profile_id) DO UPDATE SET
+       alias_surface=EXCLUDED.alias_surface,
+       source_version_id=EXCLUDED.source_version_id,
+       evidence_refs=EXCLUDED.evidence_refs,
+       source_version_refs=EXCLUDED.source_version_refs,
+       confidence=EXCLUDED.confidence,
+       updated_at=EXCLUDED.updated_at`,
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_observations (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, order_n INT NOT NULL, history TEXT[] NOT NULL, symbol TEXT NOT NULL, count BIGINT NOT NULL, field_weight DOUBLE PRECISION NOT NULL, source_version_id TEXT, evidence_id TEXT, observed_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL)`,
@@ -515,6 +574,7 @@ function schemaStatements(q: string): string[] {
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_updated ON ${q}.ngram_models((model_json->>'profileId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profile_alias_lookup ON ${q}.language_profile_aliases(alias_key,confidence DESC,updated_at DESC,profile_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_source_system_rank ON ${q}.language_units((metadata_json->>'sourceSystem'), alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_source_system_rank ON ${q}.language_patterns((pattern_json->>'sourceSystem'), support DESC, updated_at DESC)`,
@@ -573,6 +633,7 @@ function requiredHydrationColumns(): Record<string, string[]> {
     validation_graphs: ["id", "construct_id", "graph_json", "passed"],
     emission_graphs: ["id", "construct_id", "graph_json", "output_refs"],
     language_profiles: ["id", "source_version_id", "profile_json"],
+    language_profile_aliases: ["alias_key", "alias_surface", "profile_id", "source_version_id", "evidence_refs", "source_version_refs", "confidence", "updated_at"],
     ngram_observations: ["id", "stream_id", "language_hint", "order_n", "history", "symbol", "count", "metadata_json"],
     ngram_models: ["id", "stream_id", "language_hint", "max_order", "discount", "model_json"],
     language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json"],
@@ -1141,7 +1202,18 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
 
 async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuery): Promise<GraphNode[]> {
   if (query.seedNodeIds?.length) return (await storage.query<GraphNodeRow>(`SELECT * FROM ${storage.table("graph_nodes")} WHERE id=ANY($1) LIMIT $2`, [query.seedNodeIds, query.limitNodes ?? 800])).map(rowToGraphNode);
-  if (query.evidenceIds?.length) return (await storage.query<GraphNodeRow>(`SELECT * FROM ${storage.table("graph_nodes")} WHERE evidence_ids && $1 ORDER BY alpha DESC, updated_at DESC LIMIT $2`, [query.evidenceIds, query.limitNodes ?? 800])).map(rowToGraphNode);
+  if (query.evidenceIds?.length) return (await storage.query<GraphNodeRow>(
+    `WITH evidence_candidates AS MATERIALIZED (
+       SELECT *
+       FROM ${storage.table("graph_nodes")}
+       WHERE evidence_ids && $1
+     )
+     SELECT *
+     FROM evidence_candidates
+     ORDER BY alpha DESC, updated_at DESC
+     LIMIT $2`,
+    [query.evidenceIds, query.limitNodes ?? 800]
+  )).map(rowToGraphNode);
   const features = graphQueryFeatures(query);
   if (features.length) return (await storage.query<GraphNodeRow>(
     `SELECT * FROM ${storage.table("graph_nodes")} WHERE features && $1 ORDER BY (SELECT COALESCE(SUM(1.0 / GREATEST(1, array_position($1::text[], feature))), 0) FROM unnest(features) feature WHERE feature=ANY($1)) DESC, alpha DESC, updated_at DESC LIMIT $2`,
@@ -1314,6 +1386,42 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
     async listLanguageProfiles(query) {
       const requestedLimit = typeof query === "number" ? query : query?.limit;
       const boundedLimit = Math.max(1, Math.min(2048, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit!) : 512));
+      if (typeof query === "object" && query?.sourceDerivedAliases !== undefined) {
+        const aliasKeys = [...new Set(query.sourceDerivedAliases
+          .map(normalizeSourceLanguageAlias)
+          .filter(Boolean))].sort();
+        if (!aliasKeys.length) return [];
+        const referencedFilter = query.referencedByLanguageMemory
+          ? `AND (
+               EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
+             )`
+          : "";
+        return (await storage.query<{ profile_json: LanguageProfile }>(
+          `SELECT lp.profile_json
+           FROM ${storage.table("language_profile_aliases")} alias
+           JOIN ${storage.table("language_profiles")} lp
+             ON lp.id=alias.profile_id
+            AND lp.source_version_id=alias.source_version_id
+           WHERE alias.alias_key=ANY($1)
+             AND (
+               alias.source_version_id=ANY(alias.source_version_refs)
+               OR EXISTS (
+                 SELECT 1
+                 FROM ${storage.table("evidence_spans")} e
+                 WHERE e.id=ANY(alias.evidence_refs)
+                   AND e.source_version_id=alias.source_version_id
+               )
+             )
+             ${referencedFilter}
+           ORDER BY alias.confidence DESC,alias.updated_at DESC,lp.id ASC
+           LIMIT $2`,
+          [aliasKeys, boundedLimit]
+        )).map(row => row.profile_json);
+      }
       if (typeof query === "object" && query?.referencedByLanguageMemory) {
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json
@@ -1344,18 +1452,173 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
     profile_json: profile,
     created_at_ms: profile.createdAt
   }));
-  await storage.query(
-    `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,created_at)
-     SELECT r.id, r.source_version_id, r.profile_json, TO_TIMESTAMP(r.created_at_ms/1000.0)
-     FROM jsonb_to_recordset($1::jsonb) AS r(
-       id text,
-       source_version_id text,
-       profile_json jsonb,
-       created_at_ms double precision
-     )
-     ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json`,
-    [JSON.stringify(payload)]
+  const aliases = sourceOwnedLanguageAliasRows(profiles);
+  await storage.tx(async client => {
+    await client.query(
+      `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,created_at)
+       SELECT r.id, r.source_version_id, r.profile_json, TO_TIMESTAMP(r.created_at_ms/1000.0)
+       FROM jsonb_to_recordset($1::jsonb) AS r(
+         id text,
+         source_version_id text,
+         profile_json jsonb,
+         created_at_ms double precision
+       )
+       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json`,
+      [JSON.stringify(payload)]
+    );
+    await client.query(
+      `DELETE FROM ${storage.table("language_profile_aliases")} WHERE profile_id=ANY($1)`,
+      [profiles.map(profile => profile.id)]
+    );
+    if (aliases.length) {
+      await client.query(
+        `WITH rows AS (
+           SELECT *
+           FROM jsonb_to_recordset($1::jsonb) AS r(
+             alias_key text,
+             alias_surface text,
+             profile_id text,
+             source_version_id text,
+             evidence_refs text[],
+             source_version_refs text[],
+             confidence double precision,
+             updated_at_ms double precision
+           )
+         )
+         INSERT INTO ${storage.table("language_profile_aliases")}(
+           alias_key,alias_surface,profile_id,source_version_id,evidence_refs,source_version_refs,confidence,updated_at
+         )
+         SELECT r.alias_key,r.alias_surface,r.profile_id,r.source_version_id,
+                r.evidence_refs,r.source_version_refs,r.confidence,TO_TIMESTAMP(r.updated_at_ms/1000.0)
+         FROM rows r
+         WHERE r.source_version_id=ANY(r.source_version_refs)
+            OR EXISTS (
+              SELECT 1
+              FROM ${storage.table("evidence_spans")} e
+              WHERE e.id=ANY(r.evidence_refs)
+                AND e.source_version_id=r.source_version_id
+            )
+         ON CONFLICT(alias_key,profile_id) DO UPDATE SET
+           alias_surface=EXCLUDED.alias_surface,
+           source_version_id=EXCLUDED.source_version_id,
+           evidence_refs=EXCLUDED.evidence_refs,
+           source_version_refs=EXCLUDED.source_version_refs,
+           confidence=EXCLUDED.confidence,
+           updated_at=EXCLUDED.updated_at`,
+        [JSON.stringify(aliases)]
+      );
+    }
+  });
+}
+
+function sourceOwnedLanguageAliasRows(profiles: readonly LanguageProfile[]): Array<{
+  alias_key: string;
+  alias_surface: string;
+  profile_id: string;
+  source_version_id: string;
+  evidence_refs: string[];
+  source_version_refs: string[];
+  confidence: number;
+  updated_at_ms: number;
+}> {
+  const byOwner = new Map<string, {
+    alias_key: string;
+    alias_surface: string;
+    profile_id: string;
+    source_version_id: string;
+    evidence_refs: string[];
+    source_version_refs: string[];
+    confidence: number;
+    updated_at_ms: number;
+  }>();
+  for (const profile of profiles) {
+    for (const name of profile.discoveredNames ?? []) {
+      const aliasKey = normalizeSourceLanguageAlias(name.surface);
+      if (!aliasKey) continue;
+      const evidenceRefs = [...new Set(name.evidenceRefs.map(String).filter(Boolean))].sort();
+      const sourceVersionRefs = [...new Set((name.sourceVersionRefs ?? []).map(String).filter(Boolean))].sort();
+      if (!evidenceRefs.length && !sourceVersionRefs.includes(String(profile.sourceVersionId))) continue;
+      const candidate = {
+        alias_key: aliasKey,
+        alias_surface: name.surface.normalize("NFC").trim(),
+        profile_id: profile.id,
+        source_version_id: String(profile.sourceVersionId),
+        evidence_refs: evidenceRefs,
+        source_version_refs: sourceVersionRefs,
+        confidence: Math.max(0, Math.min(1, Number.isFinite(name.confidence) ? name.confidence : 0)),
+        updated_at_ms: profile.updatedAt ?? profile.createdAt
+      };
+      const key = `${aliasKey}\u001f${profile.id}`;
+      const existing = byOwner.get(key);
+      if (!existing || candidate.confidence > existing.confidence) byOwner.set(key, candidate);
+    }
+  }
+  return [...byOwner.values()].sort((left, right) =>
+    left.alias_key.localeCompare(right.alias_key)
+    || left.profile_id.localeCompare(right.profile_id)
   );
+}
+
+const NGRAM_OBSERVATION_BATCH_MAX_JSON_BYTES = 32 * 1024 * 1024;
+const NGRAM_OBSERVATION_BATCH_MAX_ROWS = 50_000;
+
+interface NgramObservationBatchRow {
+  id: string;
+  stream_id: string;
+  language_hint: string;
+  order_n: number;
+  history_json: string[];
+  symbol: string;
+  count: number;
+  field_weight: number;
+  source_version_id: string | null;
+  evidence_id: string | null;
+  observed_at_ms: number;
+  metadata_json: JsonValue;
+}
+
+function ngramObservationBatchRow(observation: NgramObservation): NgramObservationBatchRow {
+  return {
+    id: observation.id,
+    stream_id: observation.streamId,
+    language_hint: observation.languageHint,
+    order_n: observation.order,
+    history_json: observation.history,
+    symbol: observation.symbol,
+    count: observation.count,
+    field_weight: observation.fieldWeight,
+    source_version_id: observation.sourceVersionId ?? null,
+    evidence_id: observation.evidenceId ?? null,
+    observed_at_ms: observation.observedAt,
+    metadata_json: observation.metadata
+  };
+}
+
+function* serializedNgramObservationBatches(observations: readonly NgramObservation[]): Generator<string> {
+  let rows: string[] = [];
+  let payloadBytes = 2;
+  for (const observation of observations) {
+    const row = JSON.stringify(ngramObservationBatchRow(observation));
+    const rowBytes = Buffer.byteLength(row, "utf8");
+    if (rowBytes + 2 > NGRAM_OBSERVATION_BATCH_MAX_JSON_BYTES) {
+      throw new Error(
+        `ngram observation ${observation.id} serialized payload exceeds ${NGRAM_OBSERVATION_BATCH_MAX_JSON_BYTES} bytes`
+      );
+    }
+    const separatorBytes = rows.length ? 1 : 0;
+    if (
+      rows.length >= NGRAM_OBSERVATION_BATCH_MAX_ROWS
+      || payloadBytes + separatorBytes + rowBytes > NGRAM_OBSERVATION_BATCH_MAX_JSON_BYTES
+    ) {
+      yield `[${rows.join(",")}]`;
+      rows = [];
+      payloadBytes = 2;
+    }
+    if (rows.length) payloadBytes++;
+    rows.push(row);
+    payloadBytes += rowBytes;
+  }
+  if (rows.length) yield `[${rows.join(",")}]`;
 }
 
 function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMemoryStore {
@@ -1364,28 +1627,21 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       await storage.query(
         `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TO_TIMESTAMP($11/1000.0),$12::jsonb)
-         ON CONFLICT(id) DO UPDATE SET count=EXCLUDED.count, field_weight=GREATEST(n.field_weight,EXCLUDED.field_weight), metadata_json=n.metadata_json || EXCLUDED.metadata_json`,
+         ON CONFLICT(id) DO UPDATE
+         SET count=EXCLUDED.count,
+             field_weight=GREATEST(n.field_weight,EXCLUDED.field_weight),
+             metadata_json=EXCLUDED.metadata_json
+         WHERE n.count IS DISTINCT FROM EXCLUDED.count
+            OR n.field_weight IS DISTINCT FROM GREATEST(n.field_weight,EXCLUDED.field_weight)
+            OR n.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json`,
         [observation.id, observation.streamId, observation.languageHint, observation.order, observation.history, observation.symbol, observation.count, observation.fieldWeight, observation.sourceVersionId ?? null, observation.evidenceId ?? null, observation.observedAt, JSON.stringify(observation.metadata)]
       );
     },
     async putNgramObservationsBatch(observations) {
       if (!observations.length) return;
-      const payload = observations.map(observation => ({
-        id: observation.id,
-        stream_id: observation.streamId,
-        language_hint: observation.languageHint,
-        order_n: observation.order,
-        history_json: observation.history,
-        symbol: observation.symbol,
-        count: observation.count,
-        field_weight: observation.fieldWeight,
-        source_version_id: observation.sourceVersionId ?? null,
-        evidence_id: observation.evidenceId ?? null,
-        observed_at_ms: observation.observedAt,
-        metadata_json: observation.metadata
-      }));
-      await storage.query(
-        `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json)
+      for (const payload of serializedNgramObservationBatches(observations)) {
+        await storage.query(
+          `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json)
          SELECT
            r.id,
            r.stream_id,
@@ -1413,9 +1669,16 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            observed_at_ms double precision,
            metadata_json jsonb
          )
-         ON CONFLICT(id) DO UPDATE SET count=EXCLUDED.count, field_weight=GREATEST(n.field_weight,EXCLUDED.field_weight), metadata_json=n.metadata_json || EXCLUDED.metadata_json`,
-        [JSON.stringify(payload)]
-      );
+         ON CONFLICT(id) DO UPDATE
+         SET count=EXCLUDED.count,
+             field_weight=GREATEST(n.field_weight,EXCLUDED.field_weight),
+             metadata_json=EXCLUDED.metadata_json
+         WHERE n.count IS DISTINCT FROM EXCLUDED.count
+            OR n.field_weight IS DISTINCT FROM GREATEST(n.field_weight,EXCLUDED.field_weight)
+            OR n.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json`,
+          [payload]
+        );
+      }
     },
     async putNgramModel(model) {
       await putNgramModelsBatch(storage, [model]);
@@ -1454,44 +1717,64 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const where: string[] = [];
       if (query.streamId) { params.push(query.streamId); where.push(`stream_id=$${params.length}`); }
       if (query.languageHint) { params.push(query.languageHint); where.push(`language_hint=$${params.length}`); }
-      if (query.profileIds || query.sourceVersionIds) {
-        const ownership: string[] = [];
-        if (query.profileIds?.length) {
-          params.push([...query.profileIds]);
-          ownership.push(`model_json->>'profileId'=ANY($${params.length}::text[])`);
-        }
-        if (query.sourceVersionIds?.length) {
-          params.push([...query.sourceVersionIds]);
-          ownership.push(`(NULLIF(model_json->>'profileId','') IS NULL AND model_json->>'sourceVersionId'=ANY($${params.length}::text[]))`);
-        }
-        if (!ownership.length) return [];
-        where.push(`(${ownership.join(" OR ")})`);
+      if (query.profileIds) {
+        if (!query.profileIds.length) return [];
+        params.push([...query.profileIds]);
+        where.push(`model_json->>'profileId'=ANY($${params.length}::text[])`);
       }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model_json->>'sourceSystem'=$${params.length}`); }
       params.push(query.limit ?? 100);
       return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramModel);
     },
     async listNgramObservations(query = {}) {
+      const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
+      if (query.profileIds && !profileIds) return [];
+      const table = storage.table("ngram_observations");
+      const limit = query.limit ?? 1000;
+      const scopedRows = async (
+        ownerIds: readonly string[]
+      ): Promise<NgramObservationRow[]> => {
+        const params: unknown[] = [];
+        const sharedWhere: string[] = [];
+        if (query.streamId) { params.push(query.streamId); sharedWhere.push(`observation.stream_id=$${params.length}`); }
+        if (query.languageHint) { params.push(query.languageHint); sharedWhere.push(`observation.language_hint=$${params.length}`); }
+        if (query.sourceSystem) { params.push(query.sourceSystem); sharedWhere.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
+        params.push([...ownerIds]);
+        const ownersParam = params.length;
+        params.push(limit);
+        const limitParam = params.length;
+        return storage.query<NgramObservationRow>(
+          `SELECT scoped.*
+           FROM unnest($${ownersParam}::text[]) AS owner(owner_id)
+           CROSS JOIN LATERAL (
+             SELECT observation.*
+             FROM ${table} observation
+             WHERE ${sharedWhere.length ? `${sharedWhere.join(" AND ")} AND ` : ""}observation.metadata_json->>'profileId'=owner.owner_id
+             ORDER BY observation.count DESC, observation.observed_at DESC, observation.id ASC
+             LIMIT $${limitParam}
+           ) scoped
+           ORDER BY scoped.count DESC, scoped.observed_at DESC, scoped.id ASC
+           LIMIT $${limitParam}`,
+          params
+        );
+      };
+      if (profileIds) {
+        const exactRows = await scopedRows(profileIds);
+        return exactRows.map(rowToNgramObservation);
+      }
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.streamId) { params.push(query.streamId); where.push(`stream_id=$${params.length}`); }
       if (query.languageHint) { params.push(query.languageHint); where.push(`language_hint=$${params.length}`); }
-      if (query.profileIds || query.sourceVersionIds) {
-        const ownership: string[] = [];
-        if (query.profileIds?.length) {
-          params.push([...query.profileIds]);
-          ownership.push(`metadata_json->>'profileId'=ANY($${params.length}::text[])`);
-        }
-        if (query.sourceVersionIds?.length) {
-          params.push([...query.sourceVersionIds]);
-          ownership.push(`(NULLIF(metadata_json->>'profileId','') IS NULL AND source_version_id=ANY($${params.length}::text[]))`);
-        }
-        if (!ownership.length) return [];
-        where.push(`(${ownership.join(" OR ")})`);
-      }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`metadata_json->>'sourceSystem'=$${params.length}`); }
-      params.push(query.limit ?? 1000);
-      return (await storage.query<NgramObservationRow>(`SELECT * FROM ${storage.table("ngram_observations")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY count DESC, observed_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramObservation);
+      params.push(limit);
+      return (await storage.query<NgramObservationRow>(
+        `SELECT * FROM ${table}
+         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ORDER BY count DESC, observed_at DESC, id ASC
+         LIMIT $${params.length}`,
+        params
+      )).map(rowToNgramObservation);
     },
     async listLanguageUnits(query = {}) {
       const params: unknown[] = [];
@@ -1516,25 +1799,60 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       } else if (query.profileId) { params.push(query.profileId); where.push(`profile_id=$${params.length}`); }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern_json->>'sourceSystem'=$${params.length}`); }
       params.push(query.limit ?? 1000);
-      return (await storage.query<LanguagePatternRow>(`SELECT * FROM ${storage.table("language_patterns")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY support DESC, updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToLanguagePattern);
+      return (await storage.query<LanguagePatternRow>(
+        `WITH scoped_patterns AS MATERIALIZED (
+           SELECT
+             pattern.*,
+             profile.source_version_id,
+             version.source_id,
+             version.observed_at AS source_observed_at,
+             COALESCE(
+               NULLIF(pattern.pattern_json->>'language',''),
+               NULLIF(version.metadata_json->>'language',''),
+               NULLIF(version.metadata_json->>'languageHint',''),
+               'language.unspecified'
+             ) AS source_language,
+             COALESCE(NULLIF(pattern.pattern_json->>'sourceSystem',''), 'source.unspecified') AS source_system
+           FROM ${storage.table("language_patterns")} pattern
+           LEFT JOIN ${storage.table("language_profiles")} profile ON profile.id=pattern.profile_id
+           LEFT JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
+           ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ),
+         ranked_request_patterns AS (
+           SELECT
+             scoped.*,
+             DENSE_RANK() OVER (
+               PARTITION BY scoped.source_system, scoped.source_language, COALESCE(scoped.source_id, scoped.profile_id)
+               ORDER BY scoped.source_observed_at DESC NULLS LAST, scoped.source_version_id DESC NULLS LAST
+             ) AS source_version_rank
+           FROM scoped_patterns scoped
+           WHERE scoped.pattern_json->>'schema'='scce.request_requirement_pattern.v1'
+         ),
+         eligible_patterns AS (
+           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at
+           FROM scoped_patterns
+           WHERE pattern_json->>'schema' IS DISTINCT FROM 'scce.request_requirement_pattern.v1'
+           UNION ALL
+           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at
+           FROM ranked_request_patterns
+           WHERE source_version_rank=1
+         )
+         SELECT *
+         FROM eligible_patterns
+         ORDER BY support DESC, updated_at DESC, id ASC
+         LIMIT $${params.length}`,
+        params
+      )).map(rowToLanguagePattern);
     },
     async listSemanticFrames(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame_json->>'sourceSystem'=$${params.length}`); }
       if (query.surface) { params.push(query.surface); where.push(`frame_json->>'surface'=$${params.length}`); }
-      if (query.profileIds || query.sourceVersionIds) {
-        const ownership: string[] = [];
-        if (query.profileIds?.length) {
-          params.push([...query.profileIds]);
-          ownership.push(`frame_json->>'profileId'=ANY($${params.length}::text[])`);
-        }
-        if (query.sourceVersionIds?.length) {
-          params.push([...query.sourceVersionIds]);
-          ownership.push(`(NULLIF(frame_json->>'profileId','') IS NULL AND frame_json->>'sourceVersionId'=ANY($${params.length}::text[]))`);
-        }
-        if (!ownership.length) return [];
-        where.push(`(${ownership.join(" OR ")})`);
+      if (query.profileIds) {
+        if (!query.profileIds.length) return [];
+        params.push([...query.profileIds]);
+        where.push(`frame_json->>'profileId'=ANY($${params.length}::text[])`);
       }
       params.push(query.limit ?? 500);
       return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at FROM ${storage.table("semantic_frames")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
