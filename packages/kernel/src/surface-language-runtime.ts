@@ -49,6 +49,10 @@ export function createSurfaceLanguageRuntime(options: {
     value: Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>;
   } | undefined;
 
+  type ResidentOnlyOptions = {
+    residentOnly?: boolean;
+  };
+
 
   async function languageMemorySummary(limit = 36): Promise<JsonValue> {
     const models = await deps.storage.languageMemory.listNgramModels({ limit });
@@ -311,7 +315,8 @@ export function createSurfaceLanguageRuntime(options: {
     cluster?: LanguageProfileCluster,
     unscopedReason = "no-language-cluster-selected",
     preferredCorpusRoleId?: CorpusRoleId,
-    preferredSurface = ""
+    preferredSurface = "",
+    hydrationOptions: ResidentOnlyOptions = {}
   ) {
     const now = clock.now();
     if (preferredCorpusRoleId && preferredSurface.trim() && surfaceProfileCache) {
@@ -342,12 +347,21 @@ export function createSurfaceLanguageRuntime(options: {
       : "surface:none";
     const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${preferredSurfaceKey}`;
     const cached = surfaceLanguageMemoryCache.get(cacheKey);
-    if (cached && cached.limit >= limit && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) {
+    if (cached
+      && cached.limit >= limit
+      && (hydrationOptions.residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return cached.value;
+    }
+    if (hydrationOptions.residentOnly) {
+      return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
     const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
     surfaceLanguageMemoryCache.set(cacheKey, { limit, loadedAt: now, value });
     return value;
+  }
+
+  function residentRuntimeNotWarm(resource: string): never {
+    throw new Error(`hydrated runtime unavailable: resident ${resource} was not warmed`);
   }
 
   function residentSurfaceLanguageMemory(
@@ -414,15 +428,38 @@ export function createSurfaceLanguageRuntime(options: {
 
 
   async function sourceOwnedLanguageProfilesCached(
-    aliases: readonly string[]
+    aliases: readonly string[],
+    cacheOptions: ResidentOnlyOptions = {}
   ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
     const aliasKeys = [...new Set(aliases.map(normalizeSourceLanguageAlias).filter(Boolean))].sort();
     if (!aliasKeys.length) return { profiles: [], clusters: [] };
     const cacheKey = aliasKeys.join("\u001f");
     const now = clock.now();
     const cached = sourceOwnedAliasProfileCache.get(cacheKey);
-    if (cached && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) {
+    if (cached && (cacheOptions.residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return { profiles: cached.profiles, clusters: cached.clusters };
+    }
+    if (cacheOptions.residentOnly) {
+      if (!surfaceProfileCache) return residentRuntimeNotWarm("surface-language-profiles");
+      const requestedAliases = new Set(aliasKeys);
+      const profiles = surfaceProfileCache.value
+        .filter(profile => (profile.discoveredNames ?? []).some(name => (
+          requestedAliases.has(normalizeSourceLanguageAlias(name.surface))
+          && (
+            name.evidenceRefs.length > 0
+            || (name.sourceVersionRefs ?? []).some(sourceVersionId =>
+              String(sourceVersionId) === String(profile.sourceVersionId)
+            )
+          )
+        )))
+        .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+      const clusters = buildLanguageProfileClusters(profiles);
+      sourceOwnedAliasProfileCache.set(cacheKey, {
+        loadedAt: surfaceProfileCache.loadedAt,
+        profiles,
+        clusters
+      });
+      return { profiles, clusters };
     }
     const profiles = (await deps.storage.model.listLanguageProfiles({
       limit: surfaceLanguageProfileLimit,
@@ -437,9 +474,10 @@ export function createSurfaceLanguageRuntime(options: {
 
   async function sourceOwnedLanguageClusterForAlias(
     alias: string,
-    surface: string
+    surface: string,
+    cacheOptions: ResidentOnlyOptions = {}
   ): Promise<LanguageProfileCluster | undefined> {
-    const { clusters } = await sourceOwnedLanguageProfilesCached([alias]);
+    const { clusters } = await sourceOwnedLanguageProfilesCached([alias], cacheOptions);
     if (clusters.length === 1) return clusters[0];
     return surface.trim()
       ? selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
@@ -467,10 +505,16 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
 
-  async function requestSemanticFrames(surface: string): Promise<SemanticFrameRecord[]> {
+  async function requestSemanticFrames(
+    surface: string,
+    cacheOptions: ResidentOnlyOptions = {}
+  ): Promise<SemanticFrameRecord[]> {
     const normalizedSurface = normalizePriorKey(surface);
     if (!normalizedSurface) return [];
-    const frames = (await sourceAnchorSemanticFramesCached().catch(() => []))
+    const cachedFrames = sourceAnchorSemanticFramesCached(cacheOptions);
+    const frames = (cacheOptions.residentOnly
+      ? await cachedFrames
+      : await cachedFrames.catch(() => []))
       .map(row => row.frame);
     return uniqueRecordsById(frames.filter(frame => {
       const frameSurface = kernelString(jsonRecord(frame.frameJson).surface);
@@ -479,11 +523,16 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
 
-  async function sourceAnchorSemanticFramesCached(): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>> {
+  async function sourceAnchorSemanticFramesCached(
+    cacheOptions: ResidentOnlyOptions = {}
+  ): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>> {
     const now = clock.now();
-    if (sourceAnchorSemanticFrameCache && now - sourceAnchorSemanticFrameCache.loadedAt < surfaceLanguageMemoryCacheMs) {
+    if (sourceAnchorSemanticFrameCache
+      && (cacheOptions.residentOnly
+        || now - sourceAnchorSemanticFrameCache.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return sourceAnchorSemanticFrameCache.value;
     }
+    if (cacheOptions.residentOnly) return residentRuntimeNotWarm("semantic-frames");
     const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 });
     const value = frames.map(frame => {
       const record = jsonRecord(frame.frameJson);

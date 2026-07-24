@@ -401,7 +401,11 @@ export function createProductionTurnRuntime(options: {
       const selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
         : sourceLanguageAlias
-          ? await sourceOwnedLanguageClusterForAlias(sourceLanguageAlias, input.text)
+          ? await sourceOwnedLanguageClusterForAlias(
+            sourceLanguageAlias,
+            input.text,
+            { residentOnly: fastRuntimeBudget }
+          )
           : await surfaceLanguageClusterCached(input.text, fastRuntimeBudget);
       kernelTrace({
         stage: "runtime.seed.surface_cluster",
@@ -420,7 +424,14 @@ export function createProductionTurnRuntime(options: {
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
-        () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal"),
+        () => hydrateSurfaceLanguageMemoryCached(
+          12,
+          selectedSurfaceCluster,
+          selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal",
+          undefined,
+          "",
+          { residentOnly: fastRuntimeBudget }
+        ),
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
       kernelTrace({
@@ -436,7 +447,7 @@ export function createProductionTurnRuntime(options: {
       const exactRequestFramesStarted = Date.now();
       const exactRequestFrames = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
-        : await requestSemanticFrames(input.text);
+        : await requestSemanticFrames(input.text, { residentOnly: fastRuntimeBudget });
       kernelTrace({
         stage: "runtime.seed.request_frames",
         label: "kernel.turn",
@@ -790,65 +801,68 @@ export function createProductionTurnRuntime(options: {
           evidenceIds: answerProposal?.evidence.map(span => String(span.id)) ?? []
         }
       });
-      const supportBundle = evaluationComponent(
-        "support-engine",
-        "proof.support-engine",
-        () => {
-          const entailmentStarted = Date.now();
-          const entailmentResult = entailment.check({
-            text: proofClaimText,
-            evidence: proofCandidateEvidence,
-            nodes: proofNodes,
-            field,
-            createdAt: clock.now(),
-            sourceExcerpts: proofSourceExcerpts,
-            calibrationModels
-          });
-          kernelTrace({
-            stage: "proof.entailment",
-            label: "kernel.turn",
-            durationMs: Date.now() - entailmentStarted,
-            counts: {
-              claimChars: proofClaimText.length,
-              evidence: proofCandidateEvidence.length,
-              sourceExcerpts: proofSourceExcerpts.length,
-              certifiedEvidence: entailmentResult.evidenceIds.length
-            }
-          });
-          const semanticProofStarted = Date.now();
-          const semanticProof = semanticProofSystem.prove({ claimText: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, field });
-          kernelTrace({
-            stage: "proof.semantic",
-            label: "kernel.turn",
-            durationMs: Date.now() - semanticProofStarted,
-            counts: {
-              obligations: semanticProof.obligations.length,
-              counterexamples: semanticProof.counterexamples.length
-            }
-          });
-          const ccrStarted = Date.now();
-          const ccrResult = ccr.run({ text: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, edges: proofEdges, field, entailment: entailmentResult });
-          kernelTrace({
-            stage: "proof.ccr",
-            label: "kernel.turn",
-            durationMs: Date.now() - ccrStarted
-          });
-          return {
-            promoted: proofCandidateEvidence,
-            entailmentResult,
-            semanticProof,
-            ccrResult,
-            pfaceEstimate: factualProofRequired ? pface.estimate({ nodes: proofNodes, edges: proofEdges, field }) : undefined
-          };
-        },
-        () => ({
+      const emptySupportBundle = () => ({
           promoted: [] as EvidenceSpan[],
           entailmentResult: createAblatedSupportEntailment({ requestText: proofClaimText, field, idFactory, createdAt: clock.now() }),
           semanticProof: emptySemanticProofResult(proofClaimText, hasher),
           ccrResult: emptyCcrResult(proofClaimText),
           pfaceEstimate: undefined
-        })
-      );
+        });
+      const supportBundle = factualProofRequired
+        ? evaluationComponent(
+          "support-engine",
+          "proof.support-engine",
+          () => {
+            const entailmentStarted = Date.now();
+            const entailmentResult = entailment.check({
+              text: proofClaimText,
+              evidence: proofCandidateEvidence,
+              nodes: proofNodes,
+              field,
+              createdAt: clock.now(),
+              sourceExcerpts: proofSourceExcerpts,
+              calibrationModels
+            });
+            kernelTrace({
+              stage: "proof.entailment",
+              label: "kernel.turn",
+              durationMs: Date.now() - entailmentStarted,
+              counts: {
+                claimChars: proofClaimText.length,
+                evidence: proofCandidateEvidence.length,
+                sourceExcerpts: proofSourceExcerpts.length,
+                certifiedEvidence: entailmentResult.evidenceIds.length
+              }
+            });
+            const semanticProofStarted = Date.now();
+            const semanticProof = semanticProofSystem.prove({ claimText: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, field });
+            kernelTrace({
+              stage: "proof.semantic",
+              label: "kernel.turn",
+              durationMs: Date.now() - semanticProofStarted,
+              counts: {
+                obligations: semanticProof.obligations.length,
+                counterexamples: semanticProof.counterexamples.length
+              }
+            });
+            const ccrStarted = Date.now();
+            const ccrResult = ccr.run({ text: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, edges: proofEdges, field, entailment: entailmentResult });
+            kernelTrace({
+              stage: "proof.ccr",
+              label: "kernel.turn",
+              durationMs: Date.now() - ccrStarted
+            });
+            return {
+              promoted: proofCandidateEvidence,
+              entailmentResult,
+              semanticProof,
+              ccrResult,
+              pfaceEstimate: pface.estimate({ nodes: proofNodes, edges: proofEdges, field })
+            };
+          },
+          emptySupportBundle
+        )
+        : emptySupportBundle();
       const { promoted, entailmentResult, semanticProof, ccrResult, pfaceEstimate } = supportBundle;
       const entailmentAssistantForce = assistantForceDecision({
         requestedAuthority,
@@ -1006,7 +1020,8 @@ export function createProductionTurnRuntime(options: {
           selectedSurfaceCluster,
           "creative-output-language-unresolved",
           preferredSurfaceCorpusRole,
-          input.text
+          input.text,
+          { residentOnly: fastRuntimeBudget }
         )
         : undefined;
       let surfaceLanguage = preferredSurfaceCorpusRole
@@ -1017,7 +1032,10 @@ export function createProductionTurnRuntime(options: {
           ? residentEvidenceLanguage ?? authorityLanguage
           : authorityLanguage;
       const productionTranslationProfiles = translationTarget
-        ? (await sourceOwnedLanguageProfilesCached([translationTarget])).profiles
+        ? (await sourceOwnedLanguageProfilesCached(
+          [translationTarget],
+          { residentOnly: fastRuntimeBudget }
+        )).profiles
         : [];
       let productionTranslationPlan: TranslationPlan | undefined;
       if (translationTarget) {
@@ -1032,8 +1050,22 @@ export function createProductionTurnRuntime(options: {
         });
         if (deps.evaluationCondition?.flags.disableLanguageMemory !== true) {
           surfaceLanguage = productionTranslationPlan.targetCluster
-            ? await hydrateSurfaceLanguageMemoryCached(12, productionTranslationPlan.targetCluster, "translation-target-cluster-selected")
-            : await hydrateSurfaceLanguageMemoryCached(12, undefined, "translation-target-ambiguous-or-unknown");
+            ? await hydrateSurfaceLanguageMemoryCached(
+              12,
+              productionTranslationPlan.targetCluster,
+              "translation-target-cluster-selected",
+              undefined,
+              "",
+              { residentOnly: fastRuntimeBudget }
+            )
+            : await hydrateSurfaceLanguageMemoryCached(
+              12,
+              undefined,
+              "translation-target-ambiguous-or-unknown",
+              undefined,
+              "",
+              { residentOnly: fastRuntimeBudget }
+            );
         }
       }
       const surfaceLanguageModels = surfaceLanguage.models;

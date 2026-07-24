@@ -8,6 +8,7 @@ import type {
   GraphEdge,
   GraphNode,
   GraphSlice,
+  GraphSliceQuery,
   Hyperedge
 } from "../types.js";
 
@@ -120,10 +121,59 @@ describe("runtime hot graph retrieval", () => {
     expect(firstSeedTargets.size).toBeLessThanOrEqual(8);
     expect(result.evidence).toEqual([]);
   });
+
+  it("hydrates bounded missing topology once during warmup and reuses the resident cache", async () => {
+    const seed = graphNode("node:clock", ["sym:clock"]);
+    const mechanism = graphNode("node:mechanism", ["sym:mechanism"]);
+    const tide = graphNode("node:tide", ["sym:tide"]);
+    const unrelatedA = graphNode("node:unrelated:a", ["sym:unrelated-a"]);
+    const unrelatedB = graphNode("node:unrelated:b", ["sym:unrelated-b"]);
+    const edge = graphEdge("edge:clock-mechanism", seed, mechanism, 0.9);
+    const hyperedge = graphHyperedge("hyperedge:clock-tide", [seed, tide], 0.85);
+    const initialGraph = graphSlice([seed, unrelatedA, unrelatedB], [edge], [hyperedge]);
+    const closureGraph = graphSlice([mechanism, tide], [], []);
+    const fixture = runtimeFixture(initialGraph, [], closureGraph);
+
+    const first = await fixture.runtime.graphForText("clock", {
+      sourceAnchoringRequired: false,
+      residentOnly: true
+    });
+    const second = await fixture.runtime.graphForText("clock", {
+      sourceAnchoringRequired: false,
+      residentOnly: true
+    });
+
+    expect(first.graph.nodes.map(node => String(node.id))).toEqual(expect.arrayContaining([
+      "node:clock",
+      "node:mechanism",
+      "node:tide"
+    ]));
+    expect(first.graph.edges.map(row => String(row.id))).toContain("edge:clock-mechanism");
+    expect(first.graph.hyperedges.map(row => String(row.id))).toContain("hyperedge:clock-tide");
+    expect(first.evidence).toEqual([]);
+    expect(second.graph.nodes.map(node => String(node.id))).toEqual(
+      first.graph.nodes.map(node => String(node.id))
+    );
+    expect(second.evidence).toEqual([]);
+    expect(fixture.getSlice).toHaveBeenCalledTimes(2);
+    const closureQuery = fixture.getSlice.mock.calls[1]?.[0];
+    expect(closureQuery?.seedNodeIds?.map(String)).toEqual(expect.arrayContaining([
+      "node:mechanism",
+      "node:tide"
+    ]));
+    expect(closureQuery?.limitNodes).toBe(2);
+    expect(closureQuery?.limitEdges).toBe(0);
+    expect(fixture.searchEvidence).not.toHaveBeenCalled();
+  });
 });
 
-function runtimeFixture(graph: GraphSlice, evidence: EvidenceSpan[] = []) {
-  const getSlice = vi.fn(async () => graph);
+function runtimeFixture(
+  graph: GraphSlice,
+  evidence: EvidenceSpan[] = [],
+  closureGraph?: GraphSlice
+) {
+  const getSlice = vi.fn(async (query: GraphSliceQuery) =>
+    query.seedNodeIds?.length && closureGraph ? closureGraph : graph);
   const getEvidenceBatch = vi.fn(async () => evidence);
   const searchEvidence = vi.fn(async () => {
     throw new Error("resident creative graph retrieval must not search evidence");

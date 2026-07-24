@@ -327,13 +327,18 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       if (input.language ?? true) {
         tasks.push(Promise.all([
           sourceOwnedLanguageClustersForWarmup()
-            .then(clusters => Promise.all(clusters.map(cluster =>
+            .then(clusters => Promise.all([
               hydrateSurfaceLanguageMemoryCached(
+                languageLimit,
+                undefined,
+                "source-surface-ambiguous-or-no-signal"
+              ),
+              ...clusters.map(cluster => hydrateSurfaceLanguageMemoryCached(
                 languageLimit,
                 cluster,
                 "warmup-source-owned-language-cluster"
-              )
-            ))),
+              ))
+            ])),
           sourceAnchorSemanticFramesCached()
         ])
           .then(([languages, sourceAnchorFrames]) => {
