@@ -1,6 +1,7 @@
 {
   "schema": "scce.request_requirement_corpus.v1",
   "language": "en",
+  "corpusRevision": "2026-07-response-form-null-mass",
   "responseFormProfiles": [
     { "id": "response.form.0001.v1", "sourceLabel": "plain prose", "surfaceLayout": { "sentencesPerBlock": 5 } },
     { "id": "response.form.0002.v1", "sourceLabel": "narrative prose", "surfaceLayout": { "sentencesPerBlock": 4 } },

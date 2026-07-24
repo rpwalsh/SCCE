@@ -102,10 +102,66 @@ describe("source-backed response-form learning", () => {
     }).responseForm).toBeUndefined();
   });
 
+  it("lets matched no-form examples defeat a generic layout without suppressing its discriminative feature", () => {
+    const formId = "response.form.0006.v1";
+    const compiled = compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        responseFormProfiles: [{
+          id: formId,
+          sourceLabel: "outline or list",
+          surfaceLayout: {
+            sentencesPerBlock: 1,
+            orderedBlocks: true
+          }
+        }],
+        examples: [
+          annotated("compose a layout for a harbor", formId, "outline or list"),
+          annotated("compose a layout for a garden", formId, "outline or list"),
+          unannotated("invent a device for a harbor"),
+          unannotated("design a signal for a garden"),
+          unannotated("create a festival for a city")
+        ]
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture" as SourceVersionId,
+      evidenceIds: ["evidence.fixture" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${JSON.stringify(value).length}`
+    });
+    const genericPatterns = compiled.patterns.filter(pattern => {
+      const record = pattern.patternJson as Record<string, unknown>;
+      return record.surface === "for a";
+    });
+
+    expect(genericPatterns.length).toBeGreaterThan(0);
+    for (const pattern of genericPatterns) {
+      expect((pattern.patternJson as Record<string, unknown>).responseForm).toBeUndefined();
+    }
+    expect(deriveTurnRequirementField({
+      requestText: "invent a device for a valley",
+      languageMemoryState: runtimeState(compiled.patterns)
+    }).responseForm).toBeUndefined();
+    expect(deriveTurnRequirementField({
+      requestText: "compose a layout for a citadel",
+      languageMemoryState: runtimeState(compiled.patterns)
+    }).responseForm).toMatchObject({
+      id: formId,
+      sourceLabel: "outline or list",
+      surfaceLayout: {
+        sentencesPerBlock: 1,
+        orderedBlocks: true
+      }
+    });
+  });
+
   it("rejects malformed response-form IDs while preserving the request example", () => {
     const parsed = parseRequestRequirementCorpus(JSON.stringify({
       schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
       language: "fixture",
+      corpusRevision: "fixture-response-form-calibration-2",
       examples: [{
         authority: "creative",
         text: "fixture request",
@@ -115,6 +171,7 @@ describe("source-backed response-form learning", () => {
     }));
 
     expect(parsed?.examples).toHaveLength(1);
+    expect(parsed?.corpusRevision).toBe("fixture-response-form-calibration-2");
     expect(parsed?.examples[0]?.responseFormId).toBeUndefined();
     expect(parsed?.examples[0]?.responseFormSourceLabel).toBeUndefined();
   });
@@ -126,6 +183,13 @@ function annotated(text: string, responseFormId: string, responseFormSourceLabel
     text,
     responseFormId,
     ...(responseFormSourceLabel ? { responseFormSourceLabel } : {})
+  };
+}
+
+function unannotated(text: string) {
+  return {
+    authority: "creative" as const,
+    text
   };
 }
 

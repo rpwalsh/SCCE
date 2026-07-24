@@ -571,6 +571,26 @@ function requestRole(contentTerms: readonly string[], requestText: string): Requ
       left.distance - right.distance
       || right.verb.firstTermIndex - left.verb.firstTermIndex
     )[0];
+  const imperative = relational
+    ? undefined
+    : verbRows
+      .flatMap(verb => {
+        const hasSubjectBeforeVerb = requestNouns.some(row => row.lastTermIndex < verb.firstTermIndex);
+        const objects = requestNouns
+          .filter(row => row.firstTermIndex > verb.lastTermIndex)
+          .sort((left, right) => left.firstTermIndex - right.firstTermIndex);
+        if (hasSubjectBeforeVerb || !objects.length) return [];
+        return [{
+          verb,
+          protagonist: objects[0]!,
+          antagonist: objects[1],
+          distance: objects[0]!.firstTermIndex - verb.lastTermIndex
+        }];
+      })
+      .sort((left, right) =>
+        left.distance - right.distance
+        || left.verb.firstTermIndex - right.verb.firstTermIndex
+      )[0];
   const actionlessProtagonist = contentNouns.find(row => row.proper)
     ?? contentNouns[0]
     ?? requestNouns.find(row => row.proper)
@@ -584,9 +604,12 @@ function requestRole(contentTerms: readonly string[], requestText: string): Requ
       ))
       .sort((left, right) => right.lastTermIndex - left.lastTermIndex)[0]
     : undefined;
-  const protagonistRow = nearbyAppositiveProper ?? relational?.protagonist ?? actionlessProtagonist;
-  const antagonistRow = relational?.antagonist;
-  const roleDocument = relational ? requestDocument : contentDocument;
+  const protagonistRow = nearbyAppositiveProper
+    ?? relational?.protagonist
+    ?? imperative?.protagonist
+    ?? actionlessProtagonist;
+  const antagonistRow = relational?.antagonist ?? imperative?.antagonist;
+  const roleDocument = relational || imperative ? requestDocument : contentDocument;
   const protagonistRole = protagonistRow
     ? boundedNounRole(roleDocument, protagonistRow)
     : undefined;
@@ -793,16 +816,11 @@ function boundedNounRole(
   const terms = documentTermRows(document)
     .filter(row => row.index >= noun.firstTermIndex && row.index <= noun.lastTermIndex)
     .sort((left, right) => left.index - right.index);
-  const headStart = terms.findIndex(row => row.tags.includes("Noun"));
-  if (headStart < 0) return undefined;
-  let headEnd = headStart;
-  for (let index = headStart + 1; index < terms.length; index++) {
-    const previous = terms[index - 1]!;
-    const current = terms[index]!;
-    if (current.index !== previous.index + 1 || !current.tags.includes("Noun")) break;
-    headEnd = index;
-  }
-  const included = terms.slice(0, headEnd + 1);
+  if (!terms.some(row => row.tags.includes("Noun"))) return undefined;
+  const included = terms.slice(0, 12);
+  if (included.some((row, index) =>
+    index > 0 && row.index !== included[index - 1]!.index + 1
+  )) return undefined;
   const surface = cleanNounSurface(included.map(row => row.text).join(" "));
   if (!surface) return undefined;
   return {

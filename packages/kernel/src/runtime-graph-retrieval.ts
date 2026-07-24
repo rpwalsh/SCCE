@@ -14,14 +14,13 @@ import {
   sourceEvidenceAnchorsForRequest,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
-import { anchorFeatureSet, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
+import { anchorFeatureSet, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import type { RuntimeGraphSliceValue } from "./runtime-graph-cache.js";
 import {
   estimateRuntimeGraphSliceBytes,
   fitRuntimeGraphSliceToBudget,
   positiveRuntimeInt,
-  runtimeFlag,
-  uniqueById,
+  runtimeFlag
 } from "./runtime-graph-cache.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import type {
@@ -68,6 +67,16 @@ interface HotGraphNeighborhood {
   evidenceHyperedgeIds: Map<string, Set<string>>;
   sourceAnchorEvidenceIds: Map<string, Set<string>>;
 }
+
+// Hard resident-walk caps: environment sizing may enlarge the hydrated cache,
+// but a turn cannot enlarge this query frontier.
+const HOT_QUERY_RADIUS = 2;
+const HOT_QUERY_SEED_LIMIT = 24;
+const HOT_QUERY_NODE_LIMIT = 96;
+const HOT_QUERY_EDGE_LIMIT = 192;
+const HOT_QUERY_HYPEREDGE_LIMIT = 48;
+const HOT_QUERY_EDGE_BRANCH_LIMIT = 4;
+const HOT_QUERY_HYPEREDGE_BRANCH_LIMIT = 4;
 
 export function createRuntimeGraphRetrieval(options: {
   deps: Pick<ScceKernelDeps, "storage">;
@@ -745,59 +754,199 @@ export function createRuntimeGraphRetrieval(options: {
     ]).slice(0, 512);
     const ranked = rankHotNeighborhoodNodes(hot, queryFeatures);
     if (!ranked.length || ranked[0]!.score < 0.04) return undefined;
-    const nodeLimit = 420;
-    const edgeLimit = 900;
+    const nodeLimit = Math.min(HOT_QUERY_NODE_LIMIT, hot.nodeById.size);
+    const edgeLimit = Math.min(HOT_QUERY_EDGE_LIMIT, hot.edgeById.size);
     const selectedNodeIds = new Set<string>();
-    for (const row of ranked.slice(0, nodeLimit)) selectedNodeIds.add(row.nodeId);
+    const nodeScores = new Map<string, number>();
     const edgeRows = new Map<string, { edge: GraphEdge; score: number }>();
-    for (const nodeId of [...selectedNodeIds]) {
-      for (const edge of hot.edgeByNodeId.get(nodeId) ?? []) {
-        const source = String(edge.source);
-        const target = String(edge.target);
-        if (selectedNodeIds.size < nodeLimit) {
-          if (hot.nodeById.has(source)) selectedNodeIds.add(source);
-          if (hot.nodeById.has(target)) selectedNodeIds.add(target);
+    const hyperedgeRows = new Map<string, {
+      hyperedge: GraphSlice["hyperedges"][number];
+      score: number;
+    }>();
+    const recordTransition = (
+      transition: ReturnType<typeof hotNeighborhoodTransitions>[number],
+      routeScore: number
+    ) => {
+      if (transition.edge) {
+        const edgeId = String(transition.edge.id);
+        const previous = edgeRows.get(edgeId);
+        if ((!previous || routeScore > previous.score) && edgeRows.size < edgeLimit) {
+          edgeRows.set(edgeId, { edge: transition.edge, score: routeScore });
         }
-        const touchesSelected = selectedNodeIds.has(source) || selectedNodeIds.has(target);
-        if (!touchesSelected) continue;
-        const score = edge.alpha * 0.58 + edge.weight * 0.32 + (selectedNodeIds.has(source) && selectedNodeIds.has(target) ? 0.1 : 0);
-        const previous = edgeRows.get(String(edge.id));
-        if (!previous || score > previous.score) edgeRows.set(String(edge.id), { edge, score });
       }
+      if (transition.hyperedge) {
+        const hyperedgeId = String(transition.hyperedge.id);
+        const previous = hyperedgeRows.get(hyperedgeId);
+        if ((!previous || routeScore > previous.score)
+          && hyperedgeRows.size < HOT_QUERY_HYPEREDGE_LIMIT) {
+          hyperedgeRows.set(hyperedgeId, {
+            hyperedge: transition.hyperedge,
+            score: routeScore
+          });
+        }
+      }
+    };
+    let frontier = ranked
+      .slice(0, Math.min(HOT_QUERY_SEED_LIMIT, nodeLimit))
+      .map(row => ({ nodeId: row.nodeId, score: row.score }));
+    for (const row of frontier) {
+      selectedNodeIds.add(row.nodeId);
+      nodeScores.set(row.nodeId, row.score);
+    }
+    for (let depth = 1; depth <= HOT_QUERY_RADIUS && frontier.length; depth++) {
+      const candidatesByNodeId = new Map<string, {
+        nodeId: string;
+        score: number;
+        transition: ReturnType<typeof hotNeighborhoodTransitions>[number];
+      }>();
+      for (const row of frontier
+        .sort((left, right) => right.score - left.score || left.nodeId.localeCompare(right.nodeId))) {
+        for (const transition of hotNeighborhoodTransitions(hot, row.nodeId)) {
+          const targetNode = hot.nodeById.get(transition.targetNodeId);
+          if (!targetNode) continue;
+          const routeScore = row.score * transition.potential / (depth + 1);
+          if (selectedNodeIds.has(transition.targetNodeId)) {
+            recordTransition(transition, routeScore);
+            continue;
+          }
+          const previous = candidatesByNodeId.get(transition.targetNodeId);
+          if (!previous || routeScore > previous.score) {
+            candidatesByNodeId.set(transition.targetNodeId, {
+              nodeId: transition.targetNodeId,
+              score: routeScore,
+              transition
+            });
+          }
+        }
+      }
+      const remainingNodeCapacity = Math.max(0, nodeLimit - selectedNodeIds.size);
+      const remainingDepths = HOT_QUERY_RADIUS - depth + 1;
+      const depthNodeLimit = depth < HOT_QUERY_RADIUS
+        ? Math.floor(remainingNodeCapacity / remainingDepths)
+        : remainingNodeCapacity;
+      const selectedAtDepth = [...candidatesByNodeId.values()]
+        .sort((left, right) =>
+          right.score - left.score
+          || left.nodeId.localeCompare(right.nodeId))
+        .slice(0, depthNodeLimit);
+      for (const row of selectedAtDepth) {
+        selectedNodeIds.add(row.nodeId);
+        nodeScores.set(row.nodeId, row.score);
+        recordTransition(row.transition, row.score);
+      }
+      frontier = selectedAtDepth.map(row => ({ nodeId: row.nodeId, score: row.score }));
     }
     const nodes = [...selectedNodeIds]
       .map(nodeId => hot.nodeById.get(nodeId))
       .filter((node): node is GraphNode => Boolean(node))
-      .sort((left, right) => right.alpha - left.alpha || String(left.id).localeCompare(String(right.id)))
+      .sort((left, right) =>
+        (nodeScores.get(String(right.id)) ?? 0) - (nodeScores.get(String(left.id)) ?? 0)
+        || right.alpha - left.alpha
+        || String(left.id).localeCompare(String(right.id)))
       .slice(0, nodeLimit);
     if (!nodes.length) return undefined;
     const nodeIds = new Set(nodes.map(node => String(node.id)));
     const edges = [...edgeRows.values()]
-      .filter(row => nodeIds.has(String(row.edge.source)) || nodeIds.has(String(row.edge.target)))
+      .filter(row => nodeIds.has(String(row.edge.source)) && nodeIds.has(String(row.edge.target)))
       .sort((left, right) => right.score - left.score || String(left.edge.id).localeCompare(String(right.edge.id)))
       .slice(0, edgeLimit)
       .map(row => row.edge);
-    const hyperedges = uniqueById([...nodeIds].flatMap(nodeId => hot.hyperedgeByNodeId.get(nodeId) ?? []))
-      .filter(edge => edge.memberNodeIds.some(nodeId => nodeIds.has(String(nodeId))))
-      .slice(0, Math.max(64, Math.floor(edgeLimit / 4)));
-    const evidenceIds = uniqueKernelStrings([
-      ...nodes.flatMap(node => node.evidenceIds.map(String)),
-      ...edges.flatMap(edge => edge.evidenceIds.map(String)),
-      ...hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
-    ]).slice(0, 80);
-    const evidence = evidenceIds
-      .map(id => hot.evidenceById.get(id))
-      .filter((span): span is EvidenceSpan => Boolean(span));
+    const hyperedges = [...hyperedgeRows.values()]
+      .filter(row => row.hyperedge.memberNodeIds
+        .filter(memberNodeId => nodeIds.has(String(memberNodeId))).length >= 2)
+      .sort((left, right) =>
+        right.score - left.score
+        || String(left.hyperedge.id).localeCompare(String(right.hyperedge.id)))
+      .slice(0, HOT_QUERY_HYPEREDGE_LIMIT)
+      .map(row => row.hyperedge);
     return {
       graph: {
         nodes,
         edges,
         hyperedges,
         bounded: true,
-        query: { features: queryFeatures, topicTerms, radius: 2, limitNodes: nodeLimit, limitEdges: edgeLimit }
+        query: {
+          features: queryFeatures,
+          topicTerms,
+          radius: HOT_QUERY_RADIUS,
+          limitNodes: nodeLimit,
+          limitEdges: edgeLimit
+        }
       },
-      evidence
+      // An unanchored resident walk contributes graph priors only. Evidence
+      // remains exclusive to the source-anchored retrieval path above.
+      evidence: []
     };
+  }
+
+  function hotNeighborhoodTransitions(
+    hot: HotGraphNeighborhood,
+    nodeId: string
+  ): Array<{
+    targetNodeId: string;
+    potential: number;
+    edge?: GraphEdge;
+    hyperedge?: GraphSlice["hyperedges"][number];
+  }> {
+    const edgeTransitions = (hot.edgeByNodeId.get(nodeId) ?? [])
+      .flatMap(edge => {
+        const source = String(edge.source);
+        const target = String(edge.target);
+        const targetNodeId = source === nodeId ? target : target === nodeId ? source : "";
+        const potential = hotEdgeTransitionPotential(edge);
+        return targetNodeId && targetNodeId !== nodeId && hot.nodeById.has(targetNodeId) && potential > 0
+          ? [{ targetNodeId, potential, edge }]
+          : [];
+      })
+      .sort((left, right) =>
+        right.potential - left.potential
+        || String(left.edge.id).localeCompare(String(right.edge.id))
+        || left.targetNodeId.localeCompare(right.targetNodeId))
+      .slice(0, HOT_QUERY_EDGE_BRANCH_LIMIT);
+    const hyperedgeTransitions = (hot.hyperedgeByNodeId.get(nodeId) ?? [])
+      .flatMap(hyperedge => {
+        const potential = hotHyperedgeTransitionPotential(hyperedge);
+        if (potential <= 0) return [];
+        return hyperedge.memberNodeIds
+          .map(String)
+          .filter(targetNodeId => targetNodeId !== nodeId && hot.nodeById.has(targetNodeId))
+          .map(targetNodeId => ({ targetNodeId, potential, hyperedge }));
+      })
+      .sort((left, right) =>
+        right.potential - left.potential
+        || String(left.hyperedge.id).localeCompare(String(right.hyperedge.id))
+        || left.targetNodeId.localeCompare(right.targetNodeId)
+      )
+      .slice(0, HOT_QUERY_HYPEREDGE_BRANCH_LIMIT);
+    return [...edgeTransitions, ...hyperedgeTransitions]
+      .sort((left, right) => {
+        const leftId = "edge" in left
+          ? String(left.edge.id)
+          : String(left.hyperedge.id);
+        const rightId = "edge" in right
+          ? String(right.edge.id)
+          : String(right.hyperedge.id);
+        return right.potential - left.potential
+          || leftId.localeCompare(rightId)
+          || left.targetNodeId.localeCompare(right.targetNodeId);
+      });
+  }
+
+  function hotEdgeTransitionPotential(edge: GraphEdge): number {
+    const relationPotential = jsonRecord(jsonRecord(edge.metadata).relationPotential);
+    const calibrated = relationPotential.calibrated;
+    if (typeof calibrated === "number" && Number.isFinite(calibrated)) return clamp01(calibrated);
+    return clamp01(Math.sqrt(clamp01(edge.alpha) * clamp01(edge.weight)));
+  }
+
+  function hotHyperedgeTransitionPotential(
+    hyperedge: GraphSlice["hyperedges"][number]
+  ): number {
+    const weights = jsonRecord(hyperedge.weightVector);
+    const calibrated = weights.calibrated;
+    if (typeof calibrated === "number" && Number.isFinite(calibrated)) return clamp01(calibrated);
+    const alpha = weights.alpha;
+    return typeof alpha === "number" && Number.isFinite(alpha) ? clamp01(alpha) : 0;
   }
 
 

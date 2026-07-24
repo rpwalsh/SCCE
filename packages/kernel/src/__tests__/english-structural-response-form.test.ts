@@ -79,6 +79,22 @@ describe("English structural response-form layout", () => {
       }
     });
   });
+
+  it("binds full imperative artifact and operating-context spans without topic rules", () => {
+    const requestText = "Invent a new kind of clock for a city under the ocean.";
+    const realized = realizeEnglishStructuralCreative({
+      requestText,
+      contentTerms: ["new", "kind", "clock", "city", "ocean"],
+      plannedEvents: fixtureEvents(true),
+      defaultTargetWords: 120
+    });
+
+    expect(realized).toBeDefined();
+    expect(realized?.protagonist).toBe("new kind of clock");
+    expect(realized?.antagonist).toBe("city under the ocean");
+    expect(realized?.text).toContain("new kind of clock");
+    expect(realized?.text).toContain("city under the ocean");
+  });
 });
 
 function fixtureInput(surfaceLayout?: ResponseFormSurfaceLayout) {
@@ -104,7 +120,7 @@ function responseForm(surfaceLayout: ResponseFormSurfaceLayout): ActivatedRespon
   };
 }
 
-function fixtureEvents(): EnglishStructuralPlannedEvent[] {
+function fixtureEvents(bindRequestContext = false): EnglishStructuralPlannedEvent[] {
   const verbs = [
     ["search", "searched"],
     ["cross", "crossed"],
@@ -118,10 +134,16 @@ function fixtureEvents(): EnglishStructuralPlannedEvent[] {
   return verbs.map(([infinitive, past], outputIndex) => ({
     outputIndex,
     bundleId: "bundle.fixture",
-    event: fixtureEvent(outputIndex, infinitive, past),
+    event: fixtureEvent(outputIndex, infinitive, past, bindRequestContext),
     discourseRelationId: "scce.relation.subsequent",
     discourseBeatId: "beat.fixture",
-    requestRoleBindings: [],
+    requestRoleBindings: bindRequestContext
+      ? [{
+        eventRoleId: "scce.role.patient" as const,
+        requestRoleId: "scce.request.role.antagonist" as const,
+        admissible: true as const
+      }]
+      : [],
     requestFit: 0.9
   }));
 }
@@ -129,7 +151,8 @@ function fixtureEvents(): EnglishStructuralPlannedEvent[] {
 function fixtureEvent(
   sourceOrdinal: number,
   infinitive: string,
-  past: string
+  past: string,
+  withPatient = false
 ): DurableCreativeEventConstruction {
   return {
     id: `event.fixture.${sourceOrdinal}`,
@@ -148,16 +171,28 @@ function fixtureEvent(
     sourceLabel: infinitive,
     sourceLabelDigest: `digest.fixture.${sourceOrdinal}`,
     tenseId: "scce.tense.past",
-    valencyId: "scce.valency.agent",
-    roleIds: ["scce.role.agent"],
+    valencyId: withPatient ? "scce.valency.agent_patient" : "scce.valency.agent",
+    roleIds: withPatient
+      ? ["scce.role.agent", "scce.role.patient"]
+      : ["scce.role.agent"],
     argumentFrame: {
       id: `frame.fixture.${sourceOrdinal}`,
       schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
       compilerId: ENGLISH_CREATIVE_EVENT_COMPILER_ID,
       sourceSentenceStartCodePoint: sourceOrdinal * 10,
       sourceSentenceEndCodePoint: sourceOrdinal * 10 + 5,
-      roleIds: ["scce.role.agent"],
-      bindings: []
+      roleIds: withPatient
+        ? ["scce.role.agent", "scce.role.patient"]
+        : ["scce.role.agent"],
+      bindings: withPatient
+        ? [{
+          roleId: "scce.role.patient",
+          surface: "fixture object",
+          surfaceDigest: `digest.fixture.patient.${sourceOrdinal}`,
+          startCodePoint: sourceOrdinal * 10 + 1,
+          endCodePoint: sourceOrdinal * 10 + 3
+        }]
+        : []
     },
     forms: {
       infinitive,

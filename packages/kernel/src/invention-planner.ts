@@ -943,7 +943,7 @@ function buildStructuralCreativeEventPlan(
       .find((roleId): roleId is "scce.role.patient" | "scce.role.complement" => (
         roleId === "scce.role.patient" || roleId === "scce.role.complement"
       ));
-    const requestRoleBindings = outputIndex % 18 === 0 && requestBindableRoleId
+    const requestRoleBindings = requestBindableRoleId
       ? [{
         eventRoleId: requestBindableRoleId,
         requestRoleId: "scce.request.role.antagonist" as const,
