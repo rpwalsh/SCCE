@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   classifyRequestedAuthority,
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
@@ -208,6 +208,25 @@ describe("invention planner", () => {
       expect(realization.path).not.toBe("mouth_realization_deferred");
       expect(realization.structuralEventPlan ?? []).toEqual([]);
     }
+  });
+
+  it("reuses one bounded language generation for no-model creative fallback candidates", () => {
+    const fixture = plannerFixtureWithLanguageCorpus(
+      "Invent a new indexing algorithm for this graph.",
+      "At dusk, the old pump hummed beside the quiet harbor. It dreamed of carrying starlight across the sleeping town. Before dawn, its steady rhythm became a silver melody and woke the patient bells."
+    );
+    const generate = vi.spyOn(fixture.languageMemory, "generate");
+
+    const planned = planInventions({
+      ...fixture,
+      requestedAuthority: "creative",
+      maxCandidates: 4,
+      samplingDisabled: true
+    });
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(planned.length).toBeGreaterThan(0);
+    expect(fixture.languageMemoryState.creativeEventCompatibilityModels).toEqual([]);
   });
 
   it("does not admit low-posterior source-adjacent events", () => {

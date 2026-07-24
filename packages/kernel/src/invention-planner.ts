@@ -326,6 +326,16 @@ interface ProposalRealizationTrace {
   stoppedBy?: LanguageGenerationResult["stoppedBy"];
 }
 
+type LearnedProposal = {
+  surface: string;
+  trace: ProposalRealizationTrace;
+};
+
+interface LearnedProposalReuse {
+  attempted: boolean;
+  proposal?: LearnedProposal;
+}
+
 type StructuralCreativeDiscourseRelationId =
   | "scce.relation.concurrent"
   | "scce.relation.subsequent"
@@ -476,8 +486,9 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
   const structuralCandidateLimit = structuralMemoryAvailable
     ? Math.min(maxCandidates, 3)
     : maxCandidates;
+  const learnedProposalReuse: LearnedProposalReuse = { attempted: false };
   const uniqueDrafts = Array.from({ length: structuralCandidateLimit + 2 }, (_, index) =>
-    buildDraft(input, constraints, ingredients, graphIngredients, index, structuralBundles)
+    buildDraft(input, constraints, ingredients, graphIngredients, index, structuralBundles, learnedProposalReuse)
   )
     .filter(draft => Boolean(draft.proposalSurface) && !containsInternalSurfaceIdentifier(draft.proposalSurface))
     .filter((draft, index, all) => all.findIndex(candidate => draftCompositionIdentity(candidate) === draftCompositionIdentity(draft)) === index);
@@ -1191,7 +1202,8 @@ function buildDraft(
   ingredients: readonly CompositionIngredient[],
   graphIngredients: readonly CompositionIngredient[],
   variant: number,
-  structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"]
+  structuralBundles: LanguageMemoryRuntimeState["importedConstructionBundles"],
+  learnedProposalReuse: LearnedProposalReuse
 ): DraftComposition {
   const structuralEventPlan = structuralBundles.length > 0
     ? buildStructuralCreativeEventPlan(input, variant, structuralBundles)
@@ -1218,7 +1230,7 @@ function buildDraft(
   const constraintSurface = constraints.slice(0, 6).map(row => row.surface).join("; ") || requestTerms.slice(0, 6).join("; ") || title;
   const learnedProposal = deferSurfaceRealization
     ? undefined
-    : learnedProposalFromMemory(input, requestTerms, variant);
+    : reusedLearnedProposalFromMemory(input, requestTerms, variant, learnedProposalReuse);
   const structuralBundleIds = uniqueStrings(structuralEventPlan.map(event => event.bundleId));
   const shapedProposal = deferSurfaceRealization
     ? title
@@ -1311,7 +1323,19 @@ function buildDraft(
  * continuation from source-owned memory; this boundary contains no
  * language-specific vocabulary.
  */
-function learnedProposalFromMemory(input: PlanInventionsInput, requestTerms: readonly string[], variant: number): { surface: string; trace: ProposalRealizationTrace } | undefined {
+function reusedLearnedProposalFromMemory(
+  input: PlanInventionsInput,
+  requestTerms: readonly string[],
+  variant: number,
+  reuse: LearnedProposalReuse
+): LearnedProposal | undefined {
+  if (reuse.attempted) return reuse.proposal;
+  reuse.proposal = learnedProposalFromMemory(input, requestTerms, variant);
+  reuse.attempted = true;
+  return reuse.proposal;
+}
+
+function learnedProposalFromMemory(input: PlanInventionsInput, requestTerms: readonly string[], variant: number): LearnedProposal | undefined {
   if (!requestTerms.length || !input.languageMemoryState.models.length) return undefined;
   const requestConstraints = requestOwnedCreativeConstraints(input);
   if (!requestConstraints.length) {
