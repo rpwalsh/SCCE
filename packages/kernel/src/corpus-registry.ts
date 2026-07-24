@@ -233,7 +233,10 @@ export function corpusSourceAlias(value: string): string {
 }
 
 function corpusQuerySourceSystems(item: CorpusRegistryEntry): string[] {
-  return [item.sourceSystemId];
+  // Storage keeps the source-derived corpus label in language-memory metadata.
+  // Opaque source-system IDs remain the cognition/join identity, but are not
+  // the persisted query key used by the Postgres language-memory contract.
+  return [item.sourceSystem];
 }
 
 function entry(
