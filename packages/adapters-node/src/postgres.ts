@@ -467,130 +467,6 @@ function informationExportClassesThrough(maximum: InformationAccessContext["maxi
   return ordered.slice(0, ordered.indexOf(maximum) + 1);
 }
 
-function sameEvidenceLabelBackfillStatements(
-  q: string,
-  unlabeledOrLocked: (alias: string) => string
-): string[] {
-  const evidenceBackfill = (
-    table: string,
-    alias: string,
-    evidenceColumn: string
-  ) => `UPDATE ${q}.${table} ${alias}
-        SET information_label=(
-          SELECT MIN(e.information_label::text)::jsonb
-          FROM unnest(${alias}.${evidenceColumn}) AS ref(evidence_id)
-          JOIN ${q}.evidence_spans e ON e.id=ref.evidence_id
-        )
-        WHERE ${unlabeledOrLocked(alias)}
-          AND CARDINALITY(${alias}.${evidenceColumn})>0
-          AND NOT EXISTS (
-            SELECT 1
-            FROM unnest(${alias}.${evidenceColumn}) AS ref(evidence_id)
-            LEFT JOIN ${q}.evidence_spans e ON e.id=ref.evidence_id
-            WHERE e.id IS NULL
-               OR e.information_label IS NULL
-               OR e.information_label->>'tenantId'='migration.unassigned'
-          )
-          AND (
-            SELECT COUNT(DISTINCT e.information_label::text)
-            FROM unnest(${alias}.${evidenceColumn}) AS ref(evidence_id)
-            JOIN ${q}.evidence_spans e ON e.id=ref.evidence_id
-          )=1`;
-  return [
-    evidenceBackfill("graph_nodes", "n", "evidence_ids"),
-    evidenceBackfill("graph_edges", "g", "evidence_ids"),
-    `UPDATE ${q}.graph_edges g
-     SET information_label=source_node.information_label
-     FROM ${q}.graph_nodes source_node, ${q}.graph_nodes target_node
-     WHERE source_node.id=g.source_node_id
-       AND target_node.id=g.target_node_id
-       AND CARDINALITY(g.evidence_ids)=0
-       AND ${unlabeledOrLocked("g")}
-       AND source_node.information_label=target_node.information_label
-       AND source_node.information_label->>'tenantId'<>'migration.unassigned'`,
-    evidenceBackfill("graph_hyperedges", "h", "provenance_refs"),
-    `UPDATE ${q}.graph_hyperedges h
-     SET information_label=(
-       SELECT MIN(n.information_label::text)::jsonb
-       FROM unnest(h.member_node_ids) AS ref(node_id)
-       JOIN ${q}.graph_nodes n ON n.id=ref.node_id
-     )
-     WHERE CARDINALITY(h.provenance_refs)=0
-       AND CARDINALITY(h.member_node_ids)>0
-       AND ${unlabeledOrLocked("h")}
-       AND NOT EXISTS (
-         SELECT 1
-         FROM unnest(h.member_node_ids) AS ref(node_id)
-         LEFT JOIN ${q}.graph_nodes n ON n.id=ref.node_id
-         WHERE n.id IS NULL
-            OR n.information_label IS NULL
-            OR n.information_label->>'tenantId'='migration.unassigned'
-       )
-       AND (
-         SELECT COUNT(DISTINCT n.information_label::text)
-         FROM unnest(h.member_node_ids) AS ref(node_id)
-         JOIN ${q}.graph_nodes n ON n.id=ref.node_id
-       )=1`,
-    `UPDATE ${q}.ngram_observations o
-     SET information_label=e.information_label
-     FROM ${q}.evidence_spans e
-     WHERE e.id=o.evidence_id
-       AND ${unlabeledOrLocked("o")}
-       AND e.information_label->>'tenantId'<>'migration.unassigned'
-       AND (
-         o.source_version_id IS NULL
-         OR EXISTS (
-           SELECT 1 FROM ${q}.source_versions sv
-           WHERE sv.id=o.source_version_id
-             AND sv.information_label=e.information_label
-         )
-       )`,
-    `UPDATE ${q}.ngram_observations o
-     SET information_label=sv.information_label
-     FROM ${q}.source_versions sv
-     WHERE sv.id=o.source_version_id
-       AND o.evidence_id IS NULL
-       AND ${unlabeledOrLocked("o")}
-       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
-    `UPDATE ${q}.ngram_models m
-     SET information_label=(
-       SELECT MIN(o.information_label::text)::jsonb
-       FROM ${q}.ngram_observations o
-       WHERE o.stream_id=m.stream_id
-     )
-     WHERE ${unlabeledOrLocked("m")}
-       AND EXISTS (SELECT 1 FROM ${q}.ngram_observations o WHERE o.stream_id=m.stream_id)
-       AND NOT EXISTS (
-         SELECT 1 FROM ${q}.ngram_observations o
-         WHERE o.stream_id=m.stream_id
-           AND (o.information_label IS NULL OR o.information_label->>'tenantId'='migration.unassigned')
-       )
-       AND (
-         SELECT COUNT(DISTINCT o.information_label::text)
-         FROM ${q}.ngram_observations o
-         WHERE o.stream_id=m.stream_id
-       )=1`,
-    evidenceBackfill("language_units", "u", "evidence_ids"),
-    `UPDATE ${q}.language_units u
-     SET information_label=sv.information_label
-     FROM ${q}.source_versions sv
-     WHERE sv.id=u.source_version_id
-       AND CARDINALITY(u.evidence_ids)=0
-       AND ${unlabeledOrLocked("u")}
-       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
-    evidenceBackfill("language_patterns", "p", "evidence_ids"),
-    `UPDATE ${q}.language_patterns p
-     SET information_label=lp.information_label
-     FROM ${q}.language_profiles lp
-     WHERE lp.id=p.profile_id
-       AND CARDINALITY(p.evidence_ids)=0
-       AND ${unlabeledOrLocked("p")}
-       AND lp.information_label->>'tenantId'<>'migration.unassigned'`,
-    evidenceBackfill("semantic_frames", "f", "evidence_ids"),
-    evidenceBackfill("translation_alignments", "a", "evidence_ids")
-  ];
-}
-
 function informationLabelMigrationStatements(
   q: string,
   informationAccess?: InformationAccessContext
@@ -632,130 +508,143 @@ function informationLabelMigrationStatements(
       mergePolicy: "isolated"
     }).replaceAll("'", "''")
     : undefined;
-  const unlabeledOrLocked = (alias: string) =>
-    `(${alias}.information_label IS NULL OR ${alias}.information_label->>'tenantId'='migration.unassigned')`;
-  return [
-    ...tables.map(table => `ALTER TABLE ${q}.${table} ADD COLUMN IF NOT EXISTS information_label JSONB`),
-    `DELETE FROM ${q}.translation_alignments a
-     WHERE CARDINALITY(a.evidence_ids)>0
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(a.evidence_ids) AND e.status<>'promoted')`,
-    `DELETE FROM ${q}.semantic_frames f
-     WHERE CARDINALITY(f.evidence_ids)>0
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(f.evidence_ids) AND e.status<>'promoted')`,
-    `DELETE FROM ${q}.language_patterns p
-     WHERE (
-       CARDINALITY(p.evidence_ids)>0
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(p.evidence_ids) AND e.status<>'promoted')
-     ) OR EXISTS (
-       SELECT 1 FROM ${q}.language_profiles lp
-       WHERE lp.id=p.profile_id
-         AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=lp.source_version_id AND e.status<>'promoted')
-     )`,
-    `DELETE FROM ${q}.language_units u
-     WHERE (
-       CARDINALITY(u.evidence_ids)>0
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(u.evidence_ids) AND e.status<>'promoted')
-     ) OR (
-       EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=u.source_version_id)
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=u.source_version_id AND e.status<>'promoted')
-     )`,
-    `DELETE FROM ${q}.ngram_models m
-     WHERE EXISTS (
-       SELECT 1
-       FROM ${q}.ngram_observations o
-       WHERE o.stream_id=m.stream_id
-         AND (
-           EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=o.evidence_id AND e.status<>'promoted')
-           OR EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=o.source_version_id AND e.status<>'promoted')
-         )
-     )`,
-    `DELETE FROM ${q}.ngram_observations o
-     WHERE (
-       o.evidence_id IS NOT NULL
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=o.evidence_id AND e.status<>'promoted')
-     ) OR (
-       o.source_version_id IS NOT NULL
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=o.source_version_id AND e.status<>'promoted')
-     )`,
-    `DELETE FROM ${q}.language_profiles lp
-     WHERE EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=lp.source_version_id AND e.status<>'promoted')`,
-    `WITH bad_evidence AS MATERIALIZED (
-       SELECT id FROM ${q}.evidence_spans WHERE status<>'promoted'
-     ), bad_ids AS MATERIALIZED (
-       SELECT COALESCE(ARRAY_AGG(id),'{}'::text[]) AS ids FROM bad_evidence
-     ), bad_nodes AS MATERIALIZED (
+  const publicSource = (sourceAlias: string, versionAlias: string) => `(
+    (${sourceAlias}.namespace LIKE 'wikipedia-%'
+      AND ${versionAlias}.metadata_json->>'sourceSystem' IN ('wikipedia','wikipedia-v3'))
+    OR ((${sourceAlias}.namespace LIKE 'gutenberg%' OR ${sourceAlias}.namespace LIKE 'corpus:source_%')
+      AND ${versionAlias}.metadata_json->>'sourceSystem' IN ('gutenberg','gutenberg-corpus'))
+  )`;
+  const ownerSource = (sourceAlias: string, versionAlias: string) => `(
+    ${sourceAlias}.namespace IN ('corrections','local-corrections','scce-corrections','local-file')
+    AND ${versionAlias}.metadata_json->>'sourceSystem' IN ('corrections','local-corrections')
+  )`;
+  const badEvidence = `bad_evidence AS MATERIALIZED (
+    SELECT e.id,e.source_version_id
+    FROM ${q}.evidence_spans e
+    JOIN ${q}.source_versions sv ON sv.id=e.source_version_id
+    JOIN ${q}.sources s ON s.id=sv.source_id
+    WHERE e.status<>'promoted' OR NOT ${publicSource("s", "sv")}
+  )`;
+  const badSets = `bad_sets AS MATERIALIZED (
+    SELECT
+      COALESCE(ARRAY_AGG(id),'{}'::text[]) AS evidence_ids,
+      COALESCE(ARRAY_AGG(DISTINCT source_version_id),'{}'::text[]) AS source_version_ids
+    FROM bad_evidence
+  )`;
+  const migrationMarker = "information_label_migration_policy";
+  const runOnce = (statement: string) => `DO $scce_information_labels$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM ${q}.storage_meta WHERE key='${migrationMarker}') THEN
+        ${statement};
+      END IF;
+    END
+  $scce_information_labels$`;
+  const legacyStatements = [
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.translation_alignments a
+     USING bad_sets b
+     WHERE CARDINALITY(a.evidence_ids)=0 OR a.evidence_ids && b.evidence_ids`,
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.semantic_frames f
+     USING bad_sets b
+     WHERE CARDINALITY(f.evidence_ids)=0 OR f.evidence_ids && b.evidence_ids`,
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.language_patterns p
+     USING bad_sets b
+     WHERE p.evidence_ids && b.evidence_ids
+        OR NOT EXISTS (SELECT 1 FROM ${q}.language_profiles lp WHERE lp.id=p.profile_id)
+        OR EXISTS (
+          SELECT 1 FROM ${q}.language_profiles lp
+          WHERE lp.id=p.profile_id AND lp.source_version_id=ANY(b.source_version_ids)
+        )`,
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.language_units u
+     USING bad_sets b
+     WHERE u.evidence_ids && b.evidence_ids
+        OR u.source_version_id=ANY(b.source_version_ids)`,
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.ngram_models m
+     USING bad_sets b
+     WHERE NOT EXISTS (SELECT 1 FROM ${q}.ngram_observations o WHERE o.stream_id=m.stream_id)
+        OR EXISTS (
+          SELECT 1 FROM ${q}.ngram_observations o
+          WHERE o.stream_id=m.stream_id
+            AND (
+              o.evidence_id=ANY(b.evidence_ids)
+              OR o.source_version_id=ANY(b.source_version_ids)
+              OR (o.evidence_id IS NULL AND o.source_version_id IS NULL)
+            )
+        )`,
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.ngram_observations o
+     USING bad_sets b
+     WHERE o.evidence_id=ANY(b.evidence_ids)
+        OR o.source_version_id=ANY(b.source_version_ids)
+        OR (o.evidence_id IS NULL AND o.source_version_id IS NULL)`,
+    `WITH ${badEvidence}, ${badSets}
+     DELETE FROM ${q}.language_profiles lp
+     USING bad_sets b
+     WHERE lp.source_version_id=ANY(b.source_version_ids)`,
+    `WITH ${badEvidence}, ${badSets}, bad_nodes AS MATERIALIZED (
        SELECT n.id
        FROM ${q}.graph_nodes n
-       CROSS JOIN bad_ids b
-       WHERE n.evidence_ids && b.ids
+       CROSS JOIN bad_sets b
+       WHERE n.evidence_ids && b.evidence_ids
+          OR n.representation_json->>'sourceVersionId'=ANY(b.source_version_ids)
+          OR (CARDINALITY(n.evidence_ids)=0 AND NOT (n.representation_json ? 'sourceVersionId'))
      )
      DELETE FROM ${q}.graph_hyperedges h
-     USING bad_ids b
-     WHERE h.provenance_refs && b.ids
+     USING bad_sets b
+     WHERE h.provenance_refs && b.evidence_ids
+        OR CARDINALITY(h.provenance_refs)=0
         OR h.member_node_ids && COALESCE((SELECT ARRAY_AGG(id) FROM bad_nodes),'{}'::text[])`,
-    `WITH bad_evidence AS MATERIALIZED (
-       SELECT id FROM ${q}.evidence_spans WHERE status<>'promoted'
-     ), bad_ids AS MATERIALIZED (
-       SELECT COALESCE(ARRAY_AGG(id),'{}'::text[]) AS ids FROM bad_evidence
-     ), bad_nodes AS MATERIALIZED (
+    `WITH ${badEvidence}, ${badSets}, bad_nodes AS MATERIALIZED (
        SELECT n.id
        FROM ${q}.graph_nodes n
-       CROSS JOIN bad_ids b
-       WHERE n.evidence_ids && b.ids
+       CROSS JOIN bad_sets b
+       WHERE n.evidence_ids && b.evidence_ids
+          OR n.representation_json->>'sourceVersionId'=ANY(b.source_version_ids)
+          OR (CARDINALITY(n.evidence_ids)=0 AND NOT (n.representation_json ? 'sourceVersionId'))
      )
      DELETE FROM ${q}.graph_edges g
-     USING bad_ids b
-     WHERE g.evidence_ids && b.ids
+     USING bad_sets b
+     WHERE g.evidence_ids && b.evidence_ids
         OR g.source_node_id=ANY(COALESCE((SELECT ARRAY_AGG(id) FROM bad_nodes),'{}'::text[]))
         OR g.target_node_id=ANY(COALESCE((SELECT ARRAY_AGG(id) FROM bad_nodes),'{}'::text[]))`,
-    `WITH bad_evidence AS MATERIALIZED (
-       SELECT id FROM ${q}.evidence_spans WHERE status<>'promoted'
-     ), bad_ids AS MATERIALIZED (
-       SELECT COALESCE(ARRAY_AGG(id),'{}'::text[]) AS ids FROM bad_evidence
-     )
+    `WITH ${badEvidence}, ${badSets}
      DELETE FROM ${q}.graph_nodes n
-     USING bad_ids b
-     WHERE n.evidence_ids && b.ids`,
-    `UPDATE ${q}.source_versions sv
-     SET information_label='${publicCorpusLabel}'::jsonb
-     FROM ${q}.sources s
-     WHERE s.id=sv.source_id
-       AND ${unlabeledOrLocked("sv")}
-       AND (
-         (s.namespace LIKE 'wikipedia-%' AND sv.metadata_json->>'sourceSystem' IN ('wikipedia','wikipedia-v3'))
-         OR (s.namespace LIKE 'gutenberg%' AND sv.metadata_json->>'sourceSystem' IN ('gutenberg','gutenberg-corpus'))
-       )`,
+     USING bad_sets b
+     WHERE n.evidence_ids && b.evidence_ids
+        OR n.representation_json->>'sourceVersionId'=ANY(b.source_version_ids)
+        OR (CARDINALITY(n.evidence_ids)=0 AND NOT (n.representation_json ? 'sourceVersionId'))`,
     ...(ownerCorrectionsLabel ? [
       `UPDATE ${q}.source_versions sv
        SET information_label='${ownerCorrectionsLabel}'::jsonb
        FROM ${q}.sources s
-       WHERE s.id=sv.source_id
-         AND ${unlabeledOrLocked("sv")}
-         AND s.namespace IN ('corrections','local-corrections','scce-corrections','local-file')
-         AND sv.metadata_json->>'sourceSystem' IN ('corrections','local-corrections')`
+       WHERE s.id=sv.source_id AND ${ownerSource("s", "sv")}`
     ] : []),
+    `UPDATE ${q}.source_versions sv
+     SET information_label='${lockedLegacyLabel}'::jsonb
+     FROM ${q}.sources s
+     WHERE s.id=sv.source_id
+       AND NOT ${publicSource("s", "sv")}
+       AND NOT ${ownerSource("s", "sv")}`,
     `UPDATE ${q}.evidence_spans e
      SET information_label=sv.information_label
      FROM ${q}.source_versions sv
      WHERE sv.id=e.source_version_id
-       AND ${unlabeledOrLocked("e")}
-       AND sv.information_label IS NOT NULL
-       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
-    `UPDATE ${q}.language_profiles lp
-     SET information_label=sv.information_label,
-         profile_json=lp.profile_json || jsonb_build_object('informationLabel',sv.information_label)
-     FROM ${q}.source_versions sv
-     WHERE sv.id=lp.source_version_id
-       AND ${unlabeledOrLocked("lp")}
-       AND sv.information_label IS NOT NULL
-       AND sv.information_label->>'tenantId'<>'migration.unassigned'`,
-    ...sameEvidenceLabelBackfillStatements(q, unlabeledOrLocked),
-    ...tables.map(table => `UPDATE ${q}.${table} SET information_label='${lockedLegacyLabel}'::jsonb WHERE information_label IS NULL`),
-    ...tables.map(table => `ALTER TABLE ${q}.${table} ALTER COLUMN information_label SET NOT NULL`),
+       AND sv.information_label<>'${publicCorpusLabel}'::jsonb`
+  ];
+  return [
+    ...tables.map(table =>
+      `ALTER TABLE ${q}.${table} ADD COLUMN IF NOT EXISTS information_label JSONB NOT NULL DEFAULT '${publicCorpusLabel}'::jsonb`
+    ),
+    ...legacyStatements.map(runOnce),
+    ...tables.map(table => `ALTER TABLE ${q}.${table} ALTER COLUMN information_label DROP DEFAULT`),
     `INSERT INTO ${q}.storage_meta(key,value_json,updated_at)
      VALUES(
-       'information_label_migration_policy',
-       '{"schema":"scce.information_label_migration.v2","legacyPolicy":"deterministic_allowlist_else_locked","publicCorpusRule":"matching wikipedia/gutenberg namespace and sourceSystem","ownerCorrectionRule":"matching corrections namespace and sourceSystem with configured owner","derivativeRule":"all dependencies must share one non-locked label","legacyTenant":"migration.unassigned","legacyPrincipal":"migration.explicit-backfill-required","quarantineInfluenceCleanup":"delete any derivative with any non-promoted dependency transactionally"}'::jsonb,
+       '${migrationMarker}',
+       '{"schema":"scce.information_label_migration.v3","legacyPolicy":"metadata_only_public_default_then_targeted_exceptions","publicCorpusRule":"matching wikipedia namespace+sourceSystem or gutenberg/gated-corpus namespace+sourceSystem","ownerCorrectionRule":"matching corrections namespace+sourceSystem with configured owner","derivativeRule":"only verified promoted public dependencies survive; unknown, mixed, dependency-free aggregate, and non-public legacy derivatives are removed","legacyTenant":"migration.unassigned","legacyPrincipal":"migration.explicit-backfill-required","quarantineInfluenceCleanup":"delete every derivative with any non-promoted or non-public dependency transactionally","newWriteDefault":"none"}'::jsonb,
        NOW()
      )
      ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()`
