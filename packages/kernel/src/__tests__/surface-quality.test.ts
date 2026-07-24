@@ -45,6 +45,30 @@ describe("surface quality guard", () => {
     expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.telemetry);
   });
 
+  it("rejects concentrated degenerate n-gram speech without matching prompt vocabulary", () => {
+    const issues = detectCannedAnswerSpeech("Invent a the, a the,.");
+
+    expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.degenerate);
+    expect(issues.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.repeatedNgram);
+  });
+
+  it("preserves clean short rhetoric and multilingual long-form surfaces", () => {
+    for (const text of [
+      "Never again, never again.",
+      "Signal bridge",
+      "ë¬¼ê¸¸ì€ ë„ì‹œì˜ ì—´ê¸°ë¥¼ ë®ì¶”ê³  ë¹—ë¬¼ì„ ì €ìž¥í•˜ë©° ì‚°ì±…ë¡œì™€ ì •ì›ì„ ì—°ê²°í•œë‹¤.",
+      "ÙŠØ±Ø¨Ø· Ø§Ù„Ù…Ù…Ø± Ø§Ù„Ø£Ø®Ø¶Ø± Ø¨ÙŠÙ† Ø§Ù„Ù…Ø¯Ø±Ø³Ø© ÙˆØ§Ù„Ø­Ø¯ÙŠÙ‚Ø©ØŒ ÙˆÙŠØ®Ø²Ù† Ù…ÙŠØ§Ù‡ Ø§Ù„Ø£Ù…Ø·Ø§Ø± Ù„Ø±ÙŠ Ø§Ù„Ø£Ø´Ø¬Ø§Ø± Ø®Ù„Ø§Ù„ Ø§Ù„ØµÙŠÙ."
+    ]) {
+      expect(detectCannedAnswerSpeech(text)).toEqual([]);
+    }
+  });
+
+  it("rejects a repeated multilingual cycle only after three concentrated occurrences", () => {
+    const issues = detectCannedAnswerSpeech("ê°€ë‚˜ ë‹¤ë¼ ê°€ë‚˜ ë‹¤ë¼ ê°€ë‚˜ ë‹¤ë¼");
+
+    expect(issues.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.repeatedNgram);
+  });
+
   it("keeps localization out of normal hydrated answer templates", () => {
     const source = readFileSync(new URL("../localization.ts", import.meta.url), "utf8");
 
