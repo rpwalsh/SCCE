@@ -1,5 +1,5 @@
-import type { EvidenceSpan, FieldState, GraphEdge, GraphNode, JsonValue, SemanticEntailmentResult } from "./types.js";
-import { clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import type { Clock, EvidenceSpan, FieldState, GraphEdge, GraphNode, JsonValue, SemanticEntailmentResult } from "./types.js";
+import { clamp01, createClock, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { assessStabilityAdjustedSupport, causalMinimumCoverCoding, chernoffInformation, davisKahanSinTheta, mediatorPathRedundancyPruning, subspaceDriftEntropy } from "./causal-math.js";
 
 export interface CcrInput {
@@ -42,10 +42,11 @@ export interface CcrResult {
   audit: JsonValue;
 }
 
-export function createCcrEngine() {
+export function createCcrEngine(options: { clock?: Clock } = {}) {
+  const clock = options.clock ?? createClock();
   return {
     run(input: CcrInput): CcrResult {
-      const l1 = broadRecall(input);
+      const l1 = broadRecall(input, clock.now());
       const l2 = causalFilter(input, l1);
       const l3 = extractiveCompose(input, l2);
       const accepted = l3.sentences.some(sentence => sentence.accepted) && input.entailment.force !== "invented";
@@ -54,13 +55,13 @@ export function createCcrEngine() {
   };
 }
 
-function broadRecall(input: CcrInput): CcrLayer1Recall {
+function broadRecall(input: CcrInput, now: number): CcrLayer1Recall {
   const queryFeatures = featureSet(input.text, 512);
   const candidates = input.evidence
     .map(span => {
       const lexical = weightedJaccard(queryFeatures, span.features);
       const alpha = span.alpha;
-      const recency = Math.exp(-Math.max(0, Date.now() - span.observedAt) / (1000 * 60 * 60 * 24 * 180));
+      const recency = Math.exp(-Math.max(0, now - span.observedAt) / (1000 * 60 * 60 * 24 * 180));
       const score = clamp01(0.55 * lexical + 0.3 * alpha + 0.15 * recency);
       return { evidenceId: String(span.id), score, reason: `lexical=${lexical.toFixed(3)} alpha=${alpha.toFixed(3)} recency=${recency.toFixed(3)}` };
     })

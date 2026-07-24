@@ -1,5 +1,5 @@
-import type { Capability, CapabilityPlan, Hasher, JsonValue, PolicyProfile } from "./types.js";
-import { clamp01, createHasher, toJsonValue } from "./primitives.js";
+import type { Capability, CapabilityPlan, Clock, Hasher, JsonValue, PolicyProfile } from "./types.js";
+import { clamp01, createClock, createHasher, toJsonValue } from "./primitives.js";
 
 export type ConnectorKind = "filesystem" | "process" | "web_search" | "web_fetch" | "outlook" | "youtube" | "telephone";
 export type ConnectorPhase = "read" | "prepare" | "commit";
@@ -71,9 +71,10 @@ export interface ConnectorResultAdmission {
   eventPayload: JsonValue;
 }
 
-export function createConnectorGovernance(options: { hasher?: Hasher; now?: () => number } = {}) {
+export function createConnectorGovernance(options: { hasher?: Hasher; clock?: Clock; now?: () => number } = {}) {
   const hasher = options.hasher ?? createHasher();
-  const now = options.now ?? (() => Date.now());
+  const clock = options.clock ?? createClock();
+  const now = options.now ?? (() => clock.now());
   return {
     capabilities(configs: ConnectorConfig[]): Capability[] {
       return configs.map(configToCapability);

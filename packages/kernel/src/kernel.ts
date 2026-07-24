@@ -109,7 +109,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const powerWalk = createTypedTemporalWalkEngine({ hasher });
   const featureSketchLearner = createWeightedFeatureSketchLearner({ hasher });
   const learning = createLearningController();
-  const fieldEngine = createAlphaFieldEngine({ relationPotentialModel: deps.relationPotentialModel });
+  const fieldEngine = createAlphaFieldEngine({ clock, relationPotentialModel: deps.relationPotentialModel });
   const entailment = createSemanticEntailmentEngine({ idFactory, hasher });
   const ccr = createCcrEngine();
   const pca = createProofCarryingAnswer();
@@ -117,7 +117,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const judge = createJudge();
   const answerRevision = createAnswerRevisionCoordinator();
   const actionGraphBuilder = createActionGraphBuilder({ hasher });
-  const learningLoop = createLearningLoop();
+  const learningLoop = createLearningLoop(clock);
   const functionalCognitionEngine = createFunctionalCognitionEngine();
   const ssd = createSpectralSelfDistillation();
   const fcs = createFunctionalConsciousnessScore();

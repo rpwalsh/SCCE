@@ -39,7 +39,13 @@ import {
 import { createEvaluationTrace, executeEvaluationComponent } from "./evaluation-trace.js";
 import { createEventFactory } from "./events.js";
 import { createAlphaFieldEngine } from "./field.js";
-import { createFunctionalCognitionEngine } from "./functional-cognition.js";
+import {
+  createFunctionalCognitionEngine,
+  functionalSelectionGate,
+  personaHistoryFromEvents,
+  personaSnapshotFromSelf
+} from "./functional-cognition.js";
+import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
 import { createJudge } from "./judge.js";
@@ -1126,6 +1132,88 @@ export function createProductionTurnRuntime(options: {
         : composeEvidenceGroundedAnswer({ requestText: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, field, ccr: ccrResult, languageModels: surfaceLanguageModels, languageMemory: surfaceLanguageMemory, locale });
       const proofAnswer = answerSurface.answer;
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
+      const counterfactualWorld = counterfactual.simulate({
+        graph,
+        query: {
+          targetFeatures: featureSet(input.text, 512),
+          interventions: field.seeds.slice(0, 3).map((seed, index) => ({
+            id: `field_seed_${index}`,
+            nodeId: seed.nodeId,
+            value: Math.max(0, Math.min(1, seed.weight)),
+            operator: "increase" as const,
+            confidence: Math.max(0, Math.min(1, seed.weight)),
+            reason: seed.feature
+          })),
+          horizon: 4,
+          maxPaths: 32
+        }
+      });
+      const projectionStarted = Date.now();
+      const projectionNow = clock.now();
+      const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: projectionNow });
+      const [runtimeModel, priorStates, persistedPersonaEvents] = await Promise.all([
+        deps.storage.model.readModel(),
+        deps.storage.forecasts.getSeries({ limit: 64 }),
+        deps.storage.events.readRange({ typeId: "SelfModelProjected", beforeT: projectionNow, limit: 9 })
+      ]);
+      const forecast = prediction.forecast({ states: priorStates, source: state, horizon: 2, createdAt: projectionNow });
+      const selfState = await createFunctionalSelfModel({ storage: deps.storage, model: runtimeModel, policy, recentFailures: failures });
+      const selfDistillation = ssd.distill({ model: runtimeModel, graph, state, forecast, self: selfState });
+      const functionalConsciousness = fcs.score({ self: selfState, ssd: selfDistillation });
+      const personaHistory = personaHistoryFromEvents(
+        persistedPersonaEvents,
+        personaSnapshotFromSelf({ sessionId: String(episodeId), self: selfState, t: projectionNow })
+      );
+      const governance = deps.governance
+        ? await deps.governance.observe({ policy, now: projectionNow }).catch(error =>
+          unavailableGovernanceObservation(
+            projectionNow,
+            `governance_probe_error:${error instanceof Error ? error.message : String(error)}`
+          ))
+        : unavailableGovernanceObservation(projectionNow);
+      const functionalCognition = functionalCognitionEngine.project({
+        now: projectionNow,
+        self: selfState,
+        model: runtimeModel,
+        graph,
+        policy,
+        ssdAudit: selfDistillation.audit,
+        learningNeeds: earlyLearningNeeds,
+        personaHistory,
+        governance
+      });
+      const functionalGate = functionalSelectionGate(functionalCognition);
+      events.push(await append(eventFactory.create({
+        episodeId,
+        typeId: "SelfModelProjected",
+        payload: {
+          phase: "preselection",
+          self: selfState,
+          selfDistillation: selfDistillation.audit,
+          fcs: functionalConsciousness.audit,
+          functionalCognition: functionalCognition.audit
+        }
+      })));
+      kernelTrace({
+        stage: "functional-cognition.project",
+        label: "kernel.turn.preselection",
+        durationMs: Date.now() - projectionStarted,
+        counts: {
+          personaSnapshots: personaHistory.length,
+          counterfactualTraces: functionalCognition.cmps.length,
+          policyPopulation: functionalCognition.pareto.front.length
+        },
+        support: {
+          fc: functionalCognition.fc,
+          efc: functionalCognition.efc,
+          gov: functionalCognition.gov,
+          governanceReady: governance.ready,
+          governanceFailures: governance.failures,
+          selectedGoalId: functionalCognition.selectedGoal?.goal.id ?? null,
+          dciAvailable: functionalCognition.dci.available,
+          paretoAvailable: functionalCognition.pareto.available
+        }
+      });
       const candidateApprovalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
       const candidateActionPlans = candidateConstructSeed.program || candidateConstructSeed.artifacts.length
         ? toolCognition.plan({
@@ -1136,7 +1224,8 @@ export function createProductionTurnRuntime(options: {
           evidence: selectedEvidence,
           field,
           actionCommitment: requirementField.actionCommitment,
-          temporaryOperatorGrant: { enabled: candidateApprovalPolicyPatch.dryRunByDefault === false }
+          temporaryOperatorGrant: { enabled: candidateApprovalPolicyPatch.dryRunByDefault === false },
+          functionalGate
         }).capabilityPlans
         : [];
       const cognitiveActionPlans: CognitiveActionPlan[] = candidateActionPlans.map(plan => ({
@@ -1221,22 +1310,6 @@ export function createProductionTurnRuntime(options: {
           })
         })));
       }
-      const counterfactualWorld = counterfactual.simulate({
-        graph,
-        query: {
-          targetFeatures: featureSet(input.text, 512),
-          interventions: field.seeds.slice(0, 3).map((seed, index) => ({
-            id: `field_seed_${index}`,
-            nodeId: seed.nodeId,
-            value: Math.max(0, Math.min(1, seed.weight)),
-            operator: "increase" as const,
-            confidence: Math.max(0, Math.min(1, seed.weight)),
-            reason: seed.feature
-          })),
-          horizon: 4,
-          maxPaths: 32
-        }
-      });
       const cognitiveProposalStarted = Date.now();
       const cognitiveProposals = planCognitiveProposals({
         requestText: input.text,
@@ -1303,7 +1376,8 @@ export function createProductionTurnRuntime(options: {
         learningNeeds: earlyLearningNeeds,
         locale,
         calibrationModels,
-        calibrationTaskClass
+        calibrationTaskClass,
+        functionalGate
       });
       kernelTrace({
         stage: "candidate.field.generate",
@@ -1426,7 +1500,8 @@ export function createProductionTurnRuntime(options: {
         policy,
         requestedAuthority,
         requirementField,
-        deterministicReplay: deps.deterministicReplay
+        deterministicReplay: deps.deterministicReplay,
+        functionalGate
       });
       const selectedProposal = cognitiveProposalForCandidate(judged.selected, cognitiveProposals);
       for (const rejected of judged.rejected) events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateRejected", payload: { candidateId: rejected.candidate.id, score: rejected.score, reasons: rejected.reasons } })));
@@ -1475,7 +1550,8 @@ export function createProductionTurnRuntime(options: {
           evidence: selectedEvidence,
           field,
           actionCommitment: requirementField.actionCommitment,
-          temporaryOperatorGrant: { enabled: approvalPolicyPatch.dryRunByDefault === false }
+          temporaryOperatorGrant: { enabled: approvalPolicyPatch.dryRunByDefault === false },
+          functionalGate
         })
         : {
           id: `tool_cognition_${hasher.digestHex(`skipped:${episodeId}`).slice(0, 32)}`,
@@ -1921,7 +1997,6 @@ export function createProductionTurnRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: { ...emission, assistantForceTrace: emissionAssistantForce.audit, runtimeCoherence: runtimeCoherenceTrace } })));
       markTiming("validationMs");
       const actionGraph = actionGraphBuilder.build({ episodeId, plans: capabilityPlans, emission, policy });
-      const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: clock.now() });
       const afterTurnMaintenance = afterTurnMaintenanceDecision({ translationTarget, construct, capabilityPlans, assistantForce: emission.assistantForce });
       const incrementalLearningDisabled = deps.evaluationCondition?.flags.disableIncrementalLearning === true;
       if (incrementalLearningDisabled) {
@@ -1930,8 +2005,6 @@ export function createProductionTurnRuntime(options: {
       const afterTurnMaintenanceDeferred = afterTurnMaintenance.deferred
         || incrementalLearningDisabled
         || deps.evaluationCondition?.flags.disableLanguageMemory === true;
-      const priorStates = afterTurnMaintenanceDeferred ? [] : await deps.storage.forecasts.getSeries({ limit: 64 });
-      const forecast = prediction.forecast({ states: priorStates, source: state, horizon: 2, createdAt: clock.now() });
       if (!afterTurnMaintenanceDeferred) {
         await deps.storage.forecasts.putState(state);
         await deps.storage.forecasts.putForecast(forecast);
@@ -1985,6 +2058,15 @@ export function createProductionTurnRuntime(options: {
           discourseObject: discourseObjectTrace,
           corrections: correctionMemory.summarize(correctionRules),
           brain,
+          selfState,
+          selfDistillation: selfDistillation.audit,
+          functionalConsciousness: functionalConsciousness.audit,
+          functionalCognition: toJsonValue({
+            ...(functionalCognition.audit as Record<string, JsonValue>),
+            phase: "preselection",
+            runtimeReadiness: runtimeReadinessForEmission.audit,
+            runtimeCoherence: runtimeCoherenceTrace
+          }),
           learningLoop: toJsonValue({ maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           timing,
           buildTest,
@@ -2002,7 +2084,6 @@ export function createProductionTurnRuntime(options: {
         };
       }
       evaluationComponent("incremental-learning", "maintenance.incremental-learning", () => undefined, () => undefined);
-      const runtimeModel = await deps.storage.model.readModel();
       const profiles = translationTarget
         ? productionTranslationProfiles
         : (await surfaceLanguageProfilesCached()).profiles;
@@ -2027,7 +2108,11 @@ export function createProductionTurnRuntime(options: {
         connectorsConfigured: Boolean(deps.connectors),
         idFactory,
         now: clock.now()
-      });
+      }).filter(plan =>
+        functionalGate.gov
+        && functionalGate.fc
+        && (plan.phase === "read" || functionalGate.efc && Boolean(functionalGate.selectedGoalId))
+      );
       for (const plan of learningCapabilityPlans) {
         await deps.storage.capabilities.putPlan(plan);
         capabilityPlans.push(plan);
@@ -2042,10 +2127,6 @@ export function createProductionTurnRuntime(options: {
         recentEntailments: [entailmentResult],
         policy
       });
-      const selfState = await createFunctionalSelfModel({ storage: deps.storage, model: runtimeModel, policy, recentFailures: failures });
-      const selfDistillation = ssd.distill({ model: runtimeModel, graph, state, forecast, self: selfState });
-      const functionalConsciousness = fcs.score({ self: selfState, ssd: selfDistillation });
-      const functionalCognition = functionalCognitionEngine.project({ now: clock.now(), self: selfState, model: runtimeModel, graph, policy, ssdAudit: selfDistillation.audit, learningNeeds, candidates: candidateField.audit });
       events.push(await append(eventFactory.create({ episodeId, typeId: "LanguagePatternLearned", payload: languageAcquisition.audit })));
       for (const need of learningNeeds) events.push(await append(eventFactory.create({ episodeId, typeId: "LearningNeedDetected", payload: { need } })));
       for (const need of learningLoopPlan.learningNeeds) events.push(await append(eventFactory.create({ episodeId, typeId: "LearningNeedDetected", payload: { id: need.id, goal: need.goal, gapId: need.gapId, priority: need.priority, continuation: need.continuation, sourcePlans: need.sourcePlans.map(plan => ({ id: plan.id, kind: plan.kind, capabilityId: plan.capabilityId, query: plan.query, utility: plan.utility, acquisition: plan.acquisition })) } })));
@@ -2053,7 +2134,6 @@ export function createProductionTurnRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: mvpTrainingPlan.audit })));
       runtimeState.lastEpisodeId = episodeId;
       runtimeState.lastOutput = emission.answer;
-      events.push(await append(eventFactory.create({ episodeId, typeId: "SelfModelProjected", payload: { self: selfState, selfDistillation: selfDistillation.audit, fcs: functionalConsciousness.audit, functionalCognition: functionalCognition.audit } })));
       markTiming("maintenanceMs");
       const timing = buildTiming("foreground");
       events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, timing } })));
@@ -2092,7 +2172,12 @@ export function createProductionTurnRuntime(options: {
         selfState,
         selfDistillation: selfDistillation.audit,
         functionalConsciousness: functionalConsciousness.audit,
-        functionalCognition: toJsonValue({ ...(functionalCognition.audit as Record<string, JsonValue>), runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace }),
+        functionalCognition: toJsonValue({
+          ...(functionalCognition.audit as Record<string, JsonValue>),
+          phase: "preselection",
+          runtimeReadiness: runtimeReadinessForEmission.audit,
+          runtimeCoherence: runtimeCoherenceTrace
+        }),
         runtimeCoherence: runtimeCoherenceTrace,
         ...(inheritedRuntimeMotion ? { runtimeMotion: toJsonValue(inheritedRuntimeMotion) } : {}),
         discourseObject: discourseObjectTrace,

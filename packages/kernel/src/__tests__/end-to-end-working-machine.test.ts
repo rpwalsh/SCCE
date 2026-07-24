@@ -437,7 +437,7 @@ describe("end-to-end working machine source-only path", () => {
       mediaType,
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.94,
+      sourceTrust: { identity: 0.94, integrity: 0.94, parserReliability: 0.94, directness: 0.94, authority: 0.94, freshness: 0.94, independenceGroup: "fixture:end-to-end", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }
@@ -460,7 +460,7 @@ describe("end-to-end working machine source-only path", () => {
       textPreview: text,
       languageHints: {},
       scriptHints: {},
-      trustVector: { trust: source.trust, forceClass },
+      trustVector: { sourceTrust: source.sourceTrust, forceClass },
       provenance: { uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, forceClass },
       features: featureSet(text, 128),
       status: "promoted",

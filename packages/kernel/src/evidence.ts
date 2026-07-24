@@ -1,4 +1,4 @@
-import type { EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceVersionId } from "./types.js";
+import type { EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceTrust, SourceVersionId } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import type { Hasher } from "./types.js";
 import { anchorFeatureSet, clamp01, entropy, featureSet, symbolizeData, toJsonValue } from "./primitives.js";
@@ -11,9 +11,11 @@ export interface EvidenceExtractionInput {
   mediaType: string;
   text: string;
   languageProfile: LanguageProfile;
+  sourceTrust: SourceTrust;
   observedAt: number;
   maxChunkBytes: number;
   metadata?: JsonValue;
+  exactSourceText?: boolean;
 }
 
 export interface ExtractedEvidence {
@@ -47,7 +49,12 @@ export interface EvidenceExtractionDiagnostics {
 export function createEvidenceExtractor(deps: { idFactory: IdFactory; hasher: Hasher }) {
   return {
     extract(input: EvidenceExtractionInput): ExtractedEvidence {
-      const normalized = input.text.replace(/\u0000/g, " ").normalize("NFC");
+      // Exact source derivatives are already canonical and must not be rewritten.
+      // The legacy/default NFC path remains for callers that intentionally bind
+      // their source version to normalized bytes.
+      const normalized = input.exactSourceText
+        ? input.text
+        : input.text.replace(/\u0000/g, " ").normalize("NFC");
       const byteIndex = buildByteIndex(normalized);
       const sections = detectSections(normalized, byteIndex);
       const chunks = segmentByParagraphs(normalized, input.maxChunkBytes, byteIndex);
@@ -89,7 +96,7 @@ export function createEvidenceExtractor(deps: { idFactory: IdFactory; hasher: Ha
           },
           trustVector: {
             namespace: input.namespace,
-            sourceTrust: 0.82,
+            sourceTrust: input.sourceTrust,
             structuralConfidence,
             lexicalEntropy,
             mediaType: input.mediaType,

@@ -469,6 +469,10 @@ function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {
 }
 
 class MemoryScceStorage implements ScceStorage {
+  async transaction<T>(operation: () => Promise<T>): Promise<T> {
+    return operation();
+  }
+
   readonly eventsRows: ScceEvent[] = [];
   readonly sourceVersions = new Map<string, SourceVersion>();
   readonly evidenceSpans: EvidenceSpan[] = [];
@@ -784,6 +788,7 @@ class MemoryScceStorage implements ScceStorage {
     return this.evidenceSpans
       .filter(span => !query.sourceVersionId || span.sourceVersionId === query.sourceVersionId)
       .filter(span => !query.text || span.text.includes(query.text))
+      .filter(span => query.status === "any" || span.status === (query.status ?? "promoted"))
       .slice(0, query.limit ?? 32)
       .map(span => ({ span, score: 1, reason: "memory-evidence-match" }));
   }

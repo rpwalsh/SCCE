@@ -18,6 +18,7 @@ import type {
   GraphSlice,
   GraphSliceQuery,
   Hyperedge,
+  InformationLabel,
   InspectionTarget,
   JsonValue,
   LanguageProfile,
@@ -27,6 +28,7 @@ import type {
   ScceEvent,
   SemanticProof,
   SourceId,
+  SourceRedactionInterval,
   SourceVersion,
   SourceVersionId,
   TemporalGraph,
@@ -52,6 +54,11 @@ export interface EvidenceQuery {
   sourceId?: SourceId;
   sourceVersionId?: SourceVersionId;
   features?: string[];
+  /**
+   * Cognitive retrieval is promoted-only by default. Quarantined evidence is
+   * available only to explicit admission/training inspection.
+   */
+  status?: "promoted" | "quarantined" | "any";
   limit?: number;
 }
 
@@ -74,6 +81,7 @@ export interface NgramObservation {
   evidenceId?: EvidenceId;
   observedAt: number;
   metadata: JsonValue;
+  informationLabel?: InformationLabel;
 }
 
 export interface NgramModelRecord {
@@ -84,6 +92,7 @@ export interface NgramModelRecord {
   discount: number;
   modelJson: JsonValue;
   updatedAt: number;
+  informationLabel?: InformationLabel;
 }
 
 export interface LanguageUnitRecord {
@@ -98,6 +107,7 @@ export interface LanguageUnitRecord {
   alpha: number;
   evidenceIds: EvidenceId[];
   metadata: JsonValue;
+  informationLabel?: InformationLabel;
 }
 
 export interface LanguagePatternRecord {
@@ -109,6 +119,7 @@ export interface LanguagePatternRecord {
   patternJson: JsonValue;
   evidenceIds: EvidenceId[];
   updatedAt: number;
+  informationLabel?: InformationLabel;
 }
 
 export interface SemanticFrameRecord {
@@ -118,6 +129,7 @@ export interface SemanticFrameRecord {
   evidenceIds: EvidenceId[];
   alpha: number;
   createdAt: number;
+  informationLabel?: InformationLabel;
 }
 
 export interface TranslationAlignmentRecord {
@@ -131,6 +143,7 @@ export interface TranslationAlignmentRecord {
   alignmentJson: JsonValue;
   evidenceIds: EvidenceId[];
   updatedAt: number;
+  informationLabel?: InformationLabel;
 }
 
 export interface BrainImportLedgerRecord {
@@ -484,6 +497,14 @@ export interface IngestedSourceFile {
   bytes: Uint8Array;
   text: string;
   metadata: JsonValue;
+  evidenceDerivative?: {
+    bytes: Uint8Array;
+    text: string;
+    kind: "redacted-text" | "extracted-text";
+    transformId: string;
+    originalCoordinateSpace: "source-bytes" | "extracted-text-utf8";
+    redactionMap: SourceRedactionInterval[];
+  };
 }
 
 export interface IngestionCheckpoint {
@@ -761,6 +782,11 @@ export interface StorageAdmin {
   init(): Promise<void>;
   migrate(): Promise<void>;
   verify(): Promise<{ ok: boolean; tables: string[]; errors: string[] }>;
+  /**
+   * Run one logical storage mutation against a single atomic durable
+   * transaction. Nested calls participate in the existing transaction.
+   */
+  transaction<T>(operation: () => Promise<T>): Promise<T>;
   status?(): Promise<JsonValue>;
   resetLocalDevOnly?(input: { confirmLocalDevOnly: boolean }): Promise<JsonValue>;
   stats(): Promise<JsonValue>;
@@ -829,7 +855,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 14;
+export const POSTGRES_SCHEMA_VERSION = 16;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -890,6 +916,7 @@ export interface ScceKernelDeps {
   storage: ScceStorage;
   files: FileIngestPort;
   buildTest: BuildTestPort;
+  governance?: import("./governance-observation.js").GovernanceProbe;
   connectors?: ConnectorPort;
   approvals?: ApprovalPort;
   clock?: import("./types.js").Clock;
@@ -909,6 +936,8 @@ export interface ScceKernelDeps {
    */
   evaluationCondition?: EvaluationConditionConfig;
   evaluationRunId?: string;
+  informationAccess?: import("./types.js").InformationAccessContext;
+  sourceInformationLabel?: import("./types.js").InformationLabel;
 }
 
 export interface ApprovalPort {

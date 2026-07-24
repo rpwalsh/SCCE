@@ -27,6 +27,7 @@ import {
   type IdFactory,
   type IngestedSourceFile,
   type IngestionCheckpoint,
+  type InformationLabel,
   type JsonValue,
   type ScceStorage,
   type SourceVersion,
@@ -35,6 +36,14 @@ import {
 import type { ScceRuntimeConfig } from "./config.js";
 import { trainLanguageCorpusText } from "./language-corpus-trainer.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
+
+const WIKIPEDIA_INFORMATION_LABEL: InformationLabel = {
+  tenantId: "scce.public.corpus",
+  principals: [],
+  compartments: [],
+  exportClass: "public",
+  mergePolicy: "same_owner"
+};
 
 export interface WikipediaV3IngestOptions {
   dumpPath: string;
@@ -598,14 +607,28 @@ export class WikipediaV3Ingestor {
       mediaType: file.mediaType,
       observedAt: now,
       byteLength: file.bytes.byteLength,
-      trust: 0.76,
+      sourceTrust: {
+        identity: 0.98,
+        integrity: 1,
+        parserReliability: 0.92,
+        directness: 0.84,
+        authority: 0.88,
+        freshness: 0.68,
+        independenceGroup: "wikimedia:wikipedia",
+        accessScope: "public",
+        licenseStatus: "licensed"
+      },
+      informationLabel: WIKIPEDIA_INFORMATION_LABEL,
       metadata
     };
     await this.storage.evidence.putSourceVersion(source);
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } }));
 
-    const profile = this.language.acquire({ sourceVersionId, text: file.text, createdAt: now });
+    const profile = {
+      ...this.language.acquire({ sourceVersionId, text: file.text, createdAt: now }),
+      informationLabel: WIKIPEDIA_INFORMATION_LABEL
+    };
     const extracted = this.evidenceExtractor.extract({
       sourceId,
       sourceVersionId,
@@ -614,11 +637,22 @@ export class WikipediaV3Ingestor {
       mediaType: file.mediaType,
       text: file.text,
       languageProfile: profile,
+      sourceTrust: source.sourceTrust,
       observedAt: now,
       maxChunkBytes: this.config.runtime.maxChunkBytes,
+      metadata,
+      exactSourceText: true
+    });
+    const decision = this.admission.decide({
+      source,
+      evidence: extracted.spans,
+      context: {
+        sourceClass: "trusted_corpus",
+        intendedUse: "direct_evidence",
+        promotionAuthority: "training"
+      },
       metadata
     });
-    const decision = this.admission.decide({ source, evidence: extracted.spans, metadata });
     await this.storage.quarantine.put({
       id: `${sourceVersionId}:wiki-admission`,
       sourceId,
@@ -628,16 +662,58 @@ export class WikipediaV3Ingestor {
       mediaType: file.mediaType,
       fetchedAt: now,
       trustVector: decision.audit,
-      permissionVector: { disposition: decision.disposition, lane: "wiki_stream" },
-      decision: decision.disposition === "reject" ? "rejected" : "promoted",
+      permissionVector: toJsonValue({
+        disposition: decision.disposition,
+        sourceAdmission: decision.context,
+        activeInfluence: decision.activeInfluence,
+        lane: "wiki_stream"
+      }),
+      decision: decision.disposition === "reject"
+        ? "rejected"
+        : decision.disposition === "promote"
+          ? "promoted"
+          : "pending",
       decisionJson: decision.audit
     });
     if (decision.disposition === "reject") {
       await this.storage.ingestion.put({ ...checkpoint, phase: "skipped", status: "complete", reason: "admission-rejected", updatedAt: now });
       return zeroPage({ warnings: decision.reasons });
     }
+    if (decision.disposition !== "promote") {
+      const actionByEvidence = new Map(decision.evidenceActions.map(action => [action.evidenceId, action]));
+      const quarantinedSpans = extracted.spans.map(span => {
+        const action = actionByEvidence.get(String(span.id));
+        return {
+          ...span,
+          informationLabel: WIKIPEDIA_INFORMATION_LABEL,
+          alpha: action?.action === "lower-alpha" ? Math.min(span.alpha, action.alpha) : span.alpha,
+          status: "quarantined" as const,
+          trustVector: {
+            ...objectOrEmpty(span.trustVector),
+            admission: decision.audit,
+            action: action?.action ?? "quarantine"
+          }
+        };
+      });
+      for (const span of quarantinedSpans) await this.storage.blobs.put(Buffer.from(span.text, "utf8"), file.mediaType);
+      if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(quarantinedSpans);
+      else for (const span of quarantinedSpans) await this.storage.evidence.putEvidenceSpan(span);
+      await this.storage.ingestion.put({
+        ...checkpoint,
+        phase: "stored",
+        status: "complete",
+        reason: "admission-quarantined",
+        updatedAt: now,
+        metadata: {
+          ...objectOrEmpty(wikiMetadata(checkpoint.metadata)),
+          admission: decision.audit,
+          activeInfluence: decision.activeInfluence
+        }
+      });
+      return zeroPage({ warnings: decision.reasons });
+    }
 
-    const admittedSpans = stampEvidence(extracted.spans, metadata);
+    const admittedSpans = stampEvidence(extracted.spans, metadata, WIKIPEDIA_INFORMATION_LABEL);
     for (const span of admittedSpans) await this.storage.blobs.put(Buffer.from(span.text, "utf8"), file.mediaType);
     if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(admittedSpans);
     else for (const span of admittedSpans) await this.storage.evidence.putEvidenceSpan(span);
@@ -645,8 +721,8 @@ export class WikipediaV3Ingestor {
     let graphNodes = 0;
     let graphEdges = 0;
     const typedProjection = this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: file.text, metadata, evidence: admittedSpans, observedAt: now });
-    const typedNodes = stampGraphNodes(typedProjection.graphNodes);
-    const typedEdges = stampGraphEdges(typedProjection.graphEdges);
+    const typedNodes = stampGraphNodes(typedProjection.graphNodes, WIKIPEDIA_INFORMATION_LABEL);
+    const typedEdges = stampGraphEdges(typedProjection.graphEdges, WIKIPEDIA_INFORMATION_LABEL);
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(typedNodes);
     else for (const node of typedNodes) await this.storage.graph.upsertNode(node);
     if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(typedEdges);
@@ -654,14 +730,15 @@ export class WikipediaV3Ingestor {
     graphNodes += typedProjection.graphNodes.length;
     graphEdges += typedProjection.graphEdges.length;
     const builtGraph = this.graphBuilder.build({ sourceVersionId, uri: file.uri, mediaType: file.mediaType, languageProfile: profile, evidence: admittedSpans, observedAt: now });
-    const builtNodes = stampGraphNodes(builtGraph.nodes);
-    const builtEdges = stampGraphEdges(builtGraph.edges);
+    const builtNodes = stampGraphNodes(builtGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
+    const builtEdges = stampGraphEdges(builtGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(builtNodes);
     else for (const node of builtNodes) await this.storage.graph.upsertNode(node);
     if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(builtEdges);
     else for (const edge of builtEdges) await this.storage.graph.upsertEdge(edge);
-    if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(builtGraph.hyperedges);
-    else for (const hyperedge of builtGraph.hyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+    const builtHyperedges = builtGraph.hyperedges.map(hyperedge => ({ ...hyperedge, informationLabel: WIKIPEDIA_INFORMATION_LABEL }));
+    if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(builtHyperedges);
+    else for (const hyperedge of builtHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
     graphNodes += builtGraph.nodes.length;
     graphEdges += builtGraph.edges.length;
 
@@ -714,7 +791,10 @@ export class WikipediaV3Ingestor {
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
     const text = boundedLanguageShardText(samples, 1_200_000);
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
-    const profile = this.language.acquire({ sourceVersionId, text, createdAt });
+    const profile = {
+      ...this.language.acquire({ sourceVersionId, text, createdAt }),
+      informationLabel: WIKIPEDIA_INFORMATION_LABEL
+    };
     const evidence = selectShardEvidence(samples, 2048);
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
@@ -728,6 +808,7 @@ export class WikipediaV3Ingestor {
       text,
       evidence,
       profile,
+      informationLabel: WIKIPEDIA_INFORMATION_LABEL,
       languageAliases: [...new Set(samples.flatMap(sample => sample.languageAliases))].sort(),
       createdAt,
       ngramMaxOrder,
@@ -818,10 +899,11 @@ function selectShardEvidence(samples: readonly WikipediaLanguageShardSample[], l
   return selected;
 }
 
-function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue): EvidenceSpan[] {
+function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLabel: InformationLabel): EvidenceSpan[] {
   const sourceFeatures = sourceAnchorFeaturesFromMetadata(metadata);
   return spans.map(span => ({
     ...span,
+    informationLabel,
     features: [...new Set([...sourceFeatures, ...span.features])].slice(0, 720),
     status: "promoted",
     provenance: {
@@ -862,17 +944,19 @@ function sourceAnchorUnits(surface: string): string[] {
     .slice(0, 24);
 }
 
-function stampGraphNodes(nodes: GraphNode[]): GraphNode[] {
+function stampGraphNodes(nodes: GraphNode[], informationLabel: InformationLabel): GraphNode[] {
   return nodes.map(node => ({
     ...node,
+    informationLabel,
     features: [...new Set(["wikipedia", "wiki-stream", ...node.features])],
     metadata: { ...objectOrEmpty(node.metadata), sourceSystem: "wikipedia", forceClass: "learned_concept_prior" }
   }));
 }
 
-function stampGraphEdges(edges: GraphEdge[]): GraphEdge[] {
+function stampGraphEdges(edges: GraphEdge[], informationLabel: InformationLabel): GraphEdge[] {
   return edges.map(edge => ({
     ...edge,
+    informationLabel,
     metadata: { ...objectOrEmpty(edge.metadata), sourceSystem: "wikipedia", forceClass: "learned_concept_prior" }
   }));
 }

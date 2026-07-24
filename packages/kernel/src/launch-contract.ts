@@ -1,5 +1,6 @@
 import type {
   AssistantForceClass,
+  Clock,
   EvidenceId,
   EvidenceSpan,
   JsonValue,
@@ -16,7 +17,7 @@ import type {
   TruthState,
   TurnResult
 } from "./types.js";
-import { clamp01 } from "./primitives.js";
+import { clamp01, createClock } from "./primitives.js";
 import type { HybridRecallResult } from "./retrieval.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
 
@@ -29,6 +30,7 @@ export interface LaunchContractInput {
   preservationChecked?: boolean;
   unsupportedContentBlocked?: boolean;
   now?: number;
+  clock?: Clock;
 }
 
 export type LaunchContractFields = Pick<
@@ -75,7 +77,7 @@ export function launchContractForTurn(input: LaunchContractInput): LaunchContrac
     entailment: input.entailment,
     evidence: input.evidence,
     evidenceForce,
-    now: input.now ?? Date.now()
+    now: input.now ?? (input.clock ?? createClock()).now()
   });
   const answerBasis = runtimeAnswerBasis({
     entailment: input.entailment,

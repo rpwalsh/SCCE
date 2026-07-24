@@ -457,7 +457,7 @@ function sourceVersion(text: string): SourceVersion {
     mediaType: "text/plain",
     observedAt: clock.now(),
     byteLength: bytes.byteLength,
-    trust: 0.98,
+    sourceTrust: { identity: 0.98, integrity: 0.98, parserReliability: 0.98, directness: 0.98, authority: 0.98, freshness: 0.98, independenceGroup: "fixture:mouth-construction", accessScope: "fixture", licenseStatus: "fixture" },
     metadata: {}
   };
 }
@@ -480,7 +480,7 @@ function evidenceSpan(source: SourceVersion, text: string, charStart: number): E
     textPreview: text,
     languageHints: {},
     scriptHints: {},
-    trustVector: { sourceTrust: source.trust, forceClass: "direct_evidence" },
+    trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
     provenance: { sourceSystem: "fixture", sourceVersionId: source.sourceVersionId },
     features: featureSet(text, 128),
     status: "promoted",

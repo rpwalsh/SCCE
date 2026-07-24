@@ -2,6 +2,10 @@ import type { EpistemicForce, JsonValue, PolicyProfile, RequestedAuthority, Vali
 import type { CandidateField, CandidateSurface } from "./candidate.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
+import {
+  functionalCandidateGateFailures,
+  type FunctionalSelectionGate
+} from "./functional-cognition.js";
 
 export interface JudgeDecision {
   selected: CandidateSurface;
@@ -25,21 +29,31 @@ export function createJudge(options: JudgeOptions = {}) {
       requestedAuthority?: RequestedAuthority;
       requirementField?: TurnRequirementField;
       deterministicReplay?: boolean;
+      functionalGate?: FunctionalSelectionGate;
     }): JudgeDecision {
       if (!input.field.candidates.length) throw new Error("judge received no candidates");
       if (input.requirementField) return selectForRequirementField({ ...input, requirementField: input.requirementField, random });
       const massByCandidate = new Map(input.field.surfaceMass.map(item => [item.candidateId, item.mass]));
       const scored = input.field.candidates.map(candidate => {
-        const reasons: string[] = [];
-        const score = scoreCandidate(candidate, input.policy, reasons, input.validation, massByCandidate.get(candidate.id), input.requestedAuthority);
-        return { candidate, score, reasons };
+        const functionalFailures = functionalCandidateGateFailures(candidate.kind, input.functionalGate);
+        const reasons: string[] = functionalFailures.map(failure => `hard-failure:${failure}`);
+        const score = functionalFailures.length
+          ? -1_000_000 - functionalFailures.length
+          : scoreCandidate(candidate, input.policy, reasons, input.validation, massByCandidate.get(candidate.id), input.requestedAuthority);
+        return { candidate, score, reasons, functionalFailures };
       }).sort((a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id));
-      const selected = scored[0]!;
+      const selected = scored.find(row => row.functionalFailures.length === 0);
+      if (!selected) throw new Error("judge received no functionally admissible candidates");
       return {
         selected: selected.candidate,
-        rejected: scored.slice(1),
+        rejected: scored.filter(row => row !== selected),
         scores: scored.map(item => ({ candidateId: item.candidate.id, score: item.score, reasons: item.reasons })),
-        audit: toJsonValue({ requestedAuthority: input.requestedAuthority ?? null, selected: selected.candidate.id, scores: scored.map(item => ({ id: item.candidate.id, kind: item.candidate.kind, score: item.score, reasons: item.reasons })) })
+        audit: toJsonValue({
+          requestedAuthority: input.requestedAuthority ?? null,
+          selected: selected.candidate.id,
+          functionalGate: input.functionalGate ?? null,
+          scores: scored.map(item => ({ id: item.candidate.id, kind: item.candidate.kind, score: item.score, reasons: item.reasons }))
+        })
       };
     }
   };
@@ -86,6 +100,7 @@ function selectForRequirementField(input: {
   requestedAuthority?: RequestedAuthority;
   requirementField: TurnRequirementField;
   deterministicReplay?: boolean;
+  functionalGate?: FunctionalSelectionGate;
   random: () => number;
 }): JudgeDecision {
   const weights = requirementPositiveWeights(input.requirementField);
@@ -93,7 +108,10 @@ function selectForRequirementField(input: {
   const temperature = requirementTemperature(input.requirementField);
   const rows = input.field.candidates.map(candidate => {
     const quality = normalizedQuality(candidate);
-    const hardFailures = candidateHardFailures(candidate, quality, input.requirementField, input.validation);
+    const hardFailures = [
+      ...candidateHardFailures(candidate, quality, input.requirementField, input.validation),
+      ...functionalCandidateGateFailures(candidate.kind, input.functionalGate)
+    ];
     const positive = POSITIVE_QUALITY_KEYS.reduce((sum, key) => sum + weights[key] * quality[key], 0);
     const negative = NEGATIVE_QUALITY_KEYS.reduce((sum, key) => sum + penalties[key] * quality[key], 0);
     const rawScore = Number.isFinite(positive - negative) ? positive - negative : -1;
@@ -134,6 +152,7 @@ function selectForRequirementField(input: {
       randomDraw: sampled.draw,
       selected: selected.candidate.id,
       requestedAuthority: input.requestedAuthority ?? null,
+      functionalGate: input.functionalGate ?? null,
       temperature,
       temperatureBounds: [0.08, 0.45],
       positiveWeights: weights,

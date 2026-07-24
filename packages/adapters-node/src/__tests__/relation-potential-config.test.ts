@@ -33,6 +33,10 @@ function config(relationPotentialModel: RelationPotentialModel): ScceRuntimeConf
       tools: {}
     },
     connectors: {},
+    security: {
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" },
+      defaultSourceInformationLabel: { tenantId: "fixture", principals: ["owner"], compartments: ["test"], exportClass: "restricted", mergePolicy: "isolated" }
+    },
     policy: {
       allowMutation: false,
       requireTwoPhaseCommit: true,

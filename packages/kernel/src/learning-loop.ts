@@ -1,5 +1,6 @@
 import type {
   ChunkId,
+  Clock,
   ConstructGraph,
   ContentHash,
   EvidenceId,
@@ -26,7 +27,7 @@ import {
   type SemanticProofResult,
   proveClaim
 } from "./semantic-proof-engine.js";
-import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { canonicalStringify, clamp01, createClock, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 
 export type LearningRecordTypeId =
   | "learning.record.field_gap"
@@ -435,13 +436,13 @@ export function defaultSyntheticToolCapabilities(): ToolCapability[] {
   ];
 }
 
-export function createLearningLoop() {
+export function createLearningLoop(clock: Clock = createClock()) {
   return {
     plan(input: { goals: string[]; model: ModelState; graph: GraphSlice; evidence: EvidenceSpan[]; languageProfiles: LanguageProfile[] }): LearningLoopPlan {
       const fieldGaps = detectFieldGaps({
         evidence: input.evidence,
         graph: input.graph,
-        now: Date.now()
+        now: clock.now()
       });
       const goalGaps = input.goals.length ? input.goals.map((goal, index) => gapFromLegacyGoal(goal, input, index)) : [];
       const gaps = dedupeGaps([...fieldGaps, ...goalGaps]).slice(0, 24);
@@ -1039,7 +1040,17 @@ function sourceVersionFor(material: SyntheticSourceMaterial, now: number): Sourc
     mediaType: material.mediaType,
     observedAt: now,
     byteLength: byteLength(material.text),
-    trust: 0.92,
+    sourceTrust: {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 0.95,
+      directness: 0.9,
+      authority: 0.45,
+      freshness: 1,
+      independenceGroup: `generated:${material.sourceKindId}`,
+      accessScope: "runtime_internal",
+      licenseStatus: "generated"
+    },
     metadata: toJsonValue({ sourceKindId: material.sourceKindId, fixtureId: material.id })
   };
 }
@@ -1062,7 +1073,7 @@ function evidenceSpanFor(material: SyntheticSourceMaterial, sourceVersion: Sourc
     textPreview: material.text.slice(0, 320),
     languageHints: {},
     scriptHints: {},
-    trustVector: toJsonValue({ trust: 0.92, forceClass: material.forceClass }),
+    trustVector: toJsonValue({ sourceTrust: sourceVersion.sourceTrust, forceClass: material.forceClass }),
     provenance: toJsonValue({ uri: material.uri, sourceKindId: material.sourceKindId, fixtureId: material.id }),
     features: featureSet(material.text, 512),
     status: "promoted",
@@ -1296,7 +1307,14 @@ function recordKindForForce(forceClass: ProofForceClass): string {
 function promotionFocusPlan(evidence: readonly EvidenceSpan[]): Array<{ evidenceId: string; sourceVersionId: string; value: number; reason: string }> {
   return evidence.map(span => {
     const trust = objectRecord(span.trustVector);
-    const value = clamp01(0.45 * span.alpha + 0.35 * numberOr(trust.trust, 0.5) + 0.2 * (span.status === "promoted" ? 1 : 0.4));
+    const sourceTrust = objectRecord(trust.sourceTrust);
+    const evidenceTrust = Math.min(
+      numberOr(sourceTrust.integrity, 0.5),
+      numberOr(sourceTrust.parserReliability, 0.5),
+      numberOr(sourceTrust.directness, 0.5),
+      numberOr(sourceTrust.authority, 0.5)
+    );
+    const value = clamp01(0.45 * span.alpha + 0.35 * evidenceTrust + 0.2 * (span.status === "promoted" ? 1 : 0.4));
     return { evidenceId: String(span.id), sourceVersionId: String(span.sourceVersionId), value, reason: span.status === "promoted" ? "promotion.focus.already_promoted" : "promotion.focus.quarantined_candidate" };
   }).sort((a, b) => b.value - a.value);
 }

@@ -1417,6 +1417,27 @@ export function sourceAnchoredEvidenceForRequest(
   };
 }
 
+export function sourceIdentityAdmissibleEvidenceForRequest(
+  requestText: string,
+  evidence: readonly EvidenceSpan[],
+  semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set()
+): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
+  const anchored = sourceAnchoredEvidenceForRequest(
+    requestText,
+    evidence,
+    semanticFrameBoundEvidenceIds
+  );
+  if (!anchored.required) return anchored;
+  return {
+    ...anchored,
+    evidence: anchored.evidence.filter(span => (
+      evidenceExactSourceAnchorMatches(span, anchored.anchors)
+      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
+      || semanticFrameBoundEvidenceIds.has(String(span.id))
+    ))
+  };
+}
+
 function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, requestText: string): boolean {
   const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
   if (anchorUnits.length < 2) return false;

@@ -206,7 +206,7 @@ describe("Mouth temporal counterexample realization", () => {
       mediaType: "text/plain",
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.96,
+      sourceTrust: { identity: 0.96, integrity: 0.96, parserReliability: 0.96, directness: 0.96, authority: 0.96, freshness: 0.96, independenceGroup: "fixture:mouth-temporal", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }
@@ -229,7 +229,7 @@ describe("Mouth temporal counterexample realization", () => {
       textPreview: text,
       languageHints: {},
       scriptHints: {},
-      trustVector: { sourceTrust: source.trust, forceClass: "direct_evidence" },
+      trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
       provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId },
       features: featureSet(text, 128),
       status: "promoted",

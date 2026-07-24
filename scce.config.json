@@ -78,7 +78,21 @@
   "security": {
     "localMasterKey": "",
     "mentalHealthRails": true,
-    "redactPublicConfig": true
+    "redactPublicConfig": true,
+    "informationAccess": {
+      "tenantId": "scce.local",
+      "principalId": "scce.local.owner",
+      "compartments": ["scce.cognitive"],
+      "maximumExportClass": "restricted",
+      "explicitMergeAuthority": true
+    },
+    "defaultSourceInformationLabel": {
+      "tenantId": "scce.local",
+      "principals": ["scce.local.owner"],
+      "compartments": ["scce.cognitive"],
+      "exportClass": "confidential",
+      "mergePolicy": "same_owner"
+    }
   },
   "policy": {
     "allowMutation": false,

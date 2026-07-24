@@ -1,7 +1,7 @@
-import type { GraphEdge, GraphNode, NodeId } from "./types.js";
+import type { Clock, GraphEdge, GraphNode, NodeId } from "./types.js";
 import { clamp01 } from "./primitives.js";
 
-export function createCausalDiscoveryEngine() {
+export function createCausalDiscoveryEngine(clock: Clock) {
   return {
     discover(input: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; activeNodeIds: readonly NodeId[] }): Array<{ nodeId: NodeId; mass: number; reason: string }> {
       const active = new Set(input.activeNodeIds);
@@ -19,7 +19,9 @@ export function createCausalDiscoveryEngine() {
       }
       return input.nodes
         .map(node => {
-          const temporal = input.edges.filter(edge => edge.source === node.id || edge.target === node.id).reduce((sum, edge) => sum + Math.exp(-Math.max(0, Date.now() - edge.updatedAt) / (1000 * 60 * 60 * 24 * 30)), 0);
+          const temporal = input.edges
+            .filter(edge => edge.source === node.id || edge.target === node.id)
+            .reduce((sum, edge) => sum + Math.exp(-Math.max(0, clock.now() - edge.updatedAt) / (1000 * 60 * 60 * 24 * 30)), 0);
           const mass = clamp01((screened.get(node.id) ?? 0) * 0.45 + (incoming.get(node.id) ?? 0) * 0.25 + (outgoing.get(node.id) ?? 0) * 0.15 + temporal * 0.01);
           return { nodeId: node.id, mass, reason: active.has(node.id) ? "active-field-common-cause-screen" : "temporal-graph-causal-mass" };
         })

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { Clock, Hasher, JsonValue } from "./types.js";
+import type { Clock, Hasher, JsonValue, SourceRedactionInterval } from "./types.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 
 export function createCanonicalJson() {
@@ -226,8 +226,7 @@ export function randomHex(bytes: number): string {
   return randomBytes(bytes).toString("hex");
 }
 
-export function redactSecrets(text: string): string {
-  const patterns = [
+const SECRET_REDACTION_PATTERNS = [
     /AKIA[0-9A-Z]{16}/g,
     /ASIA[0-9A-Z]{16}/g,
     /gh[pso]_[A-Za-z0-9_]{30,}/g,
@@ -236,10 +235,75 @@ export function redactSecrets(text: string): string {
     /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----/g,
     /(password|secret[_-]?key|symbol|api[_-]?key)\s*[:=]\s*\S+/gi,
     /(postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^@\s]+@[^\s]+/gi
-  ];
-  let out = text.replace(/\u0000/g, " ");
-  for (const pattern of patterns) out = out.replace(pattern, "[REDACTED]");
-  return out;
+];
+
+export function redactSecretsWithMap(text: string): {
+  text: string;
+  redactionMap: SourceRedactionInterval[];
+} {
+  const replacements: Array<{ start: number; end: number; replacement: string }> = [];
+  for (const match of text.matchAll(/\u0000/g)) {
+    const start = match.index;
+    replacements.push({ start, end: start + match[0].length, replacement: " " });
+  }
+  for (const sourcePattern of SECRET_REDACTION_PATTERNS) {
+    const pattern = new RegExp(sourcePattern.source, sourcePattern.flags);
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index;
+      replacements.push({ start, end: start + match[0].length, replacement: "[REDACTED]" });
+    }
+  }
+  const merged = replacements
+    .sort((left, right) => left.start - right.start || right.end - left.end)
+    .reduce<Array<{ start: number; end: number; replacement: string }>>((out, current) => {
+      const previous = out[out.length - 1];
+      if (!previous || current.start >= previous.end) {
+        out.push({ ...current });
+        return out;
+      }
+      previous.end = Math.max(previous.end, current.end);
+      if (current.replacement === "[REDACTED]") previous.replacement = current.replacement;
+      return out;
+    }, []);
+  if (!merged.length) return { text, redactionMap: [] };
+  let derivative = "";
+  let originalCursor = 0;
+  let derivativeCharOffset = 0;
+  let derivativeByteOffset = 0;
+  const redactionMap: SourceRedactionInterval[] = [];
+  for (const replacement of merged) {
+    const unchanged = text.slice(originalCursor, replacement.start);
+    derivative += unchanged;
+    derivativeCharOffset += codePointLength(unchanged);
+    derivativeByteOffset += Buffer.byteLength(unchanged, "utf8");
+    const derivativeCharStart = derivativeCharOffset;
+    const derivativeByteStart = derivativeByteOffset;
+    derivative += replacement.replacement;
+    derivativeCharOffset += codePointLength(replacement.replacement);
+    derivativeByteOffset += Buffer.byteLength(replacement.replacement, "utf8");
+    redactionMap.push({
+      originalCharStart: codePointLength(text.slice(0, replacement.start)),
+      originalCharEnd: codePointLength(text.slice(0, replacement.end)),
+      originalByteStart: Buffer.byteLength(text.slice(0, replacement.start), "utf8"),
+      originalByteEnd: Buffer.byteLength(text.slice(0, replacement.end), "utf8"),
+      derivativeCharStart,
+      derivativeCharEnd: derivativeCharOffset,
+      derivativeByteStart,
+      derivativeByteEnd: derivativeByteOffset,
+      replacement: replacement.replacement
+    });
+    originalCursor = replacement.end;
+  }
+  derivative += text.slice(originalCursor);
+  return { text: derivative, redactionMap };
+}
+
+export function redactSecrets(text: string): string {
+  return redactSecretsWithMap(text).text;
+}
+
+function codePointLength(text: string): number {
+  return [...text].length;
 }
 
 export function normalizeVector(values: number[], prior?: number): number[] {

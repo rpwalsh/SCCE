@@ -25,6 +25,7 @@ export interface GovCertificate {
   actuatorClass: ActuatorClass;
   rollbackRequired: boolean;
   rollbackId?: string;
+  auditIntact: boolean;
   killSwitchLive?: boolean;
   policyHash: string;
   authoritySource: string;
@@ -136,9 +137,9 @@ export function createGovernedActionEnvelope(deps: { hasher: Hasher }): Governed
       const rollbackRequired = rollbackRequiredFor(classification.actuatorClass);
       const gates = {
         gov: asmScore >= thetaSafe && classification.authority !== "forbidden",
-        auditIntact: input.auditIntact ?? true,
+        auditIntact: input.auditIntact ?? false,
         rollbackAvailable: !rollbackRequired || Boolean(input.rollbackAvailable ?? false),
-        killSwitchActive: input.killSwitchActive ?? true
+        killSwitchActive: input.killSwitchActive ?? false
       };
       const certificate: GovCertificate = {
         asmScore,
@@ -147,6 +148,7 @@ export function createGovernedActionEnvelope(deps: { hasher: Hasher }): Governed
         actuatorClass: classification.actuatorClass,
         rollbackRequired,
         rollbackId: rollbackRequired && gates.rollbackAvailable ? `rollback:${input.capability.id}:${input.now}` : undefined,
+        auditIntact: gates.auditIntact,
         killSwitchLive: gates.killSwitchActive,
         policyHash: deps.hasher.digestHex(canonicalStringify(input.policy)),
         authoritySource: input.authoritySource ?? "autonomous-loop",
@@ -199,9 +201,9 @@ export function createGovernedActionEnvelope(deps: { hasher: Hasher }): Governed
       const thetaSafe = thetaFor(input.policy, input.proposal.actuatorClass);
       const gates = {
         gov: input.proposal.certificate.govPassed && asm >= thetaSafe,
-        auditIntact: true,
+        auditIntact: input.proposal.certificate.auditIntact === true,
         rollbackAvailable: !input.proposal.certificate.rollbackRequired || Boolean(input.proposal.certificate.rollbackId),
-        killSwitchActive: input.proposal.certificate.killSwitchLive !== false
+        killSwitchActive: input.proposal.certificate.killSwitchLive === true
       };
       const reason = expired
         ? "proposal_expired"

@@ -198,7 +198,7 @@ describe("semantic proof engine vertical slice", () => {
       mediaType: "text/plain",
       observedAt: now,
       byteLength: bytes.length,
-      trust: 0.9,
+      sourceTrust: { identity: 0.9, integrity: 0.9, parserReliability: 0.9, directness: 0.9, authority: 0.9, freshness: 0.9, independenceGroup: "fixture:semantic-proof-engine", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }

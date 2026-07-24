@@ -416,6 +416,22 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         try {
           const result = await input.runtime.kernel.ingest({
             path: source.absolutePath,
+            sourceAdmission: {
+              sourceClass: "owner_local",
+              intendedUse: "direct_evidence",
+              promotionAuthority: "owner"
+            },
+            sourceTrust: {
+              identity: 1,
+              integrity: 1,
+              parserReliability: 0.94,
+              directness: 1,
+              authority: 1,
+              freshness: 0.98,
+              independenceGroup: `workspace:${workspace.id}`,
+              accessScope: "owner_private",
+              licenseStatus: "owner_authorized"
+            },
             metadata: toJsonValue({
               workspace: workspaceMetadata(workspace),
               workspaceFile: {

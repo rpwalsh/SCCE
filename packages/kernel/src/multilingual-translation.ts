@@ -1,5 +1,7 @@
-import type { JsonValue } from "./types.js";
-import { canonicalStringify, clamp01, featureSet } from "./primitives.js";
+import type { Clock, JsonValue } from "./types.js";
+import type { IdFactory } from "./ids.js";
+import { createIdFactory } from "./ids.js";
+import { canonicalStringify, clamp01, createClock, createHasher, featureSet } from "./primitives.js";
 import { featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 
 export interface LanguageProfileKey {
@@ -120,6 +122,11 @@ export interface MultilingualTranslationMemory {
   corrections: MultilingualUserCorrectionAlignmentRecord[];
 }
 
+export interface MultilingualTranslationRuntimeOptions {
+  clock?: Clock;
+  idFactory?: Pick<IdFactory, "semanticId">;
+}
+
 const BASE_PROFILE_ID = "profile";
 
 export function buildLanguageProfile(text: string, label?: string): MultilingualLanguageProfile {
@@ -187,7 +194,15 @@ export function extractAlignmentAnchors(text: string): AlignmentAnchor[] {
   return anchors.filter((anchor) => anchor.positions.length > 0);
 }
 
-export function trainLexicalAlignment(source: string, target: string, sourceProfile: MultilingualLanguageProfile, targetProfile: MultilingualLanguageProfile, evidenceIds: string[] = []): LexicalAlignmentRecord {
+export function trainLexicalAlignment(
+  source: string,
+  target: string,
+  sourceProfile: MultilingualLanguageProfile,
+  targetProfile: MultilingualLanguageProfile,
+  evidenceIds: string[] = [],
+  options: MultilingualTranslationRuntimeOptions = {}
+): LexicalAlignmentRecord {
+  const { clock } = translationRuntime(options);
   const sourceTokens = tokenizeForAlignment(source);
   const targetTokens = tokenizeForAlignment(target);
   const pairs = new Map<string, { source: string; target: string; score: number }>();
@@ -214,7 +229,7 @@ export function trainLexicalAlignment(source: string, target: string, sourceProf
     evidenceIds,
     score: clamp01(mean(Array.from(pairs.values(), (item) => item.score)) || 0),
     alpha: 0.72,
-    createdAt: Date.now(),
+    createdAt: clock.now(),
     lexicalPairs: Array.from(pairs.values()).sort((a, b) => b.score - a.score).slice(0, 128)
   };
 }
@@ -302,11 +317,20 @@ export function applyUserCorrection(
   correctedOutput: string,
   sourceProfileId: string,
   targetProfileId: string,
-  protectedTerms: string[] = []
+  protectedTerms: string[] = [],
+  options: MultilingualTranslationRuntimeOptions = {}
 ): MultilingualUserCorrectionAlignmentRecord {
+  const { clock, idFactory } = translationRuntime(options);
+  const createdAt = clock.now();
   const changedTerms = diffTokens(previousOutput, correctedOutput);
   const record: MultilingualUserCorrectionAlignmentRecord = {
-    id: `cor:${hash32(sourceText + correctedOutput + Date.now())}`,
+    id: idFactory.semanticId("correction_alignment", {
+      sourceText,
+      correctedOutput,
+      sourceProfileId,
+      targetProfileId,
+      createdAt
+    }),
     kind: "correction",
     sourceText,
     targetText: correctedOutput,
@@ -315,7 +339,7 @@ export function applyUserCorrection(
     evidenceIds: [],
     score: 0.98,
     alpha: 0.95,
-    createdAt: Date.now(),
+    createdAt,
     previousOutput,
     correctedOutput,
     changedTerms,
@@ -326,21 +350,40 @@ export function applyUserCorrection(
   return record;
 }
 
-export function validateRoundTrip(source: string, roundTrip: string): MultilingualRoundTripValidationRecord {
+export function validateRoundTrip(
+  source: string,
+  roundTrip: string,
+  options: MultilingualTranslationRuntimeOptions = {}
+): MultilingualRoundTripValidationRecord {
+  const { clock, idFactory } = translationRuntime(options);
+  const createdAt = clock.now();
   const sourceTokens = tokenizeForAlignment(source);
   const roundTripTokens = new Set(tokenizeForAlignment(roundTrip));
   const shared = sourceTokens.filter((token) => roundTripTokens.has(token)).length;
   const loss = 1 - clamp01(sourceTokens.length ? shared / sourceTokens.length : 0);
   return {
-    id: `rt:${hash32(source + roundTrip + Date.now())}`,
+    id: idFactory.semanticId("round_trip_validation", { source, roundTrip, createdAt }),
     sourceText: source,
     targetText: roundTrip,
     roundTripText: roundTrip,
     sourceProfileId: "unknown",
     targetProfileId: "unknown",
     loss,
-    createdAt: Date.now()
+    createdAt
   };
+}
+
+function translationRuntime(options: MultilingualTranslationRuntimeOptions): {
+  clock: Clock;
+  idFactory: Pick<IdFactory, "semanticId">;
+} {
+  const clock = options.clock ?? createClock();
+  const idFactory = options.idFactory ?? createIdFactory({
+    clock,
+    hasher: createHasher(),
+    deterministicReplay: true
+  });
+  return { clock, idFactory };
 }
 
 function getScriptCategory(char: string): string {

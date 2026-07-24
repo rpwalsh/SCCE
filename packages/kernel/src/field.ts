@@ -1,5 +1,5 @@
-import type { FieldState, GraphEdge, GraphNode } from "./types.js";
-import { clamp01, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
+import type { Clock, FieldState, GraphEdge, GraphNode } from "./types.js";
+import { clamp01, createClock, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createAlphaLayer } from "./alpha.js";
 import { personalizedRandomWalkWithRestartDetailed, type RelationTransitionPolicy } from "./ppf.js";
 import { createCausalDiscoveryEngine } from "./causal.js";
@@ -24,13 +24,14 @@ export interface FieldEvaluationContext {
 
 export interface AlphaFieldEngineOptions {
   alpha?: number;
+  clock?: Clock;
   relationPolicies?: readonly RelationTransitionPolicy[];
   /** A pre-trained, versioned model used for inference only. */
   relationPotentialModel?: RelationPotentialModel;
 }
 
 export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
-  const causal = createCausalDiscoveryEngine();
+  const causal = createCausalDiscoveryEngine(options.clock ?? createClock());
   const relationPotentialModel = options.relationPotentialModel === undefined
     ? undefined
     : freezeRelationPotentialModel(options.relationPotentialModel);

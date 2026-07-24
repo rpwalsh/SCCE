@@ -177,7 +177,7 @@ describe("imported brain influence and proof boundary", () => {
       mediaType: "text/plain",
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust,
+      sourceTrust: { identity: trust, integrity: trust, parserReliability: trust, directness: trust, authority: trust, freshness: trust, independenceGroup: `fixture:${namespace}`, accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }
@@ -217,7 +217,7 @@ describe("imported brain influence and proof boundary", () => {
       textPreview: text,
       languageHints: {},
       scriptHints: {},
-      trustVector: { sourceTrust: source.trust, forceClass },
+      trustVector: { sourceTrust: source.sourceTrust, forceClass },
       provenance,
       features: featureSet(text, 128),
       status: "promoted",

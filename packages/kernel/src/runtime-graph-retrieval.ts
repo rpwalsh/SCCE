@@ -12,6 +12,7 @@ import {
   sourceAnchorPhraseContains,
   sourceAnchoredEvidenceForRequest,
   sourceEvidenceAnchorsForRequest,
+  sourceIdentityAdmissibleEvidenceForRequest,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
 import { anchorFeatureSet, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
@@ -22,6 +23,12 @@ import {
   positiveRuntimeInt,
   runtimeFlag
 } from "./runtime-graph-cache.js";
+import {
+  createBm25SparseIndex,
+  createSparseVector,
+  createTypedSparseFeatureId,
+  type Bm25SparseIndex
+} from "./sparse-ranking.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import type {
   EvidenceSpan,
@@ -29,7 +36,8 @@ import type {
   GraphNode,
   GraphSlice,
   JsonValue,
-  OwnerInput
+  OwnerInput,
+  SourceTrust
 } from "./types.js";
 
 
@@ -60,12 +68,12 @@ interface HotGraphNeighborhood {
   hyperedgeById: Map<string, GraphSlice["hyperedges"][number]>;
   edgeByNodeId: Map<string, GraphEdge[]>;
   hyperedgeByNodeId: Map<string, GraphSlice["hyperedges"][number][]>;
-  featureNodeIds: Map<string, Set<string>>;
   evidenceById: Map<string, EvidenceSpan>;
   evidenceNodeIds: Map<string, Set<string>>;
   evidenceEdgeIds: Map<string, Set<string>>;
   evidenceHyperedgeIds: Map<string, Set<string>>;
   sourceAnchorEvidenceIds: Map<string, Set<string>>;
+  sparseNodeIndex: Bm25SparseIndex;
 }
 
 interface HotNeighborhoodClosureCandidate {
@@ -110,8 +118,6 @@ export function createRuntimeGraphRetrieval(options: {
   const hotNeighborhoodEdgeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EDGES", 6000);
 
   const hotNeighborhoodEvidenceLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EVIDENCE", 3000);
-
-  const hotNeighborhoodPostingCap = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_POSTING_CAP", 512);
 
   const sourceAnchorHotNodeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_NODES", 16);
 
@@ -461,8 +467,25 @@ export function createRuntimeGraphRetrieval(options: {
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof);
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
-    const anchored = sourceAnchoredEvidenceForRequest(text, promoted, semanticFrameBoundEvidenceIds);
+    const anchored = sourceIdentityAdmissibleEvidenceForRequest(
+      text,
+      promoted,
+      semanticFrameBoundEvidenceIds
+    );
     const evidence = anchored.evidence.slice(0, 24);
+    kernelTrace({
+      stage: "graph.resolve.anchor_admissibility",
+      label: "kernel.sourceAnchoredEvidenceForText",
+      counts: {
+        candidates: evidenceResults.length,
+        promoted: promoted.length,
+        admitted: evidence.length
+      },
+      support: {
+        sourceAnchoringRequired: anchored.required,
+        sourceIdentityBoundEvidenceAbsent: promoted.length > 0 && evidence.length === 0
+      }
+    });
     const admittedIds = new Set(evidence.map(span => String(span.id)));
     return {
       evidence,
@@ -822,12 +845,15 @@ export function createRuntimeGraphRetrieval(options: {
     const hyperedgeById = new Map<string, GraphSlice["hyperedges"][number]>();
     const edgeByNodeId = new Map<string, GraphEdge[]>();
     const hyperedgeByNodeId = new Map<string, GraphSlice["hyperedges"][number][]>();
-    const featureNodeIds = new Map<string, Set<string>>();
     const evidenceById = new Map<string, EvidenceSpan>();
     const evidenceNodeIds = new Map<string, Set<string>>();
     const evidenceEdgeIds = new Map<string, Set<string>>();
     const evidenceHyperedgeIds = new Map<string, Set<string>>();
     const sourceAnchorEvidenceIds = new Map<string, Set<string>>();
+    const sparseDocuments: Array<{
+      id: string;
+      features: ReturnType<typeof createSparseVector>;
+    }> = [];
     for (const span of value.evidence) {
       const evidenceId = String(span.id);
       evidenceById.set(evidenceId, span);
@@ -845,10 +871,20 @@ export function createRuntimeGraphRetrieval(options: {
       const nodeId = String(node.id);
       nodeById.set(nodeId, node);
       for (const evidenceId of node.evidenceIds.map(String)) addHotIndexValue(evidenceNodeIds, evidenceId, nodeId, 1024);
-      for (const feature of node.features.slice(0, 160)) {
-        if (!isHighInformationRetrievalFeature(feature)) continue;
-        addHotIndexValue(featureNodeIds, feature, nodeId, hotNeighborhoodPostingCap);
-      }
+      const retrievalFeatures = node.features
+        .slice(0, 160)
+        .filter(isHighInformationRetrievalFeature);
+      sparseDocuments.push({
+        id: nodeId,
+        features: createSparseVector(retrievalFeatures.map(feature => ({
+          id: createTypedSparseFeatureId({
+            familyId: "scce.graph-feature.v1",
+            value: feature,
+            hasher
+          }),
+          value: 1
+        })))
+      });
     }
     for (const edge of value.graph.edges) {
       const edgeId = String(edge.id);
@@ -887,12 +923,12 @@ export function createRuntimeGraphRetrieval(options: {
       hyperedgeById,
       edgeByNodeId,
       hyperedgeByNodeId,
-      featureNodeIds,
       evidenceById,
       evidenceNodeIds,
       evidenceEdgeIds,
       evidenceHyperedgeIds,
-      sourceAnchorEvidenceIds
+      sourceAnchorEvidenceIds,
+      sparseNodeIndex: createBm25SparseIndex(sparseDocuments)
     };
   }
 
@@ -1203,20 +1239,18 @@ export function createRuntimeGraphRetrieval(options: {
 
 
   function rankHotNeighborhoodNodes(hot: HotGraphNeighborhood, features: readonly string[]): Array<{ nodeId: string; score: number }> {
-    const scores = new Map<string, number>();
-    features.slice(0, 256).forEach((feature, index) => {
-      const postings = hot.featureNodeIds.get(feature);
-      if (!postings) return;
-      const weight = 1 / Math.max(1, Math.sqrt(index + 1));
-      for (const nodeId of postings) scores.set(nodeId, (scores.get(nodeId) ?? 0) + weight);
-    });
-    return [...scores.entries()]
-      .map(([nodeId, overlap]) => {
-        const node = hot.nodeById.get(nodeId);
-        return node ? { nodeId, score: overlap + node.alpha * 0.2 } : undefined;
-      })
-      .filter((row): row is { nodeId: string; score: number } => Boolean(row))
-      .sort((left, right) => right.score - left.score || left.nodeId.localeCompare(right.nodeId));
+    if (hot.nodeById.size === 0) return [];
+    const query = createSparseVector(features.slice(0, 256).map(feature => ({
+      id: createTypedSparseFeatureId({
+        familyId: "scce.graph-feature.v1",
+        value: feature,
+        hasher
+      }),
+      value: 1
+    })));
+    return hot.sparseNodeIndex
+      .rank(query, Math.min(HOT_QUERY_NODE_LIMIT, hot.nodeById.size))
+      .map(row => ({ nodeId: row.documentId, score: row.score }));
   }
 
 
@@ -1298,8 +1332,7 @@ export function createRuntimeGraphRetrieval(options: {
           languageHints: {},
           scriptHints: {},
           trustVector: toJsonValue({
-            trust: ownerObservation ? 0.96 : ownerTurn ? 0.52 : 0.62,
-            sourceTrust: ownerObservation ? 0.96 : ownerTurn ? 0.52 : 0.62,
+            sourceTrust: sessionSourceTrust({ sessionId, ownerTurn, ownerObservation }),
             forceClass: ownerObservation
               ? "session_owner_turn_evidence"
               : ownerTurn
@@ -1359,7 +1392,10 @@ export function createRuntimeGraphRetrieval(options: {
           textPreview: text.replace(/\s+/g, " ").slice(0, 700),
           languageHints: toJsonValue({}),
           scriptHints: toJsonValue({}),
-          trustVector: toJsonValue({ trust: ownerTurn ? 0.96 : 0.62, sourceTrust: ownerTurn ? 0.96 : 0.62, forceClass: ownerTurn ? "session_owner_turn_evidence" : "session_assistant_turn_context" }),
+          trustVector: toJsonValue({
+            sourceTrust: sessionSourceTrust({ sessionId: input.sessionId, ownerTurn, ownerObservation: ownerTurn }),
+            forceClass: ownerTurn ? "session_owner_turn_evidence" : "session_assistant_turn_context"
+          }),
           provenance: toJsonValue({ sourceSystem: "conversation-session", sessionId: input.sessionId, turnId: turn.id, roleId, episodeId: turn.episodeId ?? null, createdAt: turn.createdAt }),
           features: [...new Set([...featureSet(text, 512), `session:${sessionHash}`, `role:${roleId}`])].slice(0, 560),
           status: ownerTurn ? "promoted" as const : "quarantined" as const,
@@ -1368,6 +1404,46 @@ export function createRuntimeGraphRetrieval(options: {
         };
       })
       .filter((span): span is EvidenceSpan => Boolean(span));
+  }
+
+  function sessionSourceTrust(input: {
+    sessionId: string;
+    ownerTurn: boolean;
+    ownerObservation: boolean;
+  }): SourceTrust {
+    if (input.ownerObservation) return {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 1,
+      directness: 1,
+      authority: 1,
+      freshness: 1,
+      independenceGroup: `session-owner:${input.sessionId}`,
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    };
+    if (input.ownerTurn) return {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 1,
+      directness: 0.5,
+      authority: 1,
+      freshness: 1,
+      independenceGroup: `session-query:${input.sessionId}`,
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    };
+    return {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 1,
+      directness: 0.25,
+      authority: 0.1,
+      freshness: 1,
+      independenceGroup: `session-generated:${input.sessionId}`,
+      accessScope: "owner_private",
+      licenseStatus: "generated"
+    };
   }
 
 

@@ -501,7 +501,7 @@ function sourceVersion(ids: ReturnType<typeof createIdFactory>, now: number): So
     mediaType: "text/plain",
     observedAt: now,
     byteLength: bytes.length,
-    trust: 0.9,
+    sourceTrust: { identity: 0.9, integrity: 0.9, parserReliability: 0.9, directness: 0.9, authority: 0.9, freshness: 0.9, independenceGroup: "fixture:creative-mouth", accessScope: "fixture", licenseStatus: "fixture" },
     metadata: {}
   };
 }
@@ -524,7 +524,7 @@ function evidenceSpan(ids: ReturnType<typeof createIdFactory>, source: SourceVer
     textPreview: text,
     languageHints: {},
     scriptHints: {},
-    trustVector: { sourceTrust: source.trust, forceClass: "direct_evidence" },
+    trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
     provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", sourceVersionId: source.sourceVersionId },
     features: featureSet(text, 96),
     status: "promoted",

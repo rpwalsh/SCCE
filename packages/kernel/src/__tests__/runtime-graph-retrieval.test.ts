@@ -247,6 +247,56 @@ describe("runtime hot graph retrieval", () => {
     expect(semanticFrames).toHaveBeenCalledTimes(1);
     expect(fixture.searchEvidence).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects cross-title mention evidence before hydrating a factual graph slice", async () => {
+    const crossTitle = evidenceSpan(
+      "evidence:lumen-engine",
+      "Lumen Engine",
+      "Armand Vega designed the Lumen Engine."
+    );
+    const fixture = runtimeFixture(graphSlice([], [], []));
+    fixture.searchEvidence.mockResolvedValue([{
+      span: crossTitle,
+      score: 0.9,
+      reason: "anchor mention"
+    }]);
+
+    const result = await fixture.runtime.graphForText("What was Armand Vega known for?", {
+      sourceAnchoringRequired: true
+    });
+
+    expect(result.evidence).toEqual([]);
+    expect(result.graph.nodes).toEqual([]);
+    expect(result.graph.edges).toEqual([]);
+    expect(fixture.getSlice).not.toHaveBeenCalled();
+    expect(fixture.kernelTrace.mock.calls
+      .map(call => call[0])
+      .find(event => event.stage === "graph.resolve.anchor_admissibility")
+      ?.support).toMatchObject({ sourceIdentityBoundEvidenceAbsent: true });
+  });
+
+  it("hydrates a factual graph slice when source identity matches the requested anchor", async () => {
+    const source = evidenceSpan(
+      "evidence:armand-vega",
+      "Armand Vega",
+      "Armand Vega was an engineer."
+    );
+    const node = graphNode("node:armand-vega", ["sym:armand", "sym:vega"], [String(source.id)]);
+    const fixture = runtimeFixture(graphSlice([node], [], []));
+    fixture.searchEvidence.mockResolvedValue([{
+      span: source,
+      score: 0.9,
+      reason: "source identity"
+    }]);
+
+    const result = await fixture.runtime.graphForText("What was Armand Vega known for?", {
+      sourceAnchoringRequired: true
+    });
+
+    expect(result.evidence.map(span => String(span.id))).toEqual([String(source.id)]);
+    expect(result.graph.nodes.map(row => String(row.id))).toEqual([String(node.id)]);
+    expect(fixture.getSlice).toHaveBeenCalledTimes(1);
+  });
 });
 
 function runtimeFixture(
@@ -348,7 +398,11 @@ function graphHyperedge(
   };
 }
 
-function evidenceSpan(id: string): EvidenceSpan {
+function evidenceSpan(
+  id: string,
+  title = "",
+  text = "source evidence"
+): EvidenceSpan {
   return {
     id: id as EvidenceSpan["id"],
     sourceId: "source:test" as EvidenceSpan["sourceId"],
@@ -360,12 +414,17 @@ function evidenceSpan(id: string): EvidenceSpan {
     byteEnd: 16,
     charStart: 0,
     charEnd: 16,
-    text: "source evidence",
-    textPreview: "source evidence",
+    text,
+    textPreview: text,
     languageHints: {},
     scriptHints: {},
     trustVector: {},
-    provenance: {},
+    provenance: title ? {
+      title,
+      canonicalUri: `https://example.test/${encodeURIComponent(title)}`,
+      sourceVersionId: "source-version:test",
+      charRange: [0, text.length]
+    } : {},
     features: ["sym:clock"],
     status: "promoted",
     alpha: 0.8,

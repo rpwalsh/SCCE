@@ -177,7 +177,7 @@ describe("Mouth generic chat quality gate", () => {
       mediaType: "text/plain",
       observedAt: clock.now(),
       byteLength: bytes.length,
-      trust: 0.94,
+      sourceTrust: { identity: 0.94, integrity: 0.94, parserReliability: 0.94, directness: 0.94, authority: 0.94, freshness: 0.94, independenceGroup: "fixture:mouth-generic", accessScope: "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }
@@ -200,7 +200,7 @@ describe("Mouth generic chat quality gate", () => {
       textPreview: fixture.evidenceText,
       languageHints: {},
       scriptHints: {},
-      trustVector: { sourceTrust: source.trust, forceClass: "direct_evidence" },
+      trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
       provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, fixture.evidenceText.length] },
       features: featureSet(fixture.evidenceText, 128),
       status: "promoted",

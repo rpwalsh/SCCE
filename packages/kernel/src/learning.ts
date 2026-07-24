@@ -147,9 +147,17 @@ function planGraph(graph: GraphSlice): GraphLearningPlan {
 function trustScore(value: JsonValue): number {
   if (!value || typeof value !== "object" || Array.isArray(value)) return 0.5;
   const record = value as Record<string, JsonValue>;
-  if (typeof record.trust === "number") return record.trust;
+  if (record.sourceTrust && typeof record.sourceTrust === "object" && !Array.isArray(record.sourceTrust)) {
+    const sourceTrust = record.sourceTrust as Record<string, JsonValue>;
+    const dimensions = [
+      sourceTrust.integrity,
+      sourceTrust.parserReliability,
+      sourceTrust.directness,
+      sourceTrust.authority
+    ].filter((item): item is number => typeof item === "number" && Number.isFinite(item));
+    if (dimensions.length === 4) return clamp01(Math.min(...dimensions));
+  }
   if (typeof record.risk === "number") return 1 - record.risk;
-  if (typeof record.sourceTrust === "number") return record.sourceTrust;
   return 0.55;
 }
 

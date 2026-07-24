@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { createHasher, createSourceRepositoryFacts, normalizePath, redactSecrets, sourceCodeFileFactsFromJson, toJsonValue, type ContentHash, type FileIngestPort, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue, type SourceCodeFileFacts } from "@scce/kernel";
+import { createHasher, createSourceRepositoryFacts, normalizePath, redactSecretsWithMap, sourceCodeFileFactsFromJson, toJsonValue, type ContentHash, type FileIngestPort, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue, type SourceCodeFileFacts } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { diagnoseExtractionTools, extractDocument } from "./document.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream } from "./wikipedia.js";
@@ -62,13 +62,31 @@ export class NodeFileIngestAdapter implements FileIngestPort {
           contentHash: `sha256_${extraction.sha256}`,
           facts: sourceCodeFileFactsFromJson(metadata && typeof metadata === "object" && !Array.isArray(metadata) ? (metadata as Record<string, JsonValue>).sourceCode : undefined)
         });
+        const redacted = redactSecretsWithMap(extraction.text);
+        const derivativeBytes = Buffer.from(redacted.text, "utf8");
+        const extractedTextBytes = Buffer.from(extraction.text, "utf8");
+        const evidenceDerivative = Buffer.from(extraction.bytes).equals(derivativeBytes)
+          ? undefined
+          : {
+            bytes: derivativeBytes,
+            text: redacted.text,
+            kind: redacted.redactionMap.some(interval => interval.replacement === "[REDACTED]")
+              ? "redacted-text" as const
+              : "extracted-text" as const,
+            transformId: "scce.source-text-derivative.v1",
+            originalCoordinateSpace: Buffer.from(extraction.bytes).equals(extractedTextBytes)
+              ? "source-bytes" as const
+              : "extracted-text-utf8" as const,
+            redactionMap: redacted.redactionMap
+          };
         const file = {
           uri: extraction.uri,
           namespace: extraction.namespace,
           mediaType: extraction.mediaType,
           bytes: extraction.bytes,
-          text: redactSecrets(extraction.text),
-          metadata
+          text: redacted.text,
+          metadata,
+          evidenceDerivative
         };
         yield { type: "file", file, checkpoint: checkpoint(rootUri, filePath, "extracted", "complete", metadata, undefined, `sha256_${extraction.sha256}` as ContentHash, extraction.bytes.byteLength) };
       } catch (error) {

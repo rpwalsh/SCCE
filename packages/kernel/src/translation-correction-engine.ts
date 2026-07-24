@@ -1,6 +1,8 @@
-import type { EpisodeId, EvidenceId, SourceVersionId } from "./types.js";
+import type { Clock, EpisodeId, EvidenceId, SourceVersionId } from "./types.js";
 import type { UserCorrectionAlignmentRecord, TranslationAlignmentRecord } from "./storage.js";
-import { clamp01 } from "./primitives.js";
+import type { IdFactory } from "./ids.js";
+import { createIdFactory } from "./ids.js";
+import { clamp01, createClock, createHasher } from "./primitives.js";
 import type { JsonValue } from "./types.js";
 
 export interface TranslationFeedback {
@@ -57,13 +59,29 @@ export interface RoundTripValidationResult {
   confidence: number;
 }
 
-export function createCorrectionEngine() {
+export function createCorrectionEngine(options: {
+  clock?: Clock;
+  idFactory?: Pick<IdFactory, "semanticId">;
+} = {}) {
+  const clock = options.clock ?? createClock();
+  const idFactory = options.idFactory ?? createIdFactory({
+    clock,
+    hasher: createHasher(),
+    deterministicReplay: true
+  });
   return {
     recordFeedback(feedback: TranslationFeedback): UserCorrectionAlignmentRecord {
+      const createdAt = clock.now();
       const alignmentDelta = computeAlignmentDelta(feedback.sourceText, feedback.generatedTranslation, feedback.correctedTranslation);
 
       return {
-        id: `ucor_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        id: idFactory.semanticId("user_correction_alignment", {
+          episodeId: feedback.episodeId,
+          sourceProfileId: feedback.sourceProfileId,
+          targetProfileId: feedback.targetProfileId,
+          correctedTranslation: feedback.correctedTranslation,
+          createdAt
+        }),
         sourceLanguage: feedback.sourceLanguage,
         targetLanguage: feedback.targetLanguage,
         sourceText: feedback.sourceText,
@@ -81,11 +99,12 @@ export function createCorrectionEngine() {
         alpha: computeAlpha(feedback),
         episodeId: feedback.episodeId,
         evidenceIds: feedback.evidenceIds,
-        createdAt: Date.now()
+        createdAt
       };
     },
 
     computeCompetenceFeedback(corrections: UserCorrectionAlignmentRecord[], alignmentRecords: TranslationAlignmentRecord[]): CompetenceFeedback[] {
+      const lastUpdateAt = clock.now();
       const competenceByPair: Map<string, { totalAlpha: number; count: number; corrections: number }> = new Map();
 
       for (const correction of corrections) {
@@ -113,7 +132,7 @@ export function createCorrectionEngine() {
           successRate: clamp01(1 - entry.corrections / Math.max(1, entry.count)),
           correctionCount: entry.corrections,
           averageAlpha: entry.count > 0 ? entry.totalAlpha / entry.count : 0,
-          lastUpdateAt: Date.now(),
+          lastUpdateAt,
           translateAlignmentImprovement: entry.corrections > 0 ? 0.15 * (entry.totalAlpha / entry.count) : 0
         });
       }

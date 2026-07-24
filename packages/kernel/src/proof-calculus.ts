@@ -2,6 +2,11 @@ import type { Claim, EpistemicForce, EvidenceId, EvidenceSpan, FieldState, Graph
 import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { assessStabilityAdjustedSupport, causalMinimumCoverCoding, hoeffdingLcb } from "./causal-math.js";
 import { kirchhoffBalance, maxFlowMinCut, settlePottsConsistency } from "./equation-operators.js";
+import {
+  aggregateSourceDependentEvidence,
+  assessEvidenceSourceVector,
+  type SourceDependentEvidenceMass
+} from "./evidence-mass.js";
 
 export interface EvidenceWitness {
   span: EvidenceSpan;
@@ -23,6 +28,7 @@ export interface ProofSemiringSummary {
   maxMinContradiction: number;
   netAdmissibility: number;
   pathCount: number;
+  evidenceMass: SourceDependentEvidenceMass;
   temporalIntersection?: { validFrom: number; validTo?: number; supported: boolean };
 }
 
@@ -53,12 +59,17 @@ export function createProofCalculus(options: { hasher: Hasher }) {
     evaluate(input: { claim: Claim; evidence: EvidenceSpan[]; nodes: GraphNode[]; field: FieldState }): ProofCalculusResult {
       const nodeMass = new Map(input.field.ppf.map(item => [String(item.nodeId), item.mass]));
       const witnesses = input.evidence.map(span => witness(input.claim, span, input.nodes, nodeMass, options.hasher)).sort((a, b) => b.support - a.support).slice(0, 16);
-      const supporting = witnesses.filter(item => item.support > 0.08);
-      const contradictions = witnesses.filter(item => item.contradiction > 0.12);
-      const semiring = aggregateProofSemiring({ supporting, contradictions });
-      const weightedSupport = clamp01(mean(supporting.map(item => item.support)) * 0.7 + input.field.alphaTrace.surfaces.pressure * 0.18 + mean(input.field.causalMass.slice(0, 8).map(item => item.mass)) * 0.12);
+      const supportCandidates = witnesses.filter(item => item.support > 0.08);
+      const contradictionCandidates = witnesses.filter(item => item.contradiction > 0.12);
+      const supporting = supportCandidates.filter(item => item.provenance > 0);
+      const contradictions = contradictionCandidates.filter(item => item.provenance > 0);
+      const semiring = aggregateProofSemiring({
+        supporting: supportCandidates,
+        contradictions: contradictionCandidates
+      });
+      const weightedSupport = clamp01(semiring.evidenceMass.belief * 0.7 + input.field.alphaTrace.surfaces.pressure * 0.18 + mean(input.field.causalMass.slice(0, 8).map(item => item.mass)) * 0.12);
       const preliminarySupport = clamp01(Math.max(weightedSupport, semiring.netAdmissibility * 0.9));
-      const weightedContradiction = clamp01(mean(contradictions.map(item => item.contradiction)) + input.field.alphaTrace.contradictionMass * 0.45 + input.field.alphaTrace.surfaces.risk * 0.1);
+      const weightedContradiction = clamp01(semiring.evidenceMass.contradictionRatio + input.field.alphaTrace.contradictionMass * 0.45 + input.field.alphaTrace.surfaces.risk * 0.1);
       const preliminaryContradiction = clamp01(Math.max(weightedContradiction, semiring.maxMinContradiction));
       const faithfulnessLcb = hoeffdingLcb(supporting.map(item => item.faithfulness), 0.05);
       const cover = causalMinimumCoverCoding({ claimFeatures: input.claim.features, evidence: supporting.map(item => item.span), maxEvidence: 8 });
@@ -75,9 +86,27 @@ export function createProofCalculus(options: { hasher: Hasher }) {
         projectedSupport: support,
         sinTheta: input.field.alphaTrace.surfaces.drift
       });
-      const force = forceFrom(supportAssessment.stabilityAdjustedSupport, contradiction, Math.max(faithfulnessLcb, supportAssessment.sampledSupportLcb), supporting.length, input.field.alphaTrace.bondedLeakage);
+      const force = forceFrom(
+        supportAssessment.stabilityAdjustedSupport,
+        contradiction,
+        Math.max(faithfulnessLcb, supportAssessment.sampledSupportLcb),
+        semiring.evidenceMass.independentGroupCount,
+        input.field.alphaTrace.bondedLeakage
+      );
       const boundaries = [
-        ...boundaryReasons({ force, support, contradiction, faithfulnessLcb, evidenceCount: supporting.length, leakage: input.field.alphaTrace.bondedLeakage, supportAssessmentAccepted: supportAssessment.accepted, cover: cover.coverage }),
+        ...boundaryReasons({
+          force,
+          support,
+          contradiction,
+          faithfulnessLcb,
+          evidenceCount: supporting.length,
+          candidateEvidenceCount: new Set([...supportCandidates, ...contradictionCandidates].map(item => String(item.span.id))).size,
+          independentGroupCount: semiring.evidenceMass.independentGroupCount,
+          sourceVectorCoverage: semiring.evidenceMass.sourceVectorCoverage,
+          leakage: input.field.alphaTrace.bondedLeakage,
+          supportAssessmentAccepted: supportAssessment.accepted,
+          cover: cover.coverage
+        }),
         ...operatorBoundaryReasons(proofOperators)
       ];
       const proofGraph = graph(input.claim, supporting, contradictions, input.field, boundaries);
@@ -196,29 +225,44 @@ export function aggregateProofSemiring(input: {
   supporting: readonly EvidenceWitness[];
   contradictions?: readonly EvidenceWitness[];
 }): ProofSemiringSummary {
-  const paths = input.supporting.map(pathProductSupport).filter(value => value > 0);
+  const evidenceMass = aggregateSourceDependentEvidence(input);
+  const sourcePathByGroup = new Map<string, number>();
+  for (const item of input.supporting) {
+    const source = assessEvidenceSourceVector(item.span);
+    if (!source.independenceGroup) continue;
+    const path = pathProductSupport(item);
+    if (path <= 0) continue;
+    sourcePathByGroup.set(
+      source.independenceGroup,
+      Math.max(sourcePathByGroup.get(source.independenceGroup) ?? 0, path)
+    );
+  }
+  const paths = [...sourcePathByGroup.values()];
   const maxProductSupport = paths.length ? Math.max(...paths) : 0;
   const sumProductSupport = paths.length ? clamp01(1 - paths.reduce((product, value) => product * (1 - clamp01(value)), 1)) : 0;
-  const allContradictions = [...input.supporting, ...(input.contradictions ?? [])];
+  const allContradictions = [...input.supporting, ...(input.contradictions ?? [])].filter(item => item.provenance > 0);
   const maxMinContradiction = allContradictions.length
     ? clamp01(Math.max(...allContradictions.map(item => Math.min(clamp01(item.contradiction), Math.max(clamp01(item.support), clamp01(item.provenance), 0.01)))))
     : 0;
-  const minPlusRisk = paths.length
-    ? Math.min(...input.supporting.map((item, index) => -Math.log(Math.max(1e-12, paths[index] ?? pathProductSupport(item))) + clamp01(item.contradiction) + (1 - clamp01(item.faithfulness))))
+  const sourceWeightedSupporting = input.supporting.filter(item => item.provenance > 0);
+  const minPlusRisk = sourceWeightedSupporting.length
+    ? Math.min(...sourceWeightedSupporting.map(item => -Math.log(Math.max(1e-12, pathProductSupport(item))) + clamp01(item.contradiction) + (1 - clamp01(item.faithfulness))))
     : Number.POSITIVE_INFINITY;
-  const temporalIntersection = temporalIntersectionFor(input.supporting.map(item => item.span));
+  const temporalIntersection = temporalIntersectionFor(sourceWeightedSupporting.map(item => item.span));
   return {
     maxProductSupport,
     sumProductSupport,
     minPlusRisk,
     maxMinContradiction,
-    netAdmissibility: clamp01(sumProductSupport - maxMinContradiction),
+    netAdmissibility: clamp01(evidenceMass.belief - evidenceMass.contradictionRatio),
     pathCount: paths.length,
+    evidenceMass,
     ...(temporalIntersection ? { temporalIntersection } : {})
   };
 }
 
 function pathProductSupport(witness: EvidenceWitness): number {
+  if (witness.provenance <= 0) return 0;
   const transform = witness.transformations.length ? Math.max(...witness.transformations.map(item => clamp01(item.confidence))) : 1;
   const factors = [
     witness.coverage,
@@ -344,8 +388,7 @@ function bestWindow(claim: Claim, span: EvidenceSpan): string {
 }
 
 function provenanceScore(span: EvidenceSpan): number {
-  const trust = span.trustVector as { trust?: number; sourceTrust?: number; admission?: { trust?: number; risk?: number }; structuralConfidence?: number };
-  return clamp01(0.35 * (trust.trust ?? trust.sourceTrust ?? span.alpha) + 0.25 * (trust.admission?.trust ?? span.alpha) + 0.2 * (trust.structuralConfidence ?? 0.5) + 0.2 * (1 - (trust.admission?.risk ?? 0)));
+  return assessEvidenceSourceVector(span).sourceWeight;
 }
 
 function contradictionScore(claim: Claim, span: EvidenceSpan): number {
@@ -361,18 +404,32 @@ function polarityOf(text: string): number {
   return explicitSymbolNegation || operatorNegation ? -1 : 1;
 }
 
-function forceFrom(support: number, contradiction: number, lcb: number, evidenceCount: number, leakage: number): EpistemicForce {
+function forceFrom(support: number, contradiction: number, lcb: number, independentGroupCount: number, leakage: number): EpistemicForce {
   if (contradiction > 0.45 || leakage > 0.72) return "unknown";
-  if (support >= 0.82 && lcb >= 0.62 && evidenceCount >= 2) return "proved";
+  if (support >= 0.82 && lcb >= 0.62 && independentGroupCount >= 2) return "proved";
   if (support >= 0.62 && lcb >= 0.36) return "observed";
   if (support >= 0.34) return "inferred";
   if (support >= 0.12) return "conjectured";
   return "invented";
 }
 
-function boundaryReasons(input: { force: EpistemicForce; support: number; contradiction: number; faithfulnessLcb: number; evidenceCount: number; leakage: number; supportAssessmentAccepted: boolean; cover: number }): string[] {
+function boundaryReasons(input: {
+  force: EpistemicForce;
+  support: number;
+  contradiction: number;
+  faithfulnessLcb: number;
+  evidenceCount: number;
+  candidateEvidenceCount: number;
+  independentGroupCount: number;
+  sourceVectorCoverage: number;
+  leakage: number;
+  supportAssessmentAccepted: boolean;
+  cover: number;
+}): string[] {
   const out: string[] = [];
   if (input.evidenceCount === 0) out.push("no-promoted-evidence");
+  if (input.candidateEvidenceCount > 0 && input.sourceVectorCoverage < 1) out.push("incomplete-source-trust-vector");
+  if (input.evidenceCount > 1 && input.independentGroupCount < 2) out.push("source-dependence-not-corroboration");
   if (input.faithfulnessLcb < 0.2) out.push("low-hoeffding-faithfulness-lcb");
   if (!input.supportAssessmentAccepted) out.push("stability-adjusted-support-rejected");
   if (input.cover < 0.5) out.push("causal-minimum-cover-incomplete");
