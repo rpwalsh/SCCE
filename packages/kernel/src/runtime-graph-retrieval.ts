@@ -94,7 +94,7 @@ export function createRuntimeGraphRetrieval(options: {
   failures: string[];
   cacheMs: number;
   kernelTrace(event: Parameters<typeof traceEvent>[1]): void;
-  sourceAnchorSemanticFramesCached(): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>>;
+  sourceAnchorSemanticFramesCached(options?: { residentOnly?: boolean }): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>>;
 }) {
   const { deps, clock, hasher, candidates, failures, kernelTrace, sourceAnchorSemanticFramesCached } = options;
   const surfaceLanguageMemoryCacheMs = options.cacheMs;
@@ -477,7 +477,7 @@ export function createRuntimeGraphRetrieval(options: {
   ): Promise<SourceAnchoredEvidenceSelection> {
     const anchors = sourceEvidenceAnchorsForRequest(text);
     if (!anchors.length) return { evidence: [], semanticFrameBoundEvidenceIds: [] };
-    const frames = await sourceAnchorSemanticFramesCached().catch(() => []);
+    const frames = await sourceAnchorSemanticFramesCached({ residentOnly }).catch(() => []);
     const semanticFrameBoundEvidenceIds = uniqueKernelStrings(frames
       .filter(row => semanticFrameMatchesSourceAnchor(row.surfaceUnits, anchors))
       .flatMap(row => row.frame.evidenceIds.map(String)))

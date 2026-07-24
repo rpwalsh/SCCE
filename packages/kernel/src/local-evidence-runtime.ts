@@ -445,18 +445,25 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const collection = collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
   if (collection) return collection;
   const anchored = sourceAnchoredEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds);
+  const answerAnchoredEvidence = anchored.required
+    ? anchored.evidence.filter(span => (
+      evidenceExactSourceAnchorMatches(span, anchored.anchors)
+      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
+      || input.semanticFrameBoundEvidenceIds?.has(String(span.id))
+    ))
+    : anchored.evidence;
   const explicitContextEvidence = input.explicitContextEvidenceIds?.size
     ? evidence.filter(span => input.explicitContextEvidenceIds?.has(String(span.id)))
     : [];
-  if (anchored.required && !anchored.evidence.length && !explicitContextEvidence.length) return undefined;
-  const answerEvidence = anchored.evidence.length
-    ? anchored.evidence
+  if (anchored.required && !answerAnchoredEvidence.length && !explicitContextEvidence.length) return undefined;
+  const answerEvidence = answerAnchoredEvidence.length
+    ? answerAnchoredEvidence
     : explicitContextEvidence.length
       ? explicitContextEvidence
       : sourceCoherentUnanchoredEvidence(input.requestText, evidence);
   if (!answerEvidence.length) return undefined;
   const contradiction = Math.max(input.entailment?.contradiction ?? 0, input.semanticProof?.contradiction ?? 0);
-  if (contradiction >= 0.72 || (contradiction >= 0.45 && !anchored.evidence.length)) return undefined;
+  if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
   const sentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
   if (!sentences.length) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
@@ -479,7 +486,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       evidenceIds: answerEvidence.map(span => String(span.id)),
       evidenceCount: answerEvidence.length,
       sourceAnchorRequired: anchored.required,
-      sourceAnchorMatched: anchored.evidence.length > 0,
+      sourceAnchorMatched: answerAnchoredEvidence.length > 0,
       sourceAnchors: anchored.anchors,
       evidenceBound,
       sessionBound: answerSessionBound,
@@ -2493,19 +2500,32 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 
  function anchorLocalSurface(surface: string, anchors: readonly string[]): string {
   if (!surface || !anchors.length) return surface;
-  const words = surfaceWords(surface);
+  const words = localSurfaceWordSpans(surface);
   if (words.length < 12) return surface;
-  const normalized = words.map(word => normalizePriorKey(stripOuterPriorSeparators(word))).filter(Boolean);
+  const normalized = words.map(word => word.key);
   for (const anchor of anchors) {
     const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
     if (!anchorUnits.length) continue;
     const first = anchorUnits[0] ?? "";
     const index = normalized.findIndex(unit => requestUnitMatchesSurface(first, unit));
     if (index <= 8) continue;
-    const clipped = words.slice(Math.max(0, index - 7)).join(" ").trim();
+    const anchorStart = words[index]?.start ?? 0;
+    const clauseStart = sourceBoundaryAlignedClauseStart(surface, anchorStart);
+    if (clauseStart <= 0) continue;
+    const clipped = cleanSourceAnswerSurface(surface.slice(clauseStart));
     if (clipped && sourceSurfaceMatchesAnyAnchor(clipped, [anchor])) return clipped;
   }
   return surface;
+}
+
+
+ function sourceBoundaryAlignedClauseStart(surface: string, beforeIndex: number): number {
+  const prefix = surface.slice(0, Math.max(0, beforeIndex));
+  const boundary = [...prefix.matchAll(/[\p{Sentence_Terminal}\u3002\uff01\uff1f]\s*/gu)].at(-1);
+  if (!boundary || boundary.index === undefined) return 0;
+  const start = boundary.index + boundary[0].length;
+  const interveningWords = localSurfaceWordSpans(surface.slice(start, beforeIndex));
+  return interveningWords.length <= 12 ? start : 0;
 }
 
 

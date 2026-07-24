@@ -11,6 +11,7 @@ import type {
   GraphSliceQuery,
   Hyperedge
 } from "../types.js";
+import type { EvidenceSearchResult, SemanticFrameRecord } from "../storage.js";
 
 describe("runtime hot graph retrieval", () => {
   it("walks two resident hops and includes routed hyperedge members without exposing evidence", async () => {
@@ -228,12 +229,31 @@ describe("runtime hot graph retrieval", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it("keeps source-anchor semantic-frame lookup resident during a bounded factual turn", async () => {
+    const semanticFrames = vi.fn(async (options?: { residentOnly?: boolean }): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>> => {
+      expect(options).toEqual({ residentOnly: true });
+      return [];
+    });
+    const fixture = runtimeFixture(graphSlice([], [], []), [], undefined, semanticFrames);
+    fixture.searchEvidence.mockResolvedValue([]);
+
+    const result = await fixture.runtime.graphForText("What was Charles Babbage known for?", {
+      sourceAnchoringRequired: true,
+      residentOnly: true
+    });
+
+    expect(result.evidence).toEqual([]);
+    expect(semanticFrames).toHaveBeenCalledTimes(1);
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(1);
+  });
 });
 
 function runtimeFixture(
   graph: GraphSlice,
   evidence: EvidenceSpan[] = [],
-  closureGraph?: GraphSlice
+  closureGraph?: GraphSlice,
+  sourceAnchorSemanticFramesCached: (options?: { residentOnly?: boolean }) => Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>> = async () => []
 ) {
   const getSlice = vi.fn(async (query: GraphSliceQuery) => {
     const selected = query.seedNodeIds?.length && closureGraph ? closureGraph : graph;
@@ -243,7 +263,7 @@ function runtimeFixture(
     };
   });
   const getEvidenceBatch = vi.fn(async () => evidence);
-  const searchEvidence = vi.fn(async () => {
+  const searchEvidence = vi.fn(async (): Promise<EvidenceSearchResult[]> => {
     throw new Error("resident creative graph retrieval must not search evidence");
   });
   const kernelTrace = vi.fn();
@@ -260,7 +280,7 @@ function runtimeFixture(
     failures,
     cacheMs: 60_000,
     kernelTrace,
-    sourceAnchorSemanticFramesCached: async () => []
+    sourceAnchorSemanticFramesCached
   });
   return { runtime, failures, getSlice, getEvidenceBatch, searchEvidence, kernelTrace };
 }

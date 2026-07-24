@@ -29,6 +29,8 @@ import {
   type EvaluationTraceEvent
 } from "../index.js";
 import {
+  localEvidenceAnswerClaimSurface,
+  localEvidenceAnswerSurface,
   proposeSourceExactEvidenceAnswer,
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
@@ -506,6 +508,57 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.evidence.map(span => String(span.id))).not.toContain(String(kirkMention.id));
     expect(result.answer).not.toContain("commanding the starship Enterprise");
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":false');
+  });
+
+  it("keeps an exact-source sentence complete when its subject anchor occurs late", () => {
+    const completeSentence = "The calculating apparatus was a proposed mechanical system designed and refined by the pioneering mathematician Armand Vega.";
+    const source = evidenceSpan({
+      id: "evidence:armand-vega-complete-source-sentence",
+      sourceVersionId: "source:armand-vega-complete-source-sentence:v1" as SourceVersionId,
+      title: "Armand Vega",
+      uri: "fixture://source/Armand_Vega",
+      text: completeSentence,
+      alpha: 0.97
+    });
+
+    const candidate = localEvidenceAnswerSurface({
+      requestText: "What was Armand Vega known for?",
+      selectedEvidence: [source],
+      entailment: {
+        contradiction: 0,
+        evidenceIds: [source.id],
+        force: "inferred"
+      }
+    });
+
+    expect(candidate).toBeDefined();
+    expect(localEvidenceAnswerClaimSurface(candidate!)).toBe(completeSentence);
+  });
+
+  it("does not construct a local answer from a cross-title mention without an explicit semantic binding", () => {
+    const source = evidenceSpan({
+      id: "evidence:cross-title-armand-vega-mention",
+      sourceVersionId: "source:cross-title-armand-vega-mention:v1" as SourceVersionId,
+      title: "Calculating apparatus",
+      uri: "fixture://source/Calculating_apparatus",
+      text: "The calculating apparatus was designed and refined by the pioneering mathematician Armand Vega.",
+      alpha: 0.97
+    });
+    const input = {
+      requestText: "What was Armand Vega known for?",
+      selectedEvidence: [source],
+      entailment: {
+        contradiction: 0,
+        evidenceIds: [source.id],
+        force: "inferred" as const
+      }
+    };
+
+    expect(localEvidenceAnswerSurface(input)).toBeUndefined();
+    expect(localEvidenceAnswerSurface({
+      ...input,
+      semanticFrameBoundEvidenceIds: new Set([String(source.id)])
+    })).toBeDefined();
   });
 
   it("uses a resident one-span exact source route without another durable graph read", async () => {
