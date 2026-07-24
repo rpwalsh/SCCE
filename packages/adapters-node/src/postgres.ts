@@ -679,30 +679,43 @@ function informationLabelMigrationStatements(
      )`,
     `DELETE FROM ${q}.language_profiles lp
      WHERE EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.source_version_id=lp.source_version_id AND e.status<>'promoted')`,
-    `DELETE FROM ${q}.graph_hyperedges h
-     WHERE (
-       EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(h.provenance_refs) AND e.status<>'promoted')
-     ) OR (
-       EXISTS (
-         SELECT 1 FROM ${q}.graph_nodes n
-         JOIN ${q}.evidence_spans e ON e.id=ANY(n.evidence_ids)
-         WHERE n.id=ANY(h.member_node_ids) AND e.status<>'promoted'
-       )
-     )`,
-    `DELETE FROM ${q}.graph_edges g
-     WHERE (
-       CARDINALITY(g.evidence_ids)>0
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(g.evidence_ids) AND e.status<>'promoted')
-     ) OR (
-       EXISTS (
-         SELECT 1 FROM ${q}.graph_nodes n
-         JOIN ${q}.evidence_spans e ON e.id=ANY(n.evidence_ids)
-         WHERE n.id IN (g.source_node_id,g.target_node_id) AND e.status<>'promoted'
-       )
-     )`,
-    `DELETE FROM ${q}.graph_nodes n
-     WHERE CARDINALITY(n.evidence_ids)>0
-       AND EXISTS (SELECT 1 FROM ${q}.evidence_spans e WHERE e.id=ANY(n.evidence_ids) AND e.status<>'promoted')`,
+    `WITH bad_evidence AS MATERIALIZED (
+       SELECT id FROM ${q}.evidence_spans WHERE status<>'promoted'
+     ), bad_ids AS MATERIALIZED (
+       SELECT COALESCE(ARRAY_AGG(id),'{}'::text[]) AS ids FROM bad_evidence
+     ), bad_nodes AS MATERIALIZED (
+       SELECT n.id
+       FROM ${q}.graph_nodes n
+       CROSS JOIN bad_ids b
+       WHERE n.evidence_ids && b.ids
+     )
+     DELETE FROM ${q}.graph_hyperedges h
+     USING bad_ids b
+     WHERE h.provenance_refs && b.ids
+        OR h.member_node_ids && COALESCE((SELECT ARRAY_AGG(id) FROM bad_nodes),'{}'::text[])`,
+    `WITH bad_evidence AS MATERIALIZED (
+       SELECT id FROM ${q}.evidence_spans WHERE status<>'promoted'
+     ), bad_ids AS MATERIALIZED (
+       SELECT COALESCE(ARRAY_AGG(id),'{}'::text[]) AS ids FROM bad_evidence
+     ), bad_nodes AS MATERIALIZED (
+       SELECT n.id
+       FROM ${q}.graph_nodes n
+       CROSS JOIN bad_ids b
+       WHERE n.evidence_ids && b.ids
+     )
+     DELETE FROM ${q}.graph_edges g
+     USING bad_ids b
+     WHERE g.evidence_ids && b.ids
+        OR g.source_node_id=ANY(COALESCE((SELECT ARRAY_AGG(id) FROM bad_nodes),'{}'::text[]))
+        OR g.target_node_id=ANY(COALESCE((SELECT ARRAY_AGG(id) FROM bad_nodes),'{}'::text[]))`,
+    `WITH bad_evidence AS MATERIALIZED (
+       SELECT id FROM ${q}.evidence_spans WHERE status<>'promoted'
+     ), bad_ids AS MATERIALIZED (
+       SELECT COALESCE(ARRAY_AGG(id),'{}'::text[]) AS ids FROM bad_evidence
+     )
+     DELETE FROM ${q}.graph_nodes n
+     USING bad_ids b
+     WHERE n.evidence_ids && b.ids`,
     `UPDATE ${q}.source_versions sv
      SET information_label='${publicCorpusLabel}'::jsonb
      FROM ${q}.sources s
