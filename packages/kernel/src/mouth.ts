@@ -682,14 +682,20 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           .map(row => byCandidateId.get(row.candidate.id))
           .find((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate && !candidate.forbiddenHits.length))
         : undefined;
-      const selected = semanticGraphCandidate ??
+      const plannerSelectedCandidate = selectedKernelCandidate &&
+        (!creativeRequested || !learnedCreativeCandidateAvailable) &&
+        !selectedKernelCandidate.forbiddenHits.length &&
+        kernelCandidateCanPreempt(input, selectedKernelCandidate)
+        ? selectedKernelCandidate
+        : undefined;
+      const selected = plannerSelectedCandidate ??
+        semanticGraphCandidate ??
         structuredConstructCandidate ??
         proofBoundarySelectedCandidate ??
         governedActionDraftCandidate ??
         workspaceDraftCandidate ??
         learnedCreativeProposal ??
         realizedCreativeCandidate ??
-        (selectedKernelCandidate && (!creativeRequested || !learnedCreativeCandidateAvailable) && !selectedKernelCandidate.forbiddenHits.length && kernelCandidateCanPreempt(input, selectedKernelCandidate) ? selectedKernelCandidate : undefined) ??
         (energySelected && !energySelected.forbiddenHits.length ? energySelected : undefined);
       const selectedEnergy = energyRows.find(row => row.candidate.id === selected?.id)?.result;
       markMouthPhase("candidate_selection");
