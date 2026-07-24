@@ -869,6 +869,7 @@ describe("kernel local evidence source anchoring", () => {
       mouth: result.events.find(event => event.typeId === "MouthSpoken")?.payload
     })).toBeGreaterThan(24);
     expect(result.answer.trim().startsWith("{")).toBe(false);
+    expect(result.answer).not.toContain(";");
     expect(result.answer).not.toContain("scce.invention_construct");
   });
 

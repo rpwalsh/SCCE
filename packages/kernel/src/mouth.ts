@@ -2594,7 +2594,10 @@ function creativeCandidatesFromFrames(
     const generation = languageMemory.generate({
       state: input.languageMemory,
       targetLanguageProfile: input.languageProfile,
-      contextSymbols: uniqueStrings(variant.contextSymbols.filter(Boolean)),
+      contextSymbols: uniqueStrings([
+        input.entailment.claim.text,
+        ...variant.contextSymbols
+      ].filter(Boolean)),
       requiredTerms: creativeRequiredTerms,
       semanticFrameIds: uniqueStrings([
         ...variant.frames.flatMap(frame => frame.semanticFrameIds),
@@ -5449,10 +5452,10 @@ function appendExtentUnit(selected: string[], unit: string, maxLength: number): 
 function compactAnchorSurface(required: readonly string[], maxLength: number): string {
   const selected: string[] = [];
   for (const term of required) {
-    const next = tidySurface([...selected, term].join("; "));
+    const next = tidySurface([...selected, term].join(" "));
     if (surfaceCodePointLength(next) <= maxLength) selected.push(term);
   }
-  return tidySurface(selected.join("; "));
+  return tidySurface(selected.join(" "));
 }
 
 function compactWholeWordSurface(text: string, maxLength: number): string {
