@@ -8,7 +8,7 @@ import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider,
 import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
-import type { RuntimeStartupReadiness } from "./startup.js";
+import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 
 export interface ApiContext {
   runtime: ReturnType<typeof createNodeRuntime>;
@@ -224,7 +224,7 @@ async function dispatch(
       ? await context.runtime.storage.status()
       : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
     const exactCounts = hasExactPostgresCounts(postgres);
-    const ok = warmup.ok && healthOk(postgres) && exactCounts;
+    const ok = warmupSatisfied(warmup) && healthOk(postgres) && exactCounts;
     if (ok) rememberHydratedRuntimeMarker(context, postgres);
     else invalidateHydratedRuntimeReadiness(context);
     return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
@@ -2193,6 +2193,17 @@ function optionalStringArray(value: unknown): string[] {
 
 function uniqueServerStrings(values: readonly string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+/**
+ * Warmup is satisfied for readiness purposes when it actually finished
+ * ("ready") or was deliberately turned off ("disabled" via
+ * SCCE_STARTUP_WARMUP=0) — a disabled warmup is an operator choice, not an
+ * outstanding failure, and must not permanently block /api/ready. "pending",
+ * "running", and "failed" still block: warmup is enabled but not yet done.
+ */
+function warmupSatisfied(warmup: RuntimeStartupReadinessSnapshot): boolean {
+  return warmup.phase === "ready" || warmup.phase === "disabled";
 }
 
 function healthOk(value: unknown): boolean {
