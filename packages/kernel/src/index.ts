@@ -65,6 +65,8 @@ export * from "./judge.js";
 export * from "./action-graph.js";
 export * from "./capability-dispatcher.js";
 export * from "./causal-analysis-runtime.js";
+export * from "./retrieval-rank-features.js";
+export * from "./sparse-ranking-lifecycle.js";
 export * from "./executive-episode.js";
 export * from "./executive-journal.js";
 export * from "./governed-action.js";

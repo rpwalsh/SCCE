@@ -825,6 +825,14 @@ export interface ScceStorage extends StorageAdmin {
    * honestly unavailable rather than defaulting to a permissive fallback.
    */
   policyEvolution?: PolicyEvolutionStore;
+  /**
+   * Optional: durable FTRL reranker model lifecycle store (Part A finding
+   * 9). Optional for the same reason as `policyEvolution` -- existing
+   * fixture-built storage doubles need no changes; absent means retrieval
+   * ranking stays BM25-only, never a silent fallback to an unvalidated
+   * model.
+   */
+  sparseRanking?: import("./sparse-ranking-lifecycle.js").SparseRankingModelStore;
 }
 
 export interface PolicyEvolutionStore {
@@ -873,7 +881,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 18;
+export const POSTGRES_SCHEMA_VERSION = 19;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -932,7 +940,9 @@ export const POSTGRES_REQUIRED_TABLES = [
   "policy_genomes",
   "executive_episode",
   "executive_command",
-  "executive_event"
+  "executive_event",
+  "sparse_ranking_models",
+  "sparse_ranking_active_model"
 ] as const;
 
 export interface ScceKernelDeps {
