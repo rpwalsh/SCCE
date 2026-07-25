@@ -2177,7 +2177,13 @@ export function createProductionTurnRuntime(options: {
       for (const need of learningNeeds) events.push(await append(eventFactory.create({ episodeId, typeId: "LearningNeedDetected", payload: { need } })));
       for (const need of learningLoopPlan.learningNeeds) events.push(await append(eventFactory.create({ episodeId, typeId: "LearningNeedDetected", payload: { id: need.id, goal: need.goal, gapId: need.gapId, priority: need.priority, continuation: need.continuation, sourcePlans: need.sourcePlans.map(plan => ({ id: plan.id, kind: plan.kind, capabilityId: plan.capabilityId, query: plan.query, utility: plan.utility, acquisition: plan.acquisition })) } })));
       if (learningLoopPlan.goals.length || learningLoopPlan.globalSources.length) events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: learningLoopPlan.audit })));
-      events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: mvpTrainingPlan.audit })));
+      const trainingPlanBuiltEvent = await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: mvpTrainingPlan.audit }));
+      events.push(trainingPlanBuiltEvent);
+      // The only real, event-id-backed claim this turn can make: the plan was
+      // computed and its audit was durably recorded. Nothing downstream
+      // executes, persists, or validates the checkpoint/curriculum/
+      // distillation objects yet, so no further status entry is honest here.
+      mvpTrainingPlan.statusHistory.push({ status: "planned", at: clock.now(), eventId: String(trainingPlanBuiltEvent.id) });
       runtimeState.lastEpisodeId = episodeId;
       runtimeState.lastOutput = emission.answer;
       markTiming("maintenanceMs");
@@ -2234,7 +2240,7 @@ export function createProductionTurnRuntime(options: {
         mouth: toJsonValue({ surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, uncertainty: spoken.uncertainty }),
         corrections: correctionMemory.summarize(correctionRules),
         brain,
-        learningLoop: toJsonValue({ loop: learningLoopPlan.audit, acquisitionPlans: learningCapabilityPlans, training: mvpTrainingPlan.audit }),
+        learningLoop: toJsonValue({ loop: learningLoopPlan.audit, acquisitionPlans: learningCapabilityPlans, training: mvpTrainingPlan.audit, trainingStatus: mvpTrainingPlan.statusHistory }),
         timing,
         buildTest,
         ...evaluationTraceResult(),

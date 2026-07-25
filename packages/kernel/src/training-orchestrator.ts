@@ -85,6 +85,24 @@ export interface TrainingCheckpoint {
   audit: JsonValue;
 }
 
+/**
+ * What actually happened to a computed training artifact, so a caller can
+ * never claim more than what a durable event proves. `plan()` itself can
+ * only ever justify "planned" (it computes stages/curriculum/distillation
+ * and discards them if nothing downstream persists them); "executed",
+ * "persisted", "validated", and "rejected" are earned by later stages that
+ * do not exist yet (see the handoff doc's finding 8 note) and must never be
+ * assigned without a real event id backing the claim.
+ */
+export type TrainingArtifactStatus = "planned" | "executed" | "persisted" | "validated" | "rejected";
+
+export interface TrainingStatusEntry {
+  status: TrainingArtifactStatus;
+  at: number;
+  eventId: string;
+  reason?: string;
+}
+
 export interface TrainingPlan {
   id: string;
   stages: TrainingStage[];
@@ -99,6 +117,14 @@ export interface TrainingPlan {
     writes: string[];
     batches: Array<{ table: string; rows: number }>;
   };
+  /**
+   * Always starts empty from plan() -- it has no event id yet to back a
+   * claim with. Callers append a "planned" entry only after the plan's own
+   * audit has actually been durably recorded as an event (see
+   * production-turn-runtime.ts), so this is never a freely-settable field a
+   * caller could use to fake a status this plan never reached.
+   */
+  statusHistory: TrainingStatusEntry[];
   audit: JsonValue;
 }
 
@@ -149,6 +175,7 @@ export function createTrainingOrchestrator(options: { hasher?: Hasher; clock?: C
         distillation,
         checkpoint,
         transaction,
+        statusHistory: [],
         audit: toJsonValue({
           promotedEvidence: promotion.filter(item => item.promote).length,
           rejectedEvidence: promotion.filter(item => !item.promote).length,
