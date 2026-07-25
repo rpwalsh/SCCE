@@ -1,6 +1,18 @@
 import type { JsonValue, PolicyProfile } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 
+/**
+ * This is the live enforcement gate: `ConfiguredConnectorAdapter`
+ * (`connectors.ts`) calls `begin()`/`finish()`/`fail()` on every real
+ * Outlook/YouTube/Telephone/web connector call, so the rules in `allowed()`
+ * below are what actually protects production traffic today. A separate,
+ * more elaborate admission model exists in
+ * `@scce/kernel`'s `connector-governance.ts` (risk scoring, approval
+ * tickets, quota state) but is not consulted here -- see that module's own
+ * header comment for the reconciliation plan. Do not assume the two gates
+ * agree; only this one is live.
+ */
+
 export interface ConnectorRequestRecord {
   id: string;
   connector: "web" | "outlook" | "youtube" | "telephone";
