@@ -1,6 +1,32 @@
 import type { Capability, CapabilityPlan, Clock, Hasher, JsonValue, PolicyProfile } from "./types.js";
 import { clamp01, createClock, createHasher, toJsonValue } from "./primitives.js";
 
+/**
+ * Status (confirmed by repo-wide reference search): `capabilities()` below is
+ * the only method of this module called in production today, feeding
+ * capability metadata/risk scores into `tool-cognition.ts`'s (also not yet
+ * dispatched) planning surface. `admit()`, `admitResult()`, and
+ * `updateQuota()` are fully implemented and unit-tested, but have zero
+ * production call sites -- they are not consulted for any live connector
+ * call. The gate that actually protects real Outlook/YouTube/Telephone/web
+ * calls today is `ConnectorPolicyGate` in
+ * `packages/adapters-node/src/connector-policy.ts`, which uses an entirely
+ * different config shape (`ScceRuntimeConfig.connectors.*`, not this
+ * module's `ConnectorConfig[]`) and a simpler allowlist/mutation/quota rule
+ * set. These two gates are intentionally not yet merged: reconciling them
+ * requires either mapping `ScceRuntimeConfig.connectors` into
+ * `ConnectorConfig` (or vice versa) and threading `ConnectorQuotaState`
+ * through the live request path, which touches the only currently-working
+ * connector-safety enforcement with no dedicated regression pass yet. The
+ * intended long-term shape (per the production-integration plan) is for
+ * `admit()` to become the dispatcher's connector-admission checkpoint once
+ * real connector executors are registered on the capability dispatcher
+ * (`capability-dispatcher.ts`) -- at that point `ConnectorPolicyGate` should
+ * either delegate its decision to `admit()` or be retired in its favor. Do
+ * not treat `admit()` as authoritative for any live decision until that
+ * wiring exists.
+ */
+
 export type ConnectorKind = "filesystem" | "process" | "web_search" | "web_fetch" | "outlook" | "youtube" | "telephone";
 export type ConnectorPhase = "read" | "prepare" | "commit";
 export type WebSearchProvider = "duckduckgo" | "bing" | "brave" | "serpapi" | "tavily";
