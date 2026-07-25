@@ -103,6 +103,11 @@ describe("multi-corpus training", () => {
     expect(fixture.state.sourceVersions.length).toBe(1);
     expect(fixture.state.evidence.length).toBeGreaterThan(0);
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["gutenberg"]));
+    expect(fixture.state.patterns.some(pattern => {
+      const row = pattern.patternJson;
+      return Boolean(row && typeof row === "object" && !Array.isArray(row)
+        && (row as Record<string, JsonValue>).schema === "scce.creative_event_construction_pattern.v1");
+    })).toBe(false);
   });
 
   it("trains OSS docs and code as separate source systems through the engineering corpus scanner", async () => {
