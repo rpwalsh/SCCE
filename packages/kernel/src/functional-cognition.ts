@@ -497,6 +497,23 @@ export function functionalSelectionGate(report: FunctionalCognitionReport): Func
   };
 }
 
+/**
+ * Separates "FC/EFC were computed and audited" from "FC/EFC may authorize
+ * capability execution." The computed gate always reflects the real report;
+ * this only decides whether that gate is allowed to actually widen
+ * execution authority downstream. Callers must never pass the raw
+ * `functionalSelectionGate(report)` output to admission/planning directly
+ * once authorization is meant to be gated — always route it through this
+ * function so an audit-only deployment cannot silently authorize actions.
+ */
+export function functionalCapabilityAuthorizationGate(
+  gate: FunctionalSelectionGate,
+  authorizeCapabilities: boolean
+): FunctionalSelectionGate {
+  if (authorizeCapabilities) return gate;
+  return { ...gate, fc: false, efc: false };
+}
+
 export function functionalCandidateGateFailures(
   candidateKind: string,
   gate: FunctionalSelectionGate | undefined

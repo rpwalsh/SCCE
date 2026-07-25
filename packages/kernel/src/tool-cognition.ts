@@ -64,6 +64,20 @@ export interface ApprovalControl {
   expiresAt?: number;
 }
 
+/**
+ * A bounded, non-executing preview of what the planner is weighing this
+ * turn: real objectives derived from the request/evidence/field, and every
+ * real scored capability/phase candidate per objective (fit, evidence
+ * value, and risk are already-computed quantities from the same scorer
+ * `plan()` uses — nothing here is invented for the preview). No
+ * `CapabilityPlan`, approval, or execution artifact is produced; this never
+ * calls a connector and has no side effects.
+ */
+export interface CapabilityPlanPreview {
+  objectives: ToolObjective[];
+  scored: CapabilityScore[];
+}
+
 export interface ToolCognitionPlan {
   id: string;
   episodeId: EpisodeId;
@@ -113,6 +127,20 @@ export function createAutonomousToolCognition(options: { hasher?: Hasher; clock?
   return {
     analyze(input: { request: string; evidence?: EvidenceSpan[]; field?: FieldState; actionCommitment?: number }): ToolObjective[] {
       return analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher, input.actionCommitment);
+    },
+
+    previewPlans(input: {
+      request: string;
+      capabilities: Capability[];
+      policy: PolicyProfile;
+      evidence?: EvidenceSpan[];
+      field?: FieldState;
+      actionCommitment?: number;
+    }): CapabilityPlanPreview {
+      const actionCommitment = clamp01(input.actionCommitment ?? 0);
+      const objectives = analyzeObjectives(input.request, input.evidence ?? [], input.field, hasher, actionCommitment);
+      const scored = scoreCapabilities({ objectives, capabilities: input.capabilities, policy: input.policy, operatorGrant: false, now: now() });
+      return { objectives, scored };
     },
 
     plan(input: {

@@ -41,10 +41,12 @@ import { createEventFactory } from "./events.js";
 import { createAlphaFieldEngine } from "./field.js";
 import {
   createFunctionalCognitionEngine,
+  functionalCapabilityAuthorizationGate,
   functionalSelectionGate,
   personaHistoryFromEvents,
   personaSnapshotFromSelf
 } from "./functional-cognition.js";
+import { counterfactualTracesFromCapabilityPreview } from "./functional-cognition-adapters.js";
 import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
@@ -1148,6 +1150,14 @@ export function createProductionTurnRuntime(options: {
           maxPaths: 32
         }
       });
+      const capabilityPlanPreview = toolCognition.previewPlans({
+        request: input.text,
+        capabilities: connectorGovernance.capabilities(defaultConnectorConfigs()),
+        policy,
+        evidence: selectedEvidence,
+        field,
+        actionCommitment: requirementField.actionCommitment
+      });
       const projectionStarted = Date.now();
       const projectionNow = clock.now();
       const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: projectionNow });
@@ -1180,9 +1190,14 @@ export function createProductionTurnRuntime(options: {
         ssdAudit: selfDistillation.audit,
         learningNeeds: earlyLearningNeeds,
         personaHistory,
-        governance
+        governance,
+        traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview)
       });
-      const functionalGate = functionalSelectionGate(functionalCognition);
+      const computedFunctionalGate = functionalSelectionGate(functionalCognition);
+      const functionalGate = functionalCapabilityAuthorizationGate(
+        computedFunctionalGate,
+        deps.functionalCognitionAuthorizeCapabilities === true
+      );
       events.push(await append(eventFactory.create({
         episodeId,
         typeId: "SelfModelProjected",
@@ -1191,7 +1206,12 @@ export function createProductionTurnRuntime(options: {
           self: selfState,
           selfDistillation: selfDistillation.audit,
           fcs: functionalConsciousness.audit,
-          functionalCognition: functionalCognition.audit
+          functionalCognition: functionalCognition.audit,
+          capabilityPlanPreview: toJsonValue({
+            objectives: capabilityPlanPreview.objectives.map(objective => ({ id: objective.id, kind: objective.kind })),
+            scoredCount: capabilityPlanPreview.scored.length
+          }),
+          authorizeCapabilities: deps.functionalCognitionAuthorizeCapabilities === true
         }
       })));
       kernelTrace({
@@ -1207,6 +1227,9 @@ export function createProductionTurnRuntime(options: {
           fc: functionalCognition.fc,
           efc: functionalCognition.efc,
           gov: functionalCognition.gov,
+          authorizeCapabilities: deps.functionalCognitionAuthorizeCapabilities === true,
+          authorizedFc: functionalGate.fc,
+          authorizedEfc: functionalGate.efc,
           governanceReady: governance.ready,
           governanceFailures: governance.failures,
           selectedGoalId: functionalCognition.selectedGoal?.goal.id ?? null,
