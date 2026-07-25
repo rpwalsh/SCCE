@@ -76,6 +76,20 @@ export interface LexicalClass {
   exampleContexts: string[];
 }
 
+export interface MorphologyClassBinding {
+  id: string;
+  ruleId: string;
+  lexicalClassId: string;
+  /** Count of the rule's inflected example forms that are also members of this lexical class. */
+  stemOverlap: number;
+  /** stemOverlap / rule.examples.length -- how much of the rule's own example set this class explains. */
+  ruleCoverage: number;
+  /** stemOverlap / lexicalClass.members.length -- how much of the class this rule's examples cover. */
+  classCoverage: number;
+  /** min(ruleCoverage, classCoverage) -- requires both directions of evidence, not a one-sided coincidence. */
+  confidence: number;
+}
+
 export interface SemanticFrameCandidate {
   id: string;
   predicate: string;
@@ -106,6 +120,7 @@ export interface InducedLanguageModel {
   morphology: MorphologicalRule[];
   syntaxTemplates: SyntaxTemplate[];
   lexicalClasses: LexicalClass[];
+  morphologyClassBindings: MorphologyClassBinding[];
   semanticFrames: SemanticFrameCandidate[];
   translationSeeds: TranslationSeed[];
   proseDiagnostics: JsonValue;
@@ -130,6 +145,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const morphology = induceMorphology(symbolStrings, hasher).slice(0, 2048);
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
       const lexicalClasses = induceLexicalClasses(documents, hasher, input.maxLexicalClasses ?? 1024);
+      const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
       const semanticFrames = induceSemanticFrames(documents, hasher, input.maxFrames ?? 2048);
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
       const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
@@ -146,6 +162,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         morphology,
         syntaxTemplates,
         lexicalClasses,
+        morphologyClassBindings,
         semanticFrames,
         translationSeeds,
         proseDiagnostics,
@@ -567,6 +584,51 @@ function induceLexicalClasses(documents: readonly LanguageInductionDocument[], h
   return classes
     .sort((a, b) => b.cohesion * b.members.length - a.cohesion * a.members.length || b.members.length - a.members.length || a.id.localeCompare(b.id))
     .slice(0, Math.max(1, maxClasses));
+}
+
+/**
+ * Morphology/agreement-constraint induction (Part B step 5): a real
+ * morphosyntactic marker (e.g. a plural or agreement suffix) is one whose
+ * inflected surface forms systematically fall inside one independently-
+ * induced distributional class rather than scattering randomly across many.
+ * This cross-references two already-computed, already-tested arrays
+ * (`induceMorphology`'s affix rules, whose `examples` are real inflected
+ * surface forms; `induceLexicalClasses`'s classes, whose members are the
+ * same normalized surface-form symbols) -- no new symbol stream, no change
+ * to either input. `stemOverlap`/`ruleCoverage`/`classCoverage` are the
+ * literal set-overlap evidence; `confidence` requires both directions (the
+ * class explains most of the rule's examples AND the rule explains most of
+ * the class) so one huge class trivially intersecting a rule cannot produce
+ * a false binding.
+ */
+function induceMorphologyClassBindings(
+  morphology: readonly MorphologicalRule[],
+  lexicalClasses: readonly LexicalClass[],
+  hasher: Hasher
+): MorphologyClassBinding[] {
+  const minOverlap = 2;
+  const bindings: MorphologyClassBinding[] = [];
+  for (const rule of morphology) {
+    if (rule.examples.length === 0) continue;
+    const exampleSet = new Set(rule.examples);
+    for (const lexicalClass of lexicalClasses) {
+      if (lexicalClass.members.length === 0) continue;
+      const overlap = lexicalClass.members.filter(member => exampleSet.has(member.symbol));
+      if (overlap.length < minOverlap) continue;
+      const ruleCoverage = clamp01(overlap.length / rule.examples.length);
+      const classCoverage = clamp01(overlap.length / lexicalClass.members.length);
+      bindings.push({
+        id: `morphclass_${hasher.digestHex(`${rule.id}:${lexicalClass.id}`).slice(0, 24)}`,
+        ruleId: rule.id,
+        lexicalClassId: lexicalClass.id,
+        stemOverlap: overlap.length,
+        ruleCoverage,
+        classCoverage,
+        confidence: Math.min(ruleCoverage, classCoverage)
+      });
+    }
+  }
+  return bindings.sort((a, b) => b.confidence - a.confidence || b.stemOverlap - a.stemOverlap || a.id.localeCompare(b.id));
 }
 
 function induceSemanticFrames(documents: readonly LanguageInductionDocument[], hasher: Hasher, maxFrames: number): SemanticFrameCandidate[] {
