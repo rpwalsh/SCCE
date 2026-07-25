@@ -98,6 +98,10 @@ describe("Postgres language-memory ownership queries", () => {
     expect(statements.filter(statement => statement.includes("semantic_frames_surface_rank"))).toEqual([
       `CREATE INDEX IF NOT EXISTS idx_fixture_semantic_frames_surface_rank ON "fixture".semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`
     ]);
+    expect(statements.some(statement =>
+      statement.includes("UPDATE \"fixture\".language_profiles profile")
+      && statement.includes("jsonb_array_elements(profile.profile_json->'charNgrams')")
+    )).toBe(true);
   });
 
   it("bounds referenced profile discovery with index-backed semi-joins", async () => {
