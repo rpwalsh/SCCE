@@ -38,7 +38,7 @@
     "rehearsal:postgres": "node tools/live-postgres-rehearsal.mjs",
     "rehearsal:adapter": "node tools/live-adapter-rehearsal.mjs",
     "maintenance:evidence-anchors": "pnpm --dir packages/adapters-node backfill:evidence-anchors",
-    "validate": "pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",
+    "validate": "pnpm mcp:verify && pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",
     "scce": "node packages/cli/dist/index.js",
     "hygiene:language-control": "node packages/cli/dist/index.js hygiene language-control",
     "scce:server": "node packages/server/dist/index.js",
@@ -60,6 +60,8 @@
     "mcp:build": "pnpm --dir tools/scce-dev-mcp build",
     "mcp:start": "pnpm --dir tools/scce-dev-mcp start",
     "mcp:dev": "pnpm --dir tools/scce-dev-mcp dev",
+    "mcp:test": "pnpm --dir tools/scce-dev-mcp test",
+    "mcp:verify": "pnpm mcp:build && pnpm mcp:test",
     "vscode:test:host": "pnpm --dir packages/vscode test:host",
     "vscode:package": "pnpm --dir packages/vscode package"
   },
