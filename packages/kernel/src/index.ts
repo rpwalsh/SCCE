@@ -70,6 +70,8 @@ export * from "./governance-observation.js";
 export * from "./information-flow.js";
 export * from "./learning-loop.js";
 export * from "./functional-cognition.js";
+export * from "./functional-cognition-adapters.js";
+export * from "./policy-evolution.js";
 export * from "./self-distillation.js";
 export * from "./self-rewrite.js";
 export * from "./causal-estimation.js";

@@ -64,6 +64,10 @@ import {
   type NgramModelRecord,
   type NgramObservation,
   type PpfCacheRecord,
+  aggregateGenome,
+  type DurablePolicyGenome,
+  type PolicyEvaluation,
+  type PolicyEvolutionStore,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -129,6 +133,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly selfRewrite: SelfRewriteStore;
   readonly workspace: WorkspaceStore;
   readonly dialogueMemory: DialogueMemoryStore;
+  readonly policyEvolution: PolicyEvolutionStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -160,6 +165,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.selfRewrite = createSelfRewriteStore(this);
     this.workspace = createWorkspaceStore(this);
     this.dialogueMemory = createDialogueMemoryStore(this);
+    this.policyEvolution = createPolicyEvolutionStore(this);
   }
 
   table(name: string): string {
@@ -841,6 +847,10 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.model_state (id TEXT PRIMARY KEY, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.benchmark_runs (id TEXT PRIMARY KEY, config_json JSONB NOT NULL, started_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ, summary_json JSONB)`,
     `CREATE TABLE IF NOT EXISTS ${q}.benchmark_cases (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, case_json JSONB NOT NULL, result_json JSONB NOT NULL, score_json JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.policy_evaluations (id TEXT PRIMARY KEY, policy_fingerprint TEXT NOT NULL, objective_schema_id TEXT NOT NULL, vector_json JSONB NOT NULL, objectives DOUBLE PRECISION[] NOT NULL, evaluation_window_json JSONB NOT NULL, observations INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.policy_genomes (policy_fingerprint TEXT NOT NULL, objective_schema_id TEXT NOT NULL, vector_json JSONB NOT NULL, aggregated_objectives DOUBLE PRECISION[] NOT NULL, evaluation_count INTEGER NOT NULL, information_label JSONB NOT NULL, first_evaluated_at TIMESTAMPTZ NOT NULL, last_evaluated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (policy_fingerprint, objective_schema_id))`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_policy_evaluations_fingerprint ON ${q}.policy_evaluations(policy_fingerprint, objective_schema_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_policy_genomes_schema ON ${q}.policy_genomes(objective_schema_id, last_evaluated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -1847,6 +1857,103 @@ function createBenchmarkStore(storage: PostgresStorageAdapter): BenchmarkStore {
     async summarize() {
       const rows = await storage.query<{ runs: string; cases: string; mean_score: string }>(`SELECT COUNT(DISTINCT r.id)::text AS runs, COUNT(c.id)::text AS cases, COALESCE(AVG((c.score_json->>'score')::float),0)::text AS mean_score FROM ${storage.table("benchmark_runs")} r LEFT JOIN ${storage.table("benchmark_cases")} c ON c.run_id=r.id`);
       return { runs: Number(rows[0]?.runs ?? 0), cases: Number(rows[0]?.cases ?? 0), meanScore: Number(rows[0]?.mean_score ?? 0) };
+    }
+  };
+}
+
+interface PolicyGenomeRow {
+  policy_fingerprint: string;
+  objective_schema_id: string;
+  vector_json: Record<string, number>;
+  aggregated_objectives: number[];
+  evaluation_count: number;
+  information_label: JsonValue;
+  first_evaluated_at: Date;
+  last_evaluated_at: Date;
+}
+
+function rowToPolicyGenome(row: PolicyGenomeRow): DurablePolicyGenome {
+  return {
+    policyFingerprint: row.policy_fingerprint,
+    objectiveSchemaId: row.objective_schema_id,
+    vector: row.vector_json,
+    aggregatedObjectives: row.aggregated_objectives.map(Number),
+    evaluationCount: Number(row.evaluation_count),
+    firstEvaluatedAt: row.first_evaluated_at.getTime(),
+    lastEvaluatedAt: row.last_evaluated_at.getTime(),
+    informationLabel: normalizeInformationLabel(row.information_label as never)
+  };
+}
+
+/**
+ * Durable, versioned policy-evaluation history. `putEvaluation` never
+ * invents a genome by itself — it only ever records a real evaluation the
+ * caller already computed and folds it into the running per-fingerprint
+ * aggregate inside one transaction (read current aggregate, compute the
+ * next one via the pure `aggregateGenome`, upsert), so concurrent
+ * evaluations of the same policy can't race into a corrupted average.
+ */
+function createPolicyEvolutionStore(storage: PostgresStorageAdapter): PolicyEvolutionStore {
+  return {
+    async putEvaluation(evaluation: PolicyEvaluation) {
+      await storage.transaction(async () => {
+        await storage.query(
+          `INSERT INTO ${storage.table("policy_evaluations")}(id,policy_fingerprint,objective_schema_id,vector_json,objectives,evaluation_window_json,observations,information_label,created_at)
+           VALUES($1,$2,$3,$4::jsonb,$5,$6::jsonb,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0))
+           ON CONFLICT(id) DO NOTHING`,
+          [
+            evaluation.id,
+            evaluation.policyFingerprint,
+            evaluation.objectiveSchemaId,
+            JSON.stringify(evaluation.vector),
+            evaluation.objectives,
+            JSON.stringify(evaluation.evaluationWindow),
+            evaluation.observations,
+            JSON.stringify(evaluation.informationLabel),
+            evaluation.createdAt
+          ]
+        );
+        const existing = await storage.query<PolicyGenomeRow>(
+          `SELECT * FROM ${storage.table("policy_genomes")} WHERE policy_fingerprint=$1 AND objective_schema_id=$2`,
+          [evaluation.policyFingerprint, evaluation.objectiveSchemaId]
+        );
+        const previous = existing[0] ? rowToPolicyGenome(existing[0]) : undefined;
+        const next = aggregateGenome(previous, evaluation);
+        await storage.query(
+          `INSERT INTO ${storage.table("policy_genomes")}(policy_fingerprint,objective_schema_id,vector_json,aggregated_objectives,evaluation_count,information_label,first_evaluated_at,last_evaluated_at)
+           VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb,TO_TIMESTAMP($7/1000.0),TO_TIMESTAMP($8/1000.0))
+           ON CONFLICT(policy_fingerprint,objective_schema_id) DO UPDATE SET
+             vector_json=EXCLUDED.vector_json,
+             aggregated_objectives=EXCLUDED.aggregated_objectives,
+             evaluation_count=EXCLUDED.evaluation_count,
+             information_label=EXCLUDED.information_label,
+             last_evaluated_at=EXCLUDED.last_evaluated_at`,
+          [
+            next.policyFingerprint,
+            next.objectiveSchemaId,
+            JSON.stringify(next.vector),
+            next.aggregatedObjectives,
+            next.evaluationCount,
+            JSON.stringify(next.informationLabel),
+            next.firstEvaluatedAt,
+            next.lastEvaluatedAt
+          ]
+        );
+      });
+    },
+    async listGenomes(query) {
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (query?.objectiveSchemaId) {
+        params.push(query.objectiveSchemaId);
+        where.push(`objective_schema_id=$${params.length}`);
+      }
+      params.push(Math.max(1, Math.min(500, query?.limit ?? 100)));
+      const rows = await storage.query<PolicyGenomeRow>(
+        `SELECT * FROM ${storage.table("policy_genomes")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY last_evaluated_at DESC LIMIT $${params.length}`,
+        params
+      );
+      return rows.map(rowToPolicyGenome);
     }
   };
 }

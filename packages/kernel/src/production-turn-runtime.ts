@@ -47,6 +47,7 @@ import {
   personaSnapshotFromSelf
 } from "./functional-cognition.js";
 import { counterfactualTracesFromCapabilityPreview } from "./functional-cognition-adapters.js";
+import { POLICY_OBJECTIVE_SCHEMA_ID, policyGenomeFromDurable } from "./policy-evolution.js";
 import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
@@ -1161,11 +1162,13 @@ export function createProductionTurnRuntime(options: {
       const projectionStarted = Date.now();
       const projectionNow = clock.now();
       const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: projectionNow });
-      const [runtimeModel, priorStates, persistedPersonaEvents] = await Promise.all([
+      const [runtimeModel, priorStates, persistedPersonaEvents, durablePolicyGenomes] = await Promise.all([
         deps.storage.model.readModel(),
         deps.storage.forecasts.getSeries({ limit: 64 }),
-        deps.storage.events.readRange({ typeId: "SelfModelProjected", beforeT: projectionNow, limit: 9 })
+        deps.storage.events.readRange({ typeId: "SelfModelProjected", beforeT: projectionNow, limit: 9 }),
+        deps.storage.policyEvolution?.listGenomes({ objectiveSchemaId: POLICY_OBJECTIVE_SCHEMA_ID, limit: 64 }) ?? Promise.resolve([])
       ]);
+      const policyPopulation = durablePolicyGenomes.map(policyGenomeFromDurable);
       const forecast = prediction.forecast({ states: priorStates, source: state, horizon: 2, createdAt: projectionNow });
       const selfState = await createFunctionalSelfModel({ storage: deps.storage, model: runtimeModel, policy, recentFailures: failures });
       const selfDistillation = ssd.distill({ model: runtimeModel, graph, state, forecast, self: selfState });
@@ -1191,7 +1194,8 @@ export function createProductionTurnRuntime(options: {
         learningNeeds: earlyLearningNeeds,
         personaHistory,
         governance,
-        traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview)
+        traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview),
+        policyPopulation
       });
       const computedFunctionalGate = functionalSelectionGate(functionalCognition);
       const functionalGate = functionalCapabilityAuthorizationGate(
@@ -1221,7 +1225,8 @@ export function createProductionTurnRuntime(options: {
         counts: {
           personaSnapshots: personaHistory.length,
           counterfactualTraces: functionalCognition.cmps.length,
-          policyPopulation: functionalCognition.pareto.front.length
+          policyPopulation: functionalCognition.pareto.front.length,
+          durablePolicyGenomes: durablePolicyGenomes.length
         },
         support: {
           fc: functionalCognition.fc,

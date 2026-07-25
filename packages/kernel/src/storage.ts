@@ -815,6 +815,23 @@ export interface ScceStorage extends StorageAdmin {
   selfRewrite: SelfRewriteStore;
   workspace: WorkspaceStore;
   dialogueMemory: DialogueMemoryStore;
+  /**
+   * Optional: durable, versioned policy-evaluation history feeding
+   * `functionalCognitionEngine.project()`'s policyPopulation. Optional
+   * (unlike the other stores above) so existing in-memory/test storage
+   * doubles that don't exercise EFC do not need to implement it; the real
+   * Postgres adapter always provides it. Absent or empty keeps EFC
+   * honestly unavailable rather than defaulting to a permissive fallback.
+   */
+  policyEvolution?: PolicyEvolutionStore;
+}
+
+export interface PolicyEvolutionStore {
+  putEvaluation(evaluation: import("./policy-evolution.js").PolicyEvaluation): Promise<void>;
+  listGenomes(query?: {
+    objectiveSchemaId?: string;
+    limit?: number;
+  }): Promise<import("./policy-evolution.js").DurablePolicyGenome[]>;
 }
 
 export interface FileIngestPort {
@@ -855,7 +872,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 16;
+export const POSTGRES_SCHEMA_VERSION = 17;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -909,7 +926,9 @@ export const POSTGRES_REQUIRED_TABLES = [
   "calibration_observations",
   "model_state",
   "benchmark_runs",
-  "benchmark_cases"
+  "benchmark_cases",
+  "policy_evaluations",
+  "policy_genomes"
 ] as const;
 
 export interface ScceKernelDeps {
