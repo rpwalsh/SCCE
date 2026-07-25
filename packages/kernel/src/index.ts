@@ -31,6 +31,7 @@ export * from "./ngram-prose.js";
 export * from "./ngram-memory.js";
 export * from "./translation.js";
 export * from "./unicode-segmentation.js";
+export * from "./unicode-segmentation-v2.js";
 export * from "./ppf.js";
 export * from "./powerwalk.js";
 export * from "./latent.js";
