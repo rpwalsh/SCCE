@@ -39,7 +39,7 @@ describe("functional cognition real-input projection", () => {
       front: []
     });
     expect(report.governance).toMatchObject({ ready: false });
-    expect(report.governance.failures).toHaveLength(6);
+    expect(report.governance.failures).toHaveLength(7);
     expect(report.gov).toBe(false);
     expect(report.fc).toBe(false);
     expect(report.efc).toBe(false);
@@ -293,6 +293,12 @@ function readyGovernance() {
       expectedFingerprint: "fingerprint",
       fingerprintValid: true,
       signatureValid: true
+    },
+    immutability: {
+      ...passed,
+      updateDenied: true,
+      deleteDenied: true,
+      protectiveTriggerPresent: true
     }
   });
 }

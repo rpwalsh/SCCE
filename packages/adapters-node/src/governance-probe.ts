@@ -10,6 +10,7 @@ import {
   type GovernanceControlObservation,
   type GovernanceObservation,
   type GovernanceProbe,
+  type ImmutabilityGovernanceObservation,
   type JsonValue,
   type KillSwitchGovernanceObservation,
   type LeaseGovernanceObservation,
@@ -33,10 +34,32 @@ const POLICY_PUBLIC_KEY = "SCCE_GOVERNANCE_POLICY_PUBLIC_KEY";
 type GovernanceEnvironment = Readonly<Record<string, string | undefined>>;
 
 export interface NodePostgresGovernanceProbeOptions {
-  storage: Pick<PostgresStorageAdapter, "query" | "table">;
+  storage: Pick<PostgresStorageAdapter, "query" | "table" | "schema">;
   approvals: Pick<ApprovalSession, "snapshot">;
   workspaceRoot: string;
   environment?: GovernanceEnvironment;
+}
+
+/**
+ * Durable-across-restart position is intentionally not required here: this
+ * checkpoint lives only in the probe's own closure, for the lifetime of one
+ * running process. A restart naturally does one full scan to
+ * re-establish it (see `observeEventLedger` below) -- correct and safe,
+ * just not free. What this fixes is the real, confirmed cost problem: every
+ * `.observe()` call within a long-running process previously re-read and
+ * re-verified the *entire* event table from scratch (see
+ * `packages/kernel/src/production-turn-runtime.ts`'s governance checkpoint
+ * calling this every turn). A durably-persisted checkpoint (surviving
+ * restarts too) is a further optimization, not required to fix the
+ * confirmed O(total events)-per-call cost.
+ */
+interface EventLedgerCheckpointState {
+  anchorEventId: string;
+  anchorT: number;
+  anchorHash: string;
+  anchorLedgerHash: string;
+  /** Total verified events at this checkpoint -- preserves the `events` field's original "total ledger size" meaning under incremental verification. */
+  totalEvents: number;
 }
 
 export interface PostgresGovernanceEventRow {
@@ -63,13 +86,15 @@ export function createNodePostgresGovernanceProbe(
     ...(options.environment ?? process.env)
   });
   const workspaceRoot = path.resolve(options.workspaceRoot);
+  let ledgerCheckpoint: EventLedgerCheckpointState | undefined;
   return {
     async observe(input): Promise<GovernanceObservation> {
-      const [eventLedger, rollback, killSwitch, leases] = await Promise.all([
-        observeEventLedger(options.storage),
+      const [eventLedger, rollback, killSwitch, leases, immutability] = await Promise.all([
+        observeEventLedgerIncremental(),
         observeRollback(workspaceRoot, environment),
         observeKillSwitch(workspaceRoot, environment),
-        observeLeases(workspaceRoot, environment, input.now)
+        observeLeases(workspaceRoot, environment, input.now),
+        observeImmutabilityControls(options.storage)
       ]);
       return governanceObservation(input.now, {
         eventLedger,
@@ -77,10 +102,215 @@ export function createNodePostgresGovernanceProbe(
         killSwitch,
         leases,
         pendingMutations: observePendingMutations(options.approvals),
-        policyIntegrity: observePolicyIntegrity(input.policy, environment)
+        policyIntegrity: observePolicyIntegrity(input.policy, environment),
+        immutability
       });
     }
   };
+
+  /**
+   * Bounded live verification (layer 1 of the three-layer design): on the
+   * first call, or after any failure/tamper detection forces a reset, does
+   * one full scan (same cost as before, but now a one-time cost per
+   * process lifetime rather than per call). Every subsequent call verifies
+   * only that the checkpoint anchor row is byte-for-byte unchanged, then
+   * verifies just the suffix appended since -- the checkpoint's ledger
+   * hash chain is a real cryptographic continuation, so an unchanged
+   * anchor plus a verified suffix is exactly as strong a guarantee as a
+   * full rescan would give, at O(new events) instead of O(all events)
+   * cost. A mismatch at the anchor (mutation or deletion of ledger
+   * history) or a broken suffix chain both fail closed and force a full
+   * rescan on the next call.
+   */
+  async function observeEventLedgerIncremental(): Promise<EventLedgerGovernanceObservation> {
+    try {
+      if (!ledgerCheckpoint) return await fullyVerifyEventLedgerAndCheckpoint();
+
+      const anchorRows = await options.storage.query<{ id: string; t: string | number; hash: string; ledger_hash: string }>(
+        `SELECT id, t, hash, ledger_hash FROM ${options.storage.table("events")} WHERE id = $1`,
+        [ledgerCheckpoint.anchorEventId]
+      );
+      const anchor = anchorRows[0];
+      if (!anchor || anchor.hash !== ledgerCheckpoint.anchorHash || anchor.ledger_hash !== ledgerCheckpoint.anchorLedgerHash) {
+        const expectedAnchorEventId = ledgerCheckpoint.anchorEventId;
+        ledgerCheckpoint = undefined;
+        return {
+          available: true,
+          passed: false,
+          reason: "checkpoint_anchor_mutated_or_missing",
+          events: 0,
+          evidence: toJsonValue({
+            mode: "incremental_suffix",
+            expectedAnchorEventId,
+            observedAnchor: anchor ?? null
+          })
+        };
+      }
+
+      const suffixRows = await options.storage.query<PostgresGovernanceEventRow>(
+        `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+           FROM ${options.storage.table("events")}
+          WHERE (t, id) > ($2, $1)
+          ORDER BY t ASC, id ASC`,
+        [ledgerCheckpoint.anchorEventId, Number(anchor.t)]
+      );
+
+      const eventChain = createAuditEngine().verifyEventChain(suffixRows.map(rowToEvent));
+      const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
+      let runningLedgerHash = ledgerCheckpoint.anchorLedgerHash;
+      for (const row of suffixRows) {
+        const expected = sha256(`${runningLedgerHash}${row.hash}`);
+        if (row.ledger_hash !== expected) brokenLedgerHashes.push({ eventId: row.id, expected, observed: row.ledger_hash });
+        runningLedgerHash = row.ledger_hash;
+      }
+      const passed = eventChain.ok && brokenLedgerHashes.length === 0;
+      const totalEventsBefore = ledgerCheckpoint.totalEvents;
+      if (passed) {
+        if (suffixRows.length > 0) {
+          const last = suffixRows[suffixRows.length - 1]!;
+          ledgerCheckpoint = {
+            anchorEventId: last.id,
+            anchorT: Number(last.t),
+            anchorHash: last.hash,
+            anchorLedgerHash: last.ledger_hash,
+            totalEvents: totalEventsBefore + suffixRows.length
+          };
+        }
+      } else {
+        ledgerCheckpoint = undefined;
+      }
+      return {
+        available: true,
+        passed,
+        reason: passed
+          ? "verified_incremental"
+          : !eventChain.ok
+            ? "event_hash_chain_invalid"
+            : "postgres_ledger_hash_chain_invalid",
+        events: totalEventsBefore + suffixRows.length,
+        latestLedgerHash: suffixRows.at(-1)?.ledger_hash ?? anchor.ledger_hash,
+        evidence: toJsonValue({
+          mode: "incremental_suffix",
+          anchorEventId: anchor.id,
+          suffixEvents: suffixRows.length,
+          eventChain,
+          brokenLedgerHashes: brokenLedgerHashes.slice(0, 32)
+        })
+      };
+    } catch (error) {
+      ledgerCheckpoint = undefined;
+      return {
+        ...unavailableControl("event_ledger_probe_failed", error),
+        events: 0
+      };
+    }
+  }
+
+  async function fullyVerifyEventLedgerAndCheckpoint(): Promise<EventLedgerGovernanceObservation> {
+    const rows = await options.storage.query<PostgresGovernanceEventRow>(
+      `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+         FROM ${options.storage.table("events")}
+        ORDER BY t ASC, id ASC`
+    );
+    const observation = verifyPostgresEventLedgerRows(rows);
+    if (observation.passed && rows.length > 0) {
+      const last = rows[rows.length - 1]!;
+      ledgerCheckpoint = {
+        anchorEventId: last.id,
+        anchorT: Number(last.t),
+        anchorHash: last.hash,
+        anchorLedgerHash: last.ledger_hash,
+        totalEvents: rows.length
+      };
+    }
+    return { ...observation, evidence: toJsonValue({ mode: "full_scan", ...(observation.evidence as Record<string, JsonValue>) }) };
+  }
+}
+
+/**
+ * Layer 3 of the three-layer design: an explicit, on-demand full audit that
+ * ignores any in-process checkpoint and recomputes the entire chain from
+ * scratch -- the maintenance-command primitive. Exported separately from
+ * the bounded per-call path above so a periodic job (or an operator) can
+ * invoke exactly this, deliberately paying the full O(all events) cost to
+ * get an unconditional answer.
+ */
+export async function fullyVerifyEventLedger(
+  storage: Pick<PostgresStorageAdapter, "query" | "table">
+): Promise<EventLedgerGovernanceObservation> {
+  const rows = await storage.query<PostgresGovernanceEventRow>(
+    `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+       FROM ${storage.table("events")}
+      ORDER BY t ASC, id ASC`
+  );
+  const observation = verifyPostgresEventLedgerRows(rows);
+  return { ...observation, evidence: toJsonValue({ mode: "full_scan", ...(observation.evidence as Record<string, JsonValue>) }) };
+}
+
+function rowToEvent(row: PostgresGovernanceEventRow): ScceEvent {
+  return {
+    id: row.id,
+    episodeId: row.episode_id,
+    typeId: row.type_id,
+    t: Number(row.t),
+    payload: row.payload_json,
+    parents: row.parents,
+    hash: row.hash
+  } as unknown as ScceEvent;
+}
+
+/**
+ * Layer 2 of the three-layer design: observes whether the connected role
+ * can actually mutate the event ledger, rather than assuming application
+ * discipline is enough. This only *observes and reports* the current
+ * privilege/trigger state via safe, read-only system-catalog queries -- it
+ * does not provision a separate migration-only role or install triggers
+ * itself, since that changes how the database must be deployed (a second
+ * connection role/string) and is an operator decision, not something to
+ * silently change here. See the handoff doc for the exact SQL an operator
+ * should run to lock this down.
+ */
+async function observeImmutabilityControls(
+  storage: Pick<PostgresStorageAdapter, "query" | "table" | "schema">
+): Promise<ImmutabilityGovernanceObservation> {
+  try {
+    const table = storage.table("events");
+    const privilegeRows = await storage.query<{ update_allowed: boolean; delete_allowed: boolean }>(
+      `SELECT has_table_privilege(current_user, '${table}', 'UPDATE') AS update_allowed,
+              has_table_privilege(current_user, '${table}', 'DELETE') AS delete_allowed`
+    );
+    const privilege = privilegeRows[0];
+    const updateDenied = privilege ? !privilege.update_allowed : false;
+    const deleteDenied = privilege ? !privilege.delete_allowed : false;
+    const triggerRows = await storage.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = 'events' AND NOT t.tgisinternal AND t.tgenabled <> 'D'`,
+      [storage.schema]
+    );
+    const protectiveTriggerPresent = Number(triggerRows[0]?.count ?? "0") > 0;
+    const passed = updateDenied && deleteDenied;
+    return {
+      available: true,
+      passed,
+      reason: passed
+        ? (protectiveTriggerPresent ? "verified" : "denied_by_privilege_no_protective_trigger")
+        : "runtime_role_can_mutate_events",
+      updateDenied,
+      deleteDenied,
+      protectiveTriggerPresent,
+      evidence: toJsonValue({ table, updateDenied, deleteDenied, protectiveTriggerPresent })
+    };
+  } catch (error) {
+    return {
+      ...unavailableControl("immutability_probe_failed", error),
+      updateDenied: false,
+      deleteDenied: false,
+      protectiveTriggerPresent: false
+    };
+  }
 }
 
 export function verifyPostgresEventLedgerRows(
@@ -125,24 +355,6 @@ export function verifyPostgresEventLedgerRows(
       ordering: "t_ascending_id_ascending"
     })
   };
-}
-
-async function observeEventLedger(
-  storage: Pick<PostgresStorageAdapter, "query" | "table">
-): Promise<EventLedgerGovernanceObservation> {
-  try {
-    const rows = await storage.query<PostgresGovernanceEventRow>(
-      `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
-         FROM ${storage.table("events")}
-        ORDER BY t ASC, id ASC`
-    );
-    return verifyPostgresEventLedgerRows(rows);
-  } catch (error) {
-    return {
-      ...unavailableControl("event_ledger_probe_failed", error),
-      events: 0
-    };
-  }
 }
 
 async function observeRollback(
