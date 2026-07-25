@@ -230,6 +230,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       listTranslationAlignments: async () => []
     },
     init: async () => undefined,
+    transaction: async <T>(fn: () => Promise<T>) => fn(),
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
     stats: async () => ({}),
