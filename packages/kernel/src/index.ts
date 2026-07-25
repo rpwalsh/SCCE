@@ -34,6 +34,7 @@ export * from "./unicode-segmentation.js";
 export * from "./unicode-segmentation-v2.js";
 export * from "./segmentation-aggregate.js";
 export * from "./language-induction-persistence.js";
+export * from "./language-induction-memory.js";
 export * from "./ppf.js";
 export * from "./powerwalk.js";
 export * from "./latent.js";

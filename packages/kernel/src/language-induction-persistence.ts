@@ -4,14 +4,13 @@ import type { InducedLanguageModel } from "./language-induction.js";
 export const INDUCED_LANGUAGE_MODEL_SCHEMA_V1 = "scce.induced_language_model.v1";
 
 /**
- * Part B step 3: persist the *full* induction model computed by
- * `language-induction.ts`'s engine, not only its audit summary.
- * `training-runtime.ts` and `production-turn-runtime.ts` both already
- * compute a complete `InducedLanguageModel` (n-grams, morphology rules,
- * syntax templates, semantic frame candidates, translation seeds) via
- * `trainingOrchestrator.plan()`, but until this store existed the object
- * was discarded after the turn -- only its JSON audit counts reached a
- * durable event. This is the durable home for the real thing.
+ * Durable archival home for the full induction model computed by
+ * `language-induction.ts`'s engine. Runtime language behavior must still
+ * flow through normal language-memory records; training code projects the
+ * model's morphology/syntax/semantic/translation summaries into
+ * `LanguagePatternRecord`s when it wants the checkpoint to influence
+ * hydration. A stored model alone is only an inspectable checkpoint, not an
+ * active surface prior.
  */
 export interface InducedLanguageModelRecord {
   id: string;
