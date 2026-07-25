@@ -7,6 +7,7 @@ import {
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
   compileLanguageConstructionPattern,
+  induceSourceBoundConstructionTrainingSets,
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
   canonicalCorpusSourceSystemId,
@@ -186,7 +187,16 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   const units = memory.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [];
   const constructionWarnings: string[] = [];
-  for (const set of input.constructionSets ?? []) {
+  // Real, always-on graph-surface alignment (packages/kernel/src/graph-surface-alignment.ts):
+  // induces constructions directly from this corpus's own evidence, closing the gap where
+  // constructionSets was previously only ever populated by an explicit caller (never was, in
+  // production). Caller-supplied sets (if any) are merged in, not replaced.
+  const inducedConstructionSets = induceSourceBoundConstructionTrainingSets({
+    evidence,
+    profileId: profile.id,
+    hasher
+  });
+  for (const set of [...(input.constructionSets ?? []), ...inducedConstructionSets]) {
     const compiled = compileLanguageConstructionPattern({
       bindingId: set.bindingId,
       profileId: profile.id,
