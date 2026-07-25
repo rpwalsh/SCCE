@@ -68,6 +68,11 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
   const relationPotentialModel = options.relationPotentialModel === undefined
     ? config.runtime.relationPotentialModel
     : options.relationPotentialModel ?? undefined;
+  const executive = createDurableExecutiveEpisode({
+    machine: createExecutiveEpisodeMachine(createHasher()),
+    journal: createExecutiveEventJournal(storage),
+    maxConflictRetries: 5
+  });
   const kernel = createScceKernel({
     storage,
     files,
@@ -86,12 +91,8 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     clock: options.clock,
     runSeed: options.runSeed,
     deterministicReplay: options.deterministicReplay,
-    relationPotentialModel
-  });
-  const executive = createDurableExecutiveEpisode({
-    machine: createExecutiveEpisodeMachine(createHasher()),
-    journal: createExecutiveEventJournal(storage),
-    maxConflictRetries: 5
+    relationPotentialModel,
+    executive
   });
   return { storage, kernel, connectors, approvals, executive, close: () => storage.close() };
 }
