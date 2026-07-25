@@ -58,6 +58,19 @@ export interface SegmentationModel {
   reconstructionHash: string;
 }
 
+/**
+ * Honest disclosure, not a "learned from reading" claim: `Intl.Segmenter`'s
+ * word boundaries for dictionary-segmented scripts (Han, Kana, Thai) come
+ * from ICU's built-in dictionaries -- imported linguistic knowledge baked
+ * into the JS runtime, not something SCCE induced from corpus text itself.
+ * No SCCE code hardcodes a per-language rule (the code path is identical
+ * for every script), but the underlying word-boundary data for those
+ * scripts is not self-taught. This is an acceptable bootstrap dependency
+ * for now, not a claim that segmentation for an unknown/unspaced language
+ * would work without it; a corpus-induced boundary model (real statistics,
+ * not a runtime dictionary) would be needed to close that gap for a script
+ * ICU has no dictionary for at all.
+ */
 const WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "word" });
 
 interface IcuWordSpan {
