@@ -20,6 +20,7 @@ function fakeModel(id: string): InducedLanguageModel {
     boundarySignals: [],
     morphology: [],
     syntaxTemplates: [],
+    lexicalClasses: [],
     semanticFrames: [],
     translationSeeds: [],
     proseDiagnostics: {},
