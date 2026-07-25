@@ -6,11 +6,12 @@ import {
   createIdFactory,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
-  compileLanguageConstructionPattern,
-  induceSourceBoundConstructionTrainingSets,
+  compileLanguageTrainingBatch,
+  observeLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
   canonicalCorpusSourceSystemId,
+  corpusRoleIdForSourceSystem,
   corpusSourceAlias,
   joinInformationLabels,
   normalizeInformationLabel,
@@ -82,6 +83,10 @@ export interface LanguageCorpusTrainingReport {
 }
 
 export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
+  return input.storage.transaction(() => trainLanguageCorpusTextTransaction(input));
+}
+
+async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
   const clock = input.clock ?? createClock();
   const hasher = createHasher();
   const sourceSystemId = canonicalCorpusSourceSystemId(input.sourceSystem);
@@ -170,44 +175,40 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   profile = { ...profile, informationLabel };
   await input.storage.model.putLanguageProfile(profile);
 
-  const memory = languageMemory.observe({
-    streamId: input.streamUri,
-    profile,
-    sourceVersionId,
-    text,
-    evidence,
-    createdAt,
-    maxOrder: input.ngramMaxOrder,
-    maxCountersPerOrder: input.ngramMaxCountersPerOrder,
-    vocabularyLimit: input.ngramVocabularyLimit
+  const compiledBatch = compileLanguageTrainingBatch({
+    runtime: languageMemory,
+    hasher,
+    batch: {
+      streamId: input.streamUri,
+      sourceSystem,
+      profile,
+      sourceVersionId,
+      text,
+      evidence,
+      createdAt,
+      maxOrder: input.ngramMaxOrder,
+      maxCountersPerOrder: input.ngramMaxCountersPerOrder,
+      vocabularyLimit: input.ngramVocabularyLimit,
+      constructionSets: input.constructionSets
+    }
   });
-
-  const observations = memory.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const models = memory.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const units = memory.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const compiledConstructionPatterns: LanguagePatternRecord[] = [];
-  const constructionWarnings: string[] = [];
-  // Real, always-on graph-surface alignment (packages/kernel/src/graph-surface-alignment.ts):
-  // induces constructions directly from this corpus's own evidence, closing the gap where
-  // constructionSets was previously only ever populated by an explicit caller (never was, in
-  // production). Caller-supplied sets (if any) are merged in, not replaced.
-  const inducedConstructionSets = induceSourceBoundConstructionTrainingSets({
-    evidence,
-    profileId: profile.id,
+  const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
+  await observeLanguageTrainingSegmentation({
+    storage: input.storage,
+    batch: { text, createdAt },
+    tenantId: informationLabel.tenantId,
+    corpusRole: corpusRoleIdForSourceSystem(sourceSystemId),
+    activeImportVersion: typeof activeImportVersionValue === "string"
+      ? activeImportVersionValue
+      : sourceSystemId,
     hasher
   });
-  for (const set of [...(input.constructionSets ?? []), ...inducedConstructionSets]) {
-    const compiled = compileLanguageConstructionPattern({
-      bindingId: set.bindingId,
-      profileId: profile.id,
-      observations: set.observations,
-      evidence,
-      hasher,
-      updatedAt: createdAt
-    });
-    if (compiled.status === "compiled") compiledConstructionPatterns.push(compiled.pattern);
-    else constructionWarnings.push(...compiled.issues.map(issue => issue.code));
-  }
+
+  const observations = compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const models = compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
+  const constructionWarnings: string[] = [...compiledBatch.warnings];
   if (input.creativeEventCompiler) {
     const creativeEventCompilation = input.creativeEventCompiler.compile({
       profileId: profile.id,
@@ -222,9 +223,12 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
       constructionWarnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
     }
   }
-  const patterns = [...memory.patterns, ...compiledConstructionPatterns]
+  const patterns = [
+    ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatterns.some(item => item.id === pattern.id)),
+    ...compiledConstructionPatterns
+  ]
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const frames = memory.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
 
   await input.storage.languageMemory.putNgramObservationsBatch(observations);
   if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(models);
@@ -240,7 +244,7 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
     episodeId: input.episodeId ?? ids.episodeId(),
     typeId: "SymbolPatternLearned",
     payload: {
-      ...jsonRecord(memory.audit),
+      ...jsonRecord(compiledBatch.audit),
       sourceSystem,
       sourceSystemId,
       streamUri: input.streamUri,
