@@ -2,6 +2,7 @@ import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js"
 import { clamp01, createHasher, entropy, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import type { SemanticRole } from "./semantic-graph.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -100,6 +101,31 @@ export interface SemanticFrameCandidate {
   evidenceIds: EvidenceId[];
 }
 
+export interface GraphBoundConstructionSlot {
+  roleId: string;
+  /** Reuses `semantic-graph.ts`'s real `SemanticRole` vocabulary -- arg fillers are always "entity". */
+  semanticRole: SemanticRole;
+  /** Reuses `semantic-graph.ts`'s `relationFor()` vocabulary for entity<->predicate adjacency (`has_predicate`/`acts_on`), not an invented relation name. */
+  relation: string;
+  /** Whether this slot's node is the relation's source or target, matching `relationFor()`'s exact directionality. */
+  relationDirection: "source" | "target";
+  /** Bounded, most-salient real fillers observed for this role. */
+  observedFillers: string[];
+  /** Set only when a real majority of observedFillers are members of one induced LexicalClass -- this is what makes the slot variable-bearing (accepts any class member, not only the one filler that was observed). */
+  lexicalClassId?: string;
+  classCoverage?: number;
+}
+
+export interface GraphBoundConstruction {
+  id: string;
+  frameId: string;
+  predicate: string;
+  predicateSemanticRole: SemanticRole;
+  slots: GraphBoundConstructionSlot[];
+  support: number;
+  evidenceIds: EvidenceId[];
+}
+
 export interface TranslationSeed {
   sourceSymbol: string;
   targetSymbol: string;
@@ -122,6 +148,7 @@ export interface InducedLanguageModel {
   lexicalClasses: LexicalClass[];
   morphologyClassBindings: MorphologyClassBinding[];
   semanticFrames: SemanticFrameCandidate[];
+  graphBoundConstructions: GraphBoundConstruction[];
   translationSeeds: TranslationSeed[];
   proseDiagnostics: JsonValue;
   audit: JsonValue;
@@ -147,6 +174,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const lexicalClasses = induceLexicalClasses(documents, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
       const semanticFrames = induceSemanticFrames(documents, hasher, input.maxFrames ?? 2048);
+      const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
       const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
       const id = `language_model_${hasher.digestHex(JSON.stringify({ docs: documents.map(d => d.id), symbols: symbolStrings.length, order })).slice(0, 32)}`;
@@ -164,6 +192,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         lexicalClasses,
         morphologyClassBindings,
         semanticFrames,
+        graphBoundConstructions,
         translationSeeds,
         proseDiagnostics,
         audit: toJsonValue({
@@ -670,6 +699,109 @@ function induceSemanticFrames(documents: readonly LanguageInductionDocument[], h
     .filter(frame => frame.roles.length > 0)
     .sort((a, b) => b.support - a.support || b.alphaPrior - a.alphaPrior || a.predicate.localeCompare(b.predicate))
     .slice(0, Math.max(1, maxFrames));
+}
+
+/**
+ * Bind induced constructions to SCCE's real graph semantics (Part B step 6).
+ * `SemanticFrameCandidate`s were fully inert downstream before this: nothing
+ * consumed them beyond diagnostic counts. Rather than inventing a fourth
+ * "construction" concept, this reuses the exact role/relation vocabulary the
+ * live structural-entailment pipeline already uses in `semantic-graph.ts`
+ * (`SemanticRole`, and `relationFor()`'s `has_predicate`/`acts_on` for
+ * entity<->predicate adjacency): a frame's predicate becomes a `"predicate"`-
+ * role anchor, and each `arg0`/`arg1` role group becomes an `"entity"`-role
+ * slot connected to it with the same relation direction
+ * `propositionGraphFromText()` would assign to a real entity-predicate
+ * sentence pair. A slot is genuinely *variable-bearing* -- not a fixed single
+ * filler -- exactly when a real majority of its observed fillers are members
+ * of one already-induced `LexicalClass` (step 4): that class is the slot's
+ * real substitution set, discovered from actual corpus evidence, not
+ * assumed. Deliberately does not construct actual `PropositionNode`/
+ * `PropositionEdge`/branded `NodeId`/`RelationId` values -- those require an
+ * `IdFactory`, which the induction engine does not take as a dependency
+ * (matching every prior Part B step's additive, self-contained shape); this
+ * is the typed binding a caller with a real `IdFactory` would use to build
+ * them, not the graph objects themselves.
+ */
+function induceGraphBoundConstructions(
+  semanticFrames: readonly SemanticFrameCandidate[],
+  lexicalClasses: readonly LexicalClass[],
+  hasher: Hasher
+): GraphBoundConstruction[] {
+  const minClassOverlap = 2;
+  const maxObservedFillers = 8;
+  const out: GraphBoundConstruction[] = [];
+  for (const frame of semanticFrames) {
+    if (frame.roles.length === 0) continue;
+    const byRole = new Map<string, Array<{ filler: string; salience: number }>>();
+    for (const role of frame.roles) {
+      const bucket = byRole.get(role.name) ?? [];
+      bucket.push({ filler: role.filler, salience: role.salience });
+      byRole.set(role.name, bucket);
+    }
+    const slots: GraphBoundConstructionSlot[] = [];
+    for (const [roleId, entries] of byRole) {
+      const observedFillers = entries
+        .sort((a, b) => b.salience - a.salience || a.filler.localeCompare(b.filler))
+        .slice(0, maxObservedFillers)
+        .map(entry => entry.filler);
+      const { relation, relationDirection } = relationForFrameRole(roleId);
+      const classMatch = bestLexicalClassMatch(observedFillers, lexicalClasses, minClassOverlap);
+      slots.push({
+        roleId,
+        semanticRole: "entity",
+        relation,
+        relationDirection,
+        observedFillers,
+        ...(classMatch ? { lexicalClassId: classMatch.lexicalClassId, classCoverage: classMatch.classCoverage } : {})
+      });
+    }
+    slots.sort((a, b) => a.roleId.localeCompare(b.roleId));
+    out.push({
+      id: `graphconstruct_${hasher.digestHex(frame.id).slice(0, 24)}`,
+      frameId: frame.id,
+      predicate: frame.predicate,
+      predicateSemanticRole: "predicate",
+      slots,
+      support: frame.support,
+      evidenceIds: frame.evidenceIds
+    });
+  }
+  return out.sort((a, b) => b.support - a.support || a.id.localeCompare(b.id));
+}
+
+/**
+ * Mirrors `semantic-graph.ts`'s `relationFor()` exactly for the
+ * entity<->predicate case: an `arg0` filler is treated the way
+ * `propositionGraphFromText()` treats an entity node preceding a predicate
+ * node (`source: entity, target: predicate` -> `"has_predicate"`); an `arg1`
+ * filler is treated the way it treats a predicate node preceding an entity
+ * node (`source: predicate, target: entity` -> `"acts_on"`). Any other role
+ * name falls back to `relationFor()`'s own generic fallback, `"associates"`.
+ */
+function relationForFrameRole(roleId: string): { relation: string; relationDirection: "source" | "target" } {
+  if (roleId === "arg0") return { relation: "has_predicate", relationDirection: "source" };
+  if (roleId === "arg1") return { relation: "acts_on", relationDirection: "target" };
+  return { relation: "associates", relationDirection: "source" };
+}
+
+function bestLexicalClassMatch(
+  observedFillers: readonly string[],
+  lexicalClasses: readonly LexicalClass[],
+  minOverlap: number
+): { lexicalClassId: string; classCoverage: number } | undefined {
+  if (observedFillers.length === 0) return undefined;
+  const fillerSet = new Set(observedFillers);
+  let best: { lexicalClassId: string; classCoverage: number; overlap: number } | undefined;
+  for (const lexicalClass of lexicalClasses) {
+    const overlap = lexicalClass.members.filter(member => fillerSet.has(member.symbol)).length;
+    if (overlap < minOverlap) continue;
+    const classCoverage = clamp01(overlap / observedFillers.length);
+    if (!best || overlap > best.overlap || (overlap === best.overlap && lexicalClass.id.localeCompare(best.lexicalClassId) < 0)) {
+      best = { lexicalClassId: lexicalClass.id, classCoverage, overlap };
+    }
+  }
+  return best ? { lexicalClassId: best.lexicalClassId, classCoverage: best.classCoverage } : undefined;
 }
 
 function induceTranslationSeeds(documents: readonly LanguageInductionDocument[], frames: readonly SemanticFrameCandidate[], hasher: Hasher): TranslationSeed[] {
