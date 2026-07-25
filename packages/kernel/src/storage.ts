@@ -938,6 +938,18 @@ export interface ScceKernelDeps {
   evaluationRunId?: string;
   informationAccess?: import("./types.js").InformationAccessContext;
   sourceInformationLabel?: import("./types.js").InformationLabel;
+  /**
+   * Rollout boundary for functional-cognition-authorized capability
+   * execution. FC/EFC are always computed and audited from real turn data
+   * regardless of this flag. When false or absent (the safe default), the
+   * gate handed to candidate admission, tool-cognition planning, and the
+   * learning-acquisition gate has fc/efc forced false even if the computed
+   * report says otherwise, so a real FC/EFC result cannot itself widen
+   * execution authority until this is explicitly enabled (intended once a
+   * durable executive dispatcher exists to receive authorized capability
+   * execution).
+   */
+  functionalCognitionAuthorizeCapabilities?: boolean;
 }
 
 export interface ApprovalPort {
