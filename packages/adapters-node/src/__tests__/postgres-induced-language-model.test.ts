@@ -21,6 +21,7 @@ function fakeModel(id: string): InducedLanguageModel {
     morphology: [],
     syntaxTemplates: [],
     lexicalClasses: [],
+    morphologyClassBindings: [],
     semanticFrames: [],
     translationSeeds: [],
     proseDiagnostics: {},
