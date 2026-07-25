@@ -240,7 +240,9 @@ function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: stri
 }
 
 class SpaceSavingCounter<T> {
-  readonly counts = new Map<T, { count: number; error: number }>();
+  readonly counts = new Map<T, { count: number; error: number; version: number; insertedAt: number }>();
+  private heap: Array<{ key: T; count: number; version: number; insertedAt: number }> = [];
+  private sequence = 0;
   total = 0;
   constructor(readonly capacity: number, readonly order: number) {}
   get size(): number { return this.counts.size; }
@@ -249,25 +251,98 @@ class SpaceSavingCounter<T> {
     const current = this.counts.get(key);
     if (current) {
       current.count++;
+      current.version++;
+      this.pushHeap({ key, count: current.count, version: current.version, insertedAt: current.insertedAt });
+      this.compactHeapIfNeeded();
       return;
     }
     if (this.counts.size < this.capacity) {
-      this.counts.set(key, { count: 1, error: 0 });
+      const value = { count: 1, error: 0, version: 0, insertedAt: this.sequence++ };
+      this.counts.set(key, value);
+      this.pushHeap({ key, count: value.count, version: value.version, insertedAt: value.insertedAt });
       return;
     }
-    let minKey: T | undefined;
-    let min = Number.POSITIVE_INFINITY;
-    for (const [candidate, value] of this.counts) {
-      if (value.count < min) {
-        min = value.count;
-        minKey = candidate;
-      }
-    }
-    if (minKey !== undefined) this.counts.delete(minKey);
-    this.counts.set(key, { count: min + 1, error: min });
+    const minimum = this.popCurrentMinimum();
+    if (!minimum) throw new Error("space-saving counter heap lost its current minimum");
+    this.counts.delete(minimum.key);
+    const value = {
+      count: minimum.count + 1,
+      error: minimum.count,
+      version: 0,
+      insertedAt: this.sequence++
+    };
+    this.counts.set(key, value);
+    this.pushHeap({ key, count: value.count, version: value.version, insertedAt: value.insertedAt });
+    this.compactHeapIfNeeded();
   }
   entries(): Array<{ key: T; count: number; error: number }> {
     return [...this.counts.entries()].map(([key, value]) => ({ key, count: value.count, error: value.error })).sort((a, b) => b.count - a.count);
+  }
+
+  private compactHeapIfNeeded(): void {
+    if (this.heap.length <= Math.max(64, this.capacity * 4)) return;
+    this.heap = [...this.counts.entries()].map(([key, value]) => ({
+      key,
+      count: value.count,
+      version: value.version,
+      insertedAt: value.insertedAt
+    }));
+    for (let index = Math.floor(this.heap.length / 2) - 1; index >= 0; index--) this.siftDown(index);
+  }
+
+  private popCurrentMinimum(): { key: T; count: number } | undefined {
+    while (this.heap.length) {
+      const candidate = this.popHeap()!;
+      const current = this.counts.get(candidate.key);
+      if (current
+        && current.version === candidate.version
+        && current.count === candidate.count
+        && current.insertedAt === candidate.insertedAt) {
+        return { key: candidate.key, count: candidate.count };
+      }
+    }
+    return undefined;
+  }
+
+  private pushHeap(entry: { key: T; count: number; version: number; insertedAt: number }): void {
+    this.heap.push(entry);
+    let index = this.heap.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (!this.heapLess(index, parent)) break;
+      [this.heap[index], this.heap[parent]] = [this.heap[parent]!, this.heap[index]!];
+      index = parent;
+    }
+  }
+
+  private popHeap(): { key: T; count: number; version: number; insertedAt: number } | undefined {
+    const first = this.heap[0];
+    if (!first) return undefined;
+    const last = this.heap.pop()!;
+    if (this.heap.length === 0) return first;
+    this.heap[0] = last;
+    this.siftDown(0);
+    return first;
+  }
+
+  private siftDown(start: number): void {
+    let index = start;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let smallest = index;
+      if (left < this.heap.length && this.heapLess(left, smallest)) smallest = left;
+      if (right < this.heap.length && this.heapLess(right, smallest)) smallest = right;
+      if (smallest === index) return;
+      [this.heap[index], this.heap[smallest]] = [this.heap[smallest]!, this.heap[index]!];
+      index = smallest;
+    }
+  }
+
+  private heapLess(leftIndex: number, rightIndex: number): boolean {
+    const left = this.heap[leftIndex]!;
+    const right = this.heap[rightIndex]!;
+    return left.count < right.count || (left.count === right.count && left.insertedAt < right.insertedAt);
   }
 }
 
