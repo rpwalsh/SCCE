@@ -71,6 +71,9 @@ import {
   type ExecutiveEpisodeId,
   type ExecutiveEvent,
   type ExecutiveEventJournal,
+  type SparseRankingCheckpoint,
+  type SparseRankingModelLifecycle,
+  type SparseRankingModelStore,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -137,6 +140,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly workspace: WorkspaceStore;
   readonly dialogueMemory: DialogueMemoryStore;
   readonly policyEvolution: PolicyEvolutionStore;
+  readonly sparseRanking: SparseRankingModelStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -169,6 +173,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.workspace = createWorkspaceStore(this);
     this.dialogueMemory = createDialogueMemoryStore(this);
     this.policyEvolution = createPolicyEvolutionStore(this);
+    this.sparseRanking = createSparseRankingModelStore(this);
   }
 
   table(name: string): string {
@@ -858,6 +863,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.executive_command (episode_id TEXT NOT NULL REFERENCES ${q}.executive_episode(episode_id), command_id TEXT NOT NULL, revision_start BIGINT NOT NULL, revision_end BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (episode_id, command_id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.executive_event (episode_id TEXT NOT NULL, revision BIGINT NOT NULL, command_id TEXT NOT NULL, event_json JSONB NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (episode_id, revision), FOREIGN KEY (episode_id, command_id) REFERENCES ${q}.executive_command(episode_id, command_id))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_executive_event_episode ON ${q}.executive_event(episode_id, revision ASC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_models (model_id TEXT PRIMARY KEY, task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, lifecycle TEXT NOT NULL, state_json JSONB NOT NULL, training_window_json JSONB NOT NULL, examples_seen BIGINT NOT NULL, evaluation_json JSONB, previous_active_model_id TEXT, rollback_reason TEXT, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_active_model (task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, model_id TEXT NOT NULL REFERENCES ${q}.sparse_ranking_models(model_id), activated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (task_class, feature_schema_id))`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_models_task ON ${q}.sparse_ranking_models(task_class, feature_schema_id, lifecycle)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -1961,6 +1969,170 @@ function createPolicyEvolutionStore(storage: PostgresStorageAdapter): PolicyEvol
         params
       );
       return rows.map(rowToPolicyGenome);
+    }
+  };
+}
+
+interface SparseRankingModelRow {
+  model_id: string;
+  task_class: string;
+  feature_schema_id: string;
+  lifecycle: string;
+  state_json: JsonValue;
+  training_window_json: JsonValue;
+  examples_seen: string | number;
+  evaluation_json: JsonValue | null;
+  previous_active_model_id: string | null;
+  rollback_reason: string | null;
+  information_label: JsonValue;
+  created_at: Date;
+}
+
+function rowToSparseRankingCheckpoint(row: SparseRankingModelRow): SparseRankingCheckpoint {
+  return {
+    modelId: row.model_id,
+    taskClass: row.task_class,
+    featureSchemaId: row.feature_schema_id,
+    lifecycle: row.lifecycle as SparseRankingModelLifecycle,
+    state: row.state_json as never,
+    trainingWindow: row.training_window_json as never,
+    examplesSeen: Number(row.examples_seen),
+    evaluation: row.evaluation_json ?? undefined,
+    previousActiveModelId: row.previous_active_model_id ?? undefined,
+    rollbackReason: row.rollback_reason ?? undefined,
+    informationLabel: normalizeInformationLabel(row.information_label as never),
+    createdAt: row.created_at.getTime()
+  };
+}
+
+/**
+ * Durable FTRL reranker model lifecycle store (Part A finding 9, stage 5).
+ * `activate()` structurally enforces the held-out-evaluation-gate
+ * requirement -- it refuses to move a model into the single active slot
+ * for its (taskClass, featureSchemaId) unless that model's own stored row
+ * already has lifecycle "approved". Nothing here decides *when* to approve
+ * a model; that judgment belongs to a held-out evaluation pass (not yet
+ * built -- see the handoff doc) that would call `putCheckpoint` with an
+ * "approved" lifecycle once it is satisfied.
+ */
+function createSparseRankingModelStore(storage: PostgresStorageAdapter): SparseRankingModelStore {
+  return {
+    async readActive(taskClass, featureSchemaId) {
+      const activeRows = await storage.query<{ model_id: string }>(
+        `SELECT model_id FROM ${storage.table("sparse_ranking_active_model")} WHERE task_class=$1 AND feature_schema_id=$2`,
+        [taskClass, featureSchemaId]
+      );
+      const modelId = activeRows[0]?.model_id;
+      if (!modelId) return undefined;
+      const rows = await storage.query<SparseRankingModelRow>(
+        `SELECT * FROM ${storage.table("sparse_ranking_models")} WHERE model_id=$1`,
+        [modelId]
+      );
+      return rows[0] ? rowToSparseRankingCheckpoint(rows[0]) : undefined;
+    },
+    async putCheckpoint(checkpoint) {
+      await storage.query(
+        `INSERT INTO ${storage.table("sparse_ranking_models")}(model_id,task_class,feature_schema_id,lifecycle,state_json,training_window_json,examples_seen,evaluation_json,previous_active_model_id,rollback_reason,information_label,created_at)
+         VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9,$10,$11::jsonb,TO_TIMESTAMP($12/1000.0))
+         ON CONFLICT(model_id) DO UPDATE SET
+           lifecycle=EXCLUDED.lifecycle,
+           state_json=EXCLUDED.state_json,
+           training_window_json=EXCLUDED.training_window_json,
+           examples_seen=EXCLUDED.examples_seen,
+           evaluation_json=EXCLUDED.evaluation_json,
+           previous_active_model_id=EXCLUDED.previous_active_model_id,
+           rollback_reason=EXCLUDED.rollback_reason`,
+        [
+          checkpoint.modelId,
+          checkpoint.taskClass,
+          checkpoint.featureSchemaId,
+          checkpoint.lifecycle,
+          JSON.stringify(checkpoint.state),
+          JSON.stringify(checkpoint.trainingWindow),
+          checkpoint.examplesSeen,
+          checkpoint.evaluation === undefined ? null : JSON.stringify(checkpoint.evaluation),
+          checkpoint.previousActiveModelId ?? null,
+          checkpoint.rollbackReason ?? null,
+          JSON.stringify(checkpoint.informationLabel),
+          checkpoint.createdAt
+        ]
+      );
+    },
+    async activate(input) {
+      await storage.transaction(async () => {
+        const targetRows = await storage.query<SparseRankingModelRow>(
+          `SELECT * FROM ${storage.table("sparse_ranking_models")} WHERE model_id=$1 FOR UPDATE`,
+          [input.modelId]
+        );
+        const target = targetRows[0];
+        if (!target) throw new Error(`sparse ranking model not found: ${input.modelId}`);
+        if (target.lifecycle !== "approved") {
+          throw new Error(`sparse ranking model ${input.modelId} cannot activate from lifecycle "${target.lifecycle}" -- only "approved" models may activate`);
+        }
+        if (target.task_class !== input.taskClass || target.feature_schema_id !== input.featureSchemaId) {
+          throw new Error(`sparse ranking model ${input.modelId} does not match the requested task/feature-schema class`);
+        }
+        const currentRows = await storage.query<{ model_id: string }>(
+          `SELECT model_id FROM ${storage.table("sparse_ranking_active_model")} WHERE task_class=$1 AND feature_schema_id=$2 FOR UPDATE`,
+          [input.taskClass, input.featureSchemaId]
+        );
+        const currentModelId = currentRows[0]?.model_id;
+        if (input.expectedCurrentModelId !== undefined && (currentModelId ?? null) !== (input.expectedCurrentModelId ?? null)) {
+          throw new Error(`sparse ranking active model conflict: expected ${input.expectedCurrentModelId ?? "none"}, found ${currentModelId ?? "none"}`);
+        }
+        if (currentModelId && currentModelId !== input.modelId) {
+          await storage.query(
+            `UPDATE ${storage.table("sparse_ranking_models")} SET lifecycle='approved' WHERE model_id=$1 AND lifecycle='active'`,
+            [currentModelId]
+          );
+        }
+        await storage.query(
+          `INSERT INTO ${storage.table("sparse_ranking_active_model")}(task_class,feature_schema_id,model_id,activated_at)
+           VALUES($1,$2,$3,NOW())
+           ON CONFLICT(task_class,feature_schema_id) DO UPDATE SET model_id=EXCLUDED.model_id, activated_at=EXCLUDED.activated_at`,
+          [input.taskClass, input.featureSchemaId, input.modelId]
+        );
+        await storage.query(
+          `UPDATE ${storage.table("sparse_ranking_models")} SET lifecycle='active' WHERE model_id=$1`,
+          [input.modelId]
+        );
+      });
+    },
+    async rollback(input) {
+      await storage.transaction(async () => {
+        const currentRows = await storage.query<{ model_id: string }>(
+          `SELECT model_id FROM ${storage.table("sparse_ranking_active_model")} WHERE task_class=$1 AND feature_schema_id=$2 FOR UPDATE`,
+          [input.taskClass, input.featureSchemaId]
+        );
+        const currentModelId = currentRows[0]?.model_id;
+        if (!currentModelId) throw new Error(`no active sparse ranking model to roll back for ${input.taskClass}/${input.featureSchemaId}`);
+        const currentModelRows = await storage.query<SparseRankingModelRow>(
+          `SELECT * FROM ${storage.table("sparse_ranking_models")} WHERE model_id=$1 FOR UPDATE`,
+          [currentModelId]
+        );
+        const previousActiveModelId = currentModelRows[0]?.previous_active_model_id ?? undefined;
+        await storage.query(
+          `UPDATE ${storage.table("sparse_ranking_models")} SET lifecycle='rolled_back', rollback_reason=$2 WHERE model_id=$1`,
+          [currentModelId, input.reason]
+        );
+        if (previousActiveModelId) {
+          await storage.query(
+            `UPDATE ${storage.table("sparse_ranking_models")} SET lifecycle='active' WHERE model_id=$1`,
+            [previousActiveModelId]
+          );
+          await storage.query(
+            `INSERT INTO ${storage.table("sparse_ranking_active_model")}(task_class,feature_schema_id,model_id,activated_at)
+             VALUES($1,$2,$3,NOW())
+             ON CONFLICT(task_class,feature_schema_id) DO UPDATE SET model_id=EXCLUDED.model_id, activated_at=EXCLUDED.activated_at`,
+            [input.taskClass, input.featureSchemaId, previousActiveModelId]
+          );
+        } else {
+          await storage.query(
+            `DELETE FROM ${storage.table("sparse_ranking_active_model")} WHERE task_class=$1 AND feature_schema_id=$2`,
+            [input.taskClass, input.featureSchemaId]
+          );
+        }
+      });
     }
   };
 }
