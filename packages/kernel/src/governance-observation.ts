@@ -44,6 +44,22 @@ export interface PolicyIntegrityGovernanceObservation extends GovernanceControlO
   signatureValid: boolean;
 }
 
+/**
+ * Whether the event ledger's append-only guarantee is actually enforced at
+ * the database level, not just assumed. `updateDenied`/`deleteDenied`
+ * reflect the connected role's real Postgres privileges on the events
+ * table (the load-bearing control -- a role that can UPDATE/DELETE events
+ * makes the hash chain meaningless regardless of application-level
+ * discipline); `protectiveTriggerPresent` is defense-in-depth information,
+ * not sufficient on its own since a role with table privileges can still
+ * bypass a trigger.
+ */
+export interface ImmutabilityGovernanceObservation extends GovernanceControlObservation {
+  updateDenied: boolean;
+  deleteDenied: boolean;
+  protectiveTriggerPresent: boolean;
+}
+
 export interface GovernanceObservation {
   schema: "scce.governance.observation.v1";
   observedAt: number;
@@ -53,6 +69,7 @@ export interface GovernanceObservation {
   leases: LeaseGovernanceObservation;
   pendingMutations: PendingMutationGovernanceObservation;
   policyIntegrity: PolicyIntegrityGovernanceObservation;
+  immutability: ImmutabilityGovernanceObservation;
   ready: boolean;
   failures: string[];
   audit: JsonValue;
@@ -77,7 +94,8 @@ export function governanceObservation(
     ["kill-switch", controls.killSwitch],
     ["leases", controls.leases],
     ["pending-mutations", controls.pendingMutations],
-    ["policy-integrity", controls.policyIntegrity]
+    ["policy-integrity", controls.policyIntegrity],
+    ["immutability", controls.immutability]
   ];
   const failures = checks
     .filter(([, observation]) => !observation.available || !observation.passed)
@@ -136,6 +154,12 @@ export function unavailableGovernanceObservation(
       fingerprint: "",
       fingerprintValid: false,
       signatureValid: false
+    },
+    immutability: {
+      ...unavailable("immutability"),
+      updateDenied: false,
+      deleteDenied: false,
+      protectiveTriggerPresent: false
     }
   });
 }
