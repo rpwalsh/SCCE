@@ -114,7 +114,7 @@ export interface LanguageUnitRecord {
 export interface LanguagePatternRecord {
   id: string;
   profileId: string;
-  patternKind: "segmentation" | "morphology" | "syntax" | "cadence" | "semantic_role";
+  patternKind: "segmentation" | "morphology" | "syntax" | "cadence" | "discourse" | "narrative" | "semantic_role";
   support: number;
   entropy: number;
   patternJson: JsonValue;
@@ -848,9 +848,9 @@ export interface ScceStorage extends StorageAdmin {
   segmentationAggregates?: import("./segmentation-aggregate.js").SegmentationAggregateStore;
   /**
    * Optional: durable full induction-model persistence (Part B step 3).
-   * Optional for the same reason as the other stores above; absent means
-   * `trainingOrchestrator.plan()`'s computed `languageModel` is discarded
-   * after the turn as before (only its audit summary is durable).
+   * Optional for the same reason as the other stores above; this store is
+   * archival. Runtime activation still requires projected language-memory
+   * records, not merely a stored JSON checkpoint.
    */
   inducedLanguageModels?: import("./language-induction-persistence.js").InducedLanguageModelStore;
 }

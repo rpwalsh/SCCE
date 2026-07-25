@@ -97,7 +97,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         updatedAt: input.createdAt
       } satisfies NgramModelRecord));
       const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
-      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory });
+      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory });
       const semanticFrames = input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
         span,
         index,
@@ -184,6 +184,7 @@ function compileLanguagePatterns(input: {
   profile: LanguageProfile;
   sourceVersionId: SourceVersionId;
   sourceSystem?: string;
+  text: string;
   symbols: string[];
   evidence: EvidenceSpan[];
   evidenceIds: EvidenceSpan["id"][];
@@ -194,11 +195,15 @@ function compileLanguagePatterns(input: {
   const shapeEntropy = entropy([...count(shapes).values()]);
   const transitionCounts = count(shapes.slice(1).map((shape, i) => `${shapes[i]}→${shape}`));
   const segmentSizes = input.evidence.map(span => symbolizeData(span.text).length);
+  const discourse = longFormDiscoursePattern(input.text, input.sourceSystem, input.sourceVersionId);
+  const narrative = narrativeSurfacePattern(input.text, input.sourceSystem, input.sourceVersionId);
   const patterns: Array<{ kind: LanguagePatternRecord["patternKind"]; support: number; entropy: number; payload: JsonValue }> = [
     { kind: "segmentation", support: clamp01(input.evidence.length / 64), entropy: entropy(segmentSizes), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), segmentSizes: segmentSizes.slice(0, 256), sourceVersionId: input.sourceVersionId }) },
     { kind: "morphology", support: clamp01(new Set(shapes).size / Math.max(1, shapes.length)), entropy: shapeEntropy, payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), topShapes: topEntries(count(shapes), 128) }) },
     { kind: "syntax", support: clamp01(transitionCounts.size / Math.max(1, shapes.length)), entropy: entropy([...transitionCounts.values()]), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), transitions: topEntries(transitionCounts, 128) }) },
     { kind: "cadence", support: clamp01(input.symbols.length / 8000), entropy: entropy(input.symbols.map(symbol => [...symbol].length)), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), symbolLengths: topEntries(count(input.symbols.map(symbol => String([...symbol].length))), 64) }) },
+    { kind: "discourse", support: discourse.support, entropy: discourse.entropy, payload: discourse.payload },
+    { kind: "narrative", support: narrative.support, entropy: narrative.entropy, payload: narrative.payload },
     { kind: "semantic_role", support: clamp01(input.profile.charNgrams.length / 256), entropy: input.profile.entropy, payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), profileId: input.profile.id, scripts: input.profile.scripts }) }
   ];
   return patterns.map(pattern => ({
@@ -211,6 +216,62 @@ function compileLanguagePatterns(input: {
     evidenceIds: input.evidenceIds.slice(0, 64),
     updatedAt: input.createdAt
   }));
+}
+
+function longFormDiscoursePattern(text: string, sourceSystem: string | undefined, sourceVersionId: SourceVersionId): { support: number; entropy: number; payload: JsonValue } {
+  const paragraphs = paragraphSurfaces(text);
+  const sentences = sentenceSurfaces(text);
+  const sentenceSymbolLengths = sentences.map(sentence => symbolizeData(sentence).length).filter(length => length > 0);
+  const paragraphSymbolLengths = paragraphs.map(paragraph => symbolizeData(paragraph).length).filter(length => length > 0);
+  const boundaryCounts = count(boundarySurfaces(text));
+  const connectorCounts = count(sentences.map(sentence => openingPhrase(sentence, 3)).filter(nonemptyString));
+  const paragraphOpeningCounts = count(paragraphs.map(paragraph => openingPhrase(paragraph, 4)).filter(nonemptyString));
+  const dialogueMarkers = dialogueTurnSurfaces(text);
+  const payload = toJsonValue({
+    schema: "scce.long_form_discourse_pattern.v1",
+    ...(sourceSystem ? { sourceSystem } : {}),
+    sourceVersionId,
+    sentenceCount: sentences.length,
+    paragraphCount: paragraphs.length,
+    sentenceSymbolLengths: sentenceSymbolLengths.slice(0, 512),
+    paragraphSymbolLengths: paragraphSymbolLengths.slice(0, 256),
+    boundaryCounts: topEntries(boundaryCounts, 32),
+    connectors: topEntries(connectorCounts, 64),
+    paragraphOpenings: topEntries(paragraphOpeningCounts, 64),
+    dialogueTurnMarkers: topEntries(count(dialogueMarkers), 32),
+    counts: Object.fromEntries(topEntries(connectorCounts, 64))
+  });
+  return {
+    support: clamp01((sentences.length + paragraphs.length * 2 + dialogueMarkers.length) / 128),
+    entropy: entropy([...boundaryCounts.values(), ...connectorCounts.values(), ...paragraphSymbolLengths]),
+    payload
+  };
+}
+
+function narrativeSurfacePattern(text: string, sourceSystem: string | undefined, sourceVersionId: SourceVersionId): { support: number; entropy: number; payload: JsonValue } {
+  const paragraphs = paragraphSurfaces(text);
+  const sentences = sentenceSurfaces(text);
+  const symbols = symbolizeData(text);
+  const anchors = repeatedAnchorSurfaces(symbols);
+  const paragraphShapes = paragraphs.map(paragraph => paragraphShape(paragraph));
+  const sentenceOpenings = sentences.map(sentence => openingPhrase(sentence, 2)).filter(nonemptyString);
+  const dialogueTurns = dialogueTurnSurfaces(text);
+  const payload = toJsonValue({
+    schema: "scce.narrative_surface_pattern.v1",
+    ...(sourceSystem ? { sourceSystem } : {}),
+    sourceVersionId,
+    paragraphShapeTransitions: topEntries(count(paragraphShapes.slice(1).map((shape, index) => `${paragraphShapes[index]}→${shape}`)), 64),
+    repeatedAnchors: topEntries(count(anchors), 128),
+    sentenceOpenings: topEntries(count(sentenceOpenings), 64),
+    dialogueTurnRate: ratioNumber(dialogueTurns.length, Math.max(1, paragraphs.length)),
+    anchorReuseRate: ratioNumber(anchors.length, Math.max(1, symbols.length)),
+    counts: Object.fromEntries(topEntries(count([...anchors, ...sentenceOpenings]), 128))
+  });
+  return {
+    support: clamp01((paragraphs.length + sentences.length + anchors.length) / 160),
+    entropy: entropy([...count(paragraphShapes).values(), ...count(anchors).values(), ...count(sentenceOpenings).values()]),
+    payload
+  };
 }
 
 function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: string, idFactory: IdFactory, hasher: Hasher, createdAt: number, sourceSystem?: string): SemanticFrameRecord {
@@ -237,6 +298,91 @@ function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: stri
     alpha: span.alpha,
     createdAt
   };
+}
+
+function paragraphSurfaces(text: string): string[] {
+  return text
+    .normalize("NFC")
+    .split(/(?:\r?\n){2,}/u)
+    .map(value => value.trim())
+    .filter(nonemptyString)
+    .slice(0, 512);
+}
+
+function sentenceSurfaces(text: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  for (const char of text.normalize("NFC")) {
+    current += char;
+    if (isSentenceBoundarySurface(char) || current.length >= 800) {
+      const clean = current.trim();
+      if (clean) out.push(clean);
+      current = "";
+    }
+  }
+  const tail = current.trim();
+  if (tail) out.push(tail);
+  return out.slice(0, 2048);
+}
+
+function boundarySurfaces(text: string): string[] {
+  const values: string[] = [];
+  for (const char of text.normalize("NFC")) {
+    if (isSentenceBoundarySurface(char)) values.push(char);
+  }
+  return values;
+}
+
+function dialogueTurnSurfaces(text: string): string[] {
+  const markers: string[] = [];
+  for (const rawLine of text.normalize("NFC").split(/\r?\n/u).slice(0, 4096)) {
+    const line = rawLine.trimStart();
+    const first = line[0] ?? "";
+    if (first === "\"" || first === "'" || first === "\u201c" || first === "\u2018" || first === "\u300c" || first === "\u300e" || first === "\u2014" || first === "\u2013") {
+      markers.push(first);
+    }
+  }
+  return markers;
+}
+
+function openingPhrase(text: string, maxSymbols: number): string {
+  return symbolizeData(text)
+    .filter(symbol => !isSentenceBoundarySurface(symbol))
+    .slice(0, Math.max(1, maxSymbols))
+    .join(" ")
+    .trim();
+}
+
+function repeatedAnchorSurfaces(symbols: readonly string[]): string[] {
+  const normalized = symbols
+    .map(symbol => symbol.normalize("NFKC").toLocaleLowerCase())
+    .filter(symbol => symbol.length >= 3 && !isSentenceBoundarySurface(symbol));
+  const counts = count(normalized);
+  return [...counts.entries()]
+    .filter(([, value]) => value >= 2)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 256)
+    .map(([symbol]) => symbol);
+}
+
+function paragraphShape(paragraph: string): string {
+  const sentences = sentenceSurfaces(paragraph).length;
+  const symbols = symbolizeData(paragraph).length;
+  const dialogue = dialogueTurnSurfaces(paragraph).length > 0 ? "dialogue" : "prose";
+  const length = symbols < 40 ? "short" : symbols < 140 ? "medium" : "long";
+  return `${dialogue}:${length}:${Math.min(8, sentences)}`;
+}
+
+function isSentenceBoundarySurface(value: string): boolean {
+  return value === "." || value === "!" || value === "?" || value === "\u3002" || value === "\uff01" || value === "\uff1f";
+}
+
+function nonemptyString(value: string): boolean {
+  return value.trim().length > 0;
+}
+
+function ratioNumber(numerator: number, denominator: number): number {
+  return denominator > 0 ? numerator / denominator : 0;
 }
 
 class SpaceSavingCounter<T> {

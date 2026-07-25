@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createIdFactory } from "../ids.js";
+import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
 import type { EvidenceSpan, LanguageProfile } from "../types.js";
@@ -79,6 +80,55 @@ describe("n-gram memory profile ownership", () => {
     expect(compiled.units[0]?.metadata).toMatchObject({ sourceSystem: "workspace" });
     expect(compiled.patterns[0]?.patternJson).toMatchObject({ sourceSystem: "workspace" });
     expect(compiled.semanticFrames[0]?.frameJson).toMatchObject({ sourceSystem: "workspace" });
+  });
+
+  it("compiles long-form discourse and narrative structure into hydrated language priors", () => {
+    const hasher = createHasher();
+    const idFactory = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true });
+    const compiler = createNgramMemoryCompiler({ hasher, idFactory });
+    const learned = profile("profile.narrative", "source.narrative");
+    const text = [
+      "The lantern moved across the ridge. The watcher waited.",
+      "",
+      "\u201cKeep the signal low,\u201d Mira said.",
+      "\u2014Then we cross before dawn.",
+      "",
+      "The lantern vanished. The watcher followed the old path."
+    ].join("\n");
+    const evidence = span("evidence.narrative", text);
+
+    const compiled = compiler.compile({
+      streamId: "stream.narrative",
+      sourceSystem: "gutenberg",
+      profile: learned,
+      sourceVersionId: learned.sourceVersionId,
+      text,
+      evidence: [evidence],
+      createdAt: 1
+    });
+
+    const discourse = compiled.patterns.find(pattern => pattern.patternKind === "discourse");
+    const narrative = compiled.patterns.find(pattern => pattern.patternKind === "narrative");
+    expect(discourse?.patternJson).toMatchObject({
+      schema: "scce.long_form_discourse_pattern.v1",
+      sourceSystem: "gutenberg",
+      paragraphCount: 3
+    });
+    expect(narrative?.patternJson).toMatchObject({
+      schema: "scce.narrative_surface_pattern.v1",
+      sourceSystem: "gutenberg"
+    });
+
+    const state = createLanguageMemoryRuntime({ hasher, idFactory }).hydrate({
+      models: compiled.models,
+      observations: compiled.observations,
+      units: compiled.units,
+      patterns: compiled.patterns,
+      semanticFrames: compiled.semanticFrames
+    });
+    expect(state.importedPatterns.some(pattern => pattern.patternKind === "discourse")).toBe(true);
+    expect(state.importedPatterns.some(pattern => pattern.patternKind === "narrative")).toBe(true);
+    expect(state.competenceVector.generationReliability).toBeGreaterThan(0);
   });
 });
 
