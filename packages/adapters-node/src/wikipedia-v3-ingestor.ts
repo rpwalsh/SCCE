@@ -592,6 +592,10 @@ export class WikipediaV3Ingestor {
   }
 
   private async ingestPage(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
+    return this.storage.transaction(() => this.ingestPageTransaction(file, checkpoint, episodeId));
+  }
+
+  private async ingestPageTransaction(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
     const now = this.clock.now();
     const warnings: string[] = [];
     const contentHash = await this.storage.blobs.put(file.bytes, file.mediaType);
