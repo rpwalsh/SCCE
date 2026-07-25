@@ -74,6 +74,10 @@ import {
   type SparseRankingCheckpoint,
   type SparseRankingModelLifecycle,
   type SparseRankingModelStore,
+  foldSegmentationAggregate,
+  type SegmentationAggregate,
+  type SegmentationAggregateKey,
+  type SegmentationAggregateStore,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -141,6 +145,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly dialogueMemory: DialogueMemoryStore;
   readonly policyEvolution: PolicyEvolutionStore;
   readonly sparseRanking: SparseRankingModelStore;
+  readonly segmentationAggregates: SegmentationAggregateStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -174,6 +179,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.dialogueMemory = createDialogueMemoryStore(this);
     this.policyEvolution = createPolicyEvolutionStore(this);
     this.sparseRanking = createSparseRankingModelStore(this);
+    this.segmentationAggregates = createSegmentationAggregateStore(this);
   }
 
   table(name: string): string {
@@ -866,6 +872,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_models (model_id TEXT PRIMARY KEY, task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, lifecycle TEXT NOT NULL, state_json JSONB NOT NULL, training_window_json JSONB NOT NULL, examples_seen BIGINT NOT NULL, evaluation_json JSONB, previous_active_model_id TEXT, rollback_reason TEXT, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_active_model (task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, model_id TEXT NOT NULL REFERENCES ${q}.sparse_ranking_models(model_id), activated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (task_class, feature_schema_id))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_models_task ON ${q}.sparse_ranking_models(task_class, feature_schema_id, lifecycle)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -2132,6 +2139,90 @@ function createSparseRankingModelStore(storage: PostgresStorageAdapter): SparseR
             [input.taskClass, input.featureSchemaId]
           );
         }
+      });
+    }
+  };
+}
+
+interface SegmentationAggregateRow {
+  segmentation_version: string;
+  language_cluster: string;
+  tenant_id: string;
+  corpus_role: string;
+  active_import_version: string;
+  documents_observed: string | number;
+  lexical_segments_observed: string | number;
+  spaced_boundary_observations: string | number;
+  total_boundary_observations: string | number;
+  first_observed_at: Date;
+  last_observed_at: Date;
+}
+
+function rowToSegmentationAggregate(row: SegmentationAggregateRow): SegmentationAggregate {
+  return {
+    key: {
+      segmentationVersion: row.segmentation_version,
+      languageCluster: row.language_cluster,
+      tenantId: row.tenant_id,
+      corpusRole: row.corpus_role,
+      activeImportVersion: row.active_import_version
+    },
+    documentsObserved: Number(row.documents_observed),
+    lexicalSegmentsObserved: Number(row.lexical_segments_observed),
+    spacedBoundaryObservations: Number(row.spaced_boundary_observations),
+    totalBoundaryObservations: Number(row.total_boundary_observations),
+    firstObservedAt: row.first_observed_at.getTime(),
+    lastObservedAt: row.last_observed_at.getTime()
+  };
+}
+
+/**
+ * Durable per-language-cluster segmentation v2 boundary-signal aggregate
+ * (Part B step 2). `observeDocument` reads the current aggregate for the
+ * key, folds in the one real document's evidence via the pure
+ * `foldSegmentationAggregate`, and upserts -- inside one transaction, same
+ * read-fold-upsert shape as `createPolicyEvolutionStore` -- so concurrent
+ * observations for the same key serialize correctly rather than racing.
+ */
+function createSegmentationAggregateStore(storage: PostgresStorageAdapter): SegmentationAggregateStore {
+  const readOne = async (key: SegmentationAggregateKey): Promise<SegmentationAggregate | undefined> => {
+    const rows = await storage.query<SegmentationAggregateRow>(
+      `SELECT * FROM ${storage.table("segmentation_aggregates")}
+        WHERE segmentation_version=$1 AND language_cluster=$2 AND tenant_id=$3 AND corpus_role=$4 AND active_import_version=$5`,
+      [key.segmentationVersion, key.languageCluster, key.tenantId, key.corpusRole, key.activeImportVersion]
+    );
+    return rows[0] ? rowToSegmentationAggregate(rows[0]) : undefined;
+  };
+  return {
+    readAggregate: readOne,
+    async observeDocument(input) {
+      return storage.transaction(async () => {
+        const previous = await readOne(input.key);
+        const next = foldSegmentationAggregate(previous, input.key, input.model, input.observedAt);
+        await storage.query(
+          `INSERT INTO ${storage.table("segmentation_aggregates")}(segmentation_version,language_cluster,tenant_id,corpus_role,active_import_version,documents_observed,lexical_segments_observed,spaced_boundary_observations,total_boundary_observations,first_observed_at,last_observed_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10/1000.0),TO_TIMESTAMP($11/1000.0))
+           ON CONFLICT(segmentation_version,language_cluster,tenant_id,corpus_role,active_import_version) DO UPDATE SET
+             documents_observed=EXCLUDED.documents_observed,
+             lexical_segments_observed=EXCLUDED.lexical_segments_observed,
+             spaced_boundary_observations=EXCLUDED.spaced_boundary_observations,
+             total_boundary_observations=EXCLUDED.total_boundary_observations,
+             last_observed_at=EXCLUDED.last_observed_at`,
+          [
+            next.key.segmentationVersion,
+            next.key.languageCluster,
+            next.key.tenantId,
+            next.key.corpusRole,
+            next.key.activeImportVersion,
+            next.documentsObserved,
+            next.lexicalSegmentsObserved,
+            next.spacedBoundaryObservations,
+            next.totalBoundaryObservations,
+            next.firstObservedAt,
+            next.lastObservedAt
+          ]
+        );
+        return next;
       });
     }
   };
