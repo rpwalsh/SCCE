@@ -841,6 +841,13 @@ export interface ScceStorage extends StorageAdmin {
    * static `scriptUsesSpaceSeparatedWords()` classification.
    */
   segmentationAggregates?: import("./segmentation-aggregate.js").SegmentationAggregateStore;
+  /**
+   * Optional: durable full induction-model persistence (Part B step 3).
+   * Optional for the same reason as the other stores above; absent means
+   * `trainingOrchestrator.plan()`'s computed `languageModel` is discarded
+   * after the turn as before (only its audit summary is durable).
+   */
+  inducedLanguageModels?: import("./language-induction-persistence.js").InducedLanguageModelStore;
 }
 
 export interface PolicyEvolutionStore {
@@ -889,7 +896,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 20;
+export const POSTGRES_SCHEMA_VERSION = 21;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -951,7 +958,8 @@ export const POSTGRES_REQUIRED_TABLES = [
   "executive_event",
   "sparse_ranking_models",
   "sparse_ranking_active_model",
-  "segmentation_aggregates"
+  "segmentation_aggregates",
+  "induced_language_models"
 ] as const;
 
 export interface ScceKernelDeps {

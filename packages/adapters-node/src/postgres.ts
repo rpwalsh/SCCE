@@ -78,6 +78,9 @@ import {
   type SegmentationAggregate,
   type SegmentationAggregateKey,
   type SegmentationAggregateStore,
+  type InducedLanguageModel,
+  type InducedLanguageModelRecord,
+  type InducedLanguageModelStore,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -146,6 +149,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly policyEvolution: PolicyEvolutionStore;
   readonly sparseRanking: SparseRankingModelStore;
   readonly segmentationAggregates: SegmentationAggregateStore;
+  readonly inducedLanguageModels: InducedLanguageModelStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -180,6 +184,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.policyEvolution = createPolicyEvolutionStore(this);
     this.sparseRanking = createSparseRankingModelStore(this);
     this.segmentationAggregates = createSegmentationAggregateStore(this);
+    this.inducedLanguageModels = createInducedLanguageModelStore(this);
   }
 
   table(name: string): string {
@@ -873,6 +878,8 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_active_model (task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, model_id TEXT NOT NULL REFERENCES ${q}.sparse_ranking_models(model_id), activated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (task_class, feature_schema_id))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_models_task ON ${q}.sparse_ranking_models(task_class, feature_schema_id, lifecycle)`,
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
+    `CREATE TABLE IF NOT EXISTS ${q}.induced_language_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, corpus_documents INTEGER NOT NULL, vocabulary_size INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_induced_language_models_created ON ${q}.induced_language_models(created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -2224,6 +2231,61 @@ function createSegmentationAggregateStore(storage: PostgresStorageAdapter): Segm
         );
         return next;
       });
+    }
+  };
+}
+
+interface InducedLanguageModelRow {
+  id: string;
+  training_plan_id: string;
+  model_json: InducedLanguageModel;
+  information_label: JsonValue;
+  created_at: Date;
+}
+
+function rowToInducedLanguageModelRecord(row: InducedLanguageModelRow): InducedLanguageModelRecord {
+  return {
+    id: row.id,
+    model: row.model_json,
+    trainingPlanId: row.training_plan_id,
+    createdAt: row.created_at.getTime(),
+    informationLabel: normalizeInformationLabel(row.information_label as never)
+  };
+}
+
+/** Durable full induction-model persistence (Part B step 3). */
+function createInducedLanguageModelStore(storage: PostgresStorageAdapter): InducedLanguageModelStore {
+  return {
+    async putModel(record) {
+      await storage.query(
+        `INSERT INTO ${storage.table("induced_language_models")}(id,training_plan_id,model_json,corpus_documents,vocabulary_size,information_label,created_at)
+         VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb,TO_TIMESTAMP($7/1000.0))
+         ON CONFLICT(id) DO NOTHING`,
+        [
+          record.id,
+          record.trainingPlanId,
+          JSON.stringify(record.model),
+          record.model.corpusDocuments,
+          record.model.vocabularySize,
+          JSON.stringify(record.informationLabel),
+          record.createdAt
+        ]
+      );
+    },
+    async readById(id) {
+      const rows = await storage.query<InducedLanguageModelRow>(
+        `SELECT * FROM ${storage.table("induced_language_models")} WHERE id=$1`,
+        [id]
+      );
+      return rows[0] ? rowToInducedLanguageModelRecord(rows[0]) : undefined;
+    },
+    async listRecent(query = {}) {
+      const limit = Math.max(1, Math.min(200, query.limit ?? 20));
+      const rows = await storage.query<InducedLanguageModelRow>(
+        `SELECT * FROM ${storage.table("induced_language_models")} ORDER BY created_at DESC LIMIT $1`,
+        [limit]
+      );
+      return rows.map(rowToInducedLanguageModelRecord);
     }
   };
 }

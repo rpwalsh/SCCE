@@ -137,6 +137,7 @@ export const EVENT_TYPES = [
   "CounterfactualSimulated",
   "CausalEffectIdentified",
   "CausalIdentificationRejected",
+  "InducedLanguageModelPersisted",
   "ForecastComputed",
   "LearningNeedDetected",
   "LearningPlanBuilt",
