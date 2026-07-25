@@ -872,7 +872,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 17;
+export const POSTGRES_SCHEMA_VERSION = 18;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -928,7 +928,10 @@ export const POSTGRES_REQUIRED_TABLES = [
   "benchmark_runs",
   "benchmark_cases",
   "policy_evaluations",
-  "policy_genomes"
+  "policy_genomes",
+  "executive_episode",
+  "executive_command",
+  "executive_event"
 ] as const;
 
 export interface ScceKernelDeps {
