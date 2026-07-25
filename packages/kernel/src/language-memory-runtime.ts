@@ -3699,18 +3699,20 @@ function competenceFromRuntime(input: {
   const phraseFluency = clamp01(Math.log2(1 + input.observedSymbolCount + importedPhraseMass) / 18 * Math.min(1, Math.max(maxOrder, 2) / 6));
   const generationReliability = clamp01(0.4 * lexicalCoverage + 0.36 * phraseFluency + 0.24 * modelCoverage);
   const patternCoverage = clamp01(Math.log2(1 + (input.importedPatterns?.length ?? 0)) / 10);
+  const discoursePatternCoverage = clamp01(Math.log2(1 + (input.importedPatterns ?? []).filter(pattern => pattern.patternKind === "discourse" || pattern.patternKind === "narrative").length) / 8);
   const constructionCoverage = clamp01(Math.log2(1 + (input.importedConstructionBundles?.length ?? 0)) / 10);
   const semanticFrameCoverage = clamp01(Math.log2(1 + (input.importedSemanticFrames?.length ?? 0)) / 10);
+  const discourseReliability = clamp01(0.64 * generationReliability + 0.36 * discoursePatternCoverage);
   return {
     scriptRecognition: clamp01(input.languageHints.length ? 0.45 + 0.1 * input.languageHints.length : modelCoverage * 0.3),
     segmentationQuality: clamp01(0.35 * modelCoverage + 0.65 * lexicalCoverage),
     lexicalCoverage,
     phraseFluency,
-    syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.62 : phraseFluency * 0.3) + patternCoverage * 0.18 + constructionCoverage * 0.2),
+    syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.58 : phraseFluency * 0.28) + patternCoverage * 0.16 + constructionCoverage * 0.18 + discoursePatternCoverage * 0.08),
     semanticFrameCoverage,
     translationAlignment: 0,
     entailmentReliability: 0,
-    generationReliability,
+    generationReliability: discourseReliability,
     correctionStability: 0,
     localizationReliability: 0
   };
