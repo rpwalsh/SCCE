@@ -68,6 +68,9 @@ import {
   type DurablePolicyGenome,
   type PolicyEvaluation,
   type PolicyEvolutionStore,
+  type ExecutiveEpisodeId,
+  type ExecutiveEvent,
+  type ExecutiveEventJournal,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -851,6 +854,10 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.policy_genomes (policy_fingerprint TEXT NOT NULL, objective_schema_id TEXT NOT NULL, vector_json JSONB NOT NULL, aggregated_objectives DOUBLE PRECISION[] NOT NULL, evaluation_count INTEGER NOT NULL, information_label JSONB NOT NULL, first_evaluated_at TIMESTAMPTZ NOT NULL, last_evaluated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (policy_fingerprint, objective_schema_id))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_policy_evaluations_fingerprint ON ${q}.policy_evaluations(policy_fingerprint, objective_schema_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_policy_genomes_schema ON ${q}.policy_genomes(objective_schema_id, last_evaluated_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.executive_episode (episode_id TEXT PRIMARY KEY, revision BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.executive_command (episode_id TEXT NOT NULL REFERENCES ${q}.executive_episode(episode_id), command_id TEXT NOT NULL, revision_start BIGINT NOT NULL, revision_end BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (episode_id, command_id))`,
+    `CREATE TABLE IF NOT EXISTS ${q}.executive_event (episode_id TEXT NOT NULL, revision BIGINT NOT NULL, command_id TEXT NOT NULL, event_json JSONB NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (episode_id, revision), FOREIGN KEY (episode_id, command_id) REFERENCES ${q}.executive_command(episode_id, command_id))`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_executive_event_episode ON ${q}.executive_event(episode_id, revision ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -1954,6 +1961,102 @@ function createPolicyEvolutionStore(storage: PostgresStorageAdapter): PolicyEvol
         params
       );
       return rows.map(rowToPolicyGenome);
+    }
+  };
+}
+
+const EXECUTIVE_SYSTEM_INFORMATION_LABEL = {
+  tenantId: "system",
+  principals: [] as string[],
+  compartments: [] as string[],
+  exportClass: "internal" as const,
+  mergePolicy: "isolated" as const
+};
+
+interface ExecutiveEventRow {
+  event_json: ExecutiveEvent;
+}
+
+/**
+ * Postgres-backed ExecutiveEventJournal: one durable row per executive
+ * event (not one row per command with an embedded array), because a single
+ * command can emit multiple events and the journal's own contract requires
+ * `snapshot.revision === snapshot.events.length` on replay. Duplicate
+ * commands are detected before expectedRevision is even compared, so
+ * retrying an already-committed command reports "duplicate", never
+ * "conflict".
+ *
+ * Information labels on individual executive events are not yet plumbed
+ * through `ExecutiveJournalAppend` (that interface predates this adapter);
+ * every event is stored under a fixed system-internal label until that
+ * interface is extended to carry a real one per event.
+ */
+export function createExecutiveEventJournal(storage: PostgresStorageAdapter): ExecutiveEventJournal {
+  return {
+    async read(episodeId: ExecutiveEpisodeId) {
+      const episodeRows = await storage.query<{ revision: string }>(
+        `SELECT revision FROM ${storage.table("executive_episode")} WHERE episode_id=$1`,
+        [episodeId]
+      );
+      const revision = episodeRows[0] ? Number(episodeRows[0].revision) : 0;
+      const eventRows = await storage.query<ExecutiveEventRow>(
+        `SELECT event_json FROM ${storage.table("executive_event")} WHERE episode_id=$1 ORDER BY revision ASC`,
+        [episodeId]
+      );
+      return { episodeId, revision, events: eventRows.map(row => row.event_json) };
+    },
+
+    async append(input) {
+      return storage.transaction(async () => {
+        await storage.query(
+          `INSERT INTO ${storage.table("executive_episode")}(episode_id,revision,updated_at) VALUES($1,0,NOW()) ON CONFLICT(episode_id) DO NOTHING`,
+          [input.episodeId]
+        );
+        const locked = await storage.query<{ revision: string }>(
+          `SELECT revision FROM ${storage.table("executive_episode")} WHERE episode_id=$1 FOR UPDATE`,
+          [input.episodeId]
+        );
+        const currentRevision = Number(locked[0]?.revision ?? 0);
+
+        const duplicate = await storage.query<{ episode_id: string }>(
+          `SELECT episode_id FROM ${storage.table("executive_command")} WHERE episode_id=$1 AND command_id=$2`,
+          [input.episodeId, input.commandId]
+        );
+        if (duplicate.length > 0) return { status: "duplicate" as const, revision: currentRevision };
+
+        if (currentRevision !== input.expectedRevision) {
+          return { status: "conflict" as const, revision: currentRevision };
+        }
+
+        if (input.events.length === 0) return { status: "appended" as const, revision: currentRevision };
+
+        input.events.forEach((event, index) => {
+          const expected = input.expectedRevision + index + 1;
+          if (event.revision !== expected) {
+            throw new Error(`executive event ${index} has revision ${event.revision}, expected consecutive revision ${expected}`);
+          }
+          if (event.episodeId !== input.episodeId || event.commandId !== input.commandId) {
+            throw new Error(`executive event ${index} does not match its own command/episode`);
+          }
+        });
+        const revisionEnd = input.expectedRevision + input.events.length;
+
+        await storage.query(
+          `INSERT INTO ${storage.table("executive_command")}(episode_id,command_id,revision_start,revision_end,created_at) VALUES($1,$2,$3,$4,NOW())`,
+          [input.episodeId, input.commandId, input.expectedRevision + 1, revisionEnd]
+        );
+        for (const event of input.events) {
+          await storage.query(
+            `INSERT INTO ${storage.table("executive_event")}(episode_id,revision,command_id,event_json,information_label,created_at) VALUES($1,$2,$3,$4::jsonb,$5::jsonb,TO_TIMESTAMP($6/1000.0))`,
+            [input.episodeId, event.revision, input.commandId, JSON.stringify(event), JSON.stringify(EXECUTIVE_SYSTEM_INFORMATION_LABEL), event.occurredAt]
+          );
+        }
+        await storage.query(
+          `UPDATE ${storage.table("executive_episode")} SET revision=$2, updated_at=NOW() WHERE episode_id=$1`,
+          [input.episodeId, revisionEnd]
+        );
+        return { status: "appended" as const, revision: revisionEnd };
+      });
     }
   };
 }

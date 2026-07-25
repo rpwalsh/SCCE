@@ -1,13 +1,17 @@
 import {
+  createDurableExecutiveEpisode,
+  createExecutiveEpisodeMachine,
+  createHasher,
   createScceKernel,
   type Clock,
+  type DurableExecutiveEpisode,
   type EvaluationConditionConfig,
   type RelationPotentialModel,
   type ScceKernel,
   type ScceStorage
 } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
-import { createPostgresStorageAdapter } from "./postgres.js";
+import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./postgres.js";
 import { NodeFileIngestAdapter } from "./files.js";
 import { NodeBuildTestAdapter } from "./process.js";
 import { ConfiguredConnectorAdapter } from "./connectors.js";
@@ -20,6 +24,8 @@ export interface NodeScceRuntime {
   kernel: ScceKernel;
   connectors: ConfiguredConnectorAdapter;
   approvals: ApprovalSession;
+  /** Durable, crash-recoverable executive episode coordinator backed by Postgres. */
+  executive: DurableExecutiveEpisode;
   close(): Promise<void>;
 }
 
@@ -82,5 +88,10 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     deterministicReplay: options.deterministicReplay,
     relationPotentialModel
   });
-  return { storage, kernel, connectors, approvals, close: () => storage.close() };
+  const executive = createDurableExecutiveEpisode({
+    machine: createExecutiveEpisodeMachine(createHasher()),
+    journal: createExecutiveEventJournal(storage),
+    maxConflictRetries: 5
+  });
+  return { storage, kernel, connectors, approvals, executive, close: () => storage.close() };
 }

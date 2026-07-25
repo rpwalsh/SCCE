@@ -239,6 +239,7 @@ function fakeRuntime(workspace: WorkspaceStore, dialogueMemory: DialogueMemorySt
     kernel: {} as NodeScceRuntime["kernel"],
     connectors: {} as NodeScceRuntime["connectors"],
     approvals: {} as NodeScceRuntime["approvals"],
+    executive: {} as NodeScceRuntime["executive"],
     close: async () => {}
   };
 }
