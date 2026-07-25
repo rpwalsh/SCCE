@@ -3,7 +3,7 @@ import {
   createClock,
   createHasher,
   createIdFactory,
-  createEnglishCreativeEventConstructionCompiler,
+  createUniversalCreativeEventConstructionCompiler,
   createEvaluationCondition,
   createLanguageAcquisitionEngine,
   createScceKernel,
@@ -883,7 +883,7 @@ describe("kernel local evidence source anchoring", () => {
       text: source.text,
       createdAt: clock.now()
     });
-    const compiled = createEnglishCreativeEventConstructionCompiler().compile({
+    const compiled = createUniversalCreativeEventConstructionCompiler().compile({
       profileId: profile.id,
       evidence: [source],
       hasher,

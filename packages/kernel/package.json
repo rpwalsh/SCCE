@@ -8,8 +8,5 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b"
-  },
-  "dependencies": {
-    "compromise": "14.16.0"
   }
 }

@@ -21,10 +21,6 @@ import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
-import {
-  compileEnglishCreativeRequestFrame,
-  ENGLISH_CREATIVE_REQUEST_COMPILER_ID
-} from "./english-structural-realizer.js";
 import { EVALUATION_COMPONENT_IDS, type EvaluationComponentId } from "./evaluation-flags.js";
 import {
   createAblatedSupportEntailment,
@@ -515,16 +511,10 @@ export function createProductionTurnRuntime(options: {
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
       const requestedAuthority = authorityProjection.requestedAuthority;
-      const creativeRequestFrame = requestedAuthority === "creative"
-        ? compileEnglishCreativeRequestFrame({
-          requestText: input.text,
-          learnedRequirements: requirementField.requiredFeatures,
-          activatedFrameOrPatternIds: uniqueKernelStrings([
-            ...requirementField.activatedFrameIds,
-            ...requirementField.activatedPatternIds
-          ])
-        })
-        : undefined;
+      // No English-specific request-frame compiler: creative narrative-event routing
+      // (invention-planner.ts's buildStructuralCreativeEventPlan) always sees this as
+      // absent and correctly returns no plan, matching the removal of its only producer.
+      const creativeRequestFrame = undefined;
       let operatorActivations = activateCognitiveOperators({
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),

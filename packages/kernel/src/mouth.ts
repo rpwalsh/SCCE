@@ -45,16 +45,12 @@ import {
   type LanguageMemoryRuntimeState,
   type LanguageMemoryScore
 } from "./language-memory-runtime.js";
-import {
-  englishCreativeStructuralRouteEvents,
-  isEnglishCreativeEventStructurallyRealizable,
-  MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS,
-  realizeEnglishStructuralCreative,
-  type EnglishStructuralPlannedEvent,
-  type EnglishStructuralRequestRoleBinding,
-  type LearnedResponseExtentHint,
-  type NarrativeBridgeRelationId
-} from "./english-structural-realizer.js";
+interface LearnedResponseExtentHint {
+  unitSurface: string;
+  wordsPerUnit: number;
+  requestSpan: { charStart: number; charEnd: number };
+  sourcePatternId: string;
+}
 import type { CorrectionMemory, CorrectionStyleInfluence, MeterPattern, RegisterVector } from "./correction-memory.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import {
@@ -261,55 +257,6 @@ interface SurfaceCandidate {
   audit?: JsonValue;
 }
 
-interface StructuralCreativeSelectionBinding {
-  semanticCandidateId: string;
-  cognitiveProposalId?: string;
-  invention: InventionConstructState;
-  semanticPlanId: string;
-  sourceBundleIds: string[];
-  events: StructuralCreativeEventSelector[];
-}
-
-interface StructuralCreativeEventSelector {
-  outputIndex: number;
-  bundleId: string;
-  eventId: string;
-  profileId: string;
-  constructionId: string;
-  relationId: string;
-  roleIds: string[];
-  discourseRelationId: NarrativeBridgeRelationId;
-  discourseBridgeBasisId:
-    | "scce.discourse.bridge.source_adjacency"
-    | "scce.discourse.bridge.invented_macro";
-  discourseBeatId: string;
-  requestRoleBindings: EnglishStructuralRequestRoleBinding[];
-  compatibilityModelId: string;
-  compatibilityModelVersion: string;
-  compatibilityCalibrationId: string;
-  compatibilityThreshold: number;
-  requestFit: number;
-  graphFit: number;
-  routeFit: number;
-  routeId: string;
-  routeAnchorEventId: string;
-  sourceOrdinal: number;
-  sourceVersionId: string;
-  evidenceId: string;
-}
-
-type HydratedStructuralCreativeEvent = EnglishStructuralPlannedEvent & Pick<
-  StructuralCreativeEventSelector,
-  | "discourseBridgeBasisId"
-  | "discourseBeatId"
-  | "graphFit"
-  | "requestRoleBindings"
-  | "routeFit"
-  | "routeId"
-  | "routeAnchorEventId"
-  | "sourceOrdinal"
->;
-
 interface SentenceCandidate {
   unitId: string;
   role: DiscourseUnitRole;
@@ -490,19 +437,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         context: { targetLanguageId: input.targetLanguage, targetScriptId: input.targetScript, registerVector: input.registerVector, meterPattern: input.meterPattern, surfaceKind: input.construct.program ? "program" : "answer" }
       });
       markMouthPhase("correction_influence");
-      const structuralCreativeProductionLane = input.requestedAuthority === "creative";
-      const structuralCreativeSelection = selectedStructuralCreativePlan(input);
+      // No language-specific structural-creative-narrative realizer exists anymore
+      // (Part B step 7 removed english-structural-realizer.ts entirely); this lane
+      // is permanently absent rather than routed through a hardcoded-language path.
       const nonEventCreativeMouthHandoff = selectedNonEventCreativeMouthHandoff(input);
-      const structuralCreativePreflight = structuralCreativeProductionLane
-        && Boolean(structuralCreativeSelection)
-        && hasHydratedStructuralCreativePrior(
-          input.languageMemory,
-          input.languageProfile,
-          structuralCreativeSelection
-        );
-      const basePriorPieces = structuralCreativePreflight
-        ? []
-        : importedSurfacePieces(input, undefined, undefined);
+      const basePriorPieces = importedSurfacePieces(input, undefined, undefined);
       markMouthPhase("base_prior_pieces");
       const rawPlan = buildSurfacePlan(input, correctionInfluence, options.hashText, basePriorPieces);
       markMouthPhase("surface_plan");
@@ -510,9 +449,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("surface_plan_corrections");
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
       markMouthPhase("discourse_plan");
-      const structuralCreativeCandidate = structuralCreativePreflight && structuralCreativeSelection
-        ? sourceStructuralCreativeCandidate(plan, discoursePlan, input, structuralCreativeSelection)
-        : undefined;
+      const structuralCreativeCandidate = undefined;
       markMouthPhase("structural_creative_realization");
       const structuralCreativeBound = Boolean(structuralCreativeCandidate);
       const structuralCreativeFailClosed = false;
@@ -903,8 +840,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             realization: realization.audit,
             selectedGeneration: selected?.generation?.audit ?? null,
             structuralCreative: {
-              selectionBound: Boolean(structuralCreativeSelection),
-              preflightAdmitted: structuralCreativePreflight,
+              selectionBound: false,
+              preflightAdmitted: false,
               realizationAdmitted: Boolean(structuralCreativeCandidate),
               failClosed: structuralCreativeFailClosed,
               unavailableReasonId: structuralCreativeFailClosed
@@ -913,8 +850,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
               languageProfileId: input.languageProfile.id,
               scope: input.languageMemory.scope,
               hydratedBundleIds: input.languageMemory.importedConstructionBundles.map(bundle => bundle.id),
-              selectedBundleIds: structuralCreativeSelection?.sourceBundleIds ?? [],
-              selectedEventCount: structuralCreativeSelection?.events.length ?? 0
+              selectedBundleIds: [],
+              selectedEventCount: 0
             },
             mouthPerformance: {
               phaseMs: mouthPhaseMs,
@@ -2658,221 +2595,6 @@ function creativeCandidatesFromFrames(
   return out;
 }
 
-function selectedStructuralCreativePlan(input: SpeakInput): StructuralCreativeSelectionBinding | undefined {
-  const candidate = input.selectedCandidate;
-  if (!candidate || candidate.kind !== "creative-candidate") return undefined;
-  if (!candidate.claimBases?.includes("invented")) return undefined;
-  if (input.selectedProposal && candidate.proposalId !== input.selectedProposal.id) return undefined;
-  const proposalConstructIds = new Set(
-    input.selectedProposal?.constructIds ?? candidate.constructIds ?? []
-  );
-  const selectedInventionNodeIds = uniqueStrings(candidate.constructIds ?? [])
-    .filter(id => proposalConstructIds.has(id))
-    .filter(id => input.construct.nodes.some(node => (
-      String(node.id) === id
-      && (node.kind === "construct:invention" || jsonRecord(node.metadata).schema === "scce.invention_construct.v1")
-    )));
-  if (selectedInventionNodeIds.length !== 1) return undefined;
-  const invention = inventionConstructState(input.construct, selectedInventionNodeIds[0]);
-  if (!invention) return undefined;
-  const trace = jsonRecord(invention.trace);
-  const proposalRealization = jsonRecord(trace.proposalRealization);
-  const semanticPlan = jsonRecord(trace.structuralSemanticPlan);
-  if (proposalRealization.path !== "mouth_realization_deferred") return undefined;
-  const semanticPlanId = stringFrom(proposalRealization.semanticPlanId);
-  if (!semanticPlanId || semanticPlan.id !== semanticPlanId) return undefined;
-  if (semanticPlan.schema !== "scce.structural_semantic_plan.v2"
-    || semanticPlan.selectionAuthority !== "candidate_engine_and_judge"
-    || semanticPlan.surfaceRealizationCompetitive !== false) return undefined;
-  const sourceBundleIds = uniqueStrings([
-    ...stringArrayFromJson(proposalRealization.structuralBundleIds),
-    ...stringArrayFromJson(semanticPlan.sourceBundleIds)
-  ]);
-  const proposalEvents = structuralCreativeEventSelectors(proposalRealization.structuralEventPlan);
-  const events = structuralCreativeEventSelectors(semanticPlan.events);
-  if (!sourceBundleIds.length
-    || events.length < 4
-    || proposalEvents.length !== events.length
-    || canonicalStringify(toJsonValue(proposalEvents)) !== canonicalStringify(toJsonValue(events))) return undefined;
-  const eventBundleIds = uniqueStrings(events.map(event => event.bundleId));
-  if (canonicalStringify([...sourceBundleIds].sort()) !== canonicalStringify([...eventBundleIds].sort())) return undefined;
-  return {
-    semanticCandidateId: candidate.id,
-    cognitiveProposalId: candidate.proposalId,
-    invention,
-    semanticPlanId,
-    sourceBundleIds,
-    events
-  };
-}
-
-function structuralCreativeEventSelectors(
-  value: JsonValue | undefined
-): StructuralCreativeEventSelector[] {
-  if (!Array.isArray(value)
-    || value.length < 4
-    || value.length > MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS) return [];
-  const rows = arrayRecords(value);
-  if (rows.length !== value.length) return [];
-  const out: StructuralCreativeEventSelector[] = [];
-  const eventIds = new Set<string>();
-  for (let index = 0; index < rows.length; index++) {
-    const row = rows[index]!;
-    const outputIndex = typeof row.outputIndex === "number" && Number.isSafeInteger(row.outputIndex)
-      ? row.outputIndex
-      : -1;
-    const bundleId = stringFrom(row.bundleId);
-    const eventId = stringFrom(row.eventId);
-    const profileId = stringFrom(row.profileId);
-    const constructionId = stringFrom(row.constructionId);
-    const relationId = stringFrom(row.relationId);
-    const discourseRelationId = stringFrom(row.discourseRelationId);
-    const discourseBridgeBasisId = stringFrom(row.discourseBridgeBasisId);
-    const discourseBeatId = stringFrom(row.discourseBeatId);
-    const requestRoleBindings = structuralCreativeRequestRoleBindings(row.requestRoleBindings);
-    const compatibilityModelId = stringFrom(row.compatibilityModelId);
-    const compatibilityModelVersion = stringFrom(row.compatibilityModelVersion);
-    const compatibilityCalibrationId = stringFrom(row.compatibilityCalibrationId);
-    const compatibilityThreshold = unitIntervalJsonNumber(row.compatibilityThreshold);
-    const routeId = stringFrom(row.routeId);
-    const routeAnchorEventId = stringFrom(row.routeAnchorEventId);
-    const sourceVersionId = stringFrom(row.sourceVersionId);
-    const evidenceId = stringFrom(row.evidenceId);
-    const roleIds = stringArrayFromJson(row.roleIds);
-    const requestFit = unitIntervalJsonNumber(row.requestFit);
-    const graphFit = unitIntervalJsonNumber(row.graphFit);
-    const routeFit = unitIntervalJsonNumber(row.routeFit);
-    const sourceOrdinal = typeof row.sourceOrdinal === "number" && Number.isSafeInteger(row.sourceOrdinal)
-      ? row.sourceOrdinal
-      : -1;
-    if (outputIndex !== index
-      || !bundleId
-      || !eventId
-      || !profileId
-      || !constructionId
-      || !relationId
-      || !routeId
-      || !routeAnchorEventId
-      || !sourceVersionId
-      || !evidenceId
-      || !discourseBeatId
-      || requestRoleBindings === undefined
-      || !compatibilityModelId
-      || !compatibilityModelVersion
-      || !compatibilityCalibrationId
-      || compatibilityThreshold === undefined
-      || eventIds.has(eventId)
-      || !roleIds.includes("scce.role.agent")
-      || requestFit === undefined
-      || graphFit === undefined
-      || routeFit === undefined
-      || sourceOrdinal < 0
-      || !isStructuralCreativeDiscourseBridgeBasisId(discourseBridgeBasisId)
-      || !isNarrativeBridgeRelationId(discourseRelationId)) return [];
-    eventIds.add(eventId);
-    out.push({
-      outputIndex,
-      bundleId,
-      eventId,
-      profileId,
-      constructionId,
-      relationId,
-      roleIds,
-      discourseRelationId,
-      discourseBridgeBasisId,
-      discourseBeatId,
-      requestRoleBindings,
-      compatibilityModelId,
-      compatibilityModelVersion,
-      compatibilityCalibrationId,
-      compatibilityThreshold,
-      requestFit,
-      graphFit,
-      routeFit,
-      routeId,
-      routeAnchorEventId,
-      sourceOrdinal,
-      sourceVersionId,
-      evidenceId
-    });
-  }
-  return out;
-}
-
-function structuralCreativeRequestRoleBindings(
-  value: JsonValue | undefined
-): StructuralCreativeEventSelector["requestRoleBindings"] | undefined {
-  if (!Array.isArray(value) || value.length > 2) return undefined;
-  const rows = arrayRecords(value);
-  if (rows.length !== value.length) return undefined;
-  const bindings: StructuralCreativeEventSelector["requestRoleBindings"] = [];
-  const eventRoleIds = new Set<string>();
-  const requestArgumentIds = new Set<string>();
-  for (const row of rows) {
-    const eventRoleId = stringFrom(row.eventRoleId);
-    const requestArgumentId = stringFrom(row.requestArgumentId);
-    const requestRoleId = stringFrom(row.requestRoleId);
-    const requestSpan = jsonRecord(row.requestSpan);
-    const requestSpanText = stringFrom(requestSpan.text);
-    const requestSpanCharStart = safeNonNegativeInteger(requestSpan.charStart);
-    const requestSpanCharEnd = safeNonNegativeInteger(requestSpan.charEnd);
-    const requestSpanByteStart = safeNonNegativeInteger(requestSpan.byteStart);
-    const requestSpanByteEnd = safeNonNegativeInteger(requestSpan.byteEnd);
-    const rolePosterior = unitIntervalJsonNumber(row.rolePosterior);
-    const roleThreshold = unitIntervalJsonNumber(row.roleThreshold);
-    if ((eventRoleId !== "scce.role.patient" && eventRoleId !== "scce.role.complement")
-      || !requestArgumentId
-      || !requestRoleId
-      || !requestSpanText
-      || requestSpanCharStart === undefined
-      || requestSpanCharEnd === undefined
-      || requestSpanByteStart === undefined
-      || requestSpanByteEnd === undefined
-      || requestSpanCharEnd <= requestSpanCharStart
-      || requestSpanByteEnd <= requestSpanByteStart
-      || rolePosterior === undefined
-      || roleThreshold === undefined
-      || rolePosterior < roleThreshold
-      || row.admissible !== true
-      || eventRoleIds.has(eventRoleId)
-      || requestArgumentIds.has(requestArgumentId)) return undefined;
-    eventRoleIds.add(eventRoleId);
-    requestArgumentIds.add(requestArgumentId);
-    bindings.push({
-      eventRoleId,
-      requestArgumentId,
-      requestRoleId,
-      requestSpan: {
-        text: requestSpanText,
-        charStart: requestSpanCharStart,
-        charEnd: requestSpanCharEnd,
-        byteStart: requestSpanByteStart,
-        byteEnd: requestSpanByteEnd
-      },
-      rolePosterior,
-      roleThreshold,
-      admissible: true
-    });
-  }
-  return bindings;
-}
-
-function isNarrativeBridgeRelationId(
-  value: string | undefined
-): value is NarrativeBridgeRelationId {
-  return value === "scce.relation.concurrent"
-    || value === "scce.relation.subsequent"
-    || value === "scce.relation.contrastive"
-    || value === "scce.relation.resolution";
-}
-
-function isStructuralCreativeDiscourseBridgeBasisId(
-  value: string | undefined
-): value is StructuralCreativeEventSelector["discourseBridgeBasisId"] {
-  return value === "scce.discourse.bridge.source_adjacency"
-    || value === "scce.discourse.bridge.invented_macro";
-}
-
 function unitIntervalJsonNumber(value: JsonValue | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
     ? value
@@ -2883,199 +2605,6 @@ function safeNonNegativeInteger(value: JsonValue | undefined): number | undefine
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : undefined;
-}
-
-function resolveHydratedStructuralCreativeEvents(
-  state: LanguageMemoryRuntimeState,
-  languageProfile: LanguageProfile,
-  binding: StructuralCreativeSelectionBinding
-): HydratedStructuralCreativeEvent[] | undefined {
-  if (state.scope.mode !== "cluster" || !state.scope.purityProven) return undefined;
-  const scopedProfileIds = new Set(state.scope.profileIds);
-  const bundleById = new Map(state.importedConstructionBundles.map(bundle => [bundle.id, bundle]));
-  const admittedBundleIds = new Set(binding.sourceBundleIds);
-  const bindingSelectorByEventId = new Map(binding.events.map(selector => [selector.eventId, selector]));
-  const structuralRouteByBundleId = new Map<string, {
-    eventById: Map<string, NonNullable<LanguageMemoryRuntimeState["importedConstructionBundles"][number]["creativeEvents"]>[number]>;
-    indexByEventId: Map<string, number>;
-  }>();
-  for (const bundleId of admittedBundleIds) {
-    const bundle = bundleById.get(bundleId);
-    if (!bundle) return undefined;
-    const routeEvents = englishCreativeStructuralRouteEvents(bundle.creativeEvents ?? [])
-      .sort((left, right) =>
-        left.sourceOrdinal - right.sourceOrdinal || left.id.localeCompare(right.id)
-      );
-    if (routeEvents.length < 4) return undefined;
-    structuralRouteByBundleId.set(bundleId, {
-      eventById: new Map(routeEvents.map(event => [event.id, event])),
-      indexByEventId: new Map(routeEvents.map((event, index) => [event.id, index]))
-    });
-  }
-  const routeBundleIds = new Map<string, string>();
-  const routeAnchorEventIds = new Map<string, string>();
-  const resolved: HydratedStructuralCreativeEvent[] = [];
-  for (let index = 0; index < binding.events.length; index++) {
-    const selector = binding.events[index]!;
-    const previous = binding.events[index - 1];
-    if (!admittedBundleIds.has(selector.bundleId) || !scopedProfileIds.has(selector.profileId)) return undefined;
-    const bundle = bundleById.get(selector.bundleId);
-    const structuralRoute = structuralRouteByBundleId.get(selector.bundleId);
-    if (!bundle
-      || !structuralRoute
-      || bundle.sourceProfileId !== selector.profileId
-      || bundle.targetProfileId !== selector.profileId
-      || !bundle.sourceVersionIds.includes(selector.sourceVersionId)
-      || !bundle.evidenceIds.includes(selector.evidenceId)) return undefined;
-    const event = structuralRoute.eventById.get(selector.eventId);
-    if (!event
-      || !isEnglishCreativeEventStructurallyRealizable(event)
-      || event.profileId !== selector.profileId
-      || event.constructionId !== selector.constructionId
-      || event.relationId !== selector.relationId
-      || event.sourceVersionId !== selector.sourceVersionId
-      || event.evidenceId !== selector.evidenceId
-      || event.sourceOrdinal !== selector.sourceOrdinal
-      || canonicalStringify(event.roleIds) !== canonicalStringify(selector.roleIds)) return undefined;
-    const routeAnchor = structuralRoute.eventById.get(selector.routeAnchorEventId);
-    const routeAnchorSelector = bindingSelectorByEventId.get(selector.routeAnchorEventId);
-    if (!routeAnchor
-      || !routeAnchorSelector
-      || routeAnchor.profileId !== selector.profileId
-      || routeAnchorSelector.routeId !== selector.routeId
-      || routeAnchorSelector.bundleId !== selector.bundleId) return undefined;
-    const existingRouteBundleId = routeBundleIds.get(selector.routeId);
-    const existingRouteAnchorEventId = routeAnchorEventIds.get(selector.routeId);
-    if ((existingRouteBundleId && existingRouteBundleId !== selector.bundleId)
-      || (existingRouteAnchorEventId && existingRouteAnchorEventId !== selector.routeAnchorEventId)) return undefined;
-    routeBundleIds.set(selector.routeId, selector.bundleId);
-    routeAnchorEventIds.set(selector.routeId, selector.routeAnchorEventId);
-    const currentBundleEventIndex = structuralRoute.indexByEventId.get(selector.eventId) ?? -1;
-    const previousBundleEventIndex = previous?.bundleId === selector.bundleId
-      ? structuralRoute.indexByEventId.get(previous.eventId) ?? -1
-      : -1;
-    const sourceAdjacent = Boolean(
-      previous
-      && previous.bundleId === selector.bundleId
-      && previous.routeId === selector.routeId
-      && previousBundleEventIndex >= 0
-      && currentBundleEventIndex === previousBundleEventIndex + 1
-    );
-    const expectedBridgeBasisId = sourceAdjacent
-      ? "scce.discourse.bridge.source_adjacency"
-      : "scce.discourse.bridge.invented_macro";
-    const eventArgumentRoleIds = event.argumentFrame.bindings.map(binding => binding.roleId).sort();
-    const plannedArgumentRoleIds = selector.requestRoleBindings.map(binding => binding.eventRoleId).sort();
-    if (selector.discourseBridgeBasisId !== expectedBridgeBasisId
-      || (sourceAdjacent && previous!.sourceOrdinal >= selector.sourceOrdinal)
-      || selector.requestFit < selector.compatibilityThreshold
-      || canonicalStringify(eventArgumentRoleIds) !== canonicalStringify(plannedArgumentRoleIds)
-      || Math.abs(selector.routeFit - clamp01(
-        1 - (1 - selector.requestFit) * (1 - selector.graphFit)
-      )) > 1e-12) return undefined;
-    resolved.push({
-      outputIndex: selector.outputIndex,
-      bundleId: selector.bundleId,
-      event,
-      discourseRelationId: selector.discourseRelationId,
-      discourseBridgeBasisId: selector.discourseBridgeBasisId,
-      discourseBeatId: selector.discourseBeatId,
-      requestRoleBindings: selector.requestRoleBindings,
-      requestFit: selector.requestFit,
-      graphFit: selector.graphFit,
-      routeFit: selector.routeFit,
-      routeId: selector.routeId,
-      routeAnchorEventId: selector.routeAnchorEventId,
-      sourceOrdinal: selector.sourceOrdinal
-    });
-  }
-  const resolvedBundleIds = uniqueStrings(resolved.map(row => row.bundleId)).sort();
-  if (canonicalStringify(resolvedBundleIds) !== canonicalStringify([...admittedBundleIds].sort())) return undefined;
-  return resolved;
-}
-
-function hasHydratedStructuralCreativePrior(
-  state: LanguageMemoryRuntimeState,
-  languageProfile: LanguageProfile,
-  binding: StructuralCreativeSelectionBinding | undefined
-): boolean {
-  return Boolean(binding && resolveHydratedStructuralCreativeEvents(state, languageProfile, binding));
-}
-
-function sourceStructuralCreativeCandidate(
-  plan: SurfacePlan,
-  discoursePlan: DiscoursePlan,
-  input: SpeakInput,
-  binding: StructuralCreativeSelectionBinding
-): SurfaceCandidate | undefined {
-  if (!plan.realizationFrames.length) return undefined;
-  const plannedEvents = resolveHydratedStructuralCreativeEvents(
-    input.languageMemory,
-    input.languageProfile,
-    binding
-  );
-  if (!plannedEvents) return undefined;
-  const creativeRequiredTerms = creativeRequestContentTerms(input);
-  const structural = realizeEnglishStructuralCreative({
-    requestText: input.entailment.claim.text,
-    contentTerms: creativeRequiredTerms.map(term => term.text),
-    plannedEvents,
-    ...(input.requirementField?.responseForm ? {
-      responseForm: input.requirementField.responseForm
-    } : {}),
-    responseExtentHints: creativeResponseExtentHints(input),
-    defaultTargetWords: creativeDefaultTargetWords(input)
-  });
-  if (!structural || !admissibleMouthSurface(structural.text)) return undefined;
-  const surfaceRealizationId = `surface:creative-structural:${hash32([
-    binding.semanticCandidateId,
-    binding.semanticPlanId,
-    structural.text
-  ].join("\u0001")).toString(16)}`;
-  const semanticRealizability = clamp01(
-    input.selectedCandidate?.scores.languageRealizability
-    ?? input.selectedCandidate?.scores.realizability
-    ?? 0
-  );
-  return {
-    id: surfaceRealizationId,
-    style: "surface.path.generated.creative.structural_source",
-    path: "generated",
-    claimBasis: "invented",
-    text: structural.text,
-    evidenceIds: [],
-    fit: semanticRealizability,
-    importedPieceIds: structural.importedBundleIds,
-    discoursePlan,
-    boundaryDecisions: [],
-    audit: toJsonValue({
-      ...jsonRecord(structural.audit),
-      selectionBinding: {
-        semanticCandidateId: binding.semanticCandidateId,
-        cognitiveProposalId: binding.cognitiveProposalId ?? null,
-        inventionConstructId: binding.invention.nodeId,
-        semanticPlanId: binding.semanticPlanId,
-        surfaceRealizationId,
-        selectedEventIds: plannedEvents.map(row => row.event.id),
-        selectedBundleIds: structural.importedBundleIds
-      },
-      realizationFeature: {
-        value: structural.confidence,
-        calibrated: false,
-        selectionCompetitive: false,
-        status: "provisional_uncalibrated"
-      },
-      responseForm: input.requirementField?.responseForm ?? null,
-      constructionMemory: {
-        bundleCount: input.languageMemory.importedConstructionBundles.length,
-        creativeEventCount: input.languageMemory.importedConstructionBundles
-          .reduce((sum, bundle) => sum + (bundle.creativeEvents?.length ?? 0), 0),
-        selectedEventCount: plannedEvents.length,
-        selectedBundleIds: binding.sourceBundleIds,
-        rawEvidenceBodyRead: false
-      }
-    })
-  };
 }
 
 function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
@@ -3178,12 +2707,6 @@ export function resolveLearnedCreativeGenerationExtent(input: {
     maxExtent,
     Math.ceil(Math.max(input.plannedExtent, learnedExtent))
   ));
-}
-
-function creativeDefaultTargetWords(input: SpeakInput): number {
-  const detail = clamp01(input.requirementField?.brevityDetailBalance ?? 0.5);
-  const format = clamp01(input.requirementField?.formatConstraintStrength ?? 0);
-  return Math.round(120 + detail * 80 + format * 40);
 }
 
 function structuralCreativeSelectionBindingFromSurface(candidate: Pick<SurfaceCandidate, "id" | "audit">): {
