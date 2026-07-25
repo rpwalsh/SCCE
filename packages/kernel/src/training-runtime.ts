@@ -3,13 +3,18 @@ import { createAlphaFieldEngine } from "./field.js";
 import { createIdFactory } from "./ids.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
+  compileLanguageTrainingBatch,
+  observeLanguageTrainingSegmentation
+} from "./language-training-batch.js";
+import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
+import {
   createLanguageAcquisitionEngine
 } from "./language.js";
 import { createWeightedFeatureSketchLearner } from "./latent.js";
 import { createLearningLoop } from "./learning-loop.js";
 import { createLearningController } from "./learning.js";
 import { createPredictionLayer } from "./prediction.js";
-import { createClock, toJsonValue } from "./primitives.js";
+import { createClock, createHasher, toJsonValue } from "./primitives.js";
 import { joinInformationLabels } from "./information-flow.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
@@ -52,6 +57,7 @@ export function createTrainingRuntime(options: {
     trainingOrchestrator, language, languageMemoryRuntime, fieldEngine, prediction, ssd, fcs,
     policy, failures, append, invalidateRuntimeCaches, onKernelStateMutation
   } = options;
+  const hasher = createHasher();
 
 
   function trainingPromotionEvidenceIds(plan: { promotion: readonly { evidenceId: string; promote: boolean }[] }): EvidenceSpan["id"][] {
@@ -120,16 +126,29 @@ export function createTrainingRuntime(options: {
         profileBySourceVersion.set(String(sourceVersionId), profile);
         profilesCreated++;
       }
-      const memory = languageMemoryRuntime.train({
-        streamId: `training:${trainingPlanId}:${String(sourceVersionId)}`,
-        profile,
-        sourceVersionId,
-        text,
-        evidence: spans,
-        createdAt: clock.now(),
-        maxOrder: 6,
-        maxCountersPerOrder: 12000,
-        vocabularyLimit: 24000
+      const trainedAt = clock.now();
+      const memory = compileLanguageTrainingBatch({
+        runtime: languageMemoryRuntime,
+        hasher,
+        batch: {
+          streamId: `training:${trainingPlanId}:${String(sourceVersionId)}`,
+          profile,
+          sourceVersionId,
+          text,
+          evidence: spans,
+          createdAt: trainedAt,
+          maxOrder: 6,
+          maxCountersPerOrder: 12000,
+          vocabularyLimit: 24000
+        }
+      });
+      await observeLanguageTrainingSegmentation({
+        storage: deps.storage,
+        batch: { text, createdAt: trainedAt },
+        tenantId: informationLabel.tenantId,
+        corpusRole: corpusRoleIdForSourceSystem("training"),
+        activeImportVersion: trainingPlanId,
+        hasher
       });
       await deps.storage.languageMemory.putNgramObservationsBatch(memory.observations.map(record => ({ ...record, informationLabel })));
       for (const model of memory.models) await deps.storage.languageMemory.putNgramModel({ ...model, informationLabel });
