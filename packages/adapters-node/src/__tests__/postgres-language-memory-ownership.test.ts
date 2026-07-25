@@ -113,6 +113,23 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql).not.toMatch(/artifact_refs|GROUP BY|WITH\s/i);
     expect(calls[0]?.params[0]).toBe(17);
   });
+
+  it("ranks profile candidates from the indexed durable trigram set before applying the bound", async () => {
+    const { adapter, calls } = fixture();
+
+    await adapter.model.listLanguageProfiles({
+      limit: 19,
+      referencedByLanguageMemory: true,
+      surfaceNgrams: ["QEL", "ela", "qel"]
+    });
+
+    const sql = calls[0]!.sql;
+    expect(sql).toContain("lp.ngram_keys && $1::text[]");
+    expect(sql).toContain("FROM unnest(lp.ngram_keys)");
+    expect(sql.indexOf("lp.ngram_keys &&")).toBeLessThan(sql.indexOf("LIMIT $2"));
+    expect(calls[0]?.params[0]).toEqual(["qel", "ela"]);
+    expect(calls[0]?.params[1]).toBe(19);
+  });
 });
 
 function fixture(): {

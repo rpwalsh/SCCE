@@ -721,7 +721,8 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.forecast_states (id TEXT PRIMARY KEY, episode_id TEXT, t BIGINT NOT NULL, state_vector DOUBLE PRECISION[] NOT NULL, alpha_surface_json JSONB NOT NULL, spectrum_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.forecast_envelopes (id TEXT PRIMARY KEY, source_state_id TEXT NOT NULL, horizon INT NOT NULL, mean_vector DOUBLE PRECISION[] NOT NULL, covariance_json JSONB NOT NULL, interval_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.learning_needs (id TEXT PRIMARY KEY, episode_id TEXT, goal TEXT NOT NULL, gap_json JSONB NOT NULL, source_plan_json JSONB NOT NULL, status TEXT NOT NULL, priority DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
-    `CREATE TABLE IF NOT EXISTS ${q}.language_profiles (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, profile_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.language_profiles (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, profile_json JSONB NOT NULL, ngram_keys TEXT[] NOT NULL DEFAULT ARRAY[]::text[], created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `ALTER TABLE ${q}.language_profiles ADD COLUMN IF NOT EXISTS ngram_keys TEXT[] NOT NULL DEFAULT ARRAY[]::text[]`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_profile_aliases (
        alias_key TEXT NOT NULL,
        alias_surface TEXT NOT NULL,
@@ -950,6 +951,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_updated ON ${q}.ngram_models((model_json->>'profileId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_ngrams ON ${q}.language_profiles USING GIN(ngram_keys)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profile_alias_lookup ON ${q}.language_profile_aliases(alias_key,confidence DESC,updated_at DESC,profile_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_source_system_rank ON ${q}.language_units((metadata_json->>'sourceSystem'), alpha DESC)`,
@@ -2405,6 +2407,34 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
     async listLanguageProfiles(query) {
       const requestedLimit = typeof query === "number" ? query : query?.limit;
       const boundedLimit = Math.max(1, Math.min(2048, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit!) : 512));
+      if (typeof query === "object" && query?.surfaceNgrams !== undefined) {
+        const ngrams = [...new Set(query.surfaceNgrams.map(value => value.normalize("NFC").toLowerCase()).filter(Boolean))].slice(0, 1024);
+        if (!ngrams.length) return [];
+        const referencedFilter = query.referencedByLanguageMemory
+          ? `AND (
+               EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
+             )`
+          : "";
+        const access = storage.informationAccessPredicate("lp", 3);
+        return (await storage.query<{ profile_json: LanguageProfile }>(
+          `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
+           FROM ${storage.table("language_profiles")} lp
+           WHERE lp.ngram_keys && $1::text[]
+             ${referencedFilter}
+             AND ${access.sql}
+           ORDER BY (
+             SELECT COUNT(*)
+             FROM unnest(lp.ngram_keys) key
+             WHERE key=ANY($1::text[])
+           ) DESC, lp.created_at DESC, lp.id ASC
+           LIMIT $2`,
+          [ngrams, boundedLimit, ...access.params]
+        )).map(row => row.profile_json);
+      }
       if (typeof query === "object" && query?.sourceDerivedAliases !== undefined) {
         const aliasKeys = [...new Set(query.sourceDerivedAliases
           .map(normalizeSourceLanguageAlias)
@@ -2490,21 +2520,23 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
       id: profile.id,
       source_version_id: profile.sourceVersionId,
       profile_json: profile,
+      ngram_keys: [...new Set(profile.charNgrams.map(row => row.ngram.normalize("NFC").toLowerCase()))].slice(0, 1024),
       created_at_ms: profile.createdAt,
       information_label: profile.informationLabel
     }));
     const aliases = sourceOwnedLanguageAliasRows(labeledProfiles);
     await storage.query(
-      `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,created_at,information_label)
-       SELECT r.id, r.source_version_id, r.profile_json, TO_TIMESTAMP(r.created_at_ms/1000.0), r.information_label
+      `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,ngram_keys,created_at,information_label)
+       SELECT r.id, r.source_version_id, r.profile_json, r.ngram_keys, TO_TIMESTAMP(r.created_at_ms/1000.0), r.information_label
        FROM jsonb_to_recordset($1::jsonb) AS r(
          id text,
          source_version_id text,
          profile_json jsonb,
+         ngram_keys text[],
          created_at_ms double precision,
          information_label jsonb
        )
-       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json, information_label=EXCLUDED.information_label`,
+       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json, ngram_keys=EXCLUDED.ngram_keys, information_label=EXCLUDED.information_label`,
       [JSON.stringify(payload)]
     );
     await storage.query(
