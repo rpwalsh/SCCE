@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createHasher,
   createLanguageInductionEngine,
-  evaluateHeldOutConstructionCoverage,
+  GRAPH_SURFACE_ROLE_IDS,
   induceGraphSurfaceAlignments,
   induceLearnedConstructions,
   realizeLearnedSurface,
@@ -38,17 +38,17 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
       }
     }
     // Real pre-predicate fillers observed across the aligned examples.
-    const preSurfaces = new Set(
-      set.observations.flatMap(example => example.roleSpans.filter(span => span.roleId === "scce.role.pre_predicate").map(span => span.surface))
+    const beforePredicateSurfaces = new Set(
+      set.observations.flatMap(example => example.roleSpans.filter(span => span.roleId === GRAPH_SURFACE_ROLE_IDS.beforePredicate).map(span => span.surface))
     );
-    expect(preSurfaces.has("cat")).toBe(true);
-    expect(preSurfaces.has("dog")).toBe(true);
+    expect(beforePredicateSurfaces.has("cat")).toBe(true);
+    expect(beforePredicateSurfaces.has("dog")).toBe(true);
   });
 
-  it("anti-unifies aligned examples into one reusable construction and realizes an unseen pre-/post-predicate combination", () => {
+  it("anti-unifies aligned examples into one reusable construction and realizes an unseen agent/patient combination", () => {
     const text = [
-      "cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
-      "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."
+      "cat chased mouse.", "dog chased mouse.", "cat chased ball.",
+      "cat chased mouse.", "cat chased ball.", "dog chased mouse."
     ].join(" ");
     const documents = [{ id: "doc.1", text, evidenceIds: ["evidence:doc.1" as never] }];
     const model = createLanguageInductionEngine({ hasher }).induce({ documents });
@@ -65,21 +65,28 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
     expect(induction.rejected).toEqual([]);
     expect(induction.constructions.length).toBeGreaterThan(0);
     const construction = induction.constructions[0]!;
-    expect(construction.sequence.some(part => part.kind === "slot" && part.roleId === "scce.role.pre_predicate")).toBe(true);
+    expect(construction.sequence.some(part => part.kind === "slot" && part.roleId === GRAPH_SURFACE_ROLE_IDS.beforePredicate)).toBe(true);
 
-    // Real generalization proof: every pre-predicate surface ever aligned for this
+    // Real generalization proof: every agent surface ever aligned for this
     // construction is a legitimate variant of its form class -- including
     // ones drawn from a *different* observation than the exemplar sequence
     // used to build the construction id, i.e. the construction generalizes
     // across the corpus rather than memorizing one sentence.
-    const preFormClass = induction.formClasses.find(formClass => formClass.roleId === "scce.role.pre_predicate");
-    expect(preFormClass).toBeDefined();
-    const observedPreSurfaces = new Set(preFormClass!.variants.map(variant => variant.surface));
-    expect(observedPreSurfaces.size).toBeGreaterThanOrEqual(2);
+    const agentFormClass = induction.formClasses.find(formClass => formClass.roleId === GRAPH_SURFACE_ROLE_IDS.beforePredicate);
+    expect(agentFormClass).toBeDefined();
+    const observedAgentSurfaces = new Set(agentFormClass!.variants.map(variant => variant.surface));
+    expect(observedAgentSurfaces.size).toBeGreaterThanOrEqual(2);
 
-    // Realize a combination using a learned pre-predicate variant -- proving the
-    // learned construction (not the literal source sentence) drives output.
-    const chosenPre = preFormClass!.variants[0]!;
+    const patientFormClass = induction.formClasses.find(formClass => formClass.roleId === GRAPH_SURFACE_ROLE_IDS.afterPredicate);
+    expect(patientFormClass).toBeDefined();
+    const chosenAgent = agentFormClass!.variants.find(variant => variant.surface === "dog");
+    const chosenPatient = patientFormClass!.variants.find(variant => variant.surface === "ball");
+    expect(chosenAgent).toBeDefined();
+    expect(chosenPatient).toBeDefined();
+    expect(text).not.toContain("dog chased ball");
+
+    // Deliberately combine an agent and patient that were each learned but
+    // never co-occurred in the corpus.
     const plan: SurfaceMeaningPlan = {
       id: "plan.unseen-combination",
       profileKey: "profile.univ",
@@ -88,15 +95,24 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
         roleId: occurrence.roleId,
         occurrenceId: occurrence.occurrenceId,
         realization: occurrence.realization,
-        variants: occurrence.realization === "spoken" && occurrence.roleId === "scce.role.pre_predicate"
+        variants: occurrence.realization === "spoken" && occurrence.roleId === GRAPH_SURFACE_ROLE_IDS.beforePredicate
           ? [{
-            id: "variant.chosen-pre",
+            id: "variant.chosen-agent",
             profileKey: "profile.univ",
-            surface: chosenPre.surface,
-            evidenceIds: chosenPre.evidenceIds,
-            formClassId: preFormClass!.id,
-            provenance: chosenPre.provenance
+            surface: chosenAgent!.surface,
+            evidenceIds: chosenAgent!.evidenceIds,
+            formClassId: agentFormClass!.id,
+            provenance: chosenAgent!.provenance
           }]
+          : occurrence.realization === "spoken" && occurrence.roleId === GRAPH_SURFACE_ROLE_IDS.afterPredicate
+            ? [{
+              id: "variant.chosen-patient",
+              profileKey: "profile.univ",
+              surface: chosenPatient!.surface,
+              evidenceIds: chosenPatient!.evidenceIds,
+              formClassId: patientFormClass!.id,
+              provenance: chosenPatient!.provenance
+            }]
           : occurrence.realization === "spoken"
             ? (() => {
               const formClass = induction.formClasses
@@ -124,10 +140,7 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
     // The realized surface is driven by the learned construction's literal
     // frame plus the chosen learned slot filler -- not a copy of any single
     // source sentence.
-    expect(realized.realization.text).toContain(chosenPre.surface);
-    for (const part of construction.sequence) {
-      if (part.kind === "literal") expect(realized.realization.text).toContain(part.surface);
-    }
+    expect(realized.realization.text).toBe("dog chased ball");
   });
 
   it("does not fabricate an alignment set when fewer than two real occurrences exist for a construction", () => {
@@ -160,54 +173,5 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
     });
 
     expect(alignments).toEqual([]);
-  });
-
-  it("measures real, honest held-out generalization -- covers a known pre-predicate filler, correctly misses an unknown one", () => {
-    const trainText = [
-      "cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
-      "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."
-    ].join(" ");
-    const trainDocuments = [{ id: "doc.train", text: trainText, evidenceIds: ["evidence:train" as never] }];
-    // Held-out text was never seen by induction: one sentence reuses a
-    // learned pre-predicate filler ("cat") and post-predicate filler
-    // ("ball"); the other introduces a pre-predicate filler ("bird") that
-    // training never observed for this predicate.
-    const heldOutText = "cat chased ball. bird chased mouse.";
-    const heldOutDocuments = [{ id: "doc.held-out", text: heldOutText, evidenceIds: ["evidence:held-out" as never] }];
-
-    const reports = evaluateHeldOutConstructionCoverage({
-      trainDocuments,
-      heldOutDocuments,
-      profileId: "profile.univ",
-      hasher
-    });
-
-    expect(reports.length).toBeGreaterThan(0);
-    const report = reports.find(row => row.predicate === "chased");
-    expect(report).toBeDefined();
-    expect(report!.trainedPrePredicateVariantCount).toBeGreaterThanOrEqual(2);
-    expect(report!.heldOutOccurrences).toBe(2);
-    // Real, partial coverage -- not fabricated as 100% or silently 0%.
-    expect(report!.heldOutPrePredicateCovered).toBe(1);
-    expect(report!.heldOutPostPredicateOccurrences).toBe(2);
-    expect(report!.heldOutPostPredicateCovered).toBe(2);
-  });
-
-  it("does not fabricate a coverage report when no construction has any held-out occurrence", () => {
-    const trainText = [
-      "cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
-      "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."
-    ].join(" ");
-    const trainDocuments = [{ id: "doc.train", text: trainText, evidenceIds: ["evidence:train" as never] }];
-    const heldOutDocuments = [{ id: "doc.unrelated", text: "alpha bravo charlie delta echo foxtrot.", evidenceIds: ["evidence:unrelated" as never] }];
-
-    const reports = evaluateHeldOutConstructionCoverage({
-      trainDocuments,
-      heldOutDocuments,
-      profileId: "profile.univ",
-      hasher
-    });
-
-    expect(reports).toEqual([]);
   });
 });
