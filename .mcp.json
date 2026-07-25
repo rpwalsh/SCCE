@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "scce-dev": {
+      "command": "node",
+      "args": [
+        "c:\\Users\\react\\OneDrive\\Documents\\yopp\\tools\\scce-dev-mcp\\dist\\index.js"
+      ],
+      "cwd": "c:\\Users\\react\\OneDrive\\Documents\\yopp"
+    }
+  }
+}

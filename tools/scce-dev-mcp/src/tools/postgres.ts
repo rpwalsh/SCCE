@@ -1,83 +1,94 @@
-import { run, truncate } from '../lib/run.js';
+import { runProcess } from '../lib/run.js';
+import { truncate } from '../lib/run.js';
+import { resolvePgConnection } from '../lib/pgConfig.js';
+import { sqlIdentifier } from '../lib/validate.js';
 
 const BLOCKED_SQL = /\b(INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|TRUNCATE|COPY|CALL|DO|CREATE|VACUUM|ANALYZE|GRANT|REVOKE|SET|RESET|LOCK|REFRESH|REINDEX|CLUSTER)\b/i;
 const EXPLAIN_ANALYZE = /^\s*EXPLAIN\s+(?:ANALYZE\b|\([^)]*\bANALYZE\b[^)]*\))/i;
-const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const USABLE_PG_ENV_KEYS = ['PGDATABASE', 'PGUSER', 'PGHOST', 'PGPORT', 'PGSERVICE', 'PGPASSFILE'];
+const PSQL_TIMEOUT_MS = 20_000;
 
-function connectionArgs(): string[] | undefined {
-  const url = firstNonEmpty(process.env.DATABASE_URL, process.env.PG_URL);
-  if (url) return ['-d', url];
-  if (USABLE_PG_ENV_KEYS.some((key) => Boolean(process.env[key]?.trim()))) return [];
-  return undefined;
+type PgErrorReason = 'config_missing' | 'psql_missing' | 'auth_failed' | 'connection_failed' | 'schema_missing' | 'sql_rejected' | 'query_failed';
+
+function pgError(reason: PgErrorReason, message: string): string {
+  return JSON.stringify({ error: reason, message });
 }
 
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
-  return values.find((value) => value !== undefined && value.trim().length > 0);
-}
-
-function configMissing(): string {
-  return JSON.stringify({ config_missing: true, message: 'No DATABASE_URL, PG_URL, or usable PG* env vars set' });
+async function runPsql(baseArgs: string[], sql: string): Promise<{ ok: true; stdout: string } | { ok: false; error: string }> {
+  const status = await runProcess({
+    commandId: 'psql',
+    command: 'psql',
+    args: [...baseArgs, '-v', 'ON_ERROR_STOP=1', '-Atc', sql],
+    cwd: process.cwd(),
+    timeoutMs: PSQL_TIMEOUT_MS
+  });
+  if (status.spawnError) return { ok: false, error: pgError('psql_missing', 'psql executable not found on PATH') };
+  if (status.timedOut) return { ok: false, error: pgError('query_failed', 'query timed out') };
+  if (status.exitCode !== 0) {
+    const stderr = status.stderr.toLowerCase();
+    if (stderr.includes('password authentication failed') || stderr.includes('role') && stderr.includes('does not exist')) {
+      return { ok: false, error: pgError('auth_failed', truncate(status.stderr, 20)) };
+    }
+    if (stderr.includes('could not connect') || stderr.includes('connection refused') || stderr.includes('timeout expired')) {
+      return { ok: false, error: pgError('connection_failed', truncate(status.stderr, 20)) };
+    }
+    return { ok: false, error: pgError('query_failed', truncate(status.stderr, 20)) };
+  }
+  return { ok: true, stdout: status.stdout };
 }
 
 export async function handlePgSchema(args: { schema?: string }): Promise<string> {
-  const baseArgs = connectionArgs();
-  if (!baseArgs) return configMissing();
-  const schema = args.schema?.trim() ?? 'public';
-  if (!IDENT_RE.test(schema)) return JSON.stringify({ error: 'Invalid schema name' });
-  try {
-    const sql = `SELECT table_name FROM information_schema.tables WHERE table_schema='${schema}' ORDER BY table_name`;
-    const { stdout } = await run('psql', [...baseArgs, '-Atc', sql], process.cwd());
-    const tables = stdout.split(/\r?\n/).filter(Boolean);
-    const out: Record<string, unknown> = { schema, tables };
-    try {
-      const colSql = `SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema='${schema}' ORDER BY table_name,ordinal_position`;
-      const { stdout: colStdout } = await run('psql', [...baseArgs, '-Atc', colSql], process.cwd());
-      const columns = colStdout.split(/\r?\n/).filter(Boolean).slice(0, 500).map((line) => {
-        const [table, column, dataType] = line.split('|');
-        return { table: table ?? '', column: column ?? '', dataType: dataType ?? '' };
-      });
-      out.columns = columns;
-    } catch {}
-    try {
-      const idxSql = `SELECT schemaname,tablename,indexname FROM pg_indexes WHERE schemaname='${schema}' ORDER BY tablename,indexname`;
-      const { stdout: idxStdout } = await run('psql', [...baseArgs, '-Atc', idxSql], process.cwd());
-      out.indexes = idxStdout.split(/\r?\n/).filter(Boolean).slice(0, 200);
-    } catch {}
-    return JSON.stringify(out);
-  } catch {
-    return JSON.stringify({ error: 'psql query failed' });
+  const resolution = resolvePgConnection();
+  if (!resolution.ok) return pgError('config_missing', resolution.message);
+  const { connectionArgs, defaultSchema } = resolution.info;
+  const requestedSchema = args.schema?.trim();
+  const schemaCheck = requestedSchema ? sqlIdentifier.safeParse(requestedSchema) : undefined;
+  if (requestedSchema && !schemaCheck?.success) return pgError('query_failed', 'invalid schema name');
+  const schema = requestedSchema ?? defaultSchema;
+
+  const existsResult = await runPsql(connectionArgs, `SELECT 1 FROM information_schema.schemata WHERE schema_name='${schema}'`);
+  if (!existsResult.ok) return existsResult.error;
+  if (!existsResult.stdout.trim()) return pgError('schema_missing', `schema not found: ${schema}`);
+
+  const tablesResult = await runPsql(connectionArgs, `SELECT table_name FROM information_schema.tables WHERE table_schema='${schema}' ORDER BY table_name`);
+  if (!tablesResult.ok) return tablesResult.error;
+  const tables = tablesResult.stdout.split(/\r?\n/).filter(Boolean);
+  const out: Record<string, unknown> = { schema, tables };
+
+  const columnsResult = await runPsql(connectionArgs, `SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema='${schema}' ORDER BY table_name,ordinal_position`);
+  if (columnsResult.ok) {
+    out.columns = columnsResult.stdout.split(/\r?\n/).filter(Boolean).slice(0, 500).map((line) => {
+      const [table, column, dataType] = line.split('|');
+      return { table: table ?? '', column: column ?? '', dataType: dataType ?? '' };
+    });
   }
+
+  const indexResult = await runPsql(connectionArgs, `SELECT indexname FROM pg_indexes WHERE schemaname='${schema}' ORDER BY tablename,indexname`);
+  if (indexResult.ok) out.indexes = indexResult.stdout.split(/\r?\n/).filter(Boolean).slice(0, 200);
+
+  return JSON.stringify(out);
 }
 
 export async function handlePgExplain(args: { sql: string }): Promise<string> {
-  const baseArgs = connectionArgs();
-  if (!baseArgs) return configMissing();
+  const resolution = resolvePgConnection();
+  if (!resolution.ok) return pgError('config_missing', resolution.message);
   const sql = args.sql.trim();
   if (!/^\s*SELECT\b/i.test(sql) && !/^\s*EXPLAIN\b/i.test(sql)) {
-    return JSON.stringify({ error: 'Only SELECT or EXPLAIN SELECT allowed' });
+    return pgError('sql_rejected', 'only SELECT or EXPLAIN SELECT is allowed');
   }
-  if (EXPLAIN_ANALYZE.test(sql)) {
-    return JSON.stringify({ error: 'EXPLAIN ANALYZE is not allowed' });
-  }
-  if (BLOCKED_SQL.test(sql)) {
-    return JSON.stringify({ error: 'Disallowed SQL pattern' });
-  }
+  if (EXPLAIN_ANALYZE.test(sql)) return pgError('sql_rejected', 'EXPLAIN ANALYZE is not allowed (it executes the query)');
+  if (BLOCKED_SQL.test(sql)) return pgError('sql_rejected', 'disallowed SQL keyword detected');
   if (/^\s*EXPLAIN\b/i.test(sql) && !/^\s*SELECT\b/i.test(explainSubject(sql))) {
-    return JSON.stringify({ error: 'Only EXPLAIN SELECT allowed' });
+    return pgError('sql_rejected', 'only EXPLAIN SELECT is allowed');
   }
+
   const explainSql = /^\s*EXPLAIN\b/i.test(sql) ? sql : `EXPLAIN (FORMAT JSON) ${sql}`;
+  const result = await runPsql(resolution.info.connectionArgs, explainSql);
+  if (!result.ok) return result.error;
+  const cleaned = truncate(result.stdout, 200 * 1024);
   try {
-    const { stdout } = await run('psql', [...baseArgs, '-Atc', explainSql], process.cwd());
-    const cleaned = truncate(stdout, 200 * 1024);
-    try {
-      const parsed = JSON.parse(cleaned);
-      return JSON.stringify({ plan: parsed });
-    } catch {
-      return JSON.stringify({ raw: cleaned });
-    }
+    return JSON.stringify({ plan: JSON.parse(cleaned) });
   } catch {
-    return JSON.stringify({ error: 'EXPLAIN failed' });
+    return JSON.stringify({ raw: cleaned });
   }
 }
 

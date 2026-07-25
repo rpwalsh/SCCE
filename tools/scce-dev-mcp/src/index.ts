@@ -19,6 +19,21 @@ import { handleTestFailures } from './tools/tests.js';
 import { handlePgSchema } from './tools/postgres.js';
 import { handlePgExplain } from './tools/postgres.js';
 import { handleTraceList, handleTraceRead, handleAnswerTrace } from './tools/scceTrace.js';
+import { resolveRepositoryRoot, InvalidRepositoryRootError } from './lib/repoRoot.js';
+import { validateToolArgs, ToolArgumentError, toolSchemas, type ToolName } from './lib/validate.js';
+import { COMMAND_REGISTRY } from './lib/commands.js';
+
+try {
+  const root = resolveRepositoryRoot();
+  console.error(`scce-dev-mcp: resolved repository root: ${root}`);
+} catch (error) {
+  if (error instanceof InvalidRepositoryRootError) {
+    console.error(`scce-dev-mcp: fatal: ${error.message}`);
+    console.error('scce-dev-mcp: set SCCE_REPO_ROOT (or CLAUDE_PROJECT_DIR, or launch with cwd at the repo root) to a valid SCCE checkout.');
+    process.exit(1);
+  }
+  throw error;
+}
 
 const server = new Server(
   {
@@ -26,12 +41,14 @@ const server = new Server(
     version: '0.1.0',
   },
   {
-    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, repo_search, and git_diff_summary before opening source files. Keep every result bounded. Test tools run only allowlisted commands; PostgreSQL tools are read-only; trace tools report only events that exist. This server exposes no arbitrary shell or repository write operation.",
+    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, repo_search, and git_diff_summary before opening source files. repo_symbol/repo_callsites are ripgrep-based text search, not compiler-level TypeScript resolution. test_run/test_failures accept a fixed commandId (see repo_shape's scripts, or the tool descriptions) against a closed command registry, not an arbitrary shell string. Keep every result bounded. PostgreSQL tools are read-only and default to the configured SCCE schema. Trace tools report only events that exist and are containment-checked against the configured trace directory. This server exposes no arbitrary shell execution and no repository write, git-write, or package-install operation.",
     capabilities: {
       tools: {},
     },
   }
 );
+
+const commandIds = Object.keys(COMMAND_REGISTRY).join(', ');
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -42,7 +59,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_files',
-      description: 'List files with optional glob/contains filter.',
+      description: 'List files with optional glob/contains filter (contains is applied before truncation).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -67,7 +84,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_symbol',
-      description: 'Find TypeScript symbol definitions with lightweight parsing.',
+      description: 'Ripgrep-based text search for likely TypeScript symbol definitions/references. Not a compiler-level resolver — overloads, re-exports, and destructuring can be misclassified.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -79,7 +96,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_callsites',
-      description: 'Find call sites/references for a symbol.',
+      description: 'Ripgrep-based text search for call sites/references of a symbol. Not a compiler-level resolver.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -91,27 +108,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_routes',
-      description: 'Discover API routes/server handlers.',
+      description: "Discover API routes. Prefers this repo's declarative `export const ROUTES` table in packages/server/src/routes.ts; also returns a bounded text scan for other dispatch styles.",
       inputSchema: { type: 'object', properties: {} },
     },
     {
       name: 'repo_deps',
-      description: 'Summarize dependency graph and circular deps.',
+      description: 'Summarize dependency graph and circular deps via `pnpm repo:deps`; reports the real exit code.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
       name: 'repo_deadcode',
-      description: 'Summarize unused files/exports using knip/ts-prune if available.',
+      description: 'Summarize unused files/exports via `pnpm repo:dead`; reports the real exit code.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
       name: 'git_changed',
-      description: 'Summarize changed files against current base.',
+      description: 'Summarize changed files against the working tree (git status --porcelain).',
       inputSchema: { type: 'object', properties: {} },
     },
     {
       name: 'git_diff_summary',
-      description: 'Compact diff summary using git diff --stat and selected hunks.',
+      description: 'Compact diff summary: git diff --stat plus bounded selected hunk text for an optional repo-relative path.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -122,11 +139,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'test_run',
-      description: 'Run allowlisted test/build/typecheck/lint commands.',
+      description: `Run one command from a closed registry (commandId, not a shell string). Available: ${commandIds}. Do not call commandId "validate" from within this server's own test suite — it transitively runs mcp:verify and would recurse.`,
       inputSchema: {
         type: 'object',
         properties: {
-          command: { type: 'string' },
+          commandId: { type: 'string', default: 'unit' },
           filter: { type: 'string' },
           maxOutputLines: { type: 'number', default: 200 },
         },
@@ -134,18 +151,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'test_failures',
-      description: 'Run tests/typecheck and extract only failing test names and errors.',
+      description: `Run one registry commandId and extract only failing test names and errors. Available: ${commandIds}.`,
       inputSchema: {
         type: 'object',
         properties: {
-          command: { type: 'string' },
+          commandId: { type: 'string', default: 'unit' },
           maxFailures: { type: 'number', default: 10 },
         },
       },
     },
     {
       name: 'pg_schema',
-      description: 'Read-only Postgres schema inspection via DATABASE_URL or PG* env vars.',
+      description: 'Read-only Postgres schema inspection, defaulting to the schema configured in scce.config.json (SCCE_DATABASE_URL overrides the connection target, matching the runtime\'s own override rule).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -155,7 +172,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'pg_explain',
-      description: 'Run EXPLAIN (FORMAT JSON) only for SELECT queries.',
+      description: 'Run EXPLAIN (FORMAT JSON) for a SELECT query only. Mutating statements and EXPLAIN ANALYZE are rejected before any connection is attempted.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -166,7 +183,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'scce_trace_list',
-      description: 'List recent SCCE trace files from trace directory.',
+      description: 'List recent SCCE trace files from the configured trace directory.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -176,7 +193,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'scce_trace_read',
-      description: 'Read JSONL trace events and return compact filtered events.',
+      description: 'Stream JSONL trace events (bounded) and return compact filtered events. Trace files are containment-checked against the trace directory.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -203,19 +220,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  const a = args ?? {};
   try {
+    if (!(name in toolSchemas)) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown tool' }) }], isError: true };
+    }
+    const validated = validateToolArgs(name as ToolName, args ?? {});
     switch (name) {
       case 'repo_shape':
         return { content: [{ type: 'text', text: await handleRepoShape() }] };
       case 'repo_files':
-        return { content: [{ type: 'text', text: await handleRepoFiles(a as any) }] };
+        return { content: [{ type: 'text', text: await handleRepoFiles(validated as any) }] };
       case 'repo_search':
-        return { content: [{ type: 'text', text: await handleRepoSearch(a as any) }] };
+        return { content: [{ type: 'text', text: await handleRepoSearch(validated as any) }] };
       case 'repo_symbol':
-        return { content: [{ type: 'text', text: await handleRepoSymbol(a as any) }] };
+        return { content: [{ type: 'text', text: await handleRepoSymbol(validated as any) }] };
       case 'repo_callsites':
-        return { content: [{ type: 'text', text: await handleRepoCallSites(a as any) }] };
+        return { content: [{ type: 'text', text: await handleRepoCallSites(validated as any) }] };
       case 'repo_routes':
         return { content: [{ type: 'text', text: await handleRepoRoutes() }] };
       case 'repo_deps':
@@ -225,25 +245,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'git_changed':
         return { content: [{ type: 'text', text: await handleGitChanged() }] };
       case 'git_diff_summary':
-        return { content: [{ type: 'text', text: await handleGitDiffSummary(a as any) }] };
+        return { content: [{ type: 'text', text: await handleGitDiffSummary(validated as any) }] };
       case 'test_run':
-        return { content: [{ type: 'text', text: await handleTestRun(a as any) }] };
+        return { content: [{ type: 'text', text: await handleTestRun(validated as any) }] };
       case 'test_failures':
-        return { content: [{ type: 'text', text: await handleTestFailures(a as any) }] };
+        return { content: [{ type: 'text', text: await handleTestFailures(validated as any) }] };
       case 'pg_schema':
-        return { content: [{ type: 'text', text: await handlePgSchema(a as any) }] };
+        return { content: [{ type: 'text', text: await handlePgSchema(validated as any) }] };
       case 'pg_explain':
-        return { content: [{ type: 'text', text: await handlePgExplain(a as any) }] };
+        return { content: [{ type: 'text', text: await handlePgExplain(validated as any) }] };
       case 'scce_trace_list':
-        return { content: [{ type: 'text', text: await handleTraceList(a as any) }] };
+        return { content: [{ type: 'text', text: await handleTraceList(validated as any) }] };
       case 'scce_trace_read':
-        return { content: [{ type: 'text', text: await handleTraceRead(a as any) }] };
+        return { content: [{ type: 'text', text: await handleTraceRead(validated as any) }] };
       case 'scce_answer_trace':
-        return { content: [{ type: 'text', text: await handleAnswerTrace(a as any) }] };
+        return { content: [{ type: 'text', text: await handleAnswerTrace(validated as any) }] };
       default:
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Unknown tool' }) }], isError: true };
     }
   } catch (error) {
+    if (error instanceof ToolArgumentError) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_arguments', message: error.message }) }], isError: true };
+    }
     const message = error instanceof Error ? error.message : String(error);
     return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
   }
