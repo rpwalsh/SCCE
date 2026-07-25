@@ -2,7 +2,11 @@ import {
   compileLanguageConstructionPattern,
   type SourceBoundLanguageConstructionTrainingSet
 } from "./language-construction-memory.js";
-import { induceSourceBoundConstructionTrainingSets } from "./graph-surface-alignment.js";
+import {
+  evaluateHeldOutConstructionCoverage,
+  induceSourceBoundConstructionTrainingSets,
+  type HeldOutConstructionCoverageReport
+} from "./graph-surface-alignment.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import type {
@@ -43,6 +47,36 @@ export interface LanguageTrainingBatch {
   additionalPatterns?: readonly LanguagePatternRecord[];
 }
 
+export interface LanguageTrainingConstructionPromotionPolicy {
+  minHeldOutOccurrences?: number;
+  minPrePredicateCoverage?: number;
+  minPostPredicateCoverage?: number;
+}
+
+export interface LanguageTrainingConstructionPromotionReport {
+  schema: "scce.language_training.construction_promotion.v1";
+  trainEvidence: number;
+  heldOutEvidence: number;
+  suppliedConstructionSets: number;
+  inducedConstructionSets: number;
+  promotedSuppliedConstructionSets: number;
+  promotedInducedConstructionSets: number;
+  rejectedInducedConstructionSets: number;
+  thresholds: {
+    minHeldOutOccurrences: number;
+    minPrePredicateCoverage: number;
+    minPostPredicateCoverage: number;
+  };
+  heldOutCoverage: HeldOutConstructionCoverageReport[];
+  rejections: Array<{
+    bindingId: string;
+    reason: "no_heldout_evidence" | "no_heldout_coverage" | "heldout_occurrences_low" | "pre_predicate_coverage_low" | "post_predicate_coverage_low" | "compile_rejected";
+    heldOutOccurrences: number;
+    prePredicateCoverage: number;
+    postPredicateCoverage?: number;
+  }>;
+}
+
 export interface CompiledLanguageTrainingBatch {
   observations: NgramObservation[];
   models: NgramModelRecord[];
@@ -50,6 +84,9 @@ export interface CompiledLanguageTrainingBatch {
   patterns: LanguagePatternRecord[];
   semanticFrames: SemanticFrameRecord[];
   constructionPatterns: LanguagePatternRecord[];
+  constructionCandidates: number;
+  rejectedConstructionCandidates: number;
+  constructionPromotion: LanguageTrainingConstructionPromotionReport;
   warnings: string[];
   audit: JsonValue;
 }
@@ -76,22 +113,31 @@ export function compileLanguageTrainingBatch(input: {
     vocabularyLimit: batch.vocabularyLimit
   }));
   const inducedSets = induceSourceBoundConstructionTrainingSets({
-    evidence: batch.evidence,
+    evidence: constructionTrainEvidence(batch.evidence, input.hasher),
     profileId: batch.profile.id,
     hasher: input.hasher
   });
   const constructionPatterns: LanguagePatternRecord[] = [];
   const warnings: string[] = [];
-  const sets = uniqueConstructionSets([
-    ...(batch.constructionSets ?? []),
+  const promotion = evaluateConstructionPromotion({
+    evidence: batch.evidence,
+    profileId: batch.profile.id,
+    hasher: input.hasher,
+    suppliedSets: batch.constructionSets ?? [],
+    inducedSets
+  });
+  const sets = uniqueConstructionWorkItems([
+    ...(batch.constructionSets ?? []).map(set => ({ set, evidence: batch.evidence })),
     ...inducedSets
+      .filter(set => promotion.promotedInducedBindingIds.has(set.bindingId))
+      .map(set => ({ set, evidence: constructionCompileEvidence(batch.evidence, input.hasher) }))
   ]);
-  for (const set of sets) {
+  for (const item of sets) {
     const compiled = compileLanguageConstructionPattern({
-      bindingId: set.bindingId,
+      bindingId: item.set.bindingId,
       profileId: batch.profile.id,
-      observations: set.observations,
-      evidence: batch.evidence,
+      observations: item.set.observations,
+      evidence: item.evidence,
       hasher: input.hasher,
       updatedAt: batch.createdAt
     });
@@ -110,6 +156,9 @@ export function compileLanguageTrainingBatch(input: {
     ]),
     semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
     constructionPatterns,
+    constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
+    rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
+    constructionPromotion: promotion.report,
     warnings: [...new Set(warnings)].sort(),
     audit: toJsonValue({
       compiler: "kernel.language_training_batch.v1",
@@ -120,6 +169,7 @@ export function compileLanguageTrainingBatch(input: {
       memory: memories.map(memory => jsonObject(memory.audit)),
       suppliedConstructionSets: batch.constructionSets?.length ?? 0,
       inducedConstructionSets: inducedSets.length,
+      constructionPromotion: promotion.report as unknown as JsonValue,
       compiledConstructions: constructionPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
@@ -167,6 +217,16 @@ function uniqueConstructionSets(
   return [...byBindingId.values()].sort((left, right) => left.bindingId.localeCompare(right.bindingId));
 }
 
+function uniqueConstructionWorkItems(
+  items: readonly { set: SourceBoundLanguageConstructionTrainingSet; evidence: readonly EvidenceSpan[] }[]
+): Array<{ set: SourceBoundLanguageConstructionTrainingSet; evidence: readonly EvidenceSpan[] }> {
+  const merged = uniqueConstructionSets(items.map(item => item.set));
+  return merged.map(set => ({
+    set,
+    evidence: items.find(item => item.set.bindingId === set.bindingId)?.evidence ?? []
+  }));
+}
+
 function uniquePatterns(patterns: readonly LanguagePatternRecord[]): LanguagePatternRecord[] {
   const byId = new Map<string, LanguagePatternRecord>();
   for (const pattern of patterns) if (!byId.has(pattern.id)) byId.set(pattern.id, pattern);
@@ -177,6 +237,136 @@ function uniqueRecords<T extends { id: string }>(records: readonly T[]): T[] {
   const byId = new Map<string, T>();
   for (const record of records) if (!byId.has(record.id)) byId.set(record.id, record);
   return [...byId.values()];
+}
+
+function evaluateConstructionPromotion(input: {
+  evidence: readonly EvidenceSpan[];
+  profileId: string;
+  hasher: Hasher;
+  suppliedSets: readonly SourceBoundLanguageConstructionTrainingSet[];
+  inducedSets: readonly SourceBoundLanguageConstructionTrainingSet[];
+  policy?: LanguageTrainingConstructionPromotionPolicy;
+}): { promotedInducedBindingIds: ReadonlySet<string>; report: LanguageTrainingConstructionPromotionReport } {
+  const thresholds = {
+    minHeldOutOccurrences: Math.max(1, Math.floor(input.policy?.minHeldOutOccurrences ?? 2)),
+    minPrePredicateCoverage: clampUnit(input.policy?.minPrePredicateCoverage ?? 0.5),
+    minPostPredicateCoverage: clampUnit(input.policy?.minPostPredicateCoverage ?? 0.5)
+  };
+  const split = splitConstructionEvidence(input.evidence, input.hasher);
+  const coverage = split.heldOut.length
+    ? evaluateHeldOutConstructionCoverage({
+      trainDocuments: evidenceDocuments(split.train),
+      heldOutDocuments: evidenceDocuments(split.heldOut),
+      profileId: input.profileId,
+      hasher: input.hasher
+    })
+    : [];
+  const coverageByBindingId = new Map(coverage.map(row => [row.bindingId, row]));
+  const promoted = new Set<string>();
+  const rejections: LanguageTrainingConstructionPromotionReport["rejections"] = [];
+
+  for (const set of input.inducedSets) {
+    const report = coverageByBindingId.get(set.bindingId);
+    const preCoverage = report ? ratio(report.heldOutPrePredicateCovered, report.heldOutOccurrences) : 0;
+    const postCoverage = report && report.heldOutPostPredicateOccurrences > 0
+      ? ratio(report.heldOutPostPredicateCovered, report.heldOutPostPredicateOccurrences)
+      : undefined;
+    const reason = !split.heldOut.length
+      ? "no_heldout_evidence"
+      : !report
+        ? "no_heldout_coverage"
+        : report.heldOutOccurrences < thresholds.minHeldOutOccurrences
+          ? "heldout_occurrences_low"
+          : preCoverage < thresholds.minPrePredicateCoverage
+            ? "pre_predicate_coverage_low"
+            : postCoverage !== undefined && postCoverage < thresholds.minPostPredicateCoverage
+              ? "post_predicate_coverage_low"
+              : undefined;
+    if (!reason) {
+      promoted.add(set.bindingId);
+      continue;
+    }
+    rejections.push({
+      bindingId: set.bindingId,
+      reason,
+      heldOutOccurrences: report?.heldOutOccurrences ?? 0,
+      prePredicateCoverage: preCoverage,
+      ...(postCoverage === undefined ? {} : { postPredicateCoverage: postCoverage })
+    });
+  }
+
+  return {
+    promotedInducedBindingIds: promoted,
+    report: {
+      schema: "scce.language_training.construction_promotion.v1",
+      trainEvidence: split.train.length,
+      heldOutEvidence: split.heldOut.length,
+      suppliedConstructionSets: input.suppliedSets.length,
+      inducedConstructionSets: input.inducedSets.length,
+      promotedSuppliedConstructionSets: input.suppliedSets.length,
+      promotedInducedConstructionSets: promoted.size,
+      rejectedInducedConstructionSets: rejections.length,
+      thresholds,
+      heldOutCoverage: coverage,
+      rejections
+    }
+  };
+}
+
+function constructionTrainEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): EvidenceSpan[] {
+  return splitConstructionEvidence(evidence, hasher).train;
+}
+
+function constructionCompileEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): EvidenceSpan[] {
+  const split = splitConstructionEvidence(evidence, hasher);
+  return split.heldOut.length ? split.train : [...evidence];
+}
+
+function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): { train: EvidenceSpan[]; heldOut: EvidenceSpan[] } {
+  const promoted = evidence
+    .filter(span => span.status === "promoted")
+    .sort((left, right) => {
+      const source = String(left.sourceVersionId).localeCompare(String(right.sourceVersionId));
+      if (source) return source;
+      const offset = left.charStart - right.charStart;
+      if (offset) return offset;
+      return String(left.id).localeCompare(String(right.id));
+    });
+  if (promoted.length < 3) return { train: promoted, heldOut: [] };
+
+  const heldOut: EvidenceSpan[] = [];
+  const train: EvidenceSpan[] = [];
+  for (let index = 0; index < promoted.length; index++) {
+    const span = promoted[index]!;
+    const digest = hasher.digestHex(`${span.sourceVersionId}\u001f${span.id}`);
+    const offset = Number.parseInt(digest.slice(0, 2), 16) % 5;
+    ((index + offset) % 5 === 4 ? heldOut : train).push(span);
+  }
+  if (!heldOut.length) {
+    heldOut.push(promoted[promoted.length - 1]!);
+    train.splice(train.findIndex(span => span.id === heldOut[0]!.id), 1);
+  }
+  if (train.length < 2) {
+    return { train: promoted, heldOut: [] };
+  }
+  return { train, heldOut };
+}
+
+function evidenceDocuments(evidence: readonly EvidenceSpan[]): Array<{ id: string; text: string; evidenceIds: EvidenceSpan["id"][]; sourceVersionId: EvidenceSpan["sourceVersionId"] }> {
+  return evidence.map(span => ({
+    id: String(span.id),
+    text: span.text,
+    evidenceIds: [span.id],
+    sourceVersionId: span.sourceVersionId
+  }));
+}
+
+function ratio(numerator: number, denominator: number): number {
+  return denominator > 0 ? clampUnit(numerator / denominator) : 0;
+}
+
+function clampUnit(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 }
 
 function boundedTrainingTextChunks(text: string, maxUtf16Length = 150_000): string[] {

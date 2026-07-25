@@ -77,7 +77,9 @@ export interface LanguageCorpusTrainingReport {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  constructionCandidates: number;
   languageConstructions: number;
+  rejectedLanguageConstructions: number;
   eventId: string;
   warnings: string[];
 }
@@ -251,7 +253,10 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       sourceUri,
       sourceVersionId,
       evidence: evidence.length,
+      constructionCandidates: compiledBatch.constructionCandidates,
       languageConstructions: compiledConstructionPatterns.length,
+      rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
+      constructionPromotion: compiledBatch.constructionPromotion as unknown as JsonValue,
       corpusMetadata: metadata
     }
   });
@@ -270,7 +275,9 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     languageUnits: units.length,
     languagePatterns: patterns.length,
     semanticFrames: frames.length,
+    constructionCandidates: compiledBatch.constructionCandidates,
     languageConstructions: compiledConstructionPatterns.length,
+    rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
     eventId: String(learned.id),
     warnings: [...new Set(constructionWarnings)].sort()
   };
