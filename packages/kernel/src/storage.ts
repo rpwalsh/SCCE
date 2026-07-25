@@ -833,6 +833,14 @@ export interface ScceStorage extends StorageAdmin {
    * model.
    */
   sparseRanking?: import("./sparse-ranking-lifecycle.js").SparseRankingModelStore;
+  /**
+   * Optional: durable per-language-cluster segmentation v2 boundary-signal
+   * aggregate store (Part B step 2). Optional for the same reason as the
+   * other stores above; absent means no corpus-derived spacing-convention
+   * aggregate exists yet for any script and callers must fall back to the
+   * static `scriptUsesSpaceSeparatedWords()` classification.
+   */
+  segmentationAggregates?: import("./segmentation-aggregate.js").SegmentationAggregateStore;
 }
 
 export interface PolicyEvolutionStore {
@@ -881,7 +889,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 19;
+export const POSTGRES_SCHEMA_VERSION = 20;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -942,7 +950,8 @@ export const POSTGRES_REQUIRED_TABLES = [
   "executive_command",
   "executive_event",
   "sparse_ranking_models",
-  "sparse_ranking_active_model"
+  "sparse_ranking_active_model",
+  "segmentation_aggregates"
 ] as const;
 
 export interface ScceKernelDeps {
