@@ -182,9 +182,33 @@ export function createTrainingRuntime(options: {
       model.latentConcepts = featureSketches;
       if (input.config.policy) Object.assign(policy, input.config.policy);
       await deps.storage.model.writeModel(model);
+      const trainingPlanBuiltEvent = await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: mvpTrainPlan.audit }));
+      mvpTrainPlan.statusHistory.push({ status: "planned", at: clock.now(), eventId: String(trainingPlanBuiltEvent.id) });
+      // Part B step 3: persist the full induction model (morphology,
+      // syntax templates, semantic frames, translation seeds), not only its
+      // audit -- previously discarded after this function returned. Only
+      // attempted when both a real store and a real information label are
+      // configured; never invents a label to force persistence through.
+      const inducedLanguageModel = mvpTrainPlan.checkpoint.languageModel;
+      if (inducedLanguageModel && deps.storage.inducedLanguageModels && deps.sourceInformationLabel) {
+        await deps.storage.inducedLanguageModels.putModel({
+          id: inducedLanguageModel.id,
+          model: inducedLanguageModel,
+          trainingPlanId: mvpTrainPlan.id,
+          createdAt: clock.now(),
+          informationLabel: deps.sourceInformationLabel
+        });
+        const languageModelPersistedEvent = await append(eventFactory.create({
+          episodeId,
+          typeId: "InducedLanguageModelPersisted",
+          payload: toJsonValue({ modelId: inducedLanguageModel.id, trainingPlanId: mvpTrainPlan.id, corpusDocuments: inducedLanguageModel.corpusDocuments, vocabularySize: inducedLanguageModel.vocabularySize })
+        }));
+        mvpTrainPlan.statusHistory.push({ status: "persisted", at: clock.now(), eventId: String(languageModelPersistedEvent.id), reason: "induced language model stored in full" });
+        events.push(languageModelPersistedEvent);
+      }
+      events.push(trainingPlanBuiltEvent);
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: plan.audit })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: eviPlan.audit })));
-      events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: mvpTrainPlan.audit })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPromoted", payload: { promotedEvidence: promoted, selectedEvidenceIds: promotionIds.map(String), weightedFeatureSketches: featureSketches.length, legacyModelStateKey: "latentConcepts", languageProfiles: profiles.length, trainingLanguage: trainingLanguage.audit, promotionPlan: plan.promotion, trainingPromotion: mvpTrainPlan.promotion.slice(0, 64).map(item => ({ evidenceId: item.evidenceId, promote: item.promote, score: item.score, reasons: item.reasons })) } })));
       const selfState = await createFunctionalSelfModel({ storage: deps.storage, model, policy, recentFailures: failures });
       const trainField = fieldEngine.activate({ text: model.learningGoals.join("\n"), nodes: slice.nodes, edges: slice.edges });
