@@ -6,6 +6,7 @@ import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
+import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
 import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
@@ -217,12 +218,30 @@ export function createTrainingRuntime(options: {
           createdAt: clock.now(),
           informationLabel: deps.sourceInformationLabel
         });
+        const projection = languageMemoryPatternsFromInducedLanguageModel({
+          model: inducedLanguageModel,
+          profiles,
+          idFactory,
+          updatedAt: clock.now(),
+          sourceSystem: "training",
+          informationLabel: deps.sourceInformationLabel
+        });
+        for (const pattern of projection.patterns) {
+          await deps.storage.languageMemory.putLanguagePattern(pattern);
+        }
         const languageModelPersistedEvent = await append(eventFactory.create({
           episodeId,
           typeId: "InducedLanguageModelPersisted",
-          payload: toJsonValue({ modelId: inducedLanguageModel.id, trainingPlanId: mvpTrainPlan.id, corpusDocuments: inducedLanguageModel.corpusDocuments, vocabularySize: inducedLanguageModel.vocabularySize })
+          payload: toJsonValue({
+            modelId: inducedLanguageModel.id,
+            trainingPlanId: mvpTrainPlan.id,
+            corpusDocuments: inducedLanguageModel.corpusDocuments,
+            vocabularySize: inducedLanguageModel.vocabularySize,
+            memoryProjection: projection as unknown as JsonValue,
+            runtimeActivePatterns: projection.patterns.length
+          })
         }));
-        mvpTrainPlan.statusHistory.push({ status: "persisted", at: clock.now(), eventId: String(languageModelPersistedEvent.id), reason: "induced language model stored in full" });
+        mvpTrainPlan.statusHistory.push({ status: "persisted", at: clock.now(), eventId: String(languageModelPersistedEvent.id), reason: projection.patterns.length ? "induced language model stored and projected into runtime language memory" : "induced language model stored; runtime projection skipped" });
         events.push(languageModelPersistedEvent);
       }
       events.push(trainingPlanBuiltEvent);
