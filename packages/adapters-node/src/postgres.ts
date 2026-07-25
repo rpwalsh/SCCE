@@ -723,6 +723,14 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.learning_needs (id TEXT PRIMARY KEY, episode_id TEXT, goal TEXT NOT NULL, gap_json JSONB NOT NULL, source_plan_json JSONB NOT NULL, status TEXT NOT NULL, priority DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_profiles (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, profile_json JSONB NOT NULL, ngram_keys TEXT[] NOT NULL DEFAULT ARRAY[]::text[], created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `ALTER TABLE ${q}.language_profiles ADD COLUMN IF NOT EXISTS ngram_keys TEXT[] NOT NULL DEFAULT ARRAY[]::text[]`,
+    `UPDATE ${q}.language_profiles profile
+     SET ngram_keys=COALESCE((
+       SELECT ARRAY_AGG(DISTINCT LOWER(item->>'ngram') ORDER BY LOWER(item->>'ngram'))
+       FROM jsonb_array_elements(profile.profile_json->'charNgrams') item
+       WHERE COALESCE(item->>'ngram','')<>''
+     ),ARRAY[]::text[])
+     WHERE CARDINALITY(profile.ngram_keys)=0
+       AND jsonb_typeof(profile.profile_json->'charNgrams')='array'`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_profile_aliases (
        alias_key TEXT NOT NULL,
        alias_surface TEXT NOT NULL,
