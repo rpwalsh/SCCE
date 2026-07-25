@@ -5,8 +5,8 @@ import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, ConversationTurnRecord, GraphSlice, IngestInput, InspectionTarget, JsonValue, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 
@@ -102,6 +102,7 @@ export const ROUTES = [
   { method: "GET", path: "/api/reports/handoff", label: "workspace handoff", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/reports/review", label: "workspace review", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/train", label: "train", mutates: true, requiresDb: true },
+  { method: "POST", path: "/api/causal/analyze", label: "identified causal analysis", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn", label: "turn", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn/outcome", label: "turn dialogue outcome", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/:id", label: "turn lookup", mutates: false, requiresDb: true },
@@ -401,6 +402,7 @@ async function dispatch(
     if (target === "review") return json(await runtime.report("review", url.searchParams.get("path") ?? undefined, workspaceOptionsFromUrl(url)));
   }
   if (req.method === "POST" && url.pathname === "/api/train") return json(await context.runtime.kernel.train(validateTrain(await readBody(req, context.maxBodyBytes))));
+  if (req.method === "POST" && url.pathname === "/api/causal/analyze") return json(await context.runtime.kernel.analyzeCausalEffect(validateCausalAnalysisRequest(await readBody(req, context.maxBodyBytes))));
   if (req.method === "POST" && url.pathname === "/api/turn") {
     const trace = (globalThis as any).__sccTrace;
     const turnStarted = Date.now();
@@ -790,6 +792,116 @@ function validateTrain(value: unknown): TrainInput {
       policy: config.policy === undefined ? undefined : validatePolicyPatch(config.policy),
       metadata: config.metadata === undefined ? undefined : validateJsonValue(config.metadata, "config.metadata")
     }
+  };
+}
+
+/**
+ * The typed, non-conversational entry point for identified causal
+ * inference (per the production-integration plan: never inferred from
+ * chat text). Business-rule rejection (missing adjustment, insufficient
+ * observations, failed positivity, etc.) is the engine's own job and comes
+ * back as a transparent `{status: "rejected", audit: {reasons}}` result,
+ * not an HTTP error -- this validator only enforces that the request is
+ * well-typed enough to reach the engine at all, and that every assumption
+ * field is an explicit `true` attestation from the caller, never injected
+ * on their behalf.
+ */
+function validateCausalAnalysisRequest(value: unknown): CausalAnalysisRequest {
+  if (!isRecord(value)) throw new HttpError(400, "causal analysis request must be an object");
+  if (value.schema !== CAUSAL_ANALYSIS_REQUEST_SCHEMA) {
+    throw new HttpError(400, `schema must be "${CAUSAL_ANALYSIS_REQUEST_SCHEMA}"`);
+  }
+  if (!Array.isArray(value.observations)) throw new HttpError(400, "observations must be an array");
+  if (value.observations.length > 100_000) throw new HttpError(400, "observations may contain at most 100000 items");
+  const observations = value.observations.map((raw, index) => validateCausalObservation(raw, `observations[${index}]`));
+  const design = value.design === undefined ? undefined : validateIdentificationDesign(value.design);
+  const targetRiskCoverage = boundedNumber(value.targetRiskCoverage, "targetRiskCoverage", 0, 1);
+  return {
+    schema: CAUSAL_ANALYSIS_REQUEST_SCHEMA,
+    observations,
+    ...(design ? { design } : {}),
+    targetRiskCoverage
+  };
+}
+
+function validateCausalObservation(value: unknown, label: string): CausalObservation {
+  if (!isRecord(value)) throw new HttpError(400, `${label} must be an object`);
+  const id = boundedString(value.id, `${label}.id`, 256);
+  if (!isRecord(value.values)) throw new HttpError(400, `${label}.values must be an object`);
+  const values: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value.values)) {
+    values[key] = boundedNumber(raw, `${label}.values.${key}`, -1e12, 1e12);
+  }
+  const evidenceIds = boundedStringArray(value.evidenceIds, `${label}.evidenceIds`, 64, 256);
+  return { id, values, evidenceIds };
+}
+
+function validateIdentificationDesign(value: unknown): IdentificationDesign {
+  if (!isRecord(value)) throw new HttpError(400, "design must be an object");
+  const treatment = boundedString(value.treatment, "design.treatment", 256) as NodeId;
+  const outcome = boundedString(value.outcome, "design.outcome", 256) as NodeId;
+  if (value.kind === "backdoor_adjustment") {
+    return {
+      kind: "backdoor_adjustment",
+      treatment,
+      outcome,
+      adjustmentSet: boundedStringArray(value.adjustmentSet, "design.adjustmentSet", 64, 256) as NodeId[],
+      dag: validateCausalAssumptionDag(value.dag),
+      assumptions: {
+        consistency: requireAssumptionTrue(value, "consistency"),
+        noInterference: requireAssumptionTrue(value, "noInterference"),
+        noUnmeasuredConfoundingGivenAdjustment: requireAssumptionTrue(value, "noUnmeasuredConfoundingGivenAdjustment"),
+        temporalOrderEstablished: requireAssumptionTrue(value, "temporalOrderEstablished"),
+        positivityExpected: requireAssumptionTrue(value, "positivityExpected")
+      }
+    };
+  }
+  if (value.kind === "randomized_intervention") {
+    return {
+      kind: "randomized_intervention",
+      treatment,
+      outcome,
+      assignmentMechanismId: boundedString(value.assignmentMechanismId, "design.assignmentMechanismId", 256),
+      assignmentEvidenceIds: boundedStringArray(value.assignmentEvidenceIds, "design.assignmentEvidenceIds", 64, 256),
+      assumptions: {
+        randomizedAssignment: requireAssumptionTrue(value, "randomizedAssignment"),
+        consistency: requireAssumptionTrue(value, "consistency"),
+        noInterference: requireAssumptionTrue(value, "noInterference"),
+        outcomeObservedAfterAssignment: requireAssumptionTrue(value, "outcomeObservedAfterAssignment")
+      }
+    };
+  }
+  throw new HttpError(400, `design.kind must be "backdoor_adjustment" or "randomized_intervention"`);
+}
+
+function requireAssumptionTrue(design: Record<string, unknown>, key: string): true {
+  const assumptions = isRecord(design.assumptions) ? design.assumptions : {};
+  if (assumptions[key] !== true) {
+    throw new HttpError(400, `design.assumptions.${key} must be explicitly asserted as true -- it is never inferred`);
+  }
+  return true;
+}
+
+function validateCausalAssumptionDag(value: unknown): CausalAssumptionDag {
+  if (!isRecord(value)) throw new HttpError(400, "design.dag must be an object");
+  const assumptionSetId = boundedString(value.assumptionSetId, "design.dag.assumptionSetId", 256);
+  if (!Array.isArray(value.nodes)) throw new HttpError(400, "design.dag.nodes must be an array");
+  if (value.nodes.length > 4096) throw new HttpError(400, "design.dag.nodes may contain at most 4096 items");
+  const nodes = value.nodes.map((node, index) => boundedString(node, `design.dag.nodes[${index}]`, 256)) as NodeId[];
+  if (!Array.isArray(value.edges)) throw new HttpError(400, "design.dag.edges must be an array");
+  if (value.edges.length > 8192) throw new HttpError(400, "design.dag.edges may contain at most 8192 items");
+  const edges = value.edges.map((raw, index) => validateCausalAssumptionEdge(raw, `design.dag.edges[${index}]`));
+  const evidenceIds = boundedStringArray(value.evidenceIds, "design.dag.evidenceIds", 64, 256);
+  return { kind: "causal_assumption_dag", assumptionSetId, nodes, edges, evidenceIds };
+}
+
+function validateCausalAssumptionEdge(value: unknown, label: string): CausalAssumptionEdge {
+  if (!isRecord(value)) throw new HttpError(400, `${label} must be an object`);
+  return {
+    id: boundedString(value.id, `${label}.id`, 256),
+    cause: boundedString(value.cause, `${label}.cause`, 256) as NodeId,
+    effect: boundedString(value.effect, `${label}.effect`, 256) as NodeId,
+    evidenceIds: boundedStringArray(value.evidenceIds, `${label}.evidenceIds`, 64, 256)
   };
 }
 

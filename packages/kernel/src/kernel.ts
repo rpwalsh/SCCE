@@ -5,6 +5,7 @@ import {
 } from "./answer-revision.js";
 import { createBenchmarkScorer } from "./benchmarks.js";
 import { createCandidateEngine } from "./candidate.js";
+import { createCausalAnalysisRuntime } from "./causal-analysis-runtime.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
 import { createConnectorGovernance } from "./connector-governance.js";
@@ -251,6 +252,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       if (invalidate) invalidateRuntimeCaches();
     }
   });
+  const causalAnalysisRuntime = createCausalAnalysisRuntime({ clock, hasher, idFactory, eventFactory, append });
   const trainingRuntime = createTrainingRuntime({
     deps, clock, idFactory, eventFactory, featureSketchLearner, learning, learningLoop,
     trainingOrchestrator, language, languageMemoryRuntime, fieldEngine, prediction, ssd, fcs,
@@ -455,6 +457,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     },
     async train(input: TrainInput): Promise<TrainResult> {
       return trainingRuntime.train(input);
+    },
+    async analyzeCausalEffect(request) {
+      return causalAnalysisRuntime.analyze(request);
     },
     async turn(input: OwnerInput): Promise<TurnResult> {
       return productionTurnRuntime.turn(input);

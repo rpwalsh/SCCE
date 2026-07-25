@@ -1715,7 +1715,7 @@ export function createProductionTurnRuntime(options: {
       await deps.storage.constructs.putConstruct(spokenConstructGraph);
       events.push(await append(eventFactory.create({ episodeId, typeId: "ConstructGraphBuilt", payload: construct })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "ConstructGraphBuilt", payload: { substrate: assembly.audit, constructGraphId: spokenConstructGraph.id } })));
-      events.push(await append(eventFactory.create({ episodeId, typeId: "CausalGraphDiscovered", payload: { counterfactual: counterfactualWorld.audit } })));
+      events.push(await append(eventFactory.create({ episodeId, typeId: "CounterfactualSimulated", payload: { counterfactual: counterfactualWorld.audit } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "ActionPrepared", payload: { safety: safetyWithPlans.audit, toolPlan: toolPlan.policyAudit } })));
       if (construct.program) events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramGraphBuilt", payload: construct.program })));
       if (construct.artifacts.length) events.push(await append(eventFactory.create({ episodeId, typeId: "FileGraphBuilt", payload: { files: construct.artifacts.map(file => ({ path: file.path, contentHash: file.contentHash, role: file.role })) } })));
