@@ -40,6 +40,7 @@ import type { BrainShardProvenanceClass } from "./brain-shards.js";
 import type { CorpusRegistryEntry } from "./corpus-registry.js";
 import type { CalibrationObservationRecord } from "./calibration-spine.js";
 import type { RelationPotentialModel } from "./relation-potential.js";
+import type { DurableExecutiveEpisode } from "./executive-journal.js";
 
 export interface EventRangeQuery {
   episodeId?: EpisodeId;
@@ -972,6 +973,18 @@ export interface ScceKernelDeps {
    * execution).
    */
   functionalCognitionAuthorizeCapabilities?: boolean;
+  /**
+   * Durable executive coordinator. When present, capability execution that
+   * has a bounded dispatcher executor (currently: local build/test) is
+   * routed through the executive state machine (prepare -> dispatch ->
+   * receipt -> outcome) instead of invoked directly, so it is durably
+   * attested with a goal/task/attempt/receipt/outcome/learning-record trail.
+   * When absent, execution falls back to the pre-existing direct invocation
+   * path unchanged -- this keeps the field optional so the dozens of
+   * existing fixture-built ScceKernelDeps objects that predate the
+   * dispatcher keep working without modification.
+   */
+  executive?: DurableExecutiveEpisode;
 }
 
 export interface ApprovalPort {

@@ -133,6 +133,7 @@ export const EVENT_TYPES = [
   "SourceEmitted",
   "BuildExecuted",
   "TestExecuted",
+  "ExecutiveCapabilityDispatched",
   "ForecastComputed",
   "LearningNeedDetected",
   "LearningPlanBuilt",

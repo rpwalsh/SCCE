@@ -163,6 +163,7 @@ import {
 import type {
   BuildTestResult,
   CapabilityPlan,
+  ConstructGraph,
   EpisodeId,
   EvidenceSpan,
   GraphSlice,
@@ -173,6 +174,7 @@ import type {
   ScceEvent,
   TurnResult
 } from "./types.js";
+import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor } from "./capability-dispatcher.js";
 
 export interface ProductionTurnRuntimeState {
   lastEpisodeId?: EpisodeId;
@@ -1624,11 +1626,27 @@ export function createProductionTurnRuntime(options: {
             : undefined;
           if (permission.allowed && !permission.dryRun && buildTestDecision?.allowed !== false) {
             events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: capability.id, planId: plan.id } })));
-            buildTest = await deps.buildTest.executeProgram({ episodeId, construct });
+            const executiveDispatch = deps.executive
+              ? await dispatchBuildTestThroughExecutive({ deps, episodeId, construct, capabilityId: capability.id, planId: String(plan.id), hasher, clock })
+              : undefined;
+            buildTest = executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct });
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
             events.push(await append(eventFactory.create({ episodeId, typeId: "BuildExecuted", payload: { code: buildTest.build.code, durationMs: buildTest.build.durationMs, stderrHash: hasher.digestHex(buildTest.build.stderr) } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { code: buildTest.test.code, passed: buildTest.passed, repairAttempted: buildTest.repairAttempted } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: buildTest.passed ? "CapabilitySucceeded" : "CapabilityFailed", payload: { capabilityId: capability.id, planId: plan.id, passed: buildTest.passed } })));
+            if (executiveDispatch) {
+              events.push(await append(eventFactory.create({
+                episodeId,
+                typeId: "ExecutiveCapabilityDispatched",
+                payload: {
+                  capabilityId: capability.id,
+                  planId: plan.id,
+                  disposition: executiveDispatch.disposition,
+                  attemptId: executiveDispatch.attemptId ?? null,
+                  receiptStatus: executiveDispatch.receipt?.status ?? null
+                }
+              })));
+            }
           } else {
             events.push(await append(eventFactory.create({
               episodeId,
@@ -2232,8 +2250,105 @@ export function createProductionTurnRuntime(options: {
         events
       };
       });
-    
+
   }
 
   return { turn };
+}
+
+/**
+ * Drives the local build/test capability through the durable executive
+ * spine (goal -> task -> attempt -> receipt -> outcome -> learning record)
+ * so every real invocation leaves a crash-recoverable, auditable trail --
+ * the first real executor proving the dispatcher mechanism end to end. The
+ * actual `executeProgram` call still happens exactly once, inside the
+ * dispatcher's own prepare-then-invoke ordering; its full result is
+ * captured via closure since the executive ledger only needs bounded
+ * receipt evidence, not raw stdout/stderr.
+ */
+async function dispatchBuildTestThroughExecutive(input: {
+  deps: ScceKernelDeps;
+  episodeId: EpisodeId;
+  construct: ConstructGraph;
+  capabilityId: string;
+  planId: string;
+  hasher: ReturnType<typeof createHasher>;
+  clock: ReturnType<typeof createClock>;
+}): Promise<{ disposition: string; attemptId?: string; receipt?: { status: string }; buildTest?: BuildTestResult } | undefined> {
+  const executive = input.deps.executive;
+  if (!executive) return undefined;
+
+  let capturedResult: BuildTestResult | undefined;
+  const executor: CapabilityExecutor = {
+    descriptor: { capabilityId: input.capabilityId, idempotency: "non-repeatable", rollback: "unavailable" },
+    execute: async request => {
+      const payload = request.payload as unknown as { episodeId: EpisodeId; construct: ConstructGraph };
+      const result = await input.deps.buildTest.executeProgram({ episodeId: payload.episodeId, construct: payload.construct });
+      capturedResult = result;
+      return {
+        status: result.passed ? "succeeded" : "failed",
+        outputRefs: result.artifacts.map(artifact => artifact.path),
+        evidenceRefs: [
+          `build_test.build.code.${result.build.code ?? "null"}`,
+          `build_test.test.code.${result.test.code ?? "null"}`
+        ],
+        attestationRef: `build_test.${request.invocation.idempotencyKey}`
+      };
+    }
+  };
+
+  const ownerId = input.deps.informationAccess?.principalId ?? "scce-runtime";
+  const policyVersionId = `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {})).slice(0, 32)}`;
+  const goalId = `goal_build_test_${input.planId}`;
+  const taskId = `task_build_test_${input.planId}`;
+
+  const result = await dispatchCapabilityTask(
+    { executive, executors: createCapabilityExecutorRegistry([executor]), hasher: input.hasher, now: () => input.clock.now() },
+    {
+      episodeId: input.episodeId,
+      ownerId,
+      policyVersionId,
+      goal: { id: goalId, goalClassId: "goal.class.build_test", objectiveRef: input.planId, requirementIds: [], ownerId },
+      task: {
+        id: taskId,
+        goalId,
+        taskClassId: "task.class.build_test",
+        requirementIds: [],
+        dependencyTaskIds: [],
+        capabilityId: input.capabilityId,
+        inputRef: input.planId,
+        policyVersionId,
+        controls: {
+          authority: {
+            authorityClassId: "authority.class.build_test",
+            subjectId: ownerId,
+            requiredScopeIds: [],
+            state: "not_required",
+            justificationRef: input.planId
+          },
+          approval: {
+            policyId: "approval.policy.build_test",
+            state: "pending",
+            approverClassIds: ["policy-gate"],
+            justificationRef: input.planId
+          }
+        },
+        rollback: {
+          mode: "not_required",
+          justificationRef: "build_test executes in an ephemeral workspace with no durable mutation to roll back"
+        }
+      },
+      approvalDecision: {
+        decisionId: `approval_${input.planId}`,
+        decision: "approved",
+        policyId: "approval.policy.build_test",
+        decidedBy: "policy-gate",
+        evidenceRefs: [input.planId]
+      },
+      payload: { episodeId: input.episodeId, construct: input.construct } as unknown as JsonValue,
+      outcomeEvidenceRefs: []
+    }
+  );
+
+  return { disposition: result.disposition, attemptId: result.attemptId, receipt: result.receipt, buildTest: capturedResult };
 }
