@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
-  createEnglishCreativeEventConstructionCompiler,
+  createUniversalCreativeEventConstructionCompiler,
   type CreativeEventConstructionCompiler,
   type ScceStorage
 } from "@scce/kernel";
@@ -94,7 +94,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
       ngramVocabularyLimit: input.ngramVocabularyLimit,
       languageAliases,
-      creativeEventCompiler: input.creativeEventCompiler ?? builtInCreativeCompiler(languageAliases),
+      creativeEventCompiler: input.creativeEventCompiler ?? builtInCreativeCompiler(),
       corpusMetadata: {
         relativePath: normalizeRelative(file.relativePath),
         sourceHash: sha256(raw),
@@ -126,14 +126,14 @@ function sourceLanguageAliases(raw: string, supplied: readonly string[] | undefi
   return [...new Set(declared)].sort(compareCodePoint);
 }
 
-function builtInCreativeCompiler(aliases: readonly string[]): CreativeEventConstructionCompiler | undefined {
-  const normalized = new Set(aliases.flatMap(alias => {
-    const exact = alias.normalize("NFKC").trim().toLocaleLowerCase();
-    return [exact, ...exact.split(/[\s,;/]+/u).filter(Boolean)];
-  }));
-  return normalized.has("en") || normalized.has("eng") || normalized.has("english")
-    ? createEnglishCreativeEventConstructionCompiler()
-    : undefined;
+/**
+ * Every corpus, in every language, gets the same real construction compiler
+ * -- `createUniversalCreativeEventConstructionCompiler()` is zero-hardcoded-
+ * language (built on `language-induction.ts`'s corpus induction, not a
+ * language list). No language-code branch: this is the only compiler.
+ */
+function builtInCreativeCompiler(): CreativeEventConstructionCompiler {
+  return createUniversalCreativeEventConstructionCompiler();
 }
 
 function compareCodePoint(left: string, right: string): number {

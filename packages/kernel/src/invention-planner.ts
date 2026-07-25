@@ -2,11 +2,6 @@ import { DIALOGUE_ACTION_IDS, type DialogueState } from "./dialogue-pragmatics.j
 import { boltzmannDistribution } from "./equation-operators.js";
 import { kneserNeyProbability } from "./kneser-ney.js";
 import {
-  englishCreativeStructuralRouteEvents,
-  isEnglishCreativeEventStructurallyRealizable,
-  MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS
-} from "./english-structural-realizer.js";
-import {
   creativeEventCompatibilityDecision,
   creativeEventRolePosterior,
   type CreativeEventCompatibilityDecision,
@@ -449,7 +444,7 @@ interface ScoredComposition extends DraftComposition {
 }
 
 const CREATIVE_TEMPERATURE = 0.28;
-const MAX_STRUCTURAL_CREATIVE_EVENTS = MAX_ENGLISH_STRUCTURAL_CREATIVE_EVENTS;
+const MAX_STRUCTURAL_CREATIVE_EVENTS = 1_800;
 
 function productionStructuralCreativeBundles(
   input: PlanInventionsInput
@@ -967,7 +962,7 @@ function buildStructuralCreativeEventPlan(
   const structuralEventLimit = structuralCreativeEventLimit(input);
   const admitted = structuralBundles
     .flatMap(bundle => {
-      const events = englishCreativeStructuralRouteEvents(bundle.creativeEvents ?? [])
+      const events = structurallyRoutableCreativeEvents(bundle.creativeEvents ?? [])
         .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || left.id.localeCompare(right.id));
       const routeIndexByEventId = new Map(events.map((event, routeIndex) => [event.id, routeIndex]));
       const compatible = events.flatMap(event => {
@@ -1236,8 +1231,37 @@ function structuralCreativeEventGraphFit(
     .map(edgeRelationPotential));
 }
 
+/**
+ * Compiler-agnostic structural realizability: real, evidence-traced fields
+ * present, an agent role structurally established, and -- for transitive
+ * events -- a real, non-empty patient surface. No compiler-id gate: any
+ * event that made it through `hydrateLanguageConstructionPatterns`'s own
+ * verification (which already restricts to known compiler ids) is eligible.
+ */
 function structurallyUsableCreativeEvent(event: DurableCreativeEvent): boolean {
-  return isEnglishCreativeEventStructurallyRealizable(event);
+  if (!event.id || !event.constructionId || !event.relationId || !event.sourceVersionId
+    || !event.evidenceId || !event.sourceLabelDigest
+    || !event.roleIds.includes("scce.role.agent")
+    || !event.argumentFrame.roleIds.includes("scce.role.agent")) return false;
+  if (Object.values(event.forms).some(form => !form.trim())) return false;
+  if (event.valencyId !== "scce.valency.agent_patient") return true;
+  return event.argumentFrame.bindings.some(binding => (
+    binding.roleId === "scce.role.patient" && Boolean(binding.surface.trim())
+  ));
+}
+
+function structurallyRoutableCreativeEvents<T extends DurableCreativeEvent>(events: readonly T[]): T[] {
+  const realizable = events.filter(structurallyUsableCreativeEvent);
+  const transitiveInfinitives = new Set(
+    realizable
+      .filter(event => event.valencyId === "scce.valency.agent_patient")
+      .map(event => event.forms.infinitive.normalize("NFKC").toLocaleLowerCase())
+      .filter(Boolean)
+  );
+  return realizable.filter(event => (
+    event.valencyId === "scce.valency.agent_patient"
+    || !transitiveInfinitives.has(event.forms.infinitive.normalize("NFKC").toLocaleLowerCase())
+  ));
 }
 
 function structuralCreativeDiscourseRelation(

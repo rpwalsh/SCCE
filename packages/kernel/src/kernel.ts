@@ -14,7 +14,6 @@ import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
-import { englishCreativeStructuralRouteEvents } from "./english-structural-realizer.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { assertValidEvaluationCondition } from "./evaluation-flags.js";
 import { createEventFactory, extractReplayValue } from "./events.js";
@@ -411,7 +410,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           const creativeEvents = creativeLanguages.flatMap(language =>
             language.state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? [])
           );
-          const structuralCreativeEvents = englishCreativeStructuralRouteEvents(creativeEvents);
+          const structuralCreativeEvents = creativeEvents;
           if (result.language) {
             result.language.models = Math.max(result.language.models, ...creativeLanguages.map(language => language.models.length));
             result.language.observations = Math.max(result.language.observations, ...creativeLanguages.map(language => language.observations.length));

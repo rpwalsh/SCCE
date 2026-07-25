@@ -665,7 +665,7 @@ function induceSemanticFrames(documents: readonly LanguageInductionDocument[], h
   for (const doc of documents) {
     const trust = clamp01(doc.trust ?? 0.5);
     for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = symbolizeData(sentence).filter(symbol => !/^[.,;:!?()[\]{}]$/.test(symbol));
+      const symbols = symbolizeData(sentence).filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
       if (symbols.length < 2) continue;
       const predicate = selectFramePredicate(symbols);
       const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
@@ -907,7 +907,18 @@ function sentenceSegments(text: string): string[] {
   let start = 0;
   for (let i = 0; i < cleaned.length; i++) {
     const char = cleaned[i]!;
-    if ((char === "." || char === "!" || char === "?" || char === ";") && (cleaned[i + 1] === " " || i === cleaned.length - 1)) {
+    const isAsciiTerminator = char === "." || char === "!" || char === "?" || char === ";";
+    if (isAsciiTerminator && (cleaned[i + 1] === " " || i === cleaned.length - 1)) {
+      const sentence = cleaned.slice(start, i + 1).trim();
+      if (sentence) out.push(sentence);
+      start = i + 1;
+      continue;
+    }
+    // Real Unicode sentence-terminal punctuation (e.g. CJK full-width 。！？) never
+    // requires a following space, unlike the ASCII case above -- most scripts that
+    // use these marks are conventionally unspaced. Not an ASCII-specific rule: any
+    // script whose terminal punctuation carries this Unicode property benefits.
+    if (!isAsciiTerminator && /\p{Sentence_Terminal}/u.test(char)) {
       const sentence = cleaned.slice(start, i + 1).trim();
       if (sentence) out.push(sentence);
       start = i + 1;
