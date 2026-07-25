@@ -107,7 +107,10 @@ pnpm rehearsal:adapter
 
 The server does not migrate PostgreSQL automatically. Run the migration for the exact
 checkout before verification or startup, preferably in an explicit maintenance window
-for a populated database.
+for a populated database. Startup verifies the schema and refuses to start with a clear
+error if it is missing or incompatible. Set `SCCE_STARTUP_MIGRATE=1` to let local
+development startup migrate automatically instead of failing closed; this opt-in is not
+for populated or shared databases.
 
 Common runtime commands:
 

@@ -167,8 +167,24 @@ export class PostgresStorageAdapter implements ScceStorage {
     return `${this.q}."${name}"`;
   }
 
+  /**
+   * Normal startup verifies the schema; it does not silently mutate it.
+   * Migration is explicit (`pnpm scce db migrate`, `POST /api/db/migrate`,
+   * or `resetLocalDevOnly`) except under the local-development opt-in below.
+   */
   async init(): Promise<void> {
-    await this.migrate();
+    if (startupMigrationOptIn()) {
+      await this.migrate();
+      return;
+    }
+    const verification = await this.verify();
+    if (!verification.ok) {
+      throw new Error(
+        `SCCE storage schema is missing or incompatible (${verification.errors.slice(0, 8).join("; ")}). ` +
+        "Run 'pnpm scce db migrate' (or POST /api/db/migrate) before starting the server, " +
+        "or set SCCE_STARTUP_MIGRATE=1 for local development to migrate automatically at startup."
+      );
+    }
   }
 
   async migrate(): Promise<void> {
@@ -1017,6 +1033,10 @@ async function storedSchemaVersion(storage: Pick<PostgresStorageAdapter, "query"
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const version = (value as Record<string, JsonValue>).version;
   return typeof version === "number" && Number.isInteger(version) ? version : undefined;
+}
+
+function startupMigrationOptIn(): boolean {
+  return process.env.SCCE_STARTUP_MIGRATE === "1";
 }
 
 function isLocalDatabaseUrl(value: string): boolean {

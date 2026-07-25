@@ -55,6 +55,35 @@ describe("server readiness API", () => {
 
     expect(await getReady(url)).toMatchObject({ status: 503, body: { ok: false, exactCounts: false } });
   });
+
+  it("reports ready when warmup was intentionally disabled and Postgres is otherwise healthy", async () => {
+    const readiness = createRuntimeStartupReadiness();
+    readiness.disable();
+    const url = await startFixture(readiness);
+
+    expect(await getReady(url)).toMatchObject({
+      status: 200,
+      body: { ok: true, exactCounts: true, warmup: { phase: "disabled", complete: false } }
+    });
+  });
+
+  it("still blocks readiness while warmup is pending or running, even though disabled would not block", async () => {
+    const readiness = createRuntimeStartupReadiness();
+    const pendingUrl = await startFixture(readiness);
+    expect(await getReady(pendingUrl)).toMatchObject({ status: 503, body: { ok: false, warmup: { phase: "pending" } } });
+
+    readiness.begin();
+    const runningUrl = await startFixture(readiness);
+    expect(await getReady(runningUrl)).toMatchObject({ status: 503, body: { ok: false, warmup: { phase: "running" } } });
+  });
+
+  it("still blocks readiness when a disabled-warmup server's Postgres is unhealthy", async () => {
+    const readiness = createRuntimeStartupReadiness();
+    readiness.disable();
+    const url = await startFixture(readiness, { ok: false, countSemantics: "postgres_exact_table_counts", tableCounts: {} });
+
+    expect(await getReady(url)).toMatchObject({ status: 503, body: { ok: false, warmup: { phase: "disabled" } } });
+  });
 });
 
 async function startFixture(
