@@ -691,6 +691,11 @@ export interface LanguageProfileQuery {
    * durable alias ownership rather than scanning recent profile JSON.
    */
   sourceDerivedAliases?: readonly string[];
+  /**
+   * Normalized surface trigrams used to retrieve bounded profile candidates
+   * from the full durable corpus instead of only the newest profile window.
+   */
+  surfaceNgrams?: readonly string[];
 }
 
 export interface LanguageMemoryStore {

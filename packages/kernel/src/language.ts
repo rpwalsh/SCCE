@@ -230,6 +230,18 @@ export function languageHintFromProfile(profile: LanguageProfile): string {
   return `script:${script};direction:${profile.direction}`;
 }
 
+/** Bounded normalized lookup keys for durable profile-candidate retrieval. */
+export function languageSurfaceTrigrams(surface: string, limit = 256): string[] {
+  const normalized = [...surface.normalize("NFC").toLowerCase()]
+    .filter(char => !/\s/u.test(char))
+    .join("");
+  const counts = count(charNgrams(normalized, 3));
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || compareCodePoint(left[0], right[0]))
+    .slice(0, Math.max(1, Math.min(1024, Math.floor(limit))))
+    .map(([ngram]) => ngram);
+}
+
 export function languageAliasSurfacesFromMetadata(metadata: JsonValue | undefined): string[] {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
   const row = metadata as Record<string, JsonValue>;

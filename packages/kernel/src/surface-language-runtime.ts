@@ -5,6 +5,7 @@ import { isLanguageConstructionPattern } from "./language-construction-memory.js
 import { createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, scopeLanguageMemoryStateToCluster } from "./language-memory-runtime.js";
 import {
   buildLanguageProfileClusters,
+  languageSurfaceTrigrams,
   languageProfileClusterCacheKey,
   normalizeSourceLanguageAlias,
   selectLanguageProfileClusterForSurface,
@@ -40,6 +41,11 @@ export function createSurfaceLanguageRuntime(options: {
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
 
   const sourceOwnedAliasProfileCache = new Map<string, {
+    loadedAt: number;
+    profiles: LanguageProfile[];
+    clusters: LanguageProfileCluster[];
+  }>();
+  const surfaceCandidateProfileCache = new Map<string, {
     loadedAt: number;
     profiles: LanguageProfile[];
     clusters: LanguageProfileCluster[];
@@ -505,8 +511,24 @@ export function createSurfaceLanguageRuntime(options: {
 
 
   async function surfaceLanguageClusterCached(surface: string, residentOnly = false): Promise<LanguageProfileCluster | undefined> {
-    const { clusters } = await surfaceLanguageProfilesCached(residentOnly);
     if (!surface.trim()) return undefined;
+    const surfaceKey = hasher.digestHex(surface.normalize("NFC"));
+    const cached = surfaceCandidateProfileCache.get(surfaceKey);
+    const now = clock.now();
+    if (cached && (residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
+      return selectLanguageProfileClusterForSurface(cached.clusters, surface)?.cluster;
+    }
+    if (residentOnly) {
+      const { clusters } = await surfaceLanguageProfilesCached(true);
+      return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster;
+    }
+    const profiles = await deps.storage.model.listLanguageProfiles({
+      limit: surfaceLanguageProfileLimit,
+      referencedByLanguageMemory: true,
+      surfaceNgrams: languageSurfaceTrigrams(surface)
+    });
+    const clusters = buildLanguageProfileClusters(profiles);
+    surfaceCandidateProfileCache.set(surfaceKey, { loadedAt: now, profiles, clusters });
     return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster;
   }
 
@@ -567,6 +589,7 @@ export function createSurfaceLanguageRuntime(options: {
     invalidate() {
       surfaceLanguageMemoryCache.clear();
       sourceOwnedAliasProfileCache.clear();
+      surfaceCandidateProfileCache.clear();
       surfaceProfileCache = undefined;
       sourceAnchorSemanticFrameCache = undefined;
     }
