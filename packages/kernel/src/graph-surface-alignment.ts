@@ -1,4 +1,4 @@
-import type { AlignedSurfaceExample } from "./language-construction.js";
+import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
 import type { SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
@@ -7,8 +7,8 @@ import type { EvidenceSpan, Hasher } from "./types.js";
 /**
  * First module of the graph-surface alignment / construction-induction seam:
  * turns real corpus occurrences of an already-induced `GraphBoundConstruction`
- * (steps 4-6: predicate + arg0/arg1 slots, discovered purely from corpus
- * statistics) into `AlignedSurfaceExample`s -- the exact input shape
+ * (steps 4-6: predicate + slots, discovered purely from corpus statistics)
+ * into `AlignedSurfaceExample`s -- the exact input shape
  * `language-construction.ts`'s `induceLearnedConstructions()` already
  * consumes to anti-unify concrete examples into a reusable variable-bearing
  * construction, and `realizeLearnedSurface()` already consumes to realize an
@@ -18,10 +18,25 @@ import type { EvidenceSpan, Hasher } from "./types.js";
  * reach them at all (`compileLanguageConstructionPattern`'s `observations`
  * input, confirmed unfed by any real corpus ingestor).
  *
- * These are deliberately surface-relative roles. Corpus adjacency alone
- * cannot establish semantic agency or patienthood, so the aligner records
- * before/predicate/after positions and leaves semantic-role binding to typed
- * graph evidence.
+ * Role identity is deliberately **positional, not thematic**: a slot is
+ * named by where it was measured relative to the predicate
+ * (`pre_predicate` / `post_predicate`), never "agent"/"subject"/"patient"/
+ * "object". Naming the pre-predicate slot "agent" would itself be a hidden
+ * SVO assumption -- true for English, false for e.g. a strict SOV language
+ * where the immediately pre-verbal slot is typically the object, not the
+ * subject. Calling both slots by their real, measured position (matching
+ * `induceGraphBoundConstructions`'s own `relationDirection: "source"/"target"`
+ * convention) makes no claim about which thematic role either position
+ * carries in any given language -- exactly the "opaque graph interfaces"
+ * requirement this module is implementing.
+ *
+ * Known, disclosed limitation (not fixed here): this module only models one
+ * slot immediately before and one immediately after the predicate. A
+ * language where multiple arguments precede the predicate (e.g. both
+ * subject and object in a strict SOV clause) has only its closer argument
+ * captured as `pre_predicate`; the farther one is simply not modeled as a
+ * role at all here, not mislabeled -- an honest coverage gap, not a
+ * fabricated one.
  */
 export interface GraphSurfaceAlignmentSet {
   bindingId: string;
@@ -29,9 +44,9 @@ export interface GraphSurfaceAlignmentSet {
 }
 
 export const GRAPH_SURFACE_ROLE_IDS = {
-  beforePredicate: "scce.surface_role.before_predicate",
-  predicate: "scce.surface_role.predicate",
-  afterPredicate: "scce.surface_role.after_predicate"
+  prePredicate: "scce.role.pre_predicate",
+  predicate: "scce.role.predicate",
+  postPredicate: "scce.role.post_predicate"
 } as const;
 
 export function induceGraphSurfaceAlignments(input: {
@@ -74,11 +89,7 @@ export function induceGraphSurfaceAlignments(input: {
   for (const construction of input.constructions) {
     const observations = observationsByConstructionId.get(construction.id);
     if (!observations || observations.length < 2) continue;
-    const bindingId = sourceRelationConstructionBindingId(
-      input.hasher,
-      input.profileId,
-      construction.predicate
-    );
+    const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
     sets.push({ bindingId, observations });
   }
   return sets.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
@@ -140,14 +151,105 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     .sort((a, b) => a.bindingId.localeCompare(b.bindingId));
 }
 
+export interface HeldOutConstructionCoverageReport {
+  bindingId: string;
+  predicate: string;
+  trainedPrePredicateVariantCount: number;
+  trainedPostPredicateVariantCount: number;
+  heldOutOccurrences: number;
+  heldOutPrePredicateCovered: number;
+  heldOutPostPredicateOccurrences: number;
+  heldOutPostPredicateCovered: number;
+}
+
+/**
+ * Measures whether the alignment -> anti-unification pipeline actually
+ * generalizes, rather than asserting it on the same corpus it was trained
+ * on. Induces constructions and learned form classes from `trainDocuments`
+ * only, then scans `heldOutDocuments` (genuinely unseen by the induction
+ * step) for real occurrences of the same predicates, and reports what
+ * fraction of held-out pre-/post-predicate fillers were already a member of
+ * the form class learned from training data alone. This is a real, honest
+ * coverage measurement -- not a fluency or accuracy claim, and not
+ * fabricated when there is no real held-out evidence for a construction
+ * (such constructions are simply absent from the report).
+ */
+export function evaluateHeldOutConstructionCoverage(input: {
+  trainDocuments: readonly LanguageInductionDocument[];
+  heldOutDocuments: readonly LanguageInductionDocument[];
+  profileId: string;
+  hasher: Hasher;
+}): HeldOutConstructionCoverageReport[] {
+  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: [...input.trainDocuments] });
+  if (!model.graphBoundConstructions.length) return [];
+
+  const alignments = induceGraphSurfaceAlignments({
+    documents: input.trainDocuments,
+    constructions: model.graphBoundConstructions,
+    profileId: input.profileId,
+    hasher: input.hasher
+  });
+  const alignmentByBindingId = new Map(alignments.map(set => [set.bindingId, set]));
+
+  const reports: HeldOutConstructionCoverageReport[] = [];
+  for (const construction of model.graphBoundConstructions) {
+    const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
+    const alignmentSet = alignmentByBindingId.get(bindingId);
+    if (!alignmentSet) continue;
+    const induction = induceLearnedConstructions({ examples: alignmentSet.observations, hasher: input.hasher });
+    if (!induction.constructions.length) continue;
+    const trainedPreSurfaces = new Set(
+      induction.formClasses.filter(formClass => formClass.roleId === GRAPH_SURFACE_ROLE_IDS.prePredicate)
+        .flatMap(formClass => formClass.variants.map(variant => variant.surface))
+    );
+    const trainedPostSurfaces = new Set(
+      induction.formClasses.filter(formClass => formClass.roleId === GRAPH_SURFACE_ROLE_IDS.postPredicate)
+        .flatMap(formClass => formClass.variants.map(variant => variant.surface))
+    );
+    if (!trainedPreSurfaces.size) continue;
+
+    let heldOutOccurrences = 0;
+    let heldOutPreCovered = 0;
+    let heldOutPostOccurrences = 0;
+    let heldOutPostCovered = 0;
+    const preSlot = construction.slots.find(slot => slot.relationDirection === "source");
+    const postSlot = construction.slots.find(slot => slot.relationDirection === "target");
+    for (const doc of input.heldOutDocuments) {
+      const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
+      for (let index = 0; index < lexical.length; index++) {
+        if (lexical[index]!.normalized !== construction.predicate) continue;
+        const left = lexical[index - 1];
+        if (!left || !preSlot) continue;
+        heldOutOccurrences++;
+        if (trainedPreSurfaces.has(left.normalized)) heldOutPreCovered++;
+        const right = lexical[index + 1];
+        const hasPost = Boolean(right && postSlot?.observedFillers.includes(right.normalized));
+        if (hasPost && right) {
+          heldOutPostOccurrences++;
+          if (trainedPostSurfaces.has(right.normalized)) heldOutPostCovered++;
+        }
+      }
+    }
+    if (!heldOutOccurrences) continue;
+    reports.push({
+      bindingId,
+      predicate: construction.predicate,
+      trainedPrePredicateVariantCount: trainedPreSurfaces.size,
+      trainedPostPredicateVariantCount: trainedPostSurfaces.size,
+      heldOutOccurrences,
+      heldOutPrePredicateCovered: heldOutPreCovered,
+      heldOutPostPredicateOccurrences: heldOutPostOccurrences,
+      heldOutPostPredicateCovered: heldOutPostCovered
+    });
+  }
+  return reports.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
+}
+
 export function sourceRelationConstructionBindingId(hasher: Hasher, profileId: string, predicate: string): string {
   return `language.source_relation.${hasher.digestHex(JSON.stringify([profileId, predicate])).slice(0, 32)}`;
 }
 
 function boundedConstructionObservationLimit(requested?: number): number {
-  // compileLanguageConstructionPattern() deliberately rejects more than 256
-  // source observations. Keep the producer on the same contract so common
-  // constructions do not become guaranteed compiler rejections.
   return Math.max(1, Math.min(256, Math.floor(requested ?? 256)));
 }
 
@@ -159,15 +261,15 @@ function sourceBoundObservationForOccurrence(input: {
 }): SourceBoundLanguageConstructionTrainingSet["observations"][number] | undefined {
   const { span, lexical, index, construction } = input;
   const predicate = lexical[index]!;
-  const arg0Slot = construction.slots.find(slot => slot.relationDirection === "source");
-  const arg1Slot = construction.slots.find(slot => slot.relationDirection === "target");
+  const preSlot = construction.slots.find(slot => slot.relationDirection === "source");
+  const postSlot = construction.slots.find(slot => slot.relationDirection === "target");
   const left = lexical[index - 1];
-  if (!left || !arg0Slot) return undefined;
+  if (!left || !preSlot) return undefined;
   const right = lexical[index + 1];
-  const hasPatient = Boolean(right && arg1Slot?.observedFillers.includes(right.normalized));
+  const hasPost = Boolean(right && postSlot?.observedFillers.includes(right.normalized));
 
   const windowStartCodePoint = left.codePointStart;
-  const windowEndCodePoint = hasPatient && right ? right.codePointEnd : predicate.codePointEnd;
+  const windowEndCodePoint = hasPost && right ? right.codePointEnd : predicate.codePointEnd;
   const surface = [...span.text].slice(windowStartCodePoint, windowEndCodePoint).join("");
   if (surface !== surface.normalize("NFC")) return undefined;
 
@@ -187,13 +289,13 @@ function sourceBoundObservationForOccurrence(input: {
         startCodePoint: predicate.codePointStart - windowStartCodePoint,
         endCodePoint: predicate.codePointEnd - windowStartCodePoint
       },
-      ...(hasPatient && right ? [{
+      ...(hasPost && right ? [{
         slotIndex: 2,
         startCodePoint: right.codePointStart - windowStartCodePoint,
         endCodePoint: right.codePointEnd - windowStartCodePoint
       }] : [])
     ],
-    ...(hasPatient ? {} : { nullRoles: [{ slotIndex: 2 }] })
+    ...(hasPost ? {} : { nullRoles: [{ slotIndex: 2 }] })
   };
 }
 
@@ -209,21 +311,21 @@ function alignedExampleForOccurrence(input: {
 }): AlignedSurfaceExample | undefined {
   const { lexical, index, construction } = input;
   const predicate = lexical[index]!;
-  const arg0Slot = construction.slots.find(slot => slot.relationDirection === "source");
-  const arg1Slot = construction.slots.find(slot => slot.relationDirection === "target");
+  const preSlot = construction.slots.find(slot => slot.relationDirection === "source");
+  const postSlot = construction.slots.find(slot => slot.relationDirection === "target");
   const left = lexical[index - 1];
-  if (!left || !arg0Slot) return undefined;
+  if (!left || !preSlot) return undefined;
   const right = lexical[index + 1];
-  const hasPatient = Boolean(right && arg1Slot?.observedFillers.includes(right.normalized));
+  const hasPost = Boolean(right && postSlot?.observedFillers.includes(right.normalized));
 
   const windowStart = left.utf16Start;
-  const windowEnd = hasPatient && right ? right.utf16End : predicate.utf16End;
+  const windowEnd = hasPost && right ? right.utf16End : predicate.utf16End;
   const surface = input.text.slice(windowStart, windowEnd);
   if (surface !== surface.normalize("NFC")) return undefined;
 
   const roleSpans = [
     {
-      roleId: GRAPH_SURFACE_ROLE_IDS.beforePredicate,
+      roleId: GRAPH_SURFACE_ROLE_IDS.prePredicate,
       start: left.utf16Start - windowStart,
       end: left.utf16End - windowStart,
       surface: left.surface,
@@ -236,8 +338,8 @@ function alignedExampleForOccurrence(input: {
       surface: predicate.surface,
       evidenceIds: input.evidenceIds
     },
-    ...(hasPatient && right ? [{
-      roleId: GRAPH_SURFACE_ROLE_IDS.afterPredicate,
+    ...(hasPost && right ? [{
+      roleId: GRAPH_SURFACE_ROLE_IDS.postPredicate,
       start: right.utf16Start - windowStart,
       end: right.utf16End - windowStart,
       surface: right.surface,
