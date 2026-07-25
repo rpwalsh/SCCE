@@ -134,6 +134,9 @@ export const EVENT_TYPES = [
   "BuildExecuted",
   "TestExecuted",
   "ExecutiveCapabilityDispatched",
+  "CounterfactualSimulated",
+  "CausalEffectIdentified",
+  "CausalIdentificationRejected",
   "ForecastComputed",
   "LearningNeedDetected",
   "LearningPlanBuilt",
@@ -1194,4 +1197,10 @@ export interface ScceKernel {
   replay(episodeId: EpisodeId): Promise<EpisodeReplay>;
   inspect(target: InspectionTarget): Promise<InspectionResult>;
   benchmark(input: BenchmarkInput): Promise<BenchmarkResult>;
+  /**
+   * Identified causal inference's only entry point. Never invoked from
+   * `turn()` -- a caller must supply a fully typed, schema-versioned,
+   * evidence-bound request (HTTP endpoint or CLI JSON input), not prose.
+   */
+  analyzeCausalEffect(request: import("./causal-analysis-runtime.js").CausalAnalysisRequest): Promise<import("./causal-analysis-runtime.js").CausalAnalysisResult>;
 }

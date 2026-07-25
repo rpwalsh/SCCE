@@ -64,6 +64,7 @@ export * from "./cognitive-substrate.js";
 export * from "./judge.js";
 export * from "./action-graph.js";
 export * from "./capability-dispatcher.js";
+export * from "./causal-analysis-runtime.js";
 export * from "./executive-episode.js";
 export * from "./executive-journal.js";
 export * from "./governed-action.js";
