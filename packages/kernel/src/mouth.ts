@@ -66,6 +66,7 @@ import {
   type DetailProfilePolicy
 } from "./control-plane-profiles.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
@@ -1799,8 +1800,13 @@ function semanticLearnedConstructionCandidate(
   const routeAdmissibility = Math.max(...proofEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
   if (routeAdmissibility <= 0) return undefined;
   const proofEvidenceIds = proofEvidence.map(span => String(span.id));
+  const sourceRelationBindingId = sourceRelationConstructionBindingId(
+    hasher,
+    input.languageProfile.id,
+    fact.predicate
+  );
   const bundles = input.languageMemory.importedConstructionBundles
-    .filter(bundle => bundle.bindingId === fact.relationId
+    .filter(bundle => (bundle.bindingId === fact.relationId || bundle.bindingId === sourceRelationBindingId)
       && bundle.sourceProfileId === input.languageProfile.id
       && bundle.targetProfileId === input.languageProfile.id)
     .sort((left, right) => compareSurfaceText(left.id, right.id));
