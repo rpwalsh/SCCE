@@ -92,8 +92,9 @@ validation so credentials need not be committed.
   occurrence/form/unit-class identity, lossless base-partition conservation, and
   independent-anchor/packed-marginal boundary supervision.
 - `boundary-estimator.ts`, `segmentation-forest.ts`: mergeable anchored/latent
-  statistics, source-disjoint held-out Platt calibration, complete-DAG
-  forward/backward marginals, and learned-only final boundary coefficients.
+  statistics, source-disjoint held-out Platt calibration, globally normalized traced
+  path energy, complete-DAG forward/backward marginals, non-renormalized top-k mass,
+  bounded resumable materialization, and learned-only final coefficients.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and

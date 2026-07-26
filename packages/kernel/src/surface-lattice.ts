@@ -8,6 +8,7 @@ import {
 import {
   buildSegmentationForest,
   SEGMENTATION_FOREST_SCHEMA,
+  type SegmentationForestLimits,
   type SurfaceSegmentationForest
 } from "./segmentation-forest.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
@@ -124,6 +125,7 @@ export interface SurfaceLatticeBuildOptions {
   maxUnits?: number;
   maxEdges?: number;
   segmentationPathLimit?: number;
+  segmentationForestLimits?: Partial<SegmentationForestLimits>;
   boundaryEstimator?: BoundaryEstimatorState;
   normalizationContract?: NormalizationContract;
 }
@@ -311,6 +313,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     estimatorId,
     units,
     pathLimit: options.segmentationPathLimit,
+    limits: options.segmentationForestLimits,
     normalizationContractId: normalizationContract.id,
     hasher
   });
@@ -355,7 +358,10 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
           : undefined
       },
       segmentationForestId: segmentationForest.id,
-      retainedSegmentationPosteriorMass: segmentationForest.retainedPosteriorMass
+      retainedSegmentationPosteriorMass: segmentationForest.retainedPosteriorMass,
+      omittedSegmentationPosteriorMass: segmentationForest.omittedPosteriorMass,
+      segmentationCompletion: segmentationForest.completion,
+      segmentationResumeToken: segmentationForest.resumeState?.token
     })
   };
 }
@@ -611,6 +617,35 @@ export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): S
   if (Math.abs(retainedMass - lattice.segmentationForest.retainedPosteriorMass) > 1e-8
     || retainedMass > 1 + 1e-8) {
     issues.push("segmentation_retained_mass");
+  }
+  if (Math.abs(
+    lattice.segmentationForest.retainedPosteriorMass
+    + lattice.segmentationForest.omittedPosteriorMass
+    - 1
+  ) > 1e-8
+    || Math.abs(
+      lattice.segmentationForest.prunedArcPosteriorMass
+      + lattice.segmentationForest.unretainedDerivationMass
+      - lattice.segmentationForest.omittedPosteriorMass
+    ) > 1e-8) {
+    issues.push("segmentation_posterior_conservation");
+  }
+  if (lattice.segmentationForest.paths.some(path =>
+    Math.abs(
+      path.energyTrace.boundary
+      + path.energyTrace.continuation
+      + path.energyTrace.anchor
+      + path.energyTrace.description
+      + path.energyTrace.population
+      + path.energyTrace.semanticContext
+      - path.energyTrace.total
+    ) > 1e-8
+    || Math.abs(path.energyTrace.total - path.energy) > 1e-8)) {
+    issues.push("segmentation_energy_trace");
+  }
+  if ((lattice.segmentationForest.completion === "resumable")
+    !== Boolean(lattice.segmentationForest.resumeState)) {
+    issues.push("segmentation_resume_state");
   }
   for (const unit of lattice.units) {
     if (unit.byteStart < 0 || unit.byteEnd < unit.byteStart || unit.byteEnd > bytes.length

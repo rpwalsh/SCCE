@@ -88,7 +88,8 @@ answer lane.
   independent source anchors or packed-forest marginals rather than detector labels.
 - `boundary-estimator.ts`, `segmentation-forest.ts`: versioned mergeable boundary
   statistics, source-disjoint held-out calibration, exact forward/backward
-  marginals, and no fixed recurrence/predictability production credits.
+  marginals, globally normalized traced forest energy, explicit omitted mass,
+  bounded resume state, and no fixed recurrence/predictability production credits.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,
