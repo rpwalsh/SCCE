@@ -12,6 +12,32 @@ afterEach(async () => {
 });
 
 describe("runtime load gate", () => {
+  it("refuses to run without --max-p95-ms and --min-throughput unless --allow-unbounded is passed (plan item L15)", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "scce-load-gate-mandatory-gates-"));
+    temporaryPaths.push(directory);
+    const prompts = path.join(directory, "prompts.json");
+    await writeFile(prompts, JSON.stringify(["fixture prompt"]), "utf8");
+
+    const withoutGates = await run([
+      "tools/runtime-load-gate.mjs",
+      "--prompts", prompts,
+      "--workload-id", "fixture.mandatory-gates.v1",
+      "--requests", "1"
+    ]);
+    expect(withoutGates.code).toBe(2);
+    expect(withoutGates.stderr).toMatch(/requires --max-p95-ms.*and --min-throughput/u);
+
+    const withOnlyOne = await run([
+      "tools/runtime-load-gate.mjs",
+      "--prompts", prompts,
+      "--workload-id", "fixture.mandatory-gates.v1",
+      "--requests", "1",
+      "--max-p95-ms", "2000"
+    ]);
+    expect(withOnlyOne.code).toBe(2);
+    expect(withOnlyOne.stderr).toMatch(/requires --max-p95-ms.*and --min-throughput/u);
+  });
+
   it("measures a bounded concurrent turn workload against a loopback server", async () => {
     const server = createServer((request, response) => {
       response.setHeader("content-type", "application/json");
@@ -45,7 +71,8 @@ describe("runtime load gate", () => {
         "--server-url", `http://127.0.0.1:${address.port}`,
         "--requests", "8",
         "--concurrency", "2",
-        "--max-p95-ms", "5000"
+        "--max-p95-ms", "5000",
+        "--min-throughput", "0.01"
       ]);
 
       expect(result.code).toBe(0);
@@ -101,7 +128,8 @@ describe("runtime load gate", () => {
         "--prompts", prompts,
         "--workload-id", "fixture.not-ready.v1",
         "--server-url", `http://127.0.0.1:${address.port}`,
-        "--requests", "1"
+        "--requests", "1",
+        "--allow-unbounded"
       ]);
 
       expect(result.code).not.toBe(0);
@@ -136,7 +164,8 @@ describe("runtime load gate", () => {
         "--workload-id", "fixture.duration-cap.v1",
         "--server-url", `http://127.0.0.1:${address.port}`,
         "--requests", "1",
-        "--duration-seconds", "2"
+        "--duration-seconds", "2",
+        "--allow-unbounded"
       ]);
 
       expect(result.code).toBe(1);
@@ -160,7 +189,8 @@ describe("runtime load gate", () => {
       "tools/runtime-load-gate.mjs",
       "--prompts", prompts,
       "--workload-id", "fixture.prompt-bound.v1",
-      "--requests", "1"
+      "--requests", "1",
+      "--allow-unbounded"
     ]);
 
     expect(result.code).not.toBe(0);
@@ -194,7 +224,8 @@ describe("runtime load gate", () => {
         "--workload-id", "fixture.response-bound.v1",
         "--server-url", `http://127.0.0.1:${address.port}`,
         "--requests", "1",
-        "--max-error-rate", "1"
+        "--max-error-rate", "1",
+        "--allow-unbounded"
       ]);
 
       expect(result.code).toBe(1);
