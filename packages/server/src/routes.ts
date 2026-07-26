@@ -5,8 +5,8 @@ import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 
@@ -37,17 +37,25 @@ type TurnPersistence = {
 type ScceTraceHandle = Parameters<typeof traceEvent>[0];
 
 const HYDRATED_RUNTIME_READY_TTL_MS = 5 * 60 * 1000;
-const PRODUCTION_TURN_DEADLINE_MS = 5_000;
-const PRODUCTION_TURN_RESPONSE_RESERVE_MS = 1_000;
+const INITIAL_VISIBLE_RESPONSE_DEADLINE_MS = 5_000;
+const INITIAL_VISIBLE_RESPONSE_SCHEMA = "scce.initial_visible_response.v1" as const;
 const hydratedRuntimeReadyByStorage = new WeakMap<object, { marker: HydratedRuntimeMarker; verifiedAt: number; epoch: number }>();
 const hydratedRuntimeEpochByStorage = new WeakMap<object, number>();
 const dialoguePersistenceTails = new Map<string, Promise<void>>();
 
 interface RequestTiming {
   readonly startedMonotonicMs: number;
+  firstVisibleFrameMonotonicMs?: number;
+  turnExecution?: NonNullable<OwnerInput["runtimeControl"]>;
 }
 
-type ProductionTurnDeadline = RuntimeDeadlineMetadata;
+interface ProductionTurnDeadline {
+  readonly schema: typeof INITIAL_VISIBLE_RESPONSE_SCHEMA;
+  readonly clock: "node.performance.v1";
+  readonly budgetMs: number;
+  readonly startedMonotonicMs: number;
+  readonly deadlineMonotonicMs: number;
+}
 
 export const ROUTES = [
   { method: "GET", path: "/", label: "workbench", mutates: false, requiresDb: false },
@@ -124,6 +132,18 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     assertAuthorizedRequest(req, url, context);
     const readinessMutation = invalidatesHydratedRuntimeReadiness(req.method, url.pathname);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
+    if (streamingTurnRequested(req, url)) {
+      await streamTurnResponse({
+        req,
+        res,
+        url,
+        context,
+        requestTiming,
+        requestId,
+        started
+      });
+      return;
+    }
     const response = await dispatch(req, url, context, requestTiming);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
     send(res, response.status, response.body, response.contentType, { requestId, started });
@@ -463,6 +483,7 @@ async function dispatch(
       const {
         workspacePlans: _untrustedWorkspacePlans,
         deadline: _untrustedDeadline,
+        initialResponseDeadline: _untrustedInitialResponseDeadline,
         ...trustedOriginalRuntime
       } = originalRuntime;
       const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
@@ -482,7 +503,7 @@ async function dispatch(
             ...trustedOriginalRuntime,
             fastLocalEvidenceAnswer: true,
             productionBoundedAnswer: true,
-            deadline: productionDeadlineRuntime,
+            initialResponseDeadline: productionDeadlineRuntime,
             ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
             workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
           },
@@ -498,13 +519,12 @@ async function dispatch(
           activeImportRunIds: active.activeImportRunIds
         }
       };
-      traceEvent(trace, {
-        stage: "turn.deadline.propagated",
-        label: "api.turn",
-        durationMs: performance.now() - productionDeadline.startedMonotonicMs,
-        support: productionDeadlineRuntime
+      const result = await context.runtime.kernel.turn({
+        ...turnInput,
+        ...(requestTiming.turnExecution ? {
+          runtimeControl: requestTiming.turnExecution
+        } : {})
       });
-      const result = await context.runtime.kernel.turn(turnInput);
       if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(500, "runtime produced no answer surface");
       const calibrationModels = await loadCalibrationModelSet({
         store: context.runtime.storage.dialogueMemory,
@@ -577,13 +597,16 @@ async function dispatch(
         : undefined;
       const turnResponse = url.searchParams.get("full") === "1" ? result : compactTurnResult(result);
       const dialogueResponse = compactTurnDialogue(dialogue);
-      const deadlineStatus = productionTurnDeadlineStatus(productionDeadline);
+      const deadlineStatus = productionTurnDeadlineStatus(
+        productionDeadline,
+        requestTiming.firstVisibleFrameMonotonicMs ?? performance.now()
+      );
       traceEvent(trace, {
         stage: "turn.deadline.observed",
         label: "api.turn",
         durationMs: Number(deadlineStatus.elapsedMs),
         support: deadlineStatus,
-        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its monotonic response deadline"] } : {})
+        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its first-visible-frame deadline"] } : {})
       });
       const baseResponse = {
         ...turnResponse,
@@ -1178,15 +1201,13 @@ function invalidatesHydratedRuntimeReadiness(method: string | undefined, pathnam
 }
 
 function createProductionTurnDeadline(startedMonotonicMs: number): ProductionTurnDeadline {
-  const deadlineMonotonicMs = startedMonotonicMs + PRODUCTION_TURN_DEADLINE_MS;
+  const deadlineMonotonicMs = startedMonotonicMs + INITIAL_VISIBLE_RESPONSE_DEADLINE_MS;
   return {
-    schema: RUNTIME_DEADLINE_SCHEMA,
+    schema: INITIAL_VISIBLE_RESPONSE_SCHEMA,
     clock: "node.performance.v1",
-    budgetMs: PRODUCTION_TURN_DEADLINE_MS,
-    responseReserveMs: PRODUCTION_TURN_RESPONSE_RESERVE_MS,
+    budgetMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS,
     startedMonotonicMs,
-    deadlineMonotonicMs,
-    computeDeadlineMonotonicMs: deadlineMonotonicMs - PRODUCTION_TURN_RESPONSE_RESERVE_MS
+    deadlineMonotonicMs
   };
 }
 
@@ -1196,27 +1217,32 @@ function productionTurnDeadlineMetadata(deadline: ProductionTurnDeadline): Recor
     schema: deadline.schema,
     clock: deadline.clock,
     budgetMs: deadline.budgetMs,
-    responseReserveMs: deadline.responseReserveMs,
     startedMonotonicMs: deadline.startedMonotonicMs,
     deadlineMonotonicMs: deadline.deadlineMonotonicMs,
-    computeDeadlineMonotonicMs: deadline.computeDeadlineMonotonicMs,
     propagatedAtMonotonicMs,
-    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - propagatedAtMonotonicMs),
-    computeRemainingMs: Math.max(0, deadline.computeDeadlineMonotonicMs - propagatedAtMonotonicMs)
+    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - propagatedAtMonotonicMs)
   };
 }
 
-function productionTurnDeadlineStatus(deadline: ProductionTurnDeadline): Record<string, JsonValue> {
+function productionTurnDeadlineStatus(
+  deadline: ProductionTurnDeadline,
+  firstVisibleFrameMonotonicMs: number
+): Record<string, JsonValue> {
   const observedAtMonotonicMs = performance.now();
   const elapsedMs = Math.max(0, observedAtMonotonicMs - deadline.startedMonotonicMs);
+  const firstVisibleFrameMs = Math.max(
+    0,
+    firstVisibleFrameMonotonicMs - deadline.startedMonotonicMs
+  );
   return {
     schema: deadline.schema,
     budgetMs: deadline.budgetMs,
-    responseReserveMs: deadline.responseReserveMs,
     elapsedMs,
-    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - observedAtMonotonicMs),
-    computeRemainingMs: Math.max(0, deadline.computeDeadlineMonotonicMs - observedAtMonotonicMs),
-    status: observedAtMonotonicMs <= deadline.deadlineMonotonicMs ? "met" : "exceeded",
+    firstVisibleFrameMs,
+    completionMs: elapsedMs,
+    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - firstVisibleFrameMonotonicMs),
+    status: firstVisibleFrameMonotonicMs <= deadline.deadlineMonotonicMs ? "met" : "exceeded",
+    contract: "time_to_first_visible_frame",
     outputSource: "runtime"
   };
 }
@@ -2367,6 +2393,126 @@ function html(body: string): { status: number; body: string; contentType: string
 
 function json(value: unknown, status = 200): { status: number; body: string; contentType: string } {
   return { status, body: JSON.stringify(value), contentType: "application/json; charset=utf-8" };
+}
+
+function streamingTurnRequested(req: http.IncomingMessage, url: URL): boolean {
+  if (req.method !== "POST" || url.pathname !== "/api/turn") return false;
+  if (url.searchParams.get("stream") === "1") return true;
+  const accept = Array.isArray(req.headers.accept)
+    ? req.headers.accept.join(",")
+    : req.headers.accept ?? "";
+  return accept.toLocaleLowerCase().includes("application/x-ndjson");
+}
+
+async function streamTurnResponse(input: {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  url: URL;
+  context: ApiContext;
+  requestTiming: RequestTiming;
+  requestId: string;
+  started: number;
+}): Promise<void> {
+  const { req, res, url, context, requestTiming, requestId, started } = input;
+  const controller = new AbortController();
+  let completed = false;
+  const abortDisconnected = () => {
+    if (!completed && !controller.signal.aborted) {
+      controller.abort(new Error("streaming turn client disconnected"));
+    }
+  };
+  req.once("aborted", abortDisconnected);
+  res.once("close", abortDisconnected);
+  res.writeHead(200, {
+    "content-type": "application/x-ndjson; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    "x-request-id": requestId,
+    "transfer-encoding": "chunked"
+  });
+  res.flushHeaders();
+  requestTiming.firstVisibleFrameMonotonicMs = performance.now();
+  writeTurnStreamFrame(res, {
+    schema: "scce.turn_stream.v1",
+    type: "accepted",
+    requestId,
+    elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+    initialVisibleResponseDeadlineMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS
+  });
+  requestTiming.turnExecution = {
+    signal: controller.signal,
+    onProgress(progress) {
+      if (res.writableEnded || res.destroyed) return;
+      writeTurnStreamFrame(res, {
+        schema: "scce.turn_stream.v1",
+        type: "progress",
+        requestId,
+        phase: progress.phase,
+        elapsedMs: progress.observedAtMonotonicMs - requestTiming.startedMonotonicMs
+      });
+    }
+  };
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded || res.destroyed) return;
+    writeTurnStreamFrame(res, {
+      schema: "scce.turn_stream.v1",
+      type: "progress",
+      requestId,
+      phase: "runtime.working",
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs
+    });
+  }, 3_000);
+  heartbeat.unref();
+  try {
+    const response = await dispatch(req, url, context, requestTiming);
+    const value = response.contentType.startsWith("application/json")
+      ? JSON.parse(response.body)
+      : response.body;
+    writeTurnStreamFrame(res, {
+      schema: "scce.turn_stream.v1",
+      type: response.status >= 200 && response.status < 300 ? "result" : "error",
+      requestId,
+      status: response.status,
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+      value
+    });
+  } catch (error) {
+    const status = error instanceof HttpError ? error.status : 500;
+    writeTurnStreamFrame(res, {
+      schema: "scce.turn_stream.v1",
+      type: "error",
+      requestId,
+      status,
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  } finally {
+    completed = true;
+    clearInterval(heartbeat);
+    requestTiming.turnExecution = undefined;
+    if (!res.writableEnded) res.end();
+    const trace = (globalThis as any).__sccTrace;
+    if (trace) {
+      traceEvent(trace, {
+        stage: "api.response",
+        label: `200 ${req.method} ${req.url}`,
+        durationMs: Date.now() - started,
+        support: {
+          streaming: true,
+          firstVisibleFrameMs: (requestTiming.firstVisibleFrameMonotonicMs ?? performance.now())
+            - requestTiming.startedMonotonicMs
+        }
+      });
+    }
+  }
+}
+
+function writeTurnStreamFrame(
+  res: http.ServerResponse,
+  frame: Record<string, unknown>
+): void {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(`${JSON.stringify(frame)}\n`);
 }
 
 function pendingApproval(context: ApiContext, capabilityId: string, input: unknown): { status: number; body: string; contentType: string } {

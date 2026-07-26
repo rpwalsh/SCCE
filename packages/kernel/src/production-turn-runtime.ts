@@ -391,6 +391,16 @@ export function createProductionTurnRuntime(options: {
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
       const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
+        input.runtimeControl?.onProgress?.({
+          phase,
+          observedAtMonotonicMs: performance.now()
+        });
+        if (input.runtimeControl?.signal?.aborted) {
+          const reason = input.runtimeControl.signal.reason;
+          throw reason instanceof Error
+            ? reason
+            : new Error(`runtime turn aborted at ${phase}`);
+        }
         const decision = runtimeDeadline?.checkpoint(phase, requiredMs);
         const deadlineMetadata = runtimeDeadline?.metadata;
         if (decision && deadlineMetadata) {
@@ -430,6 +440,7 @@ export function createProductionTurnRuntime(options: {
           sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null
         }
       });
+      deadlineCheckpoint("runtime.seed.surface_cluster.complete", 0);
       const selectedSurfaceProfile = selectedSurfaceCluster?.members[0];
       const authorityLanguageStarted = Date.now();
       const baseAuthorityLanguage = await evaluationComponent(
@@ -455,6 +466,7 @@ export function createProductionTurnRuntime(options: {
           semanticFrames: baseAuthorityLanguage.semanticFrames.length
         }
       });
+      deadlineCheckpoint("runtime.seed.language.complete", 0);
       const exactRequestFramesStarted = Date.now();
       const exactRequestFrames = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
@@ -465,6 +477,7 @@ export function createProductionTurnRuntime(options: {
         durationMs: Date.now() - exactRequestFramesStarted,
         counts: { semanticFrames: exactRequestFrames.length }
       });
+      deadlineCheckpoint("runtime.seed.request_frames.complete", 0);
       const authorityLanguage = exactRequestFrames.length
         ? {
           ...baseAuthorityLanguage,
@@ -779,6 +792,7 @@ export function createProductionTurnRuntime(options: {
         support: discourseObjectTrace ? { discourseObject: discourseObjectTrace, queryConcatenationUsed: false } : { queryConcatenationUsed: false }
       });
       markTiming("graphSliceMs");
+      deadlineCheckpoint("runtime.graph_slice.complete", 0);
       const factualProofRequired = requestedAuthority !== "creative";
       const supportCandidates = factualProofRequired
         ? runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit))
@@ -931,6 +945,7 @@ export function createProductionTurnRuntime(options: {
         ?? selectedTemporalCandidateEvidence;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       markTiming("proofMs");
+      deadlineCheckpoint("runtime.proof.complete", 0);
       const semanticProofContradiction = typeof semanticProof.contradiction === "number"
         && Number.isFinite(semanticProof.contradiction)
         ? semanticProof.contradiction
@@ -1587,6 +1602,7 @@ export function createProductionTurnRuntime(options: {
         }
       });
       markTiming("candidateMs");
+      deadlineCheckpoint("runtime.candidates.complete", 0);
       const answerEntailment = selectedCandidateEntailment(answerEntailmentSeed, judged.selected);
       const selectedInvention = selectedInventionForCandidate(judged.selected, inventionCandidates);
       await deps.storage.proofs.putProof(answerEntailment.proof);
@@ -1743,6 +1759,7 @@ export function createProductionTurnRuntime(options: {
       if (construct.program) events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramGraphBuilt", payload: construct.program })));
       if (construct.artifacts.length) events.push(await append(eventFactory.create({ episodeId, typeId: "FileGraphBuilt", payload: { files: construct.artifacts.map(file => ({ path: file.path, contentHash: file.contentHash, role: file.role })) } })));
       markTiming("planningMs");
+      deadlineCheckpoint("runtime.planning.complete", 0);
       const mouthStarted = Date.now();
       const speakInput = {
         construct: spokenConstructGraph,
@@ -1791,6 +1808,7 @@ export function createProductionTurnRuntime(options: {
           : mouth.speak(speakInput),
         () => deterministicMouth.speak(speakInput)
       );
+      deadlineCheckpoint("runtime.mouth.primary.complete", 0);
       const emptyAuthoritySurface = !spoken.text.trim()
         && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         && !runtimeDiagnosticRequested;
@@ -2065,6 +2083,7 @@ export function createProductionTurnRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { assistantForce: runtimeCoherence.assistantForceAfter, assistantForceBeforeCoherence: mouthAssistantForce.force, assistantForceTrace: mouthAssistantForce.audit, surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, evidenceRefs: spoken.evidenceRefs, uncertainty: spoken.uncertainty, answerRevision: answerRevisionTrace ?? null, runtimeCoherence: runtimeCoherenceTrace } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: { ...emission, assistantForceTrace: emissionAssistantForce.audit, runtimeCoherence: runtimeCoherenceTrace } })));
       markTiming("validationMs");
+      deadlineCheckpoint("runtime.validation.complete", 0);
       const actionGraph = actionGraphBuilder.build({ episodeId, plans: capabilityPlans, emission, policy });
       const afterTurnMaintenance = afterTurnMaintenanceDecision({ translationTarget, construct, capabilityPlans, assistantForce: emission.assistantForce });
       const incrementalLearningDisabled = deps.evaluationCondition?.flags.disableIncrementalLearning === true;

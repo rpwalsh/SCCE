@@ -1,6 +1,6 @@
 import type { IdFactory } from "./ids.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
-import { continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
+import { KNESER_NEY_SCHEMA, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -3678,7 +3678,7 @@ function modelsFromObservations(observations: readonly NgramObservation[]): Knes
     const continuationCounts = new Map<string, number>();
     for (const [symbol, contexts] of continuationContexts) continuationCounts.set(symbol, contexts.size);
     const totalContinuationTypes = [...continuationContexts.values()].reduce((sum, contexts) => sum + contexts.size, 0);
-    models.push({
+    const core = {
       order,
       discount: 0.75,
       observedSymbolCount: rows.reduce((sum, row) => sum + row.count, 0),
@@ -3691,6 +3691,10 @@ function modelsFromObservations(observations: readonly NgramObservation[]): Knes
       unigramCounts: Object.fromEntries(unigramCounts),
       totalUnigramCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
       vocabulary
+    };
+    models.push({
+      ...core,
+      ...compileKneserNeyRuntimeIndexes(core)
     });
   }
   return models;
@@ -3744,8 +3748,20 @@ function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefi
   const model = (json as Record<string, JsonValue>).model;
   if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
   const row = model as Record<string, JsonValue>;
-  if (typeof row.order !== "number" || typeof row.discount !== "number" || !isRecord(row.counts) || !isRecord(row.contextCounts) || !Array.isArray(row.vocabulary)) return undefined;
+  if (
+    row.schema !== KNESER_NEY_SCHEMA
+    || typeof row.order !== "number"
+    || typeof row.discount !== "number"
+    || !isRecord(row.counts)
+    || !isRecord(row.contextCounts)
+    || !Array.isArray(row.vocabulary)
+    || !isRecord(row.successorIndex)
+    || !isRecord(row.successorOverflowCounts)
+    || !isRecord(row.backoffWeights)
+    || !Array.isArray(row.baseContinuations)
+  ) return undefined;
   return {
+    schema: KNESER_NEY_SCHEMA,
     order: row.order,
     discount: row.discount,
     observedSymbolCount: numberOf(row.observedSymbolCount),
@@ -3757,8 +3773,21 @@ function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefi
     totalContinuationTypes: numberOf(row.totalContinuationTypes),
     unigramCounts: numberRecord(row.unigramCounts),
     totalUnigramCount: numberOf(row.totalUnigramCount),
-    vocabulary: row.vocabulary.map(String)
+    vocabulary: row.vocabulary.map(String),
+    successorIndex: stringArrayRecord(row.successorIndex),
+    successorOverflowCounts: numberRecord(row.successorOverflowCounts),
+    backoffWeights: numberRecord(row.backoffWeights),
+    baseContinuations: row.baseContinuations.map(String)
   };
+}
+
+function stringArrayRecord(value: JsonValue | undefined): Record<string, string[]> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (Array.isArray(raw)) out[key] = raw.map(String);
+  }
+  return out;
 }
 
 function numberRecord(value: JsonValue | undefined): Record<string, number> {

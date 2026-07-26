@@ -8,6 +8,7 @@ import {
   createEventFactory,
   createHasher,
   createIdFactory,
+  compileKneserNeyRuntimeIndexes,
   featureSet,
   stableVector,
   toJsonValue,
@@ -1857,7 +1858,7 @@ function kneserModelFromImportedCounts(items: Array<{ order: number; history: st
   const continuationCounts = new Map<string, number>();
   for (const [symbol, contexts] of continuationContexts) continuationCounts.set(symbol, contexts.size);
   const vocabulary = [...unigramCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 24000).map(([symbol]) => symbol);
-  return {
+  const core = {
     order: Math.max(1, Math.min(6, maxOrder)),
     discount: 0.75,
     observedSymbolCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
@@ -1870,6 +1871,10 @@ function kneserModelFromImportedCounts(items: Array<{ order: number; history: st
     unigramCounts: Object.fromEntries(unigramCounts),
     totalUnigramCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
     vocabulary
+  };
+  return {
+    ...core,
+    ...compileKneserNeyRuntimeIndexes(core)
   };
 }
 
