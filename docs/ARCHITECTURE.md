@@ -103,6 +103,9 @@ validation so credentials need not be committed.
 - `population-ordering.ts`: bounded source-exact relative-position induction keyed
   by segmentation population, plus explicit global pair backoff. The sparse solver
   evaluates its robust ordering term only on active candidate neighborhoods.
+- `cross-document-alignment.ts`: canonical typed graph-port projections, dependency
+  family collapse, independent-family consistency distances, and second-pass sparse
+  correction costs.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

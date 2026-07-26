@@ -20,6 +20,10 @@ import {
   populationOrderingExpectation,
   type PopulationOrderingModel
 } from "./population-ordering.js";
+import {
+  crossDocumentCost,
+  type CrossDocumentAlignmentModel
+} from "./cross-document-alignment.js";
 import type { Hasher, JsonValue } from "./types.js";
 
 export const SPARSE_FUSED_TRANSPORT_SCHEMA =
@@ -30,6 +34,7 @@ export interface SparseTransportObjective {
   featureWeight: number;
   structuralWeight: number;
   orderingWeight: number;
+  crossDocumentWeight: number;
   anchorWeight: number;
   surfaceMarginalWeight: number;
   graphMarginalWeight: number;
@@ -45,6 +50,7 @@ export const SPARSE_TRANSPORT_OBJECTIVE_V1: SparseTransportObjective = {
   featureWeight: 1,
   structuralWeight: 0.35,
   orderingWeight: 0.25,
+  crossDocumentWeight: 0.3,
   anchorWeight: 1.5,
   surfaceMarginalWeight: 0.8,
   graphMarginalWeight: 0.8,
@@ -72,6 +78,7 @@ export interface SparseTransportCell {
   featureCost: number;
   structuralCost: number;
   orderingCost: number;
+  crossDocumentCost: number;
   anchorCost: number;
   effectiveCost: number;
   exactAnchor: boolean;
@@ -84,6 +91,7 @@ export interface SparseTransportIteration {
   feature: number;
   structural: number;
   ordering: number;
+  crossDocument: number;
   anchor: number;
   surfaceMarginalKl: number;
   graphMarginalKl: number;
@@ -103,6 +111,7 @@ export interface SparseFusedTransportPlan {
   targetIndexId: string;
   typedNullCostModelId: string;
   populationOrderingModelId: string;
+  crossDocumentAlignmentModelId: string | null;
   status: "converged" | "iteration_budget_exhausted" | "work_budget_exhausted";
   globalOptimalityClaimed: false;
   objective: SparseTransportObjective;
@@ -139,6 +148,7 @@ interface RuntimeCell {
   featureCost: number;
   structuralCost: number;
   orderingCost: number;
+  crossDocumentCost: number;
   anchorCost: number;
   effectiveCost: number;
   mass: number;
@@ -150,6 +160,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   objective?: SparseTransportObjective;
   typedNullCostModel?: TypedNullCostModel;
   populationOrderingModel?: PopulationOrderingModel;
+  crossDocumentAlignmentModel?: CrossDocumentAlignmentModel;
   budget?: Partial<SparseTransportBudget>;
   hasher?: Hasher;
 }): SparseFusedTransportPlan {
@@ -197,6 +208,13 @@ export function solveSparseFusedUnbalancedTransport(input: {
     featureCost: quantize(1 - candidate.score),
     structuralCost: 0,
     orderingCost: 0,
+    crossDocumentCost: input.crossDocumentAlignmentModel
+      ? crossDocumentCost(
+        input.crossDocumentAlignmentModel,
+        candidate.graphTargetId,
+        input.support.sourceFamilyId
+      )
+      : 0,
     anchorCost: rowHasExactAnchor.has(candidate.surfaceUnitId)
       && !candidate.supportKinds.includes("exact_observable_anchor")
       ? 1
@@ -232,6 +250,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
         objective.featureWeight * cell.featureCost
         + objective.structuralWeight * cell.structuralCost
         + objective.orderingWeight * cell.orderingCost
+        + objective.crossDocumentWeight * cell.crossDocumentCost
         + objective.anchorWeight * cell.anchorCost
       );
     }
@@ -353,6 +372,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     featureCost: cell.featureCost,
     structuralCost: quantize(cell.structuralCost),
     orderingCost: quantize(cell.orderingCost),
+    crossDocumentCost: quantize(cell.crossDocumentCost),
     anchorCost: cell.anchorCost,
     effectiveCost: cell.effectiveCost,
     exactAnchor: cell.candidate.supportKinds.includes("exact_observable_anchor")
@@ -366,6 +386,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     targetIndexId: input.targetIndex.id,
     typedNullCostModelId: typedNullCostModel.id,
     populationOrderingModelId: populationOrderingModel.id,
+    crossDocumentAlignmentModelId: input.crossDocumentAlignmentModel?.id ?? null,
     status,
     globalOptimalityClaimed: false as const,
     objective,
@@ -389,6 +410,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
       typedNullCostModelId: typedNullCostModel.id,
       typedNullCostModelCalibrated: typedNullCostModel.calibrated,
       populationOrderingModelId: populationOrderingModel.id,
+      crossDocumentAlignmentModelId: input.crossDocumentAlignmentModel?.id ?? null,
       populationOrderingPosterior: input.support.populationPosterior,
       surfaceNullMass: quantize(rowMarginals.reduce(
         (sum, row) => sum + row.surfaceNullMass,
@@ -664,6 +686,10 @@ function objectiveComponents(input: {
     (sum, cell) => sum + cell.mass * cell.orderingCost,
     0
   ));
+  const crossDocument = quantize(input.cells.reduce(
+    (sum, cell) => sum + cell.mass * cell.crossDocumentCost,
+    0
+  ));
   const anchor = quantize(input.cells.reduce(
     (sum, cell) => sum + cell.mass * cell.anchorCost,
     0
@@ -686,6 +712,7 @@ function objectiveComponents(input: {
     input.objective.featureWeight * feature
     + input.objective.structuralWeight * structural
     + input.objective.orderingWeight * ordering
+    + input.objective.crossDocumentWeight * crossDocument
     + input.objective.anchorWeight * anchor
     + input.objective.surfaceMarginalWeight * surfaceMarginalKl
     + input.objective.graphMarginalWeight * graphMarginalKl
@@ -696,6 +723,7 @@ function objectiveComponents(input: {
     feature,
     structural,
     ordering,
+    crossDocument,
     anchor,
     surfaceMarginalKl,
     graphMarginalKl,

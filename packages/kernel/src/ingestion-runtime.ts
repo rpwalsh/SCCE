@@ -46,8 +46,12 @@ import {
   generateSparseAlignmentCandidates
 } from "./sparse-alignment-candidates.js";
 import { solveSparseFusedUnbalancedTransport } from "./sparse-fused-transport.js";
+import { compileTypedNullCostModel } from "./typed-null-alignment.js";
+import { compilePopulationOrderingModel } from "./population-ordering.js";
+import { compileCrossDocumentAlignmentModel } from "./cross-document-alignment.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
+import { evidenceSourceFamilyId } from "./source-family.js";
 import { liftHyperedgesToTypedIncidenceGraph } from "./typed-incidence-graph.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
 import type {
@@ -513,11 +517,15 @@ export function createIngestionRuntime(options: {
         let maximumTransportEvidenceResidual = 0;
         const typedNullCostModelIds = new Set<string>();
         const populationOrderingModelIds = new Set<string>();
+        const crossDocumentAlignmentModelIds = new Set<string>();
         let surfaceNullMass = 0;
         let graphImplicitMass = 0;
+        const alignmentSupports:
+          ReturnType<typeof generateSparseAlignmentCandidates>[] = [];
         for (const span of relationEvidence) {
           const lattice = buildSurfaceLattice({
             documentId: String(span.id),
+            sourceFamilyId: evidenceSourceFamilyId(span),
             text: span.text,
             sourceVersionId: span.sourceVersionId,
             evidenceIds: [span.id],
@@ -535,16 +543,53 @@ export function createIngestionRuntime(options: {
             maximumAlignmentDegree,
             ...support.rows.map(row => row.candidateIds.length)
           );
-          const transport = solveSparseFusedUnbalancedTransport({
+          alignmentSupports.push(support);
+        }
+        const typedNullCostModel = compileTypedNullCostModel({
+          supports: alignmentSupports,
+          targetIndex: alignmentTargetIndex,
+          hasher
+        });
+        const populationOrderingModel = compilePopulationOrderingModel({
+          supports: alignmentSupports,
+          hasher
+        });
+        const initialTransportPlans = alignmentSupports.map(support =>
+          solveSparseFusedUnbalancedTransport({
             support,
             targetIndex: alignmentTargetIndex,
+            typedNullCostModel,
+            populationOrderingModel,
             hasher
-          });
+          }));
+        const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
+          supports: alignmentSupports,
+          plans: initialTransportPlans,
+          targetIndex: alignmentTargetIndex,
+          hasher
+        });
+        const finalTransportPlans = alignmentSupports.map(support =>
+          solveSparseFusedUnbalancedTransport({
+            support,
+            targetIndex: alignmentTargetIndex,
+            typedNullCostModel,
+            populationOrderingModel,
+            crossDocumentAlignmentModel,
+            hasher
+          }));
+        for (let index = 0; index < finalTransportPlans.length; index++) {
+          const support = alignmentSupports[index]!;
+          const transport = finalTransportPlans[index]!;
           transportPlanIds.push(transport.id);
           transportIterationCount += transport.iterations.length;
           transportedCellCount += transport.cells.length;
           typedNullCostModelIds.add(transport.typedNullCostModelId);
           populationOrderingModelIds.add(transport.populationOrderingModelId);
+          if (transport.crossDocumentAlignmentModelId) {
+            crossDocumentAlignmentModelIds.add(
+              transport.crossDocumentAlignmentModelId
+            );
+          }
           surfaceNullMass += transport.rowMarginals.reduce(
             (sum, row) => sum + row.surfaceNullMass,
             0
@@ -610,6 +655,8 @@ export function createIngestionRuntime(options: {
             typedNullCostModelIds: [...typedNullCostModelIds].sort(),
             typedNullCostsCalibrated: false,
             populationOrderingModelIds: [...populationOrderingModelIds].sort(),
+            crossDocumentAlignmentModelIds:
+              [...crossDocumentAlignmentModelIds].sort(),
             surfaceNullMass,
             graphImplicitMass,
             transportSolver: "scce.sparse_fused_unbalanced_transport.v1",

@@ -206,6 +206,13 @@ over the batch; ordinary and Wikipedia ingestion use the same compiler per activ
 support. The transport objective consumes the posterior-conditioned robust order
 term without language or traditional role names.
 
+Explicit training then performs a two-pass cross-document correction. First-pass
+plans are projected into the shared typed graph-port index. Documents are collapsed
+by declared dependency family before pairwise comparison, and
+`scce.cross_document_alignment_consistency.v1` supplies per-port inconsistency
+costs to the final sparse plans. Surface-form classes remain attached as provenance,
+allowing paraphrases to reinforce the same graph region without identical text.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,
