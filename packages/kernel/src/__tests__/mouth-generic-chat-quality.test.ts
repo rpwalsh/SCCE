@@ -72,7 +72,10 @@ describe("Mouth generic chat quality gate", () => {
     expect(observed.text).toBe(baseline.text);
     expect(observed.realizationTrace.selected).toEqual(baseline.realizationTrace.selected);
     expect(observed.evidenceRefs).toEqual(baseline.evidenceRefs);
-    expect(observed.realizationTrace).toEqual(baseline.realizationTrace);
+    // phaseMs records real wall-clock durations per Mouth phase and will
+    // never be identical across two independent speak() calls; compare
+    // everything else in the trace verbatim.
+    expect(withoutPhaseMs(observed.realizationTrace)).toEqual(withoutPhaseMs(baseline.realizationTrace));
     expect(sliceCalls.filter(call => call.collection === "observations" && call.start === 0 && call.end === 512)).toHaveLength(1);
     expect(sliceCalls.filter(call => call.collection === "semanticFrames" && call.start === 0 && call.end === 256)).toHaveLength(1);
   });
@@ -447,5 +450,19 @@ describe("Mouth generic chat quality gate", () => {
     ].map(chars => chars.join(""));
     const lower = text.toLocaleLowerCase();
     return terms.some(term => lower.includes(term));
+  }
+
+  function withoutPhaseMs(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(withoutPhaseMs);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          // Real wall-clock durations (phaseMs, measuredMs, ...) never match
+          // between two independent speak() calls; strip any such field.
+          .filter(([key, inner]) => !(/Ms$/.test(key) && (typeof inner === "number" || (inner && typeof inner === "object"))))
+          .map(([key, inner]) => [key, withoutPhaseMs(inner)])
+      );
+    }
+    return value;
   }
 });
