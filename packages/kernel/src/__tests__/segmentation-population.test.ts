@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildSurfaceLattice,
   boundaryMixtureForDocument,
+  boundaryMixtureForStatistics,
   collectBoundaryTrainingObservations,
+  compileBoundaryFeatureContext,
   compileBoundaryStatistics,
   createHasher,
   learnSegmentationPopulations,
@@ -89,6 +91,7 @@ describe("segmentation population induction", () => {
     expect(model.selection.candidates.find(candidate =>
       candidate.populations === 1)?.mergeBlocked).toBe(true);
     expect(model.populations.every(population => population.documentIds.length >= 2)).toBe(true);
+    expect(model.assignmentIndex["doc.a.01"]).toBeTypeOf("number");
     const familyA = boundaryMixtureForDocument(model, "doc.a.01", hasher);
     const familyB = boundaryMixtureForDocument(model, "doc.b.11", hasher);
     expect(scoreBoundaryState(familyA, spaced)).toBeGreaterThan(scoreBoundaryState(familyA, joined));
@@ -107,6 +110,17 @@ describe("segmentation population induction", () => {
         10
       );
     });
+    expect(() => boundaryMixtureForDocument(model, "doc.unseen", hasher))
+      .toThrow(/boundaryMixtureForStatistics/u);
+    const unseen = boundaryMixtureForStatistics(
+      model,
+      "doc.unseen",
+      documents[0]!.statistics,
+      hasher
+    );
+    expect(scoreBoundaryState(unseen, spaced)).toBeGreaterThan(
+      scoreBoundaryState(unseen, joined)
+    );
   });
 
   it("is invariant to input document order", () => {
@@ -175,7 +189,13 @@ describe("segmentation population induction", () => {
     expect(model.selection.candidates.find(candidate =>
       candidate.populations === 1)?.mergeBlocked).toBe(true);
     expect(model.populations.map(population => population.documentIds.length).sort((a, b) => a - b))
-      .toEqual([10, 40]);
+      .toEqual([8, 35]);
+    expect(model.selection.finalEvaluationDocumentIds).toHaveLength(7);
+    expect(model.populations.flatMap(population => population.documentIds)
+      .some(id => model.selection.finalEvaluationDocumentIds.includes(id))).toBe(false);
+    expect(model.populations.reduce((sum, population) =>
+      sum + population.documentIds.length, 0)
+      + model.selection.finalEvaluationDocumentIds.length).toBe(50);
   });
 
   it("learns through one script-neutral path without language-name inputs", () => {
@@ -214,7 +234,76 @@ describe("segmentation population induction", () => {
     const audit = JSON.stringify(model.audit);
 
     expect(model.assignments).toHaveLength(surfaces.length);
-    expect(audit).toContain("\"scriptMetadataUsed\":false");
+    expect(audit).toContain("\"languageLabelsOrLanguageSpecificRoutingUsed\":false");
+    expect(audit).toContain("\"unicodeStructuralPropertiesMayBeUniversalFeatures\":true");
     expect(audit).not.toMatch(/English|Arabic|Korean|Chinese/);
+  });
+
+  it("keeps dependent source families in one partition", () => {
+    const hasher = createHasher();
+    const documents = Array.from({ length: 24 }, (_, index) => {
+      const family = `family.${Math.floor(index / 2)}`;
+      const documentId = `doc.copy.${index}`;
+      return {
+        documentId,
+        sourceFamilyId: family,
+        statistics: compileBoundaryStatistics({
+          populationId: "population.families",
+          sourceDocumentIds: [documentId],
+          observations: [{
+            sourceDocumentId: documentId,
+            features: index % 4 < 2 ? spaced : joined,
+            positiveMass: 12,
+            negativeMass: 1,
+            supervision: "independent_anchor",
+            signalKind: "external_anchor",
+            signalId: `${documentId}.anchor`
+          }],
+          hasher
+        })
+      };
+    });
+    const model = learnSegmentationPopulations({
+      rootPopulationId: "population.families",
+      documents,
+      maxPopulations: 2,
+      hasher
+    });
+    const partitionByDocument = new Map<string, string>();
+    for (const [partition, ids] of Object.entries({
+      fit: model.selection.fitDocumentIds,
+      selection: model.selection.modelSelectionDocumentIds,
+      guard: model.selection.mergeGuardDocumentIds,
+      evaluation: model.selection.finalEvaluationDocumentIds
+    })) {
+      ids.forEach(id => partitionByDocument.set(id, partition));
+    }
+    for (let index = 0; index < documents.length; index += 2) {
+      expect(partitionByDocument.get(documents[index]!.documentId))
+        .toBe(partitionByDocument.get(documents[index + 1]!.documentId));
+    }
+  });
+
+  it("reconstructs corpus-derived boundary features on the serving path", () => {
+    const hasher = createHasher();
+    const training = [
+      buildSurfaceLattice({ documentId: "doc.feature.a", text: "alpha beta", hasher }),
+      buildSurfaceLattice({ documentId: "doc.feature.b", text: "alpha beta", hasher })
+    ];
+    const context = compileBoundaryFeatureContext({ lattices: training, hasher });
+    const served = buildSurfaceLattice({
+      documentId: "doc.feature.unseen",
+      text: "alpha beta",
+      boundaryFeatureContext: context,
+      hasher
+    });
+    const derived = served.units.flatMap(unit => [
+      unit.boundaryBefore.features,
+      unit.boundaryAfter.features
+    ]);
+    expect(Math.max(...derived.map(features => features.crossDocumentRecurrence)))
+      .toBeGreaterThan(0);
+    expect(Math.max(...derived.map(features => features.exactPhraseRecurrence)))
+      .toBeGreaterThan(0);
   });
 });

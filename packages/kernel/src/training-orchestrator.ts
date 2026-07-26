@@ -218,10 +218,20 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
 }
 
 function evidenceToLanguageDocument(span: EvidenceSpan): LanguageInductionDocument {
+  const provenance = span.provenance && typeof span.provenance === "object"
+    && !Array.isArray(span.provenance)
+    ? span.provenance as Record<string, JsonValue>
+    : {};
+  const declaredFamily = typeof provenance.sourceFamilyId === "string"
+    ? provenance.sourceFamilyId
+    : typeof provenance.dependencyFamilyId === "string"
+      ? provenance.dependencyFamilyId
+      : undefined;
   return {
     id: String(span.id),
     text: span.text,
     sourceVersionId: span.sourceVersionId,
+    sourceFamilyId: declaredFamily ?? String(span.sourceId),
     evidenceIds: [span.id],
     languageHint: languageHint(span),
     trust: trustFromSpan(span)

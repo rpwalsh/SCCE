@@ -99,8 +99,9 @@ validation so credentials need not be committed.
   path energy, complete-DAG forward/backward marginals, non-renormalized top-k mass,
   bounded resumable materialization, and learned-only final coefficients.
 - `segmentation-population.ts`: source-disjoint MDL population selection, exact
-  prior-times-document-likelihood posteriors, and per-child held-out merge guards
-  without language or script routing metadata.
+  prior-times-document-likelihood posteriors for stored and unseen documents,
+  source-family-disjoint fit/selection/guard/evaluation partitions, content-derived
+  population identities, and per-child merge guards without language-specific routing.
 - `join-program.ts`: derivation- and population-conditioned opaque exact-source join
   distributions, source-disjoint held-out evaluation, and explicit uncertainty
   outcomes with no global join or silent-concatenation fallback.

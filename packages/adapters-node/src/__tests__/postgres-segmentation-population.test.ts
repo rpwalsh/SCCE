@@ -13,13 +13,18 @@ afterEach(async () => {
 
 function model(id: string): SegmentationPopulationModel {
   return {
-    schema: "scce.segmentation_population_model.v2",
+    schema: "scce.segmentation_population_model.v3",
     id,
     rootPopulationId: "population.fixture",
     populations: [],
     assignments: [],
+    assignmentIndex: {},
     selection: {
       fitDocumentIds: ["doc.fit"],
+      modelSelectionDocumentIds: ["doc.holdout"],
+      mergeGuardDocumentIds: [],
+      finalEvaluationDocumentIds: [],
+      sourceFamilyDisjoint: true,
       holdoutDocumentIds: ["doc.holdout"],
       candidates: [{
         populations: 1,
@@ -34,7 +39,8 @@ function model(id: string): SegmentationPopulationModel {
       selectedPopulationCount: 0,
       baselineDescriptionNats: 5,
       selectedDescriptionNats: 5,
-      mdlGainNats: 0
+      mdlGainNats: 0,
+      finalEvaluationNats: 0
     },
     audit: {}
   };

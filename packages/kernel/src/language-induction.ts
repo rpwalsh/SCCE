@@ -12,8 +12,10 @@ import {
   buildSurfaceLattice,
   canonicalSurfaceSequence,
   collectBoundaryTrainingObservations,
+  compileBoundaryFeatureContext,
   SURFACE_LATTICE_SCHEMA,
   type BoundaryAnchor,
+  type CompiledBoundaryFeatureContext,
   type SurfaceLattice
 } from "./surface-lattice.js";
 import type { SemanticRole } from "./semantic-graph.js";
@@ -40,6 +42,7 @@ export interface LanguageInductionDocument {
   id: string;
   text: string;
   sourceVersionId?: SourceVersionId;
+  sourceFamilyId?: string;
   evidenceIds?: EvidenceId[];
   languageHint?: string;
   trust?: number;
@@ -183,6 +186,7 @@ export interface InducedLanguageModel {
   kneserNey: JsonValue;
   boundaryStatistics: BoundarySufficientStatistics;
   boundaryEstimator: BoundaryEstimatorModel;
+  boundaryFeatureContext: CompiledBoundaryFeatureContext;
   segmentationPopulations: SegmentationPopulationModel;
   joinProgram: JoinProgramMixture;
   relationHypothesisModel: RelationHypothesisModel;
@@ -223,8 +227,13 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         anchors: initialLattices.flatMap(({ doc }) =>
           (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
       });
+      const boundaryFeatureContext = compileBoundaryFeatureContext({
+        lattices: initialLattices.map(row => row.lattice),
+        hasher
+      });
       const documentBoundaryStatistics = initialLattices.map(({ doc }) => ({
         documentId: doc.id,
+        sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
         statistics: compileBoundaryStatistics({
           populationId,
           observations: boundaryObservations.filter(observation =>
@@ -270,6 +279,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           sourceVersionId: doc.sourceVersionId,
           evidenceIds: doc.evidenceIds,
           boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
+          boundaryFeatureContext,
           hasher
         })
       }));
@@ -354,6 +364,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         kneserNey: compactKneserNeyForProfile(kn, corpusText.slice(0, 200000)),
         boundaryStatistics,
         boundaryEstimator,
+        boundaryFeatureContext,
         segmentationPopulations,
         joinProgram,
         relationHypothesisModel,
