@@ -11,8 +11,9 @@ import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type 
 import {
   buildSurfaceLattice,
   canonicalSurfaceSequence,
-  collectBoundaryObservations,
+  collectBoundaryTrainingObservations,
   SURFACE_LATTICE_SCHEMA,
+  type BoundaryAnchor,
   type SurfaceLattice
 } from "./surface-lattice.js";
 import type { SemanticRole } from "./semantic-graph.js";
@@ -41,6 +42,7 @@ export interface LanguageInductionDocument {
   evidenceIds?: EvidenceId[];
   languageHint?: string;
   trust?: number;
+  boundaryAnchors?: Array<Omit<BoundaryAnchor, "documentId">>;
 }
 
 export interface InducedNgram {
@@ -215,11 +217,17 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
         documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
       )).slice(0, 32)}`;
-      const documentBoundaryStatistics = initialLattices.map(({ doc, lattice }) => ({
+      const boundaryObservations = collectBoundaryTrainingObservations({
+        lattices: initialLattices.map(row => row.lattice),
+        anchors: initialLattices.flatMap(({ doc }) =>
+          (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
+      });
+      const documentBoundaryStatistics = initialLattices.map(({ doc }) => ({
         documentId: doc.id,
         statistics: compileBoundaryStatistics({
           populationId,
-          observations: collectBoundaryObservations([lattice]),
+          observations: boundaryObservations.filter(observation =>
+            observation.sourceDocumentId === doc.id),
           sourceDocumentIds: [doc.id],
           hasher
         })
@@ -229,7 +237,25 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         hasher,
         populationId
       );
-      const boundaryEstimator = fitBoundaryEstimator({ statistics: boundaryStatistics, hasher });
+      const boundarySplit = splitBoundaryCalibrationDocuments(documentBoundaryStatistics, hasher);
+      const trainingBoundaryStatistics = mergeBoundaryStatistics(
+        boundarySplit.training.map(document => document.statistics),
+        hasher,
+        populationId
+      );
+      const heldoutBoundaryStatistics = boundarySplit.heldout.length
+        ? mergeBoundaryStatistics(
+          boundarySplit.heldout.map(document => document.statistics),
+          hasher,
+          populationId
+        )
+        : undefined;
+      const boundaryEstimator = fitBoundaryEstimator({
+        statistics: trainingBoundaryStatistics,
+        calibrationStatistics: heldoutBoundaryStatistics,
+        calibrationShards: boundarySplit.heldout.map(document => document.statistics),
+        hasher
+      });
       const segmentationPopulations = learnSegmentationPopulations({
         rootPopulationId: populationId,
         documents: documentBoundaryStatistics,
@@ -1211,6 +1237,26 @@ function frequency(symbols: readonly string[]): Map<string, number> {
 
 function topEntries(map: Map<string, number>, limit: number): Array<[string, number]> {
   return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, Math.max(1, limit));
+}
+
+function splitBoundaryCalibrationDocuments<T extends { documentId: string }>(
+  documents: readonly T[],
+  hasher: Hasher
+): { training: T[]; heldout: T[] } {
+  if (documents.length < 4) return { training: [...documents], heldout: [] };
+  const ranked = documents.map(document => ({
+    document,
+    rank: hasher.digestHex(`boundary-calibration-holdout\u001f${document.documentId}`)
+  })).sort((left, right) =>
+    left.rank.localeCompare(right.rank)
+    || left.document.documentId.localeCompare(right.document.documentId));
+  const heldoutCount = Math.max(1, Math.floor(documents.length / 5));
+  const heldoutIds = new Set(ranked.slice(0, heldoutCount)
+    .map(row => row.document.documentId));
+  return {
+    training: documents.filter(document => !heldoutIds.has(document.documentId)),
+    heldout: documents.filter(document => heldoutIds.has(document.documentId))
+  };
 }
 
 function gramKey(symbols: readonly string[]): string {

@@ -15,7 +15,12 @@ const spaced: BoundaryFeatureVector = {
   scriptTransition: 0,
   structuralBoundary: 0,
   localTransitionEntropy: 0.5,
-  repeatedContextSupport: 0.5
+  repeatedContextSupport: 0.5,
+  crossDocumentRecurrence: 0.5,
+  predictiveCompressionGain: 0.4,
+  stableSubstitutionSupport: 0.2,
+  exactPhraseRecurrence: 0.5,
+  constructionReuse: 0.2
 };
 
 const joined: BoundaryFeatureVector = {
@@ -25,7 +30,12 @@ const joined: BoundaryFeatureVector = {
   scriptTransition: 0,
   structuralBoundary: 0,
   localTransitionEntropy: 0.5,
-  repeatedContextSupport: 0.5
+  repeatedContextSupport: 0.5,
+  crossDocumentRecurrence: 0,
+  predictiveCompressionGain: 0,
+  stableSubstitutionSupport: 0,
+  exactPhraseRecurrence: 0,
+  constructionReuse: 0
 };
 
 describe("segmentation population induction", () => {
@@ -42,14 +52,22 @@ describe("segmentation population induction", () => {
           sourceDocumentIds: [documentId],
           observations: [
             {
+              sourceDocumentId: documentId,
               features: spaced,
               positiveMass: prefersSpaced ? 120 : 1,
-              negativeMass: prefersSpaced ? 1 : 120
+              negativeMass: prefersSpaced ? 1 : 120,
+              supervision: "independent_anchor",
+              signalKind: "external_anchor",
+              signalId: `${documentId}.spaced`
             },
             {
+              sourceDocumentId: documentId,
               features: joined,
               positiveMass: prefersSpaced ? 1 : 120,
-              negativeMass: prefersSpaced ? 120 : 1
+              negativeMass: prefersSpaced ? 120 : 1,
+              supervision: "independent_anchor",
+              signalKind: "external_anchor",
+              signalId: `${documentId}.joined`
             }
           ],
           hasher
@@ -82,9 +100,13 @@ describe("segmentation population induction", () => {
         populationId: "population.stable",
         sourceDocumentIds: [`doc.${id}`],
         observations: [{
+          sourceDocumentId: `doc.${id}`,
           features: index % 2 ? spaced : joined,
           positiveMass: 4,
-          negativeMass: 1
+          negativeMass: 1,
+          supervision: "independent_anchor",
+          signalKind: "external_anchor",
+          signalId: `doc.${id}.anchor`
         }],
         hasher
       })

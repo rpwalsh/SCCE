@@ -89,7 +89,11 @@ validation so credentials need not be committed.
   executable normalization, explicit identity-field allowlists, and independent
   source/observation/event/validity coordinates.
 - `surface-lattice.ts`: exact-occurrence quotient over detector proposals, separate
-  occurrence/form/unit-class identity, and lossless base-partition conservation.
+  occurrence/form/unit-class identity, lossless base-partition conservation, and
+  independent-anchor/packed-marginal boundary supervision.
+- `boundary-estimator.ts`, `segmentation-forest.ts`: mergeable anchored/latent
+  statistics, source-disjoint held-out Platt calibration, complete-DAG
+  forward/backward marginals, and learned-only final boundary coefficients.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and

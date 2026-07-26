@@ -18,7 +18,7 @@ function fakeModel(id: string): InducedLanguageModel {
     ngrams: [],
     kneserNey: {},
     boundaryStatistics: {
-      schema: "scce.boundary_statistics.v1",
+      schema: "scce.boundary_statistics.v2",
       populationId: "population.fixture",
       normalizationContractId: "normalization_contract.fixture",
       featureOrder: [],
@@ -26,12 +26,14 @@ function fakeModel(id: string): InducedLanguageModel {
       rows: [],
       positiveMass: 0,
       negativeMass: 0,
+      anchoredMass: 0,
+      latentMass: 0,
       sourceDocumentIds: [],
       id: "boundary_statistics.fixture",
       audit: {}
     },
     boundaryEstimator: {
-      schema: "scce.boundary_estimator.v1",
+      schema: "scce.boundary_estimator.v2",
       id: "boundary_estimator.fixture",
       populationId: "population.fixture",
       featureOrder: [],
@@ -40,7 +42,23 @@ function fakeModel(id: string): InducedLanguageModel {
       trainingStatisticsId: "boundary_statistics.fixture",
       iterations: 1,
       l2: 0,
-      calibration: { examples: 0, positiveMass: 0, negativeMass: 0, logLoss: 0 },
+      training: { examples: 0, positiveMass: 0, negativeMass: 0, logLoss: 0 },
+      calibration: {
+        method: "identity_no_holdout",
+        slope: 1,
+        intercept: 0,
+        heldoutSourceDocumentIds: [],
+        examples: 0,
+        mass: 0,
+        logLoss: null,
+        brier: null,
+        expectedCalibrationError: null,
+        anchorPrecision: null,
+        anchorRecall: null,
+        predictiveCompressionGainNats: null,
+        shardCount: 0,
+        shardLogLossStdDev: null
+      },
       audit: {}
     },
     segmentationPopulations: {

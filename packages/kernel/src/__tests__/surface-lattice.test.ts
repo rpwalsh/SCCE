@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSurfaceLattice,
   canonicalSurfaceSequence,
+  collectBoundaryTrainingObservations,
   createHasher,
   validateSurfaceLattice
 } from "../index.js";
@@ -142,5 +143,24 @@ describe("universal surface lattice", () => {
     expect(cats[0]!.occurrenceId).not.toBe(cats[1]!.occurrenceId);
     expect(cats[0]!.unitClassId).toBe(cats[1]!.unitClassId);
     expect(cats[0]!.byteStart).not.toBe(cats[1]!.byteStart);
+  });
+
+  it("uses cross-document anchors and packed marginals without detector labels", () => {
+    const lattices = [
+      buildSurfaceLattice({ documentId: "doc.anchor.a", text: "red blue", hasher }),
+      buildSurfaceLattice({ documentId: "doc.anchor.b", text: "red blue", hasher }),
+      buildSurfaceLattice({ documentId: "doc.latent", text: "独特文字列", hasher })
+    ];
+    const observations = collectBoundaryTrainingObservations({ lattices });
+    const anchored = observations.filter(row => row.supervision === "independent_anchor");
+    const latent = observations.filter(row => row.supervision === "latent_marginal");
+
+    expect(anchored.length).toBeGreaterThan(0);
+    expect(anchored.some(row => row.signalKind === "exact_repeated_phrase")).toBe(true);
+    expect(latent.length).toBeGreaterThan(0);
+    expect(latent.every(row => row.signalKind === "packed_forest_marginal")).toBe(true);
+    expect(observations.every(row =>
+      !row.signalId.includes("candidate_detector")
+      && !row.signalId.includes("bootstrap_endpoint"))).toBe(true);
   });
 });

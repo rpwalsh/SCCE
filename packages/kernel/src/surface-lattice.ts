@@ -128,6 +128,15 @@ export interface SurfaceLatticeBuildOptions {
   normalizationContract?: NormalizationContract;
 }
 
+export interface BoundaryAnchor {
+  documentId: string;
+  positionGrapheme: number;
+  outcome: "boundary" | "continuation";
+  signalKind: Exclude<BoundaryObservation["signalKind"], "packed_forest_marginal">;
+  sourceId: string;
+  confidence: number;
+}
+
 interface CandidateUnit {
   kind: SurfaceLatticeUnitKind;
   surface: string;
@@ -367,51 +376,157 @@ export function canonicalSurfaceSequence(
 }
 
 /**
- * Extracts self-supervised boundary labels from exact lattice agreement.
- * Alternative-unit endpoints add positive mass; stable units spanning a
- * position add negative mass. Structural spans contribute endpoints only.
+ * Compiles boundary supervision without treating detector proposals as truth.
+ * Repeated phrases must recur across documents before they can anchor a
+ * decision. All unanchored positions use exact packed-forest marginals.
  */
-export function collectBoundaryObservations(
-  lattices: readonly SurfaceLattice[]
-): BoundaryObservation[] {
+export function collectBoundaryTrainingObservations(input: {
+  lattices: readonly SurfaceLattice[];
+  anchors?: readonly BoundaryAnchor[];
+}): BoundaryObservation[] {
   const observations: BoundaryObservation[] = [];
-  for (const lattice of [...lattices].sort((left, right) => left.id.localeCompare(right.id))) {
+  const lattices = [...input.lattices].sort((left, right) => left.id.localeCompare(right.id));
+  const documentsByUnitClass = new Map<string, Set<string>>();
+  const unitsByContext = new Map<string, Set<string>>();
+  for (const lattice of lattices) {
+    for (const unit of lattice.units) {
+      if (unit.overlapClass === "base_partition") continue;
+      const documents = documentsByUnitClass.get(unit.unitClassId) ?? new Set<string>();
+      documents.add(lattice.documentId);
+      documentsByUnitClass.set(unit.unitClassId, documents);
+      const contextKey = boundaryContextKey(unit);
+      const classes = unitsByContext.get(contextKey) ?? new Set<string>();
+      classes.add(unit.unitClassId);
+      unitsByContext.set(contextKey, classes);
+    }
+  }
+  const anchorsByDocument = new Map<string, BoundaryAnchor[]>();
+  for (const anchor of input.anchors ?? []) {
+    if (!anchor.sourceId.trim()) throw new Error("boundary anchor requires a sourceId");
+    const bucket = anchorsByDocument.get(anchor.documentId) ?? [];
+    bucket.push(anchor);
+    anchorsByDocument.set(anchor.documentId, bucket);
+  }
+
+  for (const lattice of lattices) {
     const graphemes = lattice.units
       .filter(unit => unit.overlapClass === "base_partition")
       .sort(comparePersistedUnits);
     const hypotheses = lattice.units.filter(unit => unit.overlapClass !== "base_partition");
-    const positiveMass = new Array<number>(graphemes.length + 1).fill(0);
-    const negativeDelta = new Array<number>(graphemes.length + 2).fill(0);
+    const featuresByPosition = new Map<number, BoundaryFeatureVector>();
+    const anchoredPositions = new Set<number>();
+    for (let position = 1; position < graphemes.length; position += 1) {
+      featuresByPosition.set(position, { ...graphemes[position - 1]!.boundaryAfter.features });
+    }
+
     for (const unit of hypotheses) {
-      const recurrence = Math.max(1, Math.log1p(unit.recurrenceCount));
-      if (unit.graphemeStart >= 0 && unit.graphemeStart <= graphemes.length) {
-        positiveMass[unit.graphemeStart] = positiveMass[unit.graphemeStart]!
-          + (unit.overlapClass === "structure" ? 0.5 : recurrence);
+      const documentSupport = documentsByUnitClass.get(unit.unitClassId)?.size ?? 1;
+      const recurrenceFeature = clamp01(Math.log1p(Math.max(0, documentSupport - 1)) / 6);
+      const spanLength = Math.max(1, unit.graphemeEnd - unit.graphemeStart);
+      const compressionFeature = clamp01(recurrenceFeature * (1 - 1 / spanLength));
+      const substitutionFeature = clamp01(
+        Math.log1p(Math.max(0, (unitsByContext.get(boundaryContextKey(unit))?.size ?? 1) - 1)) / 6
+      );
+      for (let position = Math.max(1, unit.graphemeStart);
+        position <= Math.min(graphemes.length - 1, unit.graphemeEnd);
+        position += 1) {
+        const current = featuresByPosition.get(position);
+        if (!current) continue;
+        current.crossDocumentRecurrence = Math.max(current.crossDocumentRecurrence, recurrenceFeature);
+        current.predictiveCompressionGain = Math.max(current.predictiveCompressionGain, compressionFeature);
+        current.stableSubstitutionSupport = Math.max(current.stableSubstitutionSupport, substitutionFeature);
+        current.exactPhraseRecurrence = Math.max(current.exactPhraseRecurrence, recurrenceFeature);
+        current.constructionReuse = Math.max(current.constructionReuse, substitutionFeature);
       }
-      if (unit.graphemeEnd >= 0 && unit.graphemeEnd <= graphemes.length) {
-        positiveMass[unit.graphemeEnd] = positiveMass[unit.graphemeEnd]!
-          + (unit.overlapClass === "structure" ? 0.5 : recurrence);
+
+      if (documentSupport >= 2 && unit.overlapClass === "segmentation_alternative") {
+        const mass = Math.max(1, Math.log1p(documentSupport));
+        for (const position of [unit.graphemeStart, unit.graphemeEnd]) {
+          if (position <= 0 || position >= graphemes.length) continue;
+          anchoredPositions.add(position);
+          observations.push({
+            sourceDocumentId: lattice.documentId,
+            features: featuresByPosition.get(position)!,
+            positiveMass: mass,
+            negativeMass: 0,
+            supervision: "independent_anchor",
+            signalKind: "exact_repeated_phrase",
+            signalId: `crossdoc.endpoint.${lattice.id}.${unit.id}.${position}`
+          });
+        }
+        for (let position = unit.graphemeStart + 1; position < unit.graphemeEnd; position += 1) {
+          if (position <= 0 || position >= graphemes.length) continue;
+          anchoredPositions.add(position);
+          observations.push({
+            sourceDocumentId: lattice.documentId,
+            features: featuresByPosition.get(position)!,
+            positiveMass: 0,
+            negativeMass: mass,
+            supervision: "independent_anchor",
+            signalKind: "cross_document_recurrence",
+            signalId: `crossdoc.interior.${lattice.id}.${unit.id}.${position}`
+          });
+        }
       }
-      if (unit.overlapClass === "segmentation_alternative"
-        && unit.graphemeEnd - unit.graphemeStart > 1) {
-        negativeDelta[unit.graphemeStart + 1] = negativeDelta[unit.graphemeStart + 1]! + recurrence;
-        negativeDelta[unit.graphemeEnd] = negativeDelta[unit.graphemeEnd]! - recurrence;
+
+      if (unit.overlapClass === "structure"
+        && unit.proposalSources.some(source =>
+          source === "markup_structure"
+          || source === "table_cell"
+          || source === "line"
+          || source === "paragraph")) {
+        for (const position of [unit.graphemeStart, unit.graphemeEnd]) {
+          if (position <= 0 || position >= graphemes.length) continue;
+          anchoredPositions.add(position);
+          observations.push({
+            sourceDocumentId: lattice.documentId,
+            features: featuresByPosition.get(position)!,
+            positiveMass: 1,
+            negativeMass: 0,
+            supervision: "independent_anchor",
+            signalKind: "structured_anchor",
+            signalId: `structure.endpoint.${lattice.id}.${unit.id}.${position}`
+          });
+        }
       }
     }
-    let interiorMass = 0;
-    for (let position = 1; position < graphemes.length; position += 1) {
-      interiorMass += negativeDelta[position] ?? 0;
-      const evidence = graphemes[position - 1]!.boundaryAfter;
-      const positive = positiveMass[position] ?? 0;
-      if (positive + interiorMass <= 0) continue;
+
+    for (const anchor of anchorsByDocument.get(lattice.documentId) ?? []) {
+      const features = featuresByPosition.get(anchor.positionGrapheme);
+      if (!features || anchor.positionGrapheme <= 0 || anchor.positionGrapheme >= graphemes.length) continue;
+      anchoredPositions.add(anchor.positionGrapheme);
       observations.push({
-        features: evidence.features,
-        positiveMass: positive,
-        negativeMass: interiorMass
+        sourceDocumentId: lattice.documentId,
+        features,
+        positiveMass: anchor.outcome === "boundary" ? clamp01(anchor.confidence) : 0,
+        negativeMass: anchor.outcome === "continuation" ? clamp01(anchor.confidence) : 0,
+        supervision: "independent_anchor",
+        signalKind: anchor.signalKind,
+        signalId: `external.${lattice.id}.${anchor.sourceId}.${anchor.positionGrapheme}`
+      });
+    }
+
+    const marginals = new Map(lattice.segmentationForest.boundaryMarginals
+      .map(row => [row.positionGrapheme, row.boundaryProbability]));
+    for (let position = 1; position < graphemes.length; position += 1) {
+      if (anchoredPositions.has(position)) continue;
+      const probability = clamp01(marginals.get(position) ?? 0.5);
+      observations.push({
+        sourceDocumentId: lattice.documentId,
+        features: featuresByPosition.get(position)!,
+        positiveMass: probability,
+        negativeMass: 1 - probability,
+        supervision: "latent_marginal",
+        signalKind: "packed_forest_marginal",
+        signalId: `latent.${lattice.segmentationForest.id}.${position}`
       });
     }
   }
   return observations;
+}
+
+function boundaryContextKey(unit: SurfaceLatticeUnit): string {
+  return `${unit.leftContextSketch.join("\u001f")}\u001e${unit.rightContextSketch.join("\u001f")}`;
 }
 
 export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): SurfaceLatticeValidation {
@@ -461,6 +576,15 @@ export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): S
     || lattice.segmentationForest.latticeId !== lattice.id
     || lattice.segmentationForest.graphemeCount !== graphemes.length) {
     issues.push("segmentation_forest_identity");
+  }
+  if (lattice.segmentationForest.boundaryMarginals.length !== graphemes.length + 1
+    || lattice.segmentationForest.boundaryMarginals[0]?.boundaryProbability !== 1
+    || lattice.segmentationForest.boundaryMarginals.at(-1)?.boundaryProbability !== 1
+    || lattice.segmentationForest.boundaryMarginals.some((row, index) =>
+      row.positionGrapheme !== index
+      || row.boundaryProbability < 0
+      || row.boundaryProbability > 1)) {
+    issues.push("segmentation_boundary_marginals");
   }
   const unitsById = new Map(lattice.units.map(unit => [unit.id, unit]));
   let retainedMass = 0;
@@ -857,7 +981,12 @@ function boundaryEvidenceAt(input: {
     scriptTransition,
     structuralBoundary: input.structuralBoundary,
     localTransitionEntropy,
-    repeatedContextSupport
+    repeatedContextSupport,
+    crossDocumentRecurrence: 0,
+    predictiveCompressionGain: 0,
+    stableSubstitutionSupport: 0,
+    exactPhraseRecurrence: 0,
+    constructionReuse: 0
   };
   return {
     positionByte: input.positionByte,
