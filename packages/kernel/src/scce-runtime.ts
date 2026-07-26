@@ -32,7 +32,15 @@ import {
   calibrationObservationRecord,
   type CalibrationModelSet
 } from "./calibration-spine.js";
-import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
+import {
+  createTypedIngestProjector,
+  graphFromStructuredSemanticCandidates,
+  type TypedIngestProjection
+} from "./typed-ingest.js";
+import {
+  compileRelationPromotionModel,
+  type RelationPromotionModel
+} from "./relation-promotion.js";
 import {
   promoteWorkspaceAnalysisToCoreRecords,
   type WorkspaceCoreAnalysisInput,
@@ -128,6 +136,7 @@ export interface ScceRuntimeIngestResult {
   sourceVersions: SourceVersion[];
   evidence: EvidenceSpan[];
   typedProjections: TypedIngestProjection[];
+  relationPromotionModel: RelationPromotionModel;
   graph: { nodes: GraphNode[]; edges: GraphEdge[] };
   graphLearning: RuntimeGraphLearningReport;
   classificationCounts: Record<string, number>;
@@ -435,6 +444,20 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       if (!projection.observations.length) unsupportedRecords.push(toJsonValue({ path: file.path, reasonId: "runtime.ingest.no_typed_observations" }));
     }
 
+    const relationPromotionModel = compileRelationPromotionModel({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      hasher
+    });
+    const promotedCandidateGraph = graphFromStructuredSemanticCandidates({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      observedAt: now,
+      ids: idFactory,
+      hasher,
+      relationPromotionModel
+    });
+    graphNodes.push(...promotedCandidateGraph.nodes);
+    graphEdges.push(...promotedCandidateGraph.edges);
+
     const analysis: WorkspaceCoreAnalysisInput = {
       schema: "scce.runtime.fixture_analysis.v1",
       rootPath,
@@ -460,6 +483,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       sourceVersions,
       evidence,
       typedProjections,
+      relationPromotionModel,
       graph,
       graphLearning,
       classificationCounts: countStrings(typedProjections.flatMap(item => item.observations.map(obs => obs.kind))),
@@ -470,6 +494,10 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
         fileCount: input.files.length,
         evidenceIds: evidence.map(item => String(item.id)),
         observationCounts: typedProjections.map(item => item.observationCounts),
+        relationPromotionModelId: relationPromotionModel.id,
+        promotedRelationSeedIds: relationPromotionModel.decisions
+          .filter(decision => decision.promoted)
+          .map(decision => decision.relationSeedId),
         graphLearningReportId: graphLearning.id
       })
     };

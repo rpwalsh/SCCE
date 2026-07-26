@@ -11,6 +11,8 @@ import {
   createSourceAdmissionController,
   createSourceGraphBuilder,
   createTypedIngestProjector,
+  compileRelationPromotionModel,
+  graphFromStructuredSemanticCandidates,
   toJsonValue,
   validateBrainManifestContract,
   validationDisposition,
@@ -31,7 +33,8 @@ import {
   type JsonValue,
   type ScceStorage,
   type SourceVersion,
-  type SourceVersionId
+  type SourceVersionId,
+  type StructuredSemanticCandidate
 } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { trainLanguageCorpusText } from "./language-corpus-trainer.js";
@@ -77,6 +80,8 @@ export interface WikipediaV3IngestResult {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  relationCandidates: number;
+  promotedRelations: number;
   lastCheckpointOffset: number;
   heapMiB: number;
   rssMiB: number;
@@ -95,6 +100,7 @@ interface WikipediaLanguageShardSample {
   evidence: EvidenceSpan[];
   createdAt: number;
   languageAliases: string[];
+  semanticCandidates: StructuredSemanticCandidate[];
 }
 
 interface WikipediaPageImport {
@@ -108,6 +114,8 @@ interface WikipediaPageImport {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  relationCandidates: number;
+  promotedRelations: number;
   languageSample?: WikipediaLanguageShardSample;
   warnings: string[];
 }
@@ -119,6 +127,8 @@ interface WikipediaLanguageShardImport {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  relationCandidates: number;
+  promotedRelations: number;
   warnings: string[];
 }
 
@@ -142,6 +152,8 @@ export interface WikipediaV3IngestStatus {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  relationCandidates: number;
+  promotedRelations: number;
   lastCheckpointOffset: number;
   heapMiB: number;
   rssMiB: number;
@@ -234,6 +246,8 @@ export class WikipediaV3Ingestor {
       languageUnits: 0,
       languagePatterns: 0,
       semanticFrames: 0,
+      relationCandidates: 0,
+      promotedRelations: 0,
       lastCheckpointOffset: resumedFromOffset,
       heapMiB: heapMiB(),
       rssMiB: rssMiB(),
@@ -255,6 +269,8 @@ export class WikipediaV3Ingestor {
       result.languageUnits += imported.languageUnits;
       result.languagePatterns += imported.languagePatterns;
       result.semanticFrames += imported.semanticFrames;
+      result.relationCandidates += imported.relationCandidates;
+      result.promotedRelations += imported.promotedRelations;
       result.warnings.push(...imported.warnings);
     };
     const flushLanguageShard = async (shardUri: string): Promise<void> => {
@@ -286,6 +302,8 @@ export class WikipediaV3Ingestor {
         languageUnits: result.languageUnits,
         languagePatterns: result.languagePatterns,
         semanticFrames: result.semanticFrames,
+        relationCandidates: result.relationCandidates,
+        promotedRelations: result.promotedRelations,
         lastCheckpointOffset: result.lastCheckpointOffset,
         heapMiB: result.heapMiB,
         rssMiB: result.rssMiB,
@@ -349,6 +367,8 @@ export class WikipediaV3Ingestor {
         result.languageUnits += imported.languageUnits;
         result.languagePatterns += imported.languagePatterns;
         result.semanticFrames += imported.semanticFrames;
+        result.relationCandidates += imported.relationCandidates;
+        result.promotedRelations += imported.promotedRelations;
         if (imported.languageSample) languageShardSamples.push(imported.languageSample);
         result.warnings.push(...imported.warnings);
         const now = nowMs();
@@ -777,6 +797,8 @@ export class WikipediaV3Ingestor {
       languageUnits: 0,
       languagePatterns: 0,
       semanticFrames: 0,
+      relationCandidates: 0,
+      promotedRelations: 0,
       languageSample: {
         uri: file.uri,
         title: stringValue(objectOrEmpty(metadata).title),
@@ -784,7 +806,8 @@ export class WikipediaV3Ingestor {
         text: file.text,
         evidence: admittedSpans,
         createdAt: now,
-        languageAliases: languageAliasSurfacesFromMetadata(metadata)
+        languageAliases: languageAliasSurfacesFromMetadata(metadata),
+        semanticCandidates: typedProjection.semanticCandidates
       },
       warnings
     };
@@ -827,6 +850,42 @@ export class WikipediaV3Ingestor {
       persistSource: false,
       episodeId
     });
+    const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
+    const relationPromotionModel = compileRelationPromotionModel({
+      candidates: semanticCandidates,
+      hasher: this.hasher
+    });
+    if (semanticCandidates.length) {
+      const promotedGraph = graphFromStructuredSemanticCandidates({
+        candidates: semanticCandidates,
+        observedAt: createdAt,
+        ids: this.ids,
+        hasher: this.hasher,
+        relationPromotionModel
+      });
+      const promotedNodes = stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
+      const promotedEdges = stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
+      if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(promotedNodes);
+      else for (const node of promotedNodes) await this.storage.graph.upsertNode(node);
+      if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(promotedEdges);
+      else for (const edge of promotedEdges) await this.storage.graph.upsertEdge(edge);
+      await this.storage.events.append(this.events.create({
+        episodeId,
+        typeId: "RelationPromotionCompiled",
+        payload: toJsonValue({
+          shardUri,
+          modelId: relationPromotionModel.id,
+          candidateCount: semanticCandidates.length,
+          decisions: relationPromotionModel.decisions.map(decision => ({
+            relationSeedId: decision.relationSeedId,
+            promoted: decision.promoted,
+            gainNats: decision.descriptionLength.gainNats,
+            recoveryGain: decision.recovery.gain,
+            reasons: decision.reasons
+          }))
+        })
+      }));
+    }
     return {
       languageProfiles: trained.languageProfiles,
       ngramObservations: trained.ngramObservations,
@@ -834,6 +893,8 @@ export class WikipediaV3Ingestor {
       languageUnits: trained.languageUnits,
       languagePatterns: trained.languagePatterns,
       semanticFrames: trained.semanticFrames,
+      relationCandidates: semanticCandidates.length,
+      promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length,
       warnings: trained.warnings
     };
   }
@@ -851,6 +912,8 @@ function zeroPage(input: { warnings: string[] }): WikipediaPageImport {
     languageUnits: 0,
     languagePatterns: 0,
     semanticFrames: 0,
+    relationCandidates: 0,
+    promotedRelations: 0,
     warnings: input.warnings
   };
 }
@@ -863,6 +926,8 @@ function zeroLanguageShard(input: { warnings: string[] }): WikipediaLanguageShar
     languageUnits: 0,
     languagePatterns: 0,
     semanticFrames: 0,
+    relationCandidates: 0,
+    promotedRelations: 0,
     warnings: input.warnings
   };
 }

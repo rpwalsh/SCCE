@@ -67,6 +67,11 @@ validation so credentials need not be committed.
   content-addressed model is consumed by the production field when configured. No
   representative production model has been fitted, so the default path is an explicit
   identity-unconfigured mode.
+- `packages/kernel/src/structured-semantic-candidate.ts` and
+  `relation-promotion.ts`: evidence-bearing structured relation candidates and the
+  separate source-disjoint description-length compiler that decides whether their
+  incidence may be marked reusable. This path uses explicit data/model codes and
+  negative controls; it is distinct from turn-time relation-potential scoring.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field

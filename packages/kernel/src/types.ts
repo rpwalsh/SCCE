@@ -1042,6 +1042,9 @@ export interface IngestResult {
   graphNodes: number;
   graphEdges: number;
   languageProfiles: number;
+  relationCandidates: number;
+  promotedRelations: number;
+  relationPromotionModelId: string;
   typedObservations: Record<string, number>;
   observationRoutes: Record<string, number>;
   skipped: Array<{ path: string; reason: string }>;

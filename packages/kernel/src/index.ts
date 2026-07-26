@@ -180,6 +180,7 @@ export * from "./evaluation-flags.js";
 export * from "./evaluation-trace.js";
 export * from "./support-assessment.js";
 export * from "./relation-potential.js";
+export * from "./relation-promotion.js";
 export * from "./patch-transaction.js";
 export * from "./workspace-plan-generator.js";
 export * from "./runtime-workspace-plan-context.js";

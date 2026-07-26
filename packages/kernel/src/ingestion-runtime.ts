@@ -32,7 +32,14 @@ import {
   requestRequirementCorpusLanguageText
 } from "./request-requirement-learning.js";
 import type { ScceKernelDeps } from "./storage.js";
-import { createTypedIngestProjector } from "./typed-ingest.js";
+import {
+  createTypedIngestProjector,
+  graphFromStructuredSemanticCandidates
+} from "./typed-ingest.js";
+import {
+  compileRelationPromotionModel
+} from "./relation-promotion.js";
+import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
 import type {
   EpisodeId,
   IngestInput,
@@ -92,6 +99,7 @@ export function createIngestionRuntime(options: {
       let languageProfiles = 0;
       const typedObservationCounts: Record<string, number> = {};
       const observationRouteCounts: Record<string, number> = {};
+      const relationCandidates: StructuredSemanticCandidate[] = [];
       const skipped: Array<{ path: string; reason: string }> = [];
       const stream = input.content !== undefined
         ? inlineIngestStream(input, clock.now(), hasher)
@@ -303,6 +311,7 @@ export function createIngestionRuntime(options: {
         const routeCounts = routeStoreCounts(typedProjection.routes);
         for (const [store, count] of Object.entries(routeCounts)) observationRouteCounts[store] = (observationRouteCounts[store] ?? 0) + count;
         if (decision.activeInfluence.graph) {
+          relationCandidates.push(...typedProjection.semanticCandidates);
           const typedGraphNodes = labelRecords(typedProjection.graphNodes, informationLabel);
           const typedGraphEdges = labelRecords(typedProjection.graphEdges, informationLabel);
           if (deps.storage.graph.upsertNodes) await deps.storage.graph.upsertNodes(typedGraphNodes);
@@ -425,12 +434,64 @@ export function createIngestionRuntime(options: {
         events.push(await append(eventFactory.create({ episodeId, typeId: "EvidenceLinked", payload: { sourceVersionId, diagnostics: extracted.diagnostics } })));
         });
       }
+      const relationPromotionModel = compileRelationPromotionModel({
+        candidates: relationCandidates,
+        hasher
+      });
+      if (relationCandidates.length) {
+        const promotedGraph = graphFromStructuredSemanticCandidates({
+          candidates: relationCandidates,
+          observedAt: clock.now(),
+          ids: idFactory,
+          hasher,
+          relationPromotionModel
+        });
+        const promotedNodes = labelRecords(promotedGraph.nodes, informationLabel);
+        const promotedEdges = labelRecords(promotedGraph.edges, informationLabel);
+        if (deps.storage.graph.upsertNodes) await deps.storage.graph.upsertNodes(promotedNodes);
+        else for (const node of promotedNodes) await deps.storage.graph.upsertNode(node);
+        if (deps.storage.graph.upsertEdges) await deps.storage.graph.upsertEdges(promotedEdges);
+        else for (const edge of promotedEdges) await deps.storage.graph.upsertEdge(edge);
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "RelationPromotionCompiled",
+          payload: toJsonValue({
+            modelId: relationPromotionModel.id,
+            candidateCount: relationCandidates.length,
+            promotedRelationSeedIds: relationPromotionModel.decisions
+              .filter(decision => decision.promoted)
+              .map(decision => decision.relationSeedId),
+            decisions: relationPromotionModel.decisions.map(decision => ({
+              relationSeedId: decision.relationSeedId,
+              promoted: decision.promoted,
+              gainNats: decision.descriptionLength.gainNats,
+              recoveryGain: decision.recovery.gain,
+              reasons: decision.reasons
+            }))
+          })
+        })));
+      }
       const output = `ingested ${sources} source version(s), ${evidenceCount} evidence span(s), ${sumRecord(typedObservationCounts)} typed observation(s)`;
       const invalidateRuntimeCaches = Boolean(sources || evidenceCount || graphNodes || graphEdges || languageProfiles);
       onKernelStateMutation({ episodeId, output, invalidateRuntimeCaches });
       events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output, typedObservations: typedObservationCounts, observationRoutes: observationRouteCounts } })));
 
-      return { episodeId, files: fileCount, sources, evidence: evidenceCount, graphNodes, graphEdges, languageProfiles, typedObservations: typedObservationCounts, observationRoutes: observationRouteCounts, skipped, events };
+      return {
+        episodeId,
+        files: fileCount,
+        sources,
+        evidence: evidenceCount,
+        graphNodes,
+        graphEdges,
+        languageProfiles,
+        relationCandidates: relationCandidates.length,
+        promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length,
+        relationPromotionModelId: relationPromotionModel.id,
+        typedObservations: typedObservationCounts,
+        observationRoutes: observationRouteCounts,
+        skipped,
+        events
+      };
     
     }
   };
