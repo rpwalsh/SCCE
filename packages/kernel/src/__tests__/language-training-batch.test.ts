@@ -125,6 +125,12 @@ describe("shared language training batch", () => {
     expect(compiled.sparseTransportPlans[0]!.populationOrderingModelId).toBe(
       compiled.populationOrderingModel!.id
     );
+    expect(compiled.crossDocumentAlignmentModel).toMatchObject({
+      schema: "scce.cross_document_alignment_consistency.v1"
+    });
+    expect(compiled.sparseTransportPlans[0]!.crossDocumentAlignmentModelId).toBe(
+      compiled.crossDocumentAlignmentModel!.id
+    );
     expect(compiled.sparseTransportPlans[0]!.rowMarginals.every(row =>
       row.surfaceNullMass >= 0)).toBe(true);
     expect(compiled.sparseTransportPlans[0]!.columnMarginals.every(column =>

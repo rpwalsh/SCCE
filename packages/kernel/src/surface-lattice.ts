@@ -110,6 +110,7 @@ export interface SurfaceLattice {
   schema: typeof SURFACE_LATTICE_SCHEMA;
   id: string;
   documentId: string;
+  sourceFamilyId: string;
   sourceVersionId?: string;
   evidenceIds: string[];
   textHash: string;
@@ -128,6 +129,7 @@ export interface SurfaceLatticeValidation {
 
 export interface SurfaceLatticeBuildOptions {
   documentId: string;
+  sourceFamilyId?: string;
   text: string;
   sourceVersionId?: SourceVersionId | string;
   evidenceIds?: readonly (EvidenceId | string)[];
@@ -370,6 +372,9 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     schema: SURFACE_LATTICE_SCHEMA,
     id: latticeId,
     documentId: options.documentId,
+    sourceFamilyId: options.sourceFamilyId?.trim()
+      || sourceVersionId
+      || options.documentId,
     ...(sourceVersionId ? { sourceVersionId } : {}),
     evidenceIds,
     textHash: hasher.digestHex(text),

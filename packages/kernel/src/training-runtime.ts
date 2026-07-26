@@ -113,6 +113,7 @@ export function createTrainingRuntime(options: {
     let unresolvedTransportEvidenceAllocations = 0;
     let typedNullCostModels = 0;
     let populationOrderingModels = 0;
+    let crossDocumentAlignmentModels = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -191,6 +192,7 @@ export function createTrainingRuntime(options: {
         .filter(allocation => allocation.status === "unresolved_evidence").length;
       typedNullCostModels += memory.typedNullCostModel ? 1 : 0;
       populationOrderingModels += memory.populationOrderingModel ? 1 : 0;
+      crossDocumentAlignmentModels += memory.crossDocumentAlignmentModel ? 1 : 0;
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -227,6 +229,7 @@ export function createTrainingRuntime(options: {
         unresolvedTransportEvidenceAllocations,
         typedNullCostModels,
         populationOrderingModels,
+        crossDocumentAlignmentModels,
         surfaceNullMass,
         graphImplicitMass
       })

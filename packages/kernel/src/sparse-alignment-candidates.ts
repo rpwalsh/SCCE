@@ -67,6 +67,7 @@ export interface SparseAlignmentTargetIndex {
 export interface SparseAlignmentCandidate {
   id: string;
   surfaceUnitId: string;
+  surfaceFormClassId: string;
   graphTargetId: string;
   graphTargetKind: SparseAlignmentTargetKind;
   supportKinds: SparseAlignmentSupportKind[];
@@ -96,6 +97,7 @@ export interface SparseAlignmentCandidateSupport {
   schema: typeof SPARSE_ALIGNMENT_CANDIDATE_SUPPORT_SCHEMA;
   id: string;
   latticeId: string;
+  sourceFamilyId: string;
   targetIndexId: string;
   incidenceGraphId: string;
   maxCandidateDegree: number;
@@ -300,6 +302,7 @@ export function generateSparseAlignmentCandidates(input: {
           item.supportKinds
         ])).slice(0, 40)}`,
         surfaceUnitId: unit.id,
+        surfaceFormClassId: unit.surfaceFormClassId,
         graphTargetId: item.target.id,
         graphTargetKind: item.target.kind,
         supportKinds: item.supportKinds,
@@ -324,6 +327,7 @@ export function generateSparseAlignmentCandidates(input: {
   const canonical = {
     schema: SPARSE_ALIGNMENT_CANDIDATE_SUPPORT_SCHEMA,
     latticeId: input.lattice.id,
+    sourceFamilyId: input.lattice.sourceFamilyId,
     targetIndexId: input.targetIndex.id,
     incidenceGraphId: input.targetIndex.incidenceGraphId,
     maxCandidateDegree,

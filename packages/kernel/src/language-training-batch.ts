@@ -27,9 +27,14 @@ import {
   compilePopulationOrderingModel,
   type PopulationOrderingModel
 } from "./population-ordering.js";
+import {
+  compileCrossDocumentAlignmentModel,
+  type CrossDocumentAlignmentModel
+} from "./cross-document-alignment.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
+import { evidenceSourceFamilyId } from "./source-family.js";
 import type {
   LanguagePatternRecord,
   LanguageUnitRecord,
@@ -113,6 +118,7 @@ export interface CompiledLanguageTrainingBatch {
   sparseAlignmentCandidateSummaries: JsonValue[];
   typedNullCostModel: TypedNullCostModel | null;
   populationOrderingModel: PopulationOrderingModel | null;
+  crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
   sparseTransportPlans: SparseFusedTransportPlan[];
   transportEvidenceAllocations: TransportEvidenceAllocation[];
   constructionCandidates: number;
@@ -152,6 +158,7 @@ export function compileLanguageTrainingBatch(input: {
     ? compileSparseAlignmentCandidateSupports({
       lattices: batch.evidence.map(span => buildSurfaceLattice({
         documentId: String(span.id),
+        sourceFamilyId: evidenceSourceFamilyId(span),
         text: span.text,
         sourceVersionId: span.sourceVersionId,
         evidenceIds: [span.id],
@@ -177,6 +184,24 @@ export function compileLanguageTrainingBatch(input: {
       hasher: input.hasher
     })
     : null;
+  const initialSparseTransportPlans = sparseAlignment
+    ? sparseAlignmentCandidateSupports.map(support =>
+      solveSparseFusedUnbalancedTransport({
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        typedNullCostModel: typedNullCostModel!,
+        populationOrderingModel: populationOrderingModel!,
+        hasher: input.hasher
+      }))
+    : [];
+  const crossDocumentAlignmentModel = sparseAlignment
+    ? compileCrossDocumentAlignmentModel({
+      supports: sparseAlignmentCandidateSupports,
+      plans: initialSparseTransportPlans,
+      targetIndex: sparseAlignment.targetIndex,
+      hasher: input.hasher
+    })
+    : null;
   const sparseTransportPlans = sparseAlignment
     ? sparseAlignmentCandidateSupports.map(support =>
       solveSparseFusedUnbalancedTransport({
@@ -184,6 +209,7 @@ export function compileLanguageTrainingBatch(input: {
         targetIndex: sparseAlignment.targetIndex,
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
+        crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
         hasher: input.hasher
       }))
     : [];
@@ -251,6 +277,7 @@ export function compileLanguageTrainingBatch(input: {
     sparseAlignmentCandidateSummaries,
     typedNullCostModel,
     populationOrderingModel,
+    crossDocumentAlignmentModel,
     sparseTransportPlans,
     transportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
@@ -294,6 +321,17 @@ export function compileLanguageTrainingBatch(input: {
             estimateCount: populationOrderingModel.estimates.length,
             globalBackoffCount: populationOrderingModel.globalBackoff.length,
             audit: populationOrderingModel.audit
+          }
+          : null,
+        crossDocumentAlignmentModel: crossDocumentAlignmentModel
+          ? {
+            id: crossDocumentAlignmentModel.id,
+            schema: crossDocumentAlignmentModel.schema,
+            sourceFamilyIds: crossDocumentAlignmentModel.sourceFamilyIds,
+            projectionCount: crossDocumentAlignmentModel.projections.length,
+            estimateCount: crossDocumentAlignmentModel.estimates.length,
+            pairwiseDistances: crossDocumentAlignmentModel.pairwiseDistances,
+            audit: crossDocumentAlignmentModel.audit
           }
           : null,
         supportCount: sparseAlignmentCandidateSupports.length,

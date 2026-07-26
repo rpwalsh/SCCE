@@ -16,10 +16,14 @@ import {
   compileRoleSurfaceOrderModel,
   compileSparseAlignmentTargetIndex,
   generateSparseAlignmentCandidates,
+  compileTypedNullCostModel,
+  compilePopulationOrderingModel,
+  compileCrossDocumentAlignmentModel,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
   buildSurfaceLattice,
+  evidenceSourceFamilyId,
   liftHyperedgesToTypedIncidenceGraph,
   toJsonValue,
   validateBrainManifestContract,
@@ -960,11 +964,15 @@ export class WikipediaV3Ingestor {
       let maximumTransportEvidenceResidual = 0;
       const typedNullCostModelIds = new Set<string>();
       const populationOrderingModelIds = new Set<string>();
+      const crossDocumentAlignmentModelIds = new Set<string>();
       let surfaceNullMass = 0;
       let graphImplicitMass = 0;
+      const alignmentSupports:
+        ReturnType<typeof generateSparseAlignmentCandidates>[] = [];
       for (const span of evidence) {
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
+          sourceFamilyId: evidenceSourceFamilyId(span),
           text: span.text,
           sourceVersionId: span.sourceVersionId,
           evidenceIds: [span.id],
@@ -982,16 +990,53 @@ export class WikipediaV3Ingestor {
           maximumAlignmentDegree,
           ...support.rows.map(row => row.candidateIds.length)
         );
-        const transport = solveSparseFusedUnbalancedTransport({
+        alignmentSupports.push(support);
+      }
+      const typedNullCostModel = compileTypedNullCostModel({
+        supports: alignmentSupports,
+        targetIndex: alignmentTargetIndex,
+        hasher: this.hasher
+      });
+      const populationOrderingModel = compilePopulationOrderingModel({
+        supports: alignmentSupports,
+        hasher: this.hasher
+      });
+      const initialTransportPlans = alignmentSupports.map(support =>
+        solveSparseFusedUnbalancedTransport({
           support,
           targetIndex: alignmentTargetIndex,
+          typedNullCostModel,
+          populationOrderingModel,
           hasher: this.hasher
-        });
+        }));
+      const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
+        supports: alignmentSupports,
+        plans: initialTransportPlans,
+        targetIndex: alignmentTargetIndex,
+        hasher: this.hasher
+      });
+      const finalTransportPlans = alignmentSupports.map(support =>
+        solveSparseFusedUnbalancedTransport({
+          support,
+          targetIndex: alignmentTargetIndex,
+          typedNullCostModel,
+          populationOrderingModel,
+          crossDocumentAlignmentModel,
+          hasher: this.hasher
+        }));
+      for (let index = 0; index < finalTransportPlans.length; index++) {
+        const support = alignmentSupports[index]!;
+        const transport = finalTransportPlans[index]!;
         transportPlanIds.push(transport.id);
         transportIterationCount += transport.iterations.length;
         transportedCellCount += transport.cells.length;
         typedNullCostModelIds.add(transport.typedNullCostModelId);
         populationOrderingModelIds.add(transport.populationOrderingModelId);
+        if (transport.crossDocumentAlignmentModelId) {
+          crossDocumentAlignmentModelIds.add(
+            transport.crossDocumentAlignmentModelId
+          );
+        }
         surfaceNullMass += transport.rowMarginals.reduce(
           (sum, row) => sum + row.surfaceNullMass,
           0
@@ -1056,6 +1101,8 @@ export class WikipediaV3Ingestor {
           typedNullCostModelIds: [...typedNullCostModelIds].sort(),
           typedNullCostsCalibrated: false,
           populationOrderingModelIds: [...populationOrderingModelIds].sort(),
+          crossDocumentAlignmentModelIds:
+            [...crossDocumentAlignmentModelIds].sort(),
           surfaceNullMass,
           graphImplicitMass,
           transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
