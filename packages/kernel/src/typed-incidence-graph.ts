@@ -233,7 +233,7 @@ function graphTemporalScope(hyperedge: Hyperedge): GraphEdge["temporalScope"] {
     : {};
   const validFrom = typeof value.validFrom === "number" && Number.isFinite(value.validFrom)
     ? value.validFrom
-    : hyperedge.createdAt;
+    : Number.MIN_SAFE_INTEGER;
   return typeof value.validTo === "number" && Number.isFinite(value.validTo)
     ? { validFrom, validTo: value.validTo }
     : { validFrom };

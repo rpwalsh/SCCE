@@ -4,6 +4,7 @@ import { compileRelationPromotionModel } from "../relation-promotion.js";
 import { compileRoleSurfaceOrderModel } from "../role-surface-order.js";
 import type { StructuredSemanticCandidate } from "../structured-semantic-candidate.js";
 import type { SourceId, SourceVersionId } from "../types.js";
+import { canonicalTemporalCoordinates } from "../canonical-temporal.js";
 
 describe("opaque role induction", () => {
   it("learns reusable opaque identities from source-disjoint port distributions", () => {
@@ -90,6 +91,7 @@ function corpus(count: number): StructuredSemanticCandidate[] {
       })),
       qualifiers: { discourseStream: `stream.${index % 7}` },
       evidenceIds: [],
+      temporalCoordinates: canonicalTemporalCoordinates({ observedTime: index }),
       support: 1,
       provenance: {}
     };

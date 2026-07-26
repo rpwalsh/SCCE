@@ -8,6 +8,7 @@ import {
 import { graphFromStructuredSemanticCandidates } from "../typed-ingest.js";
 import { assertCanonicalHyperedge } from "../hyperedge.js";
 import type { StructuredSemanticCandidate } from "../structured-semantic-candidate.js";
+import { canonicalTemporalCoordinates } from "../canonical-temporal.js";
 import type { EvidenceId, SourceId, SourceVersionId } from "../types.js";
 
 describe("held-out relation promotion", () => {
@@ -92,6 +93,13 @@ describe("held-out relation promotion", () => {
       ...trained[0]!,
       id: "candidate.arbitrary",
       qualifiers: { validFrom: 10, validTo: 20, quantity: 3 },
+      temporalCoordinates: canonicalTemporalCoordinates({
+        observedTime: 100,
+        eventTime: 15,
+        validFrom: 10,
+        validTo: 20,
+        provenance: { parserModelId: "fixture.temporal" }
+      }),
       participants: [
         trained[0]!.participants[0]!,
         {
@@ -120,7 +128,13 @@ describe("held-out relation promotion", () => {
     expect(graph.hyperedges[0]).toMatchObject({
       schema: "scce.hyperedge.v2",
       qualifiers: { validFrom: 10, validTo: 20, quantity: 3 },
-      temporalScope: { validFrom: 10, validTo: 20 }
+      temporalScope: {
+        schema: "scce.temporal_coordinates.v1",
+        observedTime: 100,
+        eventTime: 15,
+        validFrom: 10,
+        validTo: 20
+      }
     });
     expect(graph.hyperedges[0]!.participantPorts).toHaveLength(2);
     expect(graph.hyperedges[0]!.memberNodeIds).toHaveLength(1);
@@ -166,6 +180,7 @@ function separableCandidates(count: number): StructuredSemanticCandidate[] {
       })),
       qualifiers: {},
       evidenceIds: [`evidence.${index}` as EvidenceId],
+      temporalCoordinates: canonicalTemporalCoordinates({ observedTime: index }),
       support: 1,
       provenance: {}
     };

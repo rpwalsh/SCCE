@@ -81,6 +81,8 @@ answer lane.
   conditioned surface order, omission and repetition probabilities.
 - `typed-incidence-graph.ts`, `field.ts`: lossless hyperedge-to-incidence projection
   and reversible arbitrary-arity alpha/PPF activation.
+- `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
+  `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

@@ -1,5 +1,10 @@
 import { canonicalStringify } from "./primitives.js";
 import type { Hyperedge, NodeId } from "./types.js";
+import {
+  assertCanonicalTemporalCoordinates,
+  CANONICAL_TEMPORAL_SCHEMA,
+  type CanonicalTemporalCoordinates
+} from "./canonical-temporal.js";
 
 export function observedHyperedgeMemberNodeIds(
   participantPorts: readonly Hyperedge["participantPorts"][number][]
@@ -43,6 +48,10 @@ export function assertCanonicalHyperedge(hyperedge: Hyperedge): void {
   const temporal = hyperedge.temporalScope && typeof hyperedge.temporalScope === "object" && !Array.isArray(hyperedge.temporalScope)
     ? hyperedge.temporalScope as Record<string, unknown>
     : undefined;
+  if (temporal?.schema === CANONICAL_TEMPORAL_SCHEMA) {
+    assertCanonicalTemporalCoordinates(temporal as unknown as CanonicalTemporalCoordinates);
+    return;
+  }
   if (!temporal || typeof temporal.validFrom !== "number" || !Number.isFinite(temporal.validFrom)) {
     throw new Error("hyperedge temporalScope.validFrom must be finite");
   }

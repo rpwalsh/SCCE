@@ -129,6 +129,7 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       metadata: input.metadata,
       observations,
       evidenceIds,
+      observedAt: input.observedAt,
       hasher
     });
     const observationGraph = graphFromObservations({ observations, routes, evidenceIds, observedAt: input.observedAt, ids, hasher });
@@ -998,20 +999,9 @@ export function graphFromStructuredSemanticCandidates(input: {
 
 function temporalScopeForCandidate(
   candidate: StructuredSemanticCandidate,
-  observedAt: number
+  _observedAt: number
 ): JsonValue {
-  const qualifiers = candidate.qualifiers && typeof candidate.qualifiers === "object" && !Array.isArray(candidate.qualifiers)
-    ? candidate.qualifiers as Record<string, JsonValue>
-    : {};
-  const validFrom = typeof qualifiers.validFrom === "number" && Number.isFinite(qualifiers.validFrom)
-    ? qualifiers.validFrom
-    : observedAt;
-  const validTo = typeof qualifiers.validTo === "number"
-    && Number.isFinite(qualifiers.validTo)
-    && qualifiers.validTo >= validFrom
-    ? qualifiers.validTo
-    : undefined;
-  return toJsonValue(validTo === undefined ? { validFrom } : { validFrom, validTo });
+  return toJsonValue(candidate.temporalCoordinates);
 }
 
 function uniqueGraphNodes(nodes: readonly GraphNode[]): GraphNode[] {

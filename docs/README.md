@@ -40,6 +40,8 @@ reference needed for the task.
   of runtime scores, fitted models, and fallbacks.
 - [Multilingual contract](MULTILINGUAL_CONTRACT.md) — language-neutral cognition and
   source-derived language behavior.
+- [Canonical evidence identity](CANONICAL_EVIDENCE_IDENTITY.md) — normalization,
+  identity hash fields, temporal coordinates, and deterministic replay manifests.
 
 ## Build and debug
 
