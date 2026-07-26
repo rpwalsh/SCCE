@@ -96,8 +96,18 @@ The primary induction engine performs a two-pass surface compile:
 3. reserve a deterministic document-disjoint holdout and compare non-collapsed population counts using held-out data nats plus model/assignment nats;
 4. refit the selected populations on admitted documents and rebuild each lattice with its posterior-weighted estimator mixture;
 5. calculate the complete bounded segmentation-DAG partition and retain deterministic k-best exact covers.
+6. compile one source-exact join program per selected population from every retained path, weighted by its segmentation posterior;
+7. publish the population mixture with exact-context, Unicode-category-shape, and learned population-level join distributions.
 
-The full sufficient statistics and baseline estimator remain in the archived induced-language model for comparison. The selected mixture is also written to `segmentation_population_models` with profile/source ownership, component statistics, estimators, assignments, candidate objectives, and fit/holdout identities. Profile-overlap lookup loads those records into the cached surface-language bundle. Direct use by every interpretation/realization lattice consumer, forest persistence, and affected-only overlay promotion still remain. ICU lexical segmentation still proposes some higher candidates and must be replaced by source-induced candidates before universal segmentation is complete.
+The full sufficient statistics and baseline estimator remain in the archived induced-language model for comparison. The selected mixture is also written to `segmentation_population_models` with profile/source ownership, component statistics, estimators, assignments, candidate objectives, and fit/holdout identities. Profile-overlap lookup loads those records into the cached surface-language bundle. Join programs are currently carried in the induced model's syntax projection and recovered by language-memory hydration; a dedicated indexed store is still required if broad-brain join state exceeds that projection boundary. Direct use by every interpretation lattice consumer, forest persistence, and affected-only overlay promotion still remain. ICU lexical segmentation still proposes some higher candidates and must be replaced by source-induced candidates before universal segmentation is complete.
+
+Join observations are not word-separator guesses. For adjacent realized units \(u,v\) on retained path \(z\), the compiler records the exact source substring:
+
+\[
+j=x[\operatorname{end}(u):\operatorname{start}(v)]
+\]
+
+and contributes the path posterior \(P(z\mid x,c)\) to that observation. Thus null joins, ordinary or non-breaking spaces, line breaks, punctuation, and longer connector surfaces share one representation. At runtime an absent program is unresolved and inserts no material; the runtime does not substitute an English space or terminal period.
 
 New n-gram state is emitted as `scce.kneser_ney.v2` with compiled successor arrays, overflow counts, base continuations, and precomputed backoff weights. Runtime hydration rejects model records without these compiled fields; turn-time inference does not rebuild an obsolete model by scanning all grams.
 

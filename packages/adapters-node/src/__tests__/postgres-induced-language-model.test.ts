@@ -59,6 +59,12 @@ function fakeModel(id: string): InducedLanguageModel {
       },
       audit: {}
     },
+    joinProgram: {
+      schema: "scce.join_program_mixture.v1",
+      id: "join_program_mixture.fixture",
+      populationModelId: "segmentation_population.fixture",
+      components: []
+    },
     boundarySignals: [],
     morphology: [],
     syntaxTemplates: [],

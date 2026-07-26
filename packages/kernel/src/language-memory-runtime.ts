@@ -27,6 +27,12 @@ import {
   isBackgroundAnswerRoleId,
   isBridgeAnswerRoleId
 } from "./question-routing-ids.js";
+import {
+  isJoinProgramMixture,
+  renderJoinedSurface,
+  type JoinProgramMixture,
+  type JoinProgramTraceStep
+} from "./join-program.js";
 
 export interface LanguageMemoryRuntimeState {
   models: KneserNeyModel[];
@@ -41,6 +47,7 @@ export interface LanguageMemoryRuntimeState {
   importedObservations: NgramObservation[];
   importedSemanticFrames: SemanticFrameRecord[];
   importedConstructionBundles: DurableLanguageConstructionBundle[];
+  joinPrograms: JoinProgramMixture[];
   creativeEventCompatibilityModels: CreativeEventCompatibilityModel[];
   rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
   importedLanguagePriorCount: number;
@@ -82,6 +89,8 @@ export interface LanguageMemoryRealization {
     text: string;
     stoppedBy: string;
     averageLogProbability: number;
+    joinTrace: JoinProgramTraceStep[];
+    unresolvedBoundaries: number;
   };
   audit: JsonValue;
 }
@@ -413,8 +422,9 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           ...creativeEventCompatibilityModelsFromPatterns(persistedPatterns)
         ]
       );
+      const joinPrograms = joinProgramsFromPatterns(importedPatterns);
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
-      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + creativeEventCompatibilityModels.length + input.models.filter(isImportedLanguagePriorModel).length;
+      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + creativeEventCompatibilityModels.length + joinPrograms.length + input.models.filter(isImportedLanguagePriorModel).length;
       const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
       return {
         models,
@@ -429,6 +439,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedObservations,
         importedSemanticFrames,
         importedConstructionBundles: constructionMemory.bundles,
+        joinPrograms,
         creativeEventCompatibilityModels,
         rejectedConstructionPatterns: constructionMemory.rejected,
         importedLanguagePriorCount,
@@ -453,6 +464,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           importedObservations: importedObservations.length,
           importedSemanticFrames: importedSemanticFrames.length,
           importedConstructionBundles: constructionMemory.bundles.length,
+          joinPrograms: joinPrograms.map(program => program.id),
           creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
           rejectedConstructionPatterns: constructionMemory.rejected,
           importedLanguagePriorCount,
@@ -489,6 +501,11 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           targetProfileId: bundle.targetProfileId,
           sourceVersionIds: bundle.sourceVersionIds,
           evidenceIds: bundle.evidenceIds
+        })),
+        joinPrograms: input.state.joinPrograms.slice(0, 24).map(program => ({
+          id: program.id,
+          populationModelId: program.populationModelId,
+          components: program.components.length
         })),
         creativeEventCompatibilityModels: input.state.creativeEventCompatibilityModels.slice(0, 24).map(model => ({
           id: model.id,
@@ -556,13 +573,24 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const best = ranked[0];
       const continuationModel = input.state.models.find(model => model.order >= 3) ?? input.state.models[0];
       const continuation = continuationModel && input.continuationPrompt
-        ? continueBoundedProse(continuationModel, input.continuationPrompt, { generationExtent: 32, probabilityFloor: 1e-8, temperature: 0.82 })
+        ? continueBoundedProse(continuationModel, input.continuationPrompt, {
+          generationExtent: 32,
+          probabilityFloor: 1e-8,
+          temperature: 0.82,
+          joinProgram: input.state.joinPrograms[0]
+        })
         : undefined;
       return {
         text: best?.candidate.text ?? "",
         evidenceIds: best?.candidate.evidenceIds ?? [],
         score: best?.score ?? scoreText(input.state, "", input.requestText),
-        continuation: continuation ? { text: continuation.text, stoppedBy: continuation.stoppedBy, averageLogProbability: continuation.averageLogProbability } : undefined,
+        continuation: continuation ? {
+          text: continuation.text,
+          stoppedBy: continuation.stoppedBy,
+          averageLogProbability: continuation.averageLogProbability,
+          joinTrace: continuation.joinTrace,
+          unresolvedBoundaries: continuation.unresolvedBoundaries
+        } : undefined,
         audit: toJsonValue({
           source: "language-memory-runtime.realize",
           candidates: ranked.slice(0, 12).map(row => ({ textHash: hashText(row.candidate.text), total: row.total, activation: row.score.activation, information: row.score.information })),
@@ -572,7 +600,13 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           importedLanguageUnitIdsUsed: importedIdsFromScore(best?.score.audit, "importedLanguageUnitIdsUsed"),
           importedPhrasePatternIdsUsed: importedIdsFromScore(best?.score.audit, "importedPhrasePatternIdsUsed"),
           importedSemanticFrameIdsUsed: importedIdsFromScore(best?.score.audit, "importedSemanticFrameIdsUsed"),
-          continuation: continuation ? { stoppedBy: continuation.stoppedBy, symbols: continuation.symbols.length, averageLogProbability: continuation.averageLogProbability } : null
+          continuation: continuation ? {
+            stoppedBy: continuation.stoppedBy,
+            symbols: continuation.symbols.length,
+            averageLogProbability: continuation.averageLogProbability,
+            joinProgramId: input.state.joinPrograms[0]?.id ?? null,
+            unresolvedBoundaries: continuation.unresolvedBoundaries
+          } : null
         })
       };
     },
@@ -1058,7 +1092,10 @@ function generationPieces(
     for (const surface of semanticFrameSurfaces(frame).slice(0, 8)) add(surface, "semantic_frame", frame.id, frame.alpha);
   }
   for (const observation of input.state.importedObservations.slice(0, 2048)) {
-    const text = [...observation.history.slice(-5), observation.symbol].join(" ");
+    const text = renderLearnedSequence(
+      [...observation.history.slice(-5), observation.symbol],
+      input.state.joinPrograms[0]
+    );
     const support = Math.max(0.001, Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 12);
     add(text, "observation", observation.id, support);
   }
@@ -1164,6 +1201,7 @@ function generateRhetoricalSentenceLattice(input: {
         materials,
         pieces: input.pieces,
         inlineBoundary: inlineBoundary.text,
+        joinProgram: input.state.joinPrograms[0],
         generationExtent: input.generationExtent
       })
     }))
@@ -1184,7 +1222,12 @@ function generateRhetoricalSentenceLattice(input: {
     })
   };
   const sentenceBoundary = chooseSentenceDiscourseBoundary(input.state);
-  const proseCandidates = proseCandidatesFromSentenceLattice({ lattice, sentenceBoundary: sentenceBoundary.text, generationExtent: input.generationExtent });
+  const proseCandidates = proseCandidatesFromSentenceLattice({
+    lattice,
+    sentenceBoundary: sentenceBoundary.text,
+    joinProgram: input.state.joinPrograms[0],
+    generationExtent: input.generationExtent
+  });
   if (!proseCandidates.length) return undefined;
   const critics = proseCandidates
     .map(candidate => critiqueProseCandidate(candidate, lattice))
@@ -1305,6 +1348,7 @@ function clauseCandidatesForSentencePlan(input: {
   materials: readonly SemanticFactMaterial[];
   pieces: readonly GenerationPiece[];
   inlineBoundary: string;
+  joinProgram?: JoinProgramMixture;
   generationExtent: number;
 }): ClauseCandidate[] {
   const materialById = new Map(input.materials.map(material => [material.id, material]));
@@ -1315,7 +1359,8 @@ function clauseCandidatesForSentencePlan(input: {
     plan: input.plan,
     materials: planMaterials.length ? planMaterials : input.materials,
     materialById,
-    inlineBoundary: input.inlineBoundary
+    inlineBoundary: input.inlineBoundary,
+    joinProgram: input.joinProgram
   });
   const out: ClauseCandidate[] = [];
   for (const [index, text] of textRows.entries()) {
@@ -1355,8 +1400,9 @@ function rhetoricalClauseTexts(input: {
   materials: readonly SemanticFactMaterial[];
   materialById: ReadonlyMap<string, SemanticFactMaterial>;
   inlineBoundary: string;
+  joinProgram?: JoinProgramMixture;
 }): string[] {
-  const boundary = input.inlineBoundary || ",";
+  const boundary = input.inlineBoundary;
   const rows: string[] = [];
   const add = (value: string) => {
     const clean = tidyInline(value);
@@ -1366,39 +1412,54 @@ function rhetoricalClauseTexts(input: {
   };
   const members = collectionMemberMaterials(input.plan, input.materialById, input.materials, input.plan.subjectLabel);
   if (members.length && (input.move === RHETORICAL_MOVE_IDS.lead || input.move === RHETORICAL_MOVE_IDS.support || input.move === RHETORICAL_MOVE_IDS.close)) {
-    add(members.map(material => collectionMemberLabel(material, input.plan.subjectLabel)).filter(Boolean).join(`${boundary} `));
+    add(renderLearnedSequence(
+      members.map(material => collectionMemberLabel(material, input.plan.subjectLabel)),
+      input.joinProgram,
+      boundary
+    ));
     return rows.slice(0, 4);
   }
   if (input.move === RHETORICAL_MOVE_IDS.lead || input.move === RHETORICAL_MOVE_IDS.close) {
-    const main = rhetoricalMainSurface(input.plan, input.materialById, boundary);
+    const main = rhetoricalMainSurface(input.plan, input.materialById, boundary, input.joinProgram);
     add(main.text);
-    const bridge = rhetoricalContributionBridgeSurface(input.plan, input.materialById, boundary);
+    const bridge = rhetoricalContributionBridgeSurface(input.plan, input.materialById, boundary, input.joinProgram);
     add(bridge.text);
   }
   if (input.move === RHETORICAL_MOVE_IDS.support) {
-    const bridge = rhetoricalBridgeSurface(input.plan, input.materialById, boundary);
+    const bridge = rhetoricalBridgeSurface(input.plan, input.materialById, boundary, input.joinProgram);
     add(bridge.text);
-    const contributionBridge = rhetoricalContributionBridgeSurface(input.plan, input.materialById, boundary);
+    const contributionBridge = rhetoricalContributionBridgeSurface(input.plan, input.materialById, boundary, input.joinProgram);
     add(contributionBridge.text);
   }
   if (input.move === RHETORICAL_MOVE_IDS.contrast) {
     const background = materialsForRoles(input.plan, input.materialById, [ANSWER_ROLE_IDS.backgroundActor, ANSWER_ROLE_IDS.backgroundRelation, ANSWER_ROLE_IDS.context]).slice(0, 2);
-    for (const material of background) add(contextRelationSegments(material, input.plan.subjectLabel).join(" "));
+    for (const material of background) {
+      add(renderLearnedSequence(
+        contextRelationSegments(material, input.plan.subjectLabel),
+        input.joinProgram
+      ));
+    }
   }
   if (input.move === RHETORICAL_MOVE_IDS.sourceBound) {
     const supported = input.materials
       .filter(material => material.forceClass === "direct_evidence" || material.certificationPower)
       .slice(0, 2);
-    for (const material of supported) add(materialClauseSurface(material, input.plan.subjectLabel, boundary));
+    for (const material of supported) {
+      add(materialClauseSurface(material, input.plan.subjectLabel, boundary, input.joinProgram));
+    }
   }
   if (input.move === RHETORICAL_MOVE_IDS.boundary) {
     const weak = input.materials
       .filter(material => material.forceClass !== "direct_evidence" && !material.certificationPower)
       .sort((a, b) => a.support - b.support)
       .slice(0, 1);
-    for (const material of weak) add(materialClauseSurface(material, input.plan.subjectLabel, boundary));
+    for (const material of weak) {
+      add(materialClauseSurface(material, input.plan.subjectLabel, boundary, input.joinProgram));
+    }
   }
-  for (const material of input.materials.slice(0, 4)) add(materialClauseSurface(material, input.plan.subjectLabel, boundary));
+  for (const material of input.materials.slice(0, 4)) {
+    add(materialClauseSurface(material, input.plan.subjectLabel, boundary, input.joinProgram));
+  }
   return rows.slice(0, 4);
 }
 
@@ -1498,12 +1559,14 @@ export function scopeLanguageMemoryStateToCluster(
     ...importedObservations.map(record => record.languageHint)
   ]).sort(compareCodePoint);
   const ordinaryPatterns = importedPatterns.filter(pattern => !isLanguageConstructionPattern(pattern));
+  const joinPrograms = joinProgramsFromPatterns(ordinaryPatterns);
   const importedLanguagePriorCount = importedUnits.length
     + ordinaryPatterns.length
     + importedObservations.length
     + importedSemanticFrames.length
     + importedConstructionBundles.length
     + creativeEventCompatibilityModels.length
+    + joinPrograms.length
     + records.filter(isImportedLanguagePriorModel).length;
   const competenceVector = competenceFromRuntime({
     models,
@@ -1532,6 +1595,7 @@ export function scopeLanguageMemoryStateToCluster(
     importedObservations,
     importedSemanticFrames,
     importedConstructionBundles,
+    joinPrograms,
     creativeEventCompatibilityModels,
     rejectedConstructionPatterns,
     importedLanguagePriorCount,
@@ -1560,6 +1624,7 @@ export function scopeLanguageMemoryStateToCluster(
         patterns: importedPatterns.length,
         semanticFrames: importedSemanticFrames.length,
         constructionBundles: importedConstructionBundles.length,
+        joinPrograms: joinPrograms.length,
         creativeEventCompatibilityModels: creativeEventCompatibilityModels.length
       },
       rejected: {
@@ -1603,6 +1668,7 @@ export function markLanguageMemoryStateUnscoped(
     importedObservations: [],
     importedSemanticFrames: [],
     importedConstructionBundles: [],
+    joinPrograms: [],
     creativeEventCompatibilityModels: [],
     rejectedConstructionPatterns: [],
     importedLanguagePriorCount: 0,
@@ -1663,7 +1729,12 @@ function clauseLatticeEdges(clausesByPlan: readonly { sentencePlanId: string; ca
   return edges.slice(0, 96);
 }
 
-function proseCandidatesFromSentenceLattice(input: { lattice: SentenceLattice; sentenceBoundary: string; generationExtent: number }): ProseCandidate[] {
+function proseCandidatesFromSentenceLattice(input: {
+  lattice: SentenceLattice;
+  sentenceBoundary: string;
+  joinProgram?: JoinProgramMixture;
+  generationExtent: number;
+}): ProseCandidate[] {
   const beams: ClauseCandidate[][] = [[]];
   for (const row of input.lattice.clausesByPlan) {
     const next: ClauseCandidate[][] = [];
@@ -1675,15 +1746,32 @@ function proseCandidatesFromSentenceLattice(input: { lattice: SentenceLattice; s
       .slice(0, 16));
   }
   return beams
-    .map((clauses, index) => proseCandidateFromClauses(clauses, input.lattice, input.sentenceBoundary, input.generationExtent, index))
+    .map((clauses, index) => proseCandidateFromClauses(
+      clauses,
+      input.lattice,
+      input.sentenceBoundary,
+      input.joinProgram,
+      input.generationExtent,
+      index
+    ))
     .filter((candidate): candidate is ProseCandidate => Boolean(candidate))
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
     .slice(0, 12);
 }
 
-function proseCandidateFromClauses(clauses: readonly ClauseCandidate[], lattice: SentenceLattice, sentenceBoundary: string, generationExtent: number, index: number): ProseCandidate | undefined {
+function proseCandidateFromClauses(
+  clauses: readonly ClauseCandidate[],
+  lattice: SentenceLattice,
+  sentenceBoundary: string,
+  joinProgram: JoinProgramMixture | undefined,
+  generationExtent: number,
+  index: number
+): ProseCandidate | undefined {
   if (!clauses.length) return undefined;
-  const text = clauses.map(clause => terminateDiscourseSurface(clause.text, sentenceBoundary)).join(" ");
+  const text = renderLearnedSequence(
+    clauses.map(clause => terminateDiscourseSurface(clause.text, sentenceBoundary)),
+    joinProgram
+  );
   if (containsUserFacingMetaSpeech(text)) return undefined;
   const symbolCount = symbolizeData(text).length;
   const target = Math.max(1, Math.min(generationExtent, lattice.paragraphPlan.targetSymbolCount));
@@ -1931,7 +2019,15 @@ function decodeDiscourseMoves(input: {
     for (const state of beams) {
       for (const move of candidates) {
         if (state.usedMoveIds.includes(move.id)) continue;
-        const next = advanceDiscourseBeam({ state, move, boundary: input.boundary, requiredTerms: input.requiredTerms, frameAtoms: input.frameAtoms, generationExtent: input.generationExtent });
+        const next = advanceDiscourseBeam({
+          state,
+          move,
+          boundary: input.boundary,
+          joinProgram: input.state.joinPrograms[0],
+          requiredTerms: input.requiredTerms,
+          frameAtoms: input.frameAtoms,
+          generationExtent: input.generationExtent
+        });
         if (!next) continue;
         expanded.push(next);
         beamExpansions++;
@@ -1946,7 +2042,15 @@ function decodeDiscourseMoves(input: {
   }
 
   if (!best.moves.length && candidates.length) {
-    best = advanceDiscourseBeam({ state: emptyDiscourseBeamState(), move: candidates[0]!, boundary: input.boundary, requiredTerms: input.requiredTerms, frameAtoms: input.frameAtoms, generationExtent: input.generationExtent }) ?? emptyDiscourseBeamState();
+    best = advanceDiscourseBeam({
+      state: emptyDiscourseBeamState(),
+      move: candidates[0]!,
+      boundary: input.boundary,
+      joinProgram: input.state.joinPrograms[0],
+      requiredTerms: input.requiredTerms,
+      frameAtoms: input.frameAtoms,
+      generationExtent: input.generationExtent
+    }) ?? emptyDiscourseBeamState();
   }
 
   const moveCount = Math.max(1, best.moves.length);
@@ -1990,11 +2094,14 @@ function advanceDiscourseBeam(input: {
   state: DiscourseBeamState;
   move: LanguageDiscourseMove;
   boundary: DiscourseBoundaryCandidate;
+  joinProgram?: JoinProgramMixture;
   requiredTerms: readonly LanguageGenerationTerm[];
   frameAtoms: readonly LanguageGenerationAtom[];
   generationExtent: number;
 }): DiscourseBeamState | undefined {
-  const text = input.state.text ? renderBoundary(input.boundary.text, input.state.text, input.move.text) : tidyInline(input.move.text);
+  const text = input.state.text
+    ? renderBoundary(input.boundary.text, input.state.text, input.move.text, input.joinProgram)
+    : tidyInline(input.move.text);
   const symbols = symbolizeData(text);
   if (symbols.length > input.generationExtent && input.state.moves.length > 0) return undefined;
   const requiredTermIds = coveredRequiredTermIds(text, input.requiredTerms);
@@ -2304,15 +2411,20 @@ function semanticRhetoricalPiecesFromMaterials(materials: readonly SemanticFactM
       planRank: input.rank
     }));
   };
-  const main = rhetoricalMainSurface(plan, materialById, boundary);
+  const joinProgram = state.joinPrograms[0];
+  const main = rhetoricalMainSurface(plan, materialById, boundary, joinProgram);
   add({ text: main.text, idSeed: `${plan.id}:main`, support: main.support, surfaced: main.materials, stages: main.stageIds, rank: 0 });
-  const contributionBridge = rhetoricalContributionBridgeSurface(plan, materialById, boundary);
+  const contributionBridge = rhetoricalContributionBridgeSurface(plan, materialById, boundary, joinProgram);
   add({ text: contributionBridge.text, idSeed: `${plan.id}:contribution_bridge`, support: contributionBridge.support, surfaced: contributionBridge.materials, stages: contributionBridge.stageIds, rank: 1 });
-  const bridge = rhetoricalBridgeSurface(plan, materialById, boundary);
+  const bridge = rhetoricalBridgeSurface(plan, materialById, boundary, joinProgram);
   add({ text: bridge.text, idSeed: `${plan.id}:bridge`, support: bridge.support, surfaced: bridge.materials, stages: bridge.stageIds, rank: 2 });
   const members = collectionMemberMaterials(plan, materialById, materials, plan.subjectLabel);
   if (members.length) add({
-    text: members.map(material => collectionMemberLabel(material, plan.subjectLabel)).filter(Boolean).join(`${boundary} `),
+    text: renderLearnedSequence(
+      members.map(material => collectionMemberLabel(material, plan.subjectLabel)),
+      joinProgram,
+      boundary
+    ),
     idSeed: `${plan.id}:members`,
     support: semanticMaterialSupport(members),
     surfaced: members,
@@ -2321,7 +2433,7 @@ function semanticRhetoricalPiecesFromMaterials(materials: readonly SemanticFactM
   });
   if (!members.length) {
     for (const material of materials.slice(0, 4)) add({
-      text: materialClauseSurface(material, plan.subjectLabel, boundary),
+      text: materialClauseSurface(material, plan.subjectLabel, boundary, joinProgram),
       idSeed: `${plan.id}:${material.id}`,
       support: material.support,
       surfaced: [material],
@@ -2547,7 +2659,12 @@ function answerRoleAssignmentsFromMaterials(materials: readonly SemanticFactMate
   }).sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
 }
 
-function rhetoricalMainSurface(plan: RhetoricalPlan, materialById: ReadonlyMap<string, SemanticFactMaterial>, boundary: string): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+function rhetoricalMainSurface(
+  plan: RhetoricalPlan,
+  materialById: ReadonlyMap<string, SemanticFactMaterial>,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
   const identity = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.identity);
   const contribution = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.contribution);
   const segments: string[] = [];
@@ -2560,7 +2677,7 @@ function rhetoricalMainSurface(plan: RhetoricalPlan, materialById: ReadonlyMap<s
     }
   }
   return {
-    text: tidyInline(segments.join(`${boundary} `)),
+    text: renderLearnedSequence(segments, joinProgram, boundary),
     materials,
     demotedMaterialIds: demotedMaterialIdsForPlan(plan, materials),
     stageIds: plan.stages.filter(stage => stage.roleId === ANSWER_ROLE_IDS.identity || stage.roleId === ANSWER_ROLE_IDS.contribution).map(stage => stage.id),
@@ -2568,13 +2685,19 @@ function rhetoricalMainSurface(plan: RhetoricalPlan, materialById: ReadonlyMap<s
   };
 }
 
-function rhetoricalBridgeSurface(plan: RhetoricalPlan, materialById: ReadonlyMap<string, SemanticFactMaterial>, boundary: string): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+function rhetoricalBridgeSurface(
+  plan: RhetoricalPlan,
+  materialById: ReadonlyMap<string, SemanticFactMaterial>,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+  void boundary;
   const context = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.significance) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.context) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.field);
   if (!context) return { text: "", materials: [], demotedMaterialIds: demotedMaterialIdsForPlan(plan, []), stageIds: [], support: 0 };
   const segments = contextRelationSegments(context, plan.subjectLabel);
   const materials = [context];
   return {
-    text: tidyInline(segments.join(" ")),
+    text: renderLearnedSequence(segments, joinProgram),
     materials,
     demotedMaterialIds: demotedMaterialIdsForPlan(plan, materials),
     stageIds: plan.stages.filter(stage => isBridgeAnswerRoleId(stage.roleId)).map(stage => stage.id),
@@ -2582,7 +2705,12 @@ function rhetoricalBridgeSurface(plan: RhetoricalPlan, materialById: ReadonlyMap
   };
 }
 
-function rhetoricalContributionBridgeSurface(plan: RhetoricalPlan, materialById: ReadonlyMap<string, SemanticFactMaterial>, boundary: string): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+function rhetoricalContributionBridgeSurface(
+  plan: RhetoricalPlan,
+  materialById: ReadonlyMap<string, SemanticFactMaterial>,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
   void boundary;
   const contribution = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.contribution);
   const context = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.significance) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.context) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.field);
@@ -2596,7 +2724,7 @@ function rhetoricalContributionBridgeSurface(plan: RhetoricalPlan, materialById:
     ...relationObjectSegments(contribution),
     ...contextSegments
   ].map(tidyInline).filter(Boolean);
-  const text = tidyInline(segments.join(" "));
+  const text = renderLearnedSequence(segments, joinProgram, boundary);
   if (!text || semanticSurfaceOverlap(text, contribution.objectLabel) > 0.92) return { text: "", materials: [], demotedMaterialIds: demotedMaterialIdsForPlan(plan, []), stageIds: [], support: 0 };
   const materials = uniqueSemanticMaterials([contribution, context]);
   return {
@@ -2657,7 +2785,6 @@ function relationObjectSegments(material: SemanticFactMaterial): string[] {
   const relation = tidyInline(material.predicateLabel);
   const object = tidyInline(material.objectLabel);
   if (lowSurfaceRelationLabel(relation)) return [object].filter(Boolean);
-  if (relation && object) return [tidyInline(`${relation} ${object}`)];
   return [relation, object].filter(Boolean);
 }
 
@@ -2671,14 +2798,29 @@ function contextRelationSegments(material: SemanticFactMaterial, selectedSubject
   return [subject, relation, object].filter(Boolean);
 }
 
-function materialClauseSurface(material: SemanticFactMaterial, selectedSubject: string, boundary: string): string {
+function materialClauseSurface(
+  material: SemanticFactMaterial,
+  selectedSubject: string,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): string {
   const subject = tidyInline(material.subjectLabel);
   const relation = tidyInline(material.predicateLabel);
   const object = tidyInline(material.objectLabel);
   if (!subject || !object) return subject || object;
-  if (sameSurface(subject, selectedSubject)) return relationObjectSegments(material).join(" ");
-  if (sameSurface(object, selectedSubject)) return lowSurfaceRelationLabel(relation) ? subject : tidyInline(`${relation} ${subject}`);
-  return tidyInline([subject, ...relationObjectSegments(material)].filter(Boolean).join(`${boundary} `));
+  if (sameSurface(subject, selectedSubject)) {
+    return renderLearnedSequence(relationObjectSegments(material), joinProgram);
+  }
+  if (sameSurface(object, selectedSubject)) {
+    return lowSurfaceRelationLabel(relation)
+      ? subject
+      : renderLearnedSequence([relation, subject], joinProgram);
+  }
+  return renderLearnedSequence(
+    [subject, ...relationObjectSegments(material)],
+    joinProgram,
+    boundary
+  );
 }
 
 function sentenceSubject(value: string): string {
@@ -2702,22 +2844,11 @@ function containsSurfaceUnits(surface: string, required: string): boolean {
 }
 
 function titleEntitySurface(value: string): string {
-  const clean = humanObject(value);
-  const units = clean.split(" ").filter(Boolean);
-  if (!units.length) return clean;
-  if (units.length > 5) return stripTerminalSentenceBoundary(sentenceCaseSurface(clean));
-  return units.map(unit => {
-    if (unit.length === 1) return unit.toLocaleUpperCase();
-    const first = unit[0] ?? "";
-    if (first !== first.toLocaleLowerCase()) return unit;
-    return `${first.toLocaleUpperCase()}${unit.slice(1)}`;
-  }).join(" ");
+  return humanObject(value);
 }
 
 function sentenceCaseSurface(value: string): string {
-  const clean = tidyInline(value);
-  if (!clean) return "";
-  return ensureUnicodeSurfaceSentence(clean);
+  return tidyInline(value);
 }
 
 function learnedContinuationDiscourse(input: {
@@ -2744,12 +2875,11 @@ function learnedContinuationDiscourse(input: {
     .map(piece => piece.text)
     .filter(surface => speechBearingSurface(surface) && isDiscourseBearingPriorSurface(surface))
     .slice(0, 12);
-  const requiredSeed = uniqueStrings(input.requiredTerms
+  const requiredSeed = renderLearnedSequence(uniqueStrings(input.requiredTerms
     .filter(term => (term.weight ?? 0) >= 0.7)
     .map(term => tidyInline(term.text))
     .filter(Boolean))
-    .slice(0, 4)
-    .join(" ");
+    .slice(0, 4), input.state.joinPrograms[0]);
   for (const model of models) {
     const predictedSeeds = predictKneserNey(model, input.contextSymbols.slice(-(model.order - 1)), 16)
       .map(item => item.symbol)
@@ -2766,12 +2896,19 @@ function learnedContinuationDiscourse(input: {
         generationExtent: Math.max(8, Math.min(256, input.generationExtent)),
         probabilityFloor: 1e-12,
         temperature: 0.92,
+        joinProgram: input.state.joinPrograms[0],
         blockedSymbols: ["<unk>"],
         deterministicChoiceSeed: `${input.contextText}\u0001${requiredSeed}\u0001${model.observedSymbolCount}`,
         minSymbolsBeforeEos: Math.min(12, Math.max(6, Math.floor(input.generationExtent * 0.3))),
         repetitionWindow: 12
       });
-      const text = learnedContinuationSurface(row.seed, continuation.text, input.contextText, input.generationExtent);
+      const text = learnedContinuationSurface(
+        row.seed,
+        continuation.text,
+        input.contextText,
+        input.generationExtent,
+        input.state.joinPrograms[0]
+      );
       if (!text) continue;
       const score = scoreText(input.state, text, input.contextText);
       const sourcePieceIds = input.pieces
@@ -2852,8 +2989,14 @@ function learnedContinuationDiscourse(input: {
   };
 }
 
-function learnedContinuationSurface(seed: string | undefined, continuationText: string, contextText: string, generationExtent: number): string | undefined {
-  const seeded = tidyInline([seed, continuationText].filter(Boolean).join(" "));
+function learnedContinuationSurface(
+  seed: string | undefined,
+  continuationText: string,
+  contextText: string,
+  generationExtent: number,
+  joinProgram?: JoinProgramMixture
+): string | undefined {
+  const seeded = renderLearnedSequence([seed ?? "", continuationText], joinProgram);
   const clean = trimBoundaryGlyphSurface(seeded);
   if (!clean || !speechBearingSurface(clean) || !isDiscourseBearingPriorSurface(clean)) return undefined;
   const symbols = symbolizeData(clean);
@@ -3045,7 +3188,7 @@ function chooseInlineCompressionBoundary(state: LanguageMemoryRuntimeState): Dis
     const support = clamp01(Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 10);
     if (!best || support > best.support) best = { text: observation.symbol, source: "ngram_observation", sourceId: observation.id, support };
   }
-  return best ?? { text: ";", source: "structural-boundary", support: 0.38 };
+  return best ?? { text: "", source: "unresolved", support: 0 };
 }
 
 function isInlineCompressionBoundarySymbol(value: string): boolean {
@@ -3128,16 +3271,42 @@ function discourseRoleRank(role: string): number {
   return 8;
 }
 
-function renderBoundary(boundary: string, left: string, right: string): string {
-  const cleanBoundary = tidyInline(boundary);
-  if (!cleanBoundary) return tidyInline(`${left} ${right}`);
-  if (isBoundaryGlyphSurface(cleanBoundary)) return tidyInline(`${left}${cleanBoundary} ${right}`);
-  return tidyInline(`${left} ${cleanBoundary} ${right}`);
+function renderBoundary(
+  boundary: string,
+  left: string,
+  right: string,
+  joinProgram?: JoinProgramMixture
+): string {
+  const cleanBoundary = boundary.replace(/\u0000/gu, "").normalize("NFC");
+  return renderJoinedSurface(
+    cleanBoundary ? [left, cleanBoundary, right] : [left, right],
+    joinProgram
+  ).text;
+}
+
+function renderLearnedSequence(
+  surfaces: readonly string[],
+  joinProgram?: JoinProgramMixture,
+  connector = ""
+): string {
+  const units = surfaces
+    .map(surface => surface.replace(/\u0000/gu, "").normalize("NFC"))
+    .filter(Boolean);
+  if (units.length <= 1 || !connector) {
+    return renderJoinedSurface(units, joinProgram).text;
+  }
+  const connectorSurface = connector.replace(/\u0000/gu, "").normalize("NFC");
+  const expanded: string[] = [];
+  for (const unit of units) {
+    if (expanded.length) expanded.push(connectorSurface);
+    expanded.push(unit);
+  }
+  return renderJoinedSurface(expanded, joinProgram).text;
 }
 
 function chooseDiscourseBoundary(state: LanguageMemoryRuntimeState, contextSymbols: readonly string[]): DiscourseBoundaryCandidate {
   const candidates = discourseBoundaryCandidates(state, contextSymbols);
-  return candidates[0] ?? { text: ":", source: "structural-boundary", support: 0.2 };
+  return candidates[0] ?? { text: "", source: "unresolved", support: 0 };
 }
 
 function chooseSentenceDiscourseBoundary(state: LanguageMemoryRuntimeState): DiscourseBoundaryCandidate {
@@ -3147,17 +3316,16 @@ function chooseSentenceDiscourseBoundary(state: LanguageMemoryRuntimeState): Dis
     const support = clamp01(Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 10);
     if (!best || support > best.support) best = { text: observation.symbol, source: "ngram_observation", sourceId: observation.id, support };
   }
-  return best ?? { text: ".", source: "structural-boundary", support: 0.42 };
+  return best ?? { text: "", source: "unresolved", support: 0 };
 }
 
 function isSentenceBoundarySymbol(value: string): boolean {
   return isUnicodeSentenceBoundarySymbol(value);
-  return value === "." || value === "!" || value === "?" || value === "。" || value === "؟" || value === "।";
 }
 
 function terminateDiscourseSurface(text: string, boundary: string): string {
   const clean = tidyInline(text);
-  if (!clean || !isSentenceBoundarySymbol(boundary)) return clean;
+  if (!clean || !boundary || !isSentenceBoundarySymbol(boundary)) return clean;
   const last = clean[clean.length - 1] ?? "";
   return isSentenceBoundarySymbol(last) ? clean : `${clean}${boundary}`;
 }
@@ -3805,6 +3973,18 @@ function isRecord(value: JsonValue | undefined): value is Record<string, JsonVal
 
 function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {
   return isRecord(value) ? value : {};
+}
+
+function joinProgramsFromPatterns(
+  patterns: readonly LanguagePatternRecord[]
+): JoinProgramMixture[] {
+  const byId = new Map<string, JoinProgramMixture>();
+  for (const pattern of patterns) {
+    const candidate = jsonRecord(pattern.patternJson).joinProgram;
+    if (!isJoinProgramMixture(candidate) || byId.has(candidate.id)) continue;
+    byId.set(candidate.id, candidate);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function uniqueVocabularySize(models: readonly KneserNeyModel[]): number {
