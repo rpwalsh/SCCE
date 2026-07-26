@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CORPUS_SOURCE_SYSTEM_IDS, type ScceStorage } from "@scce/kernel";
+import { CORPUS_SOURCE_SYSTEM_IDS, type InformationLabel, type ScceStorage } from "@scce/kernel";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
@@ -38,6 +38,9 @@ export interface OssCorpusTrainingTotals {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  constructionCandidates: number;
+  languageConstructions: number;
+  rejectedLanguageConstructions: number;
 }
 
 type OssCorpusSourceSystem = typeof CORPUS_SOURCE_SYSTEM_IDS.ossDocs | typeof CORPUS_SOURCE_SYSTEM_IDS.ossCode;
@@ -80,6 +83,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       ngramMaxOrder: input.ngramMaxOrder,
       ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
       ngramVocabularyLimit: input.ngramVocabularyLimit,
+      informationLabel: OSS_CORPUS_INFORMATION_LABEL,
       corpusMetadata: {
         relativePath: normalizeRelative(file.path),
         sourceHash: file.contentHash ?? sha256(raw),
@@ -146,9 +150,20 @@ function sumReports(reports: readonly LanguageCorpusTrainingReport[]): OssCorpus
     ngramModels: sum.ngramModels + report.ngramModels,
     languageUnits: sum.languageUnits + report.languageUnits,
     languagePatterns: sum.languagePatterns + report.languagePatterns,
-    semanticFrames: sum.semanticFrames + report.semanticFrames
-  }), { languageProfiles: 0, evidence: 0, ngramObservations: 0, ngramModels: 0, languageUnits: 0, languagePatterns: 0, semanticFrames: 0 });
+    semanticFrames: sum.semanticFrames + report.semanticFrames,
+    constructionCandidates: sum.constructionCandidates + report.constructionCandidates,
+    languageConstructions: sum.languageConstructions + report.languageConstructions,
+    rejectedLanguageConstructions: sum.rejectedLanguageConstructions + report.rejectedLanguageConstructions
+  }), { languageProfiles: 0, evidence: 0, ngramObservations: 0, ngramModels: 0, languageUnits: 0, languagePatterns: 0, semanticFrames: 0, constructionCandidates: 0, languageConstructions: 0, rejectedLanguageConstructions: 0 });
 }
+
+const OSS_CORPUS_INFORMATION_LABEL: InformationLabel = {
+  tenantId: "scce.public.corpus",
+  principals: [],
+  compartments: [],
+  exportClass: "public",
+  mergePolicy: "same_owner"
+};
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
