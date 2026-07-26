@@ -13,7 +13,7 @@ import {
   createSourceRepositoryFacts,
   createSemanticEntailmentEngine,
   featureSet,
-  legacyDetailProfileIdFromSignal,
+  detailProfileIdFromSignal,
   repoSnapshotToEngineeringContext,
   toJsonValue,
   type ConstructGraph,
@@ -73,8 +73,8 @@ describe("Phase 10 generic chat quality gate", () => {
   });
 
   it("concise and detailed profiles change surface shape through detail profile ids", async () => {
-    const conciseProfileId = legacyDetailProfileIdFromSignal("brief");
-    const detailedProfileId = legacyDetailProfileIdFromSignal("detailed");
+    const conciseProfileId = detailProfileIdFromSignal("brief");
+    const detailedProfileId = detailProfileIdFromSignal("detailed");
     if (!conciseProfileId || !detailedProfileId) throw new Error("detail profile fixture unavailable");
     const concise = await speakBasic({ claim: "Rewrite concisely: the lights dim to 40% after 9:00 p.m.", detailProfileId: conciseProfileId, density: 0.22, require: ["40%", "9:00"] });
     const detailed = await speakBasic({ claim: "Explain in more detail why the lights dim to 40% after 9:00 p.m.", detailProfileId: detailedProfileId, density: 0.9, require: ["40%", "9:00"] });

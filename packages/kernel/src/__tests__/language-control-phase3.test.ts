@@ -12,7 +12,7 @@ import {
   featureSet,
   classifyIngestionLane,
   inferConstructForces,
-  legacyDetailProfileIdFromSignal,
+  detailProfileIdFromSignal,
   resolveDetailProfileId
 } from "../index.js";
 import type { EvidenceSpan, LanguageProfile } from "../index.js";
@@ -23,12 +23,12 @@ describe("language control plane profiles", () => {
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
 
-  it("quarantines legacy detail labels before runtime planning", () => {
-    const compact = legacyDetailProfileIdFromSignal("brief");
-    const expanded = legacyDetailProfileIdFromSignal("detailed");
+  it("maps explicit detail labels before runtime planning", () => {
+    const compact = detailProfileIdFromSignal("brief");
+    const expanded = detailProfileIdFromSignal("detailed");
     expect(compact).toBeDefined();
     expect(expanded).toBeDefined();
-    if (!compact || !expanded) throw new Error("legacy detail boundary fixture failed");
+    if (!compact || !expanded) throw new Error("detail signal fixture failed");
     const runtimeCompact = resolveDetailProfileId({ explicitProfileId: compact });
     const runtimeExpanded = resolveDetailProfileId({ explicitProfileId: expanded });
     expect(runtimeCompact).toBe(compact);

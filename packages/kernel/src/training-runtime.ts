@@ -102,6 +102,7 @@ export function createTrainingRuntime(options: {
     let units = 0;
     let patterns = 0;
     let semanticFrames = 0;
+    let graphSurfaceAlignments = 0;
     let profilesCreated = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
@@ -161,6 +162,7 @@ export function createTrainingRuntime(options: {
       units += memory.units.length;
       patterns += memory.patterns.length;
       semanticFrames += memory.semanticFrames.length;
+      graphSurfaceAlignments += memory.graphSurfaceAlignmentSummaries.length;
     }
     return {
       profiles,
@@ -173,7 +175,8 @@ export function createTrainingRuntime(options: {
         models,
         units,
         patterns,
-        semanticFrames
+        semanticFrames,
+        graphSurfaceAlignments
       })
     };
   }

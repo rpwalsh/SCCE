@@ -84,6 +84,7 @@ export interface CompiledLanguageTrainingBatch {
   patterns: LanguagePatternRecord[];
   semanticFrames: SemanticFrameRecord[];
   constructionPatterns: LanguagePatternRecord[];
+  graphSurfaceAlignmentSummaries: JsonValue[];
   constructionCandidates: number;
   rejectedConstructionCandidates: number;
   constructionPromotion: LanguageTrainingConstructionPromotionReport;
@@ -156,6 +157,9 @@ export function compileLanguageTrainingBatch(input: {
     ]),
     semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
     constructionPatterns,
+    graphSurfaceAlignmentSummaries: sets
+      .map(item => item.set.alignmentSummary)
+      .filter((summary): summary is JsonValue => summary !== undefined),
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
     rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
     constructionPromotion: promotion.report,
@@ -170,6 +174,9 @@ export function compileLanguageTrainingBatch(input: {
       suppliedConstructionSets: batch.constructionSets?.length ?? 0,
       inducedConstructionSets: inducedSets.length,
       constructionPromotion: promotion.report as unknown as JsonValue,
+      graphSurfaceAlignment: sets
+        .map(item => item.set.alignmentSummary)
+        .filter(summary => summary !== undefined) as JsonValue[],
       compiledConstructions: constructionPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
@@ -211,7 +218,8 @@ function uniqueConstructionSets(
     }
     byBindingId.set(set.bindingId, {
       bindingId: set.bindingId,
-      observations: [...current.observations, ...set.observations].slice(0, 256)
+      observations: [...current.observations, ...set.observations].slice(0, 256),
+      alignmentSummary: current.alignmentSummary ?? set.alignmentSummary
     });
   }
   return [...byBindingId.values()].sort((left, right) => left.bindingId.localeCompare(right.bindingId));

@@ -45,10 +45,6 @@ const IGNORED_SEGMENTS = new Set([
   "docs"
 ]);
 
-const BOUNDARY_COMPATIBILITY_FILES = new Set([
-  "packages/kernel/src/legacy-detail-signal-adapter.ts"
-]);
-
 const CONTROL_WORDS = [
   "brief",
   "normal",
@@ -192,7 +188,7 @@ function scanFile(root: string, file: string, text: string, issues: LanguageCont
       reportNode(node.expression, "display_string_branch");
     }
     if (ts.isPropertyAssignment(node)) {
-      if (isLegacyDetailSignalProperty(node)) reportNode(node, "legacy_detail_signal_runtime");
+      if (isDetailSignalProperty(node)) reportNode(node, "detail_signal_runtime");
       if (isCannedSurfaceProperty(node)) reportNode(node, "runtime_canned_surface");
     }
     if (ts.isVariableDeclaration(node)) {
@@ -235,8 +231,8 @@ function isDisplayStringCondition(condition: ts.Expression, selector?: ts.Expres
   );
 }
 
-function isLegacyDetailSignalProperty(node: ts.PropertyAssignment): boolean {
-  return propertyName(node.name) === "legacydetailsignal"
+function isDetailSignalProperty(node: ts.PropertyAssignment): boolean {
+  return propertyName(node.name) === "detailsignal"
     && expressionIdentifiers(node.initializer).some(name => name.includes("detaillevel"));
 }
 
@@ -440,7 +436,6 @@ function pushIssue(issues: LanguageControlIssue[], file: string, line: number, r
 }
 
 function shouldIgnorePath(rel: string): boolean {
-  if (BOUNDARY_COMPATIBILITY_FILES.has(rel.split(path.sep).join("/"))) return true;
   const parts = rel.split(path.sep).flatMap(part => part.split("/"));
   if (parts.some(part => IGNORED_SEGMENTS.has(part))) return true;
   return rel.endsWith(".test.ts") || rel.endsWith(".spec.ts") || rel.includes("fixture");
