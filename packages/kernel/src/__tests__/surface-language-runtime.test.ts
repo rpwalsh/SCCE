@@ -155,7 +155,7 @@ function runtimeFixture() {
   const populationRecord: SegmentationPopulationModelRecord = {
     id: "segmentation_population.fixture",
     model: {
-      schema: "scce.segmentation_population_model.v1",
+      schema: "scce.segmentation_population_model.v2",
       id: "segmentation_population.fixture",
       rootPopulationId: "population.fixture",
       populations: [],

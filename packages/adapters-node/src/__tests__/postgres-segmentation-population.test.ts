@@ -13,7 +13,7 @@ afterEach(async () => {
 
 function model(id: string): SegmentationPopulationModel {
   return {
-    schema: "scce.segmentation_population_model.v1",
+    schema: "scce.segmentation_population_model.v2",
     id,
     rootPopulationId: "population.fixture",
     populations: [],
@@ -26,7 +26,10 @@ function model(id: string): SegmentationPopulationModel {
         heldoutDataNats: 2,
         modelNats: 3,
         descriptionNats: 5,
-        collapsed: false
+        collapsed: false,
+        mergeBlocked: false,
+        mergeDescriptionDeltaNats: null,
+        heldoutRegressionPopulationIds: []
       }],
       selectedPopulationCount: 0,
       baselineDescriptionNats: 5,

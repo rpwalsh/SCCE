@@ -95,6 +95,9 @@ validation so credentials need not be committed.
   statistics, source-disjoint held-out Platt calibration, globally normalized traced
   path energy, complete-DAG forward/backward marginals, non-renormalized top-k mass,
   bounded resumable materialization, and learned-only final coefficients.
+- `segmentation-population.ts`: source-disjoint MDL population selection, exact
+  prior-times-document-likelihood posteriors, and per-child held-out merge guards
+  without language or script routing metadata.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
