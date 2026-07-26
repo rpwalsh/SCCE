@@ -230,6 +230,13 @@ extraction consume the routed support. The resulting
 conditional-gradient correction and retained alternatives into one persisted work
 trace.
 
+Item 24 accepts separately labeled alignment calibration rows. Fit and evaluation
+families are dependency-disjoint; the model learns from objective, anchor,
+semantic-cycle, unsupported-addition and marginal-residual features, then reports
+log loss, Brier and ECE only on untouched holdout families. Corpus ingestion
+without those labels records an explicit insufficient-data model and does not turn
+restricted alternative weights into correctness confidence.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

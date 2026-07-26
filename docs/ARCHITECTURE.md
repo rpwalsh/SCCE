@@ -111,6 +111,8 @@ validation so credentials need not be committed.
   Gibbs weights without a global-posterior claim.
 - `coarse-to-fine-alignment.ts`: opaque hyperedge-community routing, exact-anchor
   preservation and the unified routing/Sinkhorn/local-correction/k-best trace.
+- `alignment-calibration.ts`: source-family-disjoint labeled calibration over
+  transport/cycle features with untouched holdout log loss, Brier and ECE.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

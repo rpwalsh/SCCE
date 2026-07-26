@@ -59,6 +59,7 @@ import {
   compileAlignmentCommunityRouting,
   compileCoarseToFineAlignmentResult
 } from "./coarse-to-fine-alignment.js";
+import { compileAlignmentCalibrationModel } from "./alignment-calibration.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -602,6 +603,10 @@ export function createIngestionRuntime(options: {
           targetIndex: alignmentTargetIndex,
           hasher
         });
+        const alignmentCalibrationModel = compileAlignmentCalibrationModel({
+          observations: [],
+          hasher
+        });
         const finalTransportPlans = routedAlignmentSupports.map(support =>
           solveSparseFusedUnbalancedTransport({
             support,
@@ -741,6 +746,7 @@ export function createIngestionRuntime(options: {
             alignmentAlternativeSetIds,
             alignmentAlternativeSets,
             coarseToFineAlignments,
+            alignmentCalibrationModel,
             retainedAlignmentHypothesisCount,
             omittedAlignmentSearchBranchCount,
             alignmentPosteriorScope: "retained_candidate_set_only",
