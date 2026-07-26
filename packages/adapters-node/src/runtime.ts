@@ -93,7 +93,8 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     deterministicReplay: options.deterministicReplay,
     relationPotentialModel,
     executive,
-    sparseRankingModels: storage.sparseRanking
+    sparseRankingModels: storage.sparseRanking,
+    sparseRankingComparisons: storage.sparseRankingComparisons
   });
   return { storage, kernel, connectors, approvals, executive, close: () => storage.close() };
 }

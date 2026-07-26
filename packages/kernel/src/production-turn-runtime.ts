@@ -899,6 +899,7 @@ export function createProductionTurnRuntime(options: {
           .then(shadow => shadow
             ? updateFtrlFromTurnOutcome({
               store: deps.sparseRankingModels,
+              comparisonLog: deps.sparseRankingComparisons,
               shadowRanking: shadow.ranking,
               nodesById: shadow.nodesById,
               entailment: entailmentResult,

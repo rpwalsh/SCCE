@@ -46,6 +46,7 @@ describe("Postgres evidence informationLabel round-trip (plan item 16)", () => {
         observedAt: Date.now(),
         byteLength: bytes.byteLength,
         sourceTrust: { identity: 0.9, integrity: 0.9, parserReliability: 0.9, directness: 0.9, authority: 0.9, freshness: 0.9, independenceGroup: "fixture", accessScope: "public", licenseStatus: "unknown" },
+        metadata: {},
         informationLabel
       };
       const span: EvidenceSpan = {

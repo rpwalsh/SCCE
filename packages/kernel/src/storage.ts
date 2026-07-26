@@ -839,6 +839,13 @@ export interface ScceStorage extends StorageAdmin {
    */
   sparseRanking?: import("./sparse-ranking-lifecycle.js").SparseRankingModelStore;
   /**
+   * Optional: durable, replayable pairwise-comparison log backing the
+   * FTRL held-out evaluation gate (Part A finding 9, stage 6). Separate
+   * from `sparseRanking` for the same reason `sparseRankingComparisons`
+   * is separate on `ScceKernelDeps` -- see that field's doc comment.
+   */
+  sparseRankingComparisons?: import("./sparse-ranking-comparison-log.js").SparseRankingComparisonLogStore;
+  /**
    * Optional: durable per-language-cluster segmentation v2 boundary-signal
    * aggregate store (Part B step 2). Optional for the same reason as the
    * other stores above; absent means no corpus-derived spacing-convention
@@ -901,7 +908,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 21;
+export const POSTGRES_SCHEMA_VERSION = 22;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -963,6 +970,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "executive_event",
   "sparse_ranking_models",
   "sparse_ranking_active_model",
+  "sparse_ranking_comparisons",
   "segmentation_aggregates",
   "induced_language_models"
 ] as const;
@@ -1026,6 +1034,16 @@ export interface ScceKernelDeps {
    * computed; this keeps every pre-existing `ScceKernelDeps` fixture valid.
    */
   sparseRankingModels?: import("./sparse-ranking-lifecycle.js").SparseRankingModelStore;
+  /**
+   * Durable, replayable log of real pairwise comparisons (Part A finding
+   * 9, stage 6's prerequisite): separate from `sparseRankingModels`
+   * because a held-out evaluation needs individual examples to replay
+   * against a temporal split, not just the FTRL model's current online
+   * weights. When absent, no comparison examples are recorded and
+   * `evaluateFtrlHeldOut` has nothing to evaluate -- this keeps every
+   * pre-existing `ScceKernelDeps` fixture valid.
+   */
+  sparseRankingComparisons?: import("./sparse-ranking-comparison-log.js").SparseRankingComparisonLogStore;
 }
 
 export interface ApprovalPort {

@@ -3,6 +3,7 @@ import { createFtrlProximalRanker } from "./sparse-ranking.js";
 import { FTRL_GRAPH_NODE_RANK_TASK_CLASS, type FtrlShadowRanking } from "./sparse-ranking-shadow.js";
 import { RETRIEVAL_RANK_FEATURE_SCHEMA_V1 } from "./retrieval-rank-features.js";
 import type { SparseRankingModelStore } from "./sparse-ranking-lifecycle.js";
+import type { SparseRankingComparisonLogStore } from "./sparse-ranking-comparison-log.js";
 import type { Clock, EvidenceId, GraphNode, SemanticEntailmentResult } from "./types.js";
 
 export interface FtrlOutcomeUpdateResult {
@@ -30,6 +31,7 @@ export interface FtrlOutcomeUpdateResult {
  */
 export async function updateFtrlFromTurnOutcome(input: {
   store: SparseRankingModelStore | undefined;
+  comparisonLog?: SparseRankingComparisonLogStore;
   shadowRanking: FtrlShadowRanking | undefined;
   nodesById: ReadonlyMap<string, GraphNode>;
   entailment: SemanticEntailmentResult;
@@ -89,5 +91,19 @@ export async function updateFtrlFromTurnOutcome(input: {
       lastExampleAt: now
     }
   });
+  if (input.comparisonLog) {
+    const preferredIndex = input.shadowRanking.ranked.findIndex(entry => entry.nodeId === preferredEntry.nodeId);
+    await input.comparisonLog.append({
+      id: `ftrl-comparison:${checkpoint.modelId}:${now}:${checkpoint.examplesSeen}`,
+      taskClass: FTRL_GRAPH_NODE_RANK_TASK_CLASS,
+      featureSchemaId: RETRIEVAL_RANK_FEATURE_SCHEMA_V1,
+      recordedAt: now,
+      candidates: input.shadowRanking.ranked.map(entry => entry.featureVector),
+      preferredIndex,
+      weight: label.weight,
+      source: label.source,
+      informationLabel: checkpoint.informationLabel
+    });
+  }
   return { updated: true, reason: label.reason };
 }
