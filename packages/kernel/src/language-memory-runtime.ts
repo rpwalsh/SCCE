@@ -1222,7 +1222,21 @@ function paragraphPlanFromRhetoricalPlan(input: {
   const priorTarget = input.discoursePrior?.targetSymbolCount ?? 0;
   const target = Math.max(24, Math.min(256, Math.max(input.generationExtent, priorTarget)));
   const sentencePlans: SentencePlan[] = [];
-  const add = (move: RhetoricalMove, materials: readonly SemanticFactMaterial[], rank: number, anchors: readonly string[] = []) => {
+  // Rhetorical moves are assigned from role-filtered material pools that
+  // frequently overlap (e.g. directMaterials feeds both the lead and close
+  // moves); with few distinct input facts, the same material can otherwise
+  // get selected for several moves, producing near-duplicate clauses once
+  // each sentence plan is realized into a surface (the diversity gate in
+  // discourseSurfaceAdequate then correctly rejects the whole candidate).
+  // Prefer materials not already claimed by an earlier sentence plan in
+  // this paragraph; only reuse when a move's candidate pool is otherwise
+  // empty (a genuine restatement, e.g. a closing sentence, rather than
+  // redundant padding).
+  const usedMaterialIds = new Set<string>();
+  const add = (move: RhetoricalMove, materialsInput: readonly SemanticFactMaterial[], rank: number, anchors: readonly string[] = []) => {
+    const unused = materialsInput.filter(material => !usedMaterialIds.has(material.id));
+    const materials = unused.length ? unused : materialsInput;
+    for (const material of materials) usedMaterialIds.add(material.id);
     const claimIds = uniqueStrings(materials.map(material => material.id));
     const requiredAnchors = uniqueStrings([
       ...anchors,
