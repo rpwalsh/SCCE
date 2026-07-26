@@ -19,6 +19,10 @@ import {
   allocateTransportEvidence,
   type TransportEvidenceAllocation
 } from "./transport-evidence-allocation.js";
+import {
+  compileTypedNullCostModel,
+  type TypedNullCostModel
+} from "./typed-null-alignment.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -103,6 +107,7 @@ export interface CompiledLanguageTrainingBatch {
   graphSurfaceAlignmentSummaries: JsonValue[];
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
+  typedNullCostModel: TypedNullCostModel | null;
   sparseTransportPlans: SparseFusedTransportPlan[];
   transportEvidenceAllocations: TransportEvidenceAllocation[];
   constructionCandidates: number;
@@ -154,11 +159,19 @@ export function compileLanguageTrainingBatch(input: {
     })
     : undefined;
   const sparseAlignmentCandidateSupports = sparseAlignment?.supports ?? [];
+  const typedNullCostModel = sparseAlignment
+    ? compileTypedNullCostModel({
+      supports: sparseAlignmentCandidateSupports,
+      targetIndex: sparseAlignment.targetIndex,
+      hasher: input.hasher
+    })
+    : null;
   const sparseTransportPlans = sparseAlignment
     ? sparseAlignmentCandidateSupports.map(support =>
       solveSparseFusedUnbalancedTransport({
         support,
         targetIndex: sparseAlignment.targetIndex,
+        typedNullCostModel: typedNullCostModel!,
         hasher: input.hasher
       }))
     : [];
@@ -224,6 +237,7 @@ export function compileLanguageTrainingBatch(input: {
       .filter((summary): summary is JsonValue => summary !== undefined),
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
+    typedNullCostModel,
     sparseTransportPlans,
     transportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
@@ -246,6 +260,19 @@ export function compileLanguageTrainingBatch(input: {
       sparseTypedIncidenceAlignment: {
         targetIndexId: sparseAlignment?.targetIndex.id ?? null,
         incidenceGraphId: sparseAlignment?.incidenceGraph.id ?? null,
+        typedNullCostModel: typedNullCostModel
+          ? {
+            id: typedNullCostModel.id,
+            schema: typedNullCostModel.schema,
+            targetIndexId: typedNullCostModel.targetIndexId,
+            trainingSupportIds: typedNullCostModel.trainingSupportIds,
+            supervision: typedNullCostModel.supervision,
+            calibrated: typedNullCostModel.calibrated,
+            surface: typedNullCostModel.surface,
+            graph: typedNullCostModel.graph,
+            audit: typedNullCostModel.audit
+          }
+          : null,
         supportCount: sparseAlignmentCandidateSupports.length,
         candidateCount: sparseAlignmentCandidateSupports.reduce(
           (sum, support) => sum + support.candidates.length,

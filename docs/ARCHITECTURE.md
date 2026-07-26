@@ -97,6 +97,9 @@ validation so credentials need not be committed.
 - `transport-evidence-allocation.ts`: normalized per-cell evidence conditionals that
   partition transport mass exactly. Positive mass without evidence remains
   explicitly unresolved instead of receiving invented provenance.
+- `typed-null-alignment.ts`: source-exact Beta-Bernoulli cost induction for universal
+  surface-null and graph-implicit states. Sparse transport retains candidate-free
+  rows and targets and records typed deficit and excess mass explicitly.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity
