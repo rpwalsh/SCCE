@@ -432,9 +432,16 @@ export function runtimeMotionCandidateField(input: {
   const priorAudit = jsonRecord(input.base.audit);
   return {
     ...input.base,
-    candidates: [candidate],
-    surfaceMass: [{ candidateId: candidate.id, mass: 1, reason: "runtime motion continuation" }],
-    scoreTrace: [],
+    // Add the runtime-motion continuation as one more option for the judge
+    // to weigh, rather than replacing input.base.candidates outright: a
+    // completed (or unavailable/failed) acquisition attempt is context for
+    // this replan, not a reason to discard a candidate the field already
+    // has that the judge might correctly still prefer -- exactly what the
+    // comment above this function already says should happen, which the
+    // candidates:[candidate] replacement this replaced did not actually do
+    // (judge.select only ever saw this returned field, never the base one).
+    candidates: [...input.base.candidates, candidate],
+    surfaceMass: [...input.base.surfaceMass, { candidateId: candidate.id, mass: 1, reason: "runtime motion continuation" }],
     audit: toJsonValue({
       ...priorAudit,
       runtimeMotion: input.motion,
@@ -443,7 +450,7 @@ export function runtimeMotionCandidateField(input: {
         schema: "scce.requested_authority.candidate_admission.v1",
         authority: input.authority,
         authorityUnavailable: input.base.candidates.length === 0,
-        admittedCandidateIds: [],
+        admittedCandidateIds: input.base.candidates.map(row => row.id),
         continuationCandidateIds: [candidate.id],
         fallbackToGeneratedField: false,
         unrelatedAuthorityFallback: false
