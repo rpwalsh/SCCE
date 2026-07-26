@@ -1458,7 +1458,6 @@ function learnedProposalFromMemory(input: PlanInventionsInput, requestTerms: rea
   if (!requestTerms.length || !input.languageMemoryState.models.length) return undefined;
   const structural = learnedStructuralProposalFromMemory(input);
   if (structural) return structural;
-  if (input.requestedAuthority === "creative") return undefined;
   const requestConstraints = requestOwnedCreativeConstraints(input);
   const requestConstraint = requestConstraints.length ? requestConstraints[variant % requestConstraints.length] : undefined;
   const contextSurface = requestConstraint?.surface ?? requestTerms[Math.max(0, requestTerms.length - 1 - (variant % requestTerms.length))];
