@@ -15,6 +15,11 @@ import {
   type SurfaceNullType,
   type TypedNullCostModel
 } from "./typed-null-alignment.js";
+import {
+  compilePopulationOrderingModel,
+  populationOrderingExpectation,
+  type PopulationOrderingModel
+} from "./population-ordering.js";
 import type { Hasher, JsonValue } from "./types.js";
 
 export const SPARSE_FUSED_TRANSPORT_SCHEMA =
@@ -24,6 +29,7 @@ export interface SparseTransportObjective {
   id: string;
   featureWeight: number;
   structuralWeight: number;
+  orderingWeight: number;
   anchorWeight: number;
   surfaceMarginalWeight: number;
   graphMarginalWeight: number;
@@ -38,6 +44,7 @@ export const SPARSE_TRANSPORT_OBJECTIVE_V1: SparseTransportObjective = {
   id: "scce.transport.objective.bootstrap.v1",
   featureWeight: 1,
   structuralWeight: 0.35,
+  orderingWeight: 0.25,
   anchorWeight: 1.5,
   surfaceMarginalWeight: 0.8,
   graphMarginalWeight: 0.8,
@@ -64,6 +71,7 @@ export interface SparseTransportCell {
   mass: number;
   featureCost: number;
   structuralCost: number;
+  orderingCost: number;
   anchorCost: number;
   effectiveCost: number;
   exactAnchor: boolean;
@@ -75,6 +83,7 @@ export interface SparseTransportIteration {
   objective: number;
   feature: number;
   structural: number;
+  ordering: number;
   anchor: number;
   surfaceMarginalKl: number;
   graphMarginalKl: number;
@@ -84,6 +93,7 @@ export interface SparseTransportIteration {
   sinkhornScalingResidual: number;
   relativeObjectiveImprovement: number | null;
   structuralComparisons: number;
+  orderingComparisons: number;
 }
 
 export interface SparseFusedTransportPlan {
@@ -92,6 +102,7 @@ export interface SparseFusedTransportPlan {
   supportId: string;
   targetIndexId: string;
   typedNullCostModelId: string;
+  populationOrderingModelId: string;
   status: "converged" | "iteration_budget_exhausted" | "work_budget_exhausted";
   globalOptimalityClaimed: false;
   objective: SparseTransportObjective;
@@ -127,6 +138,7 @@ interface RuntimeCell {
   column: number;
   featureCost: number;
   structuralCost: number;
+  orderingCost: number;
   anchorCost: number;
   effectiveCost: number;
   mass: number;
@@ -137,6 +149,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   targetIndex: SparseAlignmentTargetIndex;
   objective?: SparseTransportObjective;
   typedNullCostModel?: TypedNullCostModel;
+  populationOrderingModel?: PopulationOrderingModel;
   budget?: Partial<SparseTransportBudget>;
   hasher?: Hasher;
 }): SparseFusedTransportPlan {
@@ -155,6 +168,11 @@ export function solveSparseFusedUnbalancedTransport(input: {
   if (typedNullCostModel.targetIndexId !== input.targetIndex.id) {
     throw new Error("typed null cost model and target index do not match");
   }
+  const populationOrderingModel = input.populationOrderingModel
+    ?? compilePopulationOrderingModel({
+      supports: [input.support],
+      hasher
+    });
   const rowIds = input.support.rows.map(row => row.surfaceUnitId);
   const columnIds = input.targetIndex.targets.map(target => target.id);
   const rowIndex = new Map(rowIds.map((id, index) => [id, index]));
@@ -178,6 +196,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     column: columnIndex.get(candidate.graphTargetId)!,
     featureCost: quantize(1 - candidate.score),
     structuralCost: 0,
+    orderingCost: 0,
     anchorCost: rowHasExactAnchor.has(candidate.surfaceUnitId)
       && !candidate.supportKinds.includes("exact_observable_anchor")
       ? 1
@@ -205,12 +224,14 @@ export function solveSparseFusedUnbalancedTransport(input: {
   let previousObjective: number | undefined;
   let status: SparseFusedTransportPlan["status"] = "iteration_budget_exhausted";
   let structuralComparisonsTotal = 0;
+  let orderingComparisonsTotal = 0;
 
   for (let outer = 0; outer < budget.maxOuterIterations; outer++) {
     for (const cell of cells) {
       cell.effectiveCost = quantize(
         objective.featureWeight * cell.featureCost
         + objective.structuralWeight * cell.structuralCost
+        + objective.orderingWeight * cell.orderingCost
         + objective.anchorWeight * cell.anchorCost
       );
     }
@@ -237,11 +258,27 @@ export function solveSparseFusedUnbalancedTransport(input: {
       rowCells,
       targetById,
       maxNeighbors: budget.maxStructuralNeighbors,
-      remainingComparisons: budget.maxStructuralComparisons - structuralComparisonsTotal
+      remainingComparisons: budget.maxStructuralComparisons
+        - structuralComparisonsTotal
+        - orderingComparisonsTotal
     });
     structuralComparisonsTotal += structural.comparisons;
     for (let index = 0; index < cells.length; index++) {
       cells[index]!.structuralCost = structural.costs[index] ?? 0;
+    }
+    const ordering = localOrderingCosts({
+      cells,
+      rowCells,
+      populationOrderingModel,
+      populationPosterior: input.support.populationPosterior,
+      maxNeighbors: budget.maxStructuralNeighbors,
+      remainingComparisons: budget.maxStructuralComparisons
+        - structuralComparisonsTotal
+        - orderingComparisonsTotal
+    });
+    orderingComparisonsTotal += ordering.comparisons;
+    for (let index = 0; index < cells.length; index++) {
+      cells[index]!.orderingCost = ordering.costs[index] ?? 0;
     }
     const components = objectiveComponents({
       cells,
@@ -263,9 +300,11 @@ export function solveSparseFusedUnbalancedTransport(input: {
       ...components,
       sinkhornScalingResidual: sinkhorn.scalingResidual,
       relativeObjectiveImprovement: relativeImprovement,
-      structuralComparisons: structural.comparisons
+      structuralComparisons: structural.comparisons,
+      orderingComparisons: ordering.comparisons
     });
-    if (structuralComparisonsTotal >= budget.maxStructuralComparisons) {
+    if (structuralComparisonsTotal + orderingComparisonsTotal
+      >= budget.maxStructuralComparisons) {
       status = "work_budget_exhausted";
       break;
     }
@@ -313,6 +352,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     mass: quantize(cell.mass),
     featureCost: cell.featureCost,
     structuralCost: quantize(cell.structuralCost),
+    orderingCost: quantize(cell.orderingCost),
     anchorCost: cell.anchorCost,
     effectiveCost: cell.effectiveCost,
     exactAnchor: cell.candidate.supportKinds.includes("exact_observable_anchor")
@@ -325,6 +365,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     supportId: input.support.id,
     targetIndexId: input.targetIndex.id,
     typedNullCostModelId: typedNullCostModel.id,
+    populationOrderingModelId: populationOrderingModel.id,
     status,
     globalOptimalityClaimed: false as const,
     objective,
@@ -347,6 +388,8 @@ export function solveSparseFusedUnbalancedTransport(input: {
       exactAnchorRows: rowHasExactAnchor.size,
       typedNullCostModelId: typedNullCostModel.id,
       typedNullCostModelCalibrated: typedNullCostModel.calibrated,
+      populationOrderingModelId: populationOrderingModel.id,
+      populationOrderingPosterior: input.support.populationPosterior,
       surfaceNullMass: quantize(rowMarginals.reduce(
         (sum, row) => sum + row.surfaceNullMass,
         0
@@ -364,6 +407,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
         0
       )),
       structuralComparisons: structuralComparisonsTotal,
+      orderingComparisons: orderingComparisonsTotal,
       estimatedWorkingBytes: estimatedWorkingBytes(cells.length, rowIds.length, columnIds.length),
       objectiveCalibrated: false,
       globalOptimalityClaimed: false
@@ -485,8 +529,15 @@ function localStructuralCosts(input: {
   for (let row = 0; row < input.rowCells.length; row++) {
     const current = input.rowCells[row] ?? [];
     if (!current.length) continue;
-    for (const neighborRow of [row - 1, row + 1]) {
-      if (neighborRow < 0 || neighborRow >= input.rowCells.length) continue;
+    const firstNeighborRow = Math.max(0, row - input.maxNeighbors);
+    const lastNeighborRow = Math.min(
+      input.rowCells.length - 1,
+      row + input.maxNeighbors
+    );
+    for (let neighborRow = firstNeighborRow;
+      neighborRow <= lastNeighborRow;
+      neighborRow++) {
+      if (neighborRow === row) continue;
       const neighbors = [...(input.rowCells[neighborRow] ?? [])]
         .sort((left, right) => input.cells[right]!.mass - input.cells[left]!.mass)
         .slice(0, input.maxNeighbors);
@@ -499,6 +550,9 @@ function localStructuralCosts(input: {
             return { costs: normalizeStructuralCosts(costs, weights), comparisons };
           }
           const neighbor = input.cells[neighborIndex]!;
+          if (!surfaceCandidatesCompatible(source.candidate, neighbor.candidate)) {
+            continue;
+          }
           const neighborTarget = input.targetById.get(neighbor.candidate.graphTargetId);
           if (!neighborTarget) continue;
           const surfaceDistance = normalizedSurfaceDistance(
@@ -507,6 +561,73 @@ function localStructuralCosts(input: {
           );
           const graphDistance = typedGraphDistance(sourceTarget, neighborTarget);
           const loss = huber(surfaceDistance - graphDistance, 0.25);
+          const weight = neighbor.mass;
+          costs[index] = (costs[index] ?? 0) + weight * loss;
+          weights[index] = (weights[index] ?? 0) + weight;
+          comparisons++;
+        }
+      }
+    }
+  }
+  return { costs: normalizeStructuralCosts(costs, weights), comparisons };
+}
+
+function localOrderingCosts(input: {
+  cells: RuntimeCell[];
+  rowCells: readonly number[][];
+  populationOrderingModel: PopulationOrderingModel;
+  populationPosterior: readonly { populationId: string; probability: number }[];
+  maxNeighbors: number;
+  remainingComparisons: number;
+}): { costs: number[]; comparisons: number } {
+  const costs = input.cells.map(() => 0);
+  const weights = input.cells.map(() => 0);
+  const extent = Math.max(
+    1,
+    ...input.cells.map(cell => cell.candidate.sourceCoordinates.codePointEnd)
+  );
+  let comparisons = 0;
+  for (let row = 0; row < input.rowCells.length; row++) {
+    const current = input.rowCells[row] ?? [];
+    if (!current.length) continue;
+    const firstNeighborRow = Math.max(0, row - input.maxNeighbors);
+    const lastNeighborRow = Math.min(
+      input.rowCells.length - 1,
+      row + input.maxNeighbors
+    );
+    for (let neighborRow = firstNeighborRow;
+      neighborRow <= lastNeighborRow;
+      neighborRow++) {
+      if (neighborRow === row) continue;
+      const neighbors = [...(input.rowCells[neighborRow] ?? [])]
+        .sort((left, right) => input.cells[right]!.mass - input.cells[left]!.mass)
+        .slice(0, input.maxNeighbors);
+      for (const index of current) {
+        const source = input.cells[index]!;
+        for (const neighborIndex of neighbors) {
+          if (comparisons >= Math.max(0, input.remainingComparisons)) {
+            return { costs: normalizeStructuralCosts(costs, weights), comparisons };
+          }
+          const neighbor = input.cells[neighborIndex]!;
+          if (source.candidate.graphTargetId === neighbor.candidate.graphTargetId) {
+            continue;
+          }
+          if (!surfaceCandidatesCompatible(source.candidate, neighbor.candidate)) {
+            continue;
+          }
+          const expectation = populationOrderingExpectation({
+            model: input.populationOrderingModel,
+            populationPosterior: input.populationPosterior,
+            leftGraphTargetId: source.candidate.graphTargetId,
+            rightGraphTargetId: neighbor.candidate.graphTargetId
+          });
+          if (expectation.source === "unresolved") continue;
+          const surfaceDelta = (candidateCenter(neighbor.candidate)
+            - candidateCenter(source.candidate)) / extent;
+          const loss = huber(
+            surfaceDelta - expectation.location,
+            Math.max(0.05, 1.345 * expectation.robustScale)
+          );
           const weight = neighbor.mass;
           costs[index] = (costs[index] ?? 0) + weight * loss;
           weights[index] = (weights[index] ?? 0) + weight;
@@ -529,13 +650,18 @@ function objectiveComponents(input: {
   objective: SparseTransportObjective;
 }): Omit<SparseTransportIteration,
   "outerIteration" | "sinkhornIterations" | "sinkhornScalingResidual"
-  | "relativeObjectiveImprovement" | "structuralComparisons"> {
+  | "relativeObjectiveImprovement" | "structuralComparisons"
+  | "orderingComparisons"> {
   const feature = quantize(input.cells.reduce(
     (sum, cell) => sum + cell.mass * cell.featureCost,
     0
   ));
   const structural = quantize(input.cells.reduce(
     (sum, cell) => sum + cell.mass * cell.structuralCost,
+    0
+  ));
+  const ordering = quantize(input.cells.reduce(
+    (sum, cell) => sum + cell.mass * cell.orderingCost,
     0
   ));
   const anchor = quantize(input.cells.reduce(
@@ -559,6 +685,7 @@ function objectiveComponents(input: {
   const objective = quantize(
     input.objective.featureWeight * feature
     + input.objective.structuralWeight * structural
+    + input.objective.orderingWeight * ordering
     + input.objective.anchorWeight * anchor
     + input.objective.surfaceMarginalWeight * surfaceMarginalKl
     + input.objective.graphMarginalWeight * graphMarginalKl
@@ -568,6 +695,7 @@ function objectiveComponents(input: {
     objective,
     feature,
     structural,
+    ordering,
     anchor,
     surfaceMarginalKl,
     graphMarginalKl,
@@ -591,16 +719,27 @@ function normalizedSurfaceDistance(
   left: SparseAlignmentCandidate,
   right: SparseAlignmentCandidate
 ): number {
-  const leftCenter = (left.sourceCoordinates.codePointStart
-    + left.sourceCoordinates.codePointEnd) / 2;
-  const rightCenter = (right.sourceCoordinates.codePointStart
-    + right.sourceCoordinates.codePointEnd) / 2;
+  const leftCenter = candidateCenter(left);
+  const rightCenter = candidateCenter(right);
   const width = Math.max(
     1,
     left.sourceCoordinates.codePointEnd - left.sourceCoordinates.codePointStart,
     right.sourceCoordinates.codePointEnd - right.sourceCoordinates.codePointStart
   );
   return Math.min(1, Math.abs(leftCenter - rightCenter) / (4 * width));
+}
+
+function candidateCenter(candidate: SparseAlignmentCandidate): number {
+  return (candidate.sourceCoordinates.codePointStart
+    + candidate.sourceCoordinates.codePointEnd) / 2;
+}
+
+function surfaceCandidatesCompatible(
+  left: SparseAlignmentCandidate,
+  right: SparseAlignmentCandidate
+): boolean {
+  return left.sourceCoordinates.codePointEnd <= right.sourceCoordinates.codePointStart
+    || right.sourceCoordinates.codePointEnd <= left.sourceCoordinates.codePointStart;
 }
 
 function typedGraphDistance(left: SparseAlignmentTarget, right: SparseAlignmentTarget): number {

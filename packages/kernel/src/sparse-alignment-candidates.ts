@@ -99,6 +99,7 @@ export interface SparseAlignmentCandidateSupport {
   targetIndexId: string;
   incidenceGraphId: string;
   maxCandidateDegree: number;
+  populationPosterior: Array<{ populationId: string; probability: number }>;
   candidates: SparseAlignmentCandidate[];
   rows: SparseAlignmentCandidateRow[];
   audit: JsonValue;
@@ -326,6 +327,7 @@ export function generateSparseAlignmentCandidates(input: {
     targetIndexId: input.targetIndex.id,
     incidenceGraphId: input.targetIndex.incidenceGraphId,
     maxCandidateDegree,
+    populationPosterior: input.lattice.populationPosterior,
     candidates,
     rows
   };

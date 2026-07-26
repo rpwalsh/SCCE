@@ -114,6 +114,7 @@ export interface SurfaceLattice {
   evidenceIds: string[];
   textHash: string;
   normalizationContract: NormalizationContract;
+  populationPosterior: Array<{ populationId: string; probability: number }>;
   units: SurfaceLatticeUnit[];
   edges: SurfaceLatticeEdge[];
   segmentationForest: SurfaceSegmentationForest;
@@ -364,6 +365,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   });
   const countsByKind = new Map<SurfaceLatticeUnitKind, number>();
   for (const unit of units) countsByKind.set(unit.kind, (countsByKind.get(unit.kind) ?? 0) + 1);
+  const populationPosterior = latticePopulationPosterior(options.boundaryEstimator);
   return {
     schema: SURFACE_LATTICE_SCHEMA,
     id: latticeId,
@@ -372,6 +374,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     evidenceIds,
     textHash: hasher.digestHex(text),
     normalizationContract,
+    populationPosterior,
     units,
     edges,
     segmentationForest,
@@ -402,6 +405,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
           ? options.boundaryEstimator.populationModelId
           : undefined
       },
+      populationPosterior,
       segmentationForestId: segmentationForest.id,
       retainedSegmentationPosteriorMass: segmentationForest.retainedPosteriorMass,
       omittedSegmentationPosteriorMass: segmentationForest.omittedPosteriorMass,
@@ -409,6 +413,31 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       segmentationResumeToken: segmentationForest.resumeState?.token
     })
   };
+}
+
+function latticePopulationPosterior(
+  estimator: BoundaryEstimatorState | undefined
+): Array<{ populationId: string; probability: number }> {
+  if (!estimator) {
+    return [{ populationId: "population.unassigned", probability: 1 }];
+  }
+  if ("components" in estimator) {
+    const total = estimator.components.reduce(
+      (sum, component) => sum + Math.max(0, component.weight),
+      0
+    );
+    if (total <= 0) {
+      return [{ populationId: "population.unassigned", probability: 1 }];
+    }
+    return estimator.components
+      .map(component => ({
+        populationId: component.populationId,
+        probability: component.weight / total
+      }))
+      .filter(row => row.probability > 0)
+      .sort((left, right) => left.populationId.localeCompare(right.populationId));
+  }
+  return [{ populationId: estimator.populationId, probability: 1 }];
 }
 
 export function canonicalSurfaceSequence(

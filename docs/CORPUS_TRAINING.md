@@ -199,6 +199,13 @@ parameterize the sparse unbalanced updates. Every plan records typed surface-nul
 graph-implicit and overflow mass; the learned source-exact estimates are not
 reported as calibrated confidence.
 
+Surface lattices also retain their normalized segmentation-population posterior.
+`scce.population_relative_order_model.v1` learns signed target-pair displacements
+from bounded exact-anchor neighborhoods. Explicit training fits one shared model
+over the batch; ordinary and Wikipedia ingestion use the same compiler per active
+support. The transport objective consumes the posterior-conditioned robust order
+term without language or traditional role names.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,
