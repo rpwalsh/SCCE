@@ -107,6 +107,11 @@ describe("shared language training batch", () => {
     expect(compiled.sparseAlignmentCandidateSupports[0]!.candidates.some(candidate =>
       candidate.supportKinds.includes("exact_observable_anchor"))).toBe(true);
     expect(compiled.sparseAlignmentCandidateSummaries).toHaveLength(1);
+    expect(compiled.sparseTransportPlans).toHaveLength(1);
+    expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
+      compiled.sparseAlignmentCandidateSupports[0]!.candidates.length
+    );
+    expect(compiled.sparseTransportPlans[0]!.globalOptimalityClaimed).toBe(false);
     expect(JSON.stringify(compiled.audit)).toContain("\"denseMatrixMaterialized\":false");
   });
 

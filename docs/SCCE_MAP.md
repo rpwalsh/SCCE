@@ -85,6 +85,9 @@ answer lane.
 - `sparse-alignment-candidates.ts`: bounded compiled target postings and
   \(O(|S|K_\Pi)\) graph/surface candidate support over typed incidences, consumed by
   ordinary ingestion and explicit training without a dense pair matrix.
+- `sparse-fused-transport.ts`: unbalanced sparse Sinkhorn plus bounded local fused
+  typed-structure correction and exact-anchor mass reservation, with complete
+  objective/residual/budget traces and no global-optimum claim.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

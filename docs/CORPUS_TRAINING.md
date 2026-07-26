@@ -174,6 +174,16 @@ the bounded artifacts in its batch result. Candidate
 scores are proposal energies only and do not substitute for transport or calibrated
 confidence.
 
+Each compiled support is now consumed by
+`scce.sparse_fused_unbalanced_transport.v1`. Sparse generalized Sinkhorn scaling
+handles separate surface and graph unbalanced marginals; exact-anchor rows reserve
+anchor mass; bounded local correction compares adjacent surface rows with typed
+relation/incidence neighborhoods. Every plan records feature, structural, anchor,
+generalized-KL and entropy terms, marginal and scaling residuals, iteration/work
+budgets and estimated working bytes. The current objective is explicitly
+`bootstrap` and uncalibrated, and the local non-convex solver never claims a global
+optimum.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

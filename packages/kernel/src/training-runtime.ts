@@ -107,6 +107,8 @@ export function createTrainingRuntime(options: {
     let graphSurfaceAlignments = 0;
     let sparseAlignmentCandidateSupports = 0;
     let sparseAlignmentCandidates = 0;
+    let sparseTransportPlans = 0;
+    let sparseTransportCells = 0;
     let profilesCreated = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
@@ -173,6 +175,11 @@ export function createTrainingRuntime(options: {
         (sum, support) => sum + support.candidates.length,
         0
       );
+      sparseTransportPlans += memory.sparseTransportPlans.length;
+      sparseTransportCells += memory.sparseTransportPlans.reduce(
+        (sum, plan) => sum + plan.cells.length,
+        0
+      );
     }
     return {
       profiles,
@@ -188,7 +195,9 @@ export function createTrainingRuntime(options: {
         semanticFrames,
         graphSurfaceAlignments,
         sparseAlignmentCandidateSupports,
-        sparseAlignmentCandidates
+        sparseAlignmentCandidates,
+        sparseTransportPlans,
+        sparseTransportCells
       })
     };
   }

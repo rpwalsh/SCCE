@@ -90,6 +90,10 @@ validation so credentials need not be committed.
   and hard-degree-bounded anchor/evidence/structure/context candidate support. The
   production ingestion and explicit-training paths materialize
   \(O(|S|K_\Pi)\) candidates rather than a dense surface×graph matrix.
+- `sparse-fused-transport.ts`: sparse generalized Sinkhorn scaling, exact-anchor
+  row-mass reservation and bounded local fused structural correction with explicit
+  objective, residual, work and memory traces. The non-convex solver makes no global
+  optimum claim.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

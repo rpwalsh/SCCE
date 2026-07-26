@@ -45,6 +45,7 @@ import {
   compileSparseAlignmentTargetIndex,
   generateSparseAlignmentCandidates
 } from "./sparse-alignment-candidates.js";
+import { solveSparseFusedUnbalancedTransport } from "./sparse-fused-transport.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { liftHyperedgesToTypedIncidenceGraph } from "./typed-incidence-graph.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
@@ -502,6 +503,9 @@ export function createIngestionRuntime(options: {
         let alignmentSurfaceUnitCount = 0;
         let maximumAlignmentDegree = 0;
         const alignmentSupportIds: string[] = [];
+        const transportPlanIds: string[] = [];
+        let transportIterationCount = 0;
+        let transportedCellCount = 0;
         for (const span of relationEvidence) {
           const lattice = buildSurfaceLattice({
             documentId: String(span.id),
@@ -522,6 +526,14 @@ export function createIngestionRuntime(options: {
             maximumAlignmentDegree,
             ...support.rows.map(row => row.candidateIds.length)
           );
+          const transport = solveSparseFusedUnbalancedTransport({
+            support,
+            targetIndex: alignmentTargetIndex,
+            hasher
+          });
+          transportPlanIds.push(transport.id);
+          transportIterationCount += transport.iterations.length;
+          transportedCellCount += transport.cells.length;
         }
         events.push(await append(eventFactory.create({
           episodeId,
@@ -555,6 +567,11 @@ export function createIngestionRuntime(options: {
             candidateCount: alignmentCandidateCount,
             maximumCandidateDegree: maximumAlignmentDegree,
             supportIds: alignmentSupportIds,
+            transportPlanIds,
+            transportIterationCount,
+            transportedCellCount,
+            transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
+            globalOptimalityClaimed: false,
             candidateMemory: "O(|S|*K_pi)",
             denseMatrixMaterialized: false
           })
