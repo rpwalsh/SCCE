@@ -1317,20 +1317,22 @@ function buildDraft(
   );
   const title = surfaceTitle(requestBoundSurface);
   const rotated = rotate(ingredients, variant).slice(0, 3);
-  while (rotated.length < 3) rotated.push({
-    id: stableId("request.fallback", { variant, index: rotated.length }),
-    text: requestTerms[rotated.length % Math.max(1, requestTerms.length)] ?? title,
-    source: "request",
-    weight: 0.5,
-      evidenceIds: []
-  });
   const graphChoice = graphIngredients[variant % Math.max(1, graphIngredients.length)];
-  if (graphChoice && !rotated.some(row => row.source === "graph")) rotated[0] = graphChoice;
+  if (graphChoice && !rotated.some(row => row.source === "graph")) {
+    if (rotated.length >= 1) rotated[0] = graphChoice;
+    else rotated.push(graphChoice);
+  }
   const languageChoices = ingredients.filter(row => row.source !== "request" && row.source !== "graph");
   const languageChoice = languageChoices[variant % Math.max(1, languageChoices.length)];
-  if (languageChoice && !rotated.some(row => row.source !== "request" && row.source !== "graph")) rotated[1] = languageChoice;
+  if (languageChoice && !rotated.some(row => row.source !== "request" && row.source !== "graph")) {
+    if (rotated.length >= 2) rotated[1] = languageChoice;
+    else rotated.push(languageChoice);
+  }
   const requestChoice = ingredients.find(row => row.source === "request");
-  if (requestChoice && !rotated.some(row => row.source === "request")) rotated[2] = requestChoice;
+  if (requestChoice && !rotated.some(row => row.source === "request")) {
+    if (rotated.length >= 3) rotated[2] = requestChoice;
+    else rotated.push(requestChoice);
+  }
   const learnedProposal = deferSurfaceRealization
     ? undefined
     : reusedLearnedProposalFromMemory(input, requestTerms, variant, learnedProposalReuse);
