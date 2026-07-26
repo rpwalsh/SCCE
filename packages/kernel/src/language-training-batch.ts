@@ -64,6 +64,11 @@ import {
   type ReversibleConstruction,
   type ReversibleConstructionRejection
 } from "./reversible-construction.js";
+import {
+  compilePairedAntiUnifiedConstructions,
+  compilePairedAntiUnifiedPatterns,
+  type PairedAntiUnifiedConstruction
+} from "./paired-anti-unification.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -150,6 +155,7 @@ export interface CompiledLanguageTrainingBatch {
   semanticFrames: SemanticFrameRecord[];
   constructionPatterns: LanguagePatternRecord[];
   reversibleConstructionPatterns: LanguagePatternRecord[];
+  pairedAntiUnifiedConstructionPatterns: LanguagePatternRecord[];
   graphSurfaceAlignmentSummaries: JsonValue[];
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
@@ -160,6 +166,9 @@ export interface CompiledLanguageTrainingBatch {
   alignmentHeldoutEvaluation: AutomaticAlignmentEvaluation;
   reversibleConstructions: ReversibleConstruction[];
   reversibleConstructionRejections: ReversibleConstructionRejection[];
+  pairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
+  pairedAntiUnifiedConstructionRejections:
+    ReturnType<typeof compilePairedAntiUnifiedConstructions>["rejections"];
   typedNullCostModel: TypedNullCostModel | null;
   populationOrderingModel: PopulationOrderingModel | null;
   crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
@@ -386,6 +395,20 @@ export function compileLanguageTrainingBatch(input: {
     reversibleConstructionCompilation.constructions.map(
       compileReversibleConstructionPattern
     );
+  const pairedAntiUnifiedCompilation =
+    compilePairedAntiUnifiedConstructions({
+      constructions: reversibleConstructionCompilation.constructions,
+      createdAt: batch.createdAt,
+      creationSnapshotId: `paired_anti_unification_snapshot.${
+        input.hasher.digestHex(reversibleConstructionCompilation.constructions
+          .map(construction => construction.id).sort().join("\u001f")).slice(0, 40)
+      }`,
+      hasher: input.hasher
+    });
+  const pairedAntiUnifiedConstructionPatterns =
+    pairedAntiUnifiedCompilation.constructions.flatMap(
+      compilePairedAntiUnifiedPatterns
+    );
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -434,11 +457,13 @@ export function compileLanguageTrainingBatch(input: {
       ...memories.flatMap(memory => memory.patterns),
       ...constructionPatterns,
       ...reversibleConstructionPatterns,
+      ...pairedAntiUnifiedConstructionPatterns,
       ...(batch.additionalPatterns ?? [])
     ]),
     semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
     constructionPatterns,
     reversibleConstructionPatterns,
+    pairedAntiUnifiedConstructionPatterns,
     graphSurfaceAlignmentSummaries: sets
       .map(item => item.set.alignmentSummary)
       .filter((summary): summary is JsonValue => summary !== undefined),
@@ -452,6 +477,10 @@ export function compileLanguageTrainingBatch(input: {
     reversibleConstructions: reversibleConstructionCompilation.constructions,
     reversibleConstructionRejections:
       reversibleConstructionCompilation.rejections,
+    pairedAntiUnifiedConstructions:
+      pairedAntiUnifiedCompilation.constructions,
+    pairedAntiUnifiedConstructionRejections:
+      pairedAntiUnifiedCompilation.rejections,
     typedNullCostModel,
     populationOrderingModel,
     crossDocumentAlignmentModel,
@@ -562,6 +591,10 @@ export function compileLanguageTrainingBatch(input: {
         reversibleConstructions: reversibleConstructionCompilation.constructions,
         reversibleConstructionRejections:
           reversibleConstructionCompilation.rejections,
+        pairedAntiUnifiedConstructions:
+          pairedAntiUnifiedCompilation.constructions,
+        pairedAntiUnifiedConstructionRejections:
+          pairedAntiUnifiedCompilation.rejections,
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
           id: allocation.id,
           status: allocation.status,
@@ -576,6 +609,8 @@ export function compileLanguageTrainingBatch(input: {
       },
       compiledConstructions: constructionPatterns.length,
       compiledReversibleConstructions: reversibleConstructionPatterns.length,
+      compiledPairedAntiUnifiedConstructions:
+        pairedAntiUnifiedCompilation.constructions.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
   };

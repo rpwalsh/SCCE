@@ -131,6 +131,8 @@ describe("shared language training batch", () => {
       && decision.reasons.includes("independent_heldout_families_low"))).toBe(true);
     expect(compiled.reversibleConstructions).toEqual([]);
     expect(compiled.reversibleConstructionPatterns).toEqual([]);
+    expect(compiled.pairedAntiUnifiedConstructions).toEqual([]);
+    expect(compiled.pairedAntiUnifiedConstructionPatterns).toEqual([]);
     expect(compiled.sparseTransportPlans).toHaveLength(1);
     expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length

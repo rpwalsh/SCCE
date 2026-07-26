@@ -31,6 +31,7 @@ export interface ReversibleConstructionGraphPort {
   id: string;
   graphTargetId: string;
   kind: SparseAlignmentTarget["kind"];
+  relationId: string;
   relationNodeId: string;
   hyperedgeId: string;
   incidenceId?: string;
@@ -616,6 +617,7 @@ function graphPort(
     id,
     graphTargetId: target.id,
     kind: target.kind,
+    relationId: target.relationId,
     relationNodeId: String(target.relationNodeId),
     hyperedgeId: target.hyperedgeId,
     ...(target.incidenceId ? { incidenceId: target.incidenceId } : {}),
