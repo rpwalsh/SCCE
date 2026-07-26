@@ -72,7 +72,7 @@ export interface RequestedAuthorityDecision {
   features: Record<RequestedAuthorityFeatureId, number>;
   logits: Record<RequestedAuthority, number>;
   probabilities: Record<RequestedAuthority, number>;
-  fallbackSignals: string[];
+  activationSignals: string[];
   audit: JsonValue;
 }
 
@@ -89,7 +89,7 @@ const AUTHORITY_BOOTSTRAP_MODEL: RequestedAuthorityModel = {
   featureSchema: REQUESTED_AUTHORITY_FEATURE_SCHEMA,
   defaultTemperature: 0.72,
   coefficients: {
-    factual: legacyAuthorityRow(0.46, {
+    factual: authorityCoefficientRow(0.46, {
       "authority.feature.request.question": 1.34,
       "authority.feature.dialogue.boundary": 0.28,
       "authority.feature.question_graph.activation": 0.62,
@@ -98,13 +98,13 @@ const AUTHORITY_BOOTSTRAP_MODEL: RequestedAuthorityModel = {
       "authority.feature.request.program": -0.42,
       "authority.feature.request.action": -0.38
     }),
-    reasoned: legacyAuthorityRow(0.08, {
+    reasoned: authorityCoefficientRow(0.08, {
       "authority.feature.request.reasoned": 1.82,
       "authority.feature.dialogue.plan": 0.34,
       "authority.feature.question_graph.activation": 0.36,
       "authority.feature.language.activation": 0.14
     }),
-    creative: legacyAuthorityRow(-0.22, {
+    creative: authorityCoefficientRow(-0.22, {
       "authority.feature.request.creative": 2.92,
       "authority.feature.dialogue.artifact": 0.44,
       "authority.feature.dialogue.plan": 0.28,
@@ -112,18 +112,18 @@ const AUTHORITY_BOOTSTRAP_MODEL: RequestedAuthorityModel = {
       "authority.feature.semantic_frame.activation": 0.2,
       "authority.feature.construct.invention": 3.2
     }),
-    translation: legacyAuthorityRow(-0.28, {
+    translation: authorityCoefficientRow(-0.28, {
       "authority.feature.request.translation": 3.12,
       "authority.feature.language.activation": 0.18,
       "authority.feature.semantic_frame.activation": 0.12
     }),
-    program: legacyAuthorityRow(-0.2, {
+    program: authorityCoefficientRow(-0.2, {
       "authority.feature.request.program": 2.72,
       "authority.feature.dialogue.artifact": 0.48,
       "authority.feature.dialogue.plan": 0.24,
       "authority.feature.construct.program": 2.36
     }),
-    action: legacyAuthorityRow(-0.18, {
+    action: authorityCoefficientRow(-0.18, {
       "authority.feature.request.action": 2.84,
       "authority.feature.dialogue.plan": 0.62,
       "authority.feature.dialogue.artifact": 0.22
@@ -139,13 +139,13 @@ export function requestedAuthorityBootstrapModel(): RequestedAuthorityModel {
 /**
  * @deprecated Compatibility classifier. Production routing uses
  * deriveTurnRequirementField plus numeric operator activation. This function
- * remains exported for legacy consumers, but planInventions never calls it and
+ * remains exported for compatibility consumers, but planInventions never calls it and
  * request text never controls invention admission.
  */
 export function classifyRequestedAuthority(input: AuthorityClassificationInput): RequestedAuthorityDecision {
   const model = input.model ?? AUTHORITY_BOOTSTRAP_MODEL;
-  assertLegacyAuthorityModel(model);
-  const temperature = boundedLegacyAuthorityTemperature(input.temperature ?? model.defaultTemperature);
+  assertAuthorityModel(model);
+  const temperature = boundedAuthorityTemperature(input.temperature ?? model.defaultTemperature);
   const actionIds = new Set(input.dialogueActionIds ?? []);
   const constructKinds = new Set(input.construct?.nodes.map(node => node.kind) ?? []);
   const questionGraphFeatures = [
@@ -157,7 +157,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
   const languageActivation = input.languageMemory && input.languageMemoryState
     ? input.languageMemory.score({ state: input.languageMemoryState, text: input.requestText }).activation
     : 0;
-  const semanticFrameActivation = legacyFrameActivation(input.requestText, input.languageMemoryState, input.semanticFrameIds);
+  const semanticFrameActivation = semanticFrameAuthorityActivation(input.requestText, input.languageMemoryState, input.semanticFrameIds);
   const structuredIds = new Set([
     ...(input.semanticFrameIds ?? []),
     ...(input.questionFeatures ?? []),
@@ -166,7 +166,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
   ]);
   const features: Record<RequestedAuthorityFeatureId, number> = {
     "authority.feature.bias": 1,
-    "authority.feature.request.question": legacyRequestQuestionSignal(input.requestText, structuredIds),
+    "authority.feature.request.question": requestQuestionAuthoritySignal(input.requestText, structuredIds),
     "authority.feature.request.reasoned": structuredAuthoritySignal(structuredIds, "authority.feature.request.reasoned"),
     "authority.feature.request.creative": structuredAuthoritySignal(structuredIds, "authority.feature.request.creative"),
     "authority.feature.request.translation": structuredAuthoritySignal(structuredIds, "authority.feature.request.translation"),
@@ -177,7 +177,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
     "authority.feature.dialogue.boundary": actionIds.has(DIALOGUE_ACTION_IDS.boundary) ? 1 : structuredAuthoritySignal(structuredIds, "authority.feature.dialogue.boundary"),
     "authority.feature.language.activation": clamp01(languageActivation),
     "authority.feature.semantic_frame.activation": semanticFrameActivation,
-    "authority.feature.question_graph.activation": legacyQuestionGraphActivation(questionGraphFeatures),
+    "authority.feature.question_graph.activation": questionGraphAuthorityActivation(questionGraphFeatures),
     "authority.feature.construct.invention": constructRequestsInvention(input.construct) ? 1 : 0,
     "authority.feature.construct.program": input.construct?.program || constructKinds.has("construct:program") || constructKinds.has("family:program") ? 1 : 0
   };
@@ -186,7 +186,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
     const logit = row.intercept + model.featureSchema.reduce((sum, id) => sum + row.weights[id] * features[id], 0);
     return [authority, logit];
   })) as Record<RequestedAuthority, number>;
-  const inferredProbabilities = legacySoftmaxLogits(logits, temperature);
+  const inferredProbabilities = authoritySoftmaxLogits(logits, temperature);
   const inferredAuthority = [...REQUESTED_AUTHORITIES]
     .sort((left, right) => inferredProbabilities[right] - inferredProbabilities[left] || left.localeCompare(right))[0] ?? "factual";
   const explicitOverride = input.explicitAuthority !== undefined;
@@ -194,7 +194,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
   const probabilities = explicitOverride
     ? Object.fromEntries(REQUESTED_AUTHORITIES.map(authority => [authority, authority === requestedAuthority ? 1 : 0])) as Record<RequestedAuthority, number>
     : inferredProbabilities;
-  const fallbackSignals = Object.entries(features)
+  const activationSignals = Object.entries(features)
     .filter(([id, value]) => id !== "authority.feature.bias" && value > 0)
     .map(([id]) => id)
     .sort();
@@ -208,7 +208,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
     features,
     logits,
     probabilities,
-    fallbackSignals,
+    activationSignals,
     audit: toJsonValue({
       source: "invention-planner.requested-authority",
       equation: "P(k|q)=exp(z_k/tau)/sum_j(exp(z_j/tau)); z_k=theta_k^T f(q,d,l,g)",
@@ -222,7 +222,7 @@ export function classifyRequestedAuthority(input: AuthorityClassificationInput):
       finalProbabilities: probabilities,
       explicitOverride,
       evidenceAvailabilityUsed: false,
-      fallbackSignals
+      activationSignals
     })
   };
 }
@@ -628,19 +628,19 @@ function draftCompositionIdentity(draft: DraftComposition): string {
     : normalizeSurface(draft.proposalSurface);
 }
 
-function legacyAuthorityRow(intercept: number, patch: Partial<Record<RequestedAuthorityFeatureId, number>>): RequestedAuthorityModel["coefficients"][RequestedAuthority] {
+function authorityCoefficientRow(intercept: number, patch: Partial<Record<RequestedAuthorityFeatureId, number>>): RequestedAuthorityModel["coefficients"][RequestedAuthority] {
   return {
     intercept,
     weights: Object.fromEntries(REQUESTED_AUTHORITY_FEATURE_SCHEMA.map(id => [id, patch[id] ?? 0])) as Record<RequestedAuthorityFeatureId, number>
   };
 }
 
-function assertLegacyAuthorityModel(model: RequestedAuthorityModel): void {
+function assertAuthorityModel(model: RequestedAuthorityModel): void {
   if (model.schema !== "scce.requested_authority_model.v1" || !model.version.trim()) throw new Error("requested-authority model schema/version is invalid");
   if (model.featureSchema.length !== REQUESTED_AUTHORITY_FEATURE_SCHEMA.length || model.featureSchema.some((id, index) => id !== REQUESTED_AUTHORITY_FEATURE_SCHEMA[index])) {
     throw new Error("requested-authority model feature schema does not match the runtime schema");
   }
-  boundedLegacyAuthorityTemperature(model.defaultTemperature);
+  boundedAuthorityTemperature(model.defaultTemperature);
   for (const authority of REQUESTED_AUTHORITIES) {
     const row = model.coefficients[authority];
     if (!row || !Number.isFinite(row.intercept)) throw new Error(`requested-authority model row ${authority} is invalid`);
@@ -648,7 +648,7 @@ function assertLegacyAuthorityModel(model: RequestedAuthorityModel): void {
   }
 }
 
-function legacySoftmaxLogits(logits: Record<RequestedAuthority, number>, temperature: number): Record<RequestedAuthority, number> {
+function authoritySoftmaxLogits(logits: Record<RequestedAuthority, number>, temperature: number): Record<RequestedAuthority, number> {
   const scaled = REQUESTED_AUTHORITIES.map(authority => logits[authority] / temperature);
   const max = Math.max(...scaled);
   const weights = scaled.map(value => Math.exp(value - max));
@@ -656,7 +656,7 @@ function legacySoftmaxLogits(logits: Record<RequestedAuthority, number>, tempera
   return Object.fromEntries(REQUESTED_AUTHORITIES.map((authority, index) => [authority, (weights[index] ?? 0) / Math.max(Number.EPSILON, total)])) as Record<RequestedAuthority, number>;
 }
 
-function boundedLegacyAuthorityTemperature(value: number): number {
+function boundedAuthorityTemperature(value: number): number {
   if (!Number.isFinite(value)) throw new RangeError("requested-authority temperature must be finite");
   return Math.max(0.05, Math.min(2, value));
 }
@@ -666,7 +666,7 @@ function boundedCreativeTemperature(value: number): number {
   return Math.max(0.05, Math.min(1.5, value));
 }
 
-function legacyRequestQuestionSignal(text: string, structuredIds: ReadonlySet<string>): number {
+function requestQuestionAuthoritySignal(text: string, structuredIds: ReadonlySet<string>): number {
   const punctuation = text.trim().endsWith("?") ? 1 : 0;
   return Math.max(punctuation, structuredAuthoritySignal(structuredIds, "authority.feature.request.question"));
 }
@@ -675,7 +675,7 @@ function structuredAuthoritySignal(ids: ReadonlySet<string>, featureId: Requeste
   return ids.has(featureId) ? 1 : 0;
 }
 
-function legacyFrameActivation(requestText: string, state: LanguageMemoryRuntimeState | undefined, explicitFrameIds: readonly string[] | undefined): number {
+function semanticFrameAuthorityActivation(requestText: string, state: LanguageMemoryRuntimeState | undefined, explicitFrameIds: readonly string[] | undefined): number {
   if (!state) return explicitFrameIds?.length ? clamp01(explicitFrameIds.length / 4) : 0;
   const requestFeatures = featureSet(requestText, 256);
   const explicit = new Set(explicitFrameIds ?? []);
@@ -687,7 +687,7 @@ function legacyFrameActivation(requestText: string, state: LanguageMemoryRuntime
   return clamp01(Math.max(explicit.size ? explicit.size / 4 : 0, ...scores, 0));
 }
 
-function legacyQuestionGraphActivation(features: readonly string[]): number {
+function questionGraphAuthorityActivation(features: readonly string[]): number {
   const normalized = uniqueStrings(features.map(value => value.normalize("NFC").trim()).filter(Boolean));
   return clamp01(Math.log2(1 + normalized.length) / 4);
 }
