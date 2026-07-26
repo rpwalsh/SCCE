@@ -11,6 +11,7 @@ import {
   type EvidenceId,
   type EvidenceSpan,
   type GraphSlice,
+  type InformationLabel,
   type JsonValue,
   type ModelState,
   type ScceEvent,
@@ -270,8 +271,19 @@ function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; tex
     features: featureSet(input.text, 256),
     status: input.status,
     alpha: input.alpha,
-    observedAt: 1000
+    observedAt: 1000,
+    informationLabel: fixtureInformationLabel()
   };
+}
+
+function fixtureInformationLabel(): InformationLabel {
+  return {
+    exportClass: "public",
+    tenantId: "fixture-tenant",
+    principals: [],
+    compartments: [],
+    mergePolicy: "isolated"
+  } as InformationLabel;
 }
 
 function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => number }): {
