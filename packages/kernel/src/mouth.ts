@@ -1055,7 +1055,16 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
             ? boundarySurfaceFromRuntime(input.entailment, input.evidence, deterministicVerdict)
             : ""
         ];
-      const selectedText = deterministicSurfaces.find(surface => admissibleMouthSurface(surface)) ?? "";
+      // Clip each candidate to the length/plan budget before admissibility
+      // filtering, not after: a candidate's untrimmed tail (e.g. a
+      // repeated-word stretch past maxLength) can trip the canned-answer/
+      // repeated-ngram detector even though that exact material would
+      // never reach the emitted surface once preserveSurfaceExtent runs.
+      // Checking admissibility on what will actually be emitted, rather
+      // than on material already destined to be discarded, is the correct
+      // gate -- clipping a surface already within budget is a no-op.
+      const clippedDeterministicSurfaces = deterministicSurfaces.map(surface => preserveSurfaceExtent(surface, input.maxLength, plan));
+      const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)) ?? "";
       const normalizedSelectedText = tidySurface(selectedText);
       const readableSelectedText = dominantConstructForce(plan.constructForces) === "ProgramConstruct"
         || hasStructuredSurfaceShape(normalizedSelectedText)
