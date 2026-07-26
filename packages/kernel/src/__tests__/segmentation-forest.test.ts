@@ -46,6 +46,16 @@ describe("packed segmentation forest", () => {
     expect(forest.retainedPosteriorMass).toBeLessThanOrEqual(1);
     expect(forest.paths.reduce((sum, path) => sum + path.posterior, 0))
       .toBeCloseTo(forest.retainedPosteriorMass, 10);
+    expect(forest.boundaryMarginals[0]).toEqual({
+      positionGrapheme: 0,
+      boundaryProbability: 1
+    });
+    expect(forest.boundaryMarginals.at(-1)).toEqual({
+      positionGrapheme: 3,
+      boundaryProbability: 1
+    });
+    expect(forest.boundaryMarginals
+      .every(row => row.boundaryProbability >= 0 && row.boundaryProbability <= 1)).toBe(true);
     const byId = new Map(units.map(candidate => [candidate.id, candidate]));
     for (const path of forest.paths) {
       let cursor = 0;
@@ -65,5 +75,18 @@ describe("packed segmentation forest", () => {
       hasher: createHasher()
     });
     expect(repeated).toEqual(forest);
+
+    const changedBootstrapCounts = buildSegmentationForest({
+      latticeId: "lattice.test",
+      estimatorId: "estimator.test",
+      units: units.map(candidate => ({
+        ...candidate,
+        recurrenceCount: candidate.recurrenceCount * 100,
+        predictability: 1 - candidate.predictability
+      })),
+      pathLimit: 4,
+      hasher: createHasher()
+    });
+    expect(changedBootstrapCounts).toEqual(forest);
   });
 });

@@ -24,6 +24,8 @@ The kernel selects what may be said. The Mouth is the realization boundary: it c
 ## Current capabilities
 
 - Typed ingestion with source identity, byte ranges, provenance, language, and temporal metadata.
+- Lossless multiscale surface lattices with detector-proposal quotienting,
+  packed latent-boundary inference, and source-disjoint calibrated boundary models.
 - Directed graph activation through PPF and PowerWalk structures.
 - Learned turn-requirement fields, cognitive-operator activation, bounded proposals, claim bases, candidate selection, and answer revision.
 - A source-only in-memory runtime factory that shares the kernel's source-neutral requirement-to-authority projection and operator-activation helpers, with its own traced input semantics.

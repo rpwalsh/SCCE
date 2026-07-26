@@ -84,7 +84,11 @@ answer lane.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `surface-lattice.ts`: Phase-2 proposal quotient, occurrence/class separation, and
-  exact byte/code-point/grapheme partition conservation.
+  exact byte/code-point/grapheme partition conservation; Phase-3 training consumes
+  independent source anchors or packed-forest marginals rather than detector labels.
+- `boundary-estimator.ts`, `segmentation-forest.ts`: versioned mergeable boundary
+  statistics, source-disjoint held-out calibration, exact forward/backward
+  marginals, and no fixed recurrence/predictability production credits.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

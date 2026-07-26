@@ -126,19 +126,29 @@ describe("canonical evidence identity", () => {
       populationId: "population.1",
       normalizationContractId: contract.id,
       observations: [{
+        sourceDocumentId: "document.1",
         features: boundaryFeatures(1),
         positiveMass: 1,
-        negativeMass: 0
-      }]
+        negativeMass: 0,
+        supervision: "independent_anchor",
+        signalKind: "external_anchor",
+        signalId: "anchor.document.1"
+      }],
+      sourceDocumentIds: ["document.1"]
     });
     const secondStatistics = compileBoundaryStatistics({
       populationId: "population.2",
       normalizationContractId: contract.id,
       observations: [{
+        sourceDocumentId: "document.2",
         features: boundaryFeatures(0),
         positiveMass: 0,
-        negativeMass: 1
-      }]
+        negativeMass: 1,
+        supervision: "independent_anchor",
+        signalKind: "external_anchor",
+        signalId: "anchor.document.2"
+      }],
+      sourceDocumentIds: ["document.2"]
     });
     const candidates = structuredSemanticCandidates({
       sourceId: "source.1" as SourceId,
@@ -199,6 +209,11 @@ function boundaryFeatures(boundary: number) {
     scriptTransition: 0,
     structuralBoundary: boundary,
     localTransitionEntropy: 0.5,
-    repeatedContextSupport: 0.5
+    repeatedContextSupport: 0.5,
+    crossDocumentRecurrence: 0,
+    predictiveCompressionGain: 0,
+    stableSubstitutionSupport: 0,
+    exactPhraseRecurrence: 0,
+    constructionReuse: 0
   };
 }

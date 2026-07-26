@@ -27,6 +27,11 @@ export interface SurfaceSegmentationPath {
   posterior: number;
 }
 
+export interface SegmentationBoundaryMarginal {
+  positionGrapheme: number;
+  boundaryProbability: number;
+}
+
 export interface SurfaceSegmentationForest {
   schema: typeof SEGMENTATION_FOREST_SCHEMA;
   id: string;
@@ -38,6 +43,7 @@ export interface SurfaceSegmentationForest {
   paths: SurfaceSegmentationPath[];
   partitionLogZ: number;
   retainedPosteriorMass: number;
+  boundaryMarginals: SegmentationBoundaryMarginal[];
   audit: JsonValue;
 }
 
@@ -127,6 +133,35 @@ export function buildSegmentationForest(input: {
   }
 
   const partitionLogZ = finiteOrZero(logPartition[graphemeCount]!);
+  const logBackward = new Array<number>(graphemeCount + 1).fill(Number.NEGATIVE_INFINITY);
+  logBackward[graphemeCount] = 0;
+  for (let position = graphemeCount - 1; position >= 0; position -= 1) {
+    for (const arc of arcsByStart.get(position) ?? []) {
+      logBackward[position] = logAddExp(
+        logBackward[position]!,
+        -arc.energy + logBackward[arc.unit.graphemeEnd]!
+      );
+    }
+  }
+  const boundaryMass = new Array<number>(graphemeCount + 1).fill(0);
+  boundaryMass[0] = 1;
+  if (Number.isFinite(logPartition[graphemeCount]!)) {
+    for (let position = 0; position < graphemeCount; position += 1) {
+      if (!Number.isFinite(logPartition[position]!)) continue;
+      for (const arc of arcsByStart.get(position) ?? []) {
+        const suffix = logBackward[arc.unit.graphemeEnd]!;
+        if (!Number.isFinite(suffix)) continue;
+        const posterior = Math.exp(
+          logPartition[position]! - arc.energy + suffix - logPartition[graphemeCount]!
+        );
+        boundaryMass[arc.unit.graphemeEnd] = boundaryMass[arc.unit.graphemeEnd]! + posterior;
+      }
+    }
+  }
+  const boundaryMarginals = boundaryMass.map((probability, positionGrapheme) => ({
+    positionGrapheme,
+    boundaryProbability: quantize(clamp01(probability))
+  }));
   const paths = kBest[graphemeCount]!.map(path => {
     const canonical = {
       latticeId: input.latticeId,
@@ -151,7 +186,8 @@ export function buildSegmentationForest(input: {
     pathLimit,
     paths,
     partitionLogZ: quantize(partitionLogZ),
-    retainedPosteriorMass
+    retainedPosteriorMass,
+    boundaryMarginals
   };
   return {
     ...canonical,
@@ -161,6 +197,8 @@ export function buildSegmentationForest(input: {
       normalizationContractId,
       completeDagPartition: true,
       packedDynamicProgramming: true,
+      exactForwardBackwardMarginals: true,
+      unexplainedArcCoefficients: false,
       candidateArcs: [...arcsByStart.values()].reduce((sum, arcs) => sum + arcs.length, 0),
       returnedPaths: paths.length
     })
@@ -191,10 +229,7 @@ function segmentationArcEnergy(
   const internalStart = unit.graphemeStart + 1;
   const internalCost = (interiorCostPrefix[unit.graphemeEnd] ?? 0)
     - (interiorCostPrefix[internalStart] ?? 0);
-  let energy = -Math.log(selectedEndProbability) + internalCost;
-  const recurrenceCredit = Math.log1p(Math.max(0, unit.recurrenceCount - 1)) * 0.12;
-  const predictabilityCredit = clamp01(unit.predictability) * 0.08;
-  return quantize(energy - recurrenceCredit - predictabilityCredit);
+  return quantize(-Math.log(selectedEndProbability) + internalCost);
 }
 
 function nonBoundaryCostPrefix(

@@ -122,7 +122,7 @@ export function learnSegmentationPopulations(input: {
       hasher,
       id
     );
-    const estimator = fitBoundaryEstimator({ statistics, hasher });
+    const estimator = fitCalibratedEstimatorForDocuments(group, id, hasher);
     return {
       id,
       prior: quantize(group.length / Math.max(1, documents.length)),
@@ -264,7 +264,9 @@ function fitPopulationCandidate(input: {
     sum + mixtureNegativeLogLikelihood(document.statistics, estimators, priors), 0));
   const mass = input.fit.reduce((sum, document) =>
     sum + (document.statistics.positiveMass + document.statistics.negativeMass) / 1_024, 0);
-  const parameterCount = input.populationCount * 8 + Math.max(0, input.populationCount - 1);
+  const parametersPerEstimator = (estimators[0]?.weights.length ?? 0) + 1;
+  const parameterCount = input.populationCount * parametersPerEstimator
+    + Math.max(0, input.populationCount - 1);
   const parameterNats = 0.5 * parameterCount * Math.log(Math.max(2, mass));
   const assignmentNats = input.fit.length * Math.log(input.populationCount);
   const modelNats = quantize(parameterNats + assignmentNats);
@@ -335,6 +337,32 @@ function documentDisjointSplit(
     fit: documents.filter(document => !holdoutIds.has(document.documentId)),
     holdout: documents.filter(document => holdoutIds.has(document.documentId))
   };
+}
+
+function fitCalibratedEstimatorForDocuments(
+  documents: readonly SegmentationPopulationTrainingDocument[],
+  populationId: string,
+  hasher: Hasher
+): BoundaryEstimatorModel {
+  const split = documentDisjointSplit(documents, hasher);
+  const trainingStatistics = mergeBoundaryStatistics(
+    split.fit.map(document => document.statistics),
+    hasher,
+    populationId
+  );
+  const calibrationStatistics = split.holdout.length
+    ? mergeBoundaryStatistics(
+      split.holdout.map(document => document.statistics),
+      hasher,
+      populationId
+    )
+    : undefined;
+  return fitBoundaryEstimator({
+    statistics: trainingStatistics,
+    calibrationStatistics,
+    calibrationShards: split.holdout.map(document => document.statistics),
+    hasher
+  });
 }
 
 function initialAssignments(
