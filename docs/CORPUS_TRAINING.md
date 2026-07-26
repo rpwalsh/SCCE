@@ -1,6 +1,6 @@
 # Corpus Training
 
-SCCE training is corpus compilation. Source material becomes source versions, evidence spans, language profiles, n-gram observations and models, language units, language patterns, semantic frames, and traceable events in PostgreSQL.
+SCCE training is corpus compilation. Source material first becomes an exact `scce.surface_lattice.v2`, then source versions, evidence spans, language profiles, n-gram observations and models, language units, language patterns, semantic frames, and traceable events in PostgreSQL. The base lattice is not truncated by higher-hypothesis caps: every admitted UTF-8 byte remains recoverable through byte, UTF-16, code-point, and grapheme coordinates.
 
 The current first-class language-memory source systems are:
 
@@ -87,4 +87,6 @@ The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded 
 
 ## Corpus compilation boundary
 
-Corpus material is compiled into PostgreSQL-backed evidence and language memory. The same canonical path applies when a low-support turn acquires new material: source identity and typed observations must be admitted before replanning. Factual answers still require admissible evidence and proof paths; language priors shape realization but do not certify claims. The production path has no external inference provider or prompt-construction fallback.
+Corpus material is compiled into PostgreSQL-backed evidence and language memory. The n-gram compiler and primary language-induction engine consume the canonical surface lattice and record its identity in compilation audit data. Remaining production language consumers are being migrated; see `IMPLEMENTATION_STATUS.md`.
+
+The same canonical path applies when a low-support turn acquires new material: source identity and typed observations must be admitted before replanning. Factual answers still require admissible evidence and graph paths; language priors shape realization but do not certify claims. The production path has no external inference provider or prompt-construction fallback.

@@ -2,15 +2,19 @@ import { clamp01, createHasher, entropy, toJsonValue } from "./primitives.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 
-export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v1" as const;
+export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v2" as const;
 
 export type SurfaceLatticeUnitKind =
-  | "code_point"
+  | "grapheme"
   | "surface_segment"
   | "lexical"
+  | "phrase_candidate"
   | "numeric"
+  | "date"
   | "quote"
   | "code_symbol"
+  | "markup_structure"
+  | "table_cell"
   | "line"
   | "sentence_like"
   | "paragraph"
@@ -19,10 +23,18 @@ export type SurfaceLatticeUnitKind =
 export type SurfaceLatticeEdgeKind =
   | "sequence"
   | "contains"
-  | "recurs_with";
+  | "recurs_with"
+  | "licensed_overlap";
+
+export type SurfaceLatticeOverlapClass =
+  | "base_partition"
+  | "segmentation_alternative"
+  | "structure";
 
 export interface SurfaceBoundaryEvidence {
+  positionByte: number;
   positionCodePoint: number;
+  positionGrapheme: number;
   bootstrapBoundaryProbability: number;
   features: {
     whitespaceAdjacent: number;
@@ -38,12 +50,17 @@ export interface SurfaceBoundaryEvidence {
 export interface SurfaceLatticeUnit {
   id: string;
   kind: SurfaceLatticeUnitKind;
+  overlapClass: SurfaceLatticeOverlapClass;
   surface: string;
   normalized: string;
+  byteStart: number;
+  byteEnd: number;
   utf16Start: number;
   utf16End: number;
   codePointStart: number;
   codePointEnd: number;
+  graphemeStart: number;
+  graphemeEnd: number;
   scriptId: string;
   recurrenceCount: number;
   entropy: number;
@@ -76,6 +93,11 @@ export interface SurfaceLattice {
   audit: JsonValue;
 }
 
+export interface SurfaceLatticeValidation {
+  valid: boolean;
+  issues: string[];
+}
+
 export interface SurfaceLatticeBuildOptions {
   documentId: string;
   text: string;
@@ -95,30 +117,45 @@ interface CandidateUnit {
   codePointEnd: number;
 }
 
+interface SurfaceCoordinateIndex {
+  utf16ToByte: number[];
+  utf16ToCodePoint: number[];
+  utf16ToGraphemeStart: number[];
+  utf16ToGraphemeEnd: number[];
+}
+
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
   const hasher = options.hasher ?? createHasher();
   const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? 4096));
   const maxEdges = Math.max(64, Math.floor(options.maxEdges ?? 8192));
-  const text = options.text.replace(/\u0000/g, " ");
+  const text = options.text;
   const model = segmentUnicodeSurfaceV2(text, hasher);
   const evidenceIds = (options.evidenceIds ?? []).map(String).sort();
   const sourceVersionId = options.sourceVersionId === undefined ? undefined : String(options.sourceVersionId);
-  const codePointIndexByUtf16 = buildUtf16ToCodePointIndex(text);
+  const coordinates = buildSurfaceCoordinateIndex(text);
+  const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
   const normalizedCounts = new Map<string, number>();
 
-  const candidates = [
-    ...codePointCandidates(text, codePointIndexByUtf16),
+  const baseCandidates = graphemeCandidates(text, coordinates);
+  const higherCandidates = [
     ...surfaceSegmentCandidates(model.surfaceSegments),
     ...lexicalCandidates(model.lexicalSegments),
+    ...phraseCandidates(text, model.lexicalSegments),
     ...regexSpanCandidates(text, codePointIndexByUtf16, "numeric", /[+-]?(?:\d+(?:[.,:]\d+)*|\d*\.\d+)%?/gu),
+    ...regexSpanCandidates(text, codePointIndexByUtf16, "date", /\b(?:\d{4}-\d{2}-\d{2}|\d{1,4}[/.]\d{1,2}[/.]\d{1,4})\b/gu),
     ...quoteSpanCandidates(text, codePointIndexByUtf16),
     ...regexSpanCandidates(text, codePointIndexByUtf16, "code_symbol", /[$_\p{Letter}][$_\p{Letter}\p{Number}]{1,64}/gu),
+    ...markupCandidates(text, codePointIndexByUtf16),
+    ...tableCellCandidates(text, codePointIndexByUtf16),
     ...lineCandidates(text, codePointIndexByUtf16),
     ...paragraphCandidates(text, codePointIndexByUtf16),
     ...sentenceLikeCandidates(text, codePointIndexByUtf16),
     ...repeatedSequenceCandidates(text, model.lexicalSegments)
   ];
+  const candidates = [...baseCandidates, ...higherCandidates];
 
   for (const candidate of candidates) {
     const key = recurrenceKey(candidate);
@@ -127,8 +164,13 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
 
   const units: SurfaceLatticeUnit[] = [];
   const seen = new Set<string>();
-  for (const candidate of candidates.sort(compareCandidateUnits)) {
-    if (units.length >= maxUnits) break;
+  const orderedCandidates = [
+    ...baseCandidates.sort(compareCandidateUnits),
+    ...higherCandidates.sort(compareCandidateUnits)
+  ];
+  const effectiveMaxUnits = Math.max(maxUnits, baseCandidates.length);
+  for (const candidate of orderedCandidates) {
+    if (units.length >= effectiveMaxUnits) break;
     if (!candidate.surface) continue;
     const identity = `${candidate.kind}\u0001${candidate.codePointStart}\u0001${candidate.codePointEnd}\u0001${candidate.surface}`;
     if (seen.has(identity)) continue;
@@ -138,6 +180,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     const before = boundaryEvidenceAt({
       text,
       positionCodePoint: candidate.codePointStart,
+      positionByte: coordinates.utf16ToByte[candidate.utf16Start] ?? 0,
+      positionGrapheme: coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0,
       structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount
@@ -145,6 +189,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     const after = boundaryEvidenceAt({
       text,
       positionCodePoint: candidate.codePointEnd,
+      positionByte: coordinates.utf16ToByte[candidate.utf16End] ?? Buffer.byteLength(text, "utf8"),
+      positionGrapheme: coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length,
       structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount
@@ -159,12 +205,17 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
         candidate.surface
       ])).slice(0, 32)}`,
       kind: candidate.kind,
+      overlapClass: overlapClassFor(candidate.kind),
       surface: candidate.surface,
       normalized,
+      byteStart: coordinates.utf16ToByte[candidate.utf16Start] ?? 0,
+      byteEnd: coordinates.utf16ToByte[candidate.utf16End] ?? Buffer.byteLength(text, "utf8"),
       utf16Start: candidate.utf16Start,
       utf16End: candidate.utf16End,
       codePointStart: candidate.codePointStart,
       codePointEnd: candidate.codePointEnd,
+      graphemeStart: coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0,
+      graphemeEnd: coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length,
       scriptId: dominantScriptId(candidate.surface),
       recurrenceCount,
       entropy: entropy([...frequency([...candidate.surface]).values()]),
@@ -178,7 +229,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     });
   }
 
-  const edges = latticeEdges(units, hasher, maxEdges);
+  const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);
+  const edges = latticeEdges(units, hasher, effectiveMaxEdges);
   const countsByKind = new Map<SurfaceLatticeUnitKind, number>();
   for (const unit of units) countsByKind.set(unit.kind, (countsByKind.get(unit.kind) ?? 0) + 1);
   return {
@@ -197,17 +249,20 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     units,
     edges,
     audit: toJsonValue({
-      builder: "kernel.surface_lattice.v1",
+      builder: "kernel.surface_lattice.v2",
       inputUtf16Length: text.length,
+      inputBytes: Buffer.byteLength(text, "utf8"),
       inputCodePoints: [...text].length,
+      inputGraphemes: baseCandidates.length,
       candidateUnits: candidates.length,
       persistedUnits: units.length,
       persistedEdges: edges.length,
       unitCapReached: candidates.length > units.length,
-      edgeCapReached: edges.length >= maxEdges,
+      baseCoverageOverride: baseCandidates.length > maxUnits,
+      edgeCapReached: edges.length >= effectiveMaxEdges,
       unitsByKind: Object.fromEntries([...countsByKind.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
       boundaryEstimator: {
-        id: "bootstrap_surface_lattice_boundary_v1",
+        id: "bootstrap_surface_lattice_boundary_v2",
         status: "bootstrap_calibratable_features",
         note: "features are persisted for later calibration; punctuation/space are evidence, not mandatory grammar"
       }
@@ -215,18 +270,100 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   };
 }
 
-function buildUtf16ToCodePointIndex(text: string): number[] {
-  const index = new Array<number>(text.length + 1).fill(0);
+export function canonicalSurfaceSequence(
+  lattice: SurfaceLattice
+): SurfaceLatticeUnit[] {
+  const preferred = lattice.units
+    .filter(unit => unit.kind === "surface_segment" && unit.surface.length > 0 && !/^\s+$/u.test(unit.surface))
+    .sort(comparePersistedUnits);
+  if (preferred.length > 0) return preferred;
+  return lattice.units
+    .filter(unit => unit.kind === "grapheme" && unit.surface.length > 0 && !/^\s+$/u.test(unit.surface) && !/^\p{Control}+$/u.test(unit.surface))
+    .sort(comparePersistedUnits);
+}
+
+export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): SurfaceLatticeValidation {
+  const issues: string[] = [];
+  const bytes = Buffer.from(text, "utf8");
+  const graphemes = lattice.units
+    .filter(unit => unit.kind === "grapheme")
+    .sort(comparePersistedUnits);
+  let byteCursor = 0;
+  let utf16Cursor = 0;
+  let codePointCursor = 0;
+  let graphemeCursor = 0;
+  for (const unit of graphemes) {
+    if (unit.byteStart !== byteCursor
+      || unit.utf16Start !== utf16Cursor
+      || unit.codePointStart !== codePointCursor
+      || unit.graphemeStart !== graphemeCursor) {
+      issues.push(`base_gap:${unit.id}`);
+    }
+    if (bytes.subarray(unit.byteStart, unit.byteEnd).toString("utf8") !== unit.surface
+      || text.slice(unit.utf16Start, unit.utf16End) !== unit.surface) {
+      issues.push(`coordinate_mismatch:${unit.id}`);
+    }
+    byteCursor = unit.byteEnd;
+    utf16Cursor = unit.utf16End;
+    codePointCursor = unit.codePointEnd;
+    graphemeCursor = unit.graphemeEnd;
+  }
+  if (byteCursor !== bytes.length
+    || utf16Cursor !== text.length
+    || codePointCursor !== [...text].length
+    || graphemeCursor !== graphemes.length) {
+    issues.push("base_partition_incomplete");
+  }
+  for (const unit of lattice.units) {
+    if (unit.byteStart < 0 || unit.byteEnd < unit.byteStart || unit.byteEnd > bytes.length
+      || unit.utf16Start < 0 || unit.utf16End < unit.utf16Start || unit.utf16End > text.length
+      || unit.codePointStart < 0 || unit.codePointEnd < unit.codePointStart
+      || unit.graphemeStart < 0 || unit.graphemeEnd < unit.graphemeStart) {
+      issues.push(`coordinate_range:${unit.id}`);
+      continue;
+    }
+    if (bytes.subarray(unit.byteStart, unit.byteEnd).toString("utf8") !== unit.surface
+      || text.slice(unit.utf16Start, unit.utf16End) !== unit.surface) {
+      issues.push(`coordinate_mismatch:${unit.id}`);
+    }
+  }
+  return { valid: issues.length === 0, issues };
+}
+
+function buildSurfaceCoordinateIndex(text: string): SurfaceCoordinateIndex {
+  const utf16ToByte = new Array<number>(text.length + 1).fill(0);
+  const utf16ToCodePoint = new Array<number>(text.length + 1).fill(0);
   let codePoint = 0;
   let utf16 = 0;
+  let byte = 0;
   for (const char of text) {
-    index[utf16] = codePoint;
+    utf16ToByte[utf16] = byte;
+    utf16ToCodePoint[utf16] = codePoint;
+    for (let offset = 1; offset < char.length; offset += 1) {
+      utf16ToByte[utf16 + offset] = byte;
+      utf16ToCodePoint[utf16 + offset] = codePoint;
+    }
     utf16 += char.length;
+    byte += Buffer.byteLength(char, "utf8");
     codePoint += 1;
-    index[utf16] = codePoint;
+    utf16ToByte[utf16] = byte;
+    utf16ToCodePoint[utf16] = codePoint;
   }
-  for (let i = 1; i < index.length; i++) if (index[i] === 0 && i > 0) index[i] = index[i - 1]!;
-  return index;
+  const utf16ToGraphemeStart = new Array<number>(text.length + 1).fill(0);
+  const utf16ToGraphemeEnd = new Array<number>(text.length + 1).fill(0);
+  let grapheme = 0;
+  for (const row of GRAPHEME_SEGMENTER.segment(text)) {
+    const start = row.index;
+    const end = start + row.segment.length;
+    for (let position = start; position < end; position += 1) {
+      utf16ToGraphemeStart[position] = grapheme;
+      utf16ToGraphemeEnd[position] = position === start ? grapheme : grapheme + 1;
+    }
+    utf16ToGraphemeStart[end] = grapheme + 1;
+    utf16ToGraphemeEnd[end] = grapheme + 1;
+    grapheme += 1;
+  }
+  return { utf16ToByte, utf16ToCodePoint, utf16ToGraphemeStart, utf16ToGraphemeEnd };
 }
 
 function codePointAtUtf16(indexByUtf16: readonly number[], utf16: number): number {
@@ -245,25 +382,20 @@ function utf16AtCodePoint(text: string, codePoint: number): number {
   return text.length;
 }
 
-function codePointCandidates(text: string, indexByUtf16: readonly number[]): CandidateUnit[] {
+function graphemeCandidates(text: string, coordinates: SurfaceCoordinateIndex): CandidateUnit[] {
   const out: CandidateUnit[] = [];
-  let utf16 = 0;
-  let codePoint = 0;
-  for (const char of text) {
-    if (!/\s/u.test(char)) {
-      out.push({
-        kind: "code_point",
-        surface: char,
-        utf16Start: utf16,
-        utf16End: utf16 + char.length,
-        codePointStart: codePoint,
-        codePointEnd: codePoint + 1
-      });
-    }
-    utf16 += char.length;
-    codePoint += 1;
+  for (const row of GRAPHEME_SEGMENTER.segment(text)) {
+    const utf16Start = row.index;
+    const utf16End = row.index + row.segment.length;
+    out.push({
+      kind: "grapheme",
+      surface: row.segment,
+      utf16Start,
+      utf16End,
+      codePointStart: codePointAtUtf16(coordinates.utf16ToCodePoint, utf16Start),
+      codePointEnd: codePointAtUtf16(coordinates.utf16ToCodePoint, utf16End)
+    });
   }
-  void indexByUtf16;
   return out;
 }
 
@@ -289,6 +421,29 @@ function lexicalCandidates(segments: ReturnType<typeof segmentUnicodeSurfaceV2>[
     codePointStart: segment.codePointStart,
     codePointEnd: segment.codePointEnd
   }));
+}
+
+function phraseCandidates(
+  text: string,
+  segments: ReturnType<typeof segmentUnicodeSurfaceV2>["lexicalSegments"]
+): CandidateUnit[] {
+  const out: CandidateUnit[] = [];
+  const limit = Math.min(segments.length, 4096);
+  for (let start = 0; start < limit; start += 1) {
+    for (let width = 2; width <= 5 && start + width <= limit; width += 1) {
+      const first = segments[start]!;
+      const last = segments[start + width - 1]!;
+      out.push({
+        kind: "phrase_candidate",
+        surface: text.slice(first.utf16Start, last.utf16End),
+        utf16Start: first.utf16Start,
+        utf16End: last.utf16End,
+        codePointStart: first.codePointStart,
+        codePointEnd: last.codePointEnd
+      });
+    }
+  }
+  return out;
 }
 
 function regexSpanCandidates(
@@ -339,6 +494,58 @@ function quoteSpanCandidates(text: string, indexByUtf16: readonly number[]): Can
       }
       cursor = utf16End;
     }
+  }
+  return out;
+}
+
+function markupCandidates(text: string, indexByUtf16: readonly number[]): CandidateUnit[] {
+  return regexSpanCandidates(
+    text,
+    indexByUtf16,
+    "markup_structure",
+    /<!--[\s\S]*?-->|<\/?[A-Za-z][^>]{0,1024}>/gu
+  );
+}
+
+function tableCellCandidates(text: string, indexByUtf16: readonly number[]): CandidateUnit[] {
+  const out = regexSpanCandidates(
+    text,
+    indexByUtf16,
+    "table_cell",
+    /<(?:td|th)\b[^>]*>[\s\S]*?<\/(?:td|th)>/giu
+  );
+  let lineStart = 0;
+  for (const line of text.split(/(\r?\n)/u)) {
+    if (line === "\n" || line === "\r\n") {
+      lineStart += line.length;
+      continue;
+    }
+    const separators = [...line.matchAll(/[|\t]/gu)].map(match => match.index ?? 0);
+    if (separators.length === 0) {
+      lineStart += line.length;
+      continue;
+    }
+    const boundaries = [0, ...separators.map(index => index + 1), line.length];
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const rawStart = boundaries[index]!;
+      const rawEnd = index < separators.length ? separators[index]! : boundaries[index + 1]!;
+      const raw = line.slice(rawStart, rawEnd);
+      const leading = raw.search(/\S/u);
+      if (leading < 0) continue;
+      const trimmed = raw.trimEnd();
+      const utf16Start = lineStart + rawStart + leading;
+      const utf16End = lineStart + rawStart + trimmed.length;
+      if (utf16End <= utf16Start) continue;
+      out.push({
+        kind: "table_cell",
+        surface: text.slice(utf16Start, utf16End),
+        utf16Start,
+        utf16End,
+        codePointStart: codePointAtUtf16(indexByUtf16, utf16Start),
+        codePointEnd: codePointAtUtf16(indexByUtf16, utf16End)
+      });
+    }
+    lineStart += line.length;
   }
   return out;
 }
@@ -452,7 +659,9 @@ function contextSketch(
 
 function boundaryEvidenceAt(input: {
   text: string;
+  positionByte: number;
   positionCodePoint: number;
+  positionGrapheme: number;
   structuralBoundary: number;
   transitionEntropyByPosition: ReadonlyMap<number, number>;
   repeatedContextSupport: number;
@@ -477,7 +686,9 @@ function boundaryEvidenceAt(input: {
     + repeatedContextSupport * 0.06
   );
   return {
+    positionByte: input.positionByte,
     positionCodePoint: input.positionCodePoint,
+    positionGrapheme: input.positionGrapheme,
     bootstrapBoundaryProbability,
     features: {
       whitespaceAdjacent,
@@ -529,14 +740,41 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
     bucket.push(unit);
     byKind.set(unit.kind, bucket);
   }
+  const graphemes = [...(byKind.get("grapheme") ?? [])].sort(comparePersistedUnits);
+  for (let index = 0; index < graphemes.length - 1; index += 1) {
+    pushEdge(edges, hasher, graphemes[index]!.id, graphemes[index + 1]!.id, "sequence", 1);
+  }
+  const alternatives = units
+    .filter(unit => unit.overlapClass === "segmentation_alternative")
+    .sort(comparePersistedUnits);
+  for (let leftIndex = 0; leftIndex < alternatives.length && edges.length < maxEdges; leftIndex += 1) {
+    const left = alternatives[leftIndex]!;
+    for (let rightIndex = leftIndex + 1; rightIndex < alternatives.length && edges.length < maxEdges; rightIndex += 1) {
+      const right = alternatives[rightIndex]!;
+      if (right.codePointStart >= left.codePointEnd) break;
+      const nested = (left.codePointStart <= right.codePointStart && left.codePointEnd >= right.codePointEnd)
+        || (right.codePointStart <= left.codePointStart && right.codePointEnd >= left.codePointEnd);
+      if (!nested) pushEdge(edges, hasher, left.id, right.id, "licensed_overlap", 1);
+    }
+  }
   for (const [kind, items] of byKind) {
+    if (kind === "grapheme") continue;
     const sorted = [...items].sort((a, b) => a.codePointStart - b.codePointStart || a.codePointEnd - b.codePointEnd);
     for (let i = 0; i < sorted.length - 1 && edges.length < maxEdges; i++) {
       pushEdge(edges, hasher, sorted[i]!.id, sorted[i + 1]!.id, "sequence", kind === "lexical" ? 0.92 : 0.72);
     }
   }
   const lexical = units.filter(unit => unit.kind === "lexical");
-  const containers = units.filter(unit => unit.kind === "line" || unit.kind === "sentence_like" || unit.kind === "paragraph" || unit.kind === "repeated_sequence");
+  const containers = units.filter(unit =>
+    unit.kind === "line"
+    || unit.kind === "sentence_like"
+    || unit.kind === "paragraph"
+    || unit.kind === "repeated_sequence"
+    || unit.kind === "phrase_candidate"
+    || unit.kind === "quote"
+    || unit.kind === "markup_structure"
+    || unit.kind === "table_cell"
+  );
   for (const container of containers) {
     for (const unit of lexical) {
       if (edges.length >= maxEdges) break;
@@ -546,7 +784,7 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
     }
   }
   const recurring = new Map<string, SurfaceLatticeUnit[]>();
-  for (const unit of units.filter(item => item.recurrenceCount > 1 && item.kind !== "code_point")) {
+  for (const unit of units.filter(item => item.recurrenceCount > 1 && item.kind !== "grapheme")) {
     const bucket = recurring.get(`${unit.kind}\u0001${unit.normalized}`) ?? [];
     bucket.push(unit);
     recurring.set(`${unit.kind}\u0001${unit.normalized}`, bucket);
@@ -585,6 +823,19 @@ function normalizeSurface(surface: string): string {
   return surface.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim();
 }
 
+function overlapClassFor(kind: SurfaceLatticeUnitKind): SurfaceLatticeOverlapClass {
+  if (kind === "grapheme") return "base_partition";
+  if (kind === "line" || kind === "paragraph" || kind === "markup_structure" || kind === "table_cell") return "structure";
+  return "segmentation_alternative";
+}
+
+function comparePersistedUnits(left: SurfaceLatticeUnit, right: SurfaceLatticeUnit): number {
+  return left.utf16Start - right.utf16Start
+    || left.utf16End - right.utf16End
+    || unitKindRank(left.kind) - unitKindRank(right.kind)
+    || left.id.localeCompare(right.id);
+}
+
 function compareCandidateUnits(left: CandidateUnit, right: CandidateUnit): number {
   return left.codePointStart - right.codePointStart
     || left.codePointEnd - right.codePointEnd
@@ -598,12 +849,16 @@ function unitKindRank(kind: SurfaceLatticeUnitKind): number {
     "line",
     "sentence_like",
     "repeated_sequence",
+    "markup_structure",
+    "table_cell",
     "quote",
+    "date",
     "numeric",
     "code_symbol",
+    "phrase_candidate",
     "lexical",
     "surface_segment",
-    "code_point"
+    "grapheme"
   ].indexOf(kind);
 }
 

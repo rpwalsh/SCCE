@@ -1,7 +1,7 @@
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
-import { clamp01, createHasher, entropy, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
+import { clamp01, createHasher, entropy, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
-import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import { buildSurfaceLattice, canonicalSurfaceSequence, type SurfaceLattice } from "./surface-lattice.js";
 import type { SemanticRole } from "./semantic-graph.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
@@ -163,11 +163,21 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
     induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
       const corpusText = documents.map(doc => doc.text).join("\n");
-      const symbols = documents.flatMap(doc => symbolizeData(doc.text).map(symbol => ({ symbol, doc })));
-      const symbolStrings = symbols.map(item => item.symbol);
-      const lexicalStrings = documents.flatMap(doc =>
-        segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments.map(segment => segment.normalized)
+      const lattices = documents.map(doc => ({
+        doc,
+        lattice: buildSurfaceLattice({
+          documentId: doc.id,
+          text: doc.text,
+          sourceVersionId: doc.sourceVersionId,
+          evidenceIds: doc.evidenceIds,
+          hasher
+        })
+      }));
+      const symbols = lattices.flatMap(({ doc, lattice }) =>
+        canonicalSurfaceSequence(lattice).map(unit => ({ symbol: unit.surface, doc }))
       );
+      const symbolStrings = symbols.map(item => item.symbol);
+      const lexicalStrings = lattices.flatMap(({ lattice }) => lexicalSurfaceSequence(lattice));
       const order = clampOrder(input.order ?? 6);
       const counts = countNgrams(symbolStrings, order, vocabularyLimit);
       const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
@@ -205,6 +215,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           vocabularyLimit,
           sourceVersionIds: documents.map(doc => doc.sourceVersionId).filter(Boolean),
           evidenceIds: [...new Set(documents.flatMap(doc => doc.evidenceIds ?? []))],
+          surfaceLatticeSchema: "scce.surface_lattice.v2",
+          surfaceLatticeIds: lattices.map(({ lattice }) => lattice.id),
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)
         })
@@ -463,8 +475,8 @@ function graphemeUnits(value: string): string[] {
 function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], hasher: Hasher): SyntaxTemplate[] {
   const counts = new Map<string, { count: number; examples: string[]; nextShapes: Map<string, number> }>();
   for (const doc of documents) {
-    for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = segmentUnicodeSurfaceV2(sentence, hasher).lexicalSegments.map(segment => segment.normalized);
+    for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
+      const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.syntax.${sentenceIndex}`, hasher);
       if (symbols.length === 0) continue;
       const shape = symbols.slice(0, 32).map(symbolShape);
       for (let width = 2; width <= Math.min(8, shape.length); width++) {
@@ -499,9 +511,9 @@ function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], 
  * Distributional lexical-class induction (Part B step 4): words are
  * substitutable, and therefore belong to the same latent class, when they
  * are observed in the same left/right context slots (Harris's distributional
- * hypothesis). Deliberately built on `segmentUnicodeSurfaceV2()`'s real
- * word-level `lexicalSegments` rather than `symbolizeData()`. N-gram fluency
- * may legitimately retain symbol-level granularity, while lexical,
+ * hypothesis). Deliberately built on the canonical surface lattice's
+ * lexical hypotheses. N-gram fluency retains the lattice's canonical
+ * sequence, while lexical,
  * morphology, syntax, and semantic induction require the actual lexical unit
  * a script's speakers use, or every non-Latin "word" collapses to a single
  * grapheme and every class becomes a same-script character bag rather than a
@@ -520,7 +532,13 @@ function induceLexicalClasses(documents: readonly LanguageInductionDocument[], h
   const symbolContexts = new Map<string, Map<string, number>>();
 
   for (const doc of documents) {
-    const lexical = segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments;
+    const lexical = lexicalUnits(buildSurfaceLattice({
+      documentId: doc.id,
+      text: doc.text,
+      sourceVersionId: doc.sourceVersionId,
+      evidenceIds: doc.evidenceIds,
+      hasher
+    }));
     for (let i = 0; i < lexical.length; i++) {
       const symbol = lexical[i]!.normalized;
       if (!symbol) continue;
@@ -669,13 +687,12 @@ function induceSemanticFrames(documents: readonly LanguageInductionDocument[], h
   // varying arguments); a word locked into the same one or two immediate
   // contexts every time behaves like a fixed collocation, a modifier, or an
   // argument filler -- not a predicate.
-  const combinatorialDiversity = computeGlobalContextDiversity(documents);
+  const combinatorialDiversity = computeGlobalContextDiversity(documents, hasher);
   const frames = new Map<string, { predicate: string; left: Map<string, number>; right: Map<string, number>; examples: string[]; evidenceIds: Set<EvidenceId>; alpha: number }>();
   for (const doc of documents) {
     const trust = clamp01(doc.trust ?? 0.5);
-    for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = segmentUnicodeSurfaceV2(sentence, hasher).lexicalSegments
-        .map(segment => segment.normalized)
+    for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
+      const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.frame.${sentenceIndex}`, hasher)
         .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
       if (symbols.length < 2) continue;
       const predicate = selectFramePredicate(symbols, combinatorialDiversity);
@@ -828,7 +845,7 @@ function induceTranslationSeeds(documents: readonly LanguageInductionDocument[],
   const languageProfiles = [...byLanguage.entries()].map(([lang, docs]) => ({
     lang,
     symbols: frequency(docs.flatMap(doc =>
-      segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments.map(segment => segment.normalized)
+      lexicalSurfaceSymbols(doc.text, doc.id, hasher)
     )),
     features: featureSet(docs.map(doc => doc.text).join("\n"), 4096),
     evidenceIds: [...new Set(docs.flatMap(doc => doc.evidenceIds ?? []))]
@@ -939,16 +956,16 @@ function selectFramePredicate(symbols: readonly string[], combinatorialDiversity
  * requiring at least 3 real occurrences before reporting anything above
  * zero (avoids treating a single-occurrence word as maximally "diverse" by
  * accident). This is the real signal `selectFramePredicate` uses -- computed
- * once per `induceSemanticFrames` call, over the same `symbolizeData()`
- * stream frame induction already uses (kept consistent, not mixed with the
- * v2 word-level stream steps 4-6 use for a different purpose).
+ * once per `induceSemanticFrames` call, over the same canonical lattice
+ * lexical stream frame induction already uses.
  */
-function computeGlobalContextDiversity(documents: readonly LanguageInductionDocument[]): Map<string, number> {
+function computeGlobalContextDiversity(documents: readonly LanguageInductionDocument[], hasher: Hasher): Map<string, number> {
   const occurrences = new Map<string, number>();
   const contexts = new Map<string, Set<string>>();
   for (const doc of documents) {
-    for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = symbolizeData(sentence).filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
+    for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
+      const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.diversity.${sentenceIndex}`, hasher)
+        .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
       for (let i = 0; i < symbols.length; i++) {
         const symbol = symbols[i]!;
         const left = symbols[i - 1] ?? "<s>";
@@ -976,7 +993,7 @@ function computeGlobalContextDiversity(documents: readonly LanguageInductionDocu
   return diversity;
 }
 
-function sentenceSegments(text: string): string[] {
+function sentenceSegments(text: string, hasher: Hasher): string[] {
   const cleaned = text.replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) return [];
   const out: string[] = [];
@@ -1003,10 +1020,24 @@ function sentenceSegments(text: string): string[] {
   const tail = cleaned.slice(start).trim();
   if (tail) out.push(tail);
   if (out.length) return out;
-  const symbols = segmentUnicodeSurfaceV2(cleaned).lexicalSegments.map(segment => segment.surface);
+  const symbols = lexicalSurfaceSymbols(cleaned, `sentence_fallback.${hasher.digestHex(cleaned).slice(0, 24)}`, hasher);
   const chunks: string[] = [];
   for (let i = 0; i < symbols.length; i += 40) chunks.push(symbols.slice(i, i + 40).join(" "));
   return chunks;
+}
+
+function lexicalUnits(lattice: SurfaceLattice) {
+  return lattice.units
+    .filter(unit => unit.kind === "lexical")
+    .sort((left, right) => left.utf16Start - right.utf16Start || left.utf16End - right.utf16End);
+}
+
+function lexicalSurfaceSequence(lattice: SurfaceLattice): string[] {
+  return lexicalUnits(lattice).map(unit => unit.normalized);
+}
+
+function lexicalSurfaceSymbols(text: string, documentId: string, hasher: Hasher): string[] {
+  return lexicalSurfaceSequence(buildSurfaceLattice({ documentId, text, hasher }));
 }
 
 function symbolShape(symbol: string): string {
