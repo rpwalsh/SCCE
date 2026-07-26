@@ -31,6 +31,12 @@ import {
   compileCrossDocumentAlignmentModel,
   type CrossDocumentAlignmentModel
 } from "./cross-document-alignment.js";
+import {
+  compileAlignmentAlternativeSet,
+  alignmentAlternativeSeriesId,
+  extractAlignmentAlternatives,
+  type AlignmentAlternativeSet
+} from "./alignment-alternatives.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -74,6 +80,7 @@ export interface LanguageTrainingBatch {
   additionalPatterns?: readonly LanguagePatternRecord[];
   graphSnapshot?: GraphSnapshot;
   maxAlignmentCandidateDegree?: number;
+  alignmentAlternativePredecessorSets?: readonly AlignmentAlternativeSet[];
 }
 
 export interface LanguageTrainingConstructionPromotionPolicy {
@@ -121,6 +128,8 @@ export interface CompiledLanguageTrainingBatch {
   crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
   sparseTransportPlans: SparseFusedTransportPlan[];
   transportEvidenceAllocations: TransportEvidenceAllocation[];
+  alignmentAlternativeSets: AlignmentAlternativeSet[];
+  alternativeTransportEvidenceAllocations: TransportEvidenceAllocation[];
   constructionCandidates: number;
   rejectedConstructionCandidates: number;
   constructionPromotion: LanguageTrainingConstructionPromotionReport;
@@ -213,12 +222,49 @@ export function compileLanguageTrainingBatch(input: {
         hasher: input.hasher
       }))
     : [];
-  const transportEvidenceAllocations = sparseTransportPlans.map((plan, index) =>
-    allocateTransportEvidence({
-      plan,
-      support: sparseAlignmentCandidateSupports[index]!,
-      hasher: input.hasher
-    }));
+  const retainedAlternatives = sparseAlignment
+    ? sparseTransportPlans.map((plan, index) => {
+      const support = sparseAlignmentCandidateSupports[index]!;
+      const extracted = extractAlignmentAlternatives({
+        basePlan: plan,
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        typedNullCostModel: typedNullCostModel!,
+        populationOrderingModel: populationOrderingModel!,
+        crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
+        hasher: input.hasher
+      });
+      const evidenceAllocations = extracted.plans.map(alternativePlan =>
+        allocateTransportEvidence({
+          plan: alternativePlan,
+          support,
+          hasher: input.hasher
+        }));
+      return {
+        evidenceAllocations,
+        set: compileAlignmentAlternativeSet({
+          seriesId: alignmentAlternativeSeriesId({
+            support,
+            targetIndex: sparseAlignment.targetIndex,
+            hasher: input.hasher
+          }),
+          plans: extracted.plans,
+          evidenceAllocations,
+          predecessorSets: batch.alignmentAlternativePredecessorSets,
+          omittedSearchBranchCount: extracted.omittedSearchBranchCount,
+          hasher: input.hasher
+        })
+      };
+    })
+    : [];
+  const alignmentAlternativeSets = retainedAlternatives.map(item => item.set);
+  const transportEvidenceAllocations = retainedAlternatives.map((item, index) =>
+    item.evidenceAllocations.find(allocation =>
+      allocation.transportPlanId === sparseTransportPlans[index]!.id)!);
+  const alternativeTransportEvidenceAllocations = retainedAlternatives.flatMap(
+    (item, index) => item.evidenceAllocations.filter(allocation =>
+      allocation.transportPlanId !== sparseTransportPlans[index]!.id)
+  );
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -280,6 +326,8 @@ export function compileLanguageTrainingBatch(input: {
     crossDocumentAlignmentModel,
     sparseTransportPlans,
     transportEvidenceAllocations,
+    alignmentAlternativeSets,
+    alternativeTransportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
     rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
     constructionPromotion: promotion.report,
@@ -348,6 +396,14 @@ export function compileLanguageTrainingBatch(input: {
           finalObjective: plan.iterations.at(-1)?.objective ?? null,
           audit: plan.audit
         })),
+        alignmentAlternativeSets: alignmentAlternativeSets.map(set => ({
+          id: set.id,
+          hypothesisCount: set.hypotheses.length,
+          posteriorScope: set.posteriorScope,
+          exactGlobalPosteriorClaimed: set.exactGlobalPosteriorClaimed,
+          omittedSearchBranchCount: set.omittedSearchBranchCount,
+          audit: set.audit
+        })),
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
           id: allocation.id,
           status: allocation.status,
@@ -356,7 +412,9 @@ export function compileLanguageTrainingBatch(input: {
           conservationResidual: allocation.conservationResidual,
           unresolvedCandidateCount: allocation.unresolvedCandidateIds.length,
           audit: allocation.audit
-        }))
+        })),
+        alternativeEvidenceAllocationCount:
+          alternativeTransportEvidenceAllocations.length
       },
       compiledConstructions: constructionPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()

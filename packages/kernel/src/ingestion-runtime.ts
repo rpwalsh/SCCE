@@ -49,6 +49,12 @@ import { solveSparseFusedUnbalancedTransport } from "./sparse-fused-transport.js
 import { compileTypedNullCostModel } from "./typed-null-alignment.js";
 import { compilePopulationOrderingModel } from "./population-ordering.js";
 import { compileCrossDocumentAlignmentModel } from "./cross-document-alignment.js";
+import {
+  compileAlignmentAlternativeSet,
+  alignmentAlternativeSeriesId,
+  alignmentAlternativeSetsFromEventPayloads,
+  extractAlignmentAlternatives
+} from "./alignment-alternatives.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -518,6 +524,15 @@ export function createIngestionRuntime(options: {
         const typedNullCostModelIds = new Set<string>();
         const populationOrderingModelIds = new Set<string>();
         const crossDocumentAlignmentModelIds = new Set<string>();
+        const alignmentAlternativeSetIds: string[] = [];
+        const alignmentAlternativeSets:
+          ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
+        const historicalAlignmentPayloads = (await deps.storage.events.readRange({
+          typeId: "SparseAlignmentCandidatesCompiled",
+          limit: 1_024
+        })).map(event => event.payload);
+        let retainedAlignmentHypothesisCount = 0;
+        let omittedAlignmentSearchBranchCount = 0;
         let surfaceNullMass = 0;
         let graphImplicitMass = 0;
         const alignmentSupports:
@@ -598,11 +613,46 @@ export function createIngestionRuntime(options: {
             (sum, column) => sum + column.graphImplicitMass,
             0
           );
-          const allocation = allocateTransportEvidence({
-            plan: transport,
+          const extractedAlternatives = extractAlignmentAlternatives({
+            basePlan: transport,
             support,
+            targetIndex: alignmentTargetIndex,
+            typedNullCostModel,
+            populationOrderingModel,
+            crossDocumentAlignmentModel,
             hasher
           });
+          const alternativeAllocations = extractedAlternatives.plans.map(plan =>
+            allocateTransportEvidence({
+              plan,
+              support,
+              hasher
+            }));
+          const seriesId = alignmentAlternativeSeriesId({
+            support,
+            targetIndex: alignmentTargetIndex,
+            hasher
+          });
+          const alternativeSet = compileAlignmentAlternativeSet({
+            seriesId,
+            plans: extractedAlternatives.plans,
+            evidenceAllocations: alternativeAllocations,
+            predecessorSets: [
+              ...alignmentAlternativeSetsFromEventPayloads(
+                historicalAlignmentPayloads,
+                seriesId
+              ),
+              ...alignmentAlternativeSets.filter(set => set.seriesId === seriesId)
+            ],
+            omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
+            hasher
+          });
+          alignmentAlternativeSetIds.push(alternativeSet.id);
+          alignmentAlternativeSets.push(alternativeSet);
+          retainedAlignmentHypothesisCount += alternativeSet.hypotheses.length;
+          omittedAlignmentSearchBranchCount += alternativeSet.omittedSearchBranchCount;
+          const allocation = alternativeAllocations.find(item =>
+            item.transportPlanId === transport.id)!;
           transportEvidenceAllocationIds.push(allocation.id);
           unresolvedTransportEvidenceCount += allocation.unresolvedCandidateIds.length;
           unresolvedTransportEvidenceAllocationCount +=
@@ -657,6 +707,12 @@ export function createIngestionRuntime(options: {
             populationOrderingModelIds: [...populationOrderingModelIds].sort(),
             crossDocumentAlignmentModelIds:
               [...crossDocumentAlignmentModelIds].sort(),
+            alignmentAlternativeSetIds,
+            alignmentAlternativeSets,
+            retainedAlignmentHypothesisCount,
+            omittedAlignmentSearchBranchCount,
+            alignmentPosteriorScope: "retained_candidate_set_only",
+            exactGlobalAlignmentPosteriorClaimed: false,
             surfaceNullMass,
             graphImplicitMass,
             transportSolver: "scce.sparse_fused_unbalanced_transport.v1",

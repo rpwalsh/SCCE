@@ -97,6 +97,8 @@ answer lane.
   estimates learned from exact anchors and consumed by sparse transport.
 - `cross-document-alignment.ts`: common graph-port projections and source-family-
   aware cross-document correction for two-pass sparse transport.
+- `alignment-alternatives.ts`: bounded retained sparse plans, restricted Gibbs
+  weights, evidence-allocation identities and revision lineage.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

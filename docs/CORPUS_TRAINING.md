@@ -213,6 +213,15 @@ by declared dependency family before pairwise comparison, and
 costs to the final sparse plans. Surface-form classes remain attached as provenance,
 allowing paraphrases to reinforce the same graph region without identical text.
 
+Every final plan then enters the item-22 retained-alternative compiler. The
+compiler keeps the base plan and a bounded set of deterministic non-anchor branch
+resolves, attaches conserved evidence-allocation identities and stores immutable
+predecessor lineage. Its Gibbs weights normalize only across the retained set;
+they are not represented as global posterior probability or calibrated confidence.
+Ordinary ingestion, Wikipedia ingestion and explicit training persist the same
+versioned artifact. Runtime ingestion hydrates earlier sets by stable source-family
+and canonical graph-port series identity before writing the next revision.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

@@ -106,6 +106,9 @@ validation so credentials need not be committed.
 - `cross-document-alignment.ts`: canonical typed graph-port projections, dependency
   family collapse, independent-family consistency distances, and second-pass sparse
   correction costs.
+- `alignment-alternatives.ts`: bounded non-anchor branch extraction, immutable
+  alternative-plan revisions, evidence-allocation references and restricted-set
+  Gibbs weights without a global-posterior claim.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity
