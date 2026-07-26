@@ -111,10 +111,19 @@ export interface SparseScoreContribution {
   contribution: number;
 }
 
+export interface FtrlPlattCalibration {
+  method: "platt";
+  calibrationId: string;
+  slope: number;
+  intercept: number;
+}
+
 export interface SparseRankerScore {
   rawScore: number;
   probability: number;
-  reliability: "uncalibrated";
+  reliability: "uncalibrated" | "calibrated";
+  /** Present only when `reliability` is "calibrated" -- identifies which fitted calibration produced `probability`. */
+  calibrationId?: string;
   contributions: SparseScoreContribution[];
 }
 
@@ -245,6 +254,8 @@ export function createFtrlProximalRanker(options: {
   clock?: Clock;
   hyperparameters?: Partial<FtrlHyperparameters>;
   state?: FtrlProximalRankerState;
+  /** Optional fitted Platt calibration (Part A finding 9, stage 6's calibration follow-up). Absent means score().probability stays the raw uncalibrated sigmoid -- never silently approximated. */
+  calibration?: FtrlPlattCalibration;
 }): FtrlProximalRanker {
   const clock = options.clock ?? createClock();
   const state = options.state
@@ -281,12 +292,20 @@ export function createFtrlProximalRanker(options: {
       };
     }).filter(entry => entry.contribution !== 0);
     const rawScore = contributions.reduce((sum, entry) => sum + entry.contribution, 0);
-    return {
-      rawScore,
-      probability: sigmoid(rawScore),
-      reliability: "uncalibrated",
-      contributions
-    };
+    return options.calibration
+      ? {
+        rawScore,
+        probability: sigmoid(options.calibration.slope * rawScore + options.calibration.intercept),
+        reliability: "calibrated",
+        calibrationId: options.calibration.calibrationId,
+        contributions
+      }
+      : {
+        rawScore,
+        probability: sigmoid(rawScore),
+        reliability: "uncalibrated",
+        contributions
+      };
   };
 
   const applyGradient = (features: SparseVector, multiplier: number): void => {

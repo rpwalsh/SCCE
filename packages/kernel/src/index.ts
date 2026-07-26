@@ -15,6 +15,7 @@ export * from "./sparse-ranking.js";
 export * from "./sparse-ranking-labels.js";
 export * from "./sparse-ranking-outcome.js";
 export * from "./sparse-ranking-comparison-log.js";
+export * from "./sparse-ranking-calibration.js";
 export * from "./benchmarks.js";
 export * from "./evidence.js";
 export * from "./evidence-mass.js";
