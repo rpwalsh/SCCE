@@ -88,7 +88,12 @@ import {
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
 import { formatSurfaceMessage, localeFromMetadata } from "./localization.js";
-import { createDeterministicMouth, createMouth, type SpokenOutput } from "./mouth.js";
+import {
+  createDeterministicMouth,
+  createMouth,
+  type MouthSemanticInput,
+  type SpokenOutput
+} from "./mouth.js";
 import { createMultilingualAcquisitionEngine } from "./multilingual-acquisition.js";
 import {
   createTypedTemporalWalkEngine,
@@ -1810,7 +1815,11 @@ export function createProductionTurnRuntime(options: {
               sourceId: judged.selected.proposalId
             }]
           }
-          : undefined
+          : typedSemanticInputForMouth({
+            construct: spokenConstructGraph,
+            graph,
+            authority: requestedAuthority
+          })
       };
       const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", 750);
       let spoken = await evaluationComponent(
@@ -2417,4 +2426,89 @@ async function dispatchBuildTestThroughExecutive(input: {
 function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {
   if (value) return value;
   throw new Error(`hydrated runtime unavailable: required learned surface language for ${context}`);
+}
+
+export function typedSemanticInputForMouth(input: {
+  construct: ConstructGraph;
+  graph: GraphSnapshot;
+  authority: MouthSemanticInput["authority"];
+}): MouthSemanticInput | undefined {
+  const nodes = (input.construct as unknown as {
+    nodes?: Array<{ kind?: string; metadata?: JsonValue }>;
+  }).nodes ?? [];
+  const selectedFacts = nodes.flatMap(node => {
+    if (node.kind !== "construct:semantic_answer") return [];
+    const value = jsonRecord(node.metadata ?? {});
+    return Array.isArray(value.selectedFacts)
+      ? value.selectedFacts.map(jsonRecord)
+      : [];
+  });
+  if (selectedFacts.length !== 1) return undefined;
+  const fact = selectedFacts[0]!;
+  const sourceNodeId = kernelString(fact.sourceNodeId);
+  const targetNodeId = kernelString(fact.targetNodeId);
+  const relationId = kernelString(fact.relationId);
+  const subject = kernelString(fact.subject);
+  const object = kernelString(fact.object);
+  if (!sourceNodeId || !targetNodeId || !relationId || !subject || !object) {
+    return undefined;
+  }
+  const matching = input.graph.hyperedges.filter(hyperedge =>
+    String(hyperedge.relationId) === relationId
+    && hyperedge.participantPorts.some(port =>
+      String(port.nodeId ?? "") === sourceNodeId)
+    && hyperedge.participantPorts.some(port =>
+      String(port.nodeId ?? "") === targetNodeId));
+  if (matching.length !== 1) return undefined;
+  const hyperedge = matching[0]!;
+  const sourcePorts = hyperedge.participantPorts.filter(port =>
+    String(port.nodeId ?? "") === sourceNodeId
+    && port.realization === "observed"
+    && Boolean(port.roleId));
+  const targetPorts = hyperedge.participantPorts.filter(port =>
+    String(port.nodeId ?? "") === targetNodeId
+    && port.realization === "observed"
+    && Boolean(port.roleId));
+  if (sourcePorts.length !== 1 || targetPorts.length !== 1) return undefined;
+  const sourcePort = sourcePorts[0]!;
+  const targetPort = targetPorts[0]!;
+  const factEvidenceIds = Array.isArray(fact.evidenceIds)
+    ? fact.evidenceIds
+    : [];
+  const evidenceIds = uniqueKernelStrings([
+    ...factEvidenceIds.flatMap(value =>
+      typeof value === "string" ? [value] : []),
+    ...hyperedge.evidenceIds.map(String)
+  ]);
+  const sourceSlotId = `mouth.slot.graph.${sourceNodeId}.source`;
+  const targetSlotId = `mouth.slot.graph.${targetNodeId}.target`;
+  return {
+    schema: "scce.mouth.semantic_input.v1",
+    authority: input.authority,
+    slots: [
+      {
+        id: sourceSlotId,
+        roleId: String(sourcePort.roleId),
+        value: subject,
+        evidenceIds: evidenceIds as MouthSemanticInput["slots"][number]["evidenceIds"],
+        sourceId: sourceNodeId
+      },
+      {
+        id: targetSlotId,
+        roleId: String(targetPort.roleId),
+        value: object,
+        evidenceIds: evidenceIds as MouthSemanticInput["slots"][number]["evidenceIds"],
+        sourceId: targetNodeId
+      }
+    ],
+    relations: [{
+      id: `mouth.relation.graph.${hyperedge.id}`,
+      relationId,
+      sourceSlotId,
+      targetSlotId,
+      evidenceIds: evidenceIds as NonNullable<
+        MouthSemanticInput["relations"]
+      >[number]["evidenceIds"]
+    }]
+  };
 }

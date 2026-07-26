@@ -30,6 +30,8 @@ import {
   compileAutomaticAlignmentEvaluation,
   compileReversibleConstructionPattern,
   compileReversibleConstructions,
+  compilePairedAntiUnifiedConstructions,
+  compilePairedAntiUnifiedPatterns,
   reversibleConstructionCreationSnapshotId,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
@@ -1186,12 +1188,35 @@ export class WikipediaV3Ingestor {
           ...compileReversibleConstructionPattern(construction),
           informationLabel: WIKIPEDIA_INFORMATION_LABEL
         }));
+      const pairedAntiUnifiedCompilation =
+        compilePairedAntiUnifiedConstructions({
+          constructions: reversibleConstructionCompilation.constructions,
+          createdAt,
+          creationSnapshotId: `paired_anti_unification_snapshot.${
+            this.hasher.digestHex(reversibleConstructionCompilation.constructions
+              .map(construction => construction.id).sort()
+              .join("\u001f")).slice(0, 40)
+          }`,
+          hasher: this.hasher
+        });
+      const pairedAntiUnifiedPatterns =
+        pairedAntiUnifiedCompilation.constructions.flatMap(construction =>
+          compilePairedAntiUnifiedPatterns(construction).map(pattern => ({
+            ...pattern,
+            informationLabel: WIKIPEDIA_INFORMATION_LABEL
+          })));
       if (this.storage.languageMemory.putLanguagePatterns) {
         await this.storage.languageMemory.putLanguagePatterns(
-          reversibleConstructionPatterns
+          [
+            ...reversibleConstructionPatterns,
+            ...pairedAntiUnifiedPatterns
+          ]
         );
       } else {
-        for (const pattern of reversibleConstructionPatterns) {
+        for (const pattern of [
+          ...reversibleConstructionPatterns,
+          ...pairedAntiUnifiedPatterns
+        ]) {
           await this.storage.languageMemory.putLanguagePattern(pattern);
         }
       }
@@ -1255,6 +1280,10 @@ export class WikipediaV3Ingestor {
             reversibleConstructionCompilation.constructions,
           reversibleConstructionRejections:
             reversibleConstructionCompilation.rejections,
+          pairedAntiUnifiedConstructions:
+            pairedAntiUnifiedCompilation.constructions,
+          pairedAntiUnifiedConstructionRejections:
+            pairedAntiUnifiedCompilation.rejections,
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
           alignmentPosteriorScope: "retained_candidate_set_only",

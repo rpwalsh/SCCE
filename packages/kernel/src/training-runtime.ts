@@ -122,6 +122,8 @@ export function createTrainingRuntime(options: {
     let promotedAlignmentPlans = 0;
     let reversibleConstructions = 0;
     let reversibleConstructionRejections = 0;
+    let pairedAntiUnifiedConstructions = 0;
+    let pairedAntiUnifiedConstructionRejections = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -216,6 +218,10 @@ export function createTrainingRuntime(options: {
       reversibleConstructions += memory.reversibleConstructions.length;
       reversibleConstructionRejections +=
         memory.reversibleConstructionRejections.length;
+      pairedAntiUnifiedConstructions +=
+        memory.pairedAntiUnifiedConstructions.length;
+      pairedAntiUnifiedConstructionRejections +=
+        memory.pairedAntiUnifiedConstructionRejections.length;
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -261,6 +267,8 @@ export function createTrainingRuntime(options: {
         promotedAlignmentPlans,
         reversibleConstructions,
         reversibleConstructionRejections,
+        pairedAntiUnifiedConstructions,
+        pairedAntiUnifiedConstructionRejections,
         surfaceNullMass,
         graphImplicitMass
       })

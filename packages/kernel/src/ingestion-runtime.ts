@@ -68,6 +68,10 @@ import {
   reversibleConstructionCreationSnapshotId,
   reversibleConstructionProfileId
 } from "./reversible-construction.js";
+import {
+  compilePairedAntiUnifiedConstructions,
+  compilePairedAntiUnifiedPatterns
+} from "./paired-anti-unification.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -754,8 +758,26 @@ export function createIngestionRuntime(options: {
           reversibleConstructionCompilation.constructions.map(
             compileReversibleConstructionPattern
           );
+        const pairedAntiUnifiedCompilation =
+          compilePairedAntiUnifiedConstructions({
+            constructions: reversibleConstructionCompilation.constructions,
+            createdAt: clock.now(),
+            creationSnapshotId: `paired_anti_unification_snapshot.${
+              hasher.digestHex(reversibleConstructionCompilation.constructions
+                .map(construction => construction.id).sort()
+                .join("\u001f")).slice(0, 40)
+            }`,
+            hasher
+          });
+        const pairedAntiUnifiedPatterns =
+          pairedAntiUnifiedCompilation.constructions.flatMap(
+            compilePairedAntiUnifiedPatterns
+          );
         const labeledReversiblePatterns = labelRecords(
-          reversibleConstructionPatterns,
+          [
+            ...reversibleConstructionPatterns,
+            ...pairedAntiUnifiedPatterns
+          ],
           informationLabel
         );
         if (deps.storage.languageMemory.putLanguagePatterns) {
@@ -828,6 +850,10 @@ export function createIngestionRuntime(options: {
               reversibleConstructionCompilation.constructions,
             reversibleConstructionRejections:
               reversibleConstructionCompilation.rejections,
+            pairedAntiUnifiedConstructions:
+              pairedAntiUnifiedCompilation.constructions,
+            pairedAntiUnifiedConstructionRejections:
+              pairedAntiUnifiedCompilation.rejections,
             retainedAlignmentHypothesisCount,
             omittedAlignmentSearchBranchCount,
             alignmentPosteriorScope: "retained_candidate_set_only",

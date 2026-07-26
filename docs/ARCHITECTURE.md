@@ -125,6 +125,9 @@ validation so credentials need not be committed.
   \((H_r,\partial H_r)\Longleftrightarrow(P_r,\partial P_r)\) schema, exact
   interpretation/realization cycle, durable language-memory projection and
   creation-snapshot identity.
+- `paired-anti-unification.ts`: source-family-independent least-general
+  graph/surface generalization, graph-correlated localized variables,
+  profile-specific persistence wrappers and typed bidirectional execution.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

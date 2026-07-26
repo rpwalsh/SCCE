@@ -112,6 +112,9 @@ answer lane.
 - `reversible-construction.ts`: promoted typed graph ports, coordinate-bearing
   surface slots and one source-exact program with executable interpretation and
   realization, persistence, hydration and cycle checking.
+- `paired-anti-unification.ts`: Item-27 paired least-general generalization over
+  promoted exact constructions, with localized graph-correlated surface variables,
+  executable typed bindings, persistence and hydration.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

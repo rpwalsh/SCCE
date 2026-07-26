@@ -257,8 +257,15 @@ snapshot. Interpretation and realization execute from the same record, and an
 exact graph→surface→graph cycle must recover both sides. Compiled artifacts are
 stored as language-memory patterns, restored during hydration and exposed to
 Mouth only when active participant nodes and promoted direct evidence match.
-Generalization to unseen bindings is deliberately deferred to paired
-anti-unification.
+Item 27 then groups those promoted exact artifacts only across independent source
+families with the same reusable relation/port/role/value/realization structure.
+`scce.paired_anti_unified_construction.v1` retains common literals and replaces a
+slot with a variable only when its surface and bound graph target both vary.
+Surface-only variation and adjacent variables without an observed boundary are
+rejected. The bidirectional artifact is persisted once per observed profile and
+hydrated as one deduplicated construction. Mouth supplies unseen bindings only
+from unique typed semantic-role matches and uses the current fact's promoted
+evidence.
 
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,

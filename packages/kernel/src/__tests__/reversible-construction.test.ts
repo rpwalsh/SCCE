@@ -182,6 +182,7 @@ function target(id: string, portId: string, roleId: string) {
   return {
     id,
     kind: "incidence",
+    relationId: "relation.writes",
     relationNodeId: "relation.1",
     hyperedgeId: "hyperedge.1",
     incidenceId: `incidence.${id}`,
@@ -206,6 +207,7 @@ function candidate(
     surfaceFormClassId: unit.surfaceFormClassId,
     graphTargetId,
     graphTargetKind: "incidence",
+    graphOrderKey: `order.${graphTargetId}`,
     supportKinds: ["exact_observable_anchor"],
     score: 1,
     surfaceEvidenceIds: ["evidence.1"],

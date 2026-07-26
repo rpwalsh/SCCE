@@ -92,6 +92,10 @@ import {
   type JoinRenderContext
 } from "./join-program.js";
 import { realizeReversibleConstruction } from "./reversible-construction.js";
+import {
+  realizeAntiUnifiedConstruction,
+  type AntiUnifiedBinding
+} from "./paired-anti-unification.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
   sourceQuote: "rel.1f7c4a92",
@@ -584,6 +588,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           discoursePlan,
           constructionHasher
         );
+      const antiUnifiedConstructionCandidate = structuralCreativeBound
+        ? undefined
+        : semanticAntiUnifiedConstructionCandidate(
+          input,
+          plan,
+          discoursePlan,
+          constructionHasher
+        );
       const constructAnchored = structuralCreativeBound || nonEventCreativeMouthHandoff
         ? undefined
         : constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
@@ -614,6 +626,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(semanticSourceCandidate && semanticSourceCandidate.id !== kernelSelectedCandidate?.id ? [semanticSourceCandidate] : []),
         ...(reversibleConstructionCandidate
           ? [reversibleConstructionCandidate]
+          : []),
+        ...(antiUnifiedConstructionCandidate
+          ? [antiUnifiedConstructionCandidate]
           : []),
         ...(learnedConstructionCandidate ? [learnedConstructionCandidate] : []),
         ...(constructAnchored ? [constructAnchored] : []),
@@ -1980,6 +1995,135 @@ function semanticReversibleConstructionCandidate(
           promotionModelId: construction.promotionModelId,
           creationSnapshotId: construction.creationSnapshot.id,
           sourceExact: true
+        })
+      }];
+    });
+  return rows.sort((left, right) =>
+    right.fit - left.fit
+    || compareSurfaceText(left.id, right.id))[0];
+}
+
+function semanticAntiUnifiedConstructionCandidate(
+  input: SpeakInput,
+  plan: SurfacePlan,
+  discoursePlan: DiscoursePlan,
+  hasher: Hasher
+): SurfaceCandidate | undefined {
+  const state = semanticAnswerConstructState(input.construct);
+  if (!state?.certificationBoundary.externalFactCertification
+    || state.forceId !== "output.force.source_bound_answer"
+    || state.boundaryId !== "output.force.source_bound"
+    || plan.targetLanguage !== input.languageProfile.id) return undefined;
+  const facts = uniquePriorBoundFacts(state.selectedFacts);
+  if (facts.length !== 1 || state.selectedFacts.length !== 1) return undefined;
+  const fact = facts[0]!;
+  if (!completeLearnedFactCoverage(state, fact)
+    || !learnedFactRouteAdmissible(fact)
+    || !fact.sourceVersionId
+    || !fact.evidenceIds?.length
+    || input.semanticInput?.authority !== "factual") return undefined;
+  const relations = (input.semanticInput.relations ?? []).filter(relation =>
+    relation.relationId === fact.relationId);
+  if (relations.length !== 1) return undefined;
+  const relation = relations[0]!;
+  const connectedSlots = input.semanticInput.slots.filter(slot =>
+    slot.id === relation.sourceSlotId || slot.id === relation.targetSlotId);
+  const certifiedEvidenceIds = new Set(
+    state.certificationBoundary.evidenceSpanIds
+  );
+  const certifiedSourceVersionIds = new Set(
+    state.certificationBoundary.sourceVersionIds
+  );
+  const factEvidenceIds = new Set(fact.evidenceIds);
+  const proofEvidenceIds = input.evidence
+    .filter(span => span.status === "promoted"
+      && jsonRecord(span.trustVector).forceClass === "direct_evidence"
+      && certifiedEvidenceIds.has(String(span.id))
+      && factEvidenceIds.has(String(span.id))
+      && fact.sourceVersionId === String(span.sourceVersionId)
+      && certifiedSourceVersionIds.has(String(span.sourceVersionId)))
+    .map(span => String(span.id))
+    .sort(compareSurfaceText);
+  if (!proofEvidenceIds.length) return undefined;
+
+  const rows = (input.languageMemory.importedPairedAntiUnifiedConstructions ?? [])
+    .filter(construction =>
+      construction.profileIds.includes(input.languageProfile.id))
+    .flatMap(construction => {
+      const bindings: AntiUnifiedBinding[] = [];
+      for (const variable of construction.graphVariables) {
+        if (variable.relationId !== relation.relationId) return [];
+        if (variable.kind === "relation") {
+          if (!fact.predicate) return [];
+          bindings.push({
+            graphVariableId: variable.id,
+            graphTargetId: fact.relationId,
+            relationId: variable.relationId,
+            ...(variable.valueKind ? { valueKind: variable.valueKind } : {}),
+            surface: fact.predicate,
+            evidenceIds: proofEvidenceIds
+          });
+          continue;
+        }
+        const matches = connectedSlots.filter(slot =>
+          Boolean(variable.roleId) && slot.roleId === variable.roleId);
+        if (matches.length !== 1) return [];
+        const slot = matches[0]!;
+        const surface = admittedSemanticSlotSurface(
+          input,
+          slot.roleId,
+          slot.value
+        );
+        if (!surface) return [];
+        const participantNodeId = slot.id === relation.sourceSlotId
+          ? fact.sourceNodeId
+          : fact.targetNodeId;
+        bindings.push({
+          graphVariableId: variable.id,
+          graphTargetId: participantNodeId,
+          relationId: variable.relationId,
+          participantNodeId,
+          ...(variable.valueKind ? { valueKind: variable.valueKind } : {}),
+          surface,
+          evidenceIds: proofEvidenceIds
+        });
+      }
+      const realized = realizeAntiUnifiedConstruction({
+        construction,
+        bindings
+      });
+      if (realized.status !== "realized"
+        || !exactSurfaceSatisfiesPlan(realized.text, input, plan)
+        || !learnedProfileAcceptsSurface(
+          input.languageProfile,
+          realized.text
+        )) return [];
+      return [{
+        id: `candidate:generated:paired-anti-unified-construction:${
+          hasher.digestHex(construction.id).slice(0, 20)
+        }`,
+        style: "surface.path.generated.paired_anti_unified_construction",
+        path: "generated" as const,
+        text: realized.text,
+        evidenceIds: proofEvidenceIds as EvidenceId[],
+        fit: clamp01(Math.min(
+          construction.support.minimumHeldoutCoverage,
+          construction.support.minimumCycleRecall
+        )),
+        importedPieceIds: [],
+        discoursePlan,
+        boundaryDecisions: [],
+        exactSurface: true,
+        audit: toJsonValue({
+          schema: "scce.mouth.paired_anti_unified_candidate.v1",
+          constructionId: construction.id,
+          sourceConstructionIds: construction.sourceConstructionIds,
+          graphTargetIds: realized.graphTargetIds,
+          graphVariableIds: realized.bindings.map(binding =>
+            binding.graphVariableId),
+          proofEvidenceIds,
+          typedSemanticBindingsOnly: true,
+          positionalSurfaceGuessing: false
         })
       }];
     });

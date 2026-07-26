@@ -72,6 +72,7 @@ export * from "./alignment-calibration.js";
 export * from "./alignment-promotion.js";
 export * from "./alignment-heldout-evaluation.js";
 export * from "./reversible-construction.js";
+export * from "./paired-anti-unification.js";
 export * from "./sparse-fused-transport.js";
 export * from "./transport-evidence-allocation.js";
 export * from "./language-training-batch.js";
