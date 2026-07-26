@@ -74,6 +74,9 @@ import {
   type SparseRankingCheckpoint,
   type SparseRankingModelLifecycle,
   type SparseRankingModelStore,
+  type SparseRankingComparisonExample,
+  type SparseRankingComparisonLogStore,
+  type PairwiseLabelSource,
   foldSegmentationAggregate,
   type SegmentationAggregate,
   type SegmentationAggregateKey,
@@ -148,6 +151,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly dialogueMemory: DialogueMemoryStore;
   readonly policyEvolution: PolicyEvolutionStore;
   readonly sparseRanking: SparseRankingModelStore;
+  readonly sparseRankingComparisons: SparseRankingComparisonLogStore;
   readonly segmentationAggregates: SegmentationAggregateStore;
   readonly inducedLanguageModels: InducedLanguageModelStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
@@ -183,6 +187,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.dialogueMemory = createDialogueMemoryStore(this);
     this.policyEvolution = createPolicyEvolutionStore(this);
     this.sparseRanking = createSparseRankingModelStore(this);
+    this.sparseRankingComparisons = createSparseRankingComparisonLogStore(this);
     this.segmentationAggregates = createSegmentationAggregateStore(this);
     this.inducedLanguageModels = createInducedLanguageModelStore(this);
   }
@@ -886,6 +891,8 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_models (model_id TEXT PRIMARY KEY, task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, lifecycle TEXT NOT NULL, state_json JSONB NOT NULL, training_window_json JSONB NOT NULL, examples_seen BIGINT NOT NULL, evaluation_json JSONB, previous_active_model_id TEXT, rollback_reason TEXT, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_active_model (task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, model_id TEXT NOT NULL REFERENCES ${q}.sparse_ranking_models(model_id), activated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (task_class, feature_schema_id))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_models_task ON ${q}.sparse_ranking_models(task_class, feature_schema_id, lifecycle)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_comparisons (id TEXT PRIMARY KEY, task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, recorded_at TIMESTAMPTZ NOT NULL, candidates_json JSONB NOT NULL, preferred_index INT NOT NULL, weight DOUBLE PRECISION NOT NULL, source TEXT NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_comparisons_task ON ${q}.sparse_ranking_comparisons(task_class, feature_schema_id, recorded_at DESC)`,
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
     `CREATE TABLE IF NOT EXISTS ${q}.induced_language_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, corpus_documents INTEGER NOT NULL, vocabulary_size INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_induced_language_models_created ON ${q}.induced_language_models(created_at DESC)`,
@@ -2163,6 +2170,67 @@ function createSparseRankingModelStore(storage: PostgresStorageAdapter): SparseR
           );
         }
       });
+    }
+  };
+}
+
+interface SparseRankingComparisonRow {
+  id: string;
+  task_class: string;
+  feature_schema_id: string;
+  recorded_at: Date;
+  candidates_json: JsonValue;
+  preferred_index: number;
+  weight: number;
+  source: string;
+  information_label: JsonValue;
+}
+
+function rowToSparseRankingComparisonExample(row: SparseRankingComparisonRow): SparseRankingComparisonExample {
+  return {
+    id: row.id,
+    taskClass: row.task_class,
+    featureSchemaId: row.feature_schema_id,
+    recordedAt: row.recorded_at.getTime(),
+    candidates: row.candidates_json as never,
+    preferredIndex: row.preferred_index,
+    weight: row.weight,
+    source: row.source as PairwiseLabelSource,
+    informationLabel: normalizeInformationLabel(row.information_label as never)
+  };
+}
+
+function createSparseRankingComparisonLogStore(storage: PostgresStorageAdapter): SparseRankingComparisonLogStore {
+  return {
+    async append(example) {
+      await storage.query(
+        `INSERT INTO ${storage.table("sparse_ranking_comparisons")}(id,task_class,feature_schema_id,recorded_at,candidates_json,preferred_index,weight,source,information_label)
+         VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),$5::jsonb,$6,$7,$8,$9::jsonb)
+         ON CONFLICT(id) DO NOTHING`,
+        [
+          example.id,
+          example.taskClass,
+          example.featureSchemaId,
+          example.recordedAt,
+          JSON.stringify(example.candidates),
+          example.preferredIndex,
+          example.weight,
+          example.source,
+          JSON.stringify(example.informationLabel)
+        ]
+      );
+    },
+    async listRecent(input) {
+      const rows = await storage.query<SparseRankingComparisonRow>(
+        `SELECT * FROM (
+           SELECT * FROM ${storage.table("sparse_ranking_comparisons")}
+           WHERE task_class=$1 AND feature_schema_id=$2
+           ORDER BY recorded_at DESC
+           LIMIT $3
+         ) recent ORDER BY recorded_at ASC`,
+        [input.taskClass, input.featureSchemaId, input.limit]
+      );
+      return rows.map(rowToSparseRankingComparisonExample);
     }
   };
 }
