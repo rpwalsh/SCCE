@@ -29,6 +29,7 @@ import {
   createTypedSparseFeatureId,
   type Bm25SparseIndex
 } from "./sparse-ranking.js";
+import { computeFtrlShadowRanking, type FtrlShadowCandidate } from "./sparse-ranking-shadow.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import type {
   EvidenceSpan,
@@ -95,7 +96,7 @@ const HOT_QUERY_EDGE_BRANCH_LIMIT = 4;
 const HOT_QUERY_HYPEREDGE_BRANCH_LIMIT = 4;
 
 export function createRuntimeGraphRetrieval(options: {
-  deps: Pick<ScceKernelDeps, "storage">;
+  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels">;
   clock: ReturnType<typeof createClock>;
   hasher: ReturnType<typeof createHasher>;
   candidates: ReturnType<typeof createCandidateEngine>;
@@ -1042,6 +1043,7 @@ export function createRuntimeGraphRetrieval(options: {
     ]).slice(0, 512);
     const ranked = rankHotNeighborhoodNodes(hot, queryFeatures);
     if (!ranked.length || ranked[0]!.score < 0.04) return undefined;
+    scheduleFtrlShadowRanking(hot, queryFeatures, ranked);
     const nodeLimit = Math.min(HOT_QUERY_NODE_LIMIT, hot.nodeById.size);
     const edgeLimit = Math.min(HOT_QUERY_EDGE_LIMIT, hot.edgeById.size);
     const selectedNodeIds = new Set<string>();
@@ -1251,6 +1253,45 @@ export function createRuntimeGraphRetrieval(options: {
     return hot.sparseNodeIndex
       .rank(query, Math.min(HOT_QUERY_NODE_LIMIT, hot.nodeById.size))
       .map(row => ({ nodeId: row.documentId, score: row.score }));
+  }
+
+
+  /**
+   * Fire-and-forget FTRL shadow rerank of the BM25-ranked seed frontier
+   * (Part A finding 9, stage 2). Never awaited by the caller and never
+   * changes `ranked` or any downstream selection -- it only traces a
+   * comparison for later held-out evaluation. A no-op when no
+   * `sparseRankingModels` store is configured or no model is active yet.
+   */
+  function scheduleFtrlShadowRanking(
+    hot: HotGraphNeighborhood,
+    queryFeatures: readonly string[],
+    ranked: Array<{ nodeId: string; score: number }>
+  ): void {
+    if (!deps.sparseRankingModels || !ranked.length) return;
+    const candidates: FtrlShadowCandidate[] = [];
+    for (const row of ranked) {
+      const node = hot.nodeById.get(row.nodeId);
+      if (!node) continue;
+      const evidence = node.evidenceIds
+        .map(id => hot.evidenceById.get(String(id)))
+        .filter((span): span is EvidenceSpan => Boolean(span));
+      candidates.push({ nodeId: row.nodeId, bm25Score: row.score, node, evidence });
+    }
+    if (!candidates.length) return;
+    computeFtrlShadowRanking({ store: deps.sparseRankingModels, hasher, queryFeatures, candidates })
+      .then(shadow => {
+        if (!shadow) return;
+        kernelTrace({
+          stage: "retrieval.ftrl_shadow",
+          label: "kernel.graphSliceFromHotNeighborhood",
+          counts: { candidates: shadow.candidates },
+          support: { modelId: shadow.modelId, topAgreement: shadow.topAgreement }
+        });
+      })
+      .catch(error => {
+        failures.push(`ftrl shadow ranking failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
 
