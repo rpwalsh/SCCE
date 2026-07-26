@@ -9,6 +9,7 @@ import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, Causal
 import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
+import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 
 export interface ApiContext {
   runtime: ReturnType<typeof createNodeRuntime>;
@@ -113,6 +114,9 @@ export const ROUTES = [
   { method: "POST", path: "/api/causal/analyze", label: "identified causal analysis", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn", label: "turn", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn/outcome", label: "turn dialogue outcome", mutates: true, requiresDb: true },
+  { method: "GET", path: "/api/turn/task/:id", label: "long-running turn status", mutates: false, requiresDb: true },
+  { method: "GET", path: "/api/turn/task/:id/stream", label: "long-running turn stream", mutates: false, requiresDb: true },
+  { method: "POST", path: "/api/turn/task/:id/cancel", label: "cancel long-running turn", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/:id", label: "turn lookup", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/brain", label: "inspect brain", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/import/:id", label: "inspect import", mutates: false, requiresDb: true },
@@ -132,6 +136,10 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     assertAuthorizedRequest(req, url, context);
     const readinessMutation = invalidatesHydratedRuntimeReadiness(req.method, url.pathname);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
+    if (reconnectingTurnStreamRequested(req, url)) {
+      await streamExistingTurnTask({ req, res, url, context, requestId, started });
+      return;
+    }
     if (streamingTurnRequested(req, url)) {
       await streamTurnResponse({
         req,
@@ -229,7 +237,8 @@ async function dispatch(
   req: http.IncomingMessage,
   url: URL,
   context: ApiContext,
-  requestTiming: RequestTiming
+  requestTiming: RequestTiming,
+  preloadedBody?: unknown
 ): Promise<{ status: number; body: string; contentType: string }> {
   if (req.method === "GET" && url.pathname === "/") return html(renderWorkbench(context.config.server.url));
   if (req.method === "GET" && url.pathname === "/health") {
@@ -427,7 +436,7 @@ async function dispatch(
     const trace = (globalThis as any).__sccTrace;
     const turnStarted = Date.now();
     try {
-      const body = await readBody(req, context.maxBodyBytes);
+      const body = preloadedBody ?? await readBody(req, context.maxBodyBytes);
       const turn = validateTurn(body);
       const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
       const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
@@ -670,6 +679,17 @@ async function dispatch(
       correctionId: learned.correction?.id,
       reversible: true
     });
+  }
+  const taskRoute = turnTaskRoute(url.pathname);
+  if (taskRoute && req.method === "GET" && taskRoute.action === "status") {
+    const task = await turnTaskRegistryFor(context.runtime.storage).get(taskRoute.taskId);
+    if (!task) throw new HttpError(404, "turn task not found");
+    return json(task);
+  }
+  if (taskRoute && req.method === "POST" && taskRoute.action === "cancel") {
+    const task = turnTaskRegistryFor(context.runtime.storage).cancel(taskRoute.taskId);
+    if (!task) throw new HttpError(404, "live turn task not found");
+    return json(task, 202);
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/turn/")) return json(await context.runtime.kernel.replay(decodeURIComponent(path.basename(url.pathname)) as never));
   if (req.method === "GET" && url.pathname === "/api/inspect/brain") return json(await context.runtime.kernel.inspect("brain"));
@@ -2414,37 +2434,36 @@ async function streamTurnResponse(input: {
   started: number;
 }): Promise<void> {
   const { req, res, url, context, requestTiming, requestId, started } = input;
-  const controller = new AbortController();
-  let completed = false;
-  const abortDisconnected = () => {
-    if (!completed && !controller.signal.aborted) {
-      controller.abort(new Error("streaming turn client disconnected"));
-    }
-  };
-  req.once("aborted", abortDisconnected);
-  res.once("close", abortDisconnected);
+  const registry = turnTaskRegistryFor(context.runtime.storage);
+  const task = registry.create({ requestId });
+  const controller = registry.controller(task.taskId);
+  if (!controller) throw new Error("turn task controller was not created");
   res.writeHead(200, {
     "content-type": "application/x-ndjson; charset=utf-8",
     "cache-control": "no-store",
     "x-accel-buffering": "no",
     "x-request-id": requestId,
+    "x-scce-turn-task-id": task.taskId,
     "transfer-encoding": "chunked"
   });
   res.flushHeaders();
   requestTiming.firstVisibleFrameMonotonicMs = performance.now();
-  writeTurnStreamFrame(res, {
-    schema: "scce.turn_stream.v1",
-    type: "accepted",
-    requestId,
+  writeTurnStreamFrame(res, turnTaskWireFrame(task.frames[0]!, {
+    initialVisibleResponseDeadlineMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS,
     elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
-    initialVisibleResponseDeadlineMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS
+    statusUrl: `/api/turn/task/${encodeURIComponent(task.taskId)}`,
+    streamUrl: `/api/turn/task/${encodeURIComponent(task.taskId)}/stream`,
+    cancelUrl: `/api/turn/task/${encodeURIComponent(task.taskId)}/cancel`
+  }));
+  const unsubscribe = registry.subscribe(task.taskId, frame => {
+    if (frame.sequence === 1) return;
+    writeTurnStreamFrame(res, turnTaskWireFrame(frame));
   });
+  res.once("close", () => unsubscribe?.());
   requestTiming.turnExecution = {
     signal: controller.signal,
     onProgress(progress) {
-      if (res.writableEnded || res.destroyed) return;
-      writeTurnStreamFrame(res, {
-        schema: "scce.turn_stream.v1",
+      registry.append(task.taskId, {
         type: "progress",
         requestId,
         phase: progress.phase,
@@ -2457,6 +2476,7 @@ async function streamTurnResponse(input: {
     writeTurnStreamFrame(res, {
       schema: "scce.turn_stream.v1",
       type: "progress",
+      taskId: task.taskId,
       requestId,
       phase: "runtime.working",
       elapsedMs: performance.now() - requestTiming.startedMonotonicMs
@@ -2464,32 +2484,36 @@ async function streamTurnResponse(input: {
   }, 3_000);
   heartbeat.unref();
   try {
-    const response = await dispatch(req, url, context, requestTiming);
+    const body = await readBody(req, context.maxBodyBytes);
+    registry.markRunning(task.taskId);
+    const response = await dispatch(req, url, context, requestTiming, body);
     const value = response.contentType.startsWith("application/json")
       ? JSON.parse(response.body)
       : response.body;
-    writeTurnStreamFrame(res, {
-      schema: "scce.turn_stream.v1",
+    registry.append(task.taskId, {
       type: response.status >= 200 && response.status < 300 ? "result" : "error",
       requestId,
       status: response.status,
       elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
-      value
+      value: toJsonValue(value)
     });
   } catch (error) {
-    const status = error instanceof HttpError ? error.status : 500;
-    writeTurnStreamFrame(res, {
-      schema: "scce.turn_stream.v1",
-      type: "error",
-      requestId,
-      status,
-      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
-      error: error instanceof Error ? error.message : String(error)
-    });
+    const current = await registry.get(task.taskId);
+    if (current?.status !== "cancelled") {
+      const status = error instanceof HttpError ? error.status : 500;
+      registry.append(task.taskId, {
+        type: "error",
+        requestId,
+        status,
+        elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   } finally {
-    completed = true;
     clearInterval(heartbeat);
     requestTiming.turnExecution = undefined;
+    await registry.drain(task.taskId);
+    unsubscribe?.();
     if (!res.writableEnded) res.end();
     const trace = (globalThis as any).__sccTrace;
     if (trace) {
@@ -2499,12 +2523,115 @@ async function streamTurnResponse(input: {
         durationMs: Date.now() - started,
         support: {
           streaming: true,
+          taskId: task.taskId,
           firstVisibleFrameMs: (requestTiming.firstVisibleFrameMonotonicMs ?? performance.now())
             - requestTiming.startedMonotonicMs
         }
       });
     }
   }
+}
+
+function reconnectingTurnStreamRequested(req: http.IncomingMessage, url: URL): boolean {
+  return req.method === "GET" && turnTaskRoute(url.pathname)?.action === "stream";
+}
+
+async function streamExistingTurnTask(input: {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  url: URL;
+  context: ApiContext;
+  requestId: string;
+  started: number;
+}): Promise<void> {
+  const route = turnTaskRoute(input.url.pathname);
+  if (!route || route.action !== "stream") throw new HttpError(404, "turn task stream not found");
+  const registry = turnTaskRegistryFor(input.context.runtime.storage);
+  const task = await registry.get(route.taskId);
+  if (!task) throw new HttpError(404, "turn task not found");
+  const after = boundedSequence(input.url.searchParams.get("after"));
+  input.res.writeHead(200, {
+    "content-type": "application/x-ndjson; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    "x-request-id": input.requestId,
+    "x-scce-turn-task-id": task.taskId,
+    "transfer-encoding": "chunked"
+  });
+  input.res.flushHeaders();
+  for (const frame of task.frames) {
+    if (frame.sequence > after) writeTurnStreamFrame(input.res, turnTaskWireFrame(frame));
+  }
+  if (task.status === "interrupted") {
+    writeTurnStreamFrame(input.res, {
+      schema: "scce.turn_stream.v1",
+      type: "error",
+      taskId: task.taskId,
+      status: 503,
+      error: "turn execution was interrupted by a server restart; persisted frames remain replayable"
+    });
+    input.res.end();
+    return;
+  }
+  if (task.status === "succeeded" || task.status === "failed" || task.status === "cancelled") {
+    input.res.end();
+    return;
+  }
+  let latestSequence = task.latestSequence;
+  const unsubscribe = registry.subscribe(task.taskId, frame => {
+    if (frame.sequence <= latestSequence) return;
+    latestSequence = frame.sequence;
+    writeTurnStreamFrame(input.res, turnTaskWireFrame(frame));
+    if (frame.type === "result" || frame.type === "error" || frame.type === "cancelled") {
+      unsubscribe?.();
+      if (!input.res.writableEnded) input.res.end();
+    }
+  });
+  if (!unsubscribe) {
+    input.res.end();
+    return;
+  }
+  const heartbeat = setInterval(() => {
+    writeTurnStreamFrame(input.res, {
+      schema: "scce.turn_stream.v1",
+      type: "progress",
+      taskId: task.taskId,
+      requestId: input.requestId,
+      phase: "runtime.working",
+      elapsedMs: Date.now() - task.createdAt
+    });
+  }, 3_000);
+  heartbeat.unref();
+  input.res.once("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+function turnTaskWireFrame(
+  frame: TurnTaskFrame,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    ...frame,
+    schema: "scce.turn_stream.v1",
+    ...overrides
+  };
+}
+
+function turnTaskRoute(pathname: string): { taskId: string; action: "status" | "stream" | "cancel" } | undefined {
+  const match = /^\/api\/turn\/task\/([^/]+)(?:\/(stream|cancel))?$/u.exec(pathname);
+  if (!match?.[1]) return undefined;
+  return {
+    taskId: decodeURIComponent(match[1]),
+    action: match[2] === "stream" ? "stream" : match[2] === "cancel" ? "cancel" : "status"
+  };
+}
+
+function boundedSequence(value: string | null): number {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(parsed)));
 }
 
 function writeTurnStreamFrame(

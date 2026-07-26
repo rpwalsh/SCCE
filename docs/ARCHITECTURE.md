@@ -147,6 +147,20 @@ neighborhood independently. This is not yet the final nation-scale storage desig
 the durable quotient router and memory-mapped detail shard compiler remain specified
 in `BRAIN_COMPILER_AND_STORAGE.md`.
 
+## Long-running turn transport
+
+The interactive deadline governs first visible output, not completion. A streamed turn
+receives a stable task ID immediately and continues independently of its original HTTP
+subscriber. Accepted, phase-change, terminal, and cancellation frames are appended to
+the event ledger under that task episode; heartbeat frames are ephemeral. Clients can
+query task status, reconnect from a sequence number, or explicitly cancel. A socket
+close only unsubscribes.
+
+Terminal tasks remain replayable after a process restart. A nonterminal durable receipt
+is reported as interrupted after restart because SCCE does not yet checkpoint and resume
+the complete in-flight cognitive stack. This boundary is explicit: reconnectable
+transport is implemented; crash-resumable execution is not.
+
 ## Workspace Mutation Boundary
 
 The kernel defines exact-byte workspace revision snapshots and content-addressed
