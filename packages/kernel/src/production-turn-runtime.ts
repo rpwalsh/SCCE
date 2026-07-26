@@ -1901,9 +1901,15 @@ export function createProductionTurnRuntime(options: {
         && spoken.realizationTrace.selected.semanticPlanId
         && spoken.realizationTrace.selected.surfaceRealizationId === spoken.realizationTrace.selected.id
       );
+      // Creative/invention answers are revisable too -- answer-revision.ts
+      // has no creative-specific handling that would make it unsafe, and
+      // excluding all of requestedAuthority === "creative" was broader than
+      // the one case that actually needs excluding: a structural creative
+      // surface realized directly from a semantic/construction-grammar
+      // plan (sourceStructuralCreativeSurface below), which bypasses normal
+      // Mouth realization and isn't in the shape revision expects.
       const answerRevisionEligible = Boolean(
         selectedProposal
-        && requestedAuthority !== "creative"
         && !deps.evaluationCondition
         && !sourceStructuralCreativeSurface
       );
