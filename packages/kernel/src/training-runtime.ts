@@ -24,6 +24,7 @@ import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import type {
   EpisodeId,
   EvidenceSpan,
+  GraphSnapshot,
   JsonValue,
   LanguageProfile,
   PolicyProfile,
@@ -88,7 +89,8 @@ export function createTrainingRuntime(options: {
   async function persistTrainingLanguageMemory(
     evidence: readonly EvidenceSpan[],
     existingProfiles: readonly LanguageProfile[],
-    trainingPlanId: string
+    trainingPlanId: string,
+    graphSnapshot: GraphSnapshot
   ): Promise<{ profiles: LanguageProfile[]; audit: JsonValue }> {
     if (!evidence.length) {
       return { profiles: [...existingProfiles], audit: toJsonValue({ source: "kernel.train.language_memory", skipped: "no promoted evidence selected", observations: 0, models: 0, units: 0, patterns: 0, semanticFrames: 0, profilesCreated: 0 }) };
@@ -103,6 +105,8 @@ export function createTrainingRuntime(options: {
     let patterns = 0;
     let semanticFrames = 0;
     let graphSurfaceAlignments = 0;
+    let sparseAlignmentCandidateSupports = 0;
+    let sparseAlignmentCandidates = 0;
     let profilesCreated = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
@@ -141,7 +145,8 @@ export function createTrainingRuntime(options: {
           createdAt: trainedAt,
           maxOrder: 6,
           maxCountersPerOrder: 12000,
-          vocabularyLimit: 24000
+          vocabularyLimit: 24000,
+          graphSnapshot
         }
       });
       await observeLanguageTrainingSegmentation({
@@ -163,6 +168,11 @@ export function createTrainingRuntime(options: {
       patterns += memory.patterns.length;
       semanticFrames += memory.semanticFrames.length;
       graphSurfaceAlignments += memory.graphSurfaceAlignmentSummaries.length;
+      sparseAlignmentCandidateSupports += memory.sparseAlignmentCandidateSupports.length;
+      sparseAlignmentCandidates += memory.sparseAlignmentCandidateSupports.reduce(
+        (sum, support) => sum + support.candidates.length,
+        0
+      );
     }
     return {
       profiles,
@@ -176,7 +186,9 @@ export function createTrainingRuntime(options: {
         units,
         patterns,
         semanticFrames,
-        graphSurfaceAlignments
+        graphSurfaceAlignments,
+        sparseAlignmentCandidateSupports,
+        sparseAlignmentCandidates
       })
     };
   }
@@ -197,7 +209,12 @@ export function createTrainingRuntime(options: {
       const mvpTrainPlan = trainingOrchestrator.plan({ train: input, evidence: evidenceForLearning, modelState: model, policy });
       const promotionIds = trainingPromotionEvidenceIds(mvpTrainPlan);
       const promoted = await deps.storage.evidence.promoteEvidence(promotionIds, trainingPromotionReason(input, plan, mvpTrainPlan));
-      const trainingLanguage = await persistTrainingLanguageMemory(evidenceForLearning.filter(span => promotionIds.some(id => String(id) === String(span.id))), profiles, mvpTrainPlan.id);
+      const trainingLanguage = await persistTrainingLanguageMemory(
+        evidenceForLearning.filter(span => promotionIds.some(id => String(id) === String(span.id))),
+        profiles,
+        mvpTrainPlan.id,
+        slice
+      );
       profiles = trainingLanguage.profiles;
       model = learning.updateModel(model, plan, profiles);
       // Keep the historical model_state key for JSON compatibility; the

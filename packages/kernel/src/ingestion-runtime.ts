@@ -41,9 +41,16 @@ import {
 } from "./relation-promotion.js";
 import { compileOpaqueRoleModel } from "./opaque-role-induction.js";
 import { compileRoleSurfaceOrderModel } from "./role-surface-order.js";
+import {
+  compileSparseAlignmentTargetIndex,
+  generateSparseAlignmentCandidates
+} from "./sparse-alignment-candidates.js";
+import { buildSurfaceLattice } from "./surface-lattice.js";
+import { liftHyperedgesToTypedIncidenceGraph } from "./typed-incidence-graph.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
 import type {
   EpisodeId,
+  EvidenceSpan,
   IngestInput,
   IngestResult,
   JsonValue,
@@ -476,6 +483,46 @@ export function createIngestionRuntime(options: {
         if (deps.storage.graph.upsertHyperedges) await deps.storage.graph.upsertHyperedges(promotedHyperedges);
         else for (const hyperedge of promotedHyperedges) await deps.storage.graph.upsertHyperedge(hyperedge);
         graphHyperedges += promotedGraph.hyperedges.length;
+        const incidenceGraph = liftHyperedgesToTypedIncidenceGraph({
+          hyperedges: promotedGraph.hyperedges,
+          hasher
+        });
+        const alignmentTargetIndex = compileSparseAlignmentTargetIndex({
+          incidenceGraph,
+          nodes: promotedGraph.nodes,
+          hasher
+        });
+        const relationEvidenceIds = [...new Set(
+          relationCandidates.flatMap(candidate => candidate.evidenceIds.map(String))
+        )].sort();
+        const relationEvidence = await deps.storage.evidence.getEvidenceBatch(
+          relationEvidenceIds as EvidenceSpan["id"][]
+        );
+        let alignmentCandidateCount = 0;
+        let alignmentSurfaceUnitCount = 0;
+        let maximumAlignmentDegree = 0;
+        const alignmentSupportIds: string[] = [];
+        for (const span of relationEvidence) {
+          const lattice = buildSurfaceLattice({
+            documentId: String(span.id),
+            text: span.text,
+            sourceVersionId: span.sourceVersionId,
+            evidenceIds: [span.id],
+            hasher
+          });
+          const support = generateSparseAlignmentCandidates({
+            lattice,
+            targetIndex: alignmentTargetIndex,
+            hasher
+          });
+          alignmentSupportIds.push(support.id);
+          alignmentCandidateCount += support.candidates.length;
+          alignmentSurfaceUnitCount += support.rows.length;
+          maximumAlignmentDegree = Math.max(
+            maximumAlignmentDegree,
+            ...support.rows.map(row => row.candidateIds.length)
+          );
+        }
         events.push(await append(eventFactory.create({
           episodeId,
           typeId: "RelationPromotionCompiled",
@@ -494,6 +541,22 @@ export function createIngestionRuntime(options: {
               recoveryGain: decision.recovery.gain,
               reasons: decision.reasons
             }))
+          })
+        })));
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "SparseAlignmentCandidatesCompiled",
+          payload: toJsonValue({
+            schema: "scce.sparse_alignment_candidate_batch.v1",
+            incidenceGraphId: incidenceGraph.id,
+            targetIndexId: alignmentTargetIndex.id,
+            evidenceCount: relationEvidence.length,
+            surfaceUnitCount: alignmentSurfaceUnitCount,
+            candidateCount: alignmentCandidateCount,
+            maximumCandidateDegree: maximumAlignmentDegree,
+            supportIds: alignmentSupportIds,
+            candidateMemory: "O(|S|*K_pi)",
+            denseMatrixMaterialized: false
           })
         })));
       }

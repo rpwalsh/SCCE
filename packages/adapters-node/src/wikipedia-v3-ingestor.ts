@@ -14,7 +14,11 @@ import {
   compileRelationPromotionModel,
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
+  compileSparseAlignmentTargetIndex,
+  generateSparseAlignmentCandidates,
   graphFromStructuredSemanticCandidates,
+  buildSurfaceLattice,
+  liftHyperedgesToTypedIncidenceGraph,
   toJsonValue,
   validateBrainManifestContract,
   compileBrainReplayManifest,
@@ -932,6 +936,40 @@ export class WikipediaV3Ingestor {
       else for (const edge of promotedEdges) await this.storage.graph.upsertEdge(edge);
       if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(promotedHyperedges);
       else for (const hyperedge of promotedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+      const incidenceGraph = liftHyperedgesToTypedIncidenceGraph({
+        hyperedges: promotedGraph.hyperedges,
+        hasher: this.hasher
+      });
+      const alignmentTargetIndex = compileSparseAlignmentTargetIndex({
+        incidenceGraph,
+        nodes: promotedGraph.nodes,
+        hasher: this.hasher
+      });
+      let alignmentCandidateCount = 0;
+      let alignmentSurfaceUnitCount = 0;
+      let maximumAlignmentDegree = 0;
+      const alignmentSupportIds: string[] = [];
+      for (const span of evidence) {
+        const lattice = buildSurfaceLattice({
+          documentId: String(span.id),
+          text: span.text,
+          sourceVersionId: span.sourceVersionId,
+          evidenceIds: [span.id],
+          hasher: this.hasher
+        });
+        const support = generateSparseAlignmentCandidates({
+          lattice,
+          targetIndex: alignmentTargetIndex,
+          hasher: this.hasher
+        });
+        alignmentSupportIds.push(support.id);
+        alignmentCandidateCount += support.candidates.length;
+        alignmentSurfaceUnitCount += support.rows.length;
+        maximumAlignmentDegree = Math.max(
+          maximumAlignmentDegree,
+          ...support.rows.map(row => row.candidateIds.length)
+        );
+      }
       await this.storage.events.append(this.events.create({
         episodeId,
         typeId: "RelationPromotionCompiled",
@@ -948,6 +986,23 @@ export class WikipediaV3Ingestor {
             recoveryGain: decision.recovery.gain,
             reasons: decision.reasons
           }))
+        })
+      }));
+      await this.storage.events.append(this.events.create({
+        episodeId,
+        typeId: "SparseAlignmentCandidatesCompiled",
+        payload: toJsonValue({
+          schema: "scce.sparse_alignment_candidate_batch.v1",
+          shardUri,
+          incidenceGraphId: incidenceGraph.id,
+          targetIndexId: alignmentTargetIndex.id,
+          evidenceCount: evidence.length,
+          surfaceUnitCount: alignmentSurfaceUnitCount,
+          candidateCount: alignmentCandidateCount,
+          maximumCandidateDegree: maximumAlignmentDegree,
+          supportIds: alignmentSupportIds,
+          candidateMemory: "O(|S|*K_pi)",
+          denseMatrixMaterialized: false
         })
       }));
     }

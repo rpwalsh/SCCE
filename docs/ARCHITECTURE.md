@@ -86,6 +86,10 @@ validation so credentials need not be committed.
 - `typed-incidence-graph.ts`: lossless arbitrary-arity hyperedge lift into relation
   nodes and typed participant incidences. The field engine uses reversible incidence
   transitions without participant cliques; omitted ports remain null incidences.
+- `sparse-alignment-candidates.ts`: content-addressed typed-incidence target indexes
+  and hard-degree-bounded anchor/evidence/structure/context candidate support. The
+  production ingestion and explicit-training paths materialize
+  \(O(|S|K_\Pi)\) candidates rather than a dense surface×graph matrix.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

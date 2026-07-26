@@ -163,6 +163,17 @@ relation nodes; neither case creates a fabricated participant. Observed incidenc
 projected as reversible alpha/PPF transitions. No participant clique or binary triple
 is materialized.
 
+Graph/surface alignment candidate generation now consumes that typed incidence
+representation. `scce.sparse_alignment_target_index.v1` compiles bounded postings
+for exact evidence, observable participant anchors and relation membership.
+`scce.sparse_alignment_candidate_support.v1` materializes at most \(K_\Pi\)
+candidates per surface unit from anchor, shared-evidence, incidence-structure and
+surface-context support. Ordinary ingestion emits the compiled support identities;
+Wikipedia shard compilation emits the same contract, and explicit training returns
+the bounded artifacts in its batch result. Candidate
+scores are proposal energies only and do not substitute for transport or calibrated
+confidence.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,
