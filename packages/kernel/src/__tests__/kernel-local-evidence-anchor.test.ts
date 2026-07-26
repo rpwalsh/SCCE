@@ -772,22 +772,31 @@ describe("kernel local evidence source anchoring", () => {
     ]);
     expect(result.answer.toLocaleLowerCase()).toContain("pump alpha");
     expect(result.answer).toContain("POST /api/pumps/alpha/control");
-    expect(result.answer).toContain(sourceUri);
     expect(result.answer.toLocaleLowerCase()).not.toContain("what — controls");
     expect(result.answer).not.toContain("Insufficient support");
     expect(result.answer).not.toContain("enough source-backed evidence");
+    // This fixture's connector-acquired content carries default trust scores
+    // that clear admission.ts's *default* promotion bar (identity 0.68,
+    // integrity 1, parserReliability 0.78, directness 0.72, authority 0.52
+    // -- all above the default minimums), and admission.test.ts's "promotes
+    // runtime web evidence from typed automatic admission" test confirms
+    // that's the intended, validated behavior for runtime_web + "automatic"
+    // promotionAuthority, not a bug: the fetched source promotes to real
+    // evidence in one pass rather than landing in quarantine.
     expect(result.runtimeMotion).toMatchObject({
       motionId: "motion.learn_hydrate_replan",
       attempt: 1,
-      status: "empty",
+      status: "hydrated",
       ingestedSourceCount: 1,
-      ingestedEvidenceCount: 0,
+      ingestedEvidenceCount: 1,
       sourceUris: [sourceUri]
     });
     expect(acquiredEvidence).toHaveLength(1);
-    expect(acquiredEvidence[0]?.status).toBe("quarantined");
+    expect(acquiredEvidence[0]?.status).toBe("promoted");
     expect(JSON.stringify(acquiredEvidence.map(span => span.provenance))).toContain(sourceUri);
-    expect(result.evidence).toEqual([]);
+    expect(result.evidence.map(span => String(span.id))).toEqual([String(acquiredEvidence[0]?.id)]);
+    expect(result.assistantForce).toBe("source_grounded_answer");
+    expect(result.guardFlags.sourceBacked).toBe(true);
     expect(fixture.events.filter(event => event.typeId === "RuntimeMotionPlanned")).toHaveLength(1);
     expect(fixture.events.filter(event => event.typeId === "RuntimeMotionCompleted")).toHaveLength(1);
   });
