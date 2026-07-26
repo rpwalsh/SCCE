@@ -75,6 +75,8 @@ answer lane.
 - `typed-ingest.ts`, `types.ts`: `scce.hyperedge.v2` materialization with arbitrary
   observed/omitted participant ports and separate qualifier, modality, time and
   evidence fields.
+- `opaque-role-induction.ts`: content-addressed opaque role populations selected by
+  source-disjoint held-out MDL and applied to promoted hyperedge occurrences.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

@@ -910,6 +910,7 @@ export class Scce2ToV3Importer implements BrainShardImporter {
         relationId,
         participantPorts: members.map((nodeId, index) => ({
           portId: `port.${this.hasher.digestHex(`${relationId}:${index}`).slice(0, 16)}`,
+          roleId: `role.${this.hasher.digestHex(`${relationId}:imported_concept`).slice(0, 16)}`,
           nodeId,
           valueKind: "imported_concept",
           realization: "observed",

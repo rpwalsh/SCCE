@@ -31,6 +31,10 @@ import {
   type RelationPromotionModel
 } from "./relation-promotion.js";
 import { assertCanonicalHyperedge } from "./hyperedge.js";
+import {
+  opaqueRoleId,
+  type OpaqueRoleModel
+} from "./opaque-role-induction.js";
 
 export interface TypedIngestPreview {
   lane: ReturnType<typeof classifyIngestionLane>;
@@ -59,6 +63,7 @@ export interface TypedIngestProjectorInput {
   evidence: EvidenceSpan[];
   observedAt: number;
   relationPromotionModel?: RelationPromotionModel;
+  opaqueRoleModel?: OpaqueRoleModel;
 }
 
 export function createTypedIngestProjector(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -132,7 +137,8 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       observedAt: input.observedAt,
       ids,
       hasher,
-      relationPromotionModel: input.relationPromotionModel
+      relationPromotionModel: input.relationPromotionModel,
+      opaqueRoleModel: input.opaqueRoleModel
     });
     const graph = {
       nodes: uniqueGraphNodes([...observationGraph.nodes, ...candidateGraph.nodes]),
@@ -854,6 +860,7 @@ export function graphFromStructuredSemanticCandidates(input: {
   ids: IdFactory;
   hasher: Hasher;
   relationPromotionModel?: RelationPromotionModel;
+  opaqueRoleModel?: OpaqueRoleModel;
 }): { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -898,6 +905,8 @@ export function graphFromStructuredSemanticCandidates(input: {
       });
       participantPorts.push({
         portId: participant.portId,
+        roleId: opaqueRoleId(input.opaqueRoleModel, candidate.id, participant.portId)
+          ?? `role.unresolved.${input.hasher.digestHex(`${candidate.relationSeedId}\u001f${participant.valueKind}`).slice(0, 24)}`,
         nodeId: participant.realization === "omitted" ? null : participantNodeId,
         valueKind: participant.valueKind,
         realization: participant.realization,

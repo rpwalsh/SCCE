@@ -132,6 +132,15 @@ node reference. Qualifiers, temporal validity, modality and evidence have dedica
 fields. The `memberNodeIds` array is derived only from observed ports for bounded
 retrieval and does not define role semantics.
 
+Opaque roles are compiled only for promoted relation seeds. Each participant
+occurrence contributes source-derived surface shape, value kind, co-participant
+neighborhood, substitution mass, transformation family, qualifier/discourse context
+and realization state. Source IDs are split before fitting. Deterministic k-medoids
+proposes finite populations; a smoothed Bernoulli feature code plus explicit BIC model
+code selects the population count on holdout data. The content-addressed `roleId`
+comes from the learned feature distribution, never participant-array position or a
+language grammar label. Unique `portId` still identifies each occurrence.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

@@ -39,6 +39,7 @@ import {
 import {
   compileRelationPromotionModel
 } from "./relation-promotion.js";
+import { compileOpaqueRoleModel } from "./opaque-role-induction.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
 import type {
   EpisodeId,
@@ -444,13 +445,19 @@ export function createIngestionRuntime(options: {
         candidates: relationCandidates,
         hasher
       });
+      const opaqueRoleModel = compileOpaqueRoleModel({
+        candidates: relationCandidates,
+        promotionModel: relationPromotionModel,
+        hasher
+      });
       if (relationCandidates.length) {
         const promotedGraph = graphFromStructuredSemanticCandidates({
           candidates: relationCandidates,
           observedAt: clock.now(),
           ids: idFactory,
           hasher,
-          relationPromotionModel
+          relationPromotionModel,
+          opaqueRoleModel
         });
         const promotedNodes = labelRecords(promotedGraph.nodes, informationLabel);
         const promotedEdges = labelRecords(promotedGraph.edges, informationLabel);
@@ -467,6 +474,7 @@ export function createIngestionRuntime(options: {
           typeId: "RelationPromotionCompiled",
           payload: toJsonValue({
             modelId: relationPromotionModel.id,
+            opaqueRoleModelId: opaqueRoleModel.id,
             candidateCount: relationCandidates.length,
             promotedRelationSeedIds: relationPromotionModel.decisions
               .filter(decision => decision.promoted)
@@ -498,6 +506,7 @@ export function createIngestionRuntime(options: {
         relationCandidates: relationCandidates.length,
         promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length,
         relationPromotionModelId: relationPromotionModel.id,
+        opaqueRoleModelId: opaqueRoleModel.id,
         typedObservations: typedObservationCounts,
         observationRoutes: observationRouteCounts,
         skipped,

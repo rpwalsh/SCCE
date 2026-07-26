@@ -12,6 +12,7 @@ import {
   createSourceGraphBuilder,
   createTypedIngestProjector,
   compileRelationPromotionModel,
+  compileOpaqueRoleModel,
   graphFromStructuredSemanticCandidates,
   toJsonValue,
   validateBrainManifestContract,
@@ -872,13 +873,19 @@ export class WikipediaV3Ingestor {
       candidates: semanticCandidates,
       hasher: this.hasher
     });
+    const opaqueRoleModel = compileOpaqueRoleModel({
+      candidates: semanticCandidates,
+      promotionModel: relationPromotionModel,
+      hasher: this.hasher
+    });
     if (semanticCandidates.length) {
       const promotedGraph = graphFromStructuredSemanticCandidates({
         candidates: semanticCandidates,
         observedAt: createdAt,
         ids: this.ids,
         hasher: this.hasher,
-        relationPromotionModel
+        relationPromotionModel,
+        opaqueRoleModel
       });
       const promotedNodes = stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
       const promotedEdges = stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
@@ -898,6 +905,7 @@ export class WikipediaV3Ingestor {
         payload: toJsonValue({
           shardUri,
           modelId: relationPromotionModel.id,
+          opaqueRoleModelId: opaqueRoleModel.id,
           candidateCount: semanticCandidates.length,
           decisions: relationPromotionModel.decisions.map(decision => ({
             relationSeedId: decision.relationSeedId,

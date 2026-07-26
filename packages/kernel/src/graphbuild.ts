@@ -91,6 +91,11 @@ export function createSourceGraphBuilder(deps: { idFactory: IdFactory }) {
                 relationId,
                 index
               })),
+              roleId: String(deps.idFactory.dimensionId({
+                kind: "evidence_feature_bag_role",
+                relationId,
+                memberKind: index === 0 ? "evidence_chunk" : "surface_feature"
+              })),
               nodeId: member.id,
               valueKind: index === 0 ? "evidence_chunk" : "surface_feature",
               realization: "observed",

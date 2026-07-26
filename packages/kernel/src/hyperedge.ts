@@ -20,6 +20,7 @@ export function assertCanonicalHyperedge(hyperedge: Hyperedge): void {
   const portIds = new Set<string>();
   for (const port of hyperedge.participantPorts) {
     if (!port.portId.trim()) throw new Error("hyperedge participant port id must be non-empty");
+    if (!port.roleId.trim()) throw new Error(`hyperedge participant ${port.portId} roleId must be non-empty`);
     if (portIds.has(port.portId)) throw new Error(`hyperedge participant port id must be unique: ${port.portId}`);
     portIds.add(port.portId);
     if (!port.valueKind.trim()) throw new Error(`hyperedge participant ${port.portId} valueKind must be non-empty`);

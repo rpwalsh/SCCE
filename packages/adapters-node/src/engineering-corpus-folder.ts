@@ -11,6 +11,7 @@ import {
   createSourceRepositoryFacts,
   createTypedIngestProjector,
   compileRelationPromotionModel,
+  compileOpaqueRoleModel,
   observationContract,
   toJsonValue,
   type EvidenceSpan,
@@ -137,6 +138,8 @@ export interface EngineeringCorpusFolderRuntimeReport {
     candidateCount: number;
     promotedRelationSeedIds: string[];
     rejectedRelationSeedIds: string[];
+    opaqueRoleModelId: string;
+    opaqueRoleCount: number;
   };
   projections: Array<{
     sourceUri: string;
@@ -357,6 +360,11 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
     candidates: projections.flatMap(projection => projection.semanticCandidates),
     hasher
   });
+  const opaqueRoleModel = compileOpaqueRoleModel({
+    candidates: projections.flatMap(projection => projection.semanticCandidates),
+    promotionModel: relationPromotionModel,
+    hasher
+  });
   const contracts = allObservations.map(observationContract);
   const fileProjections = projectedFiles.map(projected => summarizeFileProjection(projected));
   const routeAudit = auditEngineeringRoutes(fileProjections);
@@ -397,7 +405,9 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
         .map(decision => decision.relationSeedId),
       rejectedRelationSeedIds: relationPromotionModel.decisions
         .filter(decision => !decision.promoted)
-        .map(decision => decision.relationSeedId)
+        .map(decision => decision.relationSeedId),
+      opaqueRoleModelId: opaqueRoleModel.id,
+      opaqueRoleCount: opaqueRoleModel.clusters.length
     },
     projections: projections.map(projection => ({
       sourceUri: projection.observations[0]?.provenance && typeof projection.observations[0].provenance === "object" && !Array.isArray(projection.observations[0].provenance)

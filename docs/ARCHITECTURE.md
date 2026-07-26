@@ -76,6 +76,9 @@ validation so credentials need not be committed.
   zero-or-more-arity relations with observed/omitted ports, qualifiers, modality,
   temporal scope and evidence. PostgreSQL v23 persists these fields directly;
   `memberNodeIds` is a derived retrieval index only.
+- `opaque-role-induction.ts`: source-disjoint held-out-MDL selection of opaque role
+  populations from surface, neighborhood, substitution, transformation and discourse
+  evidence. Learned `roleId` is separate from per-occurrence `portId`.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field

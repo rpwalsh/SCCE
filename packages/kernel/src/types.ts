@@ -256,6 +256,7 @@ export interface Hyperedge {
   relationId: RelationId;
   participantPorts: Array<{
     portId: string;
+    roleId: string;
     nodeId: NodeId | null;
     valueKind: string;
     realization: "observed" | "omitted";
@@ -1058,6 +1059,7 @@ export interface IngestResult {
   relationCandidates: number;
   promotedRelations: number;
   relationPromotionModelId: string;
+  opaqueRoleModelId: string;
   typedObservations: Record<string, number>;
   observationRoutes: Record<string, number>;
   skipped: Array<{ path: string; reason: string }>;
