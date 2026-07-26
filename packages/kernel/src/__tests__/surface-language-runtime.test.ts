@@ -4,6 +4,7 @@ import { languageSurfaceTrigrams } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
+import type { SegmentationPopulationModelRecord } from "../segmentation-population-persistence.js";
 import type { LanguageProfile } from "../types.js";
 
 describe("surface language resident-only cache", () => {
@@ -93,6 +94,23 @@ describe("surface language resident-only cache", () => {
     });
     expect(fixture.profileQueries.at(-1)?.surfaceNgrams).toContain("fix");
   });
+
+  it("hydrates the learned segmentation population selected for the surface profile", async () => {
+    const fixture = runtimeFixture();
+    const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
+    const hydrated = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(
+      12,
+      cluster,
+      "source-cluster-selected"
+    );
+
+    expect(hydrated.segmentationPopulationModels.map(record => record.id))
+      .toEqual(["segmentation_population.fixture"]);
+    expect(fixture.populationQueries).toEqual([{
+      profileIds: ["profile.fixture"],
+      limit: 12
+    }]);
+  });
 });
 
 function runtimeFixture() {
@@ -103,10 +121,12 @@ function runtimeFixture() {
     models: 0,
     observations: 0,
     patterns: 0,
+    populations: 0,
     profiles: 0,
     units: 0
   };
   const profileQueries: Array<{ surfaceNgrams?: readonly string[]; limit?: number; referencedByLanguageMemory?: boolean }> = [];
+  const populationQueries: Array<{ profileIds?: readonly string[]; limit?: number }> = [];
   const profile: LanguageProfile = {
     id: "profile.fixture",
     sourceVersionId: "source.fixture" as never,
@@ -131,6 +151,37 @@ function runtimeFixture() {
     evidenceIds: [],
     alpha: 1,
     createdAt: 1
+  };
+  const populationRecord: SegmentationPopulationModelRecord = {
+    id: "segmentation_population.fixture",
+    model: {
+      schema: "scce.segmentation_population_model.v1",
+      id: "segmentation_population.fixture",
+      rootPopulationId: "population.fixture",
+      populations: [],
+      assignments: [],
+      selection: {
+        fitDocumentIds: [],
+        holdoutDocumentIds: [],
+        candidates: [],
+        selectedPopulationCount: 0,
+        baselineDescriptionNats: 0,
+        selectedDescriptionNats: 0,
+        mdlGainNats: 0
+      },
+      audit: {}
+    },
+    trainingPlanId: "training.fixture",
+    profileIds: ["profile.fixture"],
+    sourceVersionIds: ["source.fixture" as never],
+    createdAt: 1,
+    informationLabel: {
+      tenantId: "tenant.fixture",
+      principals: [],
+      compartments: [],
+      exportClass: "internal",
+      mergePolicy: "same_owner"
+    }
   };
   const storage = {
     brainImports: {
@@ -167,6 +218,13 @@ function runtimeFixture() {
         return [frame];
       }
     },
+    segmentationPopulations: {
+      listRecent: async (query: { profileIds?: readonly string[]; limit?: number }) => {
+        calls.populations += 1;
+        populationQueries.push(query);
+        return [populationRecord];
+      }
+    },
     model: {
       listLanguageProfiles: async (query: { surfaceNgrams?: readonly string[]; limit?: number; referencedByLanguageMemory?: boolean }) => {
         calls.profiles += 1;
@@ -189,6 +247,7 @@ function runtimeFixture() {
   return {
     runtime,
     profileQueries,
+    populationQueries,
     totalDurableCalls: () => Object.values(calls).reduce((sum, count) => sum + count, 0)
   };
 }

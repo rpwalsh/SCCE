@@ -1,7 +1,7 @@
 import { clamp01, createHasher, entropy, toJsonValue } from "./primitives.js";
 import {
-  scoreBoundary,
-  type BoundaryEstimatorModel,
+  scoreBoundaryState,
+  type BoundaryEstimatorState,
   type BoundaryFeatureVector,
   type BoundaryObservation
 } from "./boundary-estimator.js";
@@ -113,7 +113,7 @@ export interface SurfaceLatticeBuildOptions {
   maxUnits?: number;
   maxEdges?: number;
   segmentationPathLimit?: number;
-  boundaryEstimator?: BoundaryEstimatorModel;
+  boundaryEstimator?: BoundaryEstimatorState;
 }
 
 interface CandidateUnit {
@@ -285,7 +285,12 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       boundaryEstimator: {
         id: estimatorId,
         status: options.boundaryEstimator ? "corpus_fitted" : "untrained_neutral",
-        trainingStatisticsId: options.boundaryEstimator?.trainingStatisticsId
+        trainingStatisticsId: options.boundaryEstimator && "trainingStatisticsId" in options.boundaryEstimator
+          ? options.boundaryEstimator.trainingStatisticsId
+          : undefined,
+        populationModelId: options.boundaryEstimator && "populationModelId" in options.boundaryEstimator
+          ? options.boundaryEstimator.populationModelId
+          : undefined
       },
       segmentationForestId: segmentationForest.id,
       retainedSegmentationPosteriorMass: segmentationForest.retainedPosteriorMass
@@ -770,7 +775,7 @@ function boundaryEvidenceAt(input: {
   structuralBoundary: number;
   transitionEntropyByPosition: ReadonlyMap<number, number>;
   repeatedContextSupport: number;
-  boundaryEstimator?: BoundaryEstimatorModel;
+  boundaryEstimator?: BoundaryEstimatorState;
 }): SurfaceBoundaryEvidence {
   const chars = [...input.text];
   const left = chars[input.positionCodePoint - 1] ?? "";
@@ -795,7 +800,7 @@ function boundaryEvidenceAt(input: {
     positionCodePoint: input.positionCodePoint,
     positionGrapheme: input.positionGrapheme,
     boundaryProbability: input.boundaryEstimator
-      ? scoreBoundary(input.boundaryEstimator, features)
+      ? scoreBoundaryState(input.boundaryEstimator, features)
       : 0.5,
     estimatorId: input.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID,
     features

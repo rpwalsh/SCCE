@@ -42,6 +42,23 @@ function fakeModel(id: string): InducedLanguageModel {
       calibration: { examples: 0, positiveMass: 0, negativeMass: 0, logLoss: 0 },
       audit: {}
     },
+    segmentationPopulations: {
+      schema: "scce.segmentation_population_model.v1",
+      id: "segmentation_population.fixture",
+      rootPopulationId: "population.fixture",
+      populations: [],
+      assignments: [],
+      selection: {
+        fitDocumentIds: [],
+        holdoutDocumentIds: [],
+        candidates: [],
+        selectedPopulationCount: 0,
+        baselineDescriptionNats: 0,
+        selectedDescriptionNats: 0,
+        mdlGainNats: 0
+      },
+      audit: {}
+    },
     boundarySignals: [],
     morphology: [],
     syntaxTemplates: [],
