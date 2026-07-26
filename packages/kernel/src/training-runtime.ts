@@ -269,7 +269,12 @@ export function createTrainingRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: eviPlan.audit })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPromoted", payload: { promotedEvidence: promoted, selectedEvidenceIds: promotionIds.map(String), weightedFeatureSketches: featureSketches.length, modelStateKey: "latentConcepts", languageProfiles: profiles.length, trainingLanguage: trainingLanguage.audit, promotionPlan: plan.promotion, trainingPromotion: mvpTrainPlan.promotion.slice(0, 64).map(item => ({ evidenceId: item.evidenceId, promote: item.promote, score: item.score, reasons: item.reasons })) } })));
       const selfState = await createFunctionalSelfModel({ storage: deps.storage, model, policy, recentFailures: failures });
-      const trainField = fieldEngine.activate({ text: model.learningGoals.join("\n"), nodes: slice.nodes, edges: slice.edges });
+      const trainField = fieldEngine.activate({
+        text: model.learningGoals.join("\n"),
+        nodes: slice.nodes,
+        edges: slice.edges,
+        hyperedges: slice.hyperedges
+      });
       const trainForecastState = prediction.state({ episodeId, graph: slice, alphaTrace: trainField.alphaTrace, t: clock.now() });
       const trainSsd = ssd.distill({ model, graph: slice, state: trainForecastState, self: selfState });
       const trainFcs = fcs.score({ self: selfState, ssd: trainSsd });

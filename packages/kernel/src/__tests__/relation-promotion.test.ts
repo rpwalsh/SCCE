@@ -128,6 +128,12 @@ describe("held-out relation promotion", () => {
       nodeId: null,
       realization: "omitted"
     });
+    expect(graph.nodes.some(node =>
+      node.metadata
+      && typeof node.metadata === "object"
+      && !Array.isArray(node.metadata)
+      && node.metadata.portId === "port.omitted")).toBe(false);
+    expect(graph.edges).toHaveLength(0);
     expect(graph.hyperedges[1]!.participantPorts).toEqual([]);
     expect(graph.hyperedges[1]!.memberNodeIds).toEqual([]);
     expect(() => assertCanonicalHyperedge({
