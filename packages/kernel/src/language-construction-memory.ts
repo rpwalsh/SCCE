@@ -11,7 +11,7 @@ import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
 export const LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA = "scce.language_construction_pattern.v1" as const;
-export const LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
+export const OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
 export const CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA = "scce.creative_event_construction_pattern.v3" as const;
 export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argument_frame.v1" as const;
 /**
@@ -32,7 +32,7 @@ export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   digest: "surface.construction_memory.reject.digest",
   member: "surface.construction_memory.reject.member",
   duplicate: "surface.construction_memory.reject.duplicate",
-  legacyCreativeV2: "surface.construction_memory.reject.legacy_creative_v2"
+  obsoleteCreativeV2: "surface.construction_memory.reject.obsolete_creative_v2"
 } as const;
 
 export type LanguageConstructionMemoryRejectionId =
@@ -584,8 +584,8 @@ export function hydrateLanguageConstructionPatterns(input: {
     }
     const verified = isCreativeEventConstructionPattern(pattern)
       ? verifyCreativeEventPattern(pattern, evidenceById, input.hasher)
-      : isLegacyCreativeEventConstructionPatternV2(pattern)
-        ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.legacyCreativeV2)
+      : isObsoleteCreativeEventConstructionPatternV2(pattern)
+        ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.obsoleteCreativeV2)
         : verifyPersistedPattern(pattern, evidenceById, input.hasher);
     if ("issue" in verified) rejectedIssues.push(verified.issue);
     else bundles.push(verified.bundle);
@@ -611,8 +611,8 @@ export function isCreativeEventConstructionPattern(pattern: LanguagePatternRecor
   return recordOf(pattern.patternJson).schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA;
 }
 
-function isLegacyCreativeEventConstructionPatternV2(pattern: LanguagePatternRecord): boolean {
-  return recordOf(pattern.patternJson).schema === LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
+function isObsoleteCreativeEventConstructionPatternV2(pattern: LanguagePatternRecord): boolean {
+  return recordOf(pattern.patternJson).schema === OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
 }
 
 function prepareObservation(input: {
