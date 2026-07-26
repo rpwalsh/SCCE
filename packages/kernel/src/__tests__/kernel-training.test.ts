@@ -11,6 +11,7 @@ import {
   type EvidenceId,
   type EvidenceSpan,
   type GraphSlice,
+  type GraphSliceQuery,
   type InformationLabel,
   type JsonValue,
   type ModelState,
@@ -75,6 +76,68 @@ describe("kernel training", () => {
     expect(payload.selectedEvidenceIds).toEqual([String(eligible.id)]);
     expect(payload.trainingPromotion?.find(item => item.evidenceId === String(eligible.id))?.promote).toBe(true);
     expect(payload.trainingPromotion?.find(item => item.evidenceId === String(rejected.id))?.promote).toBe(false);
+  });
+
+  it("bootstraps train()'s graph-node query with allowLatestFallback and finds evidence with zero prior training state (plan item 15)", async () => {
+    // The shared storageFixture()'s getSlice mock always returns its graph
+    // regardless of query params, so it can't catch a regression of the
+    // real bug this test guards: postgres.ts's queryNodes returns zero
+    // rows for a filterless query unless allowLatestFallback is set (it
+    // refuses to guess what to return rather than scanning the whole
+    // table). A fresh corpus's first train() call has no seedNodeIds,
+    // evidenceIds, or feature filter to give getSlice -- only
+    // allowLatestFallback can make the bootstrap query return anything,
+    // which is what feeds evidenceForLearning's own feature-derived
+    // search. This fixture mirrors that real behavior exactly instead of
+    // being unconditionally lenient.
+    const clock = createClock({ fixedTime: 1500, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const eligible = evidenceSpan({
+      id: "evidence:bootstrap-eligible",
+      sourceVersionId: "source:bootstrap-eligible:v1" as SourceVersionId,
+      text: "Zephyr valve pressure stabilizes at 42 psi after calibration. The valve relation remains source grounded.",
+      trust: 0.94,
+      alpha: 0.91,
+      status: "quarantined"
+    });
+    const getSliceCalls: GraphSliceQuery[] = [];
+    const graphNodesFromEvidence = graphSlice([eligible]).nodes;
+    const base = storageFixture({ evidence: [eligible], clockNow: () => clock.now() });
+    const storage: ScceStorage = {
+      ...base.storage,
+      graph: {
+        ...base.storage.graph,
+        getSlice: async (query: GraphSliceQuery) => {
+          getSliceCalls.push(query);
+          // Real queryNodes semantics: only seedNodeIds/evidenceIds/features
+          // or allowLatestFallback can produce rows; a bare query returns [].
+          const hasOtherFilter = Boolean(query.seedNodeIds?.length || query.evidenceIds?.length || query.features?.length);
+          const nodes = query.allowLatestFallback || hasOtherFilter ? graphNodesFromEvidence : [];
+          return { bounded: true, query: {}, nodes, edges: [], hyperedges: [] };
+        }
+      }
+    };
+    const kernel = createScceKernel({
+      storage,
+      files: { streamPath: async function* () { /* unused in this test */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids,
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.train({
+      config: {
+        learningGoals: ["learn source grounded zephyr valve pressure calibration"],
+        promotion: { minTrust: 0.45 }
+      }
+    });
+
+    expect(getSliceCalls.length).toBeGreaterThan(0);
+    expect(getSliceCalls.some(call => call.allowLatestFallback === true)).toBe(true);
+    expect(result.promotedEvidence).toBe(1);
+    expect(base.promotedIds).toEqual([String(eligible.id)]);
   });
 
   it("uses source-derived metadata namespaces for promotion filters", async () => {
