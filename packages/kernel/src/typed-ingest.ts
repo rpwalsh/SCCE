@@ -912,43 +912,47 @@ export function graphFromStructuredSemanticCandidates(input: {
         realization: participant.realization,
         evidenceIds: candidate.evidenceIds
       });
-      nodes.push({
-        id: participantNodeId,
-        typeId: input.ids.dimensionId({ kind: "structured_semantic_participant", valueKind: participant.valueKind }),
-        representation: participant.value,
-        alpha: candidate.support,
-        evidenceIds: candidate.evidenceIds,
-        features: [`participant:${participant.valueKind}`, `port:${participant.portId}`],
-        createdAt: input.observedAt,
-        updatedAt: input.observedAt,
-        metadata: toJsonValue({ candidateId: candidate.id, portId: participant.portId })
-      });
-      const relationId = input.ids.relationId({ relation: "candidate_participant", portId: participant.portId });
-      edges.push({
-        id: input.ids.edgeId({
-          source: relationNodeId,
-          target: participantNodeId,
-          relationId,
-          provenanceHash: input.hasher.digestHex(`${candidate.id}:${participant.portId}`)
-        }),
-        source: relationNodeId,
-        target: participantNodeId,
-        relationId,
-        alpha: candidate.support,
-        weight: candidate.support,
-        temporalScope: { validFrom: input.observedAt },
-        evidenceIds: candidate.evidenceIds,
-        createdAt: input.observedAt,
-        updatedAt: input.observedAt,
-        metadata: toJsonValue({
-          candidateId: candidate.id,
-          candidateKind: candidate.kind,
-          portId: participant.portId,
-          promoted,
-          promotionModelId: input.relationPromotionModel?.id ?? null,
-          descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null
-        })
-      });
+      if (participant.realization === "observed") {
+        nodes.push({
+          id: participantNodeId,
+          typeId: input.ids.dimensionId({ kind: "structured_semantic_participant", valueKind: participant.valueKind }),
+          representation: participant.value,
+          alpha: candidate.support,
+          evidenceIds: candidate.evidenceIds,
+          features: [`participant:${participant.valueKind}`, `port:${participant.portId}`],
+          createdAt: input.observedAt,
+          updatedAt: input.observedAt,
+          metadata: toJsonValue({ candidateId: candidate.id, portId: participant.portId })
+        });
+        if (!promoted) {
+          const relationId = input.ids.relationId({ relation: "candidate_participant", portId: participant.portId });
+          edges.push({
+            id: input.ids.edgeId({
+              source: relationNodeId,
+              target: participantNodeId,
+              relationId,
+              provenanceHash: input.hasher.digestHex(`${candidate.id}:${participant.portId}`)
+            }),
+            source: relationNodeId,
+            target: participantNodeId,
+            relationId,
+            alpha: candidate.support,
+            weight: candidate.support,
+            temporalScope: { validFrom: input.observedAt },
+            evidenceIds: candidate.evidenceIds,
+            createdAt: input.observedAt,
+            updatedAt: input.observedAt,
+            metadata: toJsonValue({
+              candidateId: candidate.id,
+              candidateKind: candidate.kind,
+              portId: participant.portId,
+              promoted,
+              promotionModelId: input.relationPromotionModel?.id ?? null,
+              descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null
+            })
+          });
+        }
+      }
     }
     if (promoted) {
       const relationId = input.ids.relationId({

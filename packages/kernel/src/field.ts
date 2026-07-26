@@ -1,4 +1,4 @@
-import type { Clock, FieldState, GraphEdge, GraphNode } from "./types.js";
+import type { Clock, FieldState, GraphEdge, GraphNode, Hyperedge } from "./types.js";
 import { clamp01, createClock, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createAlphaLayer } from "./alpha.js";
 import { personalizedRandomWalkWithRestartDetailed, type RelationTransitionPolicy } from "./ppf.js";
@@ -16,6 +16,10 @@ import {
   type RelationPotentialEdgeScoreAudit,
   type RelationPotentialModel
 } from "./relation-potential.js";
+import {
+  isTypedParticipantIncidenceEdge,
+  projectTypedIncidencesForActivation
+} from "./typed-incidence-graph.js";
 
 export interface FieldEvaluationContext {
   condition: EvaluationConditionConfig;
@@ -36,11 +40,18 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
     ? undefined
     : freezeRelationPotentialModel(options.relationPotentialModel);
   return {
-    activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext }): FieldState {
+    activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; hyperedges?: Hyperedge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext }): FieldState {
+      const incidenceProjection = projectTypedIncidencesForActivation({
+        nodes: input.nodes,
+        edges: input.edges,
+        hyperedges: input.hyperedges ?? []
+      });
+      const nodes = incidenceProjection.nodes;
+      const edges = incidenceProjection.edges;
       const requestFeatures = fieldRequestFeatures(input.text);
       const priorByNode = new Map((input.seedPriors ?? []).map(seed => [String(seed.nodeId), clamp01(seed.weight)]));
       const priorFeatureByNode = new Map((input.seedPriors ?? []).map(seed => [String(seed.nodeId), seed.feature ?? "resident-memory-prior"]));
-      const seeds = input.nodes
+      const seeds = nodes
         .map(node => {
           const comparableFeatures = fieldNodeFeatures(node);
           const lexical = weightedJaccard(requestFeatures, comparableFeatures);
@@ -54,8 +65,8 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
         .filter(seed => seed.weight > 0)
         .sort((a, b) => b.weight - a.weight)
         .slice(0, 48);
-      const nodeIds = new Set(input.nodes.map(node => String(node.id)));
-      const boundedEdges = input.edges.filter(edge => nodeIds.has(String(edge.source)) && nodeIds.has(String(edge.target)));
+      const nodeIds = new Set(nodes.map(node => String(node.id)));
+      const boundedEdges = edges.filter(edge => nodeIds.has(String(edge.source)) && nodeIds.has(String(edge.target)));
       const relationPotential = relationPotentialEdges({
         edges: boundedEdges,
         model: relationPotentialModel,
@@ -64,14 +75,20 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
       const diffusionEdges = relationPotential.edges;
       const relationPolicies: readonly RelationTransitionPolicy[] = options.relationPolicies ?? [...new Set(diffusionEdges.map(edge => String(edge.relationId)))]
         .sort()
-        .map(relationId => ({ relationId, direction: "directed" as const }));
+        .map(relationId => ({
+          relationId,
+          direction: diffusionEdges.some(edge =>
+            String(edge.relationId) === relationId && isTypedParticipantIncidenceEdge(edge))
+            ? "reversible" as const
+            : "directed" as const
+        }));
       const diffusion = seeds.length
         ? evaluateFieldComponent({
           evaluation: input.evaluation,
           component: "query-diffusion",
           boundary: "field.query-diffusion",
           execute: () => personalizedRandomWalkWithRestartDetailed({
-            nodes: input.nodes,
+            nodes,
             edges: diffusionEdges,
             personalization: seeds,
             relationPolicies,
@@ -88,12 +105,12 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
       const ppf = diffusion.rank;
       const active = ppf.slice(0, 64).map(item => ({ nodeId: item.nodeId, activation: item.mass }));
       const activeNodeIds = active.map(item => String(item.nodeId));
-      const alphaTrace = createAlphaLayer(options).buildTrace({ nodes: input.nodes, edges: diffusionEdges, activeNodeIds, previous: input.previous?.alphaTrace });
+      const alphaTrace = createAlphaLayer(options).buildTrace({ nodes, edges: diffusionEdges, activeNodeIds, previous: input.previous?.alphaTrace });
       const fieldOperators = fieldOperatorTrace(alphaTrace, ppf, input.previous);
-      const causalMass = causal.discover({ nodes: input.nodes, edges: diffusionEdges, activeNodeIds: active.map(item => item.nodeId) });
-      const greenPotential = solveGreenPotentialField({ nodes: input.nodes, edges: diffusionEdges, requestFeatures, seeds, activeNodeIds, ppf, alphaTrace });
-      const importedPriorTrace = importedGraphPriorTrace(input.nodes, diffusionEdges, active, ppf);
-      return { requestFeatures, seeds, active, ppf, ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: input.edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, importedPriorTrace, fieldOperators }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
+      const causalMass = causal.discover({ nodes, edges: diffusionEdges, activeNodeIds: active.map(item => item.nodeId) });
+      const greenPotential = solveGreenPotentialField({ nodes, edges: diffusionEdges, requestFeatures, seeds, activeNodeIds, ppf, alphaTrace });
+      const importedPriorTrace = importedGraphPriorTrace(nodes, diffusionEdges, active, ppf);
+      return { requestFeatures, seeds, active, ppf, ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, fieldOperators }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
     }
   };
 }

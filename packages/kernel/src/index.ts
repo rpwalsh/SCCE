@@ -184,6 +184,7 @@ export * from "./relation-potential.js";
 export * from "./relation-promotion.js";
 export * from "./opaque-role-induction.js";
 export * from "./role-surface-order.js";
+export * from "./typed-incidence-graph.js";
 export * from "./patch-transaction.js";
 export * from "./workspace-plan-generator.js";
 export * from "./runtime-workspace-plan-context.js";

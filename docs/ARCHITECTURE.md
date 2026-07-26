@@ -82,6 +82,9 @@ validation so credentials need not be committed.
 - `role-surface-order.ts`: separately compiled \(P(p\mid r,G)\) semantic-role and
   \(P(\operatorname{position}\mid p,r,c,d)\) realization fields. Position never
   defines a role; omission and repeated realization are explicit learned states.
+- `typed-incidence-graph.ts`: lossless arbitrary-arity hyperedge lift into relation
+  nodes and typed participant incidences. The field engine uses reversible incidence
+  transitions without participant cliques; omitted ports remain null incidences.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field

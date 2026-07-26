@@ -79,6 +79,8 @@ answer lane.
   source-disjoint held-out MDL and applied to promoted hyperedge occurrences.
 - `role-surface-order.ts`: position-free semantic-role probabilities plus separately
   conditioned surface order, omission and repetition probabilities.
+- `typed-incidence-graph.ts`, `field.ts`: lossless hyperedge-to-incidence projection
+  and reversible arbitrary-arity alpha/PPF activation.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

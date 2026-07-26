@@ -152,6 +152,15 @@ The content-addressed artifact is `scce.role_surface_order_model.v1`, and its ID
 recorded by ordinary ingest, Wikipedia shard compilation, engineering-corpus folding
 and the source-only runtime.
 
+Every canonical hyperedge has a deterministic lossless derived representation,
+`scce.typed_incidence_graph.v1`. The derived graph contains one relation node per
+hyperedge and one typed incidence per participant occurrence. Relation nodes retain
+the exact hyperedge ID, relation ID, qualifiers, modality, temporal scope, evidence
+and provenance. Omitted ports remain null incidences and zero-arity hyperedges remain
+relation nodes; neither case creates a fabricated participant. Observed incidences are
+projected as reversible alpha/PPF transitions. No participant clique or binary triple
+is materialized.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

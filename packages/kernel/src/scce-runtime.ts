@@ -606,14 +606,15 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
     const runtimeGraph = {
       nodes: dedupeById([...workspaceAnswer.graph.nodes, ...(sourceIngest?.graph.nodes ?? [])]),
       edges: dedupeById([...workspaceAnswer.graph.edges, ...(sourceIngest?.graph.edges ?? [])]),
-      hyperedges: [],
+      hyperedges: dedupeById(sourceIngest?.graph.hyperedges ?? []),
       bounded: true as const,
       query: { features: featureSet(input.text, 256) }
     };
     const runtimeField = createAlphaFieldEngine().activate({
       text: input.text,
       nodes: runtimeGraph.nodes,
-      edges: runtimeGraph.edges
+      edges: runtimeGraph.edges,
+      hyperedges: runtimeGraph.hyperedges
     });
     const operatorActivations = activateCognitiveOperators({
       requirementField,

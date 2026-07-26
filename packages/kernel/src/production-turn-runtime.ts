@@ -764,6 +764,7 @@ export function createProductionTurnRuntime(options: {
         text: retrievalText,
         nodes: graph.nodes,
         edges: graph.edges,
+        hyperedges: graph.hyperedges,
         previous: runtimeState.lastField,
         evaluation: fieldEvaluation,
         seedPriors: [...semanticSeedAnchors, ...walkSeedExpansion.seeds]
