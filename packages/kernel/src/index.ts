@@ -63,6 +63,7 @@ export * from "./language-construction.js";
 export * from "./language-construction-memory.js";
 export * from "./graph-surface-alignment.js";
 export * from "./sparse-alignment-candidates.js";
+export * from "./sparse-fused-transport.js";
 export * from "./language-training-batch.js";
 export * from "./creative-event-compatibility.js";
 export * from "./calibration-spine.js";

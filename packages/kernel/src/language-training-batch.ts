@@ -11,6 +11,10 @@ import {
   compileSparseAlignmentCandidateSupports,
   type SparseAlignmentCandidateSupport
 } from "./sparse-alignment-candidates.js";
+import {
+  solveSparseFusedUnbalancedTransport,
+  type SparseFusedTransportPlan
+} from "./sparse-fused-transport.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -95,6 +99,7 @@ export interface CompiledLanguageTrainingBatch {
   graphSurfaceAlignmentSummaries: JsonValue[];
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
+  sparseTransportPlans: SparseFusedTransportPlan[];
   constructionCandidates: number;
   rejectedConstructionCandidates: number;
   constructionPromotion: LanguageTrainingConstructionPromotionReport;
@@ -144,6 +149,14 @@ export function compileLanguageTrainingBatch(input: {
     })
     : undefined;
   const sparseAlignmentCandidateSupports = sparseAlignment?.supports ?? [];
+  const sparseTransportPlans = sparseAlignment
+    ? sparseAlignmentCandidateSupports.map(support =>
+      solveSparseFusedUnbalancedTransport({
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        hasher: input.hasher
+      }))
+    : [];
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -200,6 +213,7 @@ export function compileLanguageTrainingBatch(input: {
       .filter((summary): summary is JsonValue => summary !== undefined),
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
+    sparseTransportPlans,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
     rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
     constructionPromotion: promotion.report,
@@ -225,7 +239,15 @@ export function compileLanguageTrainingBatch(input: {
           (sum, support) => sum + support.candidates.length,
           0
         ),
-        summaries: sparseAlignmentCandidateSummaries
+        summaries: sparseAlignmentCandidateSummaries,
+        transportPlans: sparseTransportPlans.map(plan => ({
+          id: plan.id,
+          status: plan.status,
+          transportedCellCount: plan.cells.length,
+          iterations: plan.iterations.length,
+          finalObjective: plan.iterations.at(-1)?.objective ?? null,
+          audit: plan.audit
+        }))
       },
       compiledConstructions: constructionPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()

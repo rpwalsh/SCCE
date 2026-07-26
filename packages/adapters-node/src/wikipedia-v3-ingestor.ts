@@ -16,6 +16,7 @@ import {
   compileRoleSurfaceOrderModel,
   compileSparseAlignmentTargetIndex,
   generateSparseAlignmentCandidates,
+  solveSparseFusedUnbalancedTransport,
   graphFromStructuredSemanticCandidates,
   buildSurfaceLattice,
   liftHyperedgesToTypedIncidenceGraph,
@@ -949,6 +950,9 @@ export class WikipediaV3Ingestor {
       let alignmentSurfaceUnitCount = 0;
       let maximumAlignmentDegree = 0;
       const alignmentSupportIds: string[] = [];
+      const transportPlanIds: string[] = [];
+      let transportIterationCount = 0;
+      let transportedCellCount = 0;
       for (const span of evidence) {
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
@@ -969,6 +973,14 @@ export class WikipediaV3Ingestor {
           maximumAlignmentDegree,
           ...support.rows.map(row => row.candidateIds.length)
         );
+        const transport = solveSparseFusedUnbalancedTransport({
+          support,
+          targetIndex: alignmentTargetIndex,
+          hasher: this.hasher
+        });
+        transportPlanIds.push(transport.id);
+        transportIterationCount += transport.iterations.length;
+        transportedCellCount += transport.cells.length;
       }
       await this.storage.events.append(this.events.create({
         episodeId,
@@ -1001,6 +1013,11 @@ export class WikipediaV3Ingestor {
           candidateCount: alignmentCandidateCount,
           maximumCandidateDegree: maximumAlignmentDegree,
           supportIds: alignmentSupportIds,
+          transportPlanIds,
+          transportIterationCount,
+          transportedCellCount,
+          transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
+          globalOptimalityClaimed: false,
           candidateMemory: "O(|S|*K_pi)",
           denseMatrixMaterialized: false
         })
