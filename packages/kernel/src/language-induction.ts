@@ -1161,7 +1161,7 @@ function sentenceSegments(text: string, hasher: Hasher): string[] {
 
 function lexicalUnits(lattice: SurfaceLattice) {
   return lattice.units
-    .filter(unit => unit.kind === "lexical")
+    .filter(unit => unit.proposalSources.includes("lexical"))
     .sort((left, right) => left.utf16Start - right.utf16Start || left.utf16End - right.utf16End);
 }
 

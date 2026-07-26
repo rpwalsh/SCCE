@@ -156,7 +156,7 @@ export function induceGraphSurfaceAlignments(input: {
       transportTraces: tracesByConstructionId.get(construction.id) ?? []
     });
   }
-  return sets.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
+  return sets;
 }
 
 /**
@@ -672,7 +672,7 @@ function transportCell(input: {
 function lexicalLatticeUnitMap(lattice: SurfaceLattice): Map<string, SurfaceLatticeUnit> {
   const out = new Map<string, SurfaceLatticeUnit>();
   for (const unit of lattice.units) {
-    if (unit.kind !== "lexical") continue;
+    if (!unit.proposalSources.includes("lexical")) continue;
     out.set(`${unit.codePointStart}\u0001${unit.codePointEnd}\u0001${unit.normalized}`, unit);
   }
   return out;
