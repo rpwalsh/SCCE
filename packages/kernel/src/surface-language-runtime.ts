@@ -114,7 +114,7 @@ export function createSurfaceLanguageRuntime(options: {
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     const requestControlCompatibilityPatterns = requestControlPatterns
       .filter(isCreativeEventCompatibilityPattern);
-    if (!cluster) {
+    if (!cluster && !preferredCorpusRoleId) {
       const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
         importRunId: active.activeImportRunIds[0],
         models: [],
@@ -222,7 +222,9 @@ export function createSurfaceLanguageRuntime(options: {
       })
       : undefined;
     const effectiveCluster = roleCluster ?? cluster;
-    const state = scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster);
+    const state = effectiveCluster
+      ? scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster)
+      : markLanguageMemoryStateUnscoped(hydrated, unscopedReason);
     return {
       models,
       observations,
@@ -232,7 +234,7 @@ export function createSurfaceLanguageRuntime(options: {
       constructionEvidence,
       requestControlPatterns: learnedRequestControlPatterns,
       state,
-      surfaceProfile: effectiveCluster.members[0] as LanguageProfile | undefined,
+      surfaceProfile: effectiveCluster?.members[0] as LanguageProfile | undefined,
       active,
       corpusPlan
     };
@@ -245,24 +247,26 @@ export function createSurfaceLanguageRuntime(options: {
     profiles: readonly LanguageProfile[];
     surface?: string;
   }): LanguageProfileCluster | undefined {
-    const targetScripts = new Set((input.target?.scripts ?? [])
+    const target = input.target;
+    const targetScripts = new Set((target?.scripts ?? [])
       .filter(row => row.mass >= 0.12)
       .map(row => row.script));
-    const targetLanguageOwners = new Set((input.target?.discoveredNames ?? [])
+    const targetLanguageOwners = new Set((target?.discoveredNames ?? [])
       .filter(row => row.confidence > 0)
       .map(row => normalizePriorKey(row.surface))
       .filter(Boolean));
-    const ownerCompatible = input.profiles
-      .filter(profile => !input.target || (
-        profile.direction === input.target.direction
+    const ownerCompatible = target
+      ? input.profiles.filter(profile => (
+        profile.direction === target.direction
         && profile.scripts.some(script => script.mass >= 0.12 && targetScripts.has(script.script))
         && targetLanguageOwners.size > 0
         && (profile.discoveredNames ?? []).some(name =>
           name.confidence > 0
           && targetLanguageOwners.has(normalizePriorKey(name.surface))
         )
-      ));
-    const surfaceSelected = !ownerCompatible.length && input.surface?.trim()
+      ))
+      : [];
+    const surfaceSelected = input.surface?.trim()
       ? selectLanguageProfileClusterForSurface(buildLanguageProfileClusters(input.profiles), input.surface)?.cluster
       : undefined;
     const surfaceSelectedOwners = new Set((surfaceSelected?.discoveredNames ?? [])
@@ -274,9 +278,16 @@ export function createSurfaceLanguageRuntime(options: {
         name.confidence > 0 && surfaceSelectedOwners.has(normalizePriorKey(name.surface))
       ))
       : surfaceSelected?.members ?? [];
-    const compatible = (ownerCompatible.length ? ownerCompatible : surfaceCompatible)
-      .filter(profile => !input.target || (
-        profile.direction === input.target.direction
+    const roleCompatible = ownerCompatible.length
+      ? ownerCompatible
+      : surfaceCompatible.length
+        ? surfaceCompatible
+        : target
+          ? []
+          : input.profiles;
+    const compatible = roleCompatible
+      .filter(profile => !target || (
+        profile.direction === target.direction
         && profile.scripts.some(script => script.mass >= 0.12 && targetScripts.has(script.script))
       ))
       .sort((left, right) => left.id.localeCompare(right.id));
@@ -292,10 +303,10 @@ export function createSurfaceLanguageRuntime(options: {
       profileIds,
       sourceVersionIds,
       discoveredNames: base.discoveredNames,
-      scripts: input.target?.scripts ?? base.scripts,
-      symbolShapes: input.target?.symbolShapes ?? base.symbolShapes,
-      charNgrams: input.target?.charNgrams ?? base.charNgrams,
-      direction: input.target?.direction ?? base.direction,
+      scripts: target?.scripts ?? base.scripts,
+      symbolShapes: target?.symbolShapes ?? base.symbolShapes,
+      charNgrams: target?.charNgrams ?? base.charNgrams,
+      direction: target?.direction ?? base.direction,
       artifactSupport: compatible.reduce((sum, profile) => sum + Math.max(1, profile.charNgrams.reduce((mass, row) => mass + row.count, 0)), 0)
     };
   }
