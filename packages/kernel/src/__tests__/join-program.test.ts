@@ -96,7 +96,7 @@ describe("learned join programs", () => {
       mixture,
       {
         units: units.map(unit => ({
-          unitClassId: unit.unitClassId,
+          surfaceFormClassId: unit.surfaceFormClassId,
           scaleId: unit.kind,
           graphemeWidth: Math.max(1, unit.graphemeEnd - unit.graphemeStart)
         })),

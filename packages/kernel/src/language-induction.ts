@@ -32,6 +32,7 @@ import {
   inferRelationHypotheses,
   type RelationHypothesisModel
 } from "./relation-hypothesis.js";
+import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -642,7 +643,7 @@ function induceMorphology(symbols: readonly string[], hasher: Hasher): Morpholog
   return rules.sort((a, b) => b.productivity - a.productivity || b.stemCount - a.stemCount || a.pattern.localeCompare(b.pattern));
 }
 
-const MORPHOLOGY_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const MORPHOLOGY_GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
 
 function graphemeUnits(value: string): string[] {
   return [...MORPHOLOGY_GRAPHEME_SEGMENTER.segment(value)].map(row => row.segment);

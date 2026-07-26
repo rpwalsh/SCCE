@@ -235,6 +235,13 @@ export interface GraphNode {
   informationLabel?: InformationLabel;
 }
 
+export type GraphTemporalScope =
+  | { status: "known"; validFrom: number; validTo?: number; provenance?: JsonValue }
+  | { status: "unknown"; uncertainty: number; provenance?: JsonValue }
+  | { status: "atemporal"; provenance?: JsonValue }
+  /** Read compatibility only; production compilation audits reject this shape. */
+  | { status?: undefined; validFrom: number; validTo?: number };
+
 export interface GraphEdge {
   id: EdgeId;
   source: NodeId;
@@ -242,7 +249,7 @@ export interface GraphEdge {
   relationId: RelationId;
   alpha: number;
   weight: number;
-  temporalScope: { validFrom: number; validTo?: number };
+  temporalScope: GraphTemporalScope;
   evidenceIds: EvidenceId[];
   createdAt: number;
   updatedAt: number;

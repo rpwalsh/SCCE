@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createAlphaFieldEngine } from "../field.js";
 import {
+  isTypedParticipantIncidenceEdge,
   liftHyperedgesToTypedIncidenceGraph,
   projectTypedIncidencesForActivation
 } from "../typed-incidence-graph.js";
+import { evaluateGraphTemporalScope } from "../graph-temporal.js";
 import type {
   EvidenceId,
   GraphNode,
@@ -12,6 +14,20 @@ import type {
 } from "../types.js";
 
 describe("typed incidence graph", () => {
+  it("keeps unresolved hyperedge validity uncertain during activation", () => {
+    const source = hyperedge("hyperedge.unknown-time", [
+      port("port.actor", "role.actor", "node.actor")
+    ], {});
+    const projection = projectTypedIncidencesForActivation({
+      nodes: [node("node.actor", ["anchor"])],
+      edges: [],
+      hyperedges: [{ ...source, temporalScope: {} }]
+    });
+    const edge = projection.edges.find(row => isTypedParticipantIncidenceEdge(row));
+    expect(edge?.temporalScope).toMatchObject({ status: "unknown", uncertainty: 1 });
+    expect(evaluateGraphTemporalScope(edge!.temporalScope, Date.now()))
+      .toEqual({ status: "uncertain", fit: 0 });
+  });
   it("losslessly lifts arbitrary and zero-arity hyperedges without binary flattening", () => {
     const relation = hyperedge("hyperedge.event", [
       port("port.actor", "role.actor", "node.actor"),

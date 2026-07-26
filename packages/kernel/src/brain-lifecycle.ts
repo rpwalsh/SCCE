@@ -1,4 +1,15 @@
-import type { JsonValue } from "./types.js";
+import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import type { Hasher, JsonValue } from "./types.js";
+
+export const BRAIN_REPLAY_MANIFEST_SCHEMA = "scce.brain_replay_manifest.v1" as const;
+
+export interface BrainReplayManifest {
+  schema: typeof BRAIN_REPLAY_MANIFEST_SCHEMA;
+  id: string;
+  byteHash: string;
+  canonicalBytes: string;
+  componentIds: string[];
+}
 
 /** Durable states for one immutable brain import run. */
 export const BRAIN_LIFECYCLE_STATES = [
@@ -47,6 +58,7 @@ export interface BrainManifestContract {
     ngramStateCount: number;
     priorSectionCount: number;
   };
+  replayManifest?: BrainReplayManifest;
   metadata: JsonValue;
   createdAt: number;
 }
@@ -128,7 +140,77 @@ export function validateBrainManifestContract(manifest: BrainManifestContract): 
   for (const [key, count] of Object.entries(manifest.content)) {
     checks.push({ id: `manifest.content.${key}`, passed: Number.isSafeInteger(count) && count >= 0, severity: "error", message: `${key} is a non-negative safe integer` });
   }
+  if (manifest.replayManifest) {
+    try {
+      verifyBrainReplayManifest(manifest.replayManifest);
+      checks.push({ id: "manifest.replay", passed: true, severity: "error", message: "brain replay manifest bytes and identity are valid" });
+    } catch (error) {
+      checks.push({
+        id: "manifest.replay",
+        passed: false,
+        severity: "error",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
   return checks;
+}
+
+export function compileBrainReplayManifest(input: {
+  sourceSchema: string;
+  sourceManifestHash: string;
+  componentIds: readonly string[];
+  content: BrainManifestContract["content"];
+  configuration?: JsonValue;
+  hasher?: Hasher;
+}): BrainReplayManifest {
+  const hasher = input.hasher ?? createHasher();
+  const canonical = {
+    schema: BRAIN_REPLAY_MANIFEST_SCHEMA,
+    sourceSchema: input.sourceSchema,
+    sourceManifestHash: input.sourceManifestHash,
+    componentIds: [...new Set(input.componentIds.map(String))].sort(),
+    content: toJsonValue(input.content),
+    configuration: toJsonValue(input.configuration ?? {})
+  };
+  const canonicalBytes = canonicalStringify(canonical);
+  const byteHash = hasher.digestHex(canonicalBytes);
+  return {
+    schema: BRAIN_REPLAY_MANIFEST_SCHEMA,
+    id: `brain_replay.${byteHash.slice(0, 48)}`,
+    byteHash,
+    canonicalBytes,
+    componentIds: canonical.componentIds
+  };
+}
+
+export function verifyBrainReplayManifest(
+  replay: BrainReplayManifest,
+  hasher: Hasher = createHasher()
+): void {
+  if (replay.schema !== BRAIN_REPLAY_MANIFEST_SCHEMA) {
+    throw new Error("unsupported brain replay manifest schema");
+  }
+  const byteHash = hasher.digestHex(replay.canonicalBytes);
+  if (replay.byteHash !== byteHash) throw new Error("brain replay manifest hash mismatch");
+  if (replay.id !== `brain_replay.${byteHash.slice(0, 48)}`) {
+    throw new Error("brain replay manifest identity mismatch");
+  }
+  const decoded = JSON.parse(replay.canonicalBytes) as { componentIds?: unknown };
+  if (!Array.isArray(decoded.componentIds)
+    || canonicalStringify(decoded.componentIds) !== canonicalStringify(replay.componentIds)) {
+    throw new Error("brain replay manifest component material mismatch");
+  }
+}
+
+export function assertBrainManifestReplayForActivation(
+  manifest: BrainManifestContract,
+  hasher: Hasher = createHasher()
+): void {
+  if (!manifest.replayManifest) {
+    throw new Error("production brain activation requires a replay manifest");
+  }
+  verifyBrainReplayManifest(manifest.replayManifest, hasher);
 }
 
 export function validationDisposition(checks: readonly BrainValidationCheck[]): BrainValidationReport["disposition"] {

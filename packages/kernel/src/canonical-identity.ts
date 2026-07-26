@@ -5,14 +5,15 @@ import {
 import { canonicalStringify, createHasher } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 
-export const CANONICAL_IDENTITY_SCHEMA = "scce.canonical_identity.v1" as const;
+export const CANONICAL_IDENTITY_SCHEMA = "scce.canonical_identity.v2" as const;
 
 export const CANONICAL_IDENTITY_FIELDS = {
   source: ["namespace", "canonicalUri"],
   document: ["sourceVersionId", "contentHash", "logicalPath"],
   evidence_span: ["sourceVersionId", "byteStart", "byteEnd", "contentHash"],
-  surface_occurrence: ["evidenceId", "byteStart", "byteEnd", "exactSurfaceHash"],
+  surface_occurrence: ["sourceVersionId", "documentId", "byteStart", "byteEnd", "exactSurfaceHash"],
   normalized_surface_form: ["normalizationContractId", "normalizedSurface"],
+  surface_form_class: ["normalizationContractId", "normalizedSurfaceFormId", "unicodeScriptId"],
   mention: ["surfaceOccurrenceId", "mentionKind"],
   canonical_entity: ["authorityNamespace", "authorityKey"],
   unresolved_entity: ["mentionIds", "evidenceIds"],
@@ -53,6 +54,64 @@ export function createCanonicalIdentity(input: {
   };
 }
 
+export interface CanonicalIdentityAuditRecord {
+  identity: CanonicalIdentity;
+  recordId?: string;
+}
+
+export interface CanonicalIdentityAudit {
+  valid: boolean;
+  checked: number;
+  issues: string[];
+}
+
+/**
+ * Release/build boundary audit. Production snapshots must retain the complete
+ * canonical identity material; a string with a familiar prefix is not enough.
+ */
+export function auditCanonicalIdentities(
+  records: readonly CanonicalIdentityAuditRecord[],
+  hasher: Hasher = createHasher()
+): CanonicalIdentityAudit {
+  const issues: string[] = [];
+  const seen = new Map<string, string>();
+  for (const record of records) {
+    const identity = record.identity;
+    let rebuilt: CanonicalIdentity;
+    try {
+      rebuilt = createCanonicalIdentity({
+        kind: identity.kind,
+        fields: identity.fields,
+        normalizationContract: canonicalNormalizationContract(hasher),
+        hasher
+      });
+    } catch (error) {
+      issues.push(`${record.recordId ?? identity.id}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    if (rebuilt.schema !== identity.schema || rebuilt.id !== identity.id) {
+      issues.push(`${record.recordId ?? identity.id}: identity does not match canonical material`);
+      continue;
+    }
+    const bytes = canonicalStringify(identity);
+    const prior = seen.get(identity.id);
+    if (prior !== undefined && prior !== bytes) {
+      issues.push(`${identity.id}: conflicting duplicate canonical identity`);
+    } else {
+      seen.set(identity.id, bytes);
+    }
+  }
+  return { valid: issues.length === 0, checked: records.length, issues };
+}
+
+export function assertCanonicalIdentityAudit(
+  records: readonly CanonicalIdentityAuditRecord[],
+  hasher: Hasher = createHasher()
+): void {
+  const audit = auditCanonicalIdentities(records, hasher);
+  if (!audit.valid) throw new Error(`canonical identity audit failed: ${audit.issues.join("; ")}`);
+}
+
 function canonicalIdentityFields(
   kind: CanonicalIdentityKind,
   raw: JsonValue,
@@ -68,6 +127,10 @@ function canonicalIdentityFields(
     }
     if (!(key in value)) throw new Error(`${kind} identity requires ${key}`);
     fields[key] = normalizeIdentityValue(value[key]!, normalizationContract);
+  }
+  if (kind === "source") {
+    fields.namespace = String(fields.namespace).trim();
+    fields.canonicalUri = String(fields.canonicalUri).trim().replace(/\\/gu, "/");
   }
   return fields;
 }

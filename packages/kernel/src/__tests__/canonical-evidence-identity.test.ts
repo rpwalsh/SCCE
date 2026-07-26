@@ -4,8 +4,14 @@ import {
   CANONICAL_IDENTITY_FIELDS,
   createCanonicalIdentity
 } from "../canonical-identity.js";
-import { compileCanonicalReplayManifest } from "../canonical-replay.js";
-import { canonicalTemporalCoordinates } from "../canonical-temporal.js";
+import {
+  compileCanonicalReplayManifest,
+  verifyCanonicalReplayManifest
+} from "../canonical-replay.js";
+import {
+  admitStructuredTemporalCoordinates,
+  canonicalTemporalCoordinates
+} from "../canonical-temporal.js";
 import {
   assertRuntimeNormalizationBehavior,
   canonicalNormalizationContract,
@@ -24,11 +30,35 @@ describe("canonical evidence identity", () => {
       unicodeVersion: "17.0.0",
       normalizationForm: "NFC",
       localePolicy: "locale-independent",
-      graphemeAlgorithmVersion: "unicode_uax29_17.0.snapshot.v1"
+      graphemeAlgorithmVersion: "icu.78.2.uax29.unicode17.und.v1",
+      runtimeUnicodeVersion: "17.0",
+      runtimeIcuVersion: "78.2"
     });
     for (const row of normalizationReplayVector()) {
       expect(normalizeCanonicalSurface(row.exact, contract)).toBe(row.normalized);
     }
+    expect(normalizeCanonicalSurface("\u212A\u017F\u03F4", contract)).toBe("ks\u03B8");
+  });
+
+  it("binds occurrence identity to source coordinates, never evidence contributor order", () => {
+    const common = {
+      documentId: "document.coordinate-bound",
+      sourceVersionId: "source-version.1",
+      text: "cat",
+      evidenceIds: ["evidence.z", "evidence.a"]
+    };
+    const left = buildSurfaceLattice(common);
+    const right = buildSurfaceLattice({
+      ...common,
+      evidenceIds: [...common.evidenceIds].reverse()
+    });
+    const changedSource = buildSurfaceLattice({
+      ...common,
+      sourceVersionId: "source-version.2"
+    });
+    expect(left.units.map(unit => unit.occurrenceId))
+      .toEqual(right.units.map(unit => unit.occurrenceId));
+    expect(left.units[0]?.occurrenceId).not.toBe(changedSource.units[0]?.occurrenceId);
   });
 
   it("keeps exact occurrences separate from normalized surface-form identity", () => {
@@ -76,6 +106,61 @@ describe("canonical evidence identity", () => {
     expect(admitted.validFrom).not.toBe(admitted.observedTime);
   });
 
+  it("admits validity only from an authoritative structured field", () => {
+    const admitted = admitStructuredTemporalCoordinates({
+      observedTime: 500,
+      structured: {
+        authority: "source_declared",
+        sourceType: "database",
+        schemaId: "schema.fixture.v1",
+        validFrom: 100,
+        validTo: 200
+      }
+    });
+    expect(admitted).toMatchObject({
+      observedTime: 500,
+      validFrom: 100,
+      validTo: 200,
+      provenance: {
+        temporalStatus: "known",
+        authority: "source_declared",
+        schemaId: "schema.fixture.v1"
+      }
+    });
+    const candidates = structuredSemanticCandidates({
+      sourceId: "source.structured" as SourceId,
+      sourceVersionId: "version.structured" as SourceVersionId,
+      metadata: {
+        links: [{ label: "record", target: "fixture://record" }],
+        structuredTemporal: {
+          authority: "source_declared",
+          sourceType: "database",
+          schemaId: "schema.fixture.v1",
+          validFrom: 100,
+          validTo: 200
+        }
+      },
+      observations: [],
+      evidenceIds: ["evidence.structured" as EvidenceId],
+      observedAt: 500
+    });
+    expect(candidates[0]?.temporalCoordinates).toMatchObject({
+      validFrom: 100,
+      validTo: 200
+    });
+    expect(structuredSemanticCandidates({
+      sourceId: "source.free-text" as SourceId,
+      sourceVersionId: "version.free-text" as SourceVersionId,
+      metadata: {
+        links: [{ label: "record", target: "fixture://record" }],
+        validFrom: 100
+      },
+      observations: [],
+      evidenceIds: ["evidence.free-text" as EvidenceId],
+      observedAt: 500
+    })[0]?.temporalCoordinates.validFrom).toBeNull();
+  });
+
   it("declares distinct field contracts for every stable identity class", () => {
     expect(Object.keys(CANONICAL_IDENTITY_FIELDS).sort()).toEqual([
       "admitted_relation",
@@ -88,6 +173,7 @@ describe("canonical evidence identity", () => {
       "normalized_surface_form",
       "relation_hypothesis",
       "source",
+      "surface_form_class",
       "surface_occurrence",
       "unresolved_entity"
     ]);
@@ -198,6 +284,73 @@ describe("canonical evidence identity", () => {
     expect(left.boundaryStatisticsIds).toEqual(right.boundaryStatisticsIds);
     expect(left.candidateIds).toEqual(right.candidateIds);
     expect(left.id).not.toBe(changedSeed.id);
+    expect(() => verifyCanonicalReplayManifest(left)).not.toThrow();
+  });
+
+  it("canonicalizes nested unordered graph fields and rejects conflicting identities", () => {
+    const node = {
+      id: "node.1",
+      typeId: "dimension.1",
+      representation: {},
+      alpha: 1,
+      evidenceIds: ["evidence.b", "evidence.a"],
+      features: ["z", "a"],
+      createdAt: 1,
+      updatedAt: 1,
+      metadata: {}
+    } as never;
+    const common = {
+      corpusManifestId: "corpus.1",
+      codeCommit: "commit.1",
+      configuration: {},
+      randomSeed: "seed.1",
+      surfaceLattices: [],
+      boundaryStatistics: [],
+      candidates: [],
+      admittedGraph: { nodes: [node], edges: [], hyperedges: [] }
+    };
+    const left = compileCanonicalReplayManifest(common);
+    const right = compileCanonicalReplayManifest({
+      ...common,
+      admittedGraph: {
+        nodes: [{
+          ...(node as object),
+          evidenceIds: ["evidence.a", "evidence.b"],
+          features: ["a", "z"]
+        } as never],
+        edges: [],
+        hyperedges: []
+      }
+    });
+    expect(left.admittedGraphHash).toBe(right.admittedGraphHash);
+    expect(() => compileCanonicalReplayManifest({
+      ...common,
+      admittedGraph: {
+        nodes: [node, { ...(node as object), alpha: 0.25 } as never],
+        edges: [],
+        hyperedges: []
+      }
+    })).toThrow(/conflicting duplicate node identity/u);
+    expect(() => compileCanonicalReplayManifest({
+      ...common,
+      admittedGraph: {
+        nodes: [node],
+        edges: [{
+          id: "edge.missing",
+          source: "node.1",
+          target: "node.missing",
+          relationId: "relation.1",
+          alpha: 1,
+          weight: 1,
+          temporalScope: { status: "atemporal" },
+          evidenceIds: [],
+          createdAt: 1,
+          updatedAt: 1,
+          metadata: {}
+        } as never],
+        hyperedges: []
+      }
+    })).toThrow(/missing graph node/u);
   });
 });
 
