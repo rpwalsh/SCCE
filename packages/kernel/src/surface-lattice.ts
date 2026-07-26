@@ -136,7 +136,16 @@ export interface SurfaceLatticeBuildOptions {
   segmentationPathLimit?: number;
   segmentationForestLimits?: Partial<SegmentationForestLimits>;
   boundaryEstimator?: BoundaryEstimatorState;
+  boundaryFeatureContext?: CompiledBoundaryFeatureContext;
   normalizationContract?: NormalizationContract;
+}
+
+export interface CompiledBoundaryFeatureContext {
+  schema: "scce.boundary_feature_context.v1";
+  id: string;
+  sourceDocumentCount: number;
+  documentCountBySurfaceFormClass: Record<string, number>;
+  classCountByBoundaryContext: Record<string, number>;
 }
 
 export interface BoundaryAnchor {
@@ -220,6 +229,14 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     candidate.proposalSources.includes("grapheme"));
   const higherCandidates = candidates.filter(candidate =>
     !candidate.proposalSources.includes("grapheme"));
+  const corpusFeaturesByPosition = corpusBoundaryFeaturesByPosition({
+    candidates: higherCandidates,
+    model,
+    coordinates,
+    normalizationContract,
+    context: options.boundaryFeatureContext,
+    hasher
+  });
 
   for (const candidate of candidates) {
     const key = recurrenceKey(candidate, normalizationContract);
@@ -249,6 +266,9 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount,
+      learnedFeatures: corpusFeaturesByPosition.get(
+        coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0
+      ),
       boundaryEstimator: options.boundaryEstimator
     });
     const after = boundaryEvidenceAt({
@@ -259,6 +279,9 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount,
+      learnedFeatures: corpusFeaturesByPosition.get(
+        coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length
+      ),
       boundaryEstimator: options.boundaryEstimator
     });
     const occurrenceIdentity = createCanonicalIdentity({
@@ -553,8 +576,51 @@ export function collectBoundaryTrainingObservations(input: {
   return observations;
 }
 
+export function compileBoundaryFeatureContext(input: {
+  lattices: readonly SurfaceLattice[];
+  hasher?: Hasher;
+}): CompiledBoundaryFeatureContext {
+  const hasher = input.hasher ?? createHasher();
+  const documentsByClass = new Map<string, Set<string>>();
+  const classesByContext = new Map<string, Set<string>>();
+  for (const lattice of input.lattices) {
+    for (const unit of lattice.units) {
+      if (unit.overlapClass === "base_partition") continue;
+      const documents = documentsByClass.get(unit.surfaceFormClassId) ?? new Set<string>();
+      documents.add(lattice.documentId);
+      documentsByClass.set(unit.surfaceFormClassId, documents);
+      const contextKey = boundaryContextKey(unit);
+      const classes = classesByContext.get(contextKey) ?? new Set<string>();
+      classes.add(unit.surfaceFormClassId);
+      classesByContext.set(contextKey, classes);
+    }
+  }
+  const canonical = {
+    schema: "scce.boundary_feature_context.v1" as const,
+    sourceDocumentCount: new Set(input.lattices.map(lattice => lattice.documentId)).size,
+    documentCountBySurfaceFormClass: Object.fromEntries(
+      [...documentsByClass.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => [key, value.size])
+    ),
+    classCountByBoundaryContext: Object.fromEntries(
+      [...classesByContext.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => [key, value.size])
+    )
+  };
+  return {
+    ...canonical,
+    id: `boundary_feature_context.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`
+  };
+}
+
 function boundaryContextKey(unit: SurfaceLatticeUnit): string {
-  return `${unit.leftContextSketch.join("\u001f")}\u001e${unit.rightContextSketch.join("\u001f")}`;
+  return boundaryContextKeyParts(unit.leftContextSketch, unit.rightContextSketch);
+}
+
+function boundaryContextKeyParts(left: readonly string[], right: readonly string[]): string {
+  return `${left.join("\u001f")}\u001e${right.join("\u001f")}`;
 }
 
 export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): SurfaceLatticeValidation {
@@ -1020,6 +1086,7 @@ function boundaryEvidenceAt(input: {
   structuralBoundary: number;
   transitionEntropyByPosition: ReadonlyMap<number, number>;
   repeatedContextSupport: number;
+  learnedFeatures?: Partial<BoundaryFeatureVector>;
   boundaryEstimator?: BoundaryEstimatorState;
 }): SurfaceBoundaryEvidence {
   const chars = [...input.text];
@@ -1039,11 +1106,11 @@ function boundaryEvidenceAt(input: {
     structuralBoundary: input.structuralBoundary,
     localTransitionEntropy,
     repeatedContextSupport,
-    crossDocumentRecurrence: 0,
-    predictiveCompressionGain: 0,
-    stableSubstitutionSupport: 0,
-    exactPhraseRecurrence: 0,
-    constructionReuse: 0
+    crossDocumentRecurrence: clamp01(input.learnedFeatures?.crossDocumentRecurrence ?? 0),
+    predictiveCompressionGain: clamp01(input.learnedFeatures?.predictiveCompressionGain ?? 0),
+    stableSubstitutionSupport: clamp01(input.learnedFeatures?.stableSubstitutionSupport ?? 0),
+    exactPhraseRecurrence: clamp01(input.learnedFeatures?.exactPhraseRecurrence ?? 0),
+    constructionReuse: clamp01(input.learnedFeatures?.constructionReuse ?? 0)
   };
   return {
     positionByte: input.positionByte,
@@ -1055,6 +1122,62 @@ function boundaryEvidenceAt(input: {
     estimatorId: input.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID,
     features
   };
+}
+
+function corpusBoundaryFeaturesByPosition(input: {
+  candidates: readonly QuotientedCandidateUnit[];
+  model: ReturnType<typeof segmentUnicodeSurfaceV2>;
+  coordinates: SurfaceCoordinateIndex;
+  normalizationContract: NormalizationContract;
+  context?: CompiledBoundaryFeatureContext;
+  hasher: Hasher;
+}): Map<number, Partial<BoundaryFeatureVector>> {
+  const out = new Map<number, Partial<BoundaryFeatureVector>>();
+  if (!input.context) return out;
+  for (const candidate of input.candidates) {
+    const normalizedIdentity = createCanonicalIdentity({
+      kind: "normalized_surface_form",
+      fields: {
+        normalizationContractId: input.normalizationContract.id,
+        normalizedSurface: normalizeSurface(candidate.surface, input.normalizationContract)
+      },
+      normalizationContract: input.normalizationContract,
+      hasher: input.hasher
+    });
+    const classId = createCanonicalIdentity({
+      kind: "surface_form_class",
+      fields: {
+        normalizationContractId: input.normalizationContract.id,
+        normalizedSurfaceFormId: normalizedIdentity.id,
+        unicodeScriptId: dominantScriptId(candidate.surface)
+      },
+      normalizationContract: input.normalizationContract,
+      hasher: input.hasher
+    }).id;
+    const contextKey = boundaryContextKeyParts(
+      contextSketch(input.model.lexicalSegments, candidate.codePointStart, "left"),
+      contextSketch(input.model.lexicalSegments, candidate.codePointEnd, "right")
+    );
+    const documentSupport = input.context.documentCountBySurfaceFormClass[classId] ?? 0;
+    const classSupport = input.context.classCountByBoundaryContext[contextKey] ?? 0;
+    const recurrence = clamp01(Math.log1p(Math.max(0, documentSupport - 1)) / 6);
+    const substitution = clamp01(Math.log1p(Math.max(0, classSupport - 1)) / 6);
+    const graphemeStart = input.coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0;
+    const graphemeEnd = input.coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? graphemeStart;
+    const spanLength = Math.max(1, graphemeEnd - graphemeStart);
+    const compression = clamp01(recurrence * (1 - 1 / spanLength));
+    for (let position = Math.max(1, graphemeStart); position <= graphemeEnd; position += 1) {
+      const current = out.get(position) ?? {};
+      out.set(position, {
+        crossDocumentRecurrence: Math.max(current.crossDocumentRecurrence ?? 0, recurrence),
+        predictiveCompressionGain: Math.max(current.predictiveCompressionGain ?? 0, compression),
+        stableSubstitutionSupport: Math.max(current.stableSubstitutionSupport ?? 0, substitution),
+        exactPhraseRecurrence: Math.max(current.exactPhraseRecurrence ?? 0, recurrence),
+        constructionReuse: Math.max(current.constructionReuse ?? 0, substitution)
+      });
+    }
+  }
+  return out;
 }
 
 function structuralBoundaryAt(startCodePoint: number, endCodePoint: number, text: string, indexByUtf16: readonly number[]): number {

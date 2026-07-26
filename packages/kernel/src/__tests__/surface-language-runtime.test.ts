@@ -155,19 +155,25 @@ function runtimeFixture() {
   const populationRecord: SegmentationPopulationModelRecord = {
     id: "segmentation_population.fixture",
     model: {
-      schema: "scce.segmentation_population_model.v2",
+      schema: "scce.segmentation_population_model.v3",
       id: "segmentation_population.fixture",
       rootPopulationId: "population.fixture",
       populations: [],
       assignments: [],
+      assignmentIndex: {},
       selection: {
         fitDocumentIds: [],
+        modelSelectionDocumentIds: [],
+        mergeGuardDocumentIds: [],
+        finalEvaluationDocumentIds: [],
+        sourceFamilyDisjoint: true,
         holdoutDocumentIds: [],
         candidates: [],
         selectedPopulationCount: 0,
         baselineDescriptionNats: 0,
         selectedDescriptionNats: 0,
-        mdlGainNats: 0
+        mdlGainNats: 0,
+        finalEvaluationNats: 0
       },
       audit: {}
     },
