@@ -34,7 +34,7 @@ describe("universal surface lattice", () => {
       expect(unit.boundaryBefore.estimatorId).toBe("boundary_estimator.untrained-neutral.v1");
     }
     expect(lattice.edges.some(edge => edge.kind === "sequence")).toBe(true);
-    expect(lattice.segmentationForest.schema).toBe("scce.segmentation_forest.v1");
+    expect(lattice.segmentationForest.schema).toBe("scce.segmentation_forest.v2");
     expect(lattice.segmentationForest.paths.length).toBeGreaterThan(0);
     expect(JSON.stringify(lattice.audit)).toContain("untrained_neutral");
     expect(validateSurfaceLattice(lattice, text)).toEqual({ valid: true, issues: [] });
