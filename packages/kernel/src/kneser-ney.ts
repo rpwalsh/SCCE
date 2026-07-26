@@ -146,10 +146,19 @@ function boundedCandidateSymbols(model: KneserNeyModel, context: readonly string
 }
 
 export function predictKneserNey(model: KneserNeyModel, context: readonly string[], limit = 16): KneserNeyPrediction[] {
-  const candidates = boundedCandidateSymbols(model, context.slice(-(model.order - 1)));
+  const trimmedContext = context.slice(-(model.order - 1));
+  const candidates = boundedCandidateSymbols(model, trimmedContext);
+  // Every candidate is scored against the same context, so the
+  // context-dependent (not symbol-dependent) part of backoff -- which
+  // orders have an observed context, and each one's denominator/lambda --
+  // is computed once here and reused for all candidates instead of once
+  // per (candidate, order) pair.
+  const chain = backoffChain(model, trimmedContext, model.order);
+  const vocab = vocabularySet(model);
   return candidates
     .map(symbol => {
-      const probability = kneserNeyProbability(model, context, symbol);
+      const normalizedSymbol = vocab.has(symbol) || symbol === "</s>" ? symbol : "<unk>";
+      const probability = probabilityFromChain(model, chain, normalizedSymbol);
       return { symbol, probability, logProbability: Math.log(Math.max(1e-300, probability)) };
     })
     .sort((a, b) => b.probability - a.probability || a.symbol.localeCompare(b.symbol))
@@ -302,22 +311,60 @@ function renderSymbols(symbols: readonly string[]): string {
 }
 
 function recursiveProbability(model: KneserNeyModel, rawContext: readonly string[], symbol: string, order: number): number {
-  if (order <= 1 || rawContext.length === 0) {
-    const continuation = model.continuationCounts[symbol] ?? (symbol === "<unk>" ? 1 : 0);
-    if (model.totalContinuationTypes > 0 && continuation > 0) return Math.max(1e-12, continuation / model.totalContinuationTypes);
-    const unigram = model.unigramCounts[symbol] ?? (symbol === "<unk>" ? 1 : 0);
-    return Math.max(1e-12, unigram / Math.max(1, model.totalUnigramCount + (symbol === "<unk>" ? 1 : 0)));
+  return probabilityFromChain(model, backoffChain(model, rawContext, order), symbol);
+}
+
+function baseProbability(model: KneserNeyModel, symbol: string): number {
+  const continuation = model.continuationCounts[symbol] ?? (symbol === "<unk>" ? 1 : 0);
+  if (model.totalContinuationTypes > 0 && continuation > 0) return Math.max(1e-12, continuation / model.totalContinuationTypes);
+  const unigram = model.unigramCounts[symbol] ?? (symbol === "<unk>" ? 1 : 0);
+  return Math.max(1e-12, unigram / Math.max(1, model.totalUnigramCount + (symbol === "<unk>" ? 1 : 0)));
+}
+
+interface BackoffLevel {
+  context: readonly string[];
+  contextCount: number;
+  lambda: number;
+}
+
+/**
+ * The part of Kneser-Ney backoff that depends only on the context, not on
+ * the candidate symbol: which orders actually have an observed context
+ * (contextCount > 0, skipping unobserved orders exactly like the original
+ * recursion's early backoff) and each contributing order's denominator and
+ * interpolation weight. Computed once per context and reused across every
+ * candidate symbol scored against it, instead of recomputing the same
+ * gramKey joins and Record lookups once per (symbol, order) pair.
+ */
+function backoffChain(model: KneserNeyModel, rawContext: readonly string[], order: number): BackoffLevel[] {
+  const chain: BackoffLevel[] = [];
+  let currentContext = rawContext;
+  let currentOrder = order;
+  while (currentOrder > 1 && currentContext.length > 0) {
+    const context = currentContext.slice(-(currentOrder - 1));
+    const contextKey = gramKey(context);
+    const contextCount = model.contextCounts[contextKey] ?? 0;
+    if (contextCount > 0) {
+      const continuationTypes = model.contextContinuationTypes[contextKey] ?? 0;
+      chain.push({ context, contextCount, lambda: (model.discount * continuationTypes) / contextCount });
+    }
+    currentContext = context.slice(1);
+    currentOrder -= 1;
   }
-  const context = rawContext.slice(-(order - 1));
-  const gram = gramKey([...context, symbol]);
-  const contextKey = gramKey(context);
-  const count = model.counts[gram] ?? 0;
-  const contextCount = model.contextCounts[contextKey] ?? 0;
-  const continuationTypes = model.contextContinuationTypes[contextKey] ?? 0;
-  if (contextCount <= 0) return recursiveProbability(model, context.slice(1), symbol, order - 1);
-  const discounted = Math.max(count - model.discount, 0) / contextCount;
-  const lambda = (model.discount * continuationTypes) / contextCount;
-  return Math.max(1e-12, discounted + lambda * recursiveProbability(model, context.slice(1), symbol, order - 1));
+  return chain;
+}
+
+/** Applies a precomputed backoff chain to one candidate symbol: only the
+ * per-level `model.counts[gram]` numerator lookup differs per symbol. */
+function probabilityFromChain(model: KneserNeyModel, chain: readonly BackoffLevel[], symbol: string): number {
+  let probability = baseProbability(model, symbol);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const level = chain[i]!;
+    const count = model.counts[gramKey([...level.context, symbol])] ?? 0;
+    const discounted = Math.max(count - model.discount, 0) / level.contextCount;
+    probability = Math.max(1e-12, discounted + level.lambda * probability);
+  }
+  return probability;
 }
 
 function topVocabulary(symbols: readonly string[], limit: number): string[] {

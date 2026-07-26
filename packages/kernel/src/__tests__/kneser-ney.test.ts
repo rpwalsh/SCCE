@@ -50,6 +50,18 @@ describe("Kneser-Ney bounded candidate generation (plan item L1)", () => {
     expect(known).not.toBe(unknown);
   });
 
+  it("predictKneserNey's cached-backoff-chain scores match per-symbol kneserNeyProbability exactly (plan item L4)", () => {
+    const model = trainKneserNey(
+      "the quick fox jumps over the lazy dog the quick fox runs past the lazy cat the quick fox sleeps under the lazy tree"
+    );
+    for (const context of [["the", "quick", "fox"], ["the", "lazy"], ["over"], []]) {
+      const predictions = predictKneserNey(model, context, 32);
+      for (const prediction of predictions) {
+        expect(prediction.probability).toBe(kneserNeyProbability(model, context, prediction.symbol));
+      }
+    }
+  });
+
   it("still produces bounded, non-empty generation via continueBoundedProse after the candidate-set change", () => {
     const model = trainKneserNey(
       "the cat sat on the mat the cat ran to the door the cat slept by the fire the cat watched the rain"
