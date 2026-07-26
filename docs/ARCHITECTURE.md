@@ -109,6 +109,8 @@ validation so credentials need not be committed.
 - `alignment-alternatives.ts`: bounded non-anchor branch extraction, immutable
   alternative-plan revisions, evidence-allocation references and restricted-set
   Gibbs weights without a global-posterior claim.
+- `coarse-to-fine-alignment.ts`: opaque hyperedge-community routing, exact-anchor
+  preservation and the unified routing/Sinkhorn/local-correction/k-best trace.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

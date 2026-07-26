@@ -66,6 +66,8 @@ export interface SparseTransportBudget {
   maxSinkhornIterations: number;
   maxStructuralNeighbors: number;
   maxStructuralComparisons: number;
+  maxConditionalGradientSteps: number;
+  maxConditionalGradientComparisons: number;
   relativeObjectiveTolerance: number;
   marginalResidualTolerance: number;
 }
@@ -102,6 +104,8 @@ export interface SparseTransportIteration {
   relativeObjectiveImprovement: number | null;
   structuralComparisons: number;
   orderingComparisons: number;
+  conditionalGradientComparisons: number;
+  conditionalGradientMassShift: number;
 }
 
 export interface SparseFusedTransportPlan {
@@ -257,6 +261,8 @@ export function solveSparseFusedUnbalancedTransport(input: {
   let status: SparseFusedTransportPlan["status"] = "iteration_budget_exhausted";
   let structuralComparisonsTotal = 0;
   let orderingComparisonsTotal = 0;
+  let conditionalGradientComparisonsTotal = 0;
+  let conditionalGradientMassShiftTotal = 0;
 
   for (let outer = 0; outer < budget.maxOuterIterations; outer++) {
     for (const cell of cells) {
@@ -313,6 +319,30 @@ export function solveSparseFusedUnbalancedTransport(input: {
     for (let index = 0; index < cells.length; index++) {
       cells[index]!.orderingCost = ordering.costs[index] ?? 0;
     }
+    for (const cell of cells) {
+      cell.effectiveCost = quantize(
+        objective.featureWeight * cell.featureCost
+        + objective.structuralWeight * cell.structuralCost
+        + objective.orderingWeight * cell.orderingCost
+        + objective.crossDocumentWeight * cell.crossDocumentCost
+        + objective.anchorWeight * cell.anchorCost
+      );
+    }
+    const correction = localConditionalGradientCorrection({
+      cells,
+      rowCells,
+      maxSteps: budget.maxConditionalGradientSteps,
+      remainingComparisons: budget.maxConditionalGradientComparisons
+        - conditionalGradientComparisonsTotal
+    });
+    conditionalGradientComparisonsTotal += correction.comparisons;
+    conditionalGradientMassShiftTotal += correction.massShift;
+    enforceExactAnchorRows({
+      cells,
+      rowCells,
+      surfaceTargetMass,
+      floor: objective.exactAnchorRowMassFloor
+    });
     const components = objectiveComponents({
       cells,
       rowCells,
@@ -334,10 +364,17 @@ export function solveSparseFusedUnbalancedTransport(input: {
       sinkhornScalingResidual: sinkhorn.scalingResidual,
       relativeObjectiveImprovement: relativeImprovement,
       structuralComparisons: structural.comparisons,
-      orderingComparisons: ordering.comparisons
+      orderingComparisons: ordering.comparisons,
+      conditionalGradientComparisons: correction.comparisons,
+      conditionalGradientMassShift: quantize(correction.massShift)
     });
     if (structuralComparisonsTotal + orderingComparisonsTotal
       >= budget.maxStructuralComparisons) {
+      status = "work_budget_exhausted";
+      break;
+    }
+    if (conditionalGradientComparisonsTotal
+      >= budget.maxConditionalGradientComparisons) {
       status = "work_budget_exhausted";
       break;
     }
@@ -447,6 +484,8 @@ export function solveSparseFusedUnbalancedTransport(input: {
       )),
       structuralComparisons: structuralComparisonsTotal,
       orderingComparisons: orderingComparisonsTotal,
+      conditionalGradientComparisons: conditionalGradientComparisonsTotal,
+      conditionalGradientMassShift: quantize(conditionalGradientMassShiftTotal),
       estimatedWorkingBytes: estimatedWorkingBytes(cells.length, rowIds.length, columnIds.length),
       objectiveCalibrated: false,
       globalOptimalityClaimed: false
@@ -678,6 +717,52 @@ function localOrderingCosts(input: {
   return { costs: normalizeStructuralCosts(costs, weights), comparisons };
 }
 
+function localConditionalGradientCorrection(input: {
+  cells: RuntimeCell[];
+  rowCells: readonly number[][];
+  maxSteps: number;
+  remainingComparisons: number;
+}): { comparisons: number; massShift: number } {
+  let comparisons = 0;
+  let massShift = 0;
+  for (let step = 0; step < input.maxSteps; step++) {
+    const gamma = 2 / (step + 3);
+    let changed = false;
+    for (const indexes of input.rowCells) {
+      if (indexes.length < 2) continue;
+      const incumbentIndex = [...indexes].sort((left, right) =>
+        input.cells[right]!.mass - input.cells[left]!.mass
+        || input.cells[left]!.effectiveCost - input.cells[right]!.effectiveCost)[0]!;
+      let oracleIndex = incumbentIndex;
+      for (const index of indexes) {
+        if (comparisons >= Math.max(0, input.remainingComparisons)) {
+          return { comparisons, massShift };
+        }
+        comparisons++;
+        if (input.cells[index]!.effectiveCost
+          < input.cells[oracleIndex]!.effectiveCost - 1e-12) {
+          oracleIndex = index;
+        }
+      }
+      if (oracleIndex === incumbentIndex) continue;
+      const incumbent = input.cells[incumbentIndex]!;
+      const oracle = input.cells[oracleIndex]!;
+      if (incumbent.candidate.supportKinds.includes("exact_observable_anchor")
+        && !oracle.candidate.supportKinds.includes("exact_observable_anchor")) {
+        continue;
+      }
+      const shift = gamma * incumbent.mass;
+      if (!(shift > 0)) continue;
+      incumbent.mass -= shift;
+      oracle.mass += shift;
+      massShift += shift;
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  return { comparisons, massShift };
+}
+
 function objectiveComponents(input: {
   cells: readonly RuntimeCell[];
   rowCells: readonly number[][];
@@ -690,7 +775,8 @@ function objectiveComponents(input: {
 }): Omit<SparseTransportIteration,
   "outerIteration" | "sinkhornIterations" | "sinkhornScalingResidual"
   | "relativeObjectiveImprovement" | "structuralComparisons"
-  | "orderingComparisons"> {
+  | "orderingComparisons" | "conditionalGradientComparisons"
+  | "conditionalGradientMassShift"> {
   const feature = quantize(input.cells.reduce(
     (sum, cell) => sum + cell.mass * cell.featureCost,
     0
@@ -876,6 +962,18 @@ function transportBudget(value: Partial<SparseTransportBudget> = {}): SparseTran
       1_000,
       20_000_000,
       2_000_000
+    ),
+    maxConditionalGradientSteps: bounded(
+      value.maxConditionalGradientSteps,
+      1,
+      32,
+      4
+    ),
+    maxConditionalGradientComparisons: bounded(
+      value.maxConditionalGradientComparisons,
+      100,
+      20_000_000,
+      1_000_000
     ),
     relativeObjectiveTolerance: boundedReal(
       value.relativeObjectiveTolerance,

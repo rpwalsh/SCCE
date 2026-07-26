@@ -116,6 +116,8 @@ export function createTrainingRuntime(options: {
     let crossDocumentAlignmentModels = 0;
     let alignmentAlternativeSets = 0;
     let retainedAlignmentHypotheses = 0;
+    let alignmentCommunityRoutings = 0;
+    let coarseToFineAlignments = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -200,6 +202,8 @@ export function createTrainingRuntime(options: {
         (sum, set) => sum + set.hypotheses.length,
         0
       );
+      alignmentCommunityRoutings += memory.alignmentCommunityRoutings.length;
+      coarseToFineAlignments += memory.coarseToFineAlignments.length;
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -239,6 +243,8 @@ export function createTrainingRuntime(options: {
         crossDocumentAlignmentModels,
         alignmentAlternativeSets,
         retainedAlignmentHypotheses,
+        alignmentCommunityRoutings,
+        coarseToFineAlignments,
         surfaceNullMass,
         graphImplicitMass
       })

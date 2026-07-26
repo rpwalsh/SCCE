@@ -23,6 +23,8 @@ import {
   alignmentAlternativeSeriesId,
   alignmentAlternativeSetsFromEventPayloads,
   extractAlignmentAlternatives,
+  compileAlignmentCommunityRouting,
+  compileCoarseToFineAlignmentResult,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
@@ -959,6 +961,8 @@ export class WikipediaV3Ingestor {
       let alignmentSurfaceUnitCount = 0;
       let maximumAlignmentDegree = 0;
       const alignmentSupportIds: string[] = [];
+      const routedAlignmentSupportIds: string[] = [];
+      const alignmentCommunityRoutingIds: string[] = [];
       const transportPlanIds: string[] = [];
       let transportIterationCount = 0;
       let transportedCellCount = 0;
@@ -972,6 +976,8 @@ export class WikipediaV3Ingestor {
       const alignmentAlternativeSetIds: string[] = [];
       const alignmentAlternativeSets:
         ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
+      const coarseToFineAlignments:
+        ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
       const historicalAlignmentPayloads = (await this.storage.events.readRange({
         typeId: "SparseAlignmentCandidatesCompiled",
         limit: 1_024
@@ -1005,16 +1011,27 @@ export class WikipediaV3Ingestor {
         );
         alignmentSupports.push(support);
       }
+      const alignmentCommunityRoutings = alignmentSupports.map(support =>
+        compileAlignmentCommunityRouting({
+          support,
+          targetIndex: alignmentTargetIndex,
+          hasher: this.hasher
+        }));
+      const routedAlignmentSupports = alignmentCommunityRoutings.map(routing => {
+        alignmentCommunityRoutingIds.push(routing.id);
+        routedAlignmentSupportIds.push(routing.routedSupport.id);
+        return routing.routedSupport;
+      });
       const typedNullCostModel = compileTypedNullCostModel({
-        supports: alignmentSupports,
+        supports: routedAlignmentSupports,
         targetIndex: alignmentTargetIndex,
         hasher: this.hasher
       });
       const populationOrderingModel = compilePopulationOrderingModel({
-        supports: alignmentSupports,
+        supports: routedAlignmentSupports,
         hasher: this.hasher
       });
-      const initialTransportPlans = alignmentSupports.map(support =>
+      const initialTransportPlans = routedAlignmentSupports.map(support =>
         solveSparseFusedUnbalancedTransport({
           support,
           targetIndex: alignmentTargetIndex,
@@ -1023,12 +1040,12 @@ export class WikipediaV3Ingestor {
           hasher: this.hasher
         }));
       const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
-        supports: alignmentSupports,
+        supports: routedAlignmentSupports,
         plans: initialTransportPlans,
         targetIndex: alignmentTargetIndex,
         hasher: this.hasher
       });
-      const finalTransportPlans = alignmentSupports.map(support =>
+      const finalTransportPlans = routedAlignmentSupports.map(support =>
         solveSparseFusedUnbalancedTransport({
           support,
           targetIndex: alignmentTargetIndex,
@@ -1038,7 +1055,7 @@ export class WikipediaV3Ingestor {
           hasher: this.hasher
         }));
       for (let index = 0; index < finalTransportPlans.length; index++) {
-        const support = alignmentSupports[index]!;
+        const support = routedAlignmentSupports[index]!;
         const transport = finalTransportPlans[index]!;
         transportPlanIds.push(transport.id);
         transportIterationCount += transport.iterations.length;
@@ -1094,6 +1111,12 @@ export class WikipediaV3Ingestor {
         });
         alignmentAlternativeSetIds.push(alternativeSet.id);
         alignmentAlternativeSets.push(alternativeSet);
+        coarseToFineAlignments.push(compileCoarseToFineAlignmentResult({
+          routing: alignmentCommunityRoutings[index]!,
+          primaryPlan: transport,
+          alternativeSet,
+          hasher: this.hasher
+        }));
         retainedAlignmentHypothesisCount += alternativeSet.hypotheses.length;
         omittedAlignmentSearchBranchCount += alternativeSet.omittedSearchBranchCount;
         const allocation = alternativeAllocations.find(item =>
@@ -1138,6 +1161,12 @@ export class WikipediaV3Ingestor {
           candidateCount: alignmentCandidateCount,
           maximumCandidateDegree: maximumAlignmentDegree,
           supportIds: alignmentSupportIds,
+          routedSupportIds: routedAlignmentSupportIds,
+          communityRoutingIds: alignmentCommunityRoutingIds,
+          communityCount: alignmentCommunityRoutings.reduce(
+            (sum, routing) => sum + routing.communities.length,
+            0
+          ),
           transportPlanIds,
           transportIterationCount,
           transportedCellCount,
@@ -1153,6 +1182,7 @@ export class WikipediaV3Ingestor {
             [...crossDocumentAlignmentModelIds].sort(),
           alignmentAlternativeSetIds,
           alignmentAlternativeSets,
+          coarseToFineAlignments,
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
           alignmentPosteriorScope: "retained_candidate_set_only",

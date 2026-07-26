@@ -222,6 +222,14 @@ Ordinary ingestion, Wikipedia ingestion and explicit training persist the same
 versioned artifact. Runtime ingestion hydrates earlier sets by stable source-family
 and canonical graph-port series identity before writing the next revision.
 
+Before either cross-document solve, item 23 routes each candidate support through
+opaque hyperedge communities while preserving every exact anchor. Typed-null and
+ordering models, both transport passes, evidence allocation and alternative
+extraction consume the routed support. The resulting
+`scce.coarse_to_fine_alignment.v1` artifact binds routing, sparse Sinkhorn,
+conditional-gradient correction and retained alternatives into one persisted work
+trace.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

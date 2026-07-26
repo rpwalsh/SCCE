@@ -99,6 +99,8 @@ answer lane.
   aware cross-document correction for two-pass sparse transport.
 - `alignment-alternatives.ts`: bounded retained sparse plans, restricted Gibbs
   weights, evidence-allocation identities and revision lineage.
+- `coarse-to-fine-alignment.ts`: exact-anchor-preserving community routing and
+  the complete work-budgeted sparse alignment stage trace.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.
