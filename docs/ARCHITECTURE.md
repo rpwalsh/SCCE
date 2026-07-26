@@ -94,6 +94,9 @@ validation so credentials need not be committed.
   row-mass reservation and bounded local fused structural correction with explicit
   objective, residual, work and memory traces. The non-convex solver makes no global
   optimum claim.
+- `transport-evidence-allocation.ts`: normalized per-cell evidence conditionals that
+  partition transport mass exactly. Positive mass without evidence remains
+  explicitly unresolved instead of receiving invented provenance.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

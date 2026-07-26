@@ -184,6 +184,14 @@ budgets and estimated working bytes. The current objective is explicitly
 `bootstrap` and uncalibrated, and the local non-convex solver never claims a global
 optimum.
 
+Transport provenance is then compiled by
+`scce.transport_evidence_allocation.v1`. For each cell it normalizes exactly one
+\(q(\epsilon\mid u,v)\) over shared, surface-only and graph-only exact evidence and
+partitions the cell mass. Overlapping evidence records never each receive a full
+copy of \(\Pi_{uv}\). Cell and total conservation residuals are recorded; positive
+mass without evidence remains unresolved and cannot be treated as an admitted
+alignment.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

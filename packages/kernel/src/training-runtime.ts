@@ -109,6 +109,8 @@ export function createTrainingRuntime(options: {
     let sparseAlignmentCandidates = 0;
     let sparseTransportPlans = 0;
     let sparseTransportCells = 0;
+    let transportEvidenceAllocations = 0;
+    let unresolvedTransportEvidenceAllocations = 0;
     let profilesCreated = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
@@ -180,6 +182,9 @@ export function createTrainingRuntime(options: {
         (sum, plan) => sum + plan.cells.length,
         0
       );
+      transportEvidenceAllocations += memory.transportEvidenceAllocations.length;
+      unresolvedTransportEvidenceAllocations += memory.transportEvidenceAllocations
+        .filter(allocation => allocation.status === "unresolved_evidence").length;
     }
     return {
       profiles,
@@ -197,7 +202,9 @@ export function createTrainingRuntime(options: {
         sparseAlignmentCandidateSupports,
         sparseAlignmentCandidates,
         sparseTransportPlans,
-        sparseTransportCells
+        sparseTransportCells,
+        transportEvidenceAllocations,
+        unresolvedTransportEvidenceAllocations
       })
     };
   }

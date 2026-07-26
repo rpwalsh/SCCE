@@ -112,6 +112,12 @@ describe("shared language training batch", () => {
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length
     );
     expect(compiled.sparseTransportPlans[0]!.globalOptimalityClaimed).toBe(false);
+    expect(compiled.transportEvidenceAllocations).toHaveLength(1);
+    expect(compiled.transportEvidenceAllocations[0]!.status).toBe("conserved");
+    expect(compiled.transportEvidenceAllocations[0]!.totalAllocatedMass).toBeCloseTo(
+      compiled.transportEvidenceAllocations[0]!.totalTransportMass,
+      12
+    );
     expect(JSON.stringify(compiled.audit)).toContain("\"denseMatrixMaterialized\":false");
   });
 

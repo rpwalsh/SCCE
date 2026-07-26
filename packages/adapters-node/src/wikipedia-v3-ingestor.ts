@@ -17,6 +17,7 @@ import {
   compileSparseAlignmentTargetIndex,
   generateSparseAlignmentCandidates,
   solveSparseFusedUnbalancedTransport,
+  allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
   buildSurfaceLattice,
   liftHyperedgesToTypedIncidenceGraph,
@@ -953,6 +954,10 @@ export class WikipediaV3Ingestor {
       const transportPlanIds: string[] = [];
       let transportIterationCount = 0;
       let transportedCellCount = 0;
+      const transportEvidenceAllocationIds: string[] = [];
+      let unresolvedTransportEvidenceCount = 0;
+      let unresolvedTransportEvidenceAllocationCount = 0;
+      let maximumTransportEvidenceResidual = 0;
       for (const span of evidence) {
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
@@ -981,6 +986,19 @@ export class WikipediaV3Ingestor {
         transportPlanIds.push(transport.id);
         transportIterationCount += transport.iterations.length;
         transportedCellCount += transport.cells.length;
+        const allocation = allocateTransportEvidence({
+          plan: transport,
+          support,
+          hasher: this.hasher
+        });
+        transportEvidenceAllocationIds.push(allocation.id);
+        unresolvedTransportEvidenceCount += allocation.unresolvedCandidateIds.length;
+        unresolvedTransportEvidenceAllocationCount +=
+          allocation.status === "unresolved_evidence" ? 1 : 0;
+        maximumTransportEvidenceResidual = Math.max(
+          maximumTransportEvidenceResidual,
+          allocation.conservationResidual
+        );
       }
       await this.storage.events.append(this.events.create({
         episodeId,
@@ -1016,6 +1034,11 @@ export class WikipediaV3Ingestor {
           transportPlanIds,
           transportIterationCount,
           transportedCellCount,
+          transportEvidenceAllocationIds,
+          unresolvedTransportEvidenceCount,
+          unresolvedTransportEvidenceAllocationCount,
+          maximumTransportEvidenceResidual,
+          evidenceMassConserved: unresolvedTransportEvidenceAllocationCount === 0,
           transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
           globalOptimalityClaimed: false,
           candidateMemory: "O(|S|*K_pi)",

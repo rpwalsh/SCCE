@@ -15,6 +15,10 @@ import {
   solveSparseFusedUnbalancedTransport,
   type SparseFusedTransportPlan
 } from "./sparse-fused-transport.js";
+import {
+  allocateTransportEvidence,
+  type TransportEvidenceAllocation
+} from "./transport-evidence-allocation.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -100,6 +104,7 @@ export interface CompiledLanguageTrainingBatch {
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
   sparseTransportPlans: SparseFusedTransportPlan[];
+  transportEvidenceAllocations: TransportEvidenceAllocation[];
   constructionCandidates: number;
   rejectedConstructionCandidates: number;
   constructionPromotion: LanguageTrainingConstructionPromotionReport;
@@ -157,6 +162,12 @@ export function compileLanguageTrainingBatch(input: {
         hasher: input.hasher
       }))
     : [];
+  const transportEvidenceAllocations = sparseTransportPlans.map((plan, index) =>
+    allocateTransportEvidence({
+      plan,
+      support: sparseAlignmentCandidateSupports[index]!,
+      hasher: input.hasher
+    }));
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -214,6 +225,7 @@ export function compileLanguageTrainingBatch(input: {
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
     sparseTransportPlans,
+    transportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
     rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
     constructionPromotion: promotion.report,
@@ -247,6 +259,15 @@ export function compileLanguageTrainingBatch(input: {
           iterations: plan.iterations.length,
           finalObjective: plan.iterations.at(-1)?.objective ?? null,
           audit: plan.audit
+        })),
+        evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
+          id: allocation.id,
+          status: allocation.status,
+          totalTransportMass: allocation.totalTransportMass,
+          totalAllocatedMass: allocation.totalAllocatedMass,
+          conservationResidual: allocation.conservationResidual,
+          unresolvedCandidateCount: allocation.unresolvedCandidateIds.length,
+          audit: allocation.audit
         }))
       },
       compiledConstructions: constructionPatterns.length,

@@ -88,6 +88,9 @@ answer lane.
 - `sparse-fused-transport.ts`: unbalanced sparse Sinkhorn plus bounded local fused
   typed-structure correction and exact-anchor mass reservation, with complete
   objective/residual/budget traces and no global-optimum claim.
+- `transport-evidence-allocation.ts`: exact normalized evidence allocation
+  \(R_{uv\epsilon}=\Pi_{uv}q(\epsilon\mid u,v)\) with cell and plan conservation
+  residuals and no overlapping-evidence mass duplication.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.
