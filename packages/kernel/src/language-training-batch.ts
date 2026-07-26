@@ -7,8 +7,13 @@ import {
   induceSourceBoundConstructionTrainingSets,
   type HeldOutConstructionCoverageReport
 } from "./graph-surface-alignment.js";
+import {
+  compileSparseAlignmentCandidateSupports,
+  type SparseAlignmentCandidateSupport
+} from "./sparse-alignment-candidates.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
+import { buildSurfaceLattice } from "./surface-lattice.js";
 import type {
   LanguagePatternRecord,
   LanguageUnitRecord,
@@ -20,6 +25,7 @@ import type { ScceStorage } from "./storage.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type {
   EvidenceSpan,
+  GraphSnapshot,
   Hasher,
   JsonValue,
   LanguageProfile,
@@ -45,6 +51,8 @@ export interface LanguageTrainingBatch {
   vocabularyLimit?: number;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   additionalPatterns?: readonly LanguagePatternRecord[];
+  graphSnapshot?: GraphSnapshot;
+  maxAlignmentCandidateDegree?: number;
 }
 
 export interface LanguageTrainingConstructionPromotionPolicy {
@@ -85,6 +93,8 @@ export interface CompiledLanguageTrainingBatch {
   semanticFrames: SemanticFrameRecord[];
   constructionPatterns: LanguagePatternRecord[];
   graphSurfaceAlignmentSummaries: JsonValue[];
+  sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
+  sparseAlignmentCandidateSummaries: JsonValue[];
   constructionCandidates: number;
   rejectedConstructionCandidates: number;
   constructionPromotion: LanguageTrainingConstructionPromotionReport;
@@ -118,6 +128,34 @@ export function compileLanguageTrainingBatch(input: {
     profileId: batch.profile.id,
     hasher: input.hasher
   });
+  const sparseAlignment = batch.graphSnapshot?.hyperedges.length
+    ? compileSparseAlignmentCandidateSupports({
+      lattices: batch.evidence.map(span => buildSurfaceLattice({
+        documentId: String(span.id),
+        text: span.text,
+        sourceVersionId: span.sourceVersionId,
+        evidenceIds: [span.id],
+        hasher: input.hasher
+      })),
+      nodes: batch.graphSnapshot.nodes,
+      hyperedges: batch.graphSnapshot.hyperedges,
+      maxCandidateDegree: batch.maxAlignmentCandidateDegree,
+      hasher: input.hasher
+    })
+    : undefined;
+  const sparseAlignmentCandidateSupports = sparseAlignment?.supports ?? [];
+  const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
+    toJsonValue({
+      schema: support.schema,
+      id: support.id,
+      latticeId: support.latticeId,
+      targetIndexId: support.targetIndexId,
+      incidenceGraphId: support.incidenceGraphId,
+      maxCandidateDegree: support.maxCandidateDegree,
+      candidateCount: support.candidates.length,
+      rowCount: support.rows.length,
+      audit: support.audit
+    }));
   const constructionPatterns: LanguagePatternRecord[] = [];
   const warnings: string[] = [];
   const promotion = evaluateConstructionPromotion({
@@ -160,6 +198,8 @@ export function compileLanguageTrainingBatch(input: {
     graphSurfaceAlignmentSummaries: sets
       .map(item => item.set.alignmentSummary)
       .filter((summary): summary is JsonValue => summary !== undefined),
+    sparseAlignmentCandidateSupports,
+    sparseAlignmentCandidateSummaries,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
     rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
     constructionPromotion: promotion.report,
@@ -177,6 +217,16 @@ export function compileLanguageTrainingBatch(input: {
       graphSurfaceAlignment: sets
         .map(item => item.set.alignmentSummary)
         .filter(summary => summary !== undefined) as JsonValue[],
+      sparseTypedIncidenceAlignment: {
+        targetIndexId: sparseAlignment?.targetIndex.id ?? null,
+        incidenceGraphId: sparseAlignment?.incidenceGraph.id ?? null,
+        supportCount: sparseAlignmentCandidateSupports.length,
+        candidateCount: sparseAlignmentCandidateSupports.reduce(
+          (sum, support) => sum + support.candidates.length,
+          0
+        ),
+        summaries: sparseAlignmentCandidateSummaries
+      },
       compiledConstructions: constructionPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })

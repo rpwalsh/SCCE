@@ -164,6 +164,7 @@ describe("canonical evidence identity", () => {
   it("declares distinct field contracts for every stable identity class", () => {
     expect(Object.keys(CANONICAL_IDENTITY_FIELDS).sort()).toEqual([
       "admitted_relation",
+      "alignment_target_index",
       "canonical_entity",
       "construction",
       "document",

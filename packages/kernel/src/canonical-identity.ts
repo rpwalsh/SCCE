@@ -20,7 +20,8 @@ export const CANONICAL_IDENTITY_FIELDS = {
   relation_hypothesis: ["relationSeedId", "participantIncidences", "qualifierHash", "temporalHash", "evidenceIds"],
   admitted_relation: ["relationHypothesisId", "admissionModelId", "admissionSnapshotId"],
   construction: ["profileId", "roleSignature", "sourceExampleIds"],
-  model_snapshot: ["corpusManifestId", "codeCommit", "normalizationContractId", "configurationHash", "randomSeed", "componentIds"]
+  model_snapshot: ["corpusManifestId", "codeCommit", "normalizationContractId", "configurationHash", "randomSeed", "componentIds"],
+  alignment_target_index: ["typedIncidenceGraphId", "normalizationContractId", "maxTargetsPerPosting", "targetIds"]
 } as const;
 
 export type CanonicalIdentityKind = keyof typeof CANONICAL_IDENTITY_FIELDS;

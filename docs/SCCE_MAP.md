@@ -82,6 +82,9 @@ answer lane.
   conditioned surface order, omission and repetition probabilities.
 - `typed-incidence-graph.ts`, `field.ts`: lossless hyperedge-to-incidence projection
   and reversible arbitrary-arity alpha/PPF activation.
+- `sparse-alignment-candidates.ts`: bounded compiled target postings and
+  \(O(|S|K_\Pi)\) graph/surface candidate support over typed incidences, consumed by
+  ordinary ingestion and explicit training without a dense pair matrix.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.
