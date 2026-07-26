@@ -12,6 +12,8 @@ export * from "./audit.js";
 
 export * from "./scoring/index.js";
 export * from "./sparse-ranking.js";
+export * from "./sparse-ranking-labels.js";
+export * from "./sparse-ranking-outcome.js";
 export * from "./benchmarks.js";
 export * from "./evidence.js";
 export * from "./evidence-mass.js";
