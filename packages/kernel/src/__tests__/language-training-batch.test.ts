@@ -133,6 +133,11 @@ describe("shared language training batch", () => {
     expect(compiled.reversibleConstructionPatterns).toEqual([]);
     expect(compiled.pairedAntiUnifiedConstructions).toEqual([]);
     expect(compiled.pairedAntiUnifiedConstructionPatterns).toEqual([]);
+    expect(compiled.admittedPairedAntiUnifiedConstructions).toEqual([]);
+    expect(compiled.graphCorrelatedVariabilityModel).toMatchObject({
+      schema: "scce.graph_correlated_surface_variability.v1",
+      decisions: []
+    });
     expect(compiled.sparseTransportPlans).toHaveLength(1);
     expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length

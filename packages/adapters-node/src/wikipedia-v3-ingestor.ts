@@ -32,6 +32,8 @@ import {
   compileReversibleConstructions,
   compilePairedAntiUnifiedConstructions,
   compilePairedAntiUnifiedPatterns,
+  compileGraphCorrelatedVariabilityModel,
+  admittedPairedAntiUnifiedConstructions,
   reversibleConstructionCreationSnapshotId,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
@@ -1200,22 +1202,40 @@ export class WikipediaV3Ingestor {
           hasher: this.hasher
         });
       const pairedAntiUnifiedPatterns =
-        pairedAntiUnifiedCompilation.constructions.flatMap(construction =>
-          compilePairedAntiUnifiedPatterns(construction).map(pattern => ({
+        (() => {
+          const graphCorrelatedVariabilityModel =
+            compileGraphCorrelatedVariabilityModel({
+              constructions: pairedAntiUnifiedCompilation.constructions,
+              hasher: this.hasher
+            });
+          const admitted = admittedPairedAntiUnifiedConstructions({
+            constructions: pairedAntiUnifiedCompilation.constructions,
+            model: graphCorrelatedVariabilityModel
+          });
+          return {
+            graphCorrelatedVariabilityModel,
+            admitted,
+            patterns: admitted.flatMap(({ construction, admission }) =>
+              compilePairedAntiUnifiedPatterns(
+                construction,
+                admission
+              ).map(pattern => ({
             ...pattern,
             informationLabel: WIKIPEDIA_INFORMATION_LABEL
-          })));
+              })))
+          };
+        })();
       if (this.storage.languageMemory.putLanguagePatterns) {
         await this.storage.languageMemory.putLanguagePatterns(
           [
             ...reversibleConstructionPatterns,
-            ...pairedAntiUnifiedPatterns
+            ...pairedAntiUnifiedPatterns.patterns
           ]
         );
       } else {
         for (const pattern of [
           ...reversibleConstructionPatterns,
-          ...pairedAntiUnifiedPatterns
+          ...pairedAntiUnifiedPatterns.patterns
         ]) {
           await this.storage.languageMemory.putLanguagePattern(pattern);
         }
@@ -1284,6 +1304,10 @@ export class WikipediaV3Ingestor {
             pairedAntiUnifiedCompilation.constructions,
           pairedAntiUnifiedConstructionRejections:
             pairedAntiUnifiedCompilation.rejections,
+          graphCorrelatedVariabilityModel:
+            pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
+          admittedPairedAntiUnifiedConstructions:
+            pairedAntiUnifiedPatterns.admitted.map(row => row.construction),
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
           alignmentPosteriorScope: "retained_candidate_set_only",

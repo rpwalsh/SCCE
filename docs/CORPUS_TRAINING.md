@@ -267,6 +267,14 @@ hydrated as one deduplicated construction. Mouth supplies unseen bindings only
 from unique typed semantic-role matches and uses the current fact's promoted
 evidence.
 
+Item 28 prevents structural co-variation from becoming runtime grammar by
+inspection alone. For each proposed variable it forms pairwise same/different
+surface and graph deltas across dependency families, measures conditional mutual
+information, and evaluates predictive gain while removing every training pair
+touching the held-out families. Deterministic graph-label permutations define the
+null distribution. Only a content-addressed passing admission can be projected to
+language memory; raw paired anti-unifications remain non-runtime hypotheses.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

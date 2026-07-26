@@ -69,6 +69,11 @@ import {
   compilePairedAntiUnifiedPatterns,
   type PairedAntiUnifiedConstruction
 } from "./paired-anti-unification.js";
+import {
+  admittedPairedAntiUnifiedConstructions,
+  compileGraphCorrelatedVariabilityModel,
+  type GraphCorrelatedVariabilityModel
+} from "./graph-correlated-variability.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -167,6 +172,8 @@ export interface CompiledLanguageTrainingBatch {
   reversibleConstructions: ReversibleConstruction[];
   reversibleConstructionRejections: ReversibleConstructionRejection[];
   pairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
+  admittedPairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
+  graphCorrelatedVariabilityModel: GraphCorrelatedVariabilityModel;
   pairedAntiUnifiedConstructionRejections:
     ReturnType<typeof compilePairedAntiUnifiedConstructions>["rejections"];
   typedNullCostModel: TypedNullCostModel | null;
@@ -405,10 +412,19 @@ export function compileLanguageTrainingBatch(input: {
       }`,
       hasher: input.hasher
     });
+  const graphCorrelatedVariabilityModel =
+    compileGraphCorrelatedVariabilityModel({
+      constructions: pairedAntiUnifiedCompilation.constructions,
+      hasher: input.hasher
+    });
+  const admittedPairedConstructions =
+    admittedPairedAntiUnifiedConstructions({
+      constructions: pairedAntiUnifiedCompilation.constructions,
+      model: graphCorrelatedVariabilityModel
+    });
   const pairedAntiUnifiedConstructionPatterns =
-    pairedAntiUnifiedCompilation.constructions.flatMap(
-      compilePairedAntiUnifiedPatterns
-    );
+    admittedPairedConstructions.flatMap(({ construction, admission }) =>
+      compilePairedAntiUnifiedPatterns(construction, admission));
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -479,6 +495,9 @@ export function compileLanguageTrainingBatch(input: {
       reversibleConstructionCompilation.rejections,
     pairedAntiUnifiedConstructions:
       pairedAntiUnifiedCompilation.constructions,
+    admittedPairedAntiUnifiedConstructions:
+      admittedPairedConstructions.map(row => row.construction),
+    graphCorrelatedVariabilityModel,
     pairedAntiUnifiedConstructionRejections:
       pairedAntiUnifiedCompilation.rejections,
     typedNullCostModel,
@@ -593,6 +612,9 @@ export function compileLanguageTrainingBatch(input: {
           reversibleConstructionCompilation.rejections,
         pairedAntiUnifiedConstructions:
           pairedAntiUnifiedCompilation.constructions,
+        admittedPairedAntiUnifiedConstructions:
+          admittedPairedConstructions.map(row => row.construction),
+        graphCorrelatedVariabilityModel,
         pairedAntiUnifiedConstructionRejections:
           pairedAntiUnifiedCompilation.rejections,
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
@@ -611,6 +633,8 @@ export function compileLanguageTrainingBatch(input: {
       compiledReversibleConstructions: reversibleConstructionPatterns.length,
       compiledPairedAntiUnifiedConstructions:
         pairedAntiUnifiedCompilation.constructions.length,
+      admittedPairedAntiUnifiedConstructions:
+        admittedPairedConstructions.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
   };

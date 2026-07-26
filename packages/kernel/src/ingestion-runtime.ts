@@ -72,6 +72,10 @@ import {
   compilePairedAntiUnifiedConstructions,
   compilePairedAntiUnifiedPatterns
 } from "./paired-anti-unification.js";
+import {
+  admittedPairedAntiUnifiedConstructions,
+  compileGraphCorrelatedVariabilityModel
+} from "./graph-correlated-variability.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -770,13 +774,27 @@ export function createIngestionRuntime(options: {
             hasher
           });
         const pairedAntiUnifiedPatterns =
-          pairedAntiUnifiedCompilation.constructions.flatMap(
-            compilePairedAntiUnifiedPatterns
-          );
+          (() => {
+            const graphCorrelatedVariabilityModel =
+              compileGraphCorrelatedVariabilityModel({
+                constructions: pairedAntiUnifiedCompilation.constructions,
+                hasher
+              });
+            const admitted = admittedPairedAntiUnifiedConstructions({
+              constructions: pairedAntiUnifiedCompilation.constructions,
+              model: graphCorrelatedVariabilityModel
+            });
+            return {
+              graphCorrelatedVariabilityModel,
+              admitted,
+              patterns: admitted.flatMap(({ construction, admission }) =>
+                compilePairedAntiUnifiedPatterns(construction, admission))
+            };
+          })();
         const labeledReversiblePatterns = labelRecords(
           [
             ...reversibleConstructionPatterns,
-            ...pairedAntiUnifiedPatterns
+            ...pairedAntiUnifiedPatterns.patterns
           ],
           informationLabel
         );
@@ -854,6 +872,10 @@ export function createIngestionRuntime(options: {
               pairedAntiUnifiedCompilation.constructions,
             pairedAntiUnifiedConstructionRejections:
               pairedAntiUnifiedCompilation.rejections,
+            graphCorrelatedVariabilityModel:
+              pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
+            admittedPairedAntiUnifiedConstructions:
+              pairedAntiUnifiedPatterns.admitted.map(row => row.construction),
             retainedAlignmentHypothesisCount,
             omittedAlignmentSearchBranchCount,
             alignmentPosteriorScope: "retained_candidate_set_only",
