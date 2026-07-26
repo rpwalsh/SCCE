@@ -2544,11 +2544,24 @@ function semanticDirectEvidenceCandidate(
       || compareSurfaceText(left.surface, right.surface)
     ));
   const selected: typeof rows = [];
+  // This dedup check runs O(rows * selected) comparisons; featureSet(...,
+  // 256) tokenizes and hashes the whole surface, so recomputing it fresh
+  // for the same row/existing surface on every comparison (rather than
+  // once per distinct surface) was needless repeated allocation.
+  const surfaceFeatures = new Map<string, string[]>();
+  const featuresFor = (surface: string): string[] => {
+    let features = surfaceFeatures.get(surface);
+    if (!features) {
+      features = featureSet(surface, 256);
+      surfaceFeatures.set(surface, features);
+    }
+    return features;
+  };
   for (const row of rows) {
     if (selected.some(existing => (
       containsSurface(existing.surface, row.surface)
       || containsSurface(row.surface, existing.surface)
-      || weightedJaccard(featureSet(existing.surface, 256), featureSet(row.surface, 256)) > 0.88
+      || weightedJaccard(featuresFor(existing.surface), featuresFor(row.surface)) > 0.88
     ))) continue;
     selected.push(row);
     if (selected.length >= Math.max(1, Math.min(4, discoursePlan.units.length || 2))) break;
@@ -5361,10 +5374,11 @@ function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {
   ].map(normalizeEvidenceSentence).filter(Boolean));
   if (!anchors.length) return [];
   if (requestTerms.some(term => containsSurface(text, term))) return [];
+  const textFeatures = featureSet(text, 256);
   const aligned = anchors.some(anchor =>
     containsSurface(text, anchor) ||
     containsSurface(anchor, text) ||
-    weightedJaccard(featureSet(text, 256), featureSet(anchor, 256)) >= 0.08
+    weightedJaccard(textFeatures, featureSet(anchor, 256)) >= 0.08
   );
   return aligned ? [] : ["surface.reject.creative_semantic_drift"];
 }
