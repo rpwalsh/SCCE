@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileOpaqueRoleModel, opaqueRoleId } from "../opaque-role-induction.js";
 import { compileRelationPromotionModel } from "../relation-promotion.js";
+import { compileRoleSurfaceOrderModel } from "../role-surface-order.js";
 import type { StructuredSemanticCandidate } from "../structured-semantic-candidate.js";
 import type { SourceId, SourceVersionId } from "../types.js";
 
@@ -38,6 +39,33 @@ describe("opaque role induction", () => {
       expect(opaqueRoleId(original, sample.id, port.portId))
         .toBe(opaqueRoleId(reordered, sample.id, port.portId));
     }
+  });
+
+  it("learns semantic role and surface position as separate probability fields", () => {
+    const candidates = corpus(240);
+    const promotionModel = compileRelationPromotionModel({ candidates });
+    const opaqueRoleModel = compileOpaqueRoleModel({ candidates, promotionModel });
+    const original = compileRoleSurfaceOrderModel({
+      candidates,
+      promotionModel,
+      opaqueRoleModel
+    });
+    const reordered = compileRoleSurfaceOrderModel({
+      candidates: candidates.map(candidate => ({
+        ...candidate,
+        participants: [...candidate.participants].reverse()
+      })),
+      promotionModel,
+      opaqueRoleModel
+    });
+
+    expect(original.semanticRoles).toEqual(reordered.semanticRoles);
+    expect(original.surfacePositions).not.toEqual(reordered.surfacePositions);
+    expect(original.audit).toMatchObject({
+      semanticIdentityUsesPosition: false,
+      unrealizedStateExplicit: true,
+      repeatedStateExplicit: true
+    });
   });
 });
 

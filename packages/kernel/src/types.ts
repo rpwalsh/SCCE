@@ -1060,6 +1060,7 @@ export interface IngestResult {
   promotedRelations: number;
   relationPromotionModelId: string;
   opaqueRoleModelId: string;
+  roleSurfaceOrderModelId: string;
   typedObservations: Record<string, number>;
   observationRoutes: Record<string, number>;
   skipped: Array<{ path: string; reason: string }>;

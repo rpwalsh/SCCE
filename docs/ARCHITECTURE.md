@@ -79,6 +79,9 @@ validation so credentials need not be committed.
 - `opaque-role-induction.ts`: source-disjoint held-out-MDL selection of opaque role
   populations from surface, neighborhood, substitution, transformation and discourse
   evidence. Learned `roleId` is separate from per-occurrence `portId`.
+- `role-surface-order.ts`: separately compiled \(P(p\mid r,G)\) semantic-role and
+  \(P(\operatorname{position}\mid p,r,c,d)\) realization fields. Position never
+  defines a role; omission and repeated realization are explicit learned states.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field

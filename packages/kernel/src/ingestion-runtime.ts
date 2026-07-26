@@ -40,6 +40,7 @@ import {
   compileRelationPromotionModel
 } from "./relation-promotion.js";
 import { compileOpaqueRoleModel } from "./opaque-role-induction.js";
+import { compileRoleSurfaceOrderModel } from "./role-surface-order.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
 import type {
   EpisodeId,
@@ -450,6 +451,12 @@ export function createIngestionRuntime(options: {
         promotionModel: relationPromotionModel,
         hasher
       });
+      const roleSurfaceOrderModel = compileRoleSurfaceOrderModel({
+        candidates: relationCandidates,
+        promotionModel: relationPromotionModel,
+        opaqueRoleModel,
+        hasher
+      });
       if (relationCandidates.length) {
         const promotedGraph = graphFromStructuredSemanticCandidates({
           candidates: relationCandidates,
@@ -475,6 +482,7 @@ export function createIngestionRuntime(options: {
           payload: toJsonValue({
             modelId: relationPromotionModel.id,
             opaqueRoleModelId: opaqueRoleModel.id,
+            roleSurfaceOrderModelId: roleSurfaceOrderModel.id,
             candidateCount: relationCandidates.length,
             promotedRelationSeedIds: relationPromotionModel.decisions
               .filter(decision => decision.promoted)
@@ -507,6 +515,7 @@ export function createIngestionRuntime(options: {
         promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length,
         relationPromotionModelId: relationPromotionModel.id,
         opaqueRoleModelId: opaqueRoleModel.id,
+        roleSurfaceOrderModelId: roleSurfaceOrderModel.id,
         typedObservations: typedObservationCounts,
         observationRoutes: observationRouteCounts,
         skipped,

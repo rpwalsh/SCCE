@@ -141,6 +141,17 @@ code selects the population count on holdout data. The content-addressed `roleId
 comes from the learned feature distribution, never participant-array position or a
 language grammar label. Unique `portId` still identifies each occurrence.
 
+Semantic role and surface realization are compiled into different probability
+fields. The semantic field estimates \(P(p\mid r,G)\) from the promoted relation and
+position-free graph context. The realization field estimates
+\(P(\operatorname{position}\mid p,r,c,d)\) from role, relation and discourse context.
+It has explicit `unrealized` probability mass and a separately smoothed repetition
+probability. Reordering participant occurrences can therefore alter the realization
+model without changing the opaque role population or semantic-role distribution.
+The content-addressed artifact is `scce.role_surface_order_model.v1`, and its ID is
+recorded by ordinary ingest, Wikipedia shard compilation, engineering-corpus folding
+and the source-only runtime.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

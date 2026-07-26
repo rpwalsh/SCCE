@@ -12,6 +12,7 @@ import {
   createTypedIngestProjector,
   compileRelationPromotionModel,
   compileOpaqueRoleModel,
+  compileRoleSurfaceOrderModel,
   observationContract,
   toJsonValue,
   type EvidenceSpan,
@@ -140,6 +141,7 @@ export interface EngineeringCorpusFolderRuntimeReport {
     rejectedRelationSeedIds: string[];
     opaqueRoleModelId: string;
     opaqueRoleCount: number;
+    roleSurfaceOrderModelId: string;
   };
   projections: Array<{
     sourceUri: string;
@@ -365,6 +367,12 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
     promotionModel: relationPromotionModel,
     hasher
   });
+  const roleSurfaceOrderModel = compileRoleSurfaceOrderModel({
+    candidates: projections.flatMap(projection => projection.semanticCandidates),
+    promotionModel: relationPromotionModel,
+    opaqueRoleModel,
+    hasher
+  });
   const contracts = allObservations.map(observationContract);
   const fileProjections = projectedFiles.map(projected => summarizeFileProjection(projected));
   const routeAudit = auditEngineeringRoutes(fileProjections);
@@ -407,7 +415,8 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
         .filter(decision => !decision.promoted)
         .map(decision => decision.relationSeedId),
       opaqueRoleModelId: opaqueRoleModel.id,
-      opaqueRoleCount: opaqueRoleModel.clusters.length
+      opaqueRoleCount: opaqueRoleModel.clusters.length,
+      roleSurfaceOrderModelId: roleSurfaceOrderModel.id
     },
     projections: projections.map(projection => ({
       sourceUri: projection.observations[0]?.provenance && typeof projection.observations[0].provenance === "object" && !Array.isArray(projection.observations[0].provenance)
