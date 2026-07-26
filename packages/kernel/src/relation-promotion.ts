@@ -1,8 +1,9 @@
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
+import type { SemanticCandidateChannel } from "./structured-semantic-candidate.js";
 import type { Hasher, JsonValue } from "./types.js";
 
-export const RELATION_PROMOTION_MODEL_SCHEMA = "scce.relation_promotion_model.v1" as const;
+export const RELATION_PROMOTION_MODEL_SCHEMA = "scce.relation_promotion_model.v2" as const;
 
 export type RelationPromotionControlKind = "shuffled_relations" | "duplicate_only" | "random_repetition";
 
@@ -16,11 +17,12 @@ export interface RelationPromotionControlResult {
 
 export interface RelationPromotionDecision {
   relationSeedId: string;
+  channel: SemanticCandidateChannel;
   promoted: boolean;
   candidateCount: number;
   independentSourceCount: number;
-  fitSourceIds: string[];
-  holdoutSourceIds: string[];
+  fitSourceFamilyIds: string[];
+  holdoutSourceFamilyIds: string[];
   descriptionLength: {
     baselineHeldoutNats: number;
     relationHeldoutNats: number;
@@ -41,8 +43,8 @@ export interface RelationPromotionModel {
   schema: typeof RELATION_PROMOTION_MODEL_SCHEMA;
   id: string;
   candidateIds: string[];
-  fitSourceIds: string[];
-  holdoutSourceIds: string[];
+  fitSourceFamilyIds: string[];
+  holdoutSourceFamilyIds: string[];
   decisions: RelationPromotionDecision[];
   audit: JsonValue;
 }
@@ -50,7 +52,9 @@ export interface RelationPromotionModel {
 interface RelationObservation {
   candidateId: string;
   relationSeedId: string;
+  channel: SemanticCandidateChannel;
   sourceId: string;
+  sourceFamilyId: string;
   signature: string;
 }
 
@@ -86,48 +90,58 @@ export function compileRelationPromotionModel(input: {
   const hasher = input.hasher ?? createHasher();
   const observations = relationObservations(input.candidates);
   const relationSeedIds = [...new Set(observations.map(row => row.relationSeedId))].sort();
-  const sourceIds = [...new Set(observations.map(row => row.sourceId))].sort();
-  const split = sourceDisjointSplit(sourceIds, hasher);
-  const fit = observations.filter(row => split.fit.has(row.sourceId));
-  const holdout = observations.filter(row => split.holdout.has(row.sourceId));
-  const signatureAlphabet = [...new Set(observations.map(row => row.signature))].sort();
+  const sourceFamilyIds = [...new Set(observations.map(row => row.sourceFamilyId))].sort();
+  const split = sourceDisjointSplit(sourceFamilyIds, hasher);
+  const fit = observations.filter(row => split.fit.has(row.sourceFamilyId));
+  const holdout = observations.filter(row => split.holdout.has(row.sourceFamilyId));
   const decisions = relationSeedIds.map(relationSeedId => {
+    const channel = observations.find(row => row.relationSeedId === relationSeedId)!.channel;
+    const channelObservations = observations.filter(row => row.channel === channel);
+    const channelFit = fit.filter(row => row.channel === channel);
+    const channelHoldout = holdout.filter(row => row.channel === channel);
+    const channelRelationSeedIds = [...new Set(
+      channelObservations.map(row => row.relationSeedId)
+    )].sort();
+    const channelSignatureAlphabet = [...new Set(
+      channelObservations.map(row => row.signature)
+    )].sort();
     const actual = evaluateRelation({
       relationSeedId,
-      fit,
-      holdout,
-      relationSeedIds,
-      signatureAlphabet
+      fit: channelFit,
+      holdout: channelHoldout,
+      relationSeedIds: channelRelationSeedIds,
+      signatureAlphabet: channelSignatureAlphabet
     });
-    const sourceCount = new Set(observations
+    const sourceCount = new Set(channelObservations
       .filter(row => row.relationSeedId === relationSeedId)
-      .map(row => row.sourceId)).size;
-    const fitSourceIds = uniqueSources(fit, relationSeedId);
-    const holdoutSourceIds = uniqueSources(holdout, relationSeedId);
+      .map(row => row.sourceFamilyId)).size;
+    const fitSourceFamilyIds = uniqueSourceFamilies(channelFit, relationSeedId);
+    const holdoutSourceFamilyIds = uniqueSourceFamilies(channelHoldout, relationSeedId);
     const controls = controlResults({
       relationSeedId,
-      observations,
-      fit,
-      holdout,
-      relationSeedIds,
-      signatureAlphabet,
+      observations: channelObservations,
+      fit: channelFit,
+      holdout: channelHoldout,
+      relationSeedIds: channelRelationSeedIds,
+      signatureAlphabet: channelSignatureAlphabet,
       hasher
     });
     const reasons: string[] = [];
     if (sourceCount < MIN_INDEPENDENT_SOURCES) reasons.push("insufficient_independent_sources");
-    if (fitSourceIds.length < MIN_FIT_SOURCES) reasons.push("insufficient_fit_sources");
-    if (!holdoutSourceIds.length) reasons.push("missing_source_disjoint_holdout");
+    if (fitSourceFamilyIds.length < MIN_FIT_SOURCES) reasons.push("insufficient_fit_source_families");
+    if (!holdoutSourceFamilyIds.length) reasons.push("missing_source_family_disjoint_holdout");
     if (!(actual.gainNats > 0)) reasons.push("nonpositive_heldout_description_length_gain");
     if (!(actual.recoveryGain > 0)) reasons.push("no_heldout_recovery_improvement");
     if (controls.some(control => control.promoted)) reasons.push("negative_control_induced_relation");
     const promoted = reasons.length === 0;
     return {
       relationSeedId,
+      channel,
       promoted,
       candidateCount: observations.filter(row => row.relationSeedId === relationSeedId).length,
       independentSourceCount: sourceCount,
-      fitSourceIds,
-      holdoutSourceIds,
+      fitSourceFamilyIds,
+      holdoutSourceFamilyIds,
       descriptionLength: {
         baselineHeldoutNats: actual.baselineHeldoutNats,
         relationHeldoutNats: actual.relationHeldoutNats,
@@ -147,23 +161,35 @@ export function compileRelationPromotionModel(input: {
   const canonical = {
     schema: RELATION_PROMOTION_MODEL_SCHEMA,
     candidateIds: [...new Set(input.candidates.map(candidate => candidate.id))].sort(),
-    fitSourceIds: [...split.fit].sort(),
-    holdoutSourceIds: [...split.holdout].sort(),
+    fitSourceFamilyIds: [...split.fit].sort(),
+    holdoutSourceFamilyIds: [...split.holdout].sort(),
     decisions
   };
   return {
     ...canonical,
     id: `relation_promotion.${hasher.digestHex(canonicalStringify(canonical)).slice(0, 40)}`,
     audit: toJsonValue({
-      compiler: "kernel.relation_promotion.heldout_description_length.v1",
+      compiler: "kernel.relation_promotion.heldout_description_length.v2",
       code: {
         null: "dirichlet_smoothed_corpus_signature_code",
         promoted: "dirichlet_smoothed_relation_signature_code",
         model: "bic_two_part_relation_code",
         dirichletAlpha: DIRICHLET_ALPHA
       },
-      sourceDisjoint: true,
-      occurrenceCollapsedWithinSource: true,
+      sourceFamilyDisjoint: true,
+      channelSeparatedEvaluation: true,
+      candidateCountsByChannel: Object.fromEntries(
+        ([
+          "source_declared_structured",
+          "anchor_derived",
+          "cross_document_induced",
+          "weak_free_surface"
+        ] as const).map(channel => [
+          channel,
+          input.candidates.filter(candidate => candidate.channel === channel).length
+        ])
+      ),
+      occurrenceCollapsedWithinSourceFamily: true,
       minimumIndependentSources: MIN_INDEPENDENT_SOURCES,
       minimumFitSources: MIN_FIT_SOURCES,
       candidateCount: input.candidates.length,
@@ -186,20 +212,25 @@ function relationObservations(candidates: readonly StructuredSemanticCandidate[]
   for (const candidate of candidates) {
     if (!candidate.id || !candidate.relationSeedId || !candidate.sourceId) continue;
     const signature = candidateSignature(candidate);
+    const sourceFamilyId = sourceFamilyFor(candidate);
     const key = canonicalStringify({
       relationSeedId: candidate.relationSeedId,
-      sourceId: String(candidate.sourceId),
+      channel: candidate.channel,
+      sourceFamilyId,
       signature
     });
     unique.set(key, {
       candidateId: candidate.id,
       relationSeedId: candidate.relationSeedId,
+      channel: candidate.channel,
       sourceId: String(candidate.sourceId),
+      sourceFamilyId,
       signature
     });
   }
   return [...unique.values()].sort((left, right) =>
-    left.sourceId.localeCompare(right.sourceId)
+    left.sourceFamilyId.localeCompare(right.sourceFamilyId)
+    || left.sourceId.localeCompare(right.sourceId)
     || left.relationSeedId.localeCompare(right.relationSeedId)
     || left.signature.localeCompare(right.signature)
     || left.candidateId.localeCompare(right.candidateId));
@@ -208,8 +239,8 @@ function relationObservations(candidates: readonly StructuredSemanticCandidate[]
 function candidateSignature(candidate: StructuredSemanticCandidate): string {
   return canonicalStringify({
     arity: candidate.participants.length,
-    ports: candidate.participants.map(participant => ({
-      portId: participant.portId,
+    ports: candidate.participants.map((participant, index) => ({
+      position: index,
       valueKind: participant.valueKind
     })),
     qualifierShape: jsonShape(candidate.qualifiers)
@@ -273,7 +304,7 @@ function evaluateRelation(input: {
     baselineRecoveryProbability: recovery.baseline,
     relationRecoveryProbability: recovery.relation,
     recoveryGain: quantize(recovery.relation - recovery.baseline),
-    independentSourceCount: new Set(targetFit.map(row => row.sourceId)).size
+    independentSourceCount: new Set(targetFit.map(row => row.sourceFamilyId)).size
   };
 }
 
@@ -292,11 +323,11 @@ function controlResults(input: {
   });
   const randomRepetition = input.fit.map(row => ({
     ...row,
-    signature: randomRepetitionSignature(row.sourceId, input.hasher)
+    signature: randomRepetitionSignature(row.sourceFamilyId, input.hasher)
   }));
   const randomRepetitionHoldout = input.holdout.map(row => ({
     ...row,
-    signature: randomRepetitionSignature(row.sourceId, input.hasher)
+    signature: randomRepetitionSignature(row.sourceFamilyId, input.hasher)
   }));
   const randomRepetitionAlphabet = [...new Set([
     ...randomRepetition,
@@ -434,10 +465,21 @@ function modelCodeNats(counts: ReadonlyMap<string, number>, sampleCount: number,
   return quantize(identityCode + parameterCode);
 }
 
-function uniqueSources(observations: readonly RelationObservation[], relationSeedId: string): string[] {
+function uniqueSourceFamilies(observations: readonly RelationObservation[], relationSeedId: string): string[] {
   return [...new Set(observations
     .filter(row => row.relationSeedId === relationSeedId)
-    .map(row => row.sourceId))].sort();
+    .map(row => row.sourceFamilyId))].sort();
+}
+
+function sourceFamilyFor(candidate: StructuredSemanticCandidate): string {
+  const dependencyGroups = [...new Set(
+    candidate.provenance.sourceIndependence.dependencyGroupIds.map(String)
+  )].sort();
+  if (dependencyGroups.length === 1) return dependencyGroups[0]!;
+  if (dependencyGroups.length > 1) {
+    return `dependency_set:${canonicalStringify(dependencyGroups)}`;
+  }
+  return `source:${String(candidate.sourceId)}`;
 }
 
 function quantize(value: number): number {

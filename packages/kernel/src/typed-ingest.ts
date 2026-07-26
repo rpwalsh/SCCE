@@ -23,7 +23,7 @@ import { extensionOf, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson
 import { createEngineeringCorpusProjection, engineeringCorpusProjectionFromJson } from "./engineering-corpus.js";
 import { bayesUpdate, shannonEntropy } from "./equation-operators.js";
 import {
-  structuredSemanticCandidates,
+  semanticCandidatesByChannel,
   type StructuredSemanticCandidate
 } from "./structured-semantic-candidate.js";
 import {
@@ -123,15 +123,22 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
     const contracts = observations.map(observationContract);
     const languageText = languageTextFromObservations(observations) || (shouldSuppressRawTraining(lane, input.mediaType, input.uri) ? "" : languageBearingDocumentText(input.text, input.mediaType, input.metadata, input.uri));
     const confidenceTrace = observationConfidenceTrace(observations, routes);
-    const semanticCandidates = structuredSemanticCandidates({
+    const semanticCandidateChannels = semanticCandidatesByChannel({
       sourceId: input.sourceId,
       sourceVersionId: input.sourceVersionId,
       metadata: input.metadata,
       observations,
       evidenceIds,
       observedAt: input.observedAt,
+      sourceDependencyGroupIds: evidenceSourceDependencyGroups(input.evidence, input.sourceId),
       hasher
     });
+    const semanticCandidates = [
+      ...semanticCandidateChannels.source_declared_structured,
+      ...semanticCandidateChannels.anchor_derived,
+      ...semanticCandidateChannels.cross_document_induced,
+      ...semanticCandidateChannels.weak_free_surface
+    ];
     const observationGraph = graphFromObservations({ observations, routes, evidenceIds, observedAt: input.observedAt, ids, hasher });
     const candidateGraph = graphFromStructuredSemanticCandidates({
       candidates: semanticCandidates,
@@ -166,8 +173,15 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
         suppressRawLanguageTraining: shouldSuppressRawTraining(lane, input.mediaType, input.uri),
         contracts: contracts.slice(0, 2048),
         confidenceTrace,
-        structuredSemanticCandidateCount: semanticCandidates.length,
-        weakFreeProseInference: false,
+        semanticCandidateCount: semanticCandidates.length,
+        semanticCandidateChannels: Object.fromEntries(
+          Object.entries(semanticCandidateChannels).map(([channel, candidates]) => [
+            channel,
+            candidates.length
+          ])
+        ),
+        candidateChannelsEvaluatedSeparately: true,
+        weakFreeProseInference: semanticCandidateChannels.weak_free_surface.length > 0,
         forceClasses: countBy(contracts.map(contract => contract.forceClass)),
         graphNodes: graph.nodes.length,
         graphEdges: graph.edges.length,
@@ -868,19 +882,33 @@ export function graphFromStructuredSemanticCandidates(input: {
   const hyperedges: Hyperedge[] = [];
   for (const candidate of input.candidates) {
     const promotion = relationPromotionDecision(input.relationPromotionModel, candidate.relationSeedId);
-    const promoted = promotion?.promoted === true;
+    const sourceDeclaredZeroArity = directlyAdmissibleZeroArity(candidate);
+    const promoted = promotion?.promoted === true || sourceDeclaredZeroArity;
+    if (!promoted) continue;
+    const admittedCandidate: StructuredSemanticCandidate = {
+      ...candidate,
+      provenance: {
+        ...candidate.provenance,
+        admissionState: "promoted"
+      }
+    };
     const relationNodeId = input.ids.nodeId({
       kind: "structured_semantic_candidate",
       candidateId: candidate.id
     });
     nodes.push({
       id: relationNodeId,
-      typeId: input.ids.dimensionId({ kind: "structured_semantic_candidate", candidateKind: candidate.kind }),
-      representation: toJsonValue(candidate),
+      typeId: input.ids.dimensionId({
+        kind: "semantic_candidate",
+        channel: candidate.channel,
+        candidateKind: candidate.kind
+      }),
+      representation: toJsonValue(admittedCandidate),
       alpha: candidate.support,
       evidenceIds: candidate.evidenceIds,
       features: [
         `candidate:${candidate.kind}`,
+        `candidate-channel:${candidate.channel}`,
         `relation-seed:${candidate.relationSeedId}`,
         promoted ? `promoted-relation:${candidate.relationSeedId}` : "relation-promotion:pending"
       ],
@@ -888,12 +916,18 @@ export function graphFromStructuredSemanticCandidates(input: {
       updatedAt: input.observedAt,
       metadata: toJsonValue({
         schema: candidate.schema,
-        promoted,
+        extractionChannel: candidate.channel,
+        candidateProvenance: candidate.provenance,
+        admissionState: "promoted",
+        promoted: true,
         promotionModelId: input.relationPromotionModel?.id ?? null,
         descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null,
         heldoutRecoveryGain: promotion?.recovery.gain ?? null,
-        promotionReasons: promotion?.reasons ?? ["relation_promotion_model_unavailable"],
-        weakFreeProseInference: false
+        promotionReasons: promotion?.reasons
+          ?? (sourceDeclaredZeroArity
+            ? ["source_declared_zero_arity_observation"]
+            : ["relation_promotion_model_unavailable"]),
+        weakFreeProseInference: candidate.channel === "weak_free_surface"
       })
     });
     const participantPorts: Hyperedge["participantPorts"] = [];
@@ -925,37 +959,9 @@ export function graphFromStructuredSemanticCandidates(input: {
           updatedAt: input.observedAt,
           metadata: toJsonValue({ candidateId: candidate.id, portId: participant.portId })
         });
-        if (!promoted) {
-          const relationId = input.ids.relationId({ relation: "candidate_participant", portId: participant.portId });
-          edges.push({
-            id: input.ids.edgeId({
-              source: relationNodeId,
-              target: participantNodeId,
-              relationId,
-              provenanceHash: input.hasher.digestHex(`${candidate.id}:${participant.portId}`)
-            }),
-            source: relationNodeId,
-            target: participantNodeId,
-            relationId,
-            alpha: candidate.support,
-            weight: candidate.support,
-            temporalScope: { validFrom: input.observedAt },
-            evidenceIds: candidate.evidenceIds,
-            createdAt: input.observedAt,
-            updatedAt: input.observedAt,
-            metadata: toJsonValue({
-              candidateId: candidate.id,
-              candidateKind: candidate.kind,
-              portId: participant.portId,
-              promoted,
-              promotionModelId: input.relationPromotionModel?.id ?? null,
-              descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null
-            })
-          });
-        }
       }
     }
-    if (promoted) {
+    {
       const relationId = input.ids.relationId({
         kind: "promoted_structured_relation",
         relationSeedId: candidate.relationSeedId
@@ -975,15 +981,20 @@ export function graphFromStructuredSemanticCandidates(input: {
         memberNodeIds,
         qualifiers: candidate.qualifiers,
         modality: toJsonValue({
-          sourceObserved: true,
+          sourceObserved: candidate.channel === "source_declared_structured"
+            || candidate.channel === "anchor_derived",
+          relationInduced: candidate.channel === "cross_document_induced"
+            || candidate.channel === "weak_free_surface",
+          extractionChannel: candidate.channel,
           candidateKind: candidate.kind,
           support: candidate.support
         }),
         evidenceIds: candidate.evidenceIds,
         weightVector: toJsonValue({
           alpha: candidate.support,
-          descriptionLengthGainNats: promotion.descriptionLength.gainNats,
-          heldoutRecoveryGain: promotion.recovery.gain
+          descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null,
+          heldoutRecoveryGain: promotion?.recovery.gain ?? null,
+          sourceDeclaredZeroArity
         }),
         temporalScope: temporalScopeForCandidate(candidate, input.observedAt),
         provenanceRefs: candidate.evidenceIds,
@@ -995,6 +1006,44 @@ export function graphFromStructuredSemanticCandidates(input: {
     }
   }
   return { nodes, edges, hyperedges };
+}
+
+function directlyAdmissibleZeroArity(candidate: StructuredSemanticCandidate): boolean {
+  if (candidate.channel !== "source_declared_structured"
+    || (candidate.kind !== "state_marker" && candidate.kind !== "source_event")
+    || candidate.participants.length !== 0
+    || candidate.evidenceIds.length === 0
+    || candidate.provenance.exactEvidenceIds.length === 0
+    || candidate.provenance.assumptions.length > 0
+    || candidate.provenance.transformations.length > 0
+    || candidate.provenance.alternativeInterpretations.length > 0) {
+    return false;
+  }
+  const candidateEvidence = [...new Set(candidate.evidenceIds.map(String))].sort();
+  const provenanceEvidence = [...new Set(
+    candidate.provenance.exactEvidenceIds.map(String)
+  )].sort();
+  return candidateEvidence.length === provenanceEvidence.length
+    && candidateEvidence.every((id, index) => id === provenanceEvidence[index]);
+}
+
+function evidenceSourceDependencyGroups(
+  evidence: readonly EvidenceSpan[],
+  fallbackSourceId: SourceId
+): string[] {
+  const groups = evidence.flatMap(span => {
+    const provenance = span.provenance && typeof span.provenance === "object"
+      && !Array.isArray(span.provenance)
+      ? span.provenance as Record<string, JsonValue>
+      : {};
+    const family = typeof provenance.sourceFamilyId === "string"
+      ? provenance.sourceFamilyId
+      : typeof provenance.dependencyFamilyId === "string"
+        ? provenance.dependencyFamilyId
+        : undefined;
+    return family?.trim() ? [family.trim()] : [];
+  });
+  return [...new Set(groups.length ? groups : [String(fallbackSourceId)])].sort();
 }
 
 function temporalScopeForCandidate(

@@ -118,15 +118,17 @@ Relation-hypothesis state is candidate memory, not promoted semantics. The compi
 
 Typed ingestion separately emits structured semantic candidates. Promotion is now
 compiled per multi-source ingest batch or bounded Wikipedia shard. Occurrences with
-the same relation/signature/source identity collapse before fitting. Source IDs are
-split into fit and holdout sets. The null code uses the fit corpus's smoothed
+the same relation/signature/source-dependency-family identity collapse before
+fitting. Dependency families are split into fit and holdout sets. The null code uses
+the fit corpus's smoothed
 participant/qualifier-signature distribution; the promoted code uses a
 relation-conditioned distribution and pays an explicit two-part model cost.
 Positive held-out codelength gain and improved held-out relation recovery are both
 required. A shuffled relation assignment, a duplicate-only one-source corpus and a
 deterministic random-repetition corpus must all fail the same promotion boundary.
-The frozen model ID and gain are written back to candidate incidence metadata.
-Promoted candidates additionally materialize as `scce.hyperedge.v2`. A relation may
+The frozen model ID and gain are written to admitted graph metadata. Unpromoted
+candidates remain outside the ordinary graph. Promoted candidates materialize as
+`scce.hyperedge.v2`. A relation may
 have zero or more ports; an omitted participant remains an explicit port with a null
 node reference. Qualifiers, temporal validity, modality and evidence have dedicated
 fields. The `memberNodeIds` array is derived only from observed ports for bounded
@@ -165,6 +167,6 @@ Typed ingest now constructs structured semantic candidates before weak prose inf
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,
 logs, and interaction outcomes. Every candidate retains source/version/evidence
-identity, qualifiers, an opaque relation seed, and typed participant ports. It enters
-the graph marked unpromoted; corpus structure proposes semantics but does not certify
-or promote them.
+identity, qualifiers, an opaque relation seed, and typed participant ports. It remains
+in a candidate channel until promotion; corpus structure proposes semantics but does
+not certify or insert it into the ordinary graph.

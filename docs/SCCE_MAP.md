@@ -70,8 +70,9 @@ answer lane.
 - `relation-potential.ts`: source-neutral edge projection, three-way-disjoint fitting,
   Platt calibration, holdout metrics, and strict content-addressed model validation.
 - `structured-semantic-candidate.ts`, `relation-promotion.ts`: source-structured
-  relation candidates followed by source-disjoint two-part codelength promotion,
-  held-out recovery, duplicate collapse and shuffled/duplicate/random controls.
+  relation candidates followed by source-family-disjoint two-part codelength
+  promotion, held-out recovery, dependency-family duplicate collapse and
+  shuffled/duplicate/random controls.
 - `typed-ingest.ts`, `types.ts`: `scce.hyperedge.v2` materialization with arbitrary
   observed/omitted participant ports and separate qualifier, modality, time and
   evidence fields.
@@ -96,6 +97,11 @@ answer lane.
 - `join-program.ts`: opaque source-exact joins conditioned on lattice/derivation,
   construction, discourse, boundary and population context; uncertainty remains an
   explicit runtime state rather than a global join guess.
+- `structured-semantic-candidate.ts`, `typed-ingest.ts`: channel-separated candidates,
+  decomposed provenance, opaque induced identities, isolated proposal state, and
+  exact-evidence-gated zero-arity source-state/source-event extraction.
+- `relation-promotion.ts`: channel-local, source-family-disjoint held-out promotion
+  evaluation.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

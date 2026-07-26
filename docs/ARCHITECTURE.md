@@ -69,9 +69,10 @@ validation so credentials need not be committed.
   identity-unconfigured mode.
 - `packages/kernel/src/structured-semantic-candidate.ts` and
   `relation-promotion.ts`: evidence-bearing structured relation candidates and the
-  separate source-disjoint description-length compiler that decides whether their
-  incidence may be marked reusable. This path uses explicit data/model codes and
-  negative controls; it is distinct from turn-time relation-potential scoring.
+  separate source-family-disjoint description-length compiler that decides whether
+  their incidence may be marked reusable. Proposed candidates remain outside the
+  ordinary graph. This path uses explicit data/model codes and negative controls; it
+  is distinct from turn-time relation-potential scoring.
 - `scce.hyperedge.v2` in `types.ts` and typed-ingest materialization: canonical
   zero-or-more-arity relations with observed/omitted ports, qualifiers, modality,
   temporal scope and evidence. PostgreSQL v23 persists these fields directly;
@@ -107,6 +108,13 @@ validation so credentials need not be committed.
   evaluation; exact coordinate provenance; factored backoff; explicit unknown
   population mass; and typed uncertainty outcomes with no global join or
   silent-concatenation fallback.
+- `structured-semantic-candidate.ts`, `typed-ingest.ts`: four explicit semantic
+  candidate channels, mandatory provenance decomposition, opaque induced relation
+  identity, proposal isolation, and exact-evidence-gated source-declared zero-arity
+  state/event hyperedges.
+- `relation-promotion.ts`: source-family-disjoint promotion evaluation with
+  channel-local background distributions so structured extraction cannot score weak
+  induction.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities, with nested unordered
   field canonicalization, duplicate-ID rejection and graph-reference integrity.

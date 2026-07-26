@@ -336,10 +336,12 @@ describe("typed ingest closure", () => {
     expect(projected.semanticCandidates.every(candidate =>
       candidate.evidenceIds.length > 0
       && candidate.participants.length > 0
+      && candidate.provenance.admissionState === "proposed"
     )).toBe(true);
     expect(projected.graphNodes.some(node =>
-      JSON.stringify(node.metadata).includes("weakFreeProseInference")
-    )).toBe(true);
+      JSON.stringify(node.metadata).includes("candidateProvenance")
+    )).toBe(false);
+    expect(projected.graphHyperedges).toHaveLength(0);
     expect(JSON.stringify(projected.diagnostics)).toContain('"weakFreeProseInference":false');
   });
 

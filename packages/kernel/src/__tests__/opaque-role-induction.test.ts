@@ -77,9 +77,10 @@ function corpus(count: number): StructuredSemanticCandidate[] {
       ? ["anchor_surface", "target_ref"]
       : ["date_surface", "time_context"];
     return {
-      schema: "scce.structured_semantic_candidate.v1",
+      schema: "scce.semantic_candidate.v2",
       id: `candidate.${index}`,
       kind: first ? "link" : "date",
+      channel: "source_declared_structured",
       relationSeedId: first ? "relation_seed.first" : "relation_seed.second",
       sourceId: `source.${index}` as SourceId,
       sourceVersionId: `version.${index}` as SourceVersionId,
@@ -93,7 +94,23 @@ function corpus(count: number): StructuredSemanticCandidate[] {
       evidenceIds: [],
       temporalCoordinates: canonicalTemporalCoordinates({ observedTime: index }),
       support: 1,
-      provenance: {}
+      provenance: {
+        exactEvidenceIds: [],
+        extractionChannel: "source_declared_structured",
+        anchors: [],
+        assumptions: [],
+        transformations: [],
+        alternativeInterpretations: [],
+        sourceIndependence: {
+          independentSourceCount: 1,
+          dependencyGroupIds: [`source.${index}`],
+          estimate: 1
+        },
+        producer: { modelId: "fixture", snapshotId: "fixture.snapshot" },
+        admissionState: "proposed",
+        normalizationContractId: "fixture.normalization",
+        participantIdentityIds: []
+      }
     };
   });
 }
