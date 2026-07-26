@@ -142,7 +142,7 @@ export interface WorkspaceQuestionAnswer {
   generatedBy: "workspace_query_adapter" | "workspace-kernel-context";
   selectedIntentId: WorkspaceIntentId;
   intentEvidence: WorkspaceIntentEvidence;
-  fallbackReason?: string;
+  unsupportedReason?: string;
   question: string;
   answer: string;
   confidence: number;
@@ -494,11 +494,11 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const normalizedOptions = normalizeOptions(options);
       const project = await analyzeWorkspaceProject(root, normalizedOptions);
       await input.runtime.storage.workspace.putWorkspace(project.workspace);
-      const legacy = answerWorkspaceQuestion(project, question);
+      const adapterBaseline = answerWorkspaceQuestion(project, question);
       if (!normalizedOptions.useKernelAnswer) {
-        const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, legacy.answer, toJsonValue(legacy), legacy.sourceRefs);
+        const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, adapterBaseline.answer, toJsonValue(adapterBaseline), adapterBaseline.sourceRefs);
         await input.runtime.storage.workspace.putReport(report);
-        return { ...legacy, report };
+        return { ...adapterBaseline, report };
       }
       const conversationId = normalizedOptions.conversationId || project.workspace.id;
       const learnedProfile = await latestDialogueStyleProfile(input.runtime.storage.dialogueMemory, conversationId);
@@ -525,18 +525,18 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         now: Date.now()
       });
       const answer: WorkspaceQuestionAnswer = {
-        ...legacy,
+        ...adapterBaseline,
         path: "workspace_kernel_context",
         generatedBy: "workspace-kernel-context",
         answer: kernel.spoken.text,
-        confidence: Math.max(legacy.confidence, kernel.pragmatics.selected.score),
-        sourceRefs: legacy.sourceRefs.length ? legacy.sourceRefs : kernel.mouthInput.speakInput.evidence.map(span => ({
+        confidence: Math.max(adapterBaseline.confidence, kernel.pragmatics.selected.score),
+        sourceRefs: adapterBaseline.sourceRefs.length ? adapterBaseline.sourceRefs : kernel.mouthInput.speakInput.evidence.map(span => ({
           path: String(span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? (span.provenance as Record<string, JsonValue>).uri ?? span.id : span.id),
           evidenceSpanId: String(span.id),
           contentHash: String(span.contentHash)
         })),
         data: toJsonValue({
-          legacy,
+          adapterBaseline,
           kernel: {
             answerGraphId: kernel.answerGraph.id,
             dialogueStateId: kernel.dialogueState.turnId,
@@ -691,7 +691,7 @@ export function answerWorkspaceQuestion(project: WorkspaceProjectReport, questio
   let confidence = 0.42;
   let selectedIntentId: WorkspaceIntentId = "workspace.intent.unsupported";
   let signals: string[] = [];
-  let fallbackReason: string | undefined;
+  let unsupportedReason: string | undefined;
 
   if (includesAll(lower, ["where", "defined"]) || includesAny(lower, ["definition", "defined"])) {
     selectedIntentId = "workspace.intent.symbol_definition";
@@ -797,7 +797,7 @@ export function answerWorkspaceQuestion(project: WorkspaceProjectReport, questio
     data = toJsonValue({ summary: project.summary, counts: project.summary.counts });
     confidence = 0.68;
   } else {
-    fallbackReason = "workspace.query.unsupported_intent";
+    unsupportedReason = "workspace.query.unsupported_intent";
     surface = workspaceAnswerSurface("workspace.intent.unsupported", ["workspace.status.unsupported_intent"]);
     data = toJsonValue({
       questionTerms: terms,
@@ -824,7 +824,7 @@ export function answerWorkspaceQuestion(project: WorkspaceProjectReport, questio
     generatedBy: "workspace_query_adapter",
     selectedIntentId,
     intentEvidence: workspaceIntentEvidence(project, signals, terms, refs),
-    fallbackReason,
+    unsupportedReason,
     question,
     answer: surface,
     confidence,
