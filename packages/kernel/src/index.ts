@@ -69,6 +69,7 @@ export * from "./cross-document-alignment.js";
 export * from "./alignment-alternatives.js";
 export * from "./coarse-to-fine-alignment.js";
 export * from "./alignment-calibration.js";
+export * from "./alignment-promotion.js";
 export * from "./sparse-fused-transport.js";
 export * from "./transport-evidence-allocation.js";
 export * from "./language-training-batch.js";

@@ -26,6 +26,7 @@ import {
   compileAlignmentCommunityRouting,
   compileCoarseToFineAlignmentResult,
   compileAlignmentCalibrationModel,
+  compileAlignmentPromotionModel,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
@@ -1135,6 +1136,11 @@ export class WikipediaV3Ingestor {
           allocation.conservationResidual
         );
       }
+      const alignmentPromotionModel = compileAlignmentPromotionModel({
+        alternativeSets: alignmentAlternativeSets,
+        observations: [],
+        hasher: this.hasher
+      });
       await this.storage.events.append(this.events.create({
         episodeId,
         typeId: "RelationPromotionCompiled",
@@ -1189,6 +1195,7 @@ export class WikipediaV3Ingestor {
           alignmentAlternativeSets,
           coarseToFineAlignments,
           alignmentCalibrationModel,
+          alignmentPromotionModel,
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
           alignmentPosteriorScope: "retained_candidate_set_only",
