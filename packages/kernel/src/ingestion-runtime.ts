@@ -61,6 +61,11 @@ import {
 } from "./coarse-to-fine-alignment.js";
 import { compileAlignmentCalibrationModel } from "./alignment-calibration.js";
 import { compileAlignmentPromotionModel } from "./alignment-promotion.js";
+import {
+  compileReversibleConstructions,
+  reversibleConstructionCreationSnapshotId,
+  reversibleConstructionProfileId
+} from "./reversible-construction.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -537,6 +542,8 @@ export function createIngestionRuntime(options: {
           ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
         const coarseToFineAlignments:
           ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
+        const allAlignmentEvidenceAllocations:
+          ReturnType<typeof allocateTransportEvidence>[] = [];
         const historicalAlignmentPayloads = (await deps.storage.events.readRange({
           typeId: "SparseAlignmentCandidatesCompiled",
           limit: 1_024
@@ -547,6 +554,8 @@ export function createIngestionRuntime(options: {
         let graphImplicitMass = 0;
         const alignmentSupports:
           ReturnType<typeof generateSparseAlignmentCandidates>[] = [];
+        const alignmentLattices:
+          ReturnType<typeof buildSurfaceLattice>[] = [];
         for (const span of relationEvidence) {
           const lattice = buildSurfaceLattice({
             documentId: String(span.id),
@@ -556,6 +565,7 @@ export function createIngestionRuntime(options: {
             evidenceIds: [span.id],
             hasher
           });
+          alignmentLattices.push(lattice);
           const support = generateSparseAlignmentCandidates({
             lattice,
             targetIndex: alignmentTargetIndex,
@@ -653,6 +663,7 @@ export function createIngestionRuntime(options: {
               support,
               hasher
             }));
+          allAlignmentEvidenceAllocations.push(...alternativeAllocations);
           const seriesId = alignmentAlternativeSeriesId({
             support,
             targetIndex: alignmentTargetIndex,
@@ -698,6 +709,33 @@ export function createIngestionRuntime(options: {
           observations: [],
           hasher
         });
+        const reversibleConstructionCompilation =
+          compileReversibleConstructions({
+            alternativeSets: alignmentAlternativeSets,
+            promotionModel: alignmentPromotionModel,
+            calibrationModel: alignmentCalibrationModel,
+            supports: routedAlignmentSupports,
+            targetIndex: alignmentTargetIndex,
+            lattices: alignmentLattices,
+            evidenceAllocations: allAlignmentEvidenceAllocations,
+            profileId: reversibleConstructionProfileId({
+              sourceVersionIds: relationEvidence.map(span =>
+                String(span.sourceVersionId)),
+              populationPosteriors: routedAlignmentSupports.map(support =>
+                support.populationPosterior),
+              hasher
+            }),
+            creationSnapshotId: reversibleConstructionCreationSnapshotId({
+              sourceVersionId: [...new Set(relationEvidence.map(span =>
+                String(span.sourceVersionId)))].sort().join("\u001f"),
+              graphNodeIds: promotedGraph.nodes.map(node => String(node.id)),
+              graphEdgeIds: promotedGraph.edges.map(edge => String(edge.id)),
+              hyperedgeIds: promotedGraph.hyperedges.map(edge => String(edge.id)),
+              hasher
+            }),
+            createdAt: clock.now(),
+            hasher
+          });
         events.push(await append(eventFactory.create({
           episodeId,
           typeId: "RelationPromotionCompiled",
@@ -754,6 +792,10 @@ export function createIngestionRuntime(options: {
             coarseToFineAlignments,
             alignmentCalibrationModel,
             alignmentPromotionModel,
+            reversibleConstructions:
+              reversibleConstructionCompilation.constructions,
+            reversibleConstructionRejections:
+              reversibleConstructionCompilation.rejections,
             retainedAlignmentHypothesisCount,
             omittedAlignmentSearchBranchCount,
             alignmentPosteriorScope: "retained_candidate_set_only",

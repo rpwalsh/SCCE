@@ -106,6 +106,9 @@ answer lane.
 - `alignment-promotion.ts`: independent held-out promotion decisions separated
   from transport selection and confidence calibration; copied source families
   cannot self-validate.
+- `reversible-construction.ts`: promoted typed graph ports, coordinate-bearing
+  surface slots and one source-exact program with executable interpretation and
+  realization, persistence, hydration and cycle checking.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

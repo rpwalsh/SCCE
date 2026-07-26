@@ -91,6 +91,7 @@ import {
   type JoinProgramMixture,
   type JoinRenderContext
 } from "./join-program.js";
+import { realizeReversibleConstruction } from "./reversible-construction.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
   sourceQuote: "rel.1f7c4a92",
@@ -575,6 +576,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const learnedConstructionCandidate = structuralCreativeBound
         ? undefined
         : semanticLearnedConstructionCandidate(input, plan, discoursePlan, constructionHasher);
+      const reversibleConstructionCandidate = structuralCreativeBound
+        ? undefined
+        : semanticReversibleConstructionCandidate(
+          input,
+          plan,
+          discoursePlan,
+          constructionHasher
+        );
       const constructAnchored = structuralCreativeBound || nonEventCreativeMouthHandoff
         ? undefined
         : constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
@@ -603,6 +612,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
         ...(semanticSourceCandidate && semanticSourceCandidate.id !== kernelSelectedCandidate?.id ? [semanticSourceCandidate] : []),
+        ...(reversibleConstructionCandidate
+          ? [reversibleConstructionCandidate]
+          : []),
         ...(learnedConstructionCandidate ? [learnedConstructionCandidate] : []),
         ...(constructAnchored ? [constructAnchored] : []),
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
@@ -635,6 +647,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         const governedActionCandidate = candidate.id === "candidate:generated:governed-action-preview";
         const proofBoundaryCandidate = candidate.id === "candidate:generated:proof-boundary";
         const semanticLearnedConstructionCandidate = candidate.id.startsWith("candidate:generated:learned-construction:");
+        const semanticReversibleConstructionCandidate =
+          candidate.id.startsWith(
+            "candidate:generated:reversible-construction:"
+          );
         const exactConstraintHits = protectedCandidateSurface
           ? exactSurfaceConstraintHits(candidate.text, input, plan, appliedCorrection.applied)
           : [];
@@ -658,6 +674,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
               ...unanchoredImportedPriorHits(candidate, input)
             ])
           : semanticLearnedConstructionCandidate
+            || semanticReversibleConstructionCandidate
             ? uniqueStrings([
               ...forbiddenSurfaceHits(bounded, plan),
               ...semanticAnswerDriftHits(bounded, input, priorPieces),
@@ -1874,6 +1891,101 @@ function semanticSourceAnswerCandidate(input: SpeakInput, discoursePlan: Discour
     discoursePlan,
     boundaryDecisions: []
   };
+}
+
+function semanticReversibleConstructionCandidate(
+  input: SpeakInput,
+  plan: SurfacePlan,
+  discoursePlan: DiscoursePlan,
+  hasher: Hasher
+): SurfaceCandidate | undefined {
+  const state = semanticAnswerConstructState(input.construct);
+  if (!state?.certificationBoundary.externalFactCertification
+    || state.forceId !== "output.force.source_bound_answer"
+    || state.boundaryId !== "output.force.source_bound"
+    || plan.targetLanguage !== input.languageProfile.id) return undefined;
+  const facts = uniquePriorBoundFacts(state.selectedFacts);
+  if (facts.length !== 1 || state.selectedFacts.length !== 1) return undefined;
+  const fact = facts[0]!;
+  if (!completeLearnedFactCoverage(state, fact)
+    || !learnedFactRouteAdmissible(fact)
+    || !fact.sourceVersionId
+    || !fact.evidenceIds?.length) return undefined;
+  const certifiedEvidenceIds = new Set(
+    state.certificationBoundary.evidenceSpanIds
+  );
+  const certifiedSourceVersionIds = new Set(
+    state.certificationBoundary.sourceVersionIds
+  );
+  const factEvidenceIds = new Set(fact.evidenceIds);
+  const proofEvidenceIds = input.evidence
+    .filter(span => span.status === "promoted"
+      && jsonRecord(span.trustVector).forceClass === "direct_evidence"
+      && certifiedEvidenceIds.has(String(span.id))
+      && factEvidenceIds.has(String(span.id))
+      && fact.sourceVersionId === String(span.sourceVersionId)
+      && certifiedSourceVersionIds.has(String(span.sourceVersionId)))
+    .map(span => String(span.id))
+    .sort(compareSurfaceText);
+  if (!proofEvidenceIds.length) return undefined;
+  const proofEvidenceSet = new Set(proofEvidenceIds);
+  const rows = (input.languageMemory.importedReversibleConstructions ?? [])
+    .filter(construction =>
+      construction.profileId === input.languageProfile.id
+      && construction.provenance.evidenceIds.some(id =>
+        proofEvidenceSet.has(id)))
+    .flatMap(construction => {
+      const participantNodeIds = new Set(construction.graph.ports
+        .flatMap(port => port.participantNodeId ? [port.participantNodeId] : []));
+      if (!participantNodeIds.has(fact.sourceNodeId)
+        || !participantNodeIds.has(fact.targetNodeId)) return [];
+      const realized = realizeReversibleConstruction({
+        construction,
+        graphTargetIds: construction.graph.ports.map(port =>
+          port.graphTargetId),
+        profileId: input.languageProfile.id
+      });
+      if (realized.status !== "realized"
+        || !exactSurfaceSatisfiesPlan(realized.text, input, plan)
+        || !learnedProfileAcceptsSurface(
+          input.languageProfile,
+          realized.text
+        )) return [];
+      const evidenceIds = construction.provenance.evidenceIds
+        .filter(id => proofEvidenceSet.has(id));
+      if (!evidenceIds.length) return [];
+      const calibrated = construction.calibration.probability;
+      const fit = clamp01(calibrated ?? Math.min(
+        construction.support.cycleRecall,
+        construction.support.heldoutCoverage
+      ));
+      return [{
+        id: `candidate:generated:reversible-construction:${
+          hasher.digestHex(construction.id).slice(0, 20)
+        }`,
+        style: "surface.path.generated.reversible_construction",
+        path: "generated" as const,
+        text: realized.text,
+        evidenceIds: evidenceIds as EvidenceId[],
+        fit,
+        importedPieceIds: [],
+        discoursePlan,
+        boundaryDecisions: [],
+        exactSurface: true,
+        audit: toJsonValue({
+          schema: "scce.mouth.reversible_construction_candidate.v1",
+          constructionId: construction.id,
+          planId: construction.planId,
+          graphTargetIds: realized.graphTargetIds,
+          promotionModelId: construction.promotionModelId,
+          creationSnapshotId: construction.creationSnapshot.id,
+          sourceExact: true
+        })
+      }];
+    });
+  return rows.sort((left, right) =>
+    right.fit - left.fit
+    || compareSurfaceText(left.id, right.id))[0];
 }
 
 interface LearnedConstructionCandidateRow {

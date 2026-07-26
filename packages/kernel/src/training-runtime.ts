@@ -120,6 +120,8 @@ export function createTrainingRuntime(options: {
     let coarseToFineAlignments = 0;
     let calibratedAlignmentModels = 0;
     let promotedAlignmentPlans = 0;
+    let reversibleConstructions = 0;
+    let reversibleConstructionRejections = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -211,6 +213,9 @@ export function createTrainingRuntime(options: {
       promotedAlignmentPlans += memory.alignmentPromotionModel.decisions.filter(
         decision => decision.promoted
       ).length;
+      reversibleConstructions += memory.reversibleConstructions.length;
+      reversibleConstructionRejections +=
+        memory.reversibleConstructionRejections.length;
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -254,6 +259,8 @@ export function createTrainingRuntime(options: {
         coarseToFineAlignments,
         calibratedAlignmentModels,
         promotedAlignmentPlans,
+        reversibleConstructions,
+        reversibleConstructionRejections,
         surfaceNullMass,
         graphImplicitMass
       })
