@@ -3,13 +3,19 @@ import { createAlphaFieldEngine } from "./field.js";
 import { createIdFactory } from "./ids.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
+  compileLanguageTrainingBatch,
+  observeLanguageTrainingSegmentation
+} from "./language-training-batch.js";
+import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
+import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
+import {
   createLanguageAcquisitionEngine
 } from "./language.js";
 import { createWeightedFeatureSketchLearner } from "./latent.js";
 import { createLearningLoop } from "./learning-loop.js";
 import { createLearningController } from "./learning.js";
 import { createPredictionLayer } from "./prediction.js";
-import { createClock, toJsonValue } from "./primitives.js";
+import { createClock, createHasher, toJsonValue } from "./primitives.js";
 import { joinInformationLabels } from "./information-flow.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
@@ -52,6 +58,7 @@ export function createTrainingRuntime(options: {
     trainingOrchestrator, language, languageMemoryRuntime, fieldEngine, prediction, ssd, fcs,
     policy, failures, append, invalidateRuntimeCaches, onKernelStateMutation
   } = options;
+  const hasher = createHasher();
 
 
   function trainingPromotionEvidenceIds(plan: { promotion: readonly { evidenceId: string; promote: boolean }[] }): EvidenceSpan["id"][] {
@@ -120,16 +127,29 @@ export function createTrainingRuntime(options: {
         profileBySourceVersion.set(String(sourceVersionId), profile);
         profilesCreated++;
       }
-      const memory = languageMemoryRuntime.train({
-        streamId: `training:${trainingPlanId}:${String(sourceVersionId)}`,
-        profile,
-        sourceVersionId,
-        text,
-        evidence: spans,
-        createdAt: clock.now(),
-        maxOrder: 6,
-        maxCountersPerOrder: 12000,
-        vocabularyLimit: 24000
+      const trainedAt = clock.now();
+      const memory = compileLanguageTrainingBatch({
+        runtime: languageMemoryRuntime,
+        hasher,
+        batch: {
+          streamId: `training:${trainingPlanId}:${String(sourceVersionId)}`,
+          profile,
+          sourceVersionId,
+          text,
+          evidence: spans,
+          createdAt: trainedAt,
+          maxOrder: 6,
+          maxCountersPerOrder: 12000,
+          vocabularyLimit: 24000
+        }
+      });
+      await observeLanguageTrainingSegmentation({
+        storage: deps.storage,
+        batch: { text, createdAt: trainedAt },
+        tenantId: informationLabel.tenantId,
+        corpusRole: corpusRoleIdForSourceSystem("training"),
+        activeImportVersion: trainingPlanId,
+        hasher
       });
       await deps.storage.languageMemory.putNgramObservationsBatch(memory.observations.map(record => ({ ...record, informationLabel })));
       for (const model of memory.models) await deps.storage.languageMemory.putNgramModel({ ...model, informationLabel });
@@ -164,7 +184,7 @@ export function createTrainingRuntime(options: {
       const episodeId = idFactory.episodeId();
       const events: ScceEvent[] = [];
       let model = await deps.storage.model.readModel();
-      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000, allowLatestFallback: true });
+      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000 });
       const featureSketches = featureSketchLearner.learn(slice.nodes, 24);
       const pending = await deps.storage.quarantine.listPending({ limit: 500 });
       let profiles = await deps.storage.model.listLanguageProfiles(200);
@@ -198,18 +218,36 @@ export function createTrainingRuntime(options: {
           createdAt: clock.now(),
           informationLabel: deps.sourceInformationLabel
         });
+        const projection = languageMemoryPatternsFromInducedLanguageModel({
+          model: inducedLanguageModel,
+          profiles,
+          idFactory,
+          updatedAt: clock.now(),
+          sourceSystem: "training",
+          informationLabel: deps.sourceInformationLabel
+        });
+        for (const pattern of projection.patterns) {
+          await deps.storage.languageMemory.putLanguagePattern(pattern);
+        }
         const languageModelPersistedEvent = await append(eventFactory.create({
           episodeId,
           typeId: "InducedLanguageModelPersisted",
-          payload: toJsonValue({ modelId: inducedLanguageModel.id, trainingPlanId: mvpTrainPlan.id, corpusDocuments: inducedLanguageModel.corpusDocuments, vocabularySize: inducedLanguageModel.vocabularySize })
+          payload: toJsonValue({
+            modelId: inducedLanguageModel.id,
+            trainingPlanId: mvpTrainPlan.id,
+            corpusDocuments: inducedLanguageModel.corpusDocuments,
+            vocabularySize: inducedLanguageModel.vocabularySize,
+            memoryProjection: projection as unknown as JsonValue,
+            runtimeActivePatterns: projection.patterns.length
+          })
         }));
-        mvpTrainPlan.statusHistory.push({ status: "persisted", at: clock.now(), eventId: String(languageModelPersistedEvent.id), reason: "induced language model stored in full" });
+        mvpTrainPlan.statusHistory.push({ status: "persisted", at: clock.now(), eventId: String(languageModelPersistedEvent.id), reason: projection.patterns.length ? "induced language model stored and projected into runtime language memory" : "induced language model stored; runtime projection skipped" });
         events.push(languageModelPersistedEvent);
       }
       events.push(trainingPlanBuiltEvent);
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: plan.audit })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: eviPlan.audit })));
-      events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPromoted", payload: { promotedEvidence: promoted, selectedEvidenceIds: promotionIds.map(String), weightedFeatureSketches: featureSketches.length, legacyModelStateKey: "latentConcepts", languageProfiles: profiles.length, trainingLanguage: trainingLanguage.audit, promotionPlan: plan.promotion, trainingPromotion: mvpTrainPlan.promotion.slice(0, 64).map(item => ({ evidenceId: item.evidenceId, promote: item.promote, score: item.score, reasons: item.reasons })) } })));
+      events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPromoted", payload: { promotedEvidence: promoted, selectedEvidenceIds: promotionIds.map(String), weightedFeatureSketches: featureSketches.length, modelStateKey: "latentConcepts", languageProfiles: profiles.length, trainingLanguage: trainingLanguage.audit, promotionPlan: plan.promotion, trainingPromotion: mvpTrainPlan.promotion.slice(0, 64).map(item => ({ evidenceId: item.evidenceId, promote: item.promote, score: item.score, reasons: item.reasons })) } })));
       const selfState = await createFunctionalSelfModel({ storage: deps.storage, model, policy, recentFailures: failures });
       const trainField = fieldEngine.activate({ text: model.learningGoals.join("\n"), nodes: slice.nodes, edges: slice.edges });
       const trainForecastState = prediction.state({ episodeId, graph: slice, alphaTrace: trainField.alphaTrace, t: clock.now() });

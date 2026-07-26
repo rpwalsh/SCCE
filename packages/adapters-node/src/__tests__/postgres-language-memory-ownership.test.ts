@@ -98,6 +98,10 @@ describe("Postgres language-memory ownership queries", () => {
     expect(statements.filter(statement => statement.includes("semantic_frames_surface_rank"))).toEqual([
       `CREATE INDEX IF NOT EXISTS idx_fixture_semantic_frames_surface_rank ON "fixture".semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`
     ]);
+    expect(statements.some(statement =>
+      statement.includes("UPDATE \"fixture\".language_profiles profile")
+      && statement.includes("jsonb_array_elements(profile.profile_json->'charNgrams')")
+    )).toBe(true);
   });
 
   it("bounds referenced profile discovery with index-backed semi-joins", async () => {
@@ -112,6 +116,23 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql).toContain("LIMIT $1");
     expect(sql).not.toMatch(/artifact_refs|GROUP BY|WITH\s/i);
     expect(calls[0]?.params[0]).toBe(17);
+  });
+
+  it("ranks profile candidates from the indexed durable trigram set before applying the bound", async () => {
+    const { adapter, calls } = fixture();
+
+    await adapter.model.listLanguageProfiles({
+      limit: 19,
+      referencedByLanguageMemory: true,
+      surfaceNgrams: ["QEL", "ela", "qel"]
+    });
+
+    const sql = calls[0]!.sql;
+    expect(sql).toContain("lp.ngram_keys && $1::text[]");
+    expect(sql).toContain("FROM unnest(lp.ngram_keys)");
+    expect(sql.indexOf("lp.ngram_keys &&")).toBeLessThan(sql.indexOf("LIMIT $2"));
+    expect(calls[0]?.params[0]).toEqual(["qel", "ela"]);
+    expect(calls[0]?.params[1]).toBe(19);
   });
 });
 

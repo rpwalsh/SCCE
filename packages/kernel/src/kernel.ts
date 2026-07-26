@@ -579,9 +579,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const results: BenchmarkResult["tasks"] = [];
       const events: ScceEvent[] = [];
       const benchmarkScorer = createBenchmarkScorer();
+      const rubrics: ReturnType<typeof benchmarkScorer.scoreTurn>[] = [];
       for (const task of tasks) {
         const turn = await kernel.turn({ text: task.input, metadata: { benchmarkTaskId: task.id } });
         const rubric = benchmarkScorer.scoreTurn(task, turn);
+        rubrics.push(rubric);
         const dims = new Map(rubric.dimensions.map(dim => [dim.id, dim.score]));
         const artifactScore = task.expectedArtifacts?.length
           ? task.expectedArtifacts.filter(path => turn.emissionGraph.artifacts.some(artifact => artifact.path === path)).length / task.expectedArtifacts.length
@@ -603,7 +605,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         await deps.storage.benchmarks.putCase({ id: `${runId}:${task.id}`, runId, case: task as unknown as JsonValue, result: { ...result, rubric: rubric as unknown as JsonValue } as unknown as JsonValue, score: { score: rubric.score } });
       }
       const score = results.length ? results.reduce((sum, item) => sum + item.score, 0) / results.length : 0;
-      await deps.storage.benchmarks.putRun({ id: runId, config: (input.config ?? { tasks }) as JsonValue, startedAt, completedAt: clock.now(), summary: { score, tasks: results.length } });
+      const broadReadiness = benchmarkScorer.broadReadiness(tasks, rubrics);
+      await deps.storage.benchmarks.putRun({ id: runId, config: (input.config ?? { tasks }) as JsonValue, startedAt, completedAt: clock.now(), summary: toJsonValue({ score, tasks: results.length, broadReadiness }) });
       events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { runId, tasks: results.length, score } })));
       return { runId, tasks: results, score, events, note: "Benchmarks are persisted local executions. Frontier comparisons are not claimed unless separately run." };
     }

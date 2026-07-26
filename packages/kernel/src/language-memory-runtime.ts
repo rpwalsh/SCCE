@@ -256,6 +256,18 @@ export interface ProseCriticResult {
   audit: JsonValue;
 }
 
+interface RuntimeDiscoursePriorProfile {
+  patternIds: string[];
+  targetMoveCount: number;
+  targetSymbolCount: number;
+  paragraphCount: number;
+  sentenceCount: number;
+  sentenceSymbolP75: number;
+  paragraphSymbolP50: number;
+  dialogueTurnRate: number;
+  support: number;
+}
+
 export interface LanguageDiscourseMove {
   id: string;
   role: string;
@@ -728,6 +740,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     .filter(Boolean)
     .slice(-128);
   const contextText = contextSymbols.join(" ");
+  const discoursePrior = runtimeDiscoursePriorProfile(input.state, generationExtent);
   const pieces = generationPieces(input, requiredTerms, frameAtoms, contextSymbols, contextText);
   const candidatePieces = selectGenerationPieces(pieces, requiredTerms, generationExtent);
   const latticeGeneration = generateRhetoricalSentenceLattice({
@@ -739,6 +752,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     contextSymbols,
     contextText,
     generationExtent,
+    discoursePrior,
     styleProfileId: input.styleProfileId
   });
   const firstDiscourse = latticeGeneration?.discourse ?? weaveDiscourse({ state: input.state, pieces: candidatePieces, requiredTerms, frameAtoms, frames: input.frames ?? [], contextSymbols, generationExtent });
@@ -785,7 +799,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
   const semanticMaterials = semanticFactMaterialsFromFrames(input.frames ?? []);
   const selectedSemanticPieces = selected.filter(piece => piece.source === "semantic_rhetoric");
   const semanticMaterialIdsUsed = uniqueStrings(selectedSemanticPieces.flatMap(piece => piece.semanticMaterialIds ?? []));
-  const semanticRhetoricalPlan = semanticRhetoricalPlanFromMaterials(semanticMaterials, contextText);
+  const semanticRhetoricalPlan = semanticRhetoricalPlanFromMaterials(semanticMaterials, contextText, discoursePrior);
   const semanticFactMaterialsUsed = semanticMaterials
     .filter(material => semanticMaterialIdsUsed.includes(material.id))
     .map(material => ({
@@ -1124,17 +1138,19 @@ function generateRhetoricalSentenceLattice(input: {
   contextSymbols: readonly string[];
   contextText: string;
   generationExtent: number;
+  discoursePrior?: RuntimeDiscoursePriorProfile;
   styleProfileId?: string;
 }): RhetoricalLatticeGeneration | undefined {
   const materials = semanticFactMaterialsFromFrames(input.frames);
   if (!materials.length) return undefined;
-  const rhetoricalPlan = semanticRhetoricalPlanFromMaterials(materials, input.contextText);
+  const rhetoricalPlan = semanticRhetoricalPlanFromMaterials(materials, input.contextText, input.discoursePrior);
   if (!rhetoricalPlan) return undefined;
   const paragraphPlan = paragraphPlanFromRhetoricalPlan({
     plan: rhetoricalPlan,
     materials,
     frameAtoms: input.frameAtoms,
     generationExtent: input.generationExtent,
+    discoursePrior: input.discoursePrior,
     styleProfileId: input.styleProfileId
   });
   if (!paragraphPlan.sentencePlans.length) return undefined;
@@ -1194,6 +1210,7 @@ function paragraphPlanFromRhetoricalPlan(input: {
   materials: readonly SemanticFactMaterial[];
   frameAtoms: readonly LanguageGenerationAtom[];
   generationExtent: number;
+  discoursePrior?: RuntimeDiscoursePriorProfile;
   styleProfileId?: string;
 }): ParagraphPlan {
   const materialById = new Map(input.materials.map(material => [material.id, material]));
@@ -1202,7 +1219,8 @@ function paragraphPlanFromRhetoricalPlan(input: {
   const contrastMaterials = input.plan.backgroundAssignmentIds.map(id => materialById.get(input.plan.assignments.find(row => row.id === id)?.materialId ?? "")).filter((row): row is SemanticFactMaterial => Boolean(row)).slice(0, 2);
   const hasAttachedEvidence = input.frameAtoms.some(atom => (atom.evidenceIds ?? []).length > 0);
   const forceClass = input.materials.find(material => material.forceClass)?.forceClass ?? "bounded_memory";
-  const target = Math.max(24, Math.min(192, input.generationExtent));
+  const priorTarget = input.discoursePrior?.targetSymbolCount ?? 0;
+  const target = Math.max(24, Math.min(256, Math.max(input.generationExtent, priorTarget)));
   const sentencePlans: SentencePlan[] = [];
   const add = (move: RhetoricalMove, materials: readonly SemanticFactMaterial[], rank: number, anchors: readonly string[] = []) => {
     const claimIds = uniqueStrings(materials.map(material => material.id));
@@ -1223,6 +1241,10 @@ function paragraphPlanFromRhetoricalPlan(input: {
   const memberMaterials = collectionMemberMaterials(input.plan, materialById, input.materials, input.plan.subjectLabel);
   if (memberMaterials.length) {
     add(RHETORICAL_MOVE_IDS.lead, memberMaterials, 0, [input.plan.subjectLabel]);
+    let rank = 1;
+    while (sentencePlans.length < Math.min(4, input.plan.targetMoveCount)) {
+      add(RHETORICAL_MOVE_IDS.support, memberMaterials.slice(0, Math.max(1, Math.min(memberMaterials.length, rank + 1))), rank++, [input.plan.subjectLabel]);
+    }
     return {
       id: `paragraph.plan:${hashText(`${input.plan.id}:member_relation`).slice(0, 18)}`,
       sentencePlans,
@@ -1235,7 +1257,8 @@ function paragraphPlanFromRhetoricalPlan(input: {
         subjectLabelHash: hashText(input.plan.subjectLabel),
         moves: sentencePlans.map(plan => plan.move),
         hasAttachedEvidence,
-        forceClass
+        forceClass,
+        discoursePrior: input.discoursePrior ? discoursePriorAudit(input.discoursePrior) : null
       })
     };
   }
@@ -1245,6 +1268,19 @@ function paragraphPlanFromRhetoricalPlan(input: {
   add(RHETORICAL_MOVE_IDS.sourceBound, input.materials.slice(0, 3), 3, [input.plan.subjectLabel]);
   add(RHETORICAL_MOVE_IDS.boundary, input.materials.slice(0, 2), 4, hasAttachedEvidence ? [] : [input.plan.subjectLabel]);
   add(RHETORICAL_MOVE_IDS.close, directMaterials.length ? directMaterials : input.materials.slice(0, 2), 5, [input.plan.subjectLabel]);
+  let expansionRank = 6;
+  while (sentencePlans.length < input.plan.targetMoveCount) {
+    const move = expansionRank % 3 === 0
+      ? RHETORICAL_MOVE_IDS.support
+      : expansionRank % 3 === 1
+        ? RHETORICAL_MOVE_IDS.sourceBound
+        : RHETORICAL_MOVE_IDS.close;
+    const materials = move === RHETORICAL_MOVE_IDS.close
+      ? (directMaterials.length ? directMaterials : input.materials.slice(0, 2))
+      : (explanationMaterials.length ? explanationMaterials : input.materials.slice(0, 4));
+    add(move, materials, expansionRank, [input.plan.subjectLabel]);
+    expansionRank += 1;
+  }
   return {
     id: `paragraph.plan:${hashText(`${input.plan.id}:${sentencePlans.map(plan => plan.move).join("|")}`).slice(0, 18)}`,
     sentencePlans,
@@ -1257,7 +1293,8 @@ function paragraphPlanFromRhetoricalPlan(input: {
       subjectLabelHash: hashText(input.plan.subjectLabel),
       moves: sentencePlans.map(plan => plan.move),
       hasAttachedEvidence,
-      forceClass
+      forceClass,
+      discoursePrior: input.discoursePrior ? discoursePriorAudit(input.discoursePrior) : null
     })
   };
 }
@@ -2249,7 +2286,7 @@ function semanticFactMaterialsFromFrames(frames: readonly LanguageGenerationFram
 }
 
 function semanticRhetoricalPiecesFromMaterials(materials: readonly SemanticFactMaterial[], state: LanguageMemoryRuntimeState, contextText: string): GenerationPiece[] {
-  const plan = semanticRhetoricalPlanFromMaterials(materials, contextText);
+  const plan = semanticRhetoricalPlanFromMaterials(materials, contextText, runtimeDiscoursePriorProfile(state));
   if (!plan) return [];
   const materialById = new Map(materials.map(material => [material.id, material]));
   const boundary = chooseInlineCompressionBoundary(state).text;
@@ -2298,7 +2335,7 @@ function semanticRhetoricalPiecesFromMaterials(materials: readonly SemanticFactM
     .slice(0, 10);
 }
 
-function semanticRhetoricalPlanFromMaterials(materials: readonly SemanticFactMaterial[], contextText: string): RhetoricalPlan | undefined {
+function semanticRhetoricalPlanFromMaterials(materials: readonly SemanticFactMaterial[], contextText: string, discoursePrior?: RuntimeDiscoursePriorProfile): RhetoricalPlan | undefined {
   const ordered = materials.filter(material => !materialRejectedByQuestionSlot(material)).sort((a, b) => b.support - a.support || b.relevance - a.relevance || a.subjectLabel.localeCompare(b.subjectLabel)).slice(0, 16);
   if (!ordered.length) return undefined;
   const subjectLabel = primarySemanticSubject(ordered);
@@ -2337,17 +2374,126 @@ function semanticRhetoricalPlanFromMaterials(materials: readonly SemanticFactMat
     stages,
     backgroundAssignmentIds: backgroundIds,
     significanceBridgeAssignmentIds: bridgeIds,
-    targetMoveCount: rhetoricalTargetMoveCount(ordered, stages),
+    targetMoveCount: rhetoricalTargetMoveCount(ordered, stages, discoursePrior),
     certificationBoundaryId: assignments.some(assignment => assignment.roleId === ANSWER_ROLE_IDS.boundary) ? ANSWER_ROLE_IDS.boundary : undefined
   };
 }
 
-function rhetoricalTargetMoveCount(materials: readonly SemanticFactMaterial[], stages: readonly RhetoricalPlanStage[]): number {
+function rhetoricalTargetMoveCount(materials: readonly SemanticFactMaterial[], stages: readonly RhetoricalPlanStage[], discoursePrior?: RuntimeDiscoursePriorProfile): number {
   const upstreamTarget = Math.max(0, ...materials.map(material => material.alphaRhetoricalTargetSentenceCount ?? 0));
   const surfacedStageCount = stages.filter(stage => stage.surfaceWeight >= 0.6).length;
   const bridgeStageCount = stages.filter(stage => isBridgeAnswerRoleId(stage.roleId)).length;
-  const raw = Math.max(upstreamTarget, 1 + surfacedStageCount + Math.min(1, bridgeStageCount));
-  return Math.max(2, Math.min(6, Math.round(raw)));
+  const learnedTarget = discoursePrior?.targetMoveCount ?? 0;
+  const raw = Math.max(upstreamTarget, learnedTarget, 1 + surfacedStageCount + Math.min(1, bridgeStageCount));
+  return Math.max(2, Math.min(12, Math.round(raw)));
+}
+
+function runtimeDiscoursePriorProfile(
+  state: LanguageMemoryRuntimeState,
+  generationExtent = 0
+): RuntimeDiscoursePriorProfile | undefined {
+  const patterns = state.importedPatterns
+    .filter(pattern => pattern.patternKind === "discourse" || pattern.patternKind === "narrative")
+    .slice(0, 512);
+  if (!patterns.length) return undefined;
+  const patternIds: string[] = [];
+  const sentenceCounts: number[] = [];
+  const paragraphCounts: number[] = [];
+  const sentenceLengths: number[] = [];
+  const paragraphLengths: number[] = [];
+  const dialogueRates: number[] = [];
+  let dialogueTurnMass = 0;
+  let support = 0;
+  for (const pattern of patterns) {
+    const record = jsonRecord(pattern.patternJson);
+    const schema = typeof record.schema === "string" ? record.schema : "";
+    if (schema !== "scce.long_form_discourse_pattern.v1"
+      && schema !== "scce.narrative_surface_pattern.v1") continue;
+    patternIds.push(pattern.id);
+    support += pattern.support;
+    if (schema === "scce.long_form_discourse_pattern.v1") {
+      sentenceCounts.push(numberOf(record.sentenceCount));
+      paragraphCounts.push(numberOf(record.paragraphCount));
+      sentenceLengths.push(...numberArrayFromJson(record.sentenceSymbolLengths).slice(0, 512));
+      paragraphLengths.push(...numberArrayFromJson(record.paragraphSymbolLengths).slice(0, 256));
+      dialogueTurnMass += topEntryMass(record.dialogueTurnMarkers);
+    } else {
+      paragraphCounts.push(Math.max(0, topEntryMass(record.paragraphShapeTransitions)));
+      dialogueRates.push(numberOf(record.dialogueTurnRate));
+    }
+  }
+  if (!patternIds.length) return undefined;
+  const sentenceCount = boundedMax(sentenceCounts, 0, 24);
+  const paragraphCount = boundedMax(paragraphCounts, 0, 12);
+  const sentenceSymbolP75 = percentile(sentenceLengths, 0.75);
+  const paragraphSymbolP50 = percentile(paragraphLengths, 0.5);
+  const dialogueTurnRate = boundedMax(dialogueRates, 0, 8) + dialogueTurnMass / Math.max(1, patternIds.length * 12);
+  const targetSymbolCount = Math.max(
+    generationExtent,
+    paragraphCount > 1 && paragraphSymbolP50 > 0 ? paragraphCount * paragraphSymbolP50 : 0,
+    sentenceCount > 2 && sentenceSymbolP75 > 0 ? sentenceCount * sentenceSymbolP75 : 0,
+    paragraphCount > 1 ? paragraphCount * 32 : 0,
+    sentenceCount > 2 ? sentenceCount * 12 : 0
+  );
+  const targetMoveCount = Math.max(
+    0,
+    Math.min(12, Math.round(Math.max(
+      paragraphCount > 1 ? paragraphCount * 1.5 : 0,
+      sentenceCount > 2 ? sentenceCount / 2 : 0,
+      dialogueTurnRate > 0 ? 4 + dialogueTurnRate : 0
+    )))
+  );
+  return {
+    patternIds: uniqueStrings(patternIds).slice(0, 32),
+    targetMoveCount,
+    targetSymbolCount: Math.max(0, Math.min(256, Math.ceil(targetSymbolCount))),
+    paragraphCount,
+    sentenceCount,
+    sentenceSymbolP75,
+    paragraphSymbolP50,
+    dialogueTurnRate,
+    support: clamp01(support / Math.max(1, patternIds.length))
+  };
+}
+
+function discoursePriorAudit(prior: RuntimeDiscoursePriorProfile): JsonValue {
+  return toJsonValue({
+    patternIds: prior.patternIds.slice(0, 16),
+    targetMoveCount: prior.targetMoveCount,
+    targetSymbolCount: prior.targetSymbolCount,
+    paragraphCount: prior.paragraphCount,
+    sentenceCount: prior.sentenceCount,
+    sentenceSymbolP75: prior.sentenceSymbolP75,
+    paragraphSymbolP50: prior.paragraphSymbolP50,
+    dialogueTurnRate: prior.dialogueTurnRate,
+    support: prior.support
+  });
+}
+
+function numberArrayFromJson(value: JsonValue | undefined): number[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
+    : [];
+}
+
+function percentile(values: readonly number[], q: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor(clamp01(q) * (sorted.length - 1))));
+  return sorted[index] ?? 0;
+}
+
+function boundedMax(values: readonly number[], min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.max(min, ...values.filter(value => Number.isFinite(value)))));
+}
+
+function topEntryMass(value: JsonValue | undefined): number {
+  if (!Array.isArray(value)) return 0;
+  return value.reduce<number>((sum, entry) => {
+    if (!Array.isArray(entry) || entry.length < 2) return sum;
+    const count = entry[1];
+    return sum + (typeof count === "number" && Number.isFinite(count) && count > 0 ? count : 0);
+  }, 0);
 }
 
 function answerRoleAssignmentsFromMaterials(materials: readonly SemanticFactMaterial[], subjectLabel: string, contextText: string): AnswerRoleAssignment[] {
@@ -3699,18 +3845,20 @@ function competenceFromRuntime(input: {
   const phraseFluency = clamp01(Math.log2(1 + input.observedSymbolCount + importedPhraseMass) / 18 * Math.min(1, Math.max(maxOrder, 2) / 6));
   const generationReliability = clamp01(0.4 * lexicalCoverage + 0.36 * phraseFluency + 0.24 * modelCoverage);
   const patternCoverage = clamp01(Math.log2(1 + (input.importedPatterns?.length ?? 0)) / 10);
+  const discoursePatternCoverage = clamp01(Math.log2(1 + (input.importedPatterns ?? []).filter(pattern => pattern.patternKind === "discourse" || pattern.patternKind === "narrative").length) / 8);
   const constructionCoverage = clamp01(Math.log2(1 + (input.importedConstructionBundles?.length ?? 0)) / 10);
   const semanticFrameCoverage = clamp01(Math.log2(1 + (input.importedSemanticFrames?.length ?? 0)) / 10);
+  const discourseReliability = clamp01(0.64 * generationReliability + 0.36 * discoursePatternCoverage);
   return {
     scriptRecognition: clamp01(input.languageHints.length ? 0.45 + 0.1 * input.languageHints.length : modelCoverage * 0.3),
     segmentationQuality: clamp01(0.35 * modelCoverage + 0.65 * lexicalCoverage),
     lexicalCoverage,
     phraseFluency,
-    syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.62 : phraseFluency * 0.3) + patternCoverage * 0.18 + constructionCoverage * 0.2),
+    syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.58 : phraseFluency * 0.28) + patternCoverage * 0.16 + constructionCoverage * 0.18 + discoursePatternCoverage * 0.08),
     semanticFrameCoverage,
     translationAlignment: 0,
     entailmentReliability: 0,
-    generationReliability,
+    generationReliability: discourseReliability,
     correctionStability: 0,
     localizationReliability: 0
   };

@@ -273,6 +273,10 @@ function roleIdForSource(sourceSystem: CorpusSourceSystemId): CorpusRoleId {
   return CORPUS_ROLE_IDS.custom;
 }
 
+export function corpusRoleIdForSourceSystem(sourceSystem: string): CorpusRoleId {
+  return roleIdForSource(canonicalCorpusSourceSystemId(sourceSystem));
+}
+
 function cloneEntry(input: CorpusRegistryEntry): CorpusRegistryEntry {
   return {
     ...input,

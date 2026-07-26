@@ -10,9 +10,10 @@ import {
   validateConfig,
   type ScceRuntimeConfig
 } from "../index.js";
-import { canonicalCorpusSourceSystemId } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory } from "@scce/kernel";
 import type {
   EvidenceSpan,
+  InformationLabel,
   JsonValue,
   LanguagePatternRecord,
   LanguageProfile,
@@ -22,7 +23,8 @@ import type {
   ScceEvent,
   ScceStorage,
   SemanticFrameRecord,
-  SourceVersion
+  SourceVersion,
+  SourceVersionId
 } from "@scce/kernel";
 
 const tempRoots: string[] = [];
@@ -83,6 +85,53 @@ describe("multi-corpus training", () => {
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["wikipedia"]));
   });
 
+  it("does not promote auto-induced constructions when no held-out linguistic evidence exists", async () => {
+    const fixture = memoryStorage();
+    const evidence = [corpusEvidenceSpan("source.no-heldout", constructionFixtureText(), 0)];
+
+    const result = await trainLanguageCorpusText({
+      storage: fixture.storage,
+      sourceSystem: "wikipedia",
+      streamUri: "wiki://fixture/no-heldout",
+      text: evidence.map(span => span.text).join("\n"),
+      evidence,
+      persistSource: false,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64
+    });
+
+    expect(result.constructionCandidates).toBeGreaterThan(0);
+    expect(result.languageConstructions).toBe(0);
+    expect(result.rejectedLanguageConstructions).toBe(result.constructionCandidates);
+    expect(fixture.state.patterns.some(pattern => isConstructionBundle(pattern))).toBe(false);
+    expect(symbolPatternLearnedPayload(fixture.state)?.constructionPromotion).toBeDefined();
+  });
+
+  it("promotes auto-induced constructions only after a separate held-out slice is covered", async () => {
+    const fixture = memoryStorage();
+    const evidence = Array.from({ length: 20 }, (_, index) =>
+      corpusEvidenceSpan(`source.heldout.${index}`, constructionFixtureText(), index * 10_000)
+    );
+
+    const result = await trainLanguageCorpusText({
+      storage: fixture.storage,
+      sourceSystem: "wikipedia",
+      streamUri: "wiki://fixture/heldout",
+      text: evidence.map(span => span.text).join("\n"),
+      evidence,
+      persistSource: false,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64
+    });
+
+    expect(result.constructionCandidates).toBeGreaterThan(0);
+    expect(result.languageConstructions).toBeGreaterThan(0);
+    expect(fixture.state.patterns.some(pattern => isConstructionBundle(pattern))).toBe(true);
+    const promotion = symbolPatternLearnedPayload(fixture.state)?.constructionPromotion;
+    expect(JSON.stringify(promotion)).toContain("heldOutCoverage");
+    expect(JSON.stringify(promotion)).toContain("promotedInducedConstructionSets");
+  });
+
   it("trains a Project Gutenberg fixture into source-stamped language memory", async () => {
     const root = await tempDir("gutenberg-fixture-");
     await writeFile(path.join(root, "book.txt"), [
@@ -103,6 +152,11 @@ describe("multi-corpus training", () => {
     expect(fixture.state.sourceVersions.length).toBe(1);
     expect(fixture.state.evidence.length).toBeGreaterThan(0);
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["gutenberg"]));
+    expect(fixture.state.patterns.some(pattern => {
+      const row = pattern.patternJson;
+      return Boolean(row && typeof row === "object" && !Array.isArray(row)
+        && (row as Record<string, JsonValue>).schema === "scce.creative_event_construction_pattern.v1");
+    })).toBe(false);
   });
 
   it("trains OSS docs and code as separate source systems through the engineering corpus scanner", async () => {
@@ -143,6 +197,10 @@ function configFixture(corpora: ScceRuntimeConfig["runtime"]["corpora"]): ScceRu
       corpora
     },
     connectors: {},
+    security: {
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" },
+      defaultSourceInformationLabel: { tenantId: "fixture", principals: ["owner"], compartments: ["test"], exportClass: "restricted", mergePolicy: "isolated" }
+    },
     policy: {
       allowMutation: false,
       requireTwoPhaseCommit: true,
@@ -154,6 +212,71 @@ function configFixture(corpora: ScceRuntimeConfig["runtime"]["corpora"]): ScceRu
       encryptSecretsAtRest: true
     }
   };
+}
+
+const corpusTestClock = createClock({ fixedTime: 101_000, stepMs: 1 });
+const corpusTestHasher = createHasher();
+const corpusTestIds = createIdFactory({
+  clock: corpusTestClock,
+  hasher: corpusTestHasher,
+  deterministicReplay: true,
+  namespace: "corpus-training-test"
+});
+const publicCorpusInformationLabel: InformationLabel = {
+  tenantId: "scce.public.corpus",
+  principals: [],
+  compartments: [],
+  exportClass: "public",
+  mergePolicy: "same_owner"
+};
+
+function constructionFixtureText(): string {
+  return [
+    "cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
+    "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."
+  ].join(" ");
+}
+
+function corpusEvidenceSpan(sourceVersionKey: string, text: string, charStart: number): EvidenceSpan {
+  const bytes = Buffer.from(text, "utf8");
+  const contentHash = corpusTestIds.contentHash(bytes);
+  const sourceVersionId = corpusTestIds.sourceVersionId(`${sourceVersionKey}\u001f${text}`) as SourceVersionId;
+  return {
+    id: corpusTestIds.evidenceId({ sourceVersionId, byteStart: 0, byteEnd: bytes.byteLength, spanHash: contentHash }),
+    sourceId: corpusTestIds.sourceId("fixture", `fixture://${sourceVersionKey}`),
+    sourceVersionId,
+    chunkId: corpusTestIds.chunkId({ sourceVersionId, byteStart: 0, byteEnd: bytes.byteLength, chunkHash: contentHash }),
+    contentHash,
+    mediaType: "text/plain",
+    byteStart: 0,
+    byteEnd: bytes.byteLength,
+    charStart,
+    charEnd: charStart + [...text].length,
+    text,
+    textPreview: text.slice(0, 200),
+    languageHints: {},
+    scriptHints: {},
+    trustVector: {},
+    provenance: {},
+    features: [],
+    status: "promoted",
+    alpha: 0.9,
+    observedAt: corpusTestClock.now(),
+    informationLabel: publicCorpusInformationLabel
+  };
+}
+
+function isConstructionBundle(pattern: LanguagePatternRecord): boolean {
+  const row = pattern.patternJson;
+  return Boolean(row && typeof row === "object" && !Array.isArray(row)
+    && (row as Record<string, JsonValue>).schema === "scce.language_construction_pattern.v1");
+}
+
+function symbolPatternLearnedPayload(state: MemoryState): Record<string, JsonValue> | undefined {
+  const payload = state.events.find(row => row.typeId === "SymbolPatternLearned")?.payload;
+  return payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, JsonValue>
+    : undefined;
 }
 
 async function tempDir(prefix: string): Promise<string> {
@@ -230,6 +353,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       listTranslationAlignments: async () => []
     },
     init: async () => undefined,
+    transaction: async <T>(fn: () => Promise<T>) => fn(),
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
     stats: async () => ({}),

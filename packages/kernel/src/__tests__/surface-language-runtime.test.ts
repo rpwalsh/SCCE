@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
+import { languageSurfaceTrigrams } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
@@ -79,6 +80,19 @@ describe("surface language resident-only cache", () => {
     expect(residentProfiles.clusters).toHaveLength(1);
     expect(fixture.totalDurableCalls()).toBe(durableCallsAfterWarmup);
   });
+
+  it("retrieves surface candidates from the durable trigram index instead of the recent-profile window", async () => {
+    const fixture = runtimeFixture();
+
+    const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
+
+    expect(cluster?.profileIds).toEqual(["profile.fixture"]);
+    expect(fixture.profileQueries.at(-1)).toMatchObject({
+      limit: 32,
+      referencedByLanguageMemory: true
+    });
+    expect(fixture.profileQueries.at(-1)?.surfaceNgrams).toContain("fix");
+  });
 });
 
 function runtimeFixture() {
@@ -92,6 +106,7 @@ function runtimeFixture() {
     profiles: 0,
     units: 0
   };
+  const profileQueries: Array<{ surfaceNgrams?: readonly string[]; limit?: number; referencedByLanguageMemory?: boolean }> = [];
   const profile: LanguageProfile = {
     id: "profile.fixture",
     sourceVersionId: "source.fixture" as never,
@@ -101,9 +116,10 @@ function runtimeFixture() {
       sourceVersionRefs: ["source.fixture" as never],
       confidence: 1
     }],
-    scripts: [{ script: "script.fixture", mass: 1 }],
+    scripts: [{ script: "script:Latn", mass: 1 }],
     symbolShapes: [],
-    charNgrams: [{ ngram: "fix", count: 2 }],
+    charNgrams: languageSurfaceTrigrams("fixture language fixture language")
+      .map(ngram => ({ ngram, count: 2 })),
     direction: "ltr",
     entropy: 1,
     createdAt: 1
@@ -152,8 +168,9 @@ function runtimeFixture() {
       }
     },
     model: {
-      listLanguageProfiles: async () => {
+      listLanguageProfiles: async (query: { surfaceNgrams?: readonly string[]; limit?: number; referencedByLanguageMemory?: boolean }) => {
         calls.profiles += 1;
+        profileQueries.push(query);
         return [profile];
       }
     }
@@ -171,6 +188,7 @@ function runtimeFixture() {
 
   return {
     runtime,
+    profileQueries,
     totalDurableCalls: () => Object.values(calls).reduce((sum, count) => sum + count, 0)
   };
 }

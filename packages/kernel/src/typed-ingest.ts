@@ -367,7 +367,7 @@ function documentStructureObservations(input: TypedIngestProjectorInput, evidenc
       evidenceIds,
       confidence: 0.7,
       provenance,
-      metadata: toJsonValue({ uri: input.uri, source: "document_fixture_section" }),
+      metadata: toJsonValue({ uri: input.uri, source: "document_structure_section" }),
       structureKind: "section",
       title,
       ordinal: out.length,
@@ -385,7 +385,7 @@ function documentStructureObservations(input: TypedIngestProjectorInput, evidenc
       evidenceIds,
       confidence: 0.66,
       provenance,
-      metadata: toJsonValue({ uri: input.uri, source: "document_fixture_page" }),
+      metadata: toJsonValue({ uri: input.uri, source: "document_structure_page" }),
       structureKind: "page",
       title: `page:${Number.isFinite(pageNumber) ? pageNumber : out.length + 1}`,
       ordinal: out.length,
@@ -1513,13 +1513,13 @@ function isNDigits(text: string, start: number, count: number): boolean {
 function evidenceIdsForTextRange(
   evidence: EvidenceSpan[],
   range: { charStart?: number; charEnd?: number } | undefined,
-  fallback: EvidenceSpan["id"][]
+  defaultEvidenceIds: EvidenceSpan["id"][]
 ): EvidenceSpan["id"][] {
-  if (!range || !Number.isFinite(range.charStart) || !Number.isFinite(range.charEnd) || (range.charEnd ?? 0) < (range.charStart ?? 0)) return fallback;
+  if (!range || !Number.isFinite(range.charStart) || !Number.isFinite(range.charEnd) || (range.charEnd ?? 0) < (range.charStart ?? 0)) return defaultEvidenceIds;
   const start = range.charStart ?? 0;
   const end = range.charEnd ?? start;
   const matches = evidence.filter(span => span.charStart < end && span.charEnd > start).map(span => span.id);
-  return matches.length ? [...new Set(matches)] : fallback;
+  return matches.length ? [...new Set(matches)] : defaultEvidenceIds;
 }
 
 function a1Address(row: number, column: number): string {
@@ -1547,9 +1547,9 @@ function formulaCacheStatus(formula: Record<string, JsonValue>): "stored-unverif
   return Object.prototype.hasOwnProperty.call(formula, "displayValue") ? "stored-unverified" : "missing";
 }
 
-function positiveInteger(value: unknown, fallback: number): number {
+function positiveInteger(value: unknown, defaultValue: number): number {
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
 function optionalNonNegativeInteger(value: unknown): number | undefined {

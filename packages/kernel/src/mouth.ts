@@ -66,6 +66,7 @@ import {
   type DetailProfilePolicy
 } from "./control-plane-profiles.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
@@ -393,17 +394,118 @@ interface MouthGenerationWorkBudget {
 
 const MOUTH_GENERATION_CALL_LIMIT = 1;
 const MOUTH_GENERATION_EXTENT_LIMIT = 64;
+const MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT = 256;
 const MOUTH_GENERATION_WINDOW_MS = 2_500;
 
-function createMouthGenerationWorkBudget(startedAtMs: number): MouthGenerationWorkBudget {
+function createMouthGenerationWorkBudget(startedAtMs: number, input: SpeakInput): MouthGenerationWorkBudget {
+  const maxExtent = mouthGenerationExtentLimit(input);
   return {
     startedAtMs,
     deadlineAtMs: startedAtMs + MOUTH_GENERATION_WINDOW_MS,
-    maxExtent: MOUTH_GENERATION_EXTENT_LIMIT,
-    remainingCalls: MOUTH_GENERATION_CALL_LIMIT,
+    maxExtent,
+    remainingCalls: mouthGenerationCallLimit(input),
     admittedCalls: 0,
     deniedCalls: 0
   };
+}
+
+function mouthGenerationCallLimit(input: SpeakInput): number {
+  const creative = input.requestedAuthority === "creative"
+    || input.entailment.force === "invented";
+  if (!creative) return MOUTH_GENERATION_CALL_LIMIT;
+  const hasLongFormPrior = input.languageMemory.importedPatterns.some(pattern =>
+    pattern.patternKind === "discourse" || pattern.patternKind === "narrative"
+  );
+  const hasCreativeStructure = input.languageMemory.importedConstructionBundles.some(bundle =>
+    (bundle.creativeEvents?.length ?? 0) > 0
+  ) || input.languageMemory.creativeEventCompatibilityModels.length > 0;
+  return hasLongFormPrior || hasCreativeStructure ? 3 : 2;
+}
+
+function mouthGenerationExtentLimit(input: SpeakInput): number {
+  const learnedLongForm = learnedLongFormExtent(input.languageMemory);
+  const explicitLearnedExtent = resolveLearnedCreativeGenerationExtent({
+    requestText: input.entailment.claim.text,
+    hints: creativeResponseExtentHints(input),
+    plannedExtent: 0,
+    maxExtent: MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT
+  });
+  const creative = input.requestedAuthority === "creative"
+    || input.entailment.force === "invented";
+  const requested = Math.max(
+    MOUTH_GENERATION_EXTENT_LIMIT,
+    creative ? learnedLongForm : 0,
+    creative ? explicitLearnedExtent : 0
+  );
+  return Math.max(
+    MOUTH_GENERATION_EXTENT_LIMIT,
+    Math.min(MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT, Math.ceil(requested))
+  );
+}
+
+function learnedLongFormExtent(state: LanguageMemoryRuntimeState): number {
+  let paragraphTarget = 0;
+  let sentenceTarget = 0;
+  let sentenceLengthTarget = 0;
+  let paragraphLengthTarget = 0;
+  let dialogueBoost = 0;
+  for (const pattern of state.importedPatterns) {
+    if (pattern.patternKind !== "discourse" && pattern.patternKind !== "narrative") continue;
+    const record = jsonRecord(pattern.patternJson);
+    const schema = stringFrom(record.schema);
+    if (schema === "scce.long_form_discourse_pattern.v1") {
+      paragraphTarget = Math.max(paragraphTarget, finitePositiveNumber(record.paragraphCount));
+      sentenceTarget = Math.max(sentenceTarget, finitePositiveNumber(record.sentenceCount));
+      sentenceLengthTarget = Math.max(sentenceLengthTarget, percentileNumber(numberArray(record.sentenceSymbolLengths), 0.75));
+      paragraphLengthTarget = Math.max(paragraphLengthTarget, percentileNumber(numberArray(record.paragraphSymbolLengths), 0.5));
+      dialogueBoost = Math.max(dialogueBoost, objectEntryMass(record.dialogueTurnMarkers));
+    }
+    if (schema === "scce.narrative_surface_pattern.v1") {
+      dialogueBoost = Math.max(dialogueBoost, finitePositiveNumber(record.dialogueTurnRate) * 24);
+      paragraphTarget = Math.max(paragraphTarget, objectEntryMass(record.paragraphShapeTransitions));
+    }
+  }
+  const discourseExtent = Math.max(
+    paragraphTarget > 1 && paragraphLengthTarget > 0 ? paragraphTarget * paragraphLengthTarget : 0,
+    sentenceTarget > 2 && sentenceLengthTarget > 0 ? sentenceTarget * sentenceLengthTarget : 0,
+    paragraphTarget > 1 ? paragraphTarget * 32 : 0,
+    sentenceTarget > 2 ? sentenceTarget * 12 : 0
+  );
+  return Math.max(0, Math.min(
+    MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT,
+    Math.ceil(discourseExtent + dialogueBoost)
+  ));
+}
+
+function finitePositiveNumber(value: JsonValue | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function numberArray(value: JsonValue | undefined): number[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
+    : [];
+}
+
+function percentileNumber(values: readonly number[], percentile: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor(clamp01(percentile) * (sorted.length - 1))));
+  return sorted[index] ?? 0;
+}
+
+function objectEntryMass(value: JsonValue | undefined): number {
+  if (Array.isArray(value)) {
+    return value.reduce<number>((sum, entry) => {
+      if (!Array.isArray(entry) || entry.length < 2) return sum;
+      const count = entry[1];
+      return sum + (typeof count === "number" && Number.isFinite(count) && count > 0 ? count : 0);
+    }, 0);
+  }
+  if (!value || typeof value !== "object") return 0;
+  return Object.values(value).reduce<number>((sum, item) => (
+    sum + (typeof item === "number" && Number.isFinite(item) && item > 0 ? item : 0)
+  ), 0);
 }
 
 function claimMouthGenerationWork(budget: MouthGenerationWorkBudget, requestedExtent: number): number | undefined {
@@ -424,7 +526,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         return createDeterministicMouth({ hashText: options.hashText }).speak(input);
       }
       const mouthStartedAt = Date.now();
-      const generationWorkBudget = createMouthGenerationWorkBudget(mouthStartedAt);
+      const generationWorkBudget = createMouthGenerationWorkBudget(mouthStartedAt, input);
       let mouthPhaseStartedAt = mouthStartedAt;
       const mouthPhaseMs: Record<string, number> = {};
       const markMouthPhase = (id: string) => {
@@ -437,9 +539,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         context: { targetLanguageId: input.targetLanguage, targetScriptId: input.targetScript, registerVector: input.registerVector, meterPattern: input.meterPattern, surfaceKind: input.construct.program ? "program" : "answer" }
       });
       markMouthPhase("correction_influence");
-      // No language-specific structural-creative-narrative realizer exists anymore
-      // (Part B step 7 removed english-structural-realizer.ts entirely); this lane
-      // is permanently absent rather than routed through a hardcoded-language path.
+      // Structural creative output goes through learned language memory and
+      // corpus-anchored assembly; no language-specific realizer lane is used.
       const nonEventCreativeMouthHandoff = selectedNonEventCreativeMouthHandoff(input);
       const basePriorPieces = importedSurfacePieces(input, undefined, undefined);
       markMouthPhase("base_prior_pieces");
@@ -1799,8 +1900,13 @@ function semanticLearnedConstructionCandidate(
   const routeAdmissibility = Math.max(...proofEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
   if (routeAdmissibility <= 0) return undefined;
   const proofEvidenceIds = proofEvidence.map(span => String(span.id));
+  const sourceRelationBindingId = sourceRelationConstructionBindingId(
+    hasher,
+    input.languageProfile.id,
+    fact.predicate
+  );
   const bundles = input.languageMemory.importedConstructionBundles
-    .filter(bundle => bundle.bindingId === fact.relationId
+    .filter(bundle => (bundle.bindingId === fact.relationId || bundle.bindingId === sourceRelationBindingId)
       && bundle.sourceProfileId === input.languageProfile.id
       && bundle.targetProfileId === input.languageProfile.id)
     .sort((left, right) => compareSurfaceText(left.id, right.id));
@@ -2743,7 +2849,7 @@ function structuralCreativeLanguageScore(candidate: SurfaceCandidate, input: Spe
     fit: semanticSelectionValue,
     orderScores: [],
     audit: toJsonValue({
-      source: "mouth.english_structural_creative.score",
+      source: "mouth.universal_structural_creative.score",
       role: "selected_semantic_plan_realization_feature",
       selectionCompetitive: false,
       calibrated: false,
@@ -5798,8 +5904,8 @@ function stringFrom(value: JsonValue | undefined): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function numberFrom(value: JsonValue | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : clamp01(fallback);
+function numberFrom(value: JsonValue | undefined, defaultValue: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : clamp01(defaultValue);
 }
 
 function scoreLabel(value: number): string {

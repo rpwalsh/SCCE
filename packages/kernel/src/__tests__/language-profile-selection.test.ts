@@ -4,6 +4,7 @@ import {
   createLanguageAcquisitionEngine,
   languageProfileClusterCacheKey,
   languageHintFromProfile,
+  languageSurfaceTrigrams,
   selectLanguageProfileClusterForSurface,
   rankLanguageProfilesForSurface,
   selectLanguageProfileForSurface
@@ -28,6 +29,15 @@ describe("learned language-profile surface selection", () => {
 
     expect(ranked.map(row => row.profile.id)).toEqual([first.id, second.id]);
     expect(ranked[0]!.trigramCoverage).toBeGreaterThan(ranked[1]!.trigramCoverage);
+  });
+
+  it("derives bounded normalized durable lookup keys from an unseen surface", () => {
+    const keys = languageSurfaceTrigrams(" QELARI   Venatu qelari ");
+
+    expect(keys).toContain("qel");
+    expect(keys).toContain("ven");
+    expect(keys).toEqual(languageSurfaceTrigrams("qelari venatu qelari"));
+    expect(keys.length).toBeLessThanOrEqual(256);
   });
 
   it("is deterministic and derives storage hints from the selected learned profile", () => {

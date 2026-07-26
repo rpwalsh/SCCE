@@ -45,6 +45,7 @@ export interface GraphSurfaceAlignmentSet {
 
 export const GRAPH_SURFACE_ROLE_IDS = {
   prePredicate: "scce.role.pre_predicate",
+  predicate: "scce.role.predicate",
   postPredicate: "scce.role.post_predicate"
 } as const;
 
@@ -55,7 +56,7 @@ export function induceGraphSurfaceAlignments(input: {
   hasher: Hasher;
   maxObservationsPerConstruction?: number;
 }): GraphSurfaceAlignmentSet[] {
-  const maxObservations = Math.max(1, Math.min(2048, Math.floor(input.maxObservationsPerConstruction ?? 512)));
+  const maxObservations = boundedConstructionObservationLimit(input.maxObservationsPerConstruction);
   const constructionsByPredicate = new Map(input.constructions.map(item => [item.predicate, item]));
   const observationsByConstructionId = new Map<string, AlignedSurfaceExample[]>();
 
@@ -88,7 +89,7 @@ export function induceGraphSurfaceAlignments(input: {
   for (const construction of input.constructions) {
     const observations = observationsByConstructionId.get(construction.id);
     if (!observations || observations.length < 2) continue;
-    const bindingId = relationBindingId(input.hasher, input.profileId, construction.predicate);
+    const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
     sets.push({ bindingId, observations });
   }
   return sets.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
@@ -123,7 +124,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents });
   if (!model.graphBoundConstructions.length) return [];
 
-  const maxObservations = Math.max(1, Math.min(2048, Math.floor(input.maxObservationsPerConstruction ?? 512)));
+  const maxObservations = boundedConstructionObservationLimit(input.maxObservationsPerConstruction);
   const constructionsByPredicate = new Map(model.graphBoundConstructions.map(item => [item.predicate, item]));
   const bySlotOrdinal = new Map<string, number>();
   const setsByBindingId = new Map<string, SourceBoundLanguageConstructionTrainingSet>();
@@ -133,7 +134,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     for (let index = 0; index < lexical.length; index++) {
       const construction = constructionsByPredicate.get(lexical[index]!.normalized);
       if (!construction) continue;
-      const bindingId = relationBindingId(input.hasher, input.profileId, construction.predicate);
+      const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
       const ordinal = bySlotOrdinal.get(bindingId) ?? 0;
       if (ordinal >= maxObservations) continue;
       const observation = sourceBoundObservationForOccurrence({ span, lexical, index, construction });
@@ -192,7 +193,7 @@ export function evaluateHeldOutConstructionCoverage(input: {
 
   const reports: HeldOutConstructionCoverageReport[] = [];
   for (const construction of model.graphBoundConstructions) {
-    const bindingId = relationBindingId(input.hasher, input.profileId, construction.predicate);
+    const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
     const alignmentSet = alignmentByBindingId.get(bindingId);
     if (!alignmentSet) continue;
     const induction = induceLearnedConstructions({ examples: alignmentSet.observations, hasher: input.hasher });
@@ -244,8 +245,12 @@ export function evaluateHeldOutConstructionCoverage(input: {
   return reports.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
 }
 
-function relationBindingId(hasher: Hasher, profileId: string, predicate: string): string {
+export function sourceRelationConstructionBindingId(hasher: Hasher, profileId: string, predicate: string): string {
   return `language.source_relation.${hasher.digestHex(JSON.stringify([profileId, predicate])).slice(0, 32)}`;
+}
+
+function boundedConstructionObservationLimit(requested?: number): number {
+  return Math.max(1, Math.min(256, Math.floor(requested ?? 256)));
 }
 
 function sourceBoundObservationForOccurrence(input: {
@@ -279,13 +284,18 @@ function sourceBoundObservationForOccurrence(input: {
         startCodePoint: left.codePointStart - windowStartCodePoint,
         endCodePoint: left.codePointEnd - windowStartCodePoint
       },
-      ...(hasPost && right ? [{
+      {
         slotIndex: 1,
+        startCodePoint: predicate.codePointStart - windowStartCodePoint,
+        endCodePoint: predicate.codePointEnd - windowStartCodePoint
+      },
+      ...(hasPost && right ? [{
+        slotIndex: 2,
         startCodePoint: right.codePointStart - windowStartCodePoint,
         endCodePoint: right.codePointEnd - windowStartCodePoint
       }] : [])
     ],
-    ...(hasPost ? {} : { nullRoles: [{ slotIndex: 1 }] })
+    ...(hasPost ? {} : { nullRoles: [{ slotIndex: 2 }] })
   };
 }
 
@@ -319,6 +329,13 @@ function alignedExampleForOccurrence(input: {
       start: left.utf16Start - windowStart,
       end: left.utf16End - windowStart,
       surface: left.surface,
+      evidenceIds: input.evidenceIds
+    },
+    {
+      roleId: GRAPH_SURFACE_ROLE_IDS.predicate,
+      start: predicate.utf16Start - windowStart,
+      end: predicate.utf16End - windowStart,
+      surface: predicate.surface,
       evidenceIds: input.evidenceIds
     },
     ...(hasPost && right ? [{

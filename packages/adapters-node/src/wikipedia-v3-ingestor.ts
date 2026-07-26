@@ -592,6 +592,10 @@ export class WikipediaV3Ingestor {
   }
 
   private async ingestPage(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
+    return this.storage.transaction(() => this.ingestPageTransaction(file, checkpoint, episodeId));
+  }
+
+  private async ingestPageTransaction(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
     const now = this.clock.now();
     const warnings: string[] = [];
     const contentHash = await this.storage.blobs.put(file.bytes, file.mediaType);
@@ -789,13 +793,14 @@ export class WikipediaV3Ingestor {
   private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaLanguageShardImport> {
     if (!samples.length) return zeroLanguageShard({ warnings: [] });
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
-    const text = boundedLanguageShardText(samples, 1_200_000);
+    const boundedShard = boundedLanguageShard(samples, 1_200_000, 2048);
+    const text = boundedShard.text;
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
     const profile = {
       ...this.language.acquire({ sourceVersionId, text, createdAt }),
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     };
-    const evidence = selectShardEvidence(samples, 2048);
+    const evidence = boundedShard.evidence;
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
     const vocabularyLimit = this.config.runtime.corpora?.wikipedia?.ngramVocabularyLimit ?? 8192;
@@ -862,16 +867,33 @@ function zeroLanguageShard(input: { warnings: string[] }): WikipediaLanguageShar
   };
 }
 
-function boundedLanguageShardText(samples: readonly WikipediaLanguageShardSample[], maxChars: number): string {
+function boundedLanguageShard(
+  samples: readonly WikipediaLanguageShardSample[],
+  maxChars: number,
+  maxEvidence: number
+): { text: string; evidence: EvidenceSpan[] } {
   const parts: string[] = [];
+  const evidence: EvidenceSpan[] = [];
+  const seenEvidence = new Set<string>();
   let remaining = Math.max(0, maxChars);
   for (const sample of samples) {
     if (remaining <= 0) break;
-    const text = sample.title ? `${sample.title}\n${sample.text}` : sample.text;
+    const titlePrefix = sample.title ? `${sample.title}\n` : "";
+    const text = `${titlePrefix}${sample.text}`;
     if (!text) continue;
     if (parts.length && remaining > 1) {
       parts.push("\n\n");
       remaining -= 2;
+    }
+    const consumed = Math.min(text.length, remaining);
+    const consumedPageChars = Math.max(0, consumed - titlePrefix.length);
+    for (const span of sample.evidence) {
+      if (evidence.length >= maxEvidence) break;
+      if (span.charEnd > consumedPageChars) continue;
+      const key = String(span.id);
+      if (seenEvidence.has(key)) continue;
+      seenEvidence.add(key);
+      evidence.push(span);
     }
     if (text.length <= remaining) {
       parts.push(text);
@@ -881,22 +903,7 @@ function boundedLanguageShardText(samples: readonly WikipediaLanguageShardSample
     parts.push(text.slice(0, remaining));
     break;
   }
-  return parts.join("");
-}
-
-function selectShardEvidence(samples: readonly WikipediaLanguageShardSample[], limit: number): EvidenceSpan[] {
-  const selected: EvidenceSpan[] = [];
-  const seen = new Set<string>();
-  for (const sample of samples) {
-    for (const span of sample.evidence) {
-      const key = String(span.id);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      selected.push(span);
-      if (selected.length >= limit) return selected;
-    }
-  }
-  return selected;
+  return { text: parts.join(""), evidence };
 }
 
 function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLabel: InformationLabel): EvidenceSpan[] {

@@ -165,13 +165,16 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const corpusText = documents.map(doc => doc.text).join("\n");
       const symbols = documents.flatMap(doc => symbolizeData(doc.text).map(symbol => ({ symbol, doc })));
       const symbolStrings = symbols.map(item => item.symbol);
+      const lexicalStrings = documents.flatMap(doc =>
+        segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments.map(segment => segment.normalized)
+      );
       const order = clampOrder(input.order ?? 6);
       const counts = countNgrams(symbolStrings, order, vocabularyLimit);
       const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
       const kn = trainKneserNey(symbolStrings, { order, vocabularyLimit });
       const boundarySignals = induceBoundaries(corpusText, hasher).slice(0, 2048);
       const scripts = induceScripts(corpusText);
-      const morphology = induceMorphology(symbolStrings, hasher).slice(0, 2048);
+      const morphology = induceMorphology(lexicalStrings, hasher).slice(0, 2048);
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
       const lexicalClasses = induceLexicalClasses(documents, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
@@ -378,31 +381,32 @@ function scriptOf(char: string): string {
 }
 
 function induceMorphology(symbols: readonly string[], hasher: Hasher): MorphologicalRule[] {
-  const vocabulary = [...new Set(symbols.filter(symbol => symbol.length >= 4 && /^[^\d\s]+$/u.test(symbol)))];
+  const vocabulary = [...new Set(symbols.filter(symbol => graphemeUnits(symbol).length >= 4 && /^[^\d\s]+$/u.test(symbol)))];
   const prefixMap = new Map<string, Set<string>>();
   const suffixMap = new Map<string, Set<string>>();
   const compoundMap = new Map<string, string[]>();
   const vocabSet = new Set(vocabulary);
   for (const symbol of vocabulary) {
-    for (let n = 1; n <= Math.min(5, symbol.length - 2); n++) {
-      const prefix = symbol.slice(0, n);
-      const suffix = symbol.slice(symbol.length - n);
-      const prefixStem = symbol.slice(n);
-      const suffixStem = symbol.slice(0, symbol.length - n);
-      if (prefixStem.length >= 3) {
+    const graphemes = graphemeUnits(symbol);
+    for (let n = 1; n <= Math.min(5, graphemes.length - 2); n++) {
+      const prefix = graphemes.slice(0, n).join("");
+      const suffix = graphemes.slice(graphemes.length - n).join("");
+      const prefixStem = graphemes.slice(n).join("");
+      const suffixStem = graphemes.slice(0, graphemes.length - n).join("");
+      if (graphemeUnits(prefixStem).length >= 3) {
         const bucket = prefixMap.get(prefix) ?? new Set<string>();
         bucket.add(prefixStem);
         prefixMap.set(prefix, bucket);
       }
-      if (suffixStem.length >= 3) {
+      if (graphemeUnits(suffixStem).length >= 3) {
         const bucket = suffixMap.get(suffix) ?? new Set<string>();
         bucket.add(suffixStem);
         suffixMap.set(suffix, bucket);
       }
     }
-    for (let split = 3; split <= symbol.length - 3; split++) {
-      const left = symbol.slice(0, split);
-      const right = symbol.slice(split);
+    for (let split = 3; split <= graphemes.length - 3; split++) {
+      const left = graphemes.slice(0, split).join("");
+      const right = graphemes.slice(split).join("");
       if (vocabSet.has(left) && vocabSet.has(right)) {
         compoundMap.set(symbol, [left, right]);
       }
@@ -450,11 +454,17 @@ function induceMorphology(symbols: readonly string[], hasher: Hasher): Morpholog
   return rules.sort((a, b) => b.productivity - a.productivity || b.stemCount - a.stemCount || a.pattern.localeCompare(b.pattern));
 }
 
+const MORPHOLOGY_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemeUnits(value: string): string[] {
+  return [...MORPHOLOGY_GRAPHEME_SEGMENTER.segment(value)].map(row => row.segment);
+}
+
 function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], hasher: Hasher): SyntaxTemplate[] {
   const counts = new Map<string, { count: number; examples: string[]; nextShapes: Map<string, number> }>();
   for (const doc of documents) {
     for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = symbolizeData(sentence);
+      const symbols = segmentUnicodeSurfaceV2(sentence, hasher).lexicalSegments.map(segment => segment.normalized);
       if (symbols.length === 0) continue;
       const shape = symbols.slice(0, 32).map(symbolShape);
       for (let width = 2; width <= Math.min(8, shape.length); width++) {
@@ -490,15 +500,13 @@ function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], 
  * substitutable, and therefore belong to the same latent class, when they
  * are observed in the same left/right context slots (Harris's distributional
  * hypothesis). Deliberately built on `segmentUnicodeSurfaceV2()`'s real
- * word-level `lexicalSegments` rather than `symbolizeData()` -- unlike the
- * n-gram/morphology induction above (which legitimately wants
- * `symbolizeData()`'s existing character-level granularity for non-Latin
- * scripts), context-slot substitutability requires the actual lexical unit
+ * word-level `lexicalSegments` rather than `symbolizeData()`. N-gram fluency
+ * may legitimately retain symbol-level granularity, while lexical,
+ * morphology, syntax, and semantic induction require the actual lexical unit
  * a script's speakers use, or every non-Latin "word" collapses to a single
  * grapheme and every class becomes a same-script character bag rather than a
  * real lexical class. This is additive and self-contained: it does not
- * change what `induceSyntaxTemplates`/`induceSemanticFrames`/
- * `induceTranslationSeeds`/n-gram/morphology induction consume.
+ * change n-gram fluency induction.
  */
 function induceLexicalClasses(documents: readonly LanguageInductionDocument[], hasher: Hasher, maxClasses: number): LexicalClass[] {
   const candidateLimit = 768;
@@ -538,57 +546,44 @@ function induceLexicalClasses(documents: readonly LanguageInductionDocument[], h
     topContexts.set(symbol, topEntries(symbolContexts.get(symbol)!, contextLimitPerSymbol).map(([key]) => key));
   }
 
-  const parent = new Map<string, string>(candidates.map(symbol => [symbol, symbol]));
-  const find = (symbol: string): string => {
-    let root = symbol;
-    while (parent.get(root) !== root) root = parent.get(root)!;
-    let cursor = symbol;
-    while (parent.get(cursor) !== root) {
-      const next = parent.get(cursor)!;
-      parent.set(cursor, root);
-      cursor = next;
-    }
-    return root;
-  };
-  const union = (a: string, b: string) => {
-    const rootA = find(a);
-    const rootB = find(b);
-    if (rootA === rootB) return;
-    if (rootA < rootB) parent.set(rootB, rootA);
-    else parent.set(rootA, rootB);
-  };
-
   const pairSimilarity = new Map<string, number>();
   for (let i = 0; i < candidates.length; i++) {
     for (let j = i + 1; j < candidates.length; j++) {
       const a = candidates[i]!;
       const b = candidates[j]!;
       const similarity = weightedJaccard(topContexts.get(a)!, topContexts.get(b)!);
-      if (similarity >= similarityThreshold) {
-        union(a, b);
-        pairSimilarity.set(`${a}\u0001${b}`, similarity);
-      }
+      pairSimilarity.set(pairKey(a, b), similarity);
     }
   }
 
-  const components = new Map<string, string[]>();
+  // Greedy complete-link clustering: a symbol may join a class only when it
+  // meets the threshold against every existing member. The previous
+  // union-find implementation admitted single-link chains (A~B, B~C) even
+  // when A and C had no substitutable contexts.
+  const components: string[][] = [];
   for (const symbol of candidates) {
-    const root = find(symbol);
-    const bucket = components.get(root) ?? [];
-    bucket.push(symbol);
-    components.set(root, bucket);
+    const eligible = components
+      .map((members, index) => ({
+        index,
+        similarities: members.map(member => pairSimilarity.get(pairKey(symbol, member)) ?? 0)
+      }))
+      .filter(row => row.similarities.every(similarity => similarity >= similarityThreshold))
+      .sort((left, right) =>
+        mean(right.similarities) - mean(left.similarities)
+        || left.index - right.index
+      )[0];
+    if (eligible) components[eligible.index]!.push(symbol);
+    else components.push([symbol]);
   }
 
   const classes: LexicalClass[] = [];
-  for (const members of components.values()) {
+  for (const members of components) {
     if (members.length < 2) continue;
     const sortedMembers = [...members].sort((a, b) => (symbolCounts.get(b) ?? 0) - (symbolCounts.get(a) ?? 0) || a.localeCompare(b));
     const pairwiseSimilarities: number[] = [];
     for (let i = 0; i < sortedMembers.length; i++) {
       for (let j = i + 1; j < sortedMembers.length; j++) {
-        const key = sortedMembers[i]! < sortedMembers[j]! ? `${sortedMembers[i]}\u0001${sortedMembers[j]}` : `${sortedMembers[j]}\u0001${sortedMembers[i]}`;
-        const similarity = pairSimilarity.get(key);
-        if (similarity !== undefined) pairwiseSimilarities.push(similarity);
+        pairwiseSimilarities.push(pairSimilarity.get(pairKey(sortedMembers[i]!, sortedMembers[j]!)) ?? 0);
       }
     }
     const cohesion = clamp01(pairwiseSimilarities.length ? mean(pairwiseSimilarities) : 0);
@@ -615,6 +610,10 @@ function induceLexicalClasses(documents: readonly LanguageInductionDocument[], h
   return classes
     .sort((a, b) => b.cohesion * b.members.length - a.cohesion * a.members.length || b.members.length - a.members.length || a.id.localeCompare(b.id))
     .slice(0, Math.max(1, maxClasses));
+}
+
+function pairKey(left: string, right: string): string {
+  return left < right ? `${left}\u0001${right}` : `${right}\u0001${left}`;
 }
 
 /**
@@ -675,7 +674,9 @@ function induceSemanticFrames(documents: readonly LanguageInductionDocument[], h
   for (const doc of documents) {
     const trust = clamp01(doc.trust ?? 0.5);
     for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = symbolizeData(sentence).filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
+      const symbols = segmentUnicodeSurfaceV2(sentence, hasher).lexicalSegments
+        .map(segment => segment.normalized)
+        .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
       if (symbols.length < 2) continue;
       const predicate = selectFramePredicate(symbols, combinatorialDiversity);
       const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
@@ -826,7 +827,9 @@ function induceTranslationSeeds(documents: readonly LanguageInductionDocument[],
   if (byLanguage.size < 2) return [];
   const languageProfiles = [...byLanguage.entries()].map(([lang, docs]) => ({
     lang,
-    symbols: frequency(docs.flatMap(doc => symbolizeData(doc.text))),
+    symbols: frequency(docs.flatMap(doc =>
+      segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments.map(segment => segment.normalized)
+    )),
     features: featureSet(docs.map(doc => doc.text).join("\n"), 4096),
     evidenceIds: [...new Set(docs.flatMap(doc => doc.evidenceIds ?? []))]
   }));
@@ -1000,7 +1003,7 @@ function sentenceSegments(text: string): string[] {
   const tail = cleaned.slice(start).trim();
   if (tail) out.push(tail);
   if (out.length) return out;
-  const symbols = symbolizeData(cleaned);
+  const symbols = segmentUnicodeSurfaceV2(cleaned).lexicalSegments.map(segment => segment.surface);
   const chunks: string[] = [];
   for (let i = 0; i < symbols.length; i += 40) chunks.push(symbols.slice(i, i + 40).join(" "));
   return chunks;

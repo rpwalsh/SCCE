@@ -1112,7 +1112,18 @@ export interface EpisodeReplay {
 export interface BenchmarkTask {
   id: string;
   input: string;
-  caseType?: "SmokeCase" | "FactualEvidenceCase" | "ContradictionCase" | "SemanticEntailmentCase" | "TranslationCase" | "ProgramArtifactCase" | "LearningAcquisitionCase";
+  caseType?:
+    | "SmokeCase"
+    | "FactualEvidenceCase"
+    | "ContradictionCase"
+    | "SemanticEntailmentCase"
+    | "ReasoningCase"
+    | "TranslationCase"
+    | "ProgramArtifactCase"
+    | "CodeEditingCase"
+    | "LearningAcquisitionCase"
+    | "LongFormNarrativeCase"
+    | "MultiTurnCoherenceCase";
   criteria?: JsonValue;
   expectedEvidence?: string[];
   expectedArtifacts?: string[];
