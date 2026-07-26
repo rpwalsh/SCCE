@@ -304,6 +304,45 @@ describe("typed ingest closure", () => {
     }
   });
 
+  it("builds evidence-bound semantic candidates from structure before prose inference", () => {
+    const projected = projectText(
+      "closure://structured.md",
+      "text/markdown",
+      "# Pump report\nSee the structured metadata.",
+      {
+        title: "Pump report",
+        redirectTarget: "closure://canonical-pump-report",
+        links: [
+          { label: "pump", target: "closure://pump" },
+          { label: "pump details", target: "closure://pump" }
+        ],
+        citations: [{ id: "cite-1", uri: "doi:10.1/example" }],
+        interactionOutcomes: [{ action: "calibrate", status: "completed" }],
+        structure: {
+          headings: [{ text: "Pump report", level: 1, charStart: 0, charEnd: 13 }]
+        }
+      }
+    );
+
+    const kinds = new Set(projected.semanticCandidates.map(candidate => candidate.kind));
+    expect([...kinds]).toEqual(expect.arrayContaining([
+      "heading",
+      "link",
+      "redirect",
+      "citation",
+      "repeated_reference",
+      "interaction_outcome"
+    ]));
+    expect(projected.semanticCandidates.every(candidate =>
+      candidate.evidenceIds.length > 0
+      && candidate.participants.length > 0
+    )).toBe(true);
+    expect(projected.graphNodes.some(node =>
+      JSON.stringify(node.metadata).includes("weakFreeProseInference")
+    )).toBe(true);
+    expect(JSON.stringify(projected.diagnostics)).toContain('"weakFreeProseInference":false');
+  });
+
   function projectText(uri: string, mediaType: string, text: string, metadata: JsonValue) {
     const evidence = evidenceFor(uri, text || uri, mediaType);
     return createTypedIngestProjector({ idFactory: ids, hasher }).project({

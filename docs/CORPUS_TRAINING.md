@@ -115,3 +115,11 @@ New n-gram state is emitted as `scce.kneser_ney.v2` with compiled successor arra
 The same canonical path applies when a low-support turn acquires new material: source identity and typed observations must be admitted before replanning. Factual answers still require admissible evidence and graph paths; language priors shape realization but do not certify claims. The production path has no external inference provider or prompt-construction fallback.
 
 Relation-hypothesis state is candidate memory, not promoted semantics. The compiler records occurrence, source independence, left/right substitution, context-pair diversity, Unicode-shape support, and evidence IDs. Frame observations are distributed by posterior mass. Later promotion still requires the structured-source candidates, held-out description-length gain, independent-source and shuffled/duplicate/random controls specified by items 10–11.
+
+Typed ingest now constructs structured semantic candidates before weak prose inference.
+The versioned candidate contract covers links, redirects, headings, table cells,
+numbers, dates, citations, repeated references, formulas, code/repository graphs,
+logs, and interaction outcomes. Every candidate retains source/version/evidence
+identity, qualifiers, an opaque relation seed, and typed participant ports. It enters
+the graph marked unpromoted; corpus structure proposes semantics but does not certify
+or promote them.
