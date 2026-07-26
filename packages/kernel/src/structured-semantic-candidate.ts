@@ -8,8 +8,10 @@ import {
 } from "./normalization-contract.js";
 import { createCanonicalIdentity } from "./canonical-identity.js";
 import {
+  admitStructuredTemporalCoordinates,
   canonicalTemporalCoordinates,
-  type CanonicalTemporalCoordinates
+  type CanonicalTemporalCoordinates,
+  type StructuredTemporalAuthority
 } from "./canonical-temporal.js";
 
 export const STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA = "scce.structured_semantic_candidate.v1" as const;
@@ -80,16 +82,11 @@ export function structuredSemanticCandidates(input: {
       })),
       qualifiers,
       evidenceIds: [...new Set(evidenceIds)].sort(),
-      temporalCoordinates: canonicalTemporalCoordinates({
-        observedTime: input.observedAt,
-        sourceTime: finiteMetadataTime(input.metadata, "sourceTime"),
-        eventSurfaceMention: kind === "date"
-          ? toJsonValue(participants.map(participant => participant.value))
-          : null,
-        provenance: {
-          eventTimeParsed: false,
-          validityInferredFromObservedTime: false
-        }
+      temporalCoordinates: temporalCoordinatesForCandidate({
+        metadata: input.metadata,
+        observedAt: input.observedAt,
+        kind,
+        participants
       }),
       support
     };
@@ -299,6 +296,64 @@ function finiteMetadataTime(metadata: JsonValue, key: string): number | null {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
   const value = metadata[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function temporalCoordinatesForCandidate(input: {
+  metadata: JsonValue;
+  observedAt: number;
+  kind: StructuredSemanticCandidateKind;
+  participants: Array<{ value: JsonValue; valueKind: string }>;
+}): CanonicalTemporalCoordinates {
+  const authority = structuredTemporalAuthority(input.metadata);
+  if (authority) {
+    return admitStructuredTemporalCoordinates({
+      observedTime: input.observedAt,
+      structured: authority,
+      provenance: { extraction: "typed_source_metadata" }
+    });
+  }
+  return canonicalTemporalCoordinates({
+    observedTime: input.observedAt,
+    sourceTime: finiteMetadataTime(input.metadata, "sourceTime"),
+    eventSurfaceMention: input.kind === "date"
+      ? toJsonValue(input.participants.map(participant => participant.value))
+      : null,
+    provenance: {
+      temporalStatus: "unknown",
+      eventTimeParsed: false,
+      validityInferredFromObservedTime: false
+    }
+  });
+}
+
+function structuredTemporalAuthority(metadata: JsonValue): StructuredTemporalAuthority | undefined {
+  const root = record(metadata);
+  const temporal = record(root.structuredTemporal ?? root.temporal);
+  if (temporal.authority !== "source_declared") return undefined;
+  const sourceType = temporal.sourceType;
+  if (sourceType !== "database"
+    && sourceType !== "structured_document"
+    && sourceType !== "schema_validated") return undefined;
+  const schemaId = text(temporal.schemaId);
+  const validFrom = temporal.validFrom;
+  const validTo = temporal.validTo;
+  if (!schemaId || typeof validFrom !== "number" || !Number.isFinite(validFrom)) return undefined;
+  if (validTo !== undefined && (typeof validTo !== "number" || !Number.isFinite(validTo))) {
+    return undefined;
+  }
+  return {
+    authority: "source_declared",
+    sourceType,
+    schemaId,
+    validFrom,
+    ...(typeof validTo === "number" ? { validTo } : {}),
+    ...(typeof temporal.eventTime === "number" && Number.isFinite(temporal.eventTime)
+      ? { eventTime: temporal.eventTime }
+      : {}),
+    ...(typeof temporal.sourceTime === "number" && Number.isFinite(temporal.sourceTime)
+      ? { sourceTime: temporal.sourceTime }
+      : {})
+  };
 }
 
 function record(value: unknown): Record<string, JsonValue> {

@@ -83,6 +83,7 @@ answer lane.
   and reversible arbitrary-arity alpha/PPF activation.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
+- `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.
 - `surface-lattice.ts`: Phase-2 proposal quotient, occurrence/class separation, and
   exact byte/code-point/grapheme partition conservation; Phase-3 training consumes
   independent source anchors or packed-forest marginals rather than detector labels.

@@ -187,6 +187,7 @@ export * from "./role-surface-order.js";
 export * from "./typed-incidence-graph.js";
 export * from "./normalization-contract.js";
 export * from "./canonical-temporal.js";
+export * from "./graph-temporal.js";
 export * from "./canonical-identity.js";
 export * from "./canonical-replay.js";
 export * from "./patch-transaction.js";

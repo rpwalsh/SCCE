@@ -14,11 +14,15 @@ import {
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 import {
+  canonicalGraphemeSegmenter,
   canonicalNormalizationContract,
   normalizeCanonicalSurface,
   type NormalizationContract
 } from "./normalization-contract.js";
-import { createCanonicalIdentity } from "./canonical-identity.js";
+import {
+  createCanonicalIdentity,
+  type CanonicalIdentity
+} from "./canonical-identity.js";
 
 export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v3" as const;
 export const UNTRAINED_BOUNDARY_ESTIMATOR_ID = "boundary_estimator.untrained-neutral.v1" as const;
@@ -63,7 +67,12 @@ export interface SurfaceLatticeUnit {
   id: string;
   occurrenceId: string;
   normalizedFormId: string;
-  unitClassId: string;
+  surfaceFormClassId: string;
+  canonicalIdentities: {
+    occurrence: CanonicalIdentity;
+    normalizedForm: CanonicalIdentity;
+    surfaceFormClass: CanonicalIdentity;
+  };
   proposalSources: SurfaceLatticeUnitKind[];
   kind: SurfaceLatticeUnitKind;
   overlapClass: SurfaceLatticeOverlapClass;
@@ -159,7 +168,7 @@ interface SurfaceCoordinateIndex {
   utf16ToGraphemeEnd: number[];
 }
 
-const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
 
 export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
   const hasher = options.hasher ?? createHasher();
@@ -170,6 +179,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const model = segmentUnicodeSurfaceV2(text, hasher);
   const evidenceIds = (options.evidenceIds ?? []).map(String).sort();
   const sourceVersionId = options.sourceVersionId === undefined ? undefined : String(options.sourceVersionId);
+  const occurrenceSourceVersionId = sourceVersionId
+    ?? `source_version.content.${hasher.digestHex(text).slice(0, 48)}`;
   const estimatorId = options.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID;
   const latticeId = `surface_lattice.${hasher.digestHex(JSON.stringify([
     SURFACE_LATTICE_SCHEMA,
@@ -253,7 +264,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     const occurrenceIdentity = createCanonicalIdentity({
         kind: "surface_occurrence",
         fields: {
-          evidenceId: evidenceIds[0] ?? options.documentId,
+          sourceVersionId: occurrenceSourceVersionId,
+          documentId: options.documentId,
           byteStart: coordinates.utf16ToByte[candidate.utf16Start] ?? 0,
           byteEnd: coordinates.utf16ToByte[candidate.utf16End] ?? Buffer.byteLength(text, "utf8"),
           exactSurfaceHash: hasher.digestHex(candidate.surface)
@@ -270,16 +282,26 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       normalizationContract,
       hasher
     });
-    const unitClassId = `surface_unit_class.${hasher.digestHex(JSON.stringify([
-      normalizationContract.id,
-      normalizedFormIdentity.id,
-      dominantScriptId(candidate.surface)
-    ])).slice(0, 40)}`;
+    const surfaceFormClassIdentity = createCanonicalIdentity({
+      kind: "surface_form_class",
+      fields: {
+        normalizationContractId: normalizationContract.id,
+        normalizedSurfaceFormId: normalizedFormIdentity.id,
+        unicodeScriptId: dominantScriptId(candidate.surface)
+      },
+      normalizationContract,
+      hasher
+    });
     units.push({
       id: `surface_arc.${hasher.digestHex(occurrenceIdentity.id).slice(0, 40)}`,
       occurrenceId: occurrenceIdentity.id,
       normalizedFormId: normalizedFormIdentity.id,
-      unitClassId,
+      surfaceFormClassId: surfaceFormClassIdentity.id,
+      canonicalIdentities: {
+        occurrence: occurrenceIdentity,
+        normalizedForm: normalizedFormIdentity,
+        surfaceFormClass: surfaceFormClassIdentity
+      },
       proposalSources: candidate.proposalSources,
       kind: candidate.kind,
       overlapClass: overlapClassFor(candidate.kind),
@@ -397,12 +419,12 @@ export function collectBoundaryTrainingObservations(input: {
   for (const lattice of lattices) {
     for (const unit of lattice.units) {
       if (unit.overlapClass === "base_partition") continue;
-      const documents = documentsByUnitClass.get(unit.unitClassId) ?? new Set<string>();
+      const documents = documentsByUnitClass.get(unit.surfaceFormClassId) ?? new Set<string>();
       documents.add(lattice.documentId);
-      documentsByUnitClass.set(unit.unitClassId, documents);
+      documentsByUnitClass.set(unit.surfaceFormClassId, documents);
       const contextKey = boundaryContextKey(unit);
       const classes = unitsByContext.get(contextKey) ?? new Set<string>();
-      classes.add(unit.unitClassId);
+      classes.add(unit.surfaceFormClassId);
       unitsByContext.set(contextKey, classes);
     }
   }
@@ -426,7 +448,7 @@ export function collectBoundaryTrainingObservations(input: {
     }
 
     for (const unit of hypotheses) {
-      const documentSupport = documentsByUnitClass.get(unit.unitClassId)?.size ?? 1;
+      const documentSupport = documentsByUnitClass.get(unit.surfaceFormClassId)?.size ?? 1;
       const recurrenceFeature = clamp01(Math.log1p(Math.max(0, documentSupport - 1)) / 6);
       const spanLength = Math.max(1, unit.graphemeEnd - unit.graphemeStart);
       const compressionFeature = clamp01(recurrenceFeature * (1 - 1 / spanLength));
@@ -1121,9 +1143,9 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
   }
   const recurring = new Map<string, SurfaceLatticeUnit[]>();
   for (const unit of units.filter(item => item.recurrenceCount > 1 && !item.proposalSources.includes("grapheme"))) {
-    const bucket = recurring.get(unit.unitClassId) ?? [];
+    const bucket = recurring.get(unit.surfaceFormClassId) ?? [];
     bucket.push(unit);
-    recurring.set(unit.unitClassId, bucket);
+    recurring.set(unit.surfaceFormClassId, bucket);
   }
   for (const items of recurring.values()) {
     const sorted = [...items].sort((a, b) => a.codePointStart - b.codePointStart);

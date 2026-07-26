@@ -17,6 +17,8 @@ import {
   graphFromStructuredSemanticCandidates,
   toJsonValue,
   validateBrainManifestContract,
+  compileBrainReplayManifest,
+  assertBrainManifestReplayForActivation,
   validationDisposition,
   type BrainLifecycleRecord,
   type BrainManifestContract,
@@ -479,12 +481,35 @@ export class WikipediaV3Ingestor {
         ngramStateCount: input.result.ngramModels,
         priorSectionCount: 3
       },
+      replayManifest: compileBrainReplayManifest({
+        sourceSchema: "scce.wikipediaV3Import.v1",
+        sourceManifestHash: manifestHash,
+        componentIds: [
+          `source-count:${input.result.sources}`,
+          `evidence-count:${input.result.evidence}`,
+          `graph-node-count:${input.result.graphNodes}`,
+          `graph-edge-count:${input.result.graphEdges}`,
+          `language-unit-count:${input.result.languageUnits}`,
+          `language-pattern-count:${input.result.languagePatterns}`,
+          `ngram-model-count:${input.result.ngramModels}`,
+          `checkpoint-offset:${input.result.lastCheckpointOffset}`
+        ],
+        content: {
+          graphShardCount: input.result.graphNodes > 0 ? 1 : 0,
+          languageShardCount: input.result.languageUnits + input.result.languagePatterns + input.result.ngramModels > 0 ? 1 : 0,
+          ngramStateCount: input.result.ngramModels,
+          priorSectionCount: 3
+        },
+        configuration: toJsonValue({ versionSeed }),
+        hasher: this.hasher
+      }),
       metadata: toJsonValue({ sourceSystem: "wikipedia", rootUri: input.rootUri, result: versionSeed }),
       createdAt: input.importedAt
     };
     let lifecycle = await this.ensureWikipediaLifecycle(manifest, input.importedAt);
     if (lifecycle.state === "ACTIVE") return;
     if (lifecycle.state === "READY") {
+      assertBrainManifestReplayForActivation(manifest, this.hasher);
       await this.storage.brainImports.activateReady({ brainVersion, importRunId, updatedAt: input.importedAt });
       return;
     }
@@ -577,6 +602,7 @@ export class WikipediaV3Ingestor {
       lifecycle = await this.storage.brainImports.transitionLifecycle({ importRunId, expectedState: "VALIDATING", toState: "READY", updatedAt: input.importedAt, reason: "Wikipedia brain validation passed", validation });
     }
     if (lifecycle.state !== "READY") throw new Error(`Wikipedia brain ${importRunId} is not activatable from ${lifecycle.state}`);
+    assertBrainManifestReplayForActivation(manifest, this.hasher);
     await this.storage.brainImports.activateReady({ brainVersion, importRunId, updatedAt: input.importedAt });
   }
 

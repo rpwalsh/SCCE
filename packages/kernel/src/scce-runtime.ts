@@ -21,6 +21,7 @@ import type {
   SourceVersion
 } from "./types.js";
 import { canonicalStringify, clamp01, createClock, createHasher, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
+import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 import { launchContractForTurn } from "./launch-contract.js";
 import { INTERACTION_FEATURE_IDS, updateDialogueState, type DialogueFeedback, type DialogueState, type UserStyleProfile } from "./dialogue-pragmatics.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
@@ -1700,7 +1701,7 @@ function graphLearningReport(input: { graph: { nodes: GraphNode[]; edges: GraphE
       model: emptyModel,
       linkPrediction: { positiveEdgeCount: edges.length, negativeEdgeCount: 0, heldOutCount: 0, learnedAuc: 0.5, lexicalBaselineAuc: 0.5, learnedAucAboveLexicalBaseline: false },
       evidenceConstructAlignment: { evidenceLinkedEdgeCount: edges.filter(edge => edge.evidenceIds.length).length, typedObservationCount: input.typedObservationCount, sourceBoundRatio: edges.length ? edges.filter(edge => edge.evidenceIds.length).length / edges.length : 0 },
-      temporalPrediction: { temporallyScopedEdgeCount: edges.filter(edge => edge.temporalScope.validFrom > 0 || edge.temporalScope.validTo !== undefined).length, freshEdgeRatio: 0 },
+      temporalPrediction: { temporallyScopedEdgeCount: edges.filter(edge => isKnownGraphTemporalScope(edge.temporalScope)).length, freshEdgeRatio: 0 },
       trace: toJsonValue({ source: "source-only-runtime.graph_learning", status: "insufficient_graph" })
     };
   }
@@ -1736,7 +1737,7 @@ function graphLearningReport(input: { graph: { nodes: GraphNode[]; edges: GraphE
       sourceBoundRatio: clamp01(evidenceLinkedEdgeCount / Math.max(1, edges.length))
     },
     temporalPrediction: {
-      temporallyScopedEdgeCount: edges.filter(edge => edge.temporalScope.validFrom > 0 || edge.temporalScope.validTo !== undefined).length,
+      temporallyScopedEdgeCount: edges.filter(edge => isKnownGraphTemporalScope(edge.temporalScope)).length,
       freshEdgeRatio: clamp01(freshEdges / Math.max(1, edges.length))
     },
     trace: toJsonValue({

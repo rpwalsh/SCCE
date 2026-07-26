@@ -13,6 +13,8 @@ import {
   stableVector,
   toJsonValue,
   validateBrainManifestContract,
+  compileBrainReplayManifest,
+  assertBrainManifestReplayForActivation,
   validationDisposition,
   type BrainLifecycleState,
   type BrainLifecycleRecord,
@@ -187,7 +189,10 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       if (lifecycle.state === "IMPORTING" || lifecycle.state === "VALIDATING") {
         lifecycle = await this.validateCompletedImport({ lifecycleState: lifecycle.state, manifest: identity.manifest, importRunId, activeBrainVersion, manifestHash, completedLedger, now });
       }
-      if (lifecycle.state === "READY") await this.storage.brainImports.activateReady({ brainVersion: activeBrainVersion, importRunId, updatedAt: now });
+      if (lifecycle.state === "READY") {
+        assertBrainManifestReplayForActivation(identity.manifest, this.hasher);
+        await this.storage.brainImports.activateReady({ brainVersion: activeBrainVersion, importRunId, updatedAt: now });
+      }
       else if (lifecycle.state !== "ACTIVE") throw new Error(`completed brain import ${importRunId} is not activatable from ${lifecycle.state}`);
       return importResultFromLedger({ manifest, importRunId, activeBrainVersion, ledger: existingLedger });
     }
@@ -620,6 +625,7 @@ export class Scce2ToV3Importer implements BrainShardImporter {
     if (readyLifecycle.state !== "READY") throw new Error(`brain import ${importRunId} did not reach READY`);
     await this.storage.events.append(events.create({ episodeId: importEpisodeId, typeId: "Scce2ImportCompleted", payload: { importRunId, activeBrainVersion, counters, warnings, stopped: false, stopReason: null } }));
     await emitStatus("completed");
+    assertBrainManifestReplayForActivation(identity.manifest, this.hasher);
     await this.storage.brainImports.activateReady({ brainVersion: activeBrainVersion, importRunId, updatedAt: now });
     return {
       manifest,
@@ -1497,6 +1503,24 @@ function scce2ImportIdentity(input: { manifest: BrainShardManifest; rootPath: st
         ngramStateCount: input.manifest.ngramStates.length,
         priorSectionCount: input.manifest.priorSections.length
       },
+      replayManifest: compileBrainReplayManifest({
+        sourceSchema: input.manifest.schema,
+        sourceManifestHash: manifestHash,
+        componentIds: [
+          ...(input.manifest.graph?.shards.map(shard => shard.shardId) ?? []),
+          ...(input.manifest.language?.shards.map(shard => shard.shardId) ?? []),
+          ...input.manifest.ngramStates.map(state => state.path),
+          ...input.manifest.priorSections.map(section => section.sha256 ?? section.path)
+        ],
+        content: {
+          graphShardCount: input.manifest.graph?.shards.length ?? 0,
+          languageShardCount: input.manifest.language?.shards.length ?? 0,
+          ngramStateCount: input.manifest.ngramStates.length,
+          priorSectionCount: input.manifest.priorSections.length
+        },
+        configuration: stableImportManifestIdentity(input.manifest),
+        hasher: input.hasher
+      }),
       metadata: toJsonValue({ sourceSystem: input.manifest.sourceSystem, observedAt: input.manifest.observedAt }),
       createdAt: input.now
     }

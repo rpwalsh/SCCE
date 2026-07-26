@@ -1,4 +1,9 @@
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import {
+  graphTemporalScopeFromCanonical,
+  unknownGraphTemporalScope
+} from "./graph-temporal.js";
+import { CANONICAL_TEMPORAL_SCHEMA } from "./canonical-temporal.js";
 import type {
   GraphEdge,
   GraphNode,
@@ -231,12 +236,23 @@ function graphTemporalScope(hyperedge: Hyperedge): GraphEdge["temporalScope"] {
     && !Array.isArray(hyperedge.temporalScope)
     ? hyperedge.temporalScope
     : {};
-  const validFrom = typeof value.validFrom === "number" && Number.isFinite(value.validFrom)
-    ? value.validFrom
-    : Number.MIN_SAFE_INTEGER;
-  return typeof value.validTo === "number" && Number.isFinite(value.validTo)
-    ? { validFrom, validTo: value.validTo }
-    : { validFrom };
+  if (value.schema === CANONICAL_TEMPORAL_SCHEMA) {
+    return graphTemporalScopeFromCanonical(value as never);
+  }
+  if (typeof value.validFrom === "number" && Number.isFinite(value.validFrom)) {
+    return {
+      status: "known",
+      validFrom: value.validFrom,
+      ...(typeof value.validTo === "number" && Number.isFinite(value.validTo)
+        ? { validTo: value.validTo }
+        : {}),
+      provenance: toJsonValue({ migratedFromLegacyHyperedgeScope: true })
+    };
+  }
+  return unknownGraphTemporalScope(1, {
+    reason: "source relation has no admitted validity interval",
+    hyperedgeId: hyperedge.id
+  });
 }
 
 function dedupeById<T extends { id: unknown }>(values: readonly T[]): T[] {

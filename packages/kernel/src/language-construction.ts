@@ -1,5 +1,6 @@
 import { canonicalStringify } from "./primitives.js";
 import type { Hasher } from "./types.js";
+import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 
 export type SurfaceRoleRealization = "spoken" | "null";
 
@@ -1239,7 +1240,7 @@ function traceCoversText(text: string, trace: readonly LearnedRealizationTracePa
 
 function graphemeBoundaries(surface: string): Set<number> {
   const boundaries = new Set<number>([0, surface.length]);
-  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const segmenter = canonicalGraphemeSegmenter();
   for (const part of segmenter.segment(surface)) {
     boundaries.add(part.index);
     boundaries.add(part.index + part.segment.length);

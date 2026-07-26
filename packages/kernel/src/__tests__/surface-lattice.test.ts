@@ -141,7 +141,7 @@ describe("universal surface lattice", () => {
 
     expect(cats).toHaveLength(2);
     expect(cats[0]!.occurrenceId).not.toBe(cats[1]!.occurrenceId);
-    expect(cats[0]!.unitClassId).toBe(cats[1]!.unitClassId);
+    expect(cats[0]!.surfaceFormClassId).toBe(cats[1]!.surfaceFormClassId);
     expect(cats[0]!.byteStart).not.toBe(cats[1]!.byteStart);
   });
 

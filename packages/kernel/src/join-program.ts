@@ -57,7 +57,7 @@ export interface JoinProgramMixture {
 }
 
 export interface JoinUnitContext {
-  unitClassId: string;
+  surfaceFormClassId: string;
   scaleId: string;
   graphemeWidth: number;
 }
@@ -633,7 +633,7 @@ function choices(rows: ReadonlyMap<string, JoinCount>): JoinProgramChoice[] {
 
 function unitContext(unit: SurfaceLatticeUnit): JoinUnitContext {
   return {
-    unitClassId: unit.unitClassId,
+    surfaceFormClassId: unit.surfaceFormClassId,
     scaleId: unit.kind,
     graphemeWidth: Math.max(1, unit.graphemeEnd - unit.graphemeStart)
   };
@@ -654,8 +654,8 @@ function conditionedJoinKey(input: {
   return JSON.stringify([
     input.left,
     input.right,
-    input.leftContext.unitClassId,
-    input.rightContext.unitClassId,
+    input.leftContext.surfaceFormClassId,
+    input.rightContext.surfaceFormClassId,
     input.leftContext.scaleId,
     input.rightContext.scaleId,
     input.leftContext.graphemeWidth,

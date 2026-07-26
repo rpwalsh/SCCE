@@ -6,6 +6,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "dependencies": {
+    "@unicode/unicode-17.0.0": "1.6.17"
+  },
   "scripts": {
     "build": "tsc -b"
   }
