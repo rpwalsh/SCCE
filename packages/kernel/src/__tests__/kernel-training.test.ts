@@ -78,6 +78,51 @@ describe("kernel training", () => {
     expect(payload.trainingPromotion?.find(item => item.evidenceId === String(rejected.id))?.promote).toBe(false);
   });
 
+  it("does not promote a large batch of near-duplicate low-trust evidence by volume alone (plan item 22)", async () => {
+    // promoteEvidence (training-orchestrator.ts) scores every span
+    // independently -- score = 0.30*trust + 0.26*alpha + 0.20*novelty +
+    // 0.18*coverage (+0.18 proof bonus). There is no cross-span
+    // aggregation, so repeating the same mediocre-trust text many times
+    // must not let any of the copies cross the 0.42 promotion floor --
+    // volume must not substitute for quality. See
+    // docs/IMPLEMENTATION_STATUS.md for the exact formula this guards.
+    const clock = createClock({ fixedTime: 2000, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const duplicates = Array.from({ length: 12 }, (_, index) =>
+      evidenceSpan({
+        id: `evidence:near-duplicate-${index}`,
+        sourceVersionId: `source:near-duplicate-${index}:v1` as SourceVersionId,
+        text: "Untrusted rumor says the pump value changed with no source span.",
+        trust: 0.5,
+        alpha: 0.5,
+        status: "quarantined"
+      })
+    );
+    const fixture = storageFixture({ evidence: duplicates, clockNow: () => clock.now() });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused in this test */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids,
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.train({ config: { learningGoals: [], promotion: { minTrust: 0.45 } } });
+
+    // Exactly one representative of the duplicate cluster may promote
+    // (it legitimately earns full novelty credit as the first span to
+    // claim its features) -- the other 11 identical copies must not,
+    // since their features are already claimed within this batch.
+    expect(result.promotedEvidence).toBe(1);
+    expect(fixture.promotedIds).toHaveLength(1);
+    const promotedEvent = fixture.events.find(event => event.typeId === "LearningPromoted");
+    const payload = promotedEvent?.payload as { trainingPromotion?: Array<{ evidenceId: string; promote: boolean; score: number }> };
+    const decisions = duplicates.map(duplicate => payload.trainingPromotion?.find(item => item.evidenceId === String(duplicate.id)));
+    expect(decisions.filter(decision => decision?.promote).length).toBe(1);
+  });
+
   it("bootstraps train()'s graph-node query with allowLatestFallback and finds evidence with zero prior training state (plan item 15)", async () => {
     // The shared storageFixture()'s getSlice mock always returns its graph
     // regardless of query params, so it can't catch a regression of the

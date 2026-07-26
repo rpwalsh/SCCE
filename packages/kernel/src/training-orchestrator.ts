@@ -196,10 +196,23 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
   const goalFeatures = featureSet(goals.join("\n"), 2048);
   const knownFeatures = new Set(modelState.languageProfiles.flatMap(profile => profile.symbolShapes.map(shape => `shape:${shape.shape}`).concat(profile.charNgrams.map(ng => `char:${ng.ngram}`))));
   const entailmentEvidence = new Set(entailments.flatMap(result => result.evidenceIds.map(String)));
-  return evidence.map(span => {
+  // novelty is scored per-span against knownFeatures (prior model
+  // state) only. Within a single training call that alone lets every
+  // copy in a batch of near-duplicate spans score full novelty
+  // simultaneously, since none of them are "known" yet -- a batch of
+  // near-duplicate low-trust evidence could promote purely by volume.
+  // Scoring highest-trust spans first and having each span claim its
+  // features against the batch (not just the prior model) means only
+  // the best representative of a duplicate cluster gets novelty
+  // credit; later duplicates see those features as already claimed.
+  const batchClaimedFeatures = new Set<string>();
+  const decisionsById = new Map<string, EvidencePromotionDecision>();
+  const byTrustDescending = [...evidence].sort((a, b) => trustFromSpan(b) - trustFromSpan(a));
+  for (const span of byTrustDescending) {
     const trust = trustFromSpan(span);
     const namespaceOk = namespaces.size === 0 || namespaces.has(sourceNamespace(span));
-    const novelty = noveltyScore(span.features, knownFeatures);
+    const novelty = noveltyScore(span.features, knownFeatures, batchClaimedFeatures);
+    for (const feature of span.features) batchClaimedFeatures.add(feature);
     const coverage = goalFeatures.length ? weightedJaccard(goalFeatures, span.features) : Math.min(1, span.features.length / 256);
     const proofUse = entailmentEvidence.has(String(span.id)) ? 0.18 : 0;
     const score = clamp01(0.3 * trust + 0.26 * span.alpha + 0.2 * novelty + 0.18 * coverage + proofUse);
@@ -213,8 +226,11 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
     if (!namespaceOk) reasons.push("namespace not selected");
     if (trust < minTrust) reasons.push("below trust threshold");
     if (proofUse > 0) reasons.push("used by recent proof");
-    return { evidenceId: String(span.id), promote, score, trust, alpha: span.alpha, novelty, coverage, reasons };
-  }).sort((a, b) => Number(b.promote) - Number(a.promote) || b.score - a.score);
+    decisionsById.set(String(span.id), { evidenceId: String(span.id), promote, score, trust, alpha: span.alpha, novelty, coverage, reasons });
+  }
+  return evidence
+    .map(span => decisionsById.get(String(span.id))!)
+    .sort((a, b) => Number(b.promote) - Number(a.promote) || b.score - a.score);
 }
 
 function evidenceToLanguageDocument(span: EvidenceSpan): LanguageInductionDocument {
@@ -412,9 +428,9 @@ function dedupeCurriculum(items: CurriculumItem[]): CurriculumItem[] {
   return [...map.values()];
 }
 
-function noveltyScore(features: readonly string[], known: Set<string>): number {
+function noveltyScore(features: readonly string[], known: Set<string>, batchClaimed?: Set<string>): number {
   if (features.length === 0) return 0;
-  const unseen = features.filter(feature => !known.has(feature)).length;
+  const unseen = features.filter(feature => !known.has(feature) && !batchClaimed?.has(feature)).length;
   return unseen / features.length;
 }
 
