@@ -1412,7 +1412,16 @@ function rhetoricalClauseTexts(input: {
       .slice(0, 1);
     for (const material of weak) add(materialClauseSurface(material, input.plan.subjectLabel, boundary));
   }
-  for (const material of input.materials.slice(0, 4)) add(materialClauseSurface(material, input.plan.subjectLabel, boundary));
+  // Only fall back to raw per-material clause surfaces when the move-specific
+  // branches above produced nothing: this used to run unconditionally for
+  // every move, so with few distinct materials (fewer than the number of
+  // rhetorical moves in the paragraph plan) every move ended up appending
+  // the same materialClauseSurface text on top of its own move-specific
+  // text, producing near-duplicate clauses across the whole paragraph that
+  // tripped the discourse diversity/repetition gate.
+  if (!rows.length) {
+    for (const material of input.materials.slice(0, 4)) add(materialClauseSurface(material, input.plan.subjectLabel, boundary));
+  }
   return rows.slice(0, 4);
 }
 
@@ -1682,7 +1691,21 @@ function proseCandidatesFromSentenceLattice(input: { lattice: SentenceLattice; s
   for (const row of input.lattice.clausesByPlan) {
     const next: ClauseCandidate[][] = [];
     for (const beam of beams) {
-      for (const candidate of row.candidates) next.push([...beam, candidate]);
+      // With few distinct materials, several rhetorical moves (e.g. lead and
+      // close both realize the same "main surface", or support and
+      // sourceBound both fall back to the same material clause) can produce
+      // literally the same clause text. Prefer a candidate that doesn't
+      // duplicate a clause already chosen in this beam; if every candidate
+      // for this sentence plan would duplicate, drop the sentence from this
+      // beam rather than repeating it verbatim -- a shorter, non-repetitive
+      // paragraph clears the discourse diversity gate where a longer,
+      // duplicate-laden one does not.
+      const freshCandidates = row.candidates.filter(candidate => !beam.some(existing => semanticRelationDuplicate(existing.text, candidate.text)));
+      if (freshCandidates.length) {
+        for (const candidate of freshCandidates) next.push([...beam, candidate]);
+      } else if (row.candidates.length) {
+        next.push(beam);
+      }
     }
     beams.splice(0, beams.length, ...next
       .sort((a, b) => clauseSequenceScore(b) - clauseSequenceScore(a))
