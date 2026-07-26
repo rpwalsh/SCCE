@@ -61,7 +61,43 @@ describe("learned join programs", () => {
 
     expect(surface.text).toBe("red—blue");
     expect(surface.trace.flatMap(step => step.evidenceIds)).toContain("evidence.punctuated");
+    expect(surface.trace.flatMap(step => step.evidenceCoordinates)
+      .some(coordinate => coordinate.evidenceId === "evidence.punctuated")).toBe(true);
     expect(surface.trace.every(step => step.support > 0)).toBe(true);
+  });
+
+  it("combines component probabilities, preserves abstaining population mass, and honors task posteriors", () => {
+    const supported = trainedMixture("supported", "alpha beta alpha beta");
+    const abstaining = trainedMixture("abstaining", "gamma delta gamma delta");
+    const mixture = compileJoinProgramMixture({
+      populationModelId: "population-model.posterior",
+      components: [
+        {
+          populationId: "population.supported",
+          weight: 0.01,
+          program: supported.components[0]!.program
+        },
+        {
+          populationId: "population.abstaining",
+          weight: 0.99,
+          program: abstaining.components[0]!.program
+        }
+      ]
+    });
+
+    const priorWeighted = renderJoinedSurface(["alpha", "beta"], mixture);
+    expect(priorWeighted.status).toBe("unresolved");
+    expect(priorWeighted.trace[0]?.support).toBeCloseTo(0.01, 10);
+    expect(priorWeighted.trace[0]?.unresolvedPopulationMass).toBeCloseTo(0.99, 10);
+
+    const taskWeighted = renderJoinedSurface(["alpha", "beta"], mixture, {
+      populationPosterior: {
+        "population.supported": 0.9,
+        "population.abstaining": 0.1
+      }
+    });
+    expect(taskWeighted.trace[0]?.support).toBeCloseTo(0.9, 10);
+    expect(taskWeighted.trace[0]?.unresolvedPopulationMass).toBeCloseTo(0.1, 10);
   });
 
   it("conditions joins on unit classes, scales, boundary posterior, and derivation shape", () => {
@@ -113,6 +149,38 @@ describe("learned join programs", () => {
     expect(rendered.trace.every(step => step.source === "conditioned")).toBe(true);
   });
 
+  it("backs off to learned local boundary shapes for unseen surface pairs", () => {
+    const trained = trainedMixture(
+      "shape-generalization",
+      "alpha beta. gamma delta. one two, three four."
+    );
+    const mixture = { ...trained, minimumConfidence: 0.5 };
+    const rendered = renderJoinedSurface(["theta", "lambda"], mixture);
+
+    expect(rendered.status).toBe("resolved");
+    expect(rendered.text).toBe("theta lambda");
+    expect(rendered.trace[0]?.source).toBe("local_shape");
+  });
+
+  it("preserves mixed-script, clitic, affixal, and zero-width source joins", () => {
+    const mixed = trainedMixture("mixed-join", "alpha猫 alpha猫");
+    const clitic = trainedMixture("clitic-join", "l’amour l’amour");
+    const affix = trainedMixture("affix-join", "pre-existing pre-existing");
+
+    expect(renderJoinedSurface(["alpha", "猫"], mixed).text).toBe("alpha猫");
+    expect(renderJoinedSurface(["l", "’", "amour"], clitic).text).toBe("l’amour");
+    expect(renderJoinedSurface(["pre", "-", "existing"], affix).text).toBe("pre-existing");
+    expect(renderJoinedSurface(["a", "b"], undefined, {
+      observedSourceSpan: {
+        text: "a\u200db",
+        evidenceIds: ["evidence.zero-width"]
+      }
+    })).toMatchObject({
+      text: "a\u200db",
+      status: "preserved_source_span"
+    });
+  });
+
   it("makes low-confidence join uncertainty explicit instead of taking a global join", () => {
     const base = trainedMixture("uncertain", "alpha beta alpha beta");
     const exactKey = JSON.stringify(["alpha", "beta"]);
@@ -125,8 +193,8 @@ describe("learned join programs", () => {
           exactIndex: {
             ...component.program.exactIndex,
             [exactKey]: [
-              { surface: " ", count: 1, probability: 0.5, evidenceIds: ["evidence.space"] },
-              { surface: "", count: 1, probability: 0.5, evidenceIds: ["evidence.zero"] }
+              { surface: " ", count: 1, probability: 0.5, evidenceIds: ["evidence.space"], evidenceCoordinates: [] },
+              { surface: "", count: 1, probability: 0.5, evidenceIds: ["evidence.zero"], evidenceCoordinates: [] }
             ]
           }
         }
@@ -151,7 +219,9 @@ describe("learned join programs", () => {
         source: "unresolved",
         support: 0,
         alternatives: [],
-        evidenceIds: []
+        evidenceIds: [],
+        evidenceCoordinates: [],
+        unresolvedPopulationMass: 1
       }],
       unresolvedBoundaries: 1,
       status: "unresolved",
@@ -213,17 +283,52 @@ describe("learned join programs", () => {
       hasher
     });
 
-    expect(program.schema).toBe("scce.join_program.v2");
+    expect(program.schema).toBe("scce.join_program.v3");
     expect(program.evaluation.heldoutDocumentIds.length).toBeGreaterThan(0);
     expect(program.evaluation.observations).toBeGreaterThan(0);
     expect(program.evaluation.exactAccuracy).not.toBeNull();
     expect(program.evaluation.negativeLogLikelihood).not.toBeNull();
     expect(program.evaluation.expectedCalibrationError).not.toBeNull();
-    expect(program.evaluation.reconstructionAccuracy).toBe(program.evaluation.exactAccuracy);
+    expect(program.evaluation.reconstructionAccuracy).not.toBeNull();
     expect(program.evaluation.whitespaceInsertionErrors).toBeGreaterThanOrEqual(0);
     expect(program.evaluation.whitespaceDeletionErrors).toBeGreaterThanOrEqual(0);
     expect(program.evaluation.punctuationErrors).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(program.audit)).toContain("\"globalJoinFallback\":false");
+  });
+
+  it("keeps source-dependence families wholly inside fit, selection, or final evaluation", () => {
+    const hasher = createHasher();
+    const documents = Array.from({ length: 12 }, (_, index) => {
+      const family = `family.${Math.floor(index / 2)}`;
+      const documentId = `doc.family.${index}`;
+      const text = index % 2 ? "alpha beta. gamma delta." : "one two. three four.";
+      return {
+        documentId,
+        sourceFamilyId: family,
+        text,
+        lattice: buildSurfaceLattice({
+          documentId,
+          text,
+          evidenceIds: [`evidence.${documentId}`],
+          hasher
+        })
+      };
+    });
+    const program = compileJoinProgram({
+      populationId: "population.family-split",
+      documents,
+      hasher
+    });
+    const partitionByDocument = new Map<string, string>([
+      ...program.trainingDocumentIds.map(id => [id, "fit"] as const),
+      ...program.evaluation.selectionDocumentIds.map(id => [id, "selection"] as const),
+      ...program.evaluation.heldoutDocumentIds.map(id => [id, "evaluation"] as const)
+    ]);
+    for (const family of new Set(documents.map(document => document.sourceFamilyId))) {
+      expect(new Set(documents
+        .filter(document => document.sourceFamilyId === family)
+        .map(document => partitionByDocument.get(document.documentId))).size).toBe(1);
+    }
   });
 
   it("is deterministic under document order", () => {

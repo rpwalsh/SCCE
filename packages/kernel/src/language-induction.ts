@@ -302,6 +302,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
                 (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
               .map(({ doc, lattice }) => ({
                 documentId: doc.id,
+                sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
                 text: doc.text,
                 lattice
               })),

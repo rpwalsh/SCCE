@@ -7,10 +7,14 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createSemanticEntailmentEngine,
+  buildSurfaceLattice,
+  compileJoinProgram,
+  compileJoinProgramMixture,
   deriveTurnRequirementField,
   detectCannedAnswerSpeech,
   featureSet,
-  detailProfileIdFromSignal
+  detailProfileIdFromSignal,
+  toJsonValue
 } from "../index.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, JsonValue, LanguageProfile, SourceVersion } from "../types.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "../storage.js";
@@ -1217,7 +1221,14 @@ describe("Mouth runtime surface planning", () => {
       languageProfile: languageProfile(source),
       evidence: [],
       entailment,
-      languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "empty-semantic-answer", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }),
+      languageMemory: languageRuntime.hydrateFromImportedBrain({
+        importRunId: "semantic-answer-with-join-program",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [joinProgramPattern()],
+        semanticFrames: []
+      }),
       targetLanguage: "fixture-language",
       brainMarker: {
         activeBrainVersion: "scce2:wiki-fixture",
@@ -1932,9 +1943,52 @@ describe("Mouth runtime surface planning", () => {
       models: [ngramModel()],
       observations: [ngramObservation(source)],
       units: [languageUnit(source)],
-      patterns: [languagePattern()],
+      patterns: [languagePattern(), joinProgramPattern()],
       semanticFrames: [semanticFrame(evidence)]
     });
+  }
+
+  function joinProgramPattern(): LanguagePatternRecord {
+    const documentId = "doc:fixture-join-corpus";
+    const text = "alpha beta. gamma delta. one two, three four.";
+    const program = compileJoinProgram({
+      populationId: "population:fixture-join",
+      documents: [{
+        documentId,
+        sourceFamilyId: "source-family:fixture-join",
+        text,
+        lattice: buildSurfaceLattice({
+          documentId,
+          text,
+          evidenceIds: ["evidence:fixture-join"],
+          hasher
+        })
+      }],
+      hasher
+    });
+    const joinProgram = compileJoinProgramMixture({
+      populationModelId: "population-model:fixture-join",
+      components: [{
+        populationId: program.populationId,
+        weight: 1,
+        program
+      }],
+      hasher
+    });
+    return {
+      id: "pattern:fixture-join",
+      profileId: "profile:greenhouse",
+      patternKind: "syntax",
+      support: 1,
+      entropy: 0,
+      patternJson: toJsonValue({
+        sourceSystem: "scce2",
+        provenanceClass: "learned_program_prior",
+        joinProgram
+      }),
+      evidenceIds: [],
+      updatedAt: clock.now()
+    };
   }
 
   function starTrekMemory(source: SourceVersion, importRunId: string) {
@@ -1965,7 +2019,7 @@ describe("Mouth runtime surface planning", () => {
         patternJson: { sourceSystem: "scce2", provenanceClass: "learned_language_prior", counts: { [text]: 3 } },
         evidenceIds: [],
         updatedAt: clock.now()
-      }],
+      }, joinProgramPattern()],
       semanticFrames: []
     });
   }
