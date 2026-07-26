@@ -30,6 +30,10 @@ reference needed for the task.
 
 - [Brain-to-Mouth pipeline](BRAIN_TO_MOUTH_PIPELINE.md) — evidence, graph
   activation, selection, proof, semantic planning, realization, and trace.
+- [Brain compiler and storage](BRAIN_COMPILER_AND_STORAGE.md) — compiled
+  query-local indexes, required durable shard artifacts, routing, and honest limits.
+- [Energy and performance](ENERGY_AND_PERFORMANCE.md) — first-visible-frame,
+  long-running completion, retrieval complexity, and measurement contracts.
 - [Serious-version math contract](SERIOUS_VERSION_MATH_APPENDIX.md) — required
   optimization, calibration, and acceptance contract for serious-version work.
 - [Scoring and calibration](SCORING_AND_CALIBRATION.md) — meanings and limitations

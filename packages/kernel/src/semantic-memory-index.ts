@@ -2,6 +2,7 @@ import type { EvidenceId, EvidenceSpan, GraphNode, Hasher, JsonValue, NodeId, So
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
 import { evidenceRetrievalSurface } from "./evidence-retrieval-surface.js";
+import { compileCorpusIndex, type CorpusIndex } from "./retrieval.js";
 
 export type RetrievalIndexKind = "lexical" | "vector" | "graph" | "temporal" | "source" | "hybrid";
 
@@ -87,24 +88,96 @@ export interface HybridRetrievalResult {
 }
 
 export interface InMemoryIndexSlice {
+  schema: "scce.compiled_memory_slice.v1";
   postings: LexicalPosting[];
+  postingsByTerm: ReadonlyMap<string, readonly LexicalPosting[]>;
+  documentFrequency: ReadonlyMap<string, number>;
   vectors: VectorPosting[];
+  vectorsById: ReadonlyMap<string, VectorPosting>;
+  vectorIdsByFeature: ReadonlyMap<string, readonly string[]>;
   nodes: GraphNode[];
+  nodesByVectorId: ReadonlyMap<string, GraphNode>;
   evidence: EvidenceSpan[];
+  evidenceById: ReadonlyMap<string, EvidenceSpan>;
+  topAlphaVectorIds: readonly string[];
+  corpusIndex: CorpusIndex;
+  fingerprint: string;
 }
 
 export function createSemanticMemoryIndex(options: { hasher?: Hasher; dimensions?: number; residentSafetyBoundBytes?: number } = {}) {
   const hasher = options.hasher ?? createHasher();
   const dimensions = Math.max(16, Math.min(512, Math.floor(options.dimensions ?? 64)));
   const residentSafetyBoundBytes = Math.max(4 * 1024 * 1024, options.residentSafetyBoundBytes ?? 96 * 1024 * 1024);
+  const compiledSliceCache = new Map<string, InMemoryIndexSlice>();
   return {
     buildSlice(input: { evidence: EvidenceSpan[]; nodes?: GraphNode[] }): InMemoryIndexSlice {
+      const fingerprint = sliceFingerprint(input, hasher);
+      const cached = compiledSliceCache.get(fingerprint);
+      if (cached) {
+        compiledSliceCache.delete(fingerprint);
+        compiledSliceCache.set(fingerprint, cached);
+        return cached;
+      }
       const postings = input.evidence.flatMap(span => postingsForEvidence(span));
+      const postingsByTerm = groupBy(postings, posting => posting.term);
+      for (const termPostings of postingsByTerm.values()) {
+        termPostings.sort((left, right) =>
+          right.alpha - left.alpha
+          || String(left.evidenceId).localeCompare(String(right.evidenceId))
+        );
+      }
+      const documentFrequency = new Map(
+        [...postingsByTerm.entries()].map(([term, termPostings]) => [
+          term,
+          new Set(termPostings.map(posting => String(posting.evidenceId))).size
+        ])
+      );
       const vectors = [
         ...input.evidence.map(span => vectorForEvidence(span, hasher, dimensions)),
         ...(input.nodes ?? []).map(node => vectorForNode(node, hasher, dimensions))
       ];
-      return { postings, vectors, nodes: input.nodes ?? [], evidence: input.evidence };
+      const vectorsById = new Map(vectors.map(vector => [vector.id, vector]));
+      const vectorIdsByFeature = new Map<string, string[]>();
+      for (const vector of vectors) {
+        for (const feature of new Set(vector.features.slice(0, 1_024))) {
+          const bucket = vectorIdsByFeature.get(feature) ?? [];
+          bucket.push(vector.id);
+          vectorIdsByFeature.set(feature, bucket);
+        }
+      }
+      for (const ids of vectorIdsByFeature.values()) {
+        ids.sort((left, right) =>
+          (vectorsById.get(right)?.alpha ?? 0) - (vectorsById.get(left)?.alpha ?? 0)
+          || left.localeCompare(right)
+        );
+      }
+      const nodes = input.nodes ?? [];
+      const slice: InMemoryIndexSlice = {
+        schema: "scce.compiled_memory_slice.v1",
+        postings,
+        postingsByTerm,
+        documentFrequency,
+        vectors,
+        vectorsById,
+        vectorIdsByFeature,
+        nodes,
+        nodesByVectorId: new Map(nodes.map(node => [`vector:node:${String(node.id)}`, node])),
+        evidence: input.evidence,
+        evidenceById: new Map(input.evidence.map(span => [String(span.id), span])),
+        topAlphaVectorIds: [...vectors]
+          .sort((left, right) => right.alpha - left.alpha || left.id.localeCompare(right.id))
+          .slice(0, 256)
+          .map(vector => vector.id),
+        corpusIndex: compileCorpusIndex(input.evidence, hasher),
+        fingerprint
+      };
+      compiledSliceCache.set(fingerprint, slice);
+      while (compiledSliceCache.size > 32) {
+        const oldest = compiledSliceCache.keys().next().value;
+        if (typeof oldest !== "string") break;
+        compiledSliceCache.delete(oldest);
+      }
+      return slice;
     },
 
     plan(input: { query: RetrievalQuery; corpusRows?: { evidenceRows: number; nodeRows: number; edgeRows: number }; now?: number }): SemanticMemoryRetrievalPlan {
@@ -128,11 +201,29 @@ export function createSemanticMemoryIndex(options: { hasher?: Hasher; dimensions
       const plan = this.plan({ query: input.query, corpusRows: input.corpusRows });
       const queryFeatures = input.query.features ?? featureSet(input.query.text, 1024);
       const queryVector = input.query.vector ?? stableVector(queryFeatures, hasher, dimensions);
-      const lexicalScores = lexicalSearch(plan.terms, input.slice.postings, input.slice.evidence);
-      const vectorScores = vectorSearch(queryVector, input.slice.vectors);
-      const graphScores = graphPrior(input.query, input.slice.nodes);
-      const candidates = mergeCandidates({ lexicalScores, vectorScores, graphScores, evidence: input.slice.evidence, nodes: input.slice.nodes, query: input.query, queryFeatures, calibrationModels: input.calibrationModels, calibrationTaskClass: input.calibrationTaskClass });
       const limit = Math.max(1, Math.min(200, input.query.limit ?? 24));
+      const candidateIds = memoryCandidateIds({
+        query: input.query,
+        terms: plan.terms,
+        queryFeatures,
+        slice: input.slice,
+        maximum: Math.max(128, Math.min(1_024, limit * 12))
+      });
+      const lexicalScores = lexicalSearch(plan.terms, input.slice, candidateIds);
+      const vectorScores = vectorSearch(queryVector, input.slice, candidateIds);
+      const graphScores = graphPrior(input.query, input.slice, candidateIds);
+      const candidates = mergeCandidates({
+        lexicalScores,
+        vectorScores,
+        graphScores,
+        candidateIds,
+        slice: input.slice,
+        query: input.query,
+        queryFeatures,
+        limit,
+        calibrationModels: input.calibrationModels,
+        calibrationTaskClass: input.calibrationTaskClass
+      });
       const selected = candidates.slice(0, limit);
       return {
         plan,
@@ -140,6 +231,13 @@ export function createSemanticMemoryIndex(options: { hasher?: Hasher; dimensions
         selectedEvidenceIds: [...new Set(selected.map(candidate => candidate.evidenceId).filter((id): id is EvidenceId => Boolean(id)))],
         selectedNodeIds: [...new Set(selected.map(candidate => candidate.nodeId).filter((id): id is NodeId => Boolean(id)))],
         diagnostics: toJsonValue({
+          sliceSchema: input.slice.schema,
+          sliceFingerprint: input.slice.fingerprint,
+          indexedVectors: input.slice.vectors.length,
+          candidateVectors: candidateIds.size,
+          boundedCandidateRatio: input.slice.vectors.length
+            ? candidateIds.size / input.slice.vectors.length
+            : 0,
           candidateCount: candidates.length,
           selectedCount: selected.length,
           top: selected.slice(0, 8).map(candidate => ({ id: candidate.id, score: candidate.score, explanation: candidate.explanation }))
@@ -298,44 +396,54 @@ function preparedStatementsFor(query: RetrievalQuery, terms: string[], shards: M
   });
 }
 
-function lexicalSearch(terms: readonly string[], postings: readonly LexicalPosting[], evidence: readonly EvidenceSpan[]): Map<string, number> {
-  const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
-  const docFreq = new Map<string, Set<string>>();
-  for (const posting of postings) {
-    const bucket = docFreq.get(posting.term) ?? new Set<string>();
-    bucket.add(String(posting.evidenceId));
-    docFreq.set(posting.term, bucket);
-  }
-  const termSet = new Set(terms);
+function lexicalSearch(
+  terms: readonly string[],
+  slice: InMemoryIndexSlice,
+  candidateIds: ReadonlySet<string>
+): Map<string, number> {
   const scores = new Map<string, number>();
-  const totalDocs = Math.max(1, evidence.length);
-  for (const posting of postings) {
-    if (!termSet.has(posting.term)) continue;
-    const df = docFreq.get(posting.term)?.size ?? 1;
+  const totalDocs = Math.max(1, slice.evidence.length);
+  for (const term of terms) {
+    const df = slice.documentFrequency.get(term) ?? 1;
     const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5));
-    const span = evidenceById.get(String(posting.evidenceId));
-    const lengthNorm = span ? 1 / Math.sqrt(Math.max(1, symbolizeData(span.textPreview || span.text).length)) : 1;
-    const score = posting.tf * idf * (0.6 + 0.4 * posting.alpha) * (1 + lengthNorm);
-    const key = String(posting.evidenceId);
-    scores.set(key, (scores.get(key) ?? 0) + score);
+    for (const posting of slice.postingsByTerm.get(term) ?? []) {
+      const key = String(posting.evidenceId);
+      if (!candidateIds.has(key) && !candidateIds.has(`vector:evidence:${key}`)) continue;
+      const indexed = slice.corpusIndex.documentsById.get(key);
+      const lengthNorm = indexed ? 1 / Math.sqrt(Math.max(1, indexed.length)) : 1;
+      const score = posting.tf * idf * (0.6 + 0.4 * posting.alpha) * (1 + lengthNorm);
+      scores.set(key, (scores.get(key) ?? 0) + score);
+    }
   }
   return normalizeScoreMap(scores);
 }
 
-function vectorSearch(queryVector: readonly number[], vectors: readonly VectorPosting[]): Map<string, number> {
+function vectorSearch(
+  queryVector: readonly number[],
+  slice: InMemoryIndexSlice,
+  candidateIds: ReadonlySet<string>
+): Map<string, number> {
   const scores = new Map<string, number>();
-  for (const posting of vectors) {
+  for (const id of candidateIds) {
+    const posting = slice.vectorsById.get(normalizeVectorId(id, slice));
+    if (!posting) continue;
     const score = clamp01((cosineSimilarity(queryVector, posting.vector) + 1) / 2) * (0.55 + 0.45 * posting.alpha);
     scores.set(posting.id, score);
   }
   return normalizeScoreMap(scores);
 }
 
-function graphPrior(query: RetrievalQuery, nodes: readonly GraphNode[]): Map<string, number> {
+function graphPrior(
+  query: RetrievalQuery,
+  slice: InMemoryIndexSlice,
+  candidateIds: ReadonlySet<string>
+): Map<string, number> {
   const scores = new Map<string, number>();
   const queryNodeIds = new Set((query.nodeIds ?? []).map(String));
   const queryEvidenceIds = new Set((query.evidenceIds ?? []).map(String));
-  for (const node of nodes) {
+  for (const id of candidateIds) {
+    const node = slice.nodesByVectorId.get(id);
+    if (!node) continue;
     const direct = queryNodeIds.has(String(node.id)) ? 1 : 0;
     const evidence = node.evidenceIds.some(id => queryEvidenceIds.has(String(id))) ? 0.8 : 0;
     const feature = query.features ? weightedJaccard(query.features, node.features) : 0;
@@ -348,24 +456,31 @@ function mergeCandidates(input: {
   lexicalScores: Map<string, number>;
   vectorScores: Map<string, number>;
   graphScores: Map<string, number>;
-  evidence: readonly EvidenceSpan[];
-  nodes: readonly GraphNode[];
+  candidateIds: ReadonlySet<string>;
+  slice: InMemoryIndexSlice;
   query: RetrievalQuery;
   queryFeatures: string[];
+  limit: number;
   calibrationModels?: CalibrationModelSet;
   calibrationTaskClass?: string;
 }): RetrievalCandidate[] {
-  const evidenceById = new Map(input.evidence.map(span => [String(span.id), span]));
-  const nodeByVectorId = new Map(input.nodes.map(node => [`vector:node:${String(node.id)}`, node]));
-  const keys = new Set<string>([...input.lexicalScores.keys(), ...input.vectorScores.keys(), ...input.graphScores.keys()]);
+  const keys = new Set<string>([
+    ...input.candidateIds,
+    ...input.lexicalScores.keys(),
+    ...input.vectorScores.keys(),
+    ...input.graphScores.keys()
+  ]);
   const alphaFloor = input.query.alphaFloor ?? 0;
   const candidates: RetrievalCandidate[] = [];
   for (const key of keys) {
     const lexical = input.lexicalScores.get(key) ?? 0;
-    const vector = input.vectorScores.get(key) ?? 0;
+    const vectorId = normalizeVectorId(key, input.slice);
+    const vector = input.vectorScores.get(vectorId) ?? 0;
     const graph = input.graphScores.get(key) ?? 0;
-    const evidence = evidenceById.get(key) ?? (key.startsWith("vector:evidence:") ? evidenceById.get(key.slice("vector:evidence:".length)) : undefined);
-    const node = nodeByVectorId.get(key);
+    const evidenceId = key.startsWith("vector:evidence:") ? key.slice("vector:evidence:".length) : key;
+    const evidence = input.slice.evidenceById.get(evidenceId);
+    const node = input.slice.nodesByVectorId.get(vectorId);
+    if (!evidence && !node) continue;
     const alpha = evidence?.alpha ?? node?.alpha ?? Math.max(lexical, vector, graph);
     if (alpha < alphaFloor) continue;
     const temporal = temporalFit(input.query, evidence);
@@ -379,8 +494,8 @@ function mergeCandidates(input: {
       inputs: ["semantic-memory-index", key]
     });
     const score = calibrated.value;
-    candidates.push({
-      id: key,
+    insertRetrievalCandidate(candidates, {
+      id: evidence ? String(evidence.id) : vectorId,
       evidenceId: evidence?.id,
       nodeId: node?.id,
       sourceVersionId: evidence?.sourceVersionId,
@@ -397,9 +512,110 @@ function mergeCandidates(input: {
         ...(calibrated.calibrated ? [`calibrated ${score.toFixed(3)}`] : [])
       ],
       payload: evidence ? toJsonValue({ preview: evidence.textPreview, status: evidence.status, sourceVersionId: evidence.sourceVersionId }) : node ? toJsonValue({ representation: node.representation, metadata: node.metadata }) : {}
-    });
+    }, input.limit);
   }
-  return candidates.sort((a, b) => b.score - a.score || b.alpha - a.alpha || a.id.localeCompare(b.id));
+  return candidates;
+}
+
+function memoryCandidateIds(input: {
+  query: RetrievalQuery;
+  terms: readonly string[];
+  queryFeatures: readonly string[];
+  slice: InMemoryIndexSlice;
+  maximum: number;
+}): Set<string> {
+  const candidates = new Set<string>();
+  const add = (id: string) => {
+    const canonical = id.startsWith("vector:evidence:")
+      ? id.slice("vector:evidence:".length)
+      : id;
+    if (candidates.size < input.maximum) candidates.add(canonical);
+  };
+  for (const evidenceId of input.query.evidenceIds ?? []) add(String(evidenceId));
+  for (const nodeId of input.query.nodeIds ?? []) add(`vector:node:${String(nodeId)}`);
+  for (const term of input.terms) {
+    for (const posting of input.slice.postingsByTerm.get(term) ?? []) {
+      add(String(posting.evidenceId));
+      if (candidates.size >= input.maximum) return candidates;
+    }
+  }
+  for (const feature of input.queryFeatures) {
+    for (const id of input.slice.vectorIdsByFeature.get(feature) ?? []) {
+      add(id);
+      if (candidates.size >= input.maximum) return candidates;
+    }
+  }
+  const floor = Math.min(input.maximum, 64);
+  for (const id of input.slice.topAlphaVectorIds) {
+    if (candidates.size >= floor) break;
+    add(id);
+  }
+  return candidates;
+}
+
+function normalizeVectorId(id: string, slice: InMemoryIndexSlice): string {
+  if (slice.vectorsById.has(id)) return id;
+  const evidenceVectorId = `vector:evidence:${id}`;
+  return slice.vectorsById.has(evidenceVectorId) ? evidenceVectorId : id;
+}
+
+function insertRetrievalCandidate(
+  candidates: RetrievalCandidate[],
+  candidate: RetrievalCandidate,
+  limit: number
+): void {
+  let low = 0;
+  let high = candidates.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const current = candidates[middle]!;
+    if (candidate.score > current.score
+      || (candidate.score === current.score && (
+        candidate.alpha > current.alpha
+        || (candidate.alpha === current.alpha && candidate.id.localeCompare(current.id) < 0)
+      ))) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  candidates.splice(low, 0, candidate);
+  if (candidates.length > limit) candidates.pop();
+}
+
+function sliceFingerprint(
+  input: { evidence: readonly EvidenceSpan[]; nodes?: readonly GraphNode[] },
+  hasher: Hasher
+): string {
+  return hasher.digestHex(JSON.stringify({
+    evidence: input.evidence.map(span => [
+      String(span.id),
+      String(span.sourceVersionId),
+      String(span.contentHash),
+      span.status,
+      span.alpha
+    ]),
+    nodes: (input.nodes ?? []).map(node => [
+      String(node.id),
+      node.typeId,
+      node.alpha,
+      node.updatedAt
+    ])
+  }));
+}
+
+function groupBy<T>(
+  values: readonly T[],
+  keyFor: (value: T) => string
+): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const value of values) {
+    const key = keyFor(value);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(value);
+    grouped.set(key, bucket);
+  }
+  return grouped;
 }
 
 function temporalFit(query: RetrievalQuery, evidence: EvidenceSpan | undefined): number {

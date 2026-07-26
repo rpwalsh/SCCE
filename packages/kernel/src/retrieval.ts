@@ -6,20 +6,27 @@ import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, typ
 import { evidenceRetrievalSurface } from "./evidence-retrieval-surface.js";
 
 export interface CorpusIndex {
+  schema: "scce.compiled_corpus_index.v1";
   documents: IndexedDocument[];
+  documentsById: ReadonlyMap<string, IndexedDocument>;
+  invertedIndex: ReadonlyMap<string, readonly string[]>;
   docFreq: Record<string, number>;
   avgLength: number;
   totalDocuments: number;
-  featureSpace: string[];
+  topAlphaDocumentIds: string[];
+  fingerprint: string;
 }
 
 export interface IndexedDocument {
   id: string;
   evidenceId: string;
   sourceVersionId: string;
+  contentHash: string;
   length: number;
   symbols: string[];
+  termFrequency: ReadonlyMap<string, number>;
   features: string[];
+  vector: number[];
   alpha: number;
   status: string;
   preview: string;
@@ -51,16 +58,25 @@ export interface RetrievalPlan {
   audit: JsonValue;
 }
 
-function buildCorpusIndex(evidence: readonly EvidenceSpan[]): CorpusIndex {
+const CORPUS_INDEX_CACHE_LIMIT = 32;
+const corpusIndexCache = new Map<string, CorpusIndex>();
+
+export function compileCorpusIndex(evidence: readonly EvidenceSpan[], hasher: Hasher): CorpusIndex {
   const documents = evidence.map(span => {
     const symbols = symbolizeData(evidenceRetrievalSurface(span));
+    const termFrequency = new Map<string, number>();
+    for (const symbol of symbols) termFrequency.set(symbol, (termFrequency.get(symbol) ?? 0) + 1);
+    const features = span.features.slice(0, 256);
     return {
       id: String(span.id),
       evidenceId: String(span.id),
       sourceVersionId: String(span.sourceVersionId),
+      contentHash: String(span.contentHash),
       length: symbols.length,
       symbols,
-      features: span.features,
+      termFrequency,
+      features,
+      vector: stableVector(features, hasher, 96),
       alpha: span.alpha,
       status: span.status,
       preview: span.textPreview,
@@ -72,29 +88,71 @@ function buildCorpusIndex(evidence: readonly EvidenceSpan[]): CorpusIndex {
     };
   });
   const docFreq = new Map<string, number>();
+  const inverted = new Map<string, string[]>();
   for (const doc of documents) {
-    for (const symbol of new Set(doc.symbols)) docFreq.set(symbol, (docFreq.get(symbol) ?? 0) + 1);
+    for (const symbol of doc.termFrequency.keys()) {
+      docFreq.set(symbol, (docFreq.get(symbol) ?? 0) + 1);
+      const bucket = inverted.get(symbol) ?? [];
+      bucket.push(doc.evidenceId);
+      inverted.set(symbol, bucket);
+    }
   }
-  const featureSpace = [...new Set(documents.flatMap(doc => doc.features.slice(0, 256)))].sort();
+  const documentsById = new Map(documents.map(document => [document.evidenceId, document]));
+  for (const bucket of inverted.values()) {
+    bucket.sort((left, right) => {
+      const leftAlpha = documentsById.get(left)?.alpha ?? 0;
+      const rightAlpha = documentsById.get(right)?.alpha ?? 0;
+      return rightAlpha - leftAlpha || left.localeCompare(right);
+    });
+  }
+  const topAlphaDocumentIds = [...documents]
+    .sort((left, right) => right.alpha - left.alpha || left.evidenceId.localeCompare(right.evidenceId))
+    .slice(0, 256)
+    .map(document => document.evidenceId);
+  const fingerprint = hasher.digestHex(JSON.stringify(
+    documents.map(document => [
+      document.evidenceId,
+      document.sourceVersionId,
+      document.contentHash,
+      document.status,
+      document.alpha
+    ])
+  ));
   return {
+    schema: "scce.compiled_corpus_index.v1",
     documents,
+    documentsById,
+    invertedIndex: inverted,
     docFreq: Object.fromEntries(docFreq),
     avgLength: mean(documents.map(doc => doc.length)),
     totalDocuments: documents.length,
-    featureSpace
+    topAlphaDocumentIds,
+    fingerprint
   };
 }
 
-export function hybridRecall(input: { query: string; evidence: readonly EvidenceSpan[]; graph?: GraphSlice; hasher: Hasher; limit?: number; calibrationModels?: CalibrationModelSet; calibrationTaskClass?: string }): RetrievalPlan {
-  const index = buildCorpusIndex(input.evidence);
+export function hybridRecall(input: { query: string; evidence?: readonly EvidenceSpan[]; index?: CorpusIndex; graph?: GraphSlice; hasher: Hasher; limit?: number; calibrationModels?: CalibrationModelSet; calibrationTaskClass?: string }): RetrievalPlan {
+  const compiled = input.index
+    ? { index: input.index, cacheHit: false, precompiled: true }
+    : cachedCorpusIndex(input.evidence ?? [], input.hasher);
+  const index = compiled.index;
   const querySymbols = symbolizeData(input.query);
   const queryFeatures = featureSet(input.query, 512);
   const graphSignals = graphEvidenceSignals(input.graph);
   const queryVector = stableVector(queryFeatures, input.hasher, 96);
-  const recall = index.documents.map(doc => {
+  const limit = Math.max(1, Math.min(200, input.limit ?? 80));
+  const candidateIds = recallCandidateIds({
+    index,
+    querySymbols,
+    graphSignals,
+    maximum: Math.max(128, Math.min(1_024, limit * 8))
+  });
+  const recall: HybridRecallResult[] = [];
+  for (const evidenceId of candidateIds) {
+    const doc = index.documentsById.get(evidenceId);
+    if (!doc) continue;
     const bm25Score = bm25(querySymbols, doc, index);
-    const docVector = stableVector(doc.features, input.hasher, 96);
-    const vectorScore = cosine(queryVector, docVector);
+    const vectorScore = cosine(queryVector, doc.vector);
     const graphSignal = graphSignals.get(doc.evidenceId);
     const graphScore = graphSignal?.mass ?? 0;
     const alphaScore = doc.alpha * (doc.status === "promoted" ? 1 : 0.45);
@@ -149,7 +207,7 @@ export function hybridRecall(input: { query: string; evidence: readonly Evidence
         provenance: ["retrieval.ts:classifyEvidenceRole"]
       })
     ];
-    return {
+    insertRecall(recall, {
       evidenceId: doc.evidenceId,
       score,
       bm25: bm25Score,
@@ -159,11 +217,31 @@ export function hybridRecall(input: { query: string; evidence: readonly Evidence
       evidenceRole,
       reason: `bm25=${bm25Score.toFixed(3)} vector=${vectorScore.toFixed(3)} graph=${graphScore.toFixed(3)} alpha=${alphaScore.toFixed(3)} raw=${rawScore.toFixed(3)} calibrated=${calibrated.calibrated ? score.toFixed(3) : "none"} role=${evidenceRole}`,
       scoreTrace
-    };
-  }).sort((a, b) => b.score - a.score).slice(0, input.limit ?? 80);
-  const expansionFeatures = expandFeatures(queryFeatures, recall, input.evidence);
+    }, limit);
+  }
+  const expansionFeatures = expandFeatures(queryFeatures, recall, index);
   const graphSeeds = recall.filter(item => item.graph > 0 || item.alpha > 0.4).slice(0, 32).map(item => item.evidenceId);
-  return { query: input.query, queryFeatures, recall, expansionFeatures, graphSeeds, audit: toJsonValue({ recall: recall.slice(0, 20), expansionFeatures: expansionFeatures.slice(0, 64), graphSeeds }) };
+  return {
+    query: input.query,
+    queryFeatures,
+    recall,
+    expansionFeatures,
+    graphSeeds,
+    audit: toJsonValue({
+      indexSchema: index.schema,
+      indexFingerprint: index.fingerprint,
+      indexCacheHit: compiled.cacheHit,
+      precompiledIndex: compiled.precompiled ?? false,
+      indexedDocuments: index.totalDocuments,
+      candidateDocuments: candidateIds.length,
+      boundedCandidateRatio: index.totalDocuments
+        ? candidateIds.length / index.totalDocuments
+        : 0,
+      recall: recall.slice(0, 20),
+      expansionFeatures: expansionFeatures.slice(0, 64),
+      graphSeeds
+    })
+  };
 }
 
 function queryExpansionFromKneserNey(input: { query: string; profile: JsonValue; limit?: number }): string[] {
@@ -179,11 +257,9 @@ function queryExpansionFromKneserNey(input: { query: string; profile: JsonValue;
 function bm25(querySymbols: readonly string[], doc: IndexedDocument, index: CorpusIndex): number {
   const k1 = 1.2;
   const b = 0.75;
-  const tf = new Map<string, number>();
-  for (const symbol of doc.symbols) tf.set(symbol, (tf.get(symbol) ?? 0) + 1);
   let score = 0;
   for (const symbol of querySymbols) {
-    const f = tf.get(symbol) ?? 0;
+    const f = doc.termFrequency.get(symbol) ?? 0;
     if (!f) continue;
     const df = index.docFreq[symbol] ?? 0;
     const idf = Math.log(1 + (index.totalDocuments - df + 0.5) / (df + 0.5));
@@ -225,16 +301,94 @@ function graphEvidenceSignals(graph: GraphSlice | undefined): Map<string, GraphE
   return out;
 }
 
-function expandFeatures(queryFeatures: string[], recall: HybridRecallResult[], evidence: readonly EvidenceSpan[]): string[] {
-  const byEvidence = new Map(evidence.map(span => [String(span.id), span]));
+function expandFeatures(queryFeatures: string[], recall: HybridRecallResult[], index: CorpusIndex): string[] {
   const counts = new Map<string, number>();
   for (const item of recall.slice(0, 12)) {
-    const span = byEvidence.get(item.evidenceId);
-    if (!span) continue;
-    for (const feature of span.features.slice(0, 128)) counts.set(feature, (counts.get(feature) ?? 0) + item.score);
+    const document = index.documentsById.get(item.evidenceId);
+    if (!document) continue;
+    for (const feature of document.features.slice(0, 128)) counts.set(feature, (counts.get(feature) ?? 0) + item.score);
   }
   const query = new Set(queryFeatures);
   return [...counts.entries()].filter(([feature]) => !query.has(feature)).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 128).map(([feature]) => feature);
+}
+
+function cachedCorpusIndex(
+  evidence: readonly EvidenceSpan[],
+  hasher: Hasher
+): { index: CorpusIndex; cacheHit: boolean; precompiled?: boolean } {
+  const key = hasher.digestHex(JSON.stringify(evidence.map(span => [
+    String(span.id),
+    String(span.sourceVersionId),
+    String(span.contentHash),
+    span.status,
+    span.alpha
+  ])));
+  const cached = corpusIndexCache.get(key);
+  if (cached) {
+    corpusIndexCache.delete(key);
+    corpusIndexCache.set(key, cached);
+    return { index: cached, cacheHit: true };
+  }
+  const index = compileCorpusIndex(evidence, hasher);
+  corpusIndexCache.set(key, index);
+  while (corpusIndexCache.size > CORPUS_INDEX_CACHE_LIMIT) {
+    const oldest = corpusIndexCache.keys().next().value;
+    if (typeof oldest !== "string") break;
+    corpusIndexCache.delete(oldest);
+  }
+  return { index, cacheHit: false };
+}
+
+function recallCandidateIds(input: {
+  index: CorpusIndex;
+  querySymbols: readonly string[];
+  graphSignals: ReadonlyMap<string, GraphEvidenceSignal>;
+  maximum: number;
+}): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (evidenceId: string) => {
+    if (seen.has(evidenceId) || !input.index.documentsById.has(evidenceId)) return;
+    seen.add(evidenceId);
+    out.push(evidenceId);
+  };
+  for (const symbol of new Set(input.querySymbols)) {
+    for (const evidenceId of input.index.invertedIndex.get(symbol) ?? []) {
+      add(evidenceId);
+      if (out.length >= input.maximum) return out;
+    }
+  }
+  for (const evidenceId of input.graphSignals.keys()) {
+    add(evidenceId);
+    if (out.length >= input.maximum) return out;
+  }
+  const minimumCandidateFloor = Math.min(input.maximum, 64);
+  for (const evidenceId of input.index.topAlphaDocumentIds) {
+    if (out.length >= minimumCandidateFloor) break;
+    add(evidenceId);
+  }
+  return out;
+}
+
+function insertRecall(
+  recalls: HybridRecallResult[],
+  candidate: HybridRecallResult,
+  limit: number
+): void {
+  let low = 0;
+  let high = recalls.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const current = recalls[middle]!;
+    if (candidate.score > current.score
+      || (candidate.score === current.score && candidate.evidenceId.localeCompare(current.evidenceId) < 0)) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  recalls.splice(low, 0, candidate);
+  if (recalls.length > limit) recalls.pop();
 }
 
 function cosine(a: readonly number[], b: readonly number[]): number {
