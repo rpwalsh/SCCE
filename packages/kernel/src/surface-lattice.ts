@@ -62,6 +62,8 @@ export interface SurfaceLatticeUnit {
   id: string;
   occurrenceId: string;
   normalizedFormId: string;
+  unitClassId: string;
+  proposalSources: SurfaceLatticeUnitKind[];
   kind: SurfaceLatticeUnitKind;
   overlapClass: SurfaceLatticeOverlapClass;
   surface: string;
@@ -135,6 +137,10 @@ interface CandidateUnit {
   codePointEnd: number;
 }
 
+interface QuotientedCandidateUnit extends CandidateUnit {
+  proposalSources: SurfaceLatticeUnitKind[];
+}
+
 interface SurfaceCoordinateIndex {
   utf16ToByte: number[];
   utf16ToCodePoint: number[];
@@ -168,8 +174,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
   const normalizedCounts = new Map<string, number>();
 
-  const baseCandidates = graphemeCandidates(text, coordinates);
-  const higherCandidates = [
+  const rawBaseCandidates = graphemeCandidates(text, coordinates);
+  const rawHigherCandidates = [
     ...surfaceSegmentCandidates(model.surfaceSegments),
     ...lexicalCandidates(model.lexicalSegments),
     ...phraseCandidates(text, model.lexicalSegments),
@@ -184,7 +190,14 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     ...sentenceLikeCandidates(text, codePointIndexByUtf16),
     ...repeatedSequenceCandidates(text, model.lexicalSegments)
   ];
-  const candidates = [...baseCandidates, ...higherCandidates];
+  const candidates = quotientCandidateUnits(
+    [...rawBaseCandidates, ...rawHigherCandidates],
+    coordinates
+  );
+  const baseCandidates = candidates.filter(candidate =>
+    candidate.proposalSources.includes("grapheme"));
+  const higherCandidates = candidates.filter(candidate =>
+    !candidate.proposalSources.includes("grapheme"));
 
   for (const candidate of candidates) {
     const key = recurrenceKey(candidate, normalizationContract);
@@ -246,13 +259,17 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       normalizationContract,
       hasher
     });
+    const unitClassId = `surface_unit_class.${hasher.digestHex(JSON.stringify([
+      normalizationContract.id,
+      normalizedFormIdentity.id,
+      dominantScriptId(candidate.surface)
+    ])).slice(0, 40)}`;
     units.push({
-      id: `surface_arc.${hasher.digestHex(JSON.stringify([
-        occurrenceIdentity.id,
-        candidate.kind
-      ])).slice(0, 40)}`,
+      id: `surface_arc.${hasher.digestHex(occurrenceIdentity.id).slice(0, 40)}`,
       occurrenceId: occurrenceIdentity.id,
       normalizedFormId: normalizedFormIdentity.id,
+      unitClassId,
+      proposalSources: candidate.proposalSources,
       kind: candidate.kind,
       overlapClass: overlapClassFor(candidate.kind),
       surface: candidate.surface,
@@ -307,7 +324,10 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       inputUtf16Length: text.length,
       inputBytes: Buffer.byteLength(text, "utf8"),
       inputCodePoints: [...text].length,
-      inputGraphemes: baseCandidates.length,
+      inputGraphemes: rawBaseCandidates.length,
+      detectorProposals: rawBaseCandidates.length + rawHigherCandidates.length,
+      canonicalCandidateUnits: candidates.length,
+      duplicateProposalsCollapsed: rawBaseCandidates.length + rawHigherCandidates.length - candidates.length,
       candidateUnits: candidates.length,
       persistedUnits: units.length,
       persistedEdges: edges.length,
@@ -400,6 +420,14 @@ export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): S
   const graphemes = lattice.units
     .filter(unit => unit.kind === "grapheme")
     .sort(comparePersistedUnits);
+  const occurrenceIds = new Set<string>();
+  for (const unit of lattice.units) {
+    if (occurrenceIds.has(unit.occurrenceId)) {
+      issues.push(`duplicate_occurrence:${unit.occurrenceId}`);
+    }
+    occurrenceIds.add(unit.occurrenceId);
+    if (!unit.proposalSources.length) issues.push(`missing_proposal_source:${unit.id}`);
+  }
   let byteCursor = 0;
   let utf16Cursor = 0;
   let codePointCursor = 0;
@@ -425,6 +453,9 @@ export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): S
     || codePointCursor !== [...text].length
     || graphemeCursor !== graphemes.length) {
     issues.push("base_partition_incomplete");
+  }
+  if (graphemes.map(unit => unit.surface).join("") !== text) {
+    issues.push("base_partition_reconstruction");
   }
   if (lattice.segmentationForest.schema !== SEGMENTATION_FOREST_SCHEMA
     || lattice.segmentationForest.latticeId !== lattice.id
@@ -874,9 +905,11 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
   const edges: SurfaceLatticeEdge[] = [];
   const byKind = new Map<SurfaceLatticeUnitKind, SurfaceLatticeUnit[]>();
   for (const unit of units) {
-    const bucket = byKind.get(unit.kind) ?? [];
-    bucket.push(unit);
-    byKind.set(unit.kind, bucket);
+    for (const kind of unit.proposalSources) {
+      const bucket = byKind.get(kind) ?? [];
+      bucket.push(unit);
+      byKind.set(kind, bucket);
+    }
   }
   const graphemes = [...(byKind.get("grapheme") ?? [])].sort(comparePersistedUnits);
   for (let index = 0; index < graphemes.length - 1; index += 1) {
@@ -902,16 +935,17 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
       pushEdge(edges, hasher, sorted[i]!.id, sorted[i + 1]!.id, "sequence", kind === "lexical" ? 0.92 : 0.72);
     }
   }
-  const lexical = units.filter(unit => unit.kind === "lexical");
+  const lexical = units.filter(unit => unit.proposalSources.includes("lexical"));
   const containers = units.filter(unit =>
-    unit.kind === "line"
-    || unit.kind === "sentence_like"
-    || unit.kind === "paragraph"
-    || unit.kind === "repeated_sequence"
-    || unit.kind === "phrase_candidate"
-    || unit.kind === "quote"
-    || unit.kind === "markup_structure"
-    || unit.kind === "table_cell"
+    unit.proposalSources.some(kind =>
+      kind === "line"
+      || kind === "sentence_like"
+      || kind === "paragraph"
+      || kind === "repeated_sequence"
+      || kind === "phrase_candidate"
+      || kind === "quote"
+      || kind === "markup_structure"
+      || kind === "table_cell")
   );
   for (const container of containers) {
     for (const unit of lexical) {
@@ -922,10 +956,10 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
     }
   }
   const recurring = new Map<string, SurfaceLatticeUnit[]>();
-  for (const unit of units.filter(item => item.recurrenceCount > 1 && item.kind !== "grapheme")) {
-    const bucket = recurring.get(`${unit.kind}\u0001${unit.normalized}`) ?? [];
+  for (const unit of units.filter(item => item.recurrenceCount > 1 && !item.proposalSources.includes("grapheme"))) {
+    const bucket = recurring.get(unit.unitClassId) ?? [];
     bucket.push(unit);
-    recurring.set(`${unit.kind}\u0001${unit.normalized}`, bucket);
+    recurring.set(unit.unitClassId, bucket);
   }
   for (const items of recurring.values()) {
     const sorted = [...items].sort((a, b) => a.codePointStart - b.codePointStart);
@@ -933,7 +967,7 @@ function latticeEdges(units: readonly SurfaceLatticeUnit[], hasher: Hasher, maxE
       pushEdge(edges, hasher, sorted[i]!.id, sorted[i + 1]!.id, "recurs_with", clamp01(Math.log1p(sorted.length) / 6));
     }
   }
-  return edges;
+  return [...new Map(edges.map(edge => [edge.id, edge])).values()];
 }
 
 function pushEdge(
@@ -953,11 +987,45 @@ function pushEdge(
   });
 }
 
+function quotientCandidateUnits(
+  candidates: readonly CandidateUnit[],
+  coordinates: SurfaceCoordinateIndex
+): QuotientedCandidateUnit[] {
+  const groups = new Map<string, CandidateUnit[]>();
+  for (const candidate of candidates) {
+    if (!candidate.surface) continue;
+    const byteStart = coordinates.utf16ToByte[candidate.utf16Start] ?? 0;
+    const byteEnd = coordinates.utf16ToByte[candidate.utf16End] ?? byteStart;
+    const key = `${byteStart}\u001f${byteEnd}\u001f${candidate.surface}`;
+    groups.set(key, [...(groups.get(key) ?? []), candidate]);
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, proposals]) => {
+      const ordered = [...proposals].sort(compareCandidateUnits);
+      const representative = ordered.find(candidate => candidate.kind === "grapheme")
+        ?? [...ordered].sort((left, right) =>
+          proposalPriority(left.kind) - proposalPriority(right.kind)
+          || compareCandidateUnits(left, right))[0]!;
+      return {
+        ...representative,
+        proposalSources: [...new Set(proposals.map(candidate => candidate.kind))].sort()
+      };
+    });
+}
+
+function proposalPriority(kind: SurfaceLatticeUnitKind): number {
+  if (["date", "numeric", "quote", "code_symbol", "markup_structure", "table_cell"].includes(kind)) return 0;
+  if (["repeated_sequence", "phrase_candidate", "sentence_like", "paragraph", "line"].includes(kind)) return 1;
+  if (kind === "lexical") return 2;
+  return 3;
+}
+
 function recurrenceKey(
   candidate: CandidateUnit,
   normalizationContract: NormalizationContract
 ): string {
-  return `${candidate.kind}\u0001${normalizeSurface(candidate.surface, normalizationContract)}`;
+  return normalizeSurface(candidate.surface, normalizationContract);
 }
 
 function normalizeSurface(

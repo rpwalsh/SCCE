@@ -21,9 +21,9 @@ describe("universal surface lattice", () => {
 
     expect(lattice.schema).toBe("scce.surface_lattice.v3");
     expect(lattice.units.some(unit => unit.kind === "grapheme" && unit.surface === "猫")).toBe(true);
-    expect(lattice.units.some(unit => unit.kind === "lexical" && unit.surface.includes("dog"))).toBe(true);
-    expect(lattice.units.some(unit => unit.kind === "numeric" && unit.surface === "7")).toBe(true);
-    expect(lattice.units.some(unit => unit.kind === "code_symbol" && unit.surface === "code_symbol42")).toBe(true);
+    expect(lattice.units.some(unit => unit.proposalSources.includes("lexical") && unit.surface.includes("dog"))).toBe(true);
+    expect(lattice.units.some(unit => unit.proposalSources.includes("numeric") && unit.surface === "7")).toBe(true);
+    expect(lattice.units.some(unit => unit.proposalSources.includes("code_symbol") && unit.surface === "code_symbol42")).toBe(true);
     for (const unit of lattice.units) {
       expect(text.slice(unit.utf16Start, unit.utf16End)).toBe(unit.surface);
       expect(Buffer.from(text, "utf8").subarray(unit.byteStart, unit.byteEnd).toString("utf8")).toBe(unit.surface);
@@ -106,5 +106,41 @@ describe("universal surface lattice", () => {
     expect(lattice.segmentationForest.paths.length).toBeGreaterThan(1);
     expect(lattice.segmentationForest.retainedPosteriorMass).toBeGreaterThan(0);
     expect(lattice.segmentationForest.retainedPosteriorMass).toBeLessThanOrEqual(1);
+  });
+
+  it("quotients duplicate detector proposals without multiplying occurrence mass", () => {
+    const lattice = buildSurfaceLattice({
+      documentId: "doc.duplicate-proposals",
+      text: "7",
+      evidenceIds: ["evidence.duplicate-proposals"],
+      hasher
+    });
+    const exact = lattice.units.filter(unit =>
+      unit.byteStart === 0 && unit.byteEnd === 1 && unit.surface === "7");
+
+    expect(exact).toHaveLength(1);
+    expect(exact[0]!.proposalSources).toEqual(expect.arrayContaining([
+      "grapheme",
+      "lexical",
+      "numeric"
+    ]));
+    expect(JSON.stringify(lattice.audit)).toContain("duplicateProposalsCollapsed");
+  });
+
+  it("separates occurrence identity from shared unit-class identity", () => {
+    const lattice = buildSurfaceLattice({
+      documentId: "doc.repeated-class",
+      text: "cat cat",
+      evidenceIds: ["evidence.repeated-class"],
+      hasher
+    });
+    const cats = lattice.units
+      .filter(unit => unit.proposalSources.includes("lexical") && unit.normalized === "cat")
+      .sort((left, right) => left.byteStart - right.byteStart);
+
+    expect(cats).toHaveLength(2);
+    expect(cats[0]!.occurrenceId).not.toBe(cats[1]!.occurrenceId);
+    expect(cats[0]!.unitClassId).toBe(cats[1]!.unitClassId);
+    expect(cats[0]!.byteStart).not.toBe(cats[1]!.byteStart);
   });
 });

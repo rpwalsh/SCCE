@@ -88,6 +88,8 @@ validation so credentials need not be committed.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   executable normalization, explicit identity-field allowlists, and independent
   source/observation/event/validity coordinates.
+- `surface-lattice.ts`: exact-occurrence quotient over detector proposals, separate
+  occurrence/form/unit-class identity, and lossless base-partition conservation.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
