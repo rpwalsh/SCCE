@@ -75,6 +75,7 @@ import {
   attachLocalEvidenceAnswerConstruct,
   createArithmeticEntailment,
   evidenceBatchFromSlice,
+  bindSelectedEvidenceToEntailment,
   evidenceForRequest,
   evidenceWithGraphPreviewWindows,
   graphFilteredToEvidence,
@@ -981,14 +982,24 @@ export function createProductionTurnRuntime(options: {
         ? undefined
         : selectedPoolLocalEvidenceAnswer;
       const longPathBasisAnswer = requestedAuthority === "creative" ? undefined : localEvidenceAnswer;
-      const answerEntailmentSeed = longPathBasisAnswer
+      // bindSelectedEvidenceToEntailment binds longPathBasisAnswer's evidence
+      // into the entailment (evidenceIds, proof graph nodes/edges) and, for
+      // a temporal-counterexample basis specifically, promotes force to
+      // "inferred" and truthState to "truth.source_bound_only" -- without
+      // it, a temporal-counterexample answer keeps whatever truthState the
+      // base entailment happened to have (typically
+      // "truth.insufficient_evidence", since the base entailment doesn't
+      // know about the local-evidence-derived counterexample). Preserve the
+      // existing "local-evidence-certification-boundary" marker mouth.ts
+      // checks for alongside the boundaries bindSelectedEvidenceToEntailment
+      // already adds.
+      const boundLongPathEntailment = longPathBasisAnswer
+        ? bindSelectedEvidenceToEntailment(entailmentResult, longPathBasisAnswer.evidence, longPathBasisAnswer.audit)
+        : undefined;
+      const answerEntailmentSeed = boundLongPathEntailment
         ? {
-          ...entailmentResult,
-          boundaries: [...new Set([
-            ...entailmentResult.boundaries,
-            "selected-evidence-bound",
-            "local-evidence-certification-boundary"
-          ])]
+          ...boundLongPathEntailment,
+          boundaries: [...new Set([...boundLongPathEntailment.boundaries, "local-evidence-certification-boundary"])]
         }
         : entailmentResult;
       if (longPathBasisAnswer) {
