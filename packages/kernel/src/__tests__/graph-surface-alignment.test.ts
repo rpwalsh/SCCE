@@ -3,6 +3,7 @@ import {
   createHasher,
   createLanguageInductionEngine,
   evaluateHeldOutConstructionCoverage,
+  GRAPH_SURFACE_ROLE_IDS,
   induceGraphSurfaceAlignments,
   induceLearnedConstructions,
   realizeLearnedSurface,
@@ -47,8 +48,8 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
 
   it("anti-unifies aligned examples into one reusable construction and realizes an unseen pre-/post-predicate combination", () => {
     const text = [
-      "cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
-      "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."
+      "cat chased mouse.", "dog chased mouse.", "cat chased ball.",
+      "cat chased mouse.", "cat chased ball.", "dog chased mouse."
     ].join(" ");
     const documents = [{ id: "doc.1", text, evidenceIds: ["evidence:doc.1" as never] }];
     const model = createLanguageInductionEngine({ hasher }).induce({ documents });
@@ -77,9 +78,18 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
     const observedPreSurfaces = new Set(preFormClass!.variants.map(variant => variant.surface));
     expect(observedPreSurfaces.size).toBeGreaterThanOrEqual(2);
 
-    // Realize a combination using a learned pre-predicate variant -- proving the
-    // learned construction (not the literal source sentence) drives output.
-    const chosenPre = preFormClass!.variants[0]!;
+    const postFormClass = induction.formClasses.find(formClass =>
+      formClass.roleId === GRAPH_SURFACE_ROLE_IDS.postPredicate
+    );
+    expect(postFormClass).toBeDefined();
+    const chosenPre = preFormClass!.variants.find(variant => variant.surface === "dog");
+    const chosenPost = postFormClass!.variants.find(variant => variant.surface === "ball");
+    expect(chosenPre).toBeDefined();
+    expect(chosenPost).toBeDefined();
+    expect(text).not.toContain("dog chased ball");
+
+    // Combine two individually learned fillers that never co-occurred in the
+    // training corpus.
     const plan: SurfaceMeaningPlan = {
       id: "plan.unseen-combination",
       profileKey: "profile.univ",
@@ -92,11 +102,20 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
           ? [{
             id: "variant.chosen-pre",
             profileKey: "profile.univ",
-            surface: chosenPre.surface,
-            evidenceIds: chosenPre.evidenceIds,
+            surface: chosenPre!.surface,
+            evidenceIds: chosenPre!.evidenceIds,
             formClassId: preFormClass!.id,
-            provenance: chosenPre.provenance
+            provenance: chosenPre!.provenance
           }]
+          : occurrence.realization === "spoken" && occurrence.roleId === GRAPH_SURFACE_ROLE_IDS.postPredicate
+            ? [{
+              id: "variant.chosen-post",
+              profileKey: "profile.univ",
+              surface: chosenPost!.surface,
+              evidenceIds: chosenPost!.evidenceIds,
+              formClassId: postFormClass!.id,
+              provenance: chosenPost!.provenance
+            }]
           : occurrence.realization === "spoken"
             ? (() => {
               const formClass = induction.formClasses
@@ -121,13 +140,7 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
     });
     expect(realized.status).toBe("realized");
     if (realized.status !== "realized") return;
-    // The realized surface is driven by the learned construction's literal
-    // frame plus the chosen learned slot filler -- not a copy of any single
-    // source sentence.
-    expect(realized.realization.text).toContain(chosenPre.surface);
-    for (const part of construction.sequence) {
-      if (part.kind === "literal") expect(realized.realization.text).toContain(part.surface);
-    }
+    expect(realized.realization.text).toBe("dog chased ball");
   });
 
   it("does not fabricate an alignment set when fewer than two real occurrences exist for a construction", () => {

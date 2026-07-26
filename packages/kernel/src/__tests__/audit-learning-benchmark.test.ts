@@ -37,6 +37,41 @@ describe("audit, learning, and benchmark source contracts", () => {
     expect(result.notes.some(note => note.includes("no frontier"))).toBe(true);
   });
 
+  it("requires broad task coverage and supplied frontier records before a beater gate can pass", () => {
+    const scorer = createBenchmarkScorer();
+    const tasks = [
+      { id: "qa", input: "answer from evidence", caseType: "FactualEvidenceCase" as const },
+      { id: "reason", input: "reason through a contradiction", caseType: "ReasoningCase" as const },
+      { id: "story", input: "write a scene", caseType: "LongFormNarrativeCase" as const },
+      { id: "code", input: "change the program", caseType: "CodeEditingCase" as const },
+      { id: "translate", input: "translate this", caseType: "TranslationCase" as const },
+      { id: "memory", input: "continue the prior thread", caseType: "MultiTurnCoherenceCase" as const },
+      { id: "learn", input: "learn a new source", caseType: "LearningAcquisitionCase" as const }
+    ];
+    const partial = scorer.broadReadiness(tasks.slice(0, 2), tasks.slice(0, 2).map(task => benchmarkResult(task.id, 0.9)), { minClassScore: 0.8 });
+    expect(partial.releaseGate).toBe("blocked_missing_tasks");
+    expect(partial.missingTaskClasses).toContain("long_form_narrative");
+
+    const allResults = tasks.map(task => benchmarkResult(task.id, 0.9));
+    const noFrontier = scorer.broadReadiness(tasks, allResults, { minClassScore: 0.8 });
+    expect(noFrontier.releaseGate).toBe("blocked_frontier_missing");
+
+    const frontierRecords = tasks.map(task => ({
+      provider: "Anthropic",
+      model: "Claude fixture",
+      benchmark: "broad-fixture",
+      taskId: task.id,
+      score: 0.86,
+      observedAt: 1
+    }));
+    const passed = scorer.broadReadiness(tasks, allResults, { minClassScore: 0.8, minFrontierMargin: 0.01, frontierRecords });
+    expect(passed.releaseGate).toBe("passed");
+  });
+
+  function benchmarkResult(taskId: string, score: number) {
+    return { taskId, score, dimensions: [], residualRisk: 1 - score, notes: [] };
+  }
+
   function minimalTurn(): TurnResult {
     const proofId = ids.proofId({ claimId: ids.claimId("alpha"), evidenceIds: [], transforms: [], validatorVersion: "test" });
     const entailment: SemanticEntailmentResult = {

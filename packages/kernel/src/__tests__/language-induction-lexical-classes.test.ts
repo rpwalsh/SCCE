@@ -46,6 +46,13 @@ describe("language induction -- distributional lexical-class induction (Part B s
       expect(member.scriptId).toBe("script:Hani");
     }
     expect(cityClass!.cohesion).toBeGreaterThan(0);
+    expect(model.syntaxTemplates.some(template =>
+      template.examples.some(example => example.includes("北京") || example.includes("上海"))
+    )).toBe(true);
+    expect(model.semanticFrames.some(frame =>
+      [...frame.predicate].length > 1
+      || frame.roles.some(role => [...role.filler].length > 1)
+    )).toBe(true);
   });
 
   it("does not fabricate classes when no word repeats enough to provide real substitution evidence", () => {
@@ -55,6 +62,22 @@ describe("language induction -- distributional lexical-class induction (Part B s
     const model = engine.induce({ documents: [{ id: "doc.sparse", text }] });
 
     expect(model.lexicalClasses).toEqual([]);
+  });
+
+  it("does not merge unrelated class endpoints through a single-link bridge", () => {
+    const engine = createLanguageInductionEngine({ hasher, vocabularyLimit: 512 });
+    const unit = [
+      "lefta alpha righta.", "leftb alpha rightb.",
+      "lefta beta righta.", "leftb beta rightb.",
+      "leftc beta rightc.", "leftd beta rightd.",
+      "leftc gamma rightc.", "leftd gamma rightd."
+    ].join(" ");
+    const model = engine.induce({ documents: [{ id: "doc.bridge", text: `${unit} ${unit} ${unit}` }] });
+
+    expect(model.lexicalClasses.some(cls =>
+      cls.members.some(member => member.symbol === "alpha")
+      && cls.members.some(member => member.symbol === "gamma")
+    )).toBe(false);
   });
 
   it("keeps lexical-class induction additive: syntax templates and n-grams are unaffected", () => {

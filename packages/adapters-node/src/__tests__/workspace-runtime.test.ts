@@ -119,7 +119,7 @@ describe("workspace runtime project intelligence", () => {
     expect(unsupported.path).toBe("workspace_query_adapter");
     expect(unsupported.generatedBy).toBe("workspace_query_adapter");
     expect(unsupported.selectedIntentId).toBe("workspace.intent.unsupported");
-    expect(unsupported.fallbackReason).toBe("workspace.query.unsupported_intent");
+    expect(unsupported.unsupportedReason).toBe("workspace.query.unsupported_intent");
     expect(unsupported.confidence).toBeLessThan(0.3);
     expect(unsupported.sourceRefs).toEqual([]);
     expect(unsupported.answer).toContain("workspace.answer.intent=workspace.intent.unsupported");

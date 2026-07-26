@@ -7,6 +7,7 @@ import { compileLanguageConstructionPattern } from "../language-construction-mem
 import { createMouth, type SpokenOutput } from "../mouth.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
 import { createSemanticEntailmentEngine } from "../entailment.js";
+import { sourceRelationConstructionBindingId } from "../graph-surface-alignment.js";
 import { deriveTurnRequirementField } from "../turn-requirements.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, LanguageProfile, SourceVersion } from "../types.js";
 import type { LanguagePatternRecord } from "../storage.js";
@@ -34,6 +35,20 @@ describe("Mouth learned-construction candidate", () => {
     expect(JSON.stringify(candidate?.audit)).toContain("scce.mouth.learned_construction_candidate.v2");
     expect(JSON.stringify(candidate?.audit)).toContain("provenance");
     expect(JSON.stringify(candidate?.audit)).toContain("trace");
+  });
+
+  it("accepts the profile-local source-relation binding emitted by corpus training", async () => {
+    const result = await speakFixture({
+      sentence: "Aster powers pump.",
+      subject: "Aster",
+      predicate: "powers",
+      object: "pump",
+      question: "What powers the pump?",
+      sourceDerivedBinding: true
+    });
+
+    expect(result.spoken.text).toBe("Aster powers pump.");
+    expect(result.spoken.realizationTrace.selected.id).toMatch(/^candidate:generated:learned-construction:/u);
   });
 
   it("preserves a no-space script's learned order and punctuation", async () => {
@@ -253,6 +268,7 @@ async function speakFixture(input: {
   exposeProofTerms?: boolean;
   requirementField?: boolean;
   persistConstruction?: boolean;
+  sourceDerivedBinding?: boolean;
 }): Promise<{ spoken: SpokenOutput; evidence: EvidenceSpan; profile: LanguageProfile }> {
   const evidenceText = input.evidenceText ?? input.sentence;
   const source = sourceVersion(evidenceText);
@@ -304,7 +320,9 @@ async function speakFixture(input: {
       evidence,
       surface: input.sentence,
       profileId: profile.id,
-      relationId,
+      relationId: input.sourceDerivedBinding
+        ? sourceRelationConstructionBindingId(hasher, profile.id, input.predicate)
+        : relationId,
       subject: input.subject,
       predicate: input.predicate,
       object: input.object

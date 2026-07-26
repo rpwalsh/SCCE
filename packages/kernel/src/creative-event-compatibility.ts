@@ -1,7 +1,8 @@
 import type { DurableCreativeEventConstruction } from "./language-construction-memory.js";
 import { clamp01, toJsonValue } from "./primitives.js";
+import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import type { EvidenceId, JsonValue } from "./types.js";
+import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 
 export const CREATIVE_REQUEST_FRAME_SCHEMA = "scce.creative_request_frame.v1" as const;
 export const CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA =
@@ -21,6 +22,17 @@ export interface CreativeRequestRole {
   id: string;
   roleId: string;
   span: CreativeRequestSpan;
+}
+
+export interface CreativeRequestFrameAnchor {
+  requestFrameId: string;
+  requestCompilerId: string;
+  lexicalKeys: string[];
+  requestRoleIds: string[];
+  support: number;
+  acceptedSupport: number;
+  rejectedSupport: number;
+  exampleTextHashes: string[];
 }
 
 /**
@@ -73,6 +85,7 @@ export interface CreativeEventCompatibilityModel {
   minimumRolePosterior: number;
   eventCompatibilities: CreativeEventCompatibility[];
   roleCompatibilities: CreativeEventRoleCompatibility[];
+  requestFrameAnchors?: CreativeRequestFrameAnchor[];
 }
 
 export interface CreativeEventCompatibilityDecision {
@@ -142,6 +155,13 @@ export function normalizeCreativeEventCompatibilityModels(
           left.requestFrameId.localeCompare(right.requestFrameId)
           || left.requestRoleId.localeCompare(right.requestRoleId)
           || left.eventRoleId.localeCompare(right.eventRoleId)
+        )),
+      requestFrameAnchors: [...(model.requestFrameAnchors ?? [])]
+        .filter(validRequestFrameAnchor)
+        .sort((left, right) => (
+          left.requestFrameId.localeCompare(right.requestFrameId)
+          || right.acceptedSupport - left.acceptedSupport
+          || right.support - left.support
         ))
     }))
     .sort((left, right) => (
@@ -279,7 +299,8 @@ export function compileCreativeEventCompatibilityCorpus(
       minimumAdmissiblePosterior: input.corpus.minimumAdmissiblePosterior,
       minimumRolePosterior: input.corpus.minimumRolePosterior,
       eventCompatibilities,
-      roleCompatibilities
+      roleCompatibilities,
+      requestFrameAnchors: compileRequestFrameAnchors(examples, input.makeId)
     };
     const modelJson = toJsonValue({ ...model, id: undefined });
     model.id = input.makeId(modelJson);
@@ -327,6 +348,226 @@ export function creativeEventCompatibilityModelsFromPatterns(
 export function isCreativeEventCompatibilityPattern(pattern: LanguagePatternRecord): boolean {
   return isRecord(pattern.patternJson)
     && pattern.patternJson.schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA;
+}
+
+export function compileCreativeRequestFrameFromCompatibilityModels(input: {
+  requestText: string;
+  models: readonly CreativeEventCompatibilityModel[];
+  hasher: Hasher;
+  minimumLexicalFit?: number;
+}): CreativeRequestFrame | undefined {
+  const requestText = input.requestText;
+  if (!requestText.trim()) return undefined;
+  const requestSegments = requestLexicalSegments(requestText);
+  const requestKeys = new Set(requestSegments.map(segment => segment.normalized).filter(Boolean));
+  if (!requestKeys.size) return undefined;
+  const minimumLexicalFit = clamp01(input.minimumLexicalFit ?? 0.08);
+  const candidates = input.models
+    .filter(model => model.reliability === "calibrated")
+    .flatMap(model => (model.requestFrameAnchors ?? []).map(anchor => {
+      const lexicalFit = lexicalKeyFit(requestKeys, anchor.lexicalKeys);
+      const posterior = maxPosteriorForRequestFrame(model, anchor.requestFrameId);
+      const roleSupport = roleSupportForRequestFrame(model, anchor.requestFrameId);
+      const supportFit = clamp01(Math.log2(1 + anchor.support) / 8);
+      return {
+        model,
+        anchor,
+        lexicalFit,
+        posterior,
+        roleSupport,
+        score: clamp01(0.52 * lexicalFit + 0.34 * posterior + 0.14 * supportFit)
+      };
+    }))
+    .filter(row => row.lexicalFit >= minimumLexicalFit && row.posterior >= row.model.minimumAdmissiblePosterior)
+    .sort((left, right) => (
+      right.score - left.score
+      || right.lexicalFit - left.lexicalFit
+      || right.posterior - left.posterior
+      || right.anchor.acceptedSupport - left.anchor.acceptedSupport
+      || left.anchor.requestFrameId.localeCompare(right.anchor.requestFrameId)
+    ));
+  const selected = candidates[0];
+  if (!selected) return undefined;
+  const roleIds = selected.anchor.requestRoleIds.length
+    ? selected.anchor.requestRoleIds
+    : [...new Set(selected.model.roleCompatibilities
+      .filter(row => row.requestFrameId === selected.anchor.requestFrameId)
+      .map(row => row.requestRoleId)
+      .filter(Boolean))]
+      .sort();
+  const argumentSegments = selectArgumentSegmentsForRoles(requestSegments, roleIds);
+  const frameSeed = {
+    schema: CREATIVE_REQUEST_FRAME_SCHEMA,
+    requestCompilerId: selected.model.requestCompilerId,
+    requestFrameId: selected.anchor.requestFrameId,
+    requestHash: input.hasher.digestHex(requestText),
+    roleIds,
+    argumentSpans: argumentSegments.map(row => ({
+      roleId: row.roleId,
+      textHash: input.hasher.digestHex(row.segment.surface),
+      start: row.segment.codePointStart,
+      end: row.segment.codePointEnd
+    }))
+  };
+  const id = `creative.request.frame.${input.hasher.digestHex(JSON.stringify(frameSeed))}`;
+  return {
+    schema: CREATIVE_REQUEST_FRAME_SCHEMA,
+    id,
+    compilerId: selected.model.requestCompilerId,
+    focus: {
+      id: `${id}.focus`,
+      roleId: "scce.request.role.focus",
+      span: exactRequestSpan(requestText, requestText, 0, [...requestText].length)
+    },
+    arguments: argumentSegments.map((row, index) => ({
+      id: `${id}.argument.${index}`,
+      roleId: row.roleId,
+      span: exactRequestSpan(
+        requestText,
+        row.segment.surface,
+        row.segment.codePointStart,
+        row.segment.codePointEnd
+      )
+    })),
+    explicitRelationId: selected.model.eventCompatibilities
+      .filter(row => row.requestFrameId === selected.anchor.requestFrameId)
+      .sort((left, right) => right.posterior - left.posterior || right.support - left.support)[0]?.eventRelationId,
+    sourceActivationIds: [
+      selected.anchor.requestFrameId,
+      ...selected.anchor.exampleTextHashes.slice(0, 8),
+      ...selected.model.eventCompatibilities
+        .filter(row => row.requestFrameId === selected.anchor.requestFrameId)
+        .flatMap(row => row.sourceActivationIds)
+        .slice(0, 16)
+    ].filter((value, index, array) => Boolean(value) && array.indexOf(value) === index)
+  };
+}
+
+function compileRequestFrameAnchors(
+  examples: readonly CreativeEventCompatibilityCorpusExample[],
+  makeId: (representation: JsonValue) => string
+): CreativeRequestFrameAnchor[] {
+  const byFrame = groupExamples(examples, example => example.requestFrameId);
+  return [...byFrame.entries()].map(([requestFrameId, rows]) => {
+    const first = rows[0]!;
+    const lexicalKeys = [...new Set(rows.flatMap(row => requestLexicalKeys(row.requestText)))].sort();
+    const requestRoleIds = [...new Set(rows.flatMap(row =>
+      (row.roleBindings ?? [])
+        .filter(binding => binding.accepted)
+        .map(binding => binding.requestRoleId)
+    ))].sort();
+    const acceptedSupport = rows.filter(row => row.accepted).length;
+    const rejectedSupport = rows.length - acceptedSupport;
+    const exampleTextHashes = [...new Set(rows
+      .map(row => makeId(toJsonValue({
+        schema: "scce.creative_request_frame_anchor_text.v1",
+        requestFrameId,
+        requestText: row.requestText
+      })))
+      .filter(Boolean))]
+      .sort()
+      .slice(0, 16);
+    return {
+      requestFrameId,
+      requestCompilerId: first.requestCompilerId,
+      lexicalKeys,
+      requestRoleIds,
+      support: rows.length,
+      acceptedSupport,
+      rejectedSupport,
+      exampleTextHashes
+    };
+  })
+    .filter(validRequestFrameAnchor)
+    .sort((left, right) => (
+      right.acceptedSupport - left.acceptedSupport
+      || right.support - left.support
+      || left.requestFrameId.localeCompare(right.requestFrameId)
+    ));
+}
+
+function requestLexicalSegments(text: string): LexicalSegment[] {
+  return segmentUnicodeSurfaceV2(text).lexicalSegments
+    .filter(segment => segment.normalized && segment.surface.trim());
+}
+
+function requestLexicalKeys(text: string): string[] {
+  return [...new Set(requestLexicalSegments(text)
+    .map(segment => segment.normalized)
+    .filter(Boolean))]
+    .sort();
+}
+
+function lexicalKeyFit(requestKeys: ReadonlySet<string>, anchorKeys: readonly string[]): number {
+  const anchor = new Set(anchorKeys.filter(Boolean));
+  if (!requestKeys.size || !anchor.size) return 0;
+  let intersection = 0;
+  for (const key of requestKeys) if (anchor.has(key)) intersection++;
+  return clamp01(intersection / Math.sqrt(requestKeys.size * anchor.size));
+}
+
+function maxPosteriorForRequestFrame(
+  model: CreativeEventCompatibilityModel,
+  requestFrameId: string
+): number {
+  return Math.max(0, ...model.eventCompatibilities
+    .filter(row => row.requestFrameId === requestFrameId)
+    .map(row => row.posterior));
+}
+
+function roleSupportForRequestFrame(
+  model: CreativeEventCompatibilityModel,
+  requestFrameId: string
+): number {
+  return model.roleCompatibilities
+    .filter(row => row.requestFrameId === requestFrameId)
+    .reduce((sum, row) => sum + row.support, 0);
+}
+
+function selectArgumentSegmentsForRoles(
+  segments: readonly LexicalSegment[],
+  roleIds: readonly string[]
+): Array<{ roleId: string; segment: LexicalSegment }> {
+  if (!roleIds.length) return [];
+  const usable = [...segments]
+    .filter(segment => segment.surface.trim() && segment.normalized)
+    .sort((left, right) => (
+      right.normalized.length - left.normalized.length
+      || right.surface.length - left.surface.length
+      || right.codePointStart - left.codePointStart
+    ));
+  const selected: Array<{ roleId: string; segment: LexicalSegment }> = [];
+  const used = new Set<string>();
+  for (const roleId of roleIds.slice(0, 8)) {
+    const segment = usable.find(candidate => {
+      const key = `${candidate.codePointStart}:${candidate.codePointEnd}`;
+      return !used.has(key);
+    });
+    if (!segment) break;
+    used.add(`${segment.codePointStart}:${segment.codePointEnd}`);
+    selected.push({ roleId, segment });
+  }
+  return selected.sort((left, right) => left.segment.codePointStart - right.segment.codePointStart);
+}
+
+function exactRequestSpan(
+  requestText: string,
+  text: string,
+  charStart: number,
+  charEnd: number
+): CreativeRequestSpan {
+  const points = [...requestText];
+  const prefix = points.slice(0, charStart).join("");
+  const surface = points.slice(charStart, charEnd).join("");
+  const spanText = surface === text ? text : surface;
+  const encoder = new TextEncoder();
+  return {
+    text: spanText,
+    charStart,
+    charEnd,
+    byteStart: encoder.encode(prefix).byteLength,
+    byteEnd: encoder.encode(prefix + spanText).byteLength
+  };
 }
 
 function compileEventRows(
@@ -429,6 +670,9 @@ function compatibilityModelFromRecord(
   const roleCompatibilities = Array.isArray(value.roleCompatibilities)
     ? value.roleCompatibilities.flatMap(roleCompatibilityFromUnknown)
     : [];
+  const requestFrameAnchors = Array.isArray(value.requestFrameAnchors)
+    ? value.requestFrameAnchors.flatMap(requestFrameAnchorFromUnknown)
+    : [];
   const model: CreativeEventCompatibilityModel = {
     schema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
     id: stringValue(value.id),
@@ -440,7 +684,8 @@ function compatibilityModelFromRecord(
     minimumAdmissiblePosterior: numberValue(value.minimumAdmissiblePosterior),
     minimumRolePosterior: numberValue(value.minimumRolePosterior),
     eventCompatibilities,
-    roleCompatibilities
+    roleCompatibilities,
+    ...(requestFrameAnchors.length ? { requestFrameAnchors } : {})
   };
   return validCreativeEventCompatibilityModel(model) ? model : undefined;
 }
@@ -476,6 +721,21 @@ function roleCompatibilityFromUnknown(value: unknown): CreativeEventRoleCompatib
     sourceActivationIds: stringArray(value.sourceActivationIds)
   };
   return validRoleCompatibility(row) ? [row] : [];
+}
+
+function requestFrameAnchorFromUnknown(value: unknown): CreativeRequestFrameAnchor[] {
+  if (!isRecord(value)) return [];
+  const row: CreativeRequestFrameAnchor = {
+    requestFrameId: stringValue(value.requestFrameId),
+    requestCompilerId: stringValue(value.requestCompilerId),
+    lexicalKeys: stringArray(value.lexicalKeys).sort(),
+    requestRoleIds: stringArray(value.requestRoleIds).sort(),
+    support: numberValue(value.support),
+    acceptedSupport: numberValue(value.acceptedSupport),
+    rejectedSupport: numberValue(value.rejectedSupport),
+    exampleTextHashes: stringArray(value.exampleTextHashes).slice(0, 16)
+  };
+  return validRequestFrameAnchor(row) ? [row] : [];
 }
 
 function parseCompatibilityCorpusExample(
@@ -543,6 +803,23 @@ function validCreativeEventCompatibilityModel(
     && unitInterval(model.minimumRolePosterior)
     && Array.isArray(model.eventCompatibilities)
     && Array.isArray(model.roleCompatibilities);
+}
+
+function validRequestFrameAnchor(row: CreativeRequestFrameAnchor): boolean {
+  return Boolean(row.requestFrameId && row.requestCompilerId)
+    && Array.isArray(row.lexicalKeys)
+    && row.lexicalKeys.length > 0
+    && row.lexicalKeys.every(key => typeof key === "string" && Boolean(key))
+    && Array.isArray(row.requestRoleIds)
+    && row.requestRoleIds.every(id => typeof id === "string" && Boolean(id))
+    && Number.isSafeInteger(row.support)
+    && row.support > 0
+    && Number.isSafeInteger(row.acceptedSupport)
+    && row.acceptedSupport >= 0
+    && Number.isSafeInteger(row.rejectedSupport)
+    && row.rejectedSupport >= 0
+    && row.acceptedSupport + row.rejectedSupport === row.support
+    && Array.isArray(row.exampleTextHashes);
 }
 
 function validEventCompatibility(row: CreativeEventCompatibility): boolean {

@@ -11,14 +11,14 @@ import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
 export const LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA = "scce.language_construction_pattern.v1" as const;
-export const LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
+export const OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
 export const CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA = "scce.creative_event_construction_pattern.v3" as const;
 export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argument_frame.v1" as const;
 /**
  * Corpus-induced, zero-hardcoded-language compiler (Part B step 7). Builds
  * `DurableCreativeEventConstruction`s from `language-induction.ts`'s
- * `GraphBoundConstruction`s (steps 4-6) instead of `compromise`'s English
- * POS/grammar tagging -- works identically for any script/corpus.
+ * `GraphBoundConstruction`s (steps 4-6) using the same universal induction
+ * path for every script/corpus.
  */
 export const UNIVERSAL_CREATIVE_EVENT_COMPILER_ID = "surface.compiler.universal.induced.v1" as const;
 
@@ -32,7 +32,7 @@ export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   digest: "surface.construction_memory.reject.digest",
   member: "surface.construction_memory.reject.member",
   duplicate: "surface.construction_memory.reject.duplicate",
-  legacyCreativeV2: "surface.construction_memory.reject.legacy_creative_v2"
+  obsoleteCreativeV2: "surface.construction_memory.reject.obsolete_creative_v2"
 } as const;
 
 export type LanguageConstructionMemoryRejectionId =
@@ -155,7 +155,7 @@ export interface DurableCreativeEventConstruction {
 export interface DurableCreativeEventArgumentFrame {
   id: string;
   schema: typeof CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA;
-  /** Was pinned to the single English compiler id; widened for the universal compiler (Part B step 7). */
+  /** Universal compiler id for the corpus-derived construction source. */
   compilerId: string;
   sourceSentenceStartCodePoint: number;
   sourceSentenceEndCodePoint: number;
@@ -334,17 +334,16 @@ export function createUniversalCreativeEventConstructionCompiler(): CreativeEven
  * Zero-hardcoded-language creative-event compiler (Part B step 7). Builds
  * `DurableCreativeEventConstruction`s directly from `language-induction.ts`'s
  * `induce()` output (steps 4-6: real word-level segmentation, distributional
- * lexical classes, graph-bound predicate/argument constructions) instead of
- * `compromise`'s English POS tagging -- no verb list, no pronoun list, no
- * word-order assumption. An "agent" slot is structural (the predicate had a
- * real left-context word at this occurrence), mirroring the English
- * compiler's own convention of never storing the agent's surface (the
- * realizer supplies it from context, not from the corpus); a "patient"
- * binding is recorded only when a construction's arg1 slot has a real
- * filler at this specific occurrence, with the actual character span of
- * that occurrence. Verb-form fields are honestly conservative: without a
- * verified tense signal, all five `forms` fields carry the one real
- * observed predicate surface rather than a fabricated conjugation.
+ * lexical classes, graph-bound predicate/argument constructions). There is no
+ * verb list, pronoun list, language-specific POS tagger, or word-order switch.
+ * A structural initiator slot records that the predicate had a real
+ * left-context unit at this occurrence without storing that surface as a
+ * universal grammar category; a patient binding is recorded only when a
+ * construction's arg1 slot has a real filler at this specific occurrence,
+ * with the actual character span of that occurrence. Form fields remain
+ * conservative: without a verified transformation signal, all form entries
+ * carry the one real observed predicate surface rather than fabricated
+ * inflection.
  */
 export function compileUniversalCreativeEventConstructionPattern(
   input: CreativeEventConstructionCompilerInput
@@ -453,7 +452,9 @@ function compileUniversalCreativeEvent(input: {
   const arg0Slot = construction.slots.find(slot => slot.relationDirection === "source");
   const arg1Slot = construction.slots.find(slot => slot.relationDirection === "target");
   const left = lexical[index - 1];
-  // Structural agent requirement, mirroring the English compiler's own subject-required gate -- the agent's surface itself is never stored (supplied by the realizer from context, not the corpus).
+  // Structural initiator requirement: the left context must exist in this
+  // observed occurrence, but its surface is not elevated into a universal
+  // language category.
   if (!left || !arg0Slot) return undefined;
   const right = lexical[index + 1];
   const arg1Fillers = arg1Slot?.observedFillers;
@@ -583,8 +584,8 @@ export function hydrateLanguageConstructionPatterns(input: {
     }
     const verified = isCreativeEventConstructionPattern(pattern)
       ? verifyCreativeEventPattern(pattern, evidenceById, input.hasher)
-      : isLegacyCreativeEventConstructionPatternV2(pattern)
-        ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.legacyCreativeV2)
+      : isObsoleteCreativeEventConstructionPatternV2(pattern)
+        ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.obsoleteCreativeV2)
         : verifyPersistedPattern(pattern, evidenceById, input.hasher);
     if ("issue" in verified) rejectedIssues.push(verified.issue);
     else bundles.push(verified.bundle);
@@ -610,8 +611,8 @@ export function isCreativeEventConstructionPattern(pattern: LanguagePatternRecor
   return recordOf(pattern.patternJson).schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA;
 }
 
-function isLegacyCreativeEventConstructionPatternV2(pattern: LanguagePatternRecord): boolean {
-  return recordOf(pattern.patternJson).schema === LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
+function isObsoleteCreativeEventConstructionPatternV2(pattern: LanguagePatternRecord): boolean {
+  return recordOf(pattern.patternJson).schema === OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
 }
 
 function prepareObservation(input: {

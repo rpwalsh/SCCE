@@ -13,6 +13,11 @@ import { inlineIngestStream } from "./inline-ingest-source.js";
 import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
+  compileLanguageTrainingBatch,
+  observeLanguageTrainingSegmentation
+} from "./language-training-batch.js";
+import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
+import {
   createLanguageAcquisitionEngine
 } from "./language.js";
 import { createClock, createHasher, toJsonValue } from "./primitives.js";
@@ -315,19 +320,7 @@ export function createIngestionRuntime(options: {
             ? creativeEventCompatibilityCorpusLanguageText(creativeEventCompatibilityCorpus)
           : typedProjection.languageText;
         if (decision.activeInfluence.language) {
-        const languageMemory = languageTrainingText.trim() ? languageMemoryRuntime.observe({
-          streamId: file.uri,
-          sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem),
-          profile,
-          sourceVersionId,
-          text: languageTrainingText,
-          evidence: admittedSpans,
-          createdAt: now,
-          maxOrder: 6,
-          maxCountersPerOrder: 12000,
-          vocabularyLimit: 24000
-        }) : undefined;
-        if (languageMemory) {
+        if (languageTrainingText.trim()) {
         const requestRequirementLearning = requestRequirementCorpus
           ? compileRequestRequirementCorpus({
             corpus: requestRequirementCorpus,
@@ -351,15 +344,40 @@ export function createIngestionRuntime(options: {
             ))
           })
           : undefined;
-        const observations = labelRecords(languageMemory.observations, informationLabel);
-        const models = labelRecords(languageMemory.models, informationLabel);
-        const units = labelRecords(languageMemory.units, informationLabel);
-        const learnedPatterns = labelRecords([
-          ...languageMemory.patterns,
-          ...(requestRequirementLearning?.patterns ?? []),
-          ...(creativeEventCompatibilityLearning?.patterns ?? [])
-        ], informationLabel);
-        const semanticFrames = labelRecords(languageMemory.semanticFrames, informationLabel);
+        const compiledBatch = compileLanguageTrainingBatch({
+          runtime: languageMemoryRuntime,
+          hasher,
+          batch: {
+            streamId: file.uri,
+            sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem),
+            profile,
+            sourceVersionId,
+            text: languageTrainingText,
+            evidence: admittedSpans,
+            createdAt: now,
+            maxOrder: 6,
+            maxCountersPerOrder: 12000,
+            vocabularyLimit: 24000,
+            additionalPatterns: [
+              ...(requestRequirementLearning?.patterns ?? []),
+              ...(creativeEventCompatibilityLearning?.patterns ?? [])
+            ]
+          }
+        });
+        const sourceSystem = kernelString(jsonRecord(file.metadata).sourceSystem) ?? "workspace";
+        await observeLanguageTrainingSegmentation({
+          storage: deps.storage,
+          batch: { text: languageTrainingText, createdAt: now },
+          tenantId: informationLabel.tenantId,
+          corpusRole: corpusRoleIdForSourceSystem(sourceSystem),
+          activeImportVersion: kernelString(jsonRecord(file.metadata).activeImportVersion) ?? file.namespace,
+          hasher
+        });
+        const observations = labelRecords(compiledBatch.observations, informationLabel);
+        const models = labelRecords(compiledBatch.models, informationLabel);
+        const units = labelRecords(compiledBatch.units, informationLabel);
+        const learnedPatterns = labelRecords(compiledBatch.patterns, informationLabel);
+        const semanticFrames = labelRecords(compiledBatch.semanticFrames, informationLabel);
         await deps.storage.languageMemory.putNgramObservationsBatch(observations);
         if (deps.storage.languageMemory.putNgramModels) await deps.storage.languageMemory.putNgramModels(models);
         else for (const model of models) await deps.storage.languageMemory.putNgramModel(model);
@@ -374,7 +392,7 @@ export function createIngestionRuntime(options: {
           typeId: "SymbolPatternLearned",
           payload: requestRequirementLearning || creativeEventCompatibilityLearning
             ? toJsonValue({
-              languageMemory: languageMemory.audit,
+              languageMemory: compiledBatch.audit,
               ...(requestRequirementLearning
                 ? { requestRequirements: requestRequirementLearning.audit }
                 : {}),
@@ -382,7 +400,7 @@ export function createIngestionRuntime(options: {
                 ? { creativeEventCompatibility: creativeEventCompatibilityLearning.audit }
                 : {})
             })
-            : languageMemory.audit
+            : compiledBatch.audit
         })));
         } else {
           events.push(await append(eventFactory.create({ episodeId, typeId: "SymbolPatternLearned", payload: { skipped: "no language-bearing observations", uri: file.uri, typedIngest: typedProjection.diagnostics } })));

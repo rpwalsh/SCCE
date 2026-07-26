@@ -73,6 +73,33 @@ describe("graph-surface alignment -> real corpus-training constructionSets wirin
     expect(sets).toEqual([]);
   });
 
+  it("keeps induced observation sets within the construction compiler's 256-example contract", () => {
+    const text = Array.from(
+      { length: 320 },
+      (_, index) => `${index % 2 ? "dog" : "cat"} chased ${index % 3 ? "mouse" : "ball"}.`
+    ).join(" ");
+    const evidence = evidenceSpan("source.frequent", text, 0);
+
+    const sets = induceSourceBoundConstructionTrainingSets({
+      evidence: [evidence],
+      profileId: "profile.univ",
+      hasher,
+      maxObservationsPerConstruction: 512
+    });
+
+    expect(sets.length).toBeGreaterThan(0);
+    expect(Math.max(...sets.map(set => set.observations.length))).toBeLessThanOrEqual(256);
+    const compiled = compileLanguageConstructionPattern({
+      bindingId: sets[0]!.bindingId,
+      profileId: "profile.univ",
+      observations: sets[0]!.observations,
+      evidence: [evidence],
+      hasher,
+      updatedAt: 92_500
+    });
+    expect(compiled.status).toBe("compiled");
+  });
+
   function evidenceSpan(sourceVersionId: string, text: string, charStart: number): EvidenceSpan {
     const bytes = new TextEncoder().encode(text);
     const contentHash = ids.contentHash(bytes);

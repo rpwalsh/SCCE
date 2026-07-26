@@ -16,6 +16,7 @@ import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
+import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
@@ -249,7 +250,6 @@ export function createProductionTurnRuntime(options: {
   } = graphRetrieval;
   const {
     hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, sourceOwnedLanguageClusterForAlias,
-    residentSurfaceLanguageMemory,
     sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached, surfaceLanguageProfilesCached,
     uniqueRecordsById
   } = surfaceLanguageRuntime;
@@ -511,10 +511,7 @@ export function createProductionTurnRuntime(options: {
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
       const requestedAuthority = authorityProjection.requestedAuthority;
-      // No English-specific request-frame compiler: creative narrative-event routing
-      // (invention-planner.ts's buildStructuralCreativeEventPlan) always sees this as
-      // absent and correctly returns no plan, matching the removal of its only producer.
-      const creativeRequestFrame = undefined;
+      let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
@@ -926,12 +923,12 @@ export function createProductionTurnRuntime(options: {
         : promoted;
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds));
       const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence]);
-      const selectedTemporalFallback = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
-      const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalFallback)
+      const selectedTemporalCandidateEvidence = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
+      const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalCandidateEvidence)
         ? await deps.storage.evidence.getEvidenceBatch(selectedEvidence.map(span => span.id))
         : [];
       const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, selectedEvidence.map(span => span.id))
-        ?? selectedTemporalFallback;
+        ?? selectedTemporalCandidateEvidence;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       markTiming("proofMs");
       const semanticProofContradiction = typeof semanticProof.contradiction === "number"
@@ -1028,7 +1025,16 @@ export function createProductionTurnRuntime(options: {
           (bundle.creativeEvents?.length ?? 0) > 0
         )
       );
-      const residentEvidenceLanguage = residentSurfaceLanguageMemory(evidenceSurfaceCluster);
+      const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
+        ? await hydrateSurfaceLanguageMemoryCached(
+          12,
+          evidenceSurfaceCluster,
+          "evidence-source-cluster-selected",
+          undefined,
+          "",
+          { residentOnly: fastRuntimeBudget }
+        )
+        : undefined;
       const creativeOutputLanguage = preferredSurfaceCorpusRole
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
@@ -1042,9 +1048,12 @@ export function createProductionTurnRuntime(options: {
       let surfaceLanguage = preferredSurfaceCorpusRole
         ? exactCreativeAuthorityReady
           ? authorityLanguage
-          : creativeOutputLanguage ?? authorityLanguage
-        : evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
-          ? residentEvidenceLanguage ?? authorityLanguage
+          : requireHydratedSurfaceLanguage(
+            creativeOutputLanguage,
+            `creative corpus role ${preferredSurfaceCorpusRole}`
+          )
+        : evidenceOutputLanguage
+          ? evidenceOutputLanguage
           : authorityLanguage;
       const productionTranslationProfiles = translationTarget
         ? (await sourceOwnedLanguageProfilesCached(
@@ -1085,6 +1094,13 @@ export function createProductionTurnRuntime(options: {
       }
       const surfaceLanguageModels = surfaceLanguage.models;
       const surfaceLanguageMemory = surfaceLanguage.state;
+      if (requestedAuthority === "creative") {
+        creativeRequestFrame = compileCreativeRequestFrameFromCompatibilityModels({
+          requestText: input.text,
+          models: surfaceLanguageMemory.creativeEventCompatibilityModels,
+          hasher
+        });
+      }
       kernelTrace({
         stage: "candidate.language.hydrate",
         label: "kernel.turn",
@@ -1096,9 +1112,26 @@ export function createProductionTurnRuntime(options: {
         },
         support: {
           requestedAuthority,
-          corpusRole: preferredSurfaceCorpusRole ?? null
+          corpusRole: preferredSurfaceCorpusRole ?? null,
+          creativeRequestFrameId: creativeRequestFrame?.id ?? null,
+          creativeRequestCompilerId: creativeRequestFrame?.compilerId ?? null,
+          creativeRequestActivations: creativeRequestFrame?.sourceActivationIds.length ?? 0
         }
       });
+      if (creativeRequestFrame) {
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "CreativeRequestFrameProjected",
+          payload: toJsonValue({
+            id: creativeRequestFrame.id,
+            compilerId: creativeRequestFrame.compilerId,
+            focusHash: hasher.digestHex(creativeRequestFrame.focus.span.text),
+            argumentCount: creativeRequestFrame.arguments.length,
+            explicitRelationId: creativeRequestFrame.explicitRelationId ?? null,
+            sourceActivationIds: creativeRequestFrame.sourceActivationIds.slice(0, 24)
+          })
+        })));
+      }
       const candidatePriorStarted = Date.now();
       const brain = await activeBrainMarker();
       events.push(await append(eventFactory.create({ episodeId, typeId: "BrainInfluenceObserved", payload: { ...brain as Record<string, JsonValue>, languageMemory: surfaceLanguageMemoryProfile(surfaceLanguageMemory, deps.evaluationCondition?.flags.disableLanguageMemory === true) } })));
@@ -2347,4 +2380,9 @@ async function dispatchBuildTestThroughExecutive(input: {
   );
 
   return { disposition: result.disposition, attemptId: result.attemptId, receipt: result.receipt, buildTest: capturedResult };
+}
+
+function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {
+  if (value) return value;
+  throw new Error(`hydrated runtime unavailable: required learned surface language for ${context}`);
 }

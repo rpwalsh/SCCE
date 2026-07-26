@@ -5,7 +5,7 @@ import {
   UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
   LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
-  LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2,
+  OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2,
   compileUniversalCreativeEventConstructionPattern,
   compileLanguageConstructionPattern,
   hydrateLanguageConstructionPatterns
@@ -254,22 +254,22 @@ describe("source-verified universal creative argument frames", () => {
       updatedAt: 91_500
     });
     if (compiled.status !== "compiled") throw new Error(JSON.stringify(compiled.issues));
-    const legacy = structuredClone(compiled.pattern);
-    const patternJson = legacy.patternJson as Record<string, JsonValue>;
+    const obsolete = structuredClone(compiled.pattern);
+    const patternJson = obsolete.patternJson as Record<string, JsonValue>;
     const bundle = patternJson.bundle as Record<string, JsonValue>;
-    patternJson.schema = LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
-    bundle.schema = LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
+    patternJson.schema = OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
+    bundle.schema = OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2;
 
     const hydrated = hydrateLanguageConstructionPatterns({
-      patterns: [legacy],
+      patterns: [obsolete],
       evidence: [evidence],
       hasher
     });
     expect(CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA)
-      .not.toBe(LEGACY_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2);
+      .not.toBe(OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2);
     expect(hydrated.bundles).toEqual([]);
     expect(hydrated.rejected).toEqual([expect.objectContaining({
-      code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.legacyCreativeV2
+      code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.obsoleteCreativeV2
     })]);
   });
 });

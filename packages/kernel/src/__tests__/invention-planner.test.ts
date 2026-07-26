@@ -177,9 +177,9 @@ describe("invention planner", () => {
       expect(trace.proposalSelectionGuard).toMatchObject({
         id: "guard.invention.production_structural_authority.v1",
         productionStructuralAuthority: true,
-        coldStartFallbackActive: false,
+        coldStartSubstitutionActive: false,
         learnedCandidateCount: 0,
-        fallbackCandidateCount: 0
+        syntheticCandidateCount: 0
       });
     }
     expect(planned.some(candidate => {
@@ -484,10 +484,10 @@ describe("invention planner", () => {
     expect(planned.every(candidate => candidate.proposalSurface !== sourceSentence)).toBe(true);
     expect(planned.every(candidate => !candidate.proposalSurface.includes(";"))).toBe(true);
     expect(traceRecord(planned[0]!).proposalSelectionGuard).toMatchObject({
-      coldStartFallbackActive: false,
+      coldStartSubstitutionActive: false,
       mouthRealizationHandoffActive: true,
       learnedCandidateCount: 0,
-      fallbackCandidateCount: 0
+      syntheticCandidateCount: 0
     });
   });
 
