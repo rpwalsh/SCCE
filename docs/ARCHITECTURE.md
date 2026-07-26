@@ -98,6 +98,9 @@ validation so credentials need not be committed.
 - `segmentation-population.ts`: source-disjoint MDL population selection, exact
   prior-times-document-likelihood posteriors, and per-child held-out merge guards
   without language or script routing metadata.
+- `join-program.ts`: derivation- and population-conditioned opaque exact-source join
+  distributions, source-disjoint held-out evaluation, and explicit uncertainty
+  outcomes with no global join or silent-concatenation fallback.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and

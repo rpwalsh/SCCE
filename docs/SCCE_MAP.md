@@ -92,6 +92,9 @@ answer lane.
   bounded resume state, and no fixed recurrence/predictability production credits.
 - `segmentation-population.ts`: generative document-NLL population posteriors and
   description-length plus per-child held-out non-regression merge admissibility.
+- `join-program.ts`: opaque source-exact joins conditioned on lattice/derivation,
+  construction, discourse, boundary and population context; uncertainty remains an
+  explicit runtime state rather than a global join guess.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,
