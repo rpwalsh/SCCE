@@ -81,6 +81,9 @@ import {
   type InducedLanguageModel,
   type InducedLanguageModelRecord,
   type InducedLanguageModelStore,
+  type SegmentationPopulationModel,
+  type SegmentationPopulationModelRecord,
+  type SegmentationPopulationModelStore,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -150,6 +153,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly sparseRanking: SparseRankingModelStore;
   readonly segmentationAggregates: SegmentationAggregateStore;
   readonly inducedLanguageModels: InducedLanguageModelStore;
+  readonly segmentationPopulations: SegmentationPopulationModelStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -185,6 +189,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.sparseRanking = createSparseRankingModelStore(this);
     this.segmentationAggregates = createSegmentationAggregateStore(this);
     this.inducedLanguageModels = createInducedLanguageModelStore(this);
+    this.segmentationPopulations = createSegmentationPopulationModelStore(this);
   }
 
   table(name: string): string {
@@ -889,6 +894,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
     `CREATE TABLE IF NOT EXISTS ${q}.induced_language_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, corpus_documents INTEGER NOT NULL, vocabulary_size INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_induced_language_models_created ON ${q}.induced_language_models(created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.segmentation_population_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, profile_ids TEXT[] NOT NULL, source_version_ids TEXT[] NOT NULL, population_count INTEGER NOT NULL, mdl_gain_nats DOUBLE PRECISION NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -2296,6 +2304,73 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         [limit]
       );
       return rows.map(rowToInducedLanguageModelRecord);
+    }
+  };
+}
+
+interface SegmentationPopulationModelRow {
+  id: string;
+  training_plan_id: string;
+  model_json: SegmentationPopulationModel;
+  profile_ids: string[];
+  source_version_ids: SourceVersionId[];
+  information_label: JsonValue;
+  created_at: Date;
+}
+
+function rowToSegmentationPopulationModelRecord(
+  row: SegmentationPopulationModelRow
+): SegmentationPopulationModelRecord {
+  return {
+    id: row.id,
+    model: row.model_json,
+    trainingPlanId: row.training_plan_id,
+    profileIds: row.profile_ids,
+    sourceVersionIds: row.source_version_ids,
+    createdAt: row.created_at.getTime(),
+    informationLabel: normalizeInformationLabel(row.information_label as never)
+  };
+}
+
+function createSegmentationPopulationModelStore(
+  storage: PostgresStorageAdapter
+): SegmentationPopulationModelStore {
+  return {
+    async putModel(record) {
+      await storage.query(
+        `INSERT INTO ${storage.table("segmentation_population_models")}(id,training_plan_id,model_json,profile_ids,source_version_ids,population_count,mdl_gain_nats,information_label,created_at)
+         VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0))
+         ON CONFLICT(id) DO NOTHING`,
+        [
+          record.id,
+          record.trainingPlanId,
+          JSON.stringify(record.model),
+          [...new Set(record.profileIds)].sort(),
+          [...new Set(record.sourceVersionIds.map(String))].sort(),
+          record.model.populations.length,
+          record.model.selection.mdlGainNats,
+          JSON.stringify(record.informationLabel),
+          record.createdAt
+        ]
+      );
+    },
+    async readById(id) {
+      const rows = await storage.query<SegmentationPopulationModelRow>(
+        `SELECT * FROM ${storage.table("segmentation_population_models")} WHERE id=$1`,
+        [id]
+      );
+      return rows[0] ? rowToSegmentationPopulationModelRecord(rows[0]) : undefined;
+    },
+    async listRecent(query = {}) {
+      const limit = Math.max(1, Math.min(200, query.limit ?? 20));
+      const profileIds = [...new Set(query.profileIds ?? [])].sort();
+      const rows = await storage.query<SegmentationPopulationModelRow>(
+        profileIds.length
+          ? `SELECT * FROM ${storage.table("segmentation_population_models")} WHERE profile_ids && $1::text[] ORDER BY created_at DESC,id LIMIT $2`
+          : `SELECT * FROM ${storage.table("segmentation_population_models")} ORDER BY created_at DESC,id LIMIT $1`,
+        profileIds.length ? [profileIds, limit] : [limit]
+      );
+      return rows.map(rowToSegmentationPopulationModelRecord);
     }
   };
 }
@@ -4007,8 +4082,8 @@ function rowToConversationTurn(row: ConversationTurnRow): ConversationTurnRecord
 interface IngestionCheckpointRow { id: string; root_uri: string; item_uri: string; phase: IngestionCheckpoint["phase"]; status: IngestionCheckpoint["status"]; offset_bytes: string; content_hash: string | null; byte_length: string | null; reason: string | null; metadata_json: JsonValue; updated_at: Date }
 function rowToIngestionCheckpoint(row: IngestionCheckpointRow): IngestionCheckpoint { return { id: row.id, rootUri: row.root_uri, itemUri: row.item_uri, phase: row.phase, status: row.status, offsetBytes: Number(row.offset_bytes), contentHash: row.content_hash ? row.content_hash as ContentHash : undefined, byteLength: row.byte_length ? Number(row.byte_length) : undefined, reason: row.reason ?? undefined, updatedAt: row.updated_at.getTime(), metadata: row.metadata_json }; }
 
-interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date; information_label: JsonValue }
-function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime(), informationLabel: row.information_label ? normalizeInformationLabel(row.information_label as never) : undefined }; }
+interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date }
+function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime() }; }
 
 interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust_vector: JsonValue; metadata_json: JsonValue; namespace: string; canonical_uri: string }
 function rowToSourceVersion(row: SourceVersionRow): SourceVersion {

@@ -853,6 +853,12 @@ export interface ScceStorage extends StorageAdmin {
    * records, not merely a stored JSON checkpoint.
    */
   inducedLanguageModels?: import("./language-induction-persistence.js").InducedLanguageModelStore;
+  /**
+   * Durable learned segmentation populations selected by document-disjoint
+   * MDL. Unlike the obsolete spacing aggregate, records retain the complete
+   * sufficient statistics, estimators, assignments, and selection trace.
+   */
+  segmentationPopulations?: import("./segmentation-population-persistence.js").SegmentationPopulationModelStore;
 }
 
 export interface PolicyEvolutionStore {
@@ -901,7 +907,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 21;
+export const POSTGRES_SCHEMA_VERSION = 22;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -964,7 +970,8 @@ export const POSTGRES_REQUIRED_TABLES = [
   "sparse_ranking_models",
   "sparse_ranking_active_model",
   "segmentation_aggregates",
-  "induced_language_models"
+  "induced_language_models",
+  "segmentation_population_models"
 ] as const;
 
 export interface ScceKernelDeps {

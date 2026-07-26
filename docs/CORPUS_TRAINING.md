@@ -81,7 +81,7 @@ The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded 
 
 ## Activation and evidence limits
 
-- PostgreSQL schema v12 enforces at most one ACTIVE lifecycle row and repairs legacy duplicate-active state during migration.
+- PostgreSQL schema v22 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, and adds durable segmentation-population models.
 - Generic lifecycle CAS cannot enter or leave ACTIVE; activation must use the locked READY-only path.
 - Corpus promotion and language-memory eligibility do not certify facts. Exact evidence spans and graph/proof admissibility remain required for source-backed claims.
 
@@ -93,11 +93,11 @@ The primary induction engine performs a two-pass surface compile:
 
 1. build exact neutral lattices and collect weighted endpoint/interior agreement;
 2. reduce those observations into quantized integer sufficient statistics;
-3. fit one deterministic versioned boundary estimator for the current corpus population;
-4. rebuild each lattice with learned probabilities;
+3. reserve a deterministic document-disjoint holdout and compare non-collapsed population counts using held-out data nats plus model/assignment nats;
+4. refit the selected populations on admitted documents and rebuild each lattice with its posterior-weighted estimator mixture;
 5. calculate the complete bounded segmentation-DAG partition and retain deterministic k-best exact covers.
 
-The full sufficient statistics and estimator are stored inside the archived induced-language model. That makes the learned score reproducible and inspectable, but it is not yet the final compiled-brain activation path: dedicated population records, split/merge lifecycle, and direct forest hydration still remain. ICU lexical segmentation still proposes some higher candidates and must be replaced by source-induced candidates before universal segmentation is complete.
+The full sufficient statistics and baseline estimator remain in the archived induced-language model for comparison. The selected mixture is also written to `segmentation_population_models` with profile/source ownership, component statistics, estimators, assignments, candidate objectives, and fit/holdout identities. Profile-overlap lookup loads those records into the cached surface-language bundle. Direct use by every interpretation/realization lattice consumer, forest persistence, and affected-only overlay promotion still remain. ICU lexical segmentation still proposes some higher candidates and must be replaced by source-induced candidates before universal segmentation is complete.
 
 New n-gram state is emitted as `scce.kneser_ney.v2` with compiled successor arrays, overflow counts, base continuations, and precomputed backoff weights. Runtime hydration rejects model records without these compiled fields; turn-time inference does not rebuild an obsolete model by scanning all grams.
 

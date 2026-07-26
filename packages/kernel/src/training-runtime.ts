@@ -187,17 +187,7 @@ export function createTrainingRuntime(options: {
       const episodeId = idFactory.episodeId();
       const events: ScceEvent[] = [];
       let model = await deps.storage.model.readModel();
-      // Bootstrap seed for evidenceForLearning below: without an explicit
-      // seedNodeIds/evidenceIds/features filter, getSlice's Postgres
-      // implementation returns zero rows unless allowLatestFallback is set
-      // (queryNodes, postgres.ts) -- it refuses to guess what to return
-      // rather than silently scanning the whole table. Omitting this flag
-      // here meant every train() call's own graph-node bootstrap query was
-      // unconditionally empty, which made the derived evidence-search
-      // feature list empty, which made searchEvidence's own no-filter guard
-      // return [] too -- so promotion candidates were always empty
-      // regardless of what evidence or graph structure actually existed.
-      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000, allowLatestFallback: true });
+      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000 });
       const featureSketches = featureSketchLearner.learn(slice.nodes, 24);
       const pending = await deps.storage.quarantine.listPending({ limit: 500 });
       let profiles = await deps.storage.model.listLanguageProfiles(200);
@@ -242,6 +232,20 @@ export function createTrainingRuntime(options: {
         for (const pattern of projection.patterns) {
           await deps.storage.languageMemory.putLanguagePattern(pattern);
         }
+        if (deps.storage.segmentationPopulations) {
+          const projectedProfileIds = new Set(projection.profileIds);
+          await deps.storage.segmentationPopulations.putModel({
+            id: inducedLanguageModel.segmentationPopulations.id,
+            model: inducedLanguageModel.segmentationPopulations,
+            trainingPlanId: mvpTrainPlan.id,
+            profileIds: projection.profileIds,
+            sourceVersionIds: profiles
+              .filter(profile => projectedProfileIds.has(profile.id))
+              .map(profile => profile.sourceVersionId),
+            createdAt: clock.now(),
+            informationLabel: deps.sourceInformationLabel
+          });
+        }
         const languageModelPersistedEvent = await append(eventFactory.create({
           episodeId,
           typeId: "InducedLanguageModelPersisted",
@@ -250,6 +254,9 @@ export function createTrainingRuntime(options: {
             trainingPlanId: mvpTrainPlan.id,
             corpusDocuments: inducedLanguageModel.corpusDocuments,
             vocabularySize: inducedLanguageModel.vocabularySize,
+            segmentationPopulationModelId: inducedLanguageModel.segmentationPopulations.id,
+            segmentationPopulationCount: inducedLanguageModel.segmentationPopulations.populations.length,
+            segmentationPopulationRuntimeActive: Boolean(deps.storage.segmentationPopulations),
             memoryProjection: projection as unknown as JsonValue,
             runtimeActivePatterns: projection.patterns.length
           })

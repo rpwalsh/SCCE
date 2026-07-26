@@ -3,6 +3,7 @@ import { clamp01, createHasher, entropy, featureSet, mean, toJsonValue, weighted
 import {
   compileBoundaryStatistics,
   fitBoundaryEstimator,
+  mergeBoundaryStatistics,
   type BoundaryEstimatorModel,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
@@ -15,6 +16,11 @@ import {
   type SurfaceLattice
 } from "./surface-lattice.js";
 import type { SemanticRole } from "./semantic-graph.js";
+import {
+  boundaryMixtureForDocument,
+  learnSegmentationPopulations,
+  type SegmentationPopulationModel
+} from "./segmentation-population.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -158,6 +164,7 @@ export interface InducedLanguageModel {
   kneserNey: JsonValue;
   boundaryStatistics: BoundarySufficientStatistics;
   boundaryEstimator: BoundaryEstimatorModel;
+  segmentationPopulations: SegmentationPopulationModel;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
   syntaxTemplates: SyntaxTemplate[];
@@ -190,13 +197,26 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
         documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
       )).slice(0, 32)}`;
-      const boundaryStatistics = compileBoundaryStatistics({
-        populationId,
-        observations: collectBoundaryObservations(initialLattices.map(({ lattice }) => lattice)),
-        sourceDocumentIds: documents.map(document => document.id),
+      const documentBoundaryStatistics = initialLattices.map(({ doc, lattice }) => ({
+        documentId: doc.id,
+        statistics: compileBoundaryStatistics({
+          populationId,
+          observations: collectBoundaryObservations([lattice]),
+          sourceDocumentIds: [doc.id],
+          hasher
+        })
+      }));
+      const boundaryStatistics = mergeBoundaryStatistics(
+        documentBoundaryStatistics.map(document => document.statistics),
+        hasher,
+        populationId
+      );
+      const boundaryEstimator = fitBoundaryEstimator({ statistics: boundaryStatistics, hasher });
+      const segmentationPopulations = learnSegmentationPopulations({
+        rootPopulationId: populationId,
+        documents: documentBoundaryStatistics,
         hasher
       });
-      const boundaryEstimator = fitBoundaryEstimator({ statistics: boundaryStatistics, hasher });
       const lattices = documents.map(doc => ({
         doc,
         lattice: buildSurfaceLattice({
@@ -204,7 +224,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           text: doc.text,
           sourceVersionId: doc.sourceVersionId,
           evidenceIds: doc.evidenceIds,
-          boundaryEstimator,
+          boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
           hasher
         })
       }));
@@ -231,7 +251,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         docs: documents.map(d => d.id),
         symbols: symbolStrings.length,
         order,
-        boundaryEstimatorId: boundaryEstimator.id
+        boundaryEstimatorId: boundaryEstimator.id,
+        segmentationPopulationModelId: segmentationPopulations.id
       })).slice(0, 32)}`;
       return {
         id,
@@ -243,6 +264,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         kneserNey: compactKneserNeyForProfile(kn, corpusText.slice(0, 200000)),
         boundaryStatistics,
         boundaryEstimator,
+        segmentationPopulations,
         boundarySignals,
         morphology,
         syntaxTemplates,
@@ -264,6 +286,9 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           boundaryStatisticsId: boundaryStatistics.id,
           boundaryEstimatorId: boundaryEstimator.id,
           boundaryEstimatorPopulationId: populationId,
+          segmentationPopulationModelId: segmentationPopulations.id,
+          segmentationPopulationCount: segmentationPopulations.populations.length,
+          segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)
         })

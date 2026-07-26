@@ -2,6 +2,7 @@ import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 
 export const BOUNDARY_ESTIMATOR_SCHEMA = "scce.boundary_estimator.v1" as const;
+export const BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA = "scce.boundary_estimator_mixture.v1" as const;
 export const BOUNDARY_STATISTICS_SCHEMA = "scce.boundary_statistics.v1" as const;
 
 export interface BoundaryFeatureVector {
@@ -58,6 +59,19 @@ export interface BoundaryEstimatorModel {
   };
   audit: JsonValue;
 }
+
+export interface BoundaryEstimatorMixture {
+  schema: typeof BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA;
+  id: string;
+  populationModelId: string;
+  components: Array<{
+    populationId: string;
+    weight: number;
+    estimator: BoundaryEstimatorModel;
+  }>;
+}
+
+export type BoundaryEstimatorState = BoundaryEstimatorModel | BoundaryEstimatorMixture;
 
 const FEATURE_ORDER: readonly (keyof BoundaryFeatureVector)[] = [
   "whitespaceAdjacent",
@@ -123,11 +137,12 @@ export function compileBoundaryStatistics(input: {
 
 export function mergeBoundaryStatistics(
   statistics: readonly BoundarySufficientStatistics[],
-  hasher: Hasher = createHasher()
+  hasher: Hasher = createHasher(),
+  targetPopulationId?: string
 ): BoundarySufficientStatistics {
   if (!statistics.length) {
     return compileBoundaryStatistics({
-      populationId: "population.unassigned",
+      populationId: targetPopulationId ?? "population.unassigned",
       observations: [],
       hasher
     });
@@ -162,7 +177,7 @@ export function mergeBoundaryStatistics(
       negativeMass: row.negativeMass / MASS_SCALE
     }));
   return compileBoundaryStatistics({
-    populationId,
+    populationId: targetPopulationId ?? populationId,
     observations,
     sourceDocumentIds: statistics.flatMap(item => item.sourceDocumentIds),
     hasher
@@ -249,23 +264,62 @@ export function scoreBoundary(
   return clamp01(sigmoid(model.intercept + dot(model.weights, featureArray(features))));
 }
 
-function boundaryLogLoss(
-  statistics: BoundarySufficientStatistics,
-  weights: readonly number[],
-  intercept: number
+export function scoreBoundaryState(
+  state: BoundaryEstimatorState,
+  features: BoundaryFeatureVector
 ): number {
-  let loss = 0;
+  if (state.schema === BOUNDARY_ESTIMATOR_SCHEMA) return scoreBoundary(state, features);
+  if (state.schema !== BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA || state.components.length === 0) {
+    throw new Error("incompatible boundary estimator state");
+  }
+  const totalWeight = state.components.reduce((sum, component) =>
+    sum + Math.max(0, component.weight), 0);
+  if (totalWeight <= 0) throw new Error("boundary estimator mixture has no positive mass");
+  return clamp01(state.components.reduce((sum, component) =>
+    sum + Math.max(0, component.weight) * scoreBoundary(component.estimator, features), 0) / totalWeight);
+}
+
+export function boundaryNegativeLogLikelihood(
+  model: BoundaryEstimatorModel,
+  statistics: BoundarySufficientStatistics
+): { negativeLogLikelihood: number; mass: number; averageLogLoss: number } {
+  let negativeLogLikelihood = 0;
   let mass = 0;
   for (const row of statistics.rows) {
     const positive = row.positiveMass / MASS_SCALE;
     const negative = row.negativeMass / MASS_SCALE;
     const predicted = Math.min(1 - 1e-12, Math.max(1e-12, sigmoid(
-      intercept + dot(weights, row.featuresFixed.map(value => value / FIXED_SCALE))
+      model.intercept + dot(model.weights, row.featuresFixed.map(value => value / FIXED_SCALE))
     )));
-    loss += -positive * Math.log(predicted) - negative * Math.log(1 - predicted);
+    negativeLogLikelihood += -positive * Math.log(predicted) - negative * Math.log(1 - predicted);
     mass += positive + negative;
   }
-  return quantize(loss / Math.max(1, mass));
+  return {
+    negativeLogLikelihood: quantize(negativeLogLikelihood),
+    mass: quantize(mass),
+    averageLogLoss: quantize(negativeLogLikelihood / Math.max(1, mass))
+  };
+}
+
+function boundaryLogLoss(
+  statistics: BoundarySufficientStatistics,
+  weights: readonly number[],
+  intercept: number
+): number {
+  const synthetic: BoundaryEstimatorModel = {
+    schema: BOUNDARY_ESTIMATOR_SCHEMA,
+    id: "boundary_estimator.loss-evaluation",
+    populationId: statistics.populationId,
+    featureOrder: FEATURE_ORDER,
+    weights: [...weights],
+    intercept,
+    trainingStatisticsId: statistics.id,
+    iterations: 0,
+    l2: 0,
+    calibration: { examples: 0, positiveMass: 0, negativeMass: 0, logLoss: 0 },
+    audit: null
+  };
+  return boundaryNegativeLogLikelihood(synthetic, statistics).averageLogLoss;
 }
 
 function featureArray(features: BoundaryFeatureVector): number[] {
