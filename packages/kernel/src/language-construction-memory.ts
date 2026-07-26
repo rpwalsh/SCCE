@@ -71,6 +71,7 @@ export interface SourceBoundConstructionObservation {
 export interface SourceBoundLanguageConstructionTrainingSet {
   bindingId: string;
   observations: readonly SourceBoundConstructionObservation[];
+  alignmentSummary?: JsonValue;
 }
 
 export interface DurableSourceConstructionExample {

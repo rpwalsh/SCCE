@@ -10,7 +10,7 @@ import {
   deriveTurnRequirementField,
   detectCannedAnswerSpeech,
   featureSet,
-  legacyDetailProfileIdFromSignal
+  detailProfileIdFromSignal
 } from "../index.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, JsonValue, LanguageProfile, SourceVersion } from "../types.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "../storage.js";
@@ -945,9 +945,9 @@ describe("Mouth runtime surface planning", () => {
       targetLanguage: "fixture-language",
       brainMarker: { activeBrainVersion: "fixture-brain", activeImportRunIds: ["detail-discourse"] }
     };
-    const conciseProfileId = legacyDetailProfileIdFromSignal("brief");
-    const detailedProfileId = legacyDetailProfileIdFromSignal("detailed");
-    if (!conciseProfileId || !detailedProfileId) throw new Error("legacy detail boundary fixture failed");
+    const conciseProfileId = detailProfileIdFromSignal("brief");
+    const detailedProfileId = detailProfileIdFromSignal("detailed");
+    if (!conciseProfileId || !detailedProfileId) throw new Error("detail signal fixture failed");
     const concise = await mouth.speak({ ...shared, detailProfileId: conciseProfileId });
     const detailed = await mouth.speak({ ...shared, detailProfileId: detailedProfileId });
 
@@ -1631,7 +1631,7 @@ describe("Mouth runtime surface planning", () => {
           label: "construct.runtime_diagnostic",
           metadata: {
             schema: "scce.runtime_diagnostic_construct.v1",
-            answerSurface: "The running machine should answer from learned graph priors when they carry relevant topology; those priors are import-bound, not certified proof. LanguageMemory should only realize the selected meaning slots. Broad text-retrieval fallback is outside the intended runtime route.",
+            answerSurface: "The running machine should answer from learned graph priors when they carry relevant topology; those priors are import-bound, not certified proof. LanguageMemory should only realize the selected meaning slots. Broad text-retrieval recovery is outside the intended runtime route.",
             forceId: "output.force.import_bound",
             runtimeBoundary: "learned_priors_are_speakable_not_certifying"
           }

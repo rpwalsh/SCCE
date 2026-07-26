@@ -444,19 +444,19 @@ export function createLearningLoop(clock: Clock = createClock()) {
         graph: input.graph,
         now: clock.now()
       });
-      const goalGaps = input.goals.length ? input.goals.map((goal, index) => gapFromLegacyGoal(goal, input, index)) : [];
+      const goalGaps = input.goals.length ? input.goals.map((goal, index) => gapFromLearningGoal(goal, input, index)) : [];
       const gaps = dedupeGaps([...fieldGaps, ...goalGaps]).slice(0, 24);
       const capabilities = defaultSyntheticToolCapabilities();
       const learningNeeds = gaps.map(gap => learningNeedFromGap(gap, DEFAULT_LEARNING_POLICY));
       const sourcePlans = planLearningSources(gaps, capabilities, DEFAULT_LEARNING_POLICY);
       const byNeed = groupPlansByNeed(sourcePlans.map(toLearningSourcePlan));
-      const legacyNeeds: LearningNeedPlan[] = learningNeeds.map(need => ({
+      const learningNeedPlans: LearningNeedPlan[] = learningNeeds.map(need => ({
         ...need,
         goal: need.trace && typeof need.trace === "object" && !Array.isArray(need.trace) && typeof need.trace.goal === "string" ? need.trace.goal : need.needKindId,
         sourcePlans: byNeed.get(need.id) ?? [],
         continuation: (byNeed.get(need.id) ?? []).some(plan => plan.acquisition.promote === "after_validation") ? "answer_after_promotion" : "answer_with_unknown"
       }));
-      const goals = legacyNeeds.map(need => ({
+      const goals = learningNeedPlans.map(need => ({
         goal: need.goal,
         priority: need.priority,
         coverageGap: clamp01(1 - need.priority * 0.5),
@@ -467,11 +467,11 @@ export function createLearningLoop(clock: Clock = createClock()) {
       const promotionFocus = promotionFocusPlan(input.evidence);
       return {
         fieldGaps: gaps,
-        learningNeeds: legacyNeeds,
+        learningNeeds: learningNeedPlans,
         goals,
         globalSources,
         promotionFocus,
-        audit: toJsonValue({ source: "learning-loop.plan", fieldGaps: gaps, learningNeeds: legacyNeeds, goals, globalSources, promotionFocus })
+        audit: toJsonValue({ source: "learning-loop.plan", fieldGaps: gaps, learningNeeds: learningNeedPlans, goals, globalSources, promotionFocus })
       };
     }
   };
@@ -1236,7 +1236,7 @@ function gap(kindId: string, input: Partial<FieldGap>): FieldGap {
   };
 }
 
-function gapFromLegacyGoal(goal: string, input: { model: ModelState; graph: GraphSlice; evidence: EvidenceSpan[]; languageProfiles: LanguageProfile[] }, index: number): FieldGap {
+function gapFromLearningGoal(goal: string, input: { model: ModelState; graph: GraphSlice; evidence: EvidenceSpan[]; languageProfiles: LanguageProfile[] }, index: number): FieldGap {
   const features = featureSet(goal, 256);
   const evidenceFeatures = input.evidence.flatMap(span => span.features.slice(0, 64));
   const graphFeatures = input.graph.nodes.flatMap(node => node.features.slice(0, 64));
