@@ -33,6 +33,12 @@ export type AntiUnifiedSurfacePart =
     fixedSurface: string | null;
     graphVariableIds: string[];
     observedSurfaces: string[];
+    examples: Array<{
+      constructionId: string;
+      sourceFamilyId: string;
+      observedSurface: string;
+      graphTargetIds: string[];
+    }>;
   };
 
 export interface PairedAntiUnifiedConstruction {
@@ -117,6 +123,15 @@ export interface PairedAntiUnificationCompilation {
     constructionIds: string[];
     reasons: string[];
   }>;
+}
+
+export interface PairedVariabilityAdmission {
+  schema: "scce.graph_correlated_variability_admission.v1";
+  id: string;
+  modelId: string;
+  decisionId: string;
+  constructionId: string;
+  passed: true;
 }
 
 export function compilePairedAntiUnifiedConstructions(input: {
@@ -235,7 +250,14 @@ export function compilePairedAntiUnifiedConstructions(input: {
         fixedSurface: variable ? null : observedSurfaces[0]!,
         graphVariableIds: source.structuralPortKeys.map(key =>
           variableIdByKey.get(key)!),
-        observedSurfaces
+        observedSurfaces,
+        examples: allRows.map(row => ({
+          constructionId: row.construction.id,
+          sourceFamilyId: row.construction.surface.sourceFamilyId,
+          observedSurface: row.slots[index]!.observedSurface,
+          graphTargetIds: row.slots[index]!.structuralPortKeys.map(key =>
+            row.portByStructuralKey.get(key)!.graphTargetId).sort()
+        }))
       });
     }
     const tail = group[0].literals[group[0].literals.length - 1]!;
@@ -419,18 +441,24 @@ export function interpretAntiUnifiedConstruction(input: {
 }
 
 export function compilePairedAntiUnifiedPattern(
-  construction: PairedAntiUnifiedConstruction
+  construction: PairedAntiUnifiedConstruction,
+  admission: PairedVariabilityAdmission
 ): LanguagePatternRecord {
-  return compilePairedAntiUnifiedPatterns(construction)[0]!;
+  return compilePairedAntiUnifiedPatterns(construction, admission)[0]!;
 }
 
 export function compilePairedAntiUnifiedPatterns(
-  construction: PairedAntiUnifiedConstruction
+  construction: PairedAntiUnifiedConstruction,
+  admission: PairedVariabilityAdmission
 ): LanguagePatternRecord[] {
+  assertVariabilityAdmission(construction, admission);
   return construction.profileIds.map(profileId => ({
     id: stableId(createHasher(), "paired_anti_unified_pattern", [
       construction.id,
-      profileId
+      profileId,
+      admission.modelId,
+      admission.decisionId,
+      admission.id
     ]),
     profileId,
     patternKind: "semantic_role",
@@ -438,7 +466,8 @@ export function compilePairedAntiUnifiedPatterns(
     entropy: 0,
     patternJson: toJsonValue({
       schema: PAIRED_ANTI_UNIFIED_PATTERN_SCHEMA,
-      construction
+      construction,
+      admission
     }),
     evidenceIds: construction.provenance.evidenceIds as
       LanguagePatternRecord["evidenceIds"],
@@ -460,8 +489,10 @@ export function pairedAntiUnifiedConstructionsFromPatterns(
   for (const pattern of patterns) {
     if (!isPairedAntiUnifiedPattern(pattern)) continue;
     const value = recordOf(pattern.patternJson).construction;
+    const admissionValue = recordOf(pattern.patternJson).admission;
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const parsed = value as unknown as PairedAntiUnifiedConstruction;
+    const admission = admissionValue as unknown as PairedVariabilityAdmission;
     const { id, audit: _audit, ...identityMaterial } = parsed;
     const expectedConstructionId = stableId(
       createHasher(),
@@ -471,19 +502,57 @@ export function pairedAntiUnifiedConstructionsFromPatterns(
     const expectedPatternId = stableId(
       createHasher(),
       "paired_anti_unified_pattern",
-      [parsed.id, pattern.profileId]
+      [
+        parsed.id,
+        pattern.profileId,
+        admission.modelId,
+        admission.decisionId,
+        admission.id
+      ]
     );
     if (parsed.schema !== PAIRED_ANTI_UNIFIED_CONSTRUCTION_SCHEMA
       || !parsed.profileIds?.includes(pattern.profileId)
       || parsed.profileId !== parsed.profileIds[0]
       || id !== expectedConstructionId
       || pattern.id !== expectedPatternId
+      || admission.schema !== "scce.graph_correlated_variability_admission.v1"
+      || admission.constructionId !== parsed.id
+      || admission.passed !== true
+      || !admission.modelId
+      || !admission.decisionId
+      || admission.id !== variabilityAdmissionId(admission)
       || canonicalStringify(uniqueStrings(parsed.provenance?.evidenceIds ?? []))
         !== canonicalStringify(uniqueStrings(pattern.evidenceIds.map(String)))) continue;
     byId.set(parsed.id, parsed);
   }
   return [...byId.values()].sort((left, right) =>
     left.id.localeCompare(right.id));
+}
+
+function assertVariabilityAdmission(
+  construction: PairedAntiUnifiedConstruction,
+  admission: PairedVariabilityAdmission
+): void {
+  if (admission.schema !== "scce.graph_correlated_variability_admission.v1"
+    || admission.constructionId !== construction.id
+    || admission.passed !== true
+    || !admission.modelId
+    || !admission.decisionId
+    || admission.id !== variabilityAdmissionId(admission)) {
+    throw new Error("paired construction requires graph-correlated variability admission");
+  }
+}
+
+function variabilityAdmissionId(
+  admission: Omit<PairedVariabilityAdmission, "id"> | PairedVariabilityAdmission
+): string {
+  return stableId(createHasher(), "graph_correlated_variability_admission", {
+    schema: admission.schema,
+    modelId: admission.modelId,
+    decisionId: admission.decisionId,
+    constructionId: admission.constructionId,
+    passed: admission.passed
+  });
 }
 
 interface PreparedPort {

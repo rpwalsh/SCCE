@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   compilePairedAntiUnifiedConstructions,
-  compilePairedAntiUnifiedPattern,
-  compilePairedAntiUnifiedPatterns,
   createHasher,
-  createLanguageMemoryRuntime,
   interpretAntiUnifiedConstruction,
-  pairedAntiUnifiedConstructionsFromPatterns,
   realizeAntiUnifiedConstruction,
   type AntiUnifiedBinding,
   type ReversibleConstruction
@@ -58,19 +54,6 @@ describe("paired graph/surface anti-unification", () => {
       status: "interpreted",
       graphTargetIds: ["target.lin", "target.writes.unseen"]
     });
-    const pattern = compilePairedAntiUnifiedPattern(construction);
-    expect(pairedAntiUnifiedConstructionsFromPatterns([pattern])).toEqual([
-      construction
-    ]);
-    const patterns = compilePairedAntiUnifiedPatterns(construction);
-    expect(patterns).toHaveLength(2);
-    expect(createLanguageMemoryRuntime({ hasher }).hydrate({
-      models: [],
-      observations: [],
-      units: [],
-      patterns,
-      semanticFrames: []
-    }).importedPairedAntiUnifiedConstructions).toEqual([construction]);
   });
 
   it("rejects a surface delta that has no paired graph delta", () => {

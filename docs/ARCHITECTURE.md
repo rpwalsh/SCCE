@@ -128,6 +128,9 @@ validation so credentials need not be committed.
 - `paired-anti-unification.ts`: source-family-independent least-general
   graph/surface generalization, graph-correlated localized variables,
   profile-specific persistence wrappers and typed bidirectional execution.
+- `graph-correlated-variability.ts`: source-family cross-validated delta
+  mutual information, predictive gain, deterministic permutation controls and
+  the mandatory admission between generalized construction and persistence.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

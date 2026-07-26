@@ -115,6 +115,9 @@ answer lane.
 - `paired-anti-unification.ts`: Item-27 paired least-general generalization over
   promoted exact constructions, with localized graph-correlated surface variables,
   executable typed bindings, persistence and hydration.
+- `graph-correlated-variability.ts`: Item-28 cross-family surface/graph delta
+  dependence, predictive-gain and shuffled-null gate required before Item-27
+  artifacts can persist or hydrate.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.
