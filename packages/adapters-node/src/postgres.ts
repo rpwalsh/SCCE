@@ -1331,9 +1331,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       where.push(access.sql);
       params.push(...access.params);
       params.push(query.limit ?? 80);
+      // A bare integer literal in ORDER BY is a positional column reference
+      // in Postgres, not a constant -- "ORDER BY 0" is invalid (positions
+      // start at 1) and throws "ORDER BY position 0 is not in select
+      // list" for any searchEvidence call with no anchor/GIN features
+      // (e.g. querying by sourceVersionId/status alone). Cast to make it
+      // an expression instead of a position reference.
       const overlap = featureParamIndex > 0
         ? `(SELECT COUNT(*) FROM unnest(ev.features) AS f(feature) WHERE f.feature = ANY($${featureParamIndex}::text[]))`
-        : "0";
+        : "0::int";
       const rows = await storage.query<EvidenceRow>(`SELECT ev.* FROM ${storage.table("evidence_spans")} ev WHERE ${where.join(" AND ")} ORDER BY ${overlap} DESC, CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC, ev.alpha DESC, ev.observed_at DESC LIMIT $${params.length}`, params);
       return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres feature/source bounded evidence search" }));
     },
