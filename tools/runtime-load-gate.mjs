@@ -32,12 +32,17 @@ if (args.includes("--help")) {
     "  --requests <count>          total cap; default 100, or 100000 with duration",
     "  --duration-seconds <count>  run until the duration expires",
     "  --concurrency <count>       default 4",
-    "  --timeout-ms <count>        per-turn timeout, default 120000",
+    "  --timeout-ms <count>        per-turn timeout, default 10000 (see docs/EVALUATION_PROTOCOL.md)",
     "  --max-error-rate <0..1>     default 0",
-    "  --max-p95-ms <count>        optional latency-estimate gate",
-    "  --min-throughput <count>    optional requests/second gate",
+    "  --max-p95-ms <count>        required latency-estimate gate",
+    "  --min-throughput <count>    required requests/second gate",
+    "  --allow-unbounded           explicitly skip the p95/throughput gates",
     "  --out <path>                optional JSON report path",
     "  --allow-remote              permit a non-loopback server URL",
+    "",
+    "This client measures its own observed latency/throughput/error-rate only.",
+    "It does not gate server-side CPU-seconds or peak RSS -- the server has no",
+    "endpoint exposing process resource usage yet; see docs/EVALUATION_PROTOCOL.md.",
     ""
   ].join("\n"));
   process.exit(0);
@@ -54,10 +59,24 @@ if (Buffer.byteLength(workloadId, "utf8") > MAX_WORKLOAD_ID_BYTES) throw new Err
 const serverUrl = new URL(valueAfter("--server-url") ?? process.env.SCCE_LOAD_SERVER_URL ?? "http://127.0.0.1:3873");
 if (!args.includes("--allow-remote") && !isLoopback(serverUrl.hostname)) throw new Error("non-loopback load targets require --allow-remote");
 const concurrency = boundedInteger(numberAfter("--concurrency") ?? 4, 1, 256, "concurrency");
-const timeoutMs = boundedInteger(numberAfter("--timeout-ms") ?? 120_000, 1, 3_600_000, "timeout-ms");
+// Default matches docs/EVALUATION_PROTOCOL.md's "no normal interactive
+// request exceeds 10s" contract, not an arbitrary round number -- a run
+// that needs longer than that to even time out a single request is
+// already failing the contract this gate exists to enforce.
+const timeoutMs = boundedInteger(numberAfter("--timeout-ms") ?? 10_000, 1, 3_600_000, "timeout-ms");
 const durationSeconds = optionalPositive(numberAfter("--duration-seconds"), "duration-seconds");
 const requestedCount = boundedInteger(numberAfter("--requests") ?? (durationSeconds === undefined ? 100 : 100_000), 1, 1_000_000, "requests");
 const maxErrorRate = boundedNumber(numberAfter("--max-error-rate") ?? 0, 0, 1, "max-error-rate");
+// p95 and throughput gates are mandatory (plan item L15): a load run with
+// no latency/throughput bar to clear can silently regress indefinitely
+// without ever failing CI. A caller who genuinely wants an exploratory,
+// gateless run must say so explicitly via --allow-unbounded, not get an
+// unbounded run for free by omitting the flags.
+const allowUnbounded = args.includes("--allow-unbounded");
+if (!allowUnbounded && (valueAfter("--max-p95-ms") === undefined || valueAfter("--min-throughput") === undefined)) {
+  process.stderr.write("runtime load gate requires --max-p95-ms <count> and --min-throughput <count> (see docs/EVALUATION_PROTOCOL.md); pass --allow-unbounded to explicitly opt out for an exploratory run\n");
+  process.exit(2);
+}
 const maxP95Ms = optionalPositive(numberAfter("--max-p95-ms"), "max-p95-ms");
 const minThroughput = optionalPositive(numberAfter("--min-throughput"), "min-throughput");
 const outputPath = valueAfter("--out");
