@@ -103,6 +103,7 @@ pnpm scce db migrate
 pnpm scce db verify
 pnpm rehearsal:postgres
 pnpm rehearsal:adapter
+pnpm rehearsal:sparse-ranking
 ```
 
 The server does not migrate PostgreSQL automatically. Run the migration for the exact
