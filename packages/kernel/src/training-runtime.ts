@@ -184,7 +184,7 @@ export function createTrainingRuntime(options: {
       const episodeId = idFactory.episodeId();
       const events: ScceEvent[] = [];
       let model = await deps.storage.model.readModel();
-      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000, allowLatestFallback: true });
+      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000 });
       const featureSketches = featureSketchLearner.learn(slice.nodes, 24);
       const pending = await deps.storage.quarantine.listPending({ limit: 500 });
       let profiles = await deps.storage.model.listLanguageProfiles(200);

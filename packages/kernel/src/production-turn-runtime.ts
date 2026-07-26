@@ -923,12 +923,12 @@ export function createProductionTurnRuntime(options: {
         : promoted;
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds));
       const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence]);
-      const selectedTemporalFallback = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
-      const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalFallback)
+      const selectedTemporalCandidateEvidence = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
+      const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalCandidateEvidence)
         ? await deps.storage.evidence.getEvidenceBatch(selectedEvidence.map(span => span.id))
         : [];
       const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, selectedEvidence.map(span => span.id))
-        ?? selectedTemporalFallback;
+        ?? selectedTemporalCandidateEvidence;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       markTiming("proofMs");
       const semanticProofContradiction = typeof semanticProof.contradiction === "number"

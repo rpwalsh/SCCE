@@ -589,11 +589,11 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
             ? "guard.invention.production_structural_authority.v1"
             : "guard.invention.learned_realization_priority.v1",
           productionStructuralAuthority,
-          coldStartFallbackActive: false,
+          coldStartSubstitutionActive: false,
           mouthRealizationHandoffActive,
           learnedCandidateCount: productionStructuralAuthority ? 0 : learnedDrafts.length,
           structuralCandidateCount: structuralDrafts.length,
-          fallbackCandidateCount: 0,
+          syntheticCandidateCount: 0,
           mouthHandoffCandidateCount: productionStructuralAuthority ? 0 : mouthHandoffDrafts.length
         },
         bootstrapCoefficients: {
