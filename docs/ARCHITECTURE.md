@@ -102,9 +102,11 @@ validation so credentials need not be committed.
   prior-times-document-likelihood posteriors for stored and unseen documents,
   source-family-disjoint fit/selection/guard/evaluation partitions, content-derived
   population identities, and per-child merge guards without language-specific routing.
-- `join-program.ts`: derivation- and population-conditioned opaque exact-source join
-  distributions, source-disjoint held-out evaluation, and explicit uncertainty
-  outcomes with no global join or silent-concatenation fallback.
+- `join-program.ts`: derivation- and task-population-conditioned opaque exact-source
+  join distributions; source-family-disjoint fit, threshold selection and final
+  evaluation; exact coordinate provenance; factored backoff; explicit unknown
+  population mass; and typed uncertainty outcomes with no global join or
+  silent-concatenation fallback.
 - `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
   configuration, seed and sorted derived component identities, with nested unordered
   field canonicalization, duplicate-ID rejection and graph-reference integrity.

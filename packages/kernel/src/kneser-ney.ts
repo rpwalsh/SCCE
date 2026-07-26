@@ -56,6 +56,8 @@ export interface BoundedProseContinuation {
   trace: KneserNeyPrediction[];
   joinTrace: JoinProgramTraceStep[];
   unresolvedBoundaries: number;
+  joinStatus: "resolved" | "preserved_source_span" | "unresolved";
+  joinRequiredAction?: "try_alternate_derivation" | "request_additional_evidence";
 }
 
 export function trainKneserNey(text: string | readonly string[], options: { order?: number; discount?: number; vocabularyLimit?: number } = {}): KneserNeyModel {
@@ -236,7 +238,11 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
     stoppedBy,
     trace,
     joinTrace: joined.trace,
-    unresolvedBoundaries: joined.unresolvedBoundaries
+    unresolvedBoundaries: joined.unresolvedBoundaries,
+    joinStatus: joined.status,
+    ...(joined.requiredAction
+      ? { joinRequiredAction: joined.requiredAction }
+      : {})
   };
 }
 
