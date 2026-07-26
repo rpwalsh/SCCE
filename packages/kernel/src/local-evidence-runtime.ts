@@ -352,6 +352,14 @@ export function proposeSourceExactEvidenceAnswer(input: {
 }): LocalEvidenceAnswerCandidate | undefined {
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!promoted.length) return undefined;
+  // A request implying a temporal counterexample (e.g. "did X invent Y?"
+  // when Y's evidence-attested history predates X's lifespan) needs the
+  // richer, multi-sentence temporalCounterexampleAnswerPlan in
+  // localEvidenceAnswerPlan -- pairing the counterexample marker sentence
+  // with its development context, not this function's single
+  // highest-scoring sentence. Defer to that path instead of returning a
+  // single generic sentence that happens to score well here.
+  if (temporalCounterexampleExpected(input.requestText, promoted)) return undefined;
   const anchored = sourceAnchoredEvidenceForRequest(
     input.requestText,
     promoted,
@@ -940,6 +948,15 @@ export function assistantForceFromLocalEvidenceAudit(audit: JsonValue, defaultFo
       [LOCAL_ANSWER_SLOT_IDS.conceptEvidence]: conceptSentence,
       [LOCAL_ANSWER_SLOT_IDS.counterexampleEvidence]: counterSentence
     },
+    // Without this, localEvidenceAnswerProofExcerpts falls back to
+    // Object.values(slotSurfaces), whose order is incidental to object key
+    // insertion order rather than a deliberate answer order. State the
+    // order explicitly: the counterexample itself (e.g. "attested in
+    // 1478") leads, the broader development context it's drawn from
+    // follows -- readers need the specific fact that contradicts the
+    // premise before the surrounding history that explains it.
+    proofExcerpts: uniqueKernelStrings([counterSentence, conceptSentence])
+      .map(text => ({ text, evidenceId: counter.span.id })),
     maxSentences: 3,
     audit: toJsonValue({
       source: "turn.basis.7f1c2a90",
@@ -2878,7 +2895,11 @@ export function attachLocalEvidenceAnswerConstruct(input: {
     if (concept || counter) facts.push(localEvidenceSemanticFact({
       subject: cleanSourceAnswerSurface(evidenceTitle(plan.evidence[0]!) || subject),
       predicate: kernelString(jsonRecord(plan.audit).counterexampleDate) ?? "",
-      object: uniqueKernelStrings([concept, counter]).map(surface => ensureUnicodeSurfaceSentence(surface)).join(" "),
+      // The counterexample itself (e.g. "attested in 1478") leads; the
+      // broader development context it's drawn from follows -- readers
+      // need the specific fact that contradicts the premise before the
+      // surrounding history that explains it.
+      object: uniqueKernelStrings([counter, concept]).map(surface => ensureUnicodeSurfaceSentence(surface)).join(" "),
       relationId: LOCAL_ANSWER_RELATION_IDS.temporalCounterexample,
       evidence: plan.evidence,
       index: facts.length,
