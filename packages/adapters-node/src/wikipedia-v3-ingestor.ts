@@ -958,6 +958,9 @@ export class WikipediaV3Ingestor {
       let unresolvedTransportEvidenceCount = 0;
       let unresolvedTransportEvidenceAllocationCount = 0;
       let maximumTransportEvidenceResidual = 0;
+      const typedNullCostModelIds = new Set<string>();
+      let surfaceNullMass = 0;
+      let graphImplicitMass = 0;
       for (const span of evidence) {
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
@@ -986,6 +989,15 @@ export class WikipediaV3Ingestor {
         transportPlanIds.push(transport.id);
         transportIterationCount += transport.iterations.length;
         transportedCellCount += transport.cells.length;
+        typedNullCostModelIds.add(transport.typedNullCostModelId);
+        surfaceNullMass += transport.rowMarginals.reduce(
+          (sum, row) => sum + row.surfaceNullMass,
+          0
+        );
+        graphImplicitMass += transport.columnMarginals.reduce(
+          (sum, column) => sum + column.graphImplicitMass,
+          0
+        );
         const allocation = allocateTransportEvidence({
           plan: transport,
           support,
@@ -1039,6 +1051,10 @@ export class WikipediaV3Ingestor {
           unresolvedTransportEvidenceAllocationCount,
           maximumTransportEvidenceResidual,
           evidenceMassConserved: unresolvedTransportEvidenceAllocationCount === 0,
+          typedNullCostModelIds: [...typedNullCostModelIds].sort(),
+          typedNullCostsCalibrated: false,
+          surfaceNullMass,
+          graphImplicitMass,
           transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
           globalOptimalityClaimed: false,
           candidateMemory: "O(|S|*K_pi)",

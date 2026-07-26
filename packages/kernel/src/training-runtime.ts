@@ -111,6 +111,9 @@ export function createTrainingRuntime(options: {
     let sparseTransportCells = 0;
     let transportEvidenceAllocations = 0;
     let unresolvedTransportEvidenceAllocations = 0;
+    let typedNullCostModels = 0;
+    let surfaceNullMass = 0;
+    let graphImplicitMass = 0;
     let profilesCreated = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
@@ -185,6 +188,21 @@ export function createTrainingRuntime(options: {
       transportEvidenceAllocations += memory.transportEvidenceAllocations.length;
       unresolvedTransportEvidenceAllocations += memory.transportEvidenceAllocations
         .filter(allocation => allocation.status === "unresolved_evidence").length;
+      typedNullCostModels += memory.typedNullCostModel ? 1 : 0;
+      surfaceNullMass += memory.sparseTransportPlans.reduce(
+        (sum, plan) => sum + plan.rowMarginals.reduce(
+          (rowSum, row) => rowSum + row.surfaceNullMass,
+          0
+        ),
+        0
+      );
+      graphImplicitMass += memory.sparseTransportPlans.reduce(
+        (sum, plan) => sum + plan.columnMarginals.reduce(
+          (columnSum, column) => columnSum + column.graphImplicitMass,
+          0
+        ),
+        0
+      );
     }
     return {
       profiles,
@@ -204,7 +222,10 @@ export function createTrainingRuntime(options: {
         sparseTransportPlans,
         sparseTransportCells,
         transportEvidenceAllocations,
-        unresolvedTransportEvidenceAllocations
+        unresolvedTransportEvidenceAllocations,
+        typedNullCostModels,
+        surfaceNullMass,
+        graphImplicitMass
       })
     };
   }

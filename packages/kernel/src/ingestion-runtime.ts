@@ -511,6 +511,9 @@ export function createIngestionRuntime(options: {
         let unresolvedTransportEvidenceCount = 0;
         let unresolvedTransportEvidenceAllocationCount = 0;
         let maximumTransportEvidenceResidual = 0;
+        const typedNullCostModelIds = new Set<string>();
+        let surfaceNullMass = 0;
+        let graphImplicitMass = 0;
         for (const span of relationEvidence) {
           const lattice = buildSurfaceLattice({
             documentId: String(span.id),
@@ -539,6 +542,15 @@ export function createIngestionRuntime(options: {
           transportPlanIds.push(transport.id);
           transportIterationCount += transport.iterations.length;
           transportedCellCount += transport.cells.length;
+          typedNullCostModelIds.add(transport.typedNullCostModelId);
+          surfaceNullMass += transport.rowMarginals.reduce(
+            (sum, row) => sum + row.surfaceNullMass,
+            0
+          );
+          graphImplicitMass += transport.columnMarginals.reduce(
+            (sum, column) => sum + column.graphImplicitMass,
+            0
+          );
           const allocation = allocateTransportEvidence({
             plan: transport,
             support,
@@ -593,6 +605,10 @@ export function createIngestionRuntime(options: {
             unresolvedTransportEvidenceAllocationCount,
             maximumTransportEvidenceResidual,
             evidenceMassConserved: unresolvedTransportEvidenceAllocationCount === 0,
+            typedNullCostModelIds: [...typedNullCostModelIds].sort(),
+            typedNullCostsCalibrated: false,
+            surfaceNullMass,
+            graphImplicitMass,
             transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
             globalOptimalityClaimed: false,
             candidateMemory: "O(|S|*K_pi)",

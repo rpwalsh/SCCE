@@ -112,6 +112,17 @@ describe("shared language training batch", () => {
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length
     );
     expect(compiled.sparseTransportPlans[0]!.globalOptimalityClaimed).toBe(false);
+    expect(compiled.typedNullCostModel).toMatchObject({
+      schema: "scce.typed_null_alignment_cost_model.v1",
+      calibrated: false
+    });
+    expect(compiled.sparseTransportPlans[0]!.typedNullCostModelId).toBe(
+      compiled.typedNullCostModel!.id
+    );
+    expect(compiled.sparseTransportPlans[0]!.rowMarginals.every(row =>
+      row.surfaceNullMass >= 0)).toBe(true);
+    expect(compiled.sparseTransportPlans[0]!.columnMarginals.every(column =>
+      column.graphImplicitMass >= 0)).toBe(true);
     expect(compiled.transportEvidenceAllocations).toHaveLength(1);
     expect(compiled.transportEvidenceAllocations[0]!.status).toBe("conserved");
     expect(compiled.transportEvidenceAllocations[0]!.totalAllocatedMass).toBeCloseTo(

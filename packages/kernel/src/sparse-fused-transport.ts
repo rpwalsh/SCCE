@@ -5,6 +5,16 @@ import type {
   SparseAlignmentTarget,
   SparseAlignmentTargetIndex
 } from "./sparse-alignment-candidates.js";
+import {
+  classifyGraphImplicitType,
+  classifySurfaceNullType,
+  compileTypedNullCostModel,
+  graphImplicitEstimate,
+  surfaceNullEstimate,
+  type GraphImplicitType,
+  type SurfaceNullType,
+  type TypedNullCostModel
+} from "./typed-null-alignment.js";
 import type { Hasher, JsonValue } from "./types.js";
 
 export const SPARSE_FUSED_TRANSPORT_SCHEMA =
@@ -81,6 +91,7 @@ export interface SparseFusedTransportPlan {
   id: string;
   supportId: string;
   targetIndexId: string;
+  typedNullCostModelId: string;
   status: "converged" | "iteration_budget_exhausted" | "work_budget_exhausted";
   globalOptimalityClaimed: false;
   objective: SparseTransportObjective;
@@ -88,14 +99,22 @@ export interface SparseFusedTransportPlan {
   cells: SparseTransportCell[];
   rowMarginals: Array<{
     surfaceUnitId: string;
+    nullType: SurfaceNullType;
+    nullCost: number;
     targetMass: number;
     transportedMass: number;
+    surfaceNullMass: number;
+    overflowMass: number;
     residual: number;
   }>;
   columnMarginals: Array<{
     graphTargetId: string;
+    implicitType: GraphImplicitType;
+    implicitCost: number;
     targetMass: number;
     transportedMass: number;
+    graphImplicitMass: number;
+    overflowMass: number;
     residual: number;
   }>;
   iterations: SparseTransportIteration[];
@@ -117,6 +136,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   support: SparseAlignmentCandidateSupport;
   targetIndex: SparseAlignmentTargetIndex;
   objective?: SparseTransportObjective;
+  typedNullCostModel?: TypedNullCostModel;
   budget?: Partial<SparseTransportBudget>;
   hasher?: Hasher;
 }): SparseFusedTransportPlan {
@@ -127,12 +147,22 @@ export function solveSparseFusedUnbalancedTransport(input: {
   const objective = validatedObjective(input.objective ?? SPARSE_TRANSPORT_OBJECTIVE_V1);
   const budget = transportBudget(input.budget);
   const targetById = new Map(input.targetIndex.targets.map(target => [target.id, target]));
+  const typedNullCostModel = input.typedNullCostModel ?? compileTypedNullCostModel({
+    supports: [input.support],
+    targetIndex: input.targetIndex,
+    hasher
+  });
+  if (typedNullCostModel.targetIndexId !== input.targetIndex.id) {
+    throw new Error("typed null cost model and target index do not match");
+  }
   const rowIds = input.support.rows.map(row => row.surfaceUnitId);
-  const columnIds = [...new Set(input.support.candidates.map(
-    candidate => candidate.graphTargetId
-  ))].sort();
+  const columnIds = input.targetIndex.targets.map(target => target.id);
   const rowIndex = new Map(rowIds.map((id, index) => [id, index]));
   const columnIndex = new Map(columnIds.map((id, index) => [id, index]));
+  const candidateById = new Map(input.support.candidates.map(candidate => [
+    candidate.id,
+    candidate
+  ]));
   const rowCandidateIds = new Map(input.support.rows.map(row => [
     row.surfaceUnitId,
     new Set(row.candidateIds)
@@ -157,10 +187,20 @@ export function solveSparseFusedUnbalancedTransport(input: {
   }));
   const rowCells = groupedCellIndexes(cells, cell => cell.row, rowIds.length);
   const columnCells = groupedCellIndexes(cells, cell => cell.column, columnIds.length);
-  const activeRowCount = Math.max(1, rowCells.filter(indexes => indexes.length).length);
-  const activeColumnCount = Math.max(1, columnCells.filter(indexes => indexes.length).length);
-  const surfaceTargetMass = rowCells.map(indexes => indexes.length ? 1 / activeRowCount : 0);
-  const graphTargetMass = columnCells.map(indexes => indexes.length ? 1 / activeColumnCount : 0);
+  const surfaceTargetMass = rowCells.map(() => rowCells.length ? 1 / rowCells.length : 0);
+  const graphTargetMass = columnCells.map(() =>
+    columnCells.length ? 1 / columnCells.length : 0);
+  const surfaceNullTypes = input.support.rows.map(row =>
+    classifySurfaceNullType(row.candidateIds.flatMap(candidateId => {
+      const candidate = candidateById.get(candidateId);
+      return candidate ? [candidate] : [];
+    })));
+  const graphImplicitTypes = columnIds.map(columnId =>
+    classifyGraphImplicitType(targetById.get(columnId)!));
+  const surfaceNullCosts = surfaceNullTypes.map(type =>
+    surfaceNullEstimate(typedNullCostModel, type).unmatchedCost);
+  const graphImplicitCosts = graphImplicitTypes.map(type =>
+    graphImplicitEstimate(typedNullCostModel, type).unmatchedCost);
   const iterations: SparseTransportIteration[] = [];
   let previousObjective: number | undefined;
   let status: SparseFusedTransportPlan["status"] = "iteration_budget_exhausted";
@@ -180,6 +220,8 @@ export function solveSparseFusedUnbalancedTransport(input: {
       columnCells,
       surfaceTargetMass,
       graphTargetMass,
+      surfaceNullCosts,
+      graphImplicitCosts,
       objective,
       maxIterations: budget.maxSinkhornIterations,
       residualTolerance: budget.marginalResidualTolerance
@@ -207,6 +249,8 @@ export function solveSparseFusedUnbalancedTransport(input: {
       columnCells,
       surfaceTargetMass,
       graphTargetMass,
+      surfaceNullCosts,
+      graphImplicitCosts,
       objective
     });
     const relativeImprovement = previousObjective === undefined
@@ -236,20 +280,30 @@ export function solveSparseFusedUnbalancedTransport(input: {
 
   const rowMarginals = rowIds.map((surfaceUnitId, index) => {
     const transportedMass = sumIndexes(rowCells[index] ?? [], cells);
+    const targetMass = surfaceTargetMass[index] ?? 0;
     return {
       surfaceUnitId,
-      targetMass: quantize(surfaceTargetMass[index] ?? 0),
+      nullType: surfaceNullTypes[index]!,
+      nullCost: quantize(surfaceNullCosts[index]!),
+      targetMass: quantize(targetMass),
       transportedMass: quantize(transportedMass),
-      residual: quantize(Math.abs(transportedMass - (surfaceTargetMass[index] ?? 0)))
+      surfaceNullMass: quantize(Math.max(0, targetMass - transportedMass)),
+      overflowMass: quantize(Math.max(0, transportedMass - targetMass)),
+      residual: quantize(Math.abs(transportedMass - targetMass))
     };
   });
   const columnMarginals = columnIds.map((graphTargetId, index) => {
     const transportedMass = sumIndexes(columnCells[index] ?? [], cells);
+    const targetMass = graphTargetMass[index] ?? 0;
     return {
       graphTargetId,
-      targetMass: quantize(graphTargetMass[index] ?? 0),
+      implicitType: graphImplicitTypes[index]!,
+      implicitCost: quantize(graphImplicitCosts[index]!),
+      targetMass: quantize(targetMass),
       transportedMass: quantize(transportedMass),
-      residual: quantize(Math.abs(transportedMass - (graphTargetMass[index] ?? 0)))
+      graphImplicitMass: quantize(Math.max(0, targetMass - transportedMass)),
+      overflowMass: quantize(Math.max(0, transportedMass - targetMass)),
+      residual: quantize(Math.abs(transportedMass - targetMass))
     };
   });
   const planCells: SparseTransportCell[] = cells.map(cell => ({
@@ -270,6 +324,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     schema: SPARSE_FUSED_TRANSPORT_SCHEMA,
     supportId: input.support.id,
     targetIndexId: input.targetIndex.id,
+    typedNullCostModelId: typedNullCostModel.id,
     status,
     globalOptimalityClaimed: false as const,
     objective,
@@ -290,6 +345,24 @@ export function solveSparseFusedUnbalancedTransport(input: {
       denseMatrixMaterialized: false,
       localStructuralApproximation: true,
       exactAnchorRows: rowHasExactAnchor.size,
+      typedNullCostModelId: typedNullCostModel.id,
+      typedNullCostModelCalibrated: typedNullCostModel.calibrated,
+      surfaceNullMass: quantize(rowMarginals.reduce(
+        (sum, row) => sum + row.surfaceNullMass,
+        0
+      )),
+      graphImplicitMass: quantize(columnMarginals.reduce(
+        (sum, column) => sum + column.graphImplicitMass,
+        0
+      )),
+      surfaceOverflowMass: quantize(rowMarginals.reduce(
+        (sum, row) => sum + row.overflowMass,
+        0
+      )),
+      graphOverflowMass: quantize(columnMarginals.reduce(
+        (sum, column) => sum + column.overflowMass,
+        0
+      )),
       structuralComparisons: structuralComparisonsTotal,
       estimatedWorkingBytes: estimatedWorkingBytes(cells.length, rowIds.length, columnIds.length),
       objectiveCalibrated: false,
@@ -304,16 +377,22 @@ function sparseSinkhorn(input: {
   columnCells: readonly number[][];
   surfaceTargetMass: readonly number[];
   graphTargetMass: readonly number[];
+  surfaceNullCosts: readonly number[];
+  graphImplicitCosts: readonly number[];
   objective: SparseTransportObjective;
   maxIterations: number;
   residualTolerance: number;
 }): { iterations: number; scalingResidual: number } {
   if (!input.cells.length) return { iterations: 0, scalingResidual: 0 };
   const epsilon = input.objective.entropyEpsilon;
-  const surfacePower = input.objective.surfaceUnbalancedTau
-    / (input.objective.surfaceUnbalancedTau + epsilon);
-  const graphPower = input.objective.graphUnbalancedTau
-    / (input.objective.graphUnbalancedTau + epsilon);
+  const surfacePowers = input.surfaceNullCosts.map(cost => {
+    const tau = input.objective.surfaceUnbalancedTau * Math.max(0.05, cost);
+    return tau / (tau + epsilon);
+  });
+  const graphPowers = input.graphImplicitCosts.map(cost => {
+    const tau = input.objective.graphUnbalancedTau * Math.max(0.05, cost);
+    return tau / (tau + epsilon);
+  });
   const kernel = input.cells.map(cell => Math.exp(
     -Math.max(-20, Math.min(80, cell.effectiveCost / epsilon))
   ));
@@ -330,7 +409,7 @@ function sparseSinkhorn(input: {
         sum + kernel[index]! * v[input.cells[index]!.column]!, 0);
       const next = Math.pow(
         (input.surfaceTargetMass[row] ?? 0) / Math.max(1e-300, denominator),
-        surfacePower
+        surfacePowers[row] ?? 1
       );
       maxChange = Math.max(maxChange, relativeChange(u[row]!, next));
       u[row] = finiteScale(next);
@@ -342,7 +421,7 @@ function sparseSinkhorn(input: {
         sum + kernel[index]! * u[input.cells[index]!.row]!, 0);
       const next = Math.pow(
         (input.graphTargetMass[column] ?? 0) / Math.max(1e-300, denominator),
-        graphPower
+        graphPowers[column] ?? 1
       );
       maxChange = Math.max(maxChange, relativeChange(v[column]!, next));
       v[column] = finiteScale(next);
@@ -445,6 +524,8 @@ function objectiveComponents(input: {
   columnCells: readonly number[][];
   surfaceTargetMass: readonly number[];
   graphTargetMass: readonly number[];
+  surfaceNullCosts: readonly number[];
+  graphImplicitCosts: readonly number[];
   objective: SparseTransportObjective;
 }): Omit<SparseTransportIteration,
   "outerIteration" | "sinkhornIterations" | "sinkhornScalingResidual"
@@ -463,8 +544,16 @@ function objectiveComponents(input: {
   ));
   const rowMass = input.rowCells.map(indexes => sumIndexes(indexes, input.cells));
   const columnMass = input.columnCells.map(indexes => sumIndexes(indexes, input.cells));
-  const surfaceMarginalKl = quantize(generalizedKl(rowMass, input.surfaceTargetMass));
-  const graphMarginalKl = quantize(generalizedKl(columnMass, input.graphTargetMass));
+  const surfaceMarginalKl = quantize(weightedGeneralizedKl(
+    rowMass,
+    input.surfaceTargetMass,
+    input.surfaceNullCosts
+  ));
+  const graphMarginalKl = quantize(weightedGeneralizedKl(
+    columnMass,
+    input.graphTargetMass,
+    input.graphImplicitCosts
+  ));
   const entropy = quantize(-input.cells.reduce((sum, cell) =>
     cell.mass > 0 ? sum + cell.mass * (Math.log(cell.mass) - 1) : sum, 0));
   const objective = quantize(
@@ -536,14 +625,19 @@ function normalizeStructuralCosts(costs: number[], weights: number[]): number[] 
     quantize(weights[index]! > 0 ? cost / weights[index]! : 0));
 }
 
-function generalizedKl(values: readonly number[], reference: readonly number[]): number {
+function weightedGeneralizedKl(
+  values: readonly number[],
+  reference: readonly number[],
+  costs: readonly number[]
+): number {
   let sum = 0;
   for (let index = 0; index < Math.max(values.length, reference.length); index++) {
     const value = Math.max(0, values[index] ?? 0);
     const expected = Math.max(1e-300, reference[index] ?? 0);
-    sum += value > 0
+    const divergence = value > 0
       ? value * Math.log(value / expected) - value + expected
       : expected;
+    sum += divergence * Math.max(0.05, costs[index] ?? 1);
   }
   return sum;
 }

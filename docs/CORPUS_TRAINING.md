@@ -192,6 +192,13 @@ copy of \(\Pi_{uv}\). Cell and total conservation residuals are recorded; positi
 mass without evidence remains unresolved and cannot be treated as an admitted
 alignment.
 
+Candidate-free surface rows and typed-incidence targets are retained by item 19.
+`scce.typed_null_alignment_cost_model.v1` estimates universal null/implicit costs
+from exact-anchor, absent-support and omitted-port observations. Those costs
+parameterize the sparse unbalanced updates. Every plan records typed surface-null,
+graph-implicit and overflow mass; the learned source-exact estimates are not
+reported as calibrated confidence.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,
