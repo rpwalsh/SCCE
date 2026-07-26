@@ -4016,7 +4016,7 @@ function rowToIngestionCheckpoint(row: IngestionCheckpointRow): IngestionCheckpo
 interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date; information_label: JsonValue }
 function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime(), informationLabel: row.information_label ? normalizeInformationLabel(row.information_label as never) : undefined }; }
 
-interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust_vector: JsonValue; metadata_json: JsonValue; namespace: string; canonical_uri: string }
+interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust_vector: JsonValue; metadata_json: JsonValue; namespace: string; canonical_uri: string; information_label: JsonValue }
 function rowToSourceVersion(row: SourceVersionRow): SourceVersion {
   const storedMetadata = sourceVersionMetadataRecord(row.metadata_json);
   const internal = sourceVersionMetadataRecord(storedMetadata._scceSourceVersion);
@@ -4038,7 +4038,8 @@ function rowToSourceVersion(row: SourceVersionRow): SourceVersion {
       : undefined,
     derivation: internal.derivation && typeof internal.derivation === "object" && !Array.isArray(internal.derivation)
       ? internal.derivation as unknown as SourceVersion["derivation"]
-      : undefined
+      : undefined,
+    informationLabel: normalizeInformationLabel(row.information_label as never)
   };
 }
 
