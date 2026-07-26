@@ -69,6 +69,9 @@ answer lane.
   uncalibrated.
 - `relation-potential.ts`: source-neutral edge projection, three-way-disjoint fitting,
   Platt calibration, holdout metrics, and strict content-addressed model validation.
+- `structured-semantic-candidate.ts`, `relation-promotion.ts`: source-structured
+  relation candidates followed by source-disjoint two-part codelength promotion,
+  held-out recovery, duplicate collapse and shuffled/duplicate/random controls.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

@@ -26,6 +26,10 @@ import {
   structuredSemanticCandidates,
   type StructuredSemanticCandidate
 } from "./structured-semantic-candidate.js";
+import {
+  relationPromotionDecision,
+  type RelationPromotionModel
+} from "./relation-promotion.js";
 
 export interface TypedIngestPreview {
   lane: ReturnType<typeof classifyIngestionLane>;
@@ -52,6 +56,7 @@ export interface TypedIngestProjectorInput {
   metadata: JsonValue;
   evidence: EvidenceSpan[];
   observedAt: number;
+  relationPromotionModel?: RelationPromotionModel;
 }
 
 export function createTypedIngestProjector(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -120,7 +125,13 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       hasher
     });
     const observationGraph = graphFromObservations({ observations, routes, evidenceIds, observedAt: input.observedAt, ids, hasher });
-    const candidateGraph = graphFromStructuredSemanticCandidates({ candidates: semanticCandidates, observedAt: input.observedAt, ids, hasher });
+    const candidateGraph = graphFromStructuredSemanticCandidates({
+      candidates: semanticCandidates,
+      observedAt: input.observedAt,
+      ids,
+      hasher,
+      relationPromotionModel: input.relationPromotionModel
+    });
     const graph = {
       nodes: uniqueGraphNodes([...observationGraph.nodes, ...candidateGraph.nodes]),
       edges: uniqueGraphEdges([...observationGraph.edges, ...candidateGraph.edges])
@@ -833,15 +844,18 @@ function graphFromObservations(input: { observations: Observation[]; routes: Obs
   return { nodes: [...nodes.values()], edges: [...edges.values()] };
 }
 
-function graphFromStructuredSemanticCandidates(input: {
+export function graphFromStructuredSemanticCandidates(input: {
   candidates: readonly StructuredSemanticCandidate[];
   observedAt: number;
   ids: IdFactory;
   hasher: Hasher;
+  relationPromotionModel?: RelationPromotionModel;
 }): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   for (const candidate of input.candidates) {
+    const promotion = relationPromotionDecision(input.relationPromotionModel, candidate.relationSeedId);
+    const promoted = promotion?.promoted === true;
     const relationNodeId = input.ids.nodeId({
       kind: "structured_semantic_candidate",
       candidateId: candidate.id
@@ -852,12 +866,20 @@ function graphFromStructuredSemanticCandidates(input: {
       representation: toJsonValue(candidate),
       alpha: candidate.support,
       evidenceIds: candidate.evidenceIds,
-      features: [`candidate:${candidate.kind}`, `relation-seed:${candidate.relationSeedId}`],
+      features: [
+        `candidate:${candidate.kind}`,
+        `relation-seed:${candidate.relationSeedId}`,
+        promoted ? `promoted-relation:${candidate.relationSeedId}` : "relation-promotion:pending"
+      ],
       createdAt: input.observedAt,
       updatedAt: input.observedAt,
       metadata: toJsonValue({
         schema: candidate.schema,
-        promoted: false,
+        promoted,
+        promotionModelId: input.relationPromotionModel?.id ?? null,
+        descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null,
+        heldoutRecoveryGain: promotion?.recovery.gain ?? null,
+        promotionReasons: promotion?.reasons ?? ["relation_promotion_model_unavailable"],
         weakFreeProseInference: false
       })
     });
@@ -900,7 +922,9 @@ function graphFromStructuredSemanticCandidates(input: {
           candidateId: candidate.id,
           candidateKind: candidate.kind,
           portId: participant.portId,
-          promoted: false
+          promoted,
+          promotionModelId: input.relationPromotionModel?.id ?? null,
+          descriptionLengthGainNats: promotion?.descriptionLength.gainNats ?? null
         })
       });
     }

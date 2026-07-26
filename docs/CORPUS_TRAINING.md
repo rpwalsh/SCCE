@@ -114,7 +114,18 @@ New n-gram state is emitted as `scce.kneser_ney.v2` with compiled successor arra
 
 The same canonical path applies when a low-support turn acquires new material: source identity and typed observations must be admitted before replanning. Factual answers still require admissible evidence and graph paths; language priors shape realization but do not certify claims. The production path has no external inference provider or prompt-construction fallback.
 
-Relation-hypothesis state is candidate memory, not promoted semantics. The compiler records occurrence, source independence, left/right substitution, context-pair diversity, Unicode-shape support, and evidence IDs. Frame observations are distributed by posterior mass. Later promotion still requires the structured-source candidates, held-out description-length gain, independent-source and shuffled/duplicate/random controls specified by items 10–11.
+Relation-hypothesis state is candidate memory, not promoted semantics. The compiler records occurrence, source independence, left/right substitution, context-pair diversity, Unicode-shape support, and evidence IDs. Frame observations are distributed by posterior mass.
+
+Typed ingestion separately emits structured semantic candidates. Promotion is now
+compiled per multi-source ingest batch or bounded Wikipedia shard. Occurrences with
+the same relation/signature/source identity collapse before fitting. Source IDs are
+split into fit and holdout sets. The null code uses the fit corpus's smoothed
+participant/qualifier-signature distribution; the promoted code uses a
+relation-conditioned distribution and pays an explicit two-part model cost.
+Positive held-out codelength gain and improved held-out relation recovery are both
+required. A shuffled relation assignment, a duplicate-only one-source corpus and a
+deterministic random-repetition corpus must all fail the same promotion boundary.
+The frozen model ID and gain are written back to candidate incidence metadata.
 
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
