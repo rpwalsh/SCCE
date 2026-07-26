@@ -34,6 +34,11 @@ import {
   type JoinProgramMixture,
   type JoinProgramTraceStep
 } from "./join-program.js";
+import {
+  isReversibleConstructionPattern,
+  reversibleConstructionsFromPatterns,
+  type ReversibleConstruction
+} from "./reversible-construction.js";
 
 const composedJoinProgramCache = new WeakMap<
   LanguageMemoryRuntimeState,
@@ -53,6 +58,7 @@ export interface LanguageMemoryRuntimeState {
   importedObservations: NgramObservation[];
   importedSemanticFrames: SemanticFrameRecord[];
   importedConstructionBundles: DurableLanguageConstructionBundle[];
+  importedReversibleConstructions?: ReversibleConstruction[];
   joinPrograms: JoinProgramMixture[];
   creativeEventCompatibilityModels: CreativeEventCompatibilityModel[];
   rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
@@ -435,8 +441,11 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const persistedPatterns = [...(input.patterns ?? [])].sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id)).slice(0, 1024);
       const importedPatterns = persistedPatterns.filter(pattern => (
         !isLanguageConstructionPattern(pattern)
+        && !isReversibleConstructionPattern(pattern)
         && !isCreativeEventCompatibilityPattern(pattern)
       ));
+      const importedReversibleConstructions =
+        reversibleConstructionsFromPatterns(persistedPatterns);
       const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.id, b.id)).slice(0, 2048);
       const constructionMemory = hydrateLanguageConstructionPatterns({
         patterns: persistedPatterns,
@@ -451,7 +460,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       );
       const joinPrograms = joinProgramsFromPatterns(importedPatterns);
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
-      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + creativeEventCompatibilityModels.length + joinPrograms.length + input.models.filter(isImportedLanguagePriorModel).length;
+      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + creativeEventCompatibilityModels.length + joinPrograms.length + input.models.filter(isImportedLanguagePriorModel).length;
       const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
       return {
         models,
@@ -466,6 +475,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedObservations,
         importedSemanticFrames,
         importedConstructionBundles: constructionMemory.bundles,
+        importedReversibleConstructions,
         joinPrograms,
         creativeEventCompatibilityModels,
         rejectedConstructionPatterns: constructionMemory.rejected,
@@ -491,6 +501,8 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           importedObservations: importedObservations.length,
           importedSemanticFrames: importedSemanticFrames.length,
           importedConstructionBundles: constructionMemory.bundles.length,
+          importedReversibleConstructions:
+            importedReversibleConstructions.length,
           joinPrograms: joinPrograms.map(program => program.id),
           creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
           rejectedConstructionPatterns: constructionMemory.rejected,
@@ -529,6 +541,14 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           sourceVersionIds: bundle.sourceVersionIds,
           evidenceIds: bundle.evidenceIds
         })),
+        importedReversibleConstructions:
+          (input.state.importedReversibleConstructions ?? []).slice(0, 24)
+            .map(construction => ({
+              id: construction.id,
+              profileId: construction.profileId,
+              planId: construction.planId,
+              evidenceIds: construction.provenance.evidenceIds
+            })),
         joinPrograms: input.state.joinPrograms.slice(0, 24).map(program => ({
           id: program.id,
           populationModelId: program.populationModelId,
@@ -1591,6 +1611,12 @@ export function scopeLanguageMemoryStateToCluster(
       && bundle.evidenceIds.includes(example.evidenceId)
     ))
   ));
+  const importedReversibleConstructions =
+    (state.importedReversibleConstructions ?? []).filter(construction => (
+      profileIds.has(construction.profileId)
+      && Boolean(construction.surface.sourceVersionId)
+      && sourceVersionIds.has(construction.surface.sourceVersionId!)
+    ));
   const retainedCreativeCompilerIds = new Set(importedConstructionBundles.flatMap(bundle => (
     (bundle.creativeEvents ?? []).map(event => event.compilerId)
   )));
@@ -1615,6 +1641,7 @@ export function scopeLanguageMemoryStateToCluster(
     + importedObservations.length
     + importedSemanticFrames.length
     + importedConstructionBundles.length
+    + importedReversibleConstructions.length
     + creativeEventCompatibilityModels.length
     + joinPrograms.length
     + records.filter(isImportedLanguagePriorModel).length;
@@ -1645,6 +1672,7 @@ export function scopeLanguageMemoryStateToCluster(
     importedObservations,
     importedSemanticFrames,
     importedConstructionBundles,
+    importedReversibleConstructions,
     joinPrograms,
     creativeEventCompatibilityModels,
     rejectedConstructionPatterns,
@@ -1674,6 +1702,7 @@ export function scopeLanguageMemoryStateToCluster(
         patterns: importedPatterns.length,
         semanticFrames: importedSemanticFrames.length,
         constructionBundles: importedConstructionBundles.length,
+        reversibleConstructions: importedReversibleConstructions.length,
         joinPrograms: joinPrograms.length,
         creativeEventCompatibilityModels: creativeEventCompatibilityModels.length
       },
@@ -1684,6 +1713,9 @@ export function scopeLanguageMemoryStateToCluster(
         patterns: state.importedPatterns.length - importedPatterns.length,
         semanticFrames: state.importedSemanticFrames.length - importedSemanticFrames.length,
         constructionBundles: state.importedConstructionBundles.length - importedConstructionBundles.length,
+        reversibleConstructions:
+          (state.importedReversibleConstructions?.length ?? 0)
+          - importedReversibleConstructions.length,
         creativeEventCompatibilityModels:
           state.creativeEventCompatibilityModels.length - creativeEventCompatibilityModels.length
       }
@@ -1718,6 +1750,7 @@ export function markLanguageMemoryStateUnscoped(
     importedObservations: [],
     importedSemanticFrames: [],
     importedConstructionBundles: [],
+    importedReversibleConstructions: [],
     joinPrograms: [],
     creativeEventCompatibilityModels: [],
     rejectedConstructionPatterns: [],

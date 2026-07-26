@@ -246,6 +246,17 @@ of every exact anchor, and zero unsupported additions. Ordinary and Wikipedia
 ingestion persist explicit nonpromotion because they do not possess independent
 held-out evaluation rows; explicit training must provide those observations.
 
+Item 26 compiles every constructible promoted plan into
+`scce.reversible_construction.v1`. The artifact binds typed relation/incidence
+ports to source-exact surface occurrences, discourse conditions, population
+posterior, conserved evidence allocation, calibration metadata and a creation
+snapshot. Interpretation and realization execute from the same record, and an
+exact graph→surface→graph cycle must recover both sides. Compiled artifacts are
+stored as language-memory patterns, restored during hydration and exposed to
+Mouth only when active participant nodes and promoted direct evidence match.
+Generalization to unseen bindings is deliberately deferred to paired
+anti-unification.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

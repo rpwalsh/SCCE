@@ -116,6 +116,10 @@ validation so credentials need not be committed.
 - `alignment-promotion.ts`: conservative source-family collapse and independent
   held-out reuse admission requiring complete recovery, semantic-cycle fidelity,
   exact-anchor preservation and zero unsupported additions.
+- `reversible-construction.ts`: the first executable
+  \((H_r,\partial H_r)\Longleftrightarrow(P_r,\partial P_r)\) schema, exact
+  interpretation/realization cycle, durable language-memory projection and
+  creation-snapshot identity.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

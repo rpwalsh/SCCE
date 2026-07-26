@@ -53,6 +53,13 @@ import {
   type AlignmentPromotionModel,
   type AlignmentPromotionObservation
 } from "./alignment-promotion.js";
+import {
+  compileReversibleConstructionPattern,
+  compileReversibleConstructions,
+  reversibleConstructionCreationSnapshotId,
+  type ReversibleConstruction,
+  type ReversibleConstructionRejection
+} from "./reversible-construction.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -138,6 +145,7 @@ export interface CompiledLanguageTrainingBatch {
   patterns: LanguagePatternRecord[];
   semanticFrames: SemanticFrameRecord[];
   constructionPatterns: LanguagePatternRecord[];
+  reversibleConstructionPatterns: LanguagePatternRecord[];
   graphSurfaceAlignmentSummaries: JsonValue[];
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
@@ -145,6 +153,8 @@ export interface CompiledLanguageTrainingBatch {
   coarseToFineAlignments: CoarseToFineAlignmentResult[];
   alignmentCalibrationModel: AlignmentCalibrationModel;
   alignmentPromotionModel: AlignmentPromotionModel;
+  reversibleConstructions: ReversibleConstruction[];
+  reversibleConstructionRejections: ReversibleConstructionRejection[];
   typedNullCostModel: TypedNullCostModel | null;
   populationOrderingModel: PopulationOrderingModel | null;
   crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
@@ -185,18 +195,21 @@ export function compileLanguageTrainingBatch(input: {
     profileId: batch.profile.id,
     hasher: input.hasher
   });
-  const sparseAlignment = batch.graphSnapshot?.hyperedges.length
+  const alignmentLattices = batch.graphSnapshot?.hyperedges.length
+    ? batch.evidence.map(span => buildSurfaceLattice({
+      documentId: String(span.id),
+      sourceFamilyId: evidenceSourceFamilyId(span),
+      text: span.text,
+      sourceVersionId: span.sourceVersionId,
+      evidenceIds: [span.id],
+      hasher: input.hasher
+    }))
+    : [];
+  const sparseAlignment = alignmentLattices.length
     ? compileSparseAlignmentCandidateSupports({
-      lattices: batch.evidence.map(span => buildSurfaceLattice({
-        documentId: String(span.id),
-        sourceFamilyId: evidenceSourceFamilyId(span),
-        text: span.text,
-        sourceVersionId: span.sourceVersionId,
-        evidenceIds: [span.id],
-        hasher: input.hasher
-      })),
-      nodes: batch.graphSnapshot.nodes,
-      hyperedges: batch.graphSnapshot.hyperedges,
+      lattices: alignmentLattices,
+      nodes: batch.graphSnapshot!.nodes,
+      hyperedges: batch.graphSnapshot!.hyperedges,
       maxCandidateDegree: batch.maxAlignmentCandidateDegree,
       hasher: input.hasher
     })
@@ -314,6 +327,32 @@ export function compileLanguageTrainingBatch(input: {
     observations: batch.alignmentPromotionObservations ?? [],
     hasher: input.hasher
   });
+  const reversibleConstructionCompilation = sparseAlignment
+    ? compileReversibleConstructions({
+      alternativeSets: alignmentAlternativeSets,
+      promotionModel: alignmentPromotionModel,
+      calibrationModel: alignmentCalibrationModel,
+      supports: routedAlignmentSupports,
+      targetIndex: sparseAlignment.targetIndex,
+      lattices: alignmentLattices,
+      evidenceAllocations: retainedAlternatives.flatMap(item =>
+        item.evidenceAllocations),
+      profileId: batch.profile.id,
+      creationSnapshotId: reversibleConstructionCreationSnapshotId({
+        sourceVersionId: String(batch.sourceVersionId),
+        graphNodeIds: batch.graphSnapshot!.nodes.map(node => String(node.id)),
+        graphEdgeIds: batch.graphSnapshot!.edges.map(edge => String(edge.id)),
+        hyperedgeIds: batch.graphSnapshot!.hyperedges.map(edge => String(edge.id)),
+        hasher: input.hasher
+      }),
+      createdAt: batch.createdAt,
+      hasher: input.hasher
+    })
+    : { constructions: [], rejections: [] };
+  const reversibleConstructionPatterns =
+    reversibleConstructionCompilation.constructions.map(
+      compileReversibleConstructionPattern
+    );
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -361,10 +400,12 @@ export function compileLanguageTrainingBatch(input: {
     patterns: uniquePatterns([
       ...memories.flatMap(memory => memory.patterns),
       ...constructionPatterns,
+      ...reversibleConstructionPatterns,
       ...(batch.additionalPatterns ?? [])
     ]),
     semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
     constructionPatterns,
+    reversibleConstructionPatterns,
     graphSurfaceAlignmentSummaries: sets
       .map(item => item.set.alignmentSummary)
       .filter((summary): summary is JsonValue => summary !== undefined),
@@ -374,6 +415,9 @@ export function compileLanguageTrainingBatch(input: {
     coarseToFineAlignments,
     alignmentCalibrationModel,
     alignmentPromotionModel,
+    reversibleConstructions: reversibleConstructionCompilation.constructions,
+    reversibleConstructionRejections:
+      reversibleConstructionCompilation.rejections,
     typedNullCostModel,
     populationOrderingModel,
     crossDocumentAlignmentModel,
@@ -480,6 +524,9 @@ export function compileLanguageTrainingBatch(input: {
         })),
         alignmentCalibrationModel,
         alignmentPromotionModel,
+        reversibleConstructions: reversibleConstructionCompilation.constructions,
+        reversibleConstructionRejections:
+          reversibleConstructionCompilation.rejections,
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
           id: allocation.id,
           status: allocation.status,
@@ -493,6 +540,7 @@ export function compileLanguageTrainingBatch(input: {
           alternativeTransportEvidenceAllocations.length
       },
       compiledConstructions: constructionPatterns.length,
+      compiledReversibleConstructions: reversibleConstructionPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
   };

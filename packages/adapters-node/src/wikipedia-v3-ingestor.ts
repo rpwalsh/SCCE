@@ -27,6 +27,8 @@ import {
   compileCoarseToFineAlignmentResult,
   compileAlignmentCalibrationModel,
   compileAlignmentPromotionModel,
+  compileReversibleConstructions,
+  reversibleConstructionCreationSnapshotId,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
@@ -980,6 +982,8 @@ export class WikipediaV3Ingestor {
         ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
       const coarseToFineAlignments:
         ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
+      const allAlignmentEvidenceAllocations:
+        ReturnType<typeof allocateTransportEvidence>[] = [];
       const historicalAlignmentPayloads = (await this.storage.events.readRange({
         typeId: "SparseAlignmentCandidatesCompiled",
         limit: 1_024
@@ -990,6 +994,8 @@ export class WikipediaV3Ingestor {
       let graphImplicitMass = 0;
       const alignmentSupports:
         ReturnType<typeof generateSparseAlignmentCandidates>[] = [];
+      const alignmentLattices:
+        ReturnType<typeof buildSurfaceLattice>[] = [];
       for (const span of evidence) {
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
@@ -999,6 +1005,7 @@ export class WikipediaV3Ingestor {
           evidenceIds: [span.id],
           hasher: this.hasher
         });
+        alignmentLattices.push(lattice);
         const support = generateSparseAlignmentCandidates({
           lattice,
           targetIndex: alignmentTargetIndex,
@@ -1096,6 +1103,7 @@ export class WikipediaV3Ingestor {
             support,
             hasher: this.hasher
           }));
+        allAlignmentEvidenceAllocations.push(...alternativeAllocations);
         const seriesId = alignmentAlternativeSeriesId({
           support,
           targetIndex: alignmentTargetIndex,
@@ -1141,6 +1149,27 @@ export class WikipediaV3Ingestor {
         observations: [],
         hasher: this.hasher
       });
+      const reversibleConstructionCompilation =
+        compileReversibleConstructions({
+          alternativeSets: alignmentAlternativeSets,
+          promotionModel: alignmentPromotionModel,
+          calibrationModel: alignmentCalibrationModel,
+          supports: routedAlignmentSupports,
+          targetIndex: alignmentTargetIndex,
+          lattices: alignmentLattices,
+          evidenceAllocations: allAlignmentEvidenceAllocations,
+          profileId: profile.id,
+          creationSnapshotId: reversibleConstructionCreationSnapshotId({
+            sourceVersionId: [...new Set(samples.map(sample =>
+              String(sample.sourceVersionId)))].sort().join("\u001f"),
+            graphNodeIds: promotedGraph.nodes.map(node => String(node.id)),
+            graphEdgeIds: promotedGraph.edges.map(edge => String(edge.id)),
+            hyperedgeIds: promotedGraph.hyperedges.map(edge => String(edge.id)),
+            hasher: this.hasher
+          }),
+          createdAt,
+          hasher: this.hasher
+        });
       await this.storage.events.append(this.events.create({
         episodeId,
         typeId: "RelationPromotionCompiled",
@@ -1196,6 +1225,10 @@ export class WikipediaV3Ingestor {
           coarseToFineAlignments,
           alignmentCalibrationModel,
           alignmentPromotionModel,
+          reversibleConstructions:
+            reversibleConstructionCompilation.constructions,
+          reversibleConstructionRejections:
+            reversibleConstructionCompilation.rejections,
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
           alignmentPosteriorScope: "retained_candidate_set_only",
