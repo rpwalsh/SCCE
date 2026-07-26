@@ -26,7 +26,7 @@ export interface BoundaryProfile {
   repeatedBoundaryPenalty: number;
   learnedBoundaryWeight: number;
   profileBoundaryWeight: number;
-  boundarySource: "profile" | "learned_prior" | "structural_fallback";
+  boundarySource: "learned_prior" | "unresolved";
   audit: JsonValue;
 }
 
@@ -162,18 +162,21 @@ export function boundaryProfileFor(input: { scriptId?: string; metadata?: JsonVa
   const learned = boundaryProfileFromMetadata(input.metadata);
   if (learned) return learned;
   const scriptId = input.scriptId ?? "script.any";
-  const forms = formsForScript(scriptId);
   return {
-    id: `surface.boundary.profile.${hashSmall(scriptId)}`,
+    id: `surface.boundary.unresolved.${hashSmall(scriptId)}`,
     scriptId,
-    sentenceForms: forms.sentenceForms,
-    inlineForms: forms.inlineForms,
-    terminalForms: forms.terminalForms,
+    sentenceForms: [],
+    inlineForms: [],
+    terminalForms: [],
     repeatedBoundaryPenalty: 0.24,
-    learnedBoundaryWeight: 0.52,
-    profileBoundaryWeight: 0.34,
-    boundarySource: "profile",
-    audit: toJsonValue({ source: "boundary-profile.script", scriptId, formCount: forms.sentenceForms.length + forms.inlineForms.length })
+    learnedBoundaryWeight: 0,
+    profileBoundaryWeight: 0,
+    boundarySource: "unresolved",
+    audit: toJsonValue({
+      source: "boundary-profile.unresolved",
+      scriptId,
+      reason: "no learned boundary profile"
+    })
   };
 }
 
@@ -208,17 +211,9 @@ function boundaryProfileFromMetadata(value: JsonValue | undefined): BoundaryProf
     repeatedBoundaryPenalty: clamp01(typeof profile.repeatedBoundaryPenalty === "number" ? profile.repeatedBoundaryPenalty : 0.24),
     learnedBoundaryWeight: clamp01(typeof profile.learnedBoundaryWeight === "number" ? profile.learnedBoundaryWeight : 0.52),
     profileBoundaryWeight: clamp01(typeof profile.profileBoundaryWeight === "number" ? profile.profileBoundaryWeight : 0.34),
-    boundarySource: "profile",
+    boundarySource: "learned_prior",
     audit: toJsonValue({ source: "boundary-profile.metadata", profileId: profile.id ?? null })
   };
-}
-
-function formsForScript(scriptId: string): { sentenceForms: string[]; inlineForms: string[]; terminalForms: string[] } {
-  const normalized = scriptId.toLocaleLowerCase();
-  if (normalized.includes("arab")) return { sentenceForms: ["؟", "."], inlineForms: ["،", ":"], terminalForms: ["؟", "."] };
-  if (normalized.includes("deva")) return { sentenceForms: ["।", "."], inlineForms: [":", ";"], terminalForms: ["।", "."] };
-  if (normalized.includes("hani") || normalized.includes("jpan") || normalized.includes("kana")) return { sentenceForms: ["。", "."], inlineForms: ["、", ":"], terminalForms: ["。", "."] };
-  return { sentenceForms: ["."], inlineForms: [":", ";"], terminalForms: [".", "!", "?"] };
 }
 
 function stringList(value: JsonValue | undefined): string[] {

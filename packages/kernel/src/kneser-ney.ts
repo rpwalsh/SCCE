@@ -1,5 +1,10 @@
 import { clamp01, symbolizeData, toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
+import {
+  renderJoinedSurface,
+  type JoinProgramMixture,
+  type JoinProgramTraceStep
+} from "./join-program.js";
 
 export const KNESER_NEY_SCHEMA = "scce.kneser_ney.v2" as const;
 const MAX_SUCCESSORS_PER_CONTEXT = 256;
@@ -49,6 +54,8 @@ export interface BoundedProseContinuation {
   averageLogProbability: number;
   stoppedBy: "eos" | "generationExtent" | "probabilityFloor";
   trace: KneserNeyPrediction[];
+  joinTrace: JoinProgramTraceStep[];
+  unresolvedBoundaries: number;
 }
 
 export function trainKneserNey(text: string | readonly string[], options: { order?: number; discount?: number; vocabularyLimit?: number } = {}): KneserNeyModel {
@@ -174,6 +181,7 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
   deterministicChoiceSeed?: string;
   minSymbolsBeforeEos?: number;
   repetitionWindow?: number;
+  joinProgram?: JoinProgramMixture;
 } = {}): BoundedProseContinuation {
   const context = normalizeSymbols(prompt);
   const generated: string[] = [];
@@ -219,13 +227,16 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
     trace.push(best);
     logProbability += Math.log(Math.max(1e-300, best.probability));
   }
+  const joined = renderJoinedSurface(generated, options.joinProgram);
   return {
     symbols: generated,
-    text: renderSymbols(generated),
+    text: joined.text,
     logProbability,
     averageLogProbability: generated.length ? logProbability / generated.length : logProbability,
     stoppedBy,
-    trace
+    trace,
+    joinTrace: joined.trace,
+    unresolvedBoundaries: joined.unresolvedBoundaries
   };
 }
 
@@ -275,16 +286,6 @@ function orderSummary(model: KneserNeyModel): Array<{ order: number; grams: numb
     const grams = Object.keys(model.counts).filter(key => key.split("\u0001").length === n).length;
     const contexts = n === 1 ? 1 : Object.keys(model.contextCounts).filter(key => key.split("\u0001").length === n - 1).length;
     out.push({ order: n, grams, contexts });
-  }
-  return out;
-}
-
-function renderSymbols(symbols: readonly string[]): string {
-  let out = "";
-  for (const symbol of symbols) {
-    if (/^[,.;:!?)]$/.test(symbol)) out += symbol;
-    else if (/^[(]$/.test(symbol)) out += `${out ? " " : ""}${symbol}`;
-    else out += `${out ? " " : ""}${symbol}`;
   }
   return out;
 }

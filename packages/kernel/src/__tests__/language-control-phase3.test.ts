@@ -106,12 +106,12 @@ describe("language control plane profiles", () => {
     expect(JSON.stringify(result.audit)).not.toContain("prompt-router");
   });
 
-  it("builds boundary profiles from script/profile data", () => {
+  it("leaves boundary profiles unresolved until corpus state is learned", () => {
     const profile = boundaryProfileFor({ scriptId: "Arab" });
-    expect(profile.id).toContain("surface.boundary.profile.");
-    expect(profile.boundarySource).toBe("profile");
-    expect(profile.sentenceForms.length).toBeGreaterThan(0);
-    expect(profile.inlineForms.length).toBeGreaterThan(0);
+    expect(profile.id).toContain("surface.boundary.unresolved.");
+    expect(profile.boundarySource).toBe("unresolved");
+    expect(profile.sentenceForms).toEqual([]);
+    expect(profile.inlineForms).toEqual([]);
   });
 
   it("keys multilingual acquisition by Unicode scripts instead of English language labels", () => {

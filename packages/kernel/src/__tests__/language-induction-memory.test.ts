@@ -61,6 +61,8 @@ describe("induced language model memory projection", () => {
     });
     expect(state.importedPatterns.length).toBe(projection.patterns.length);
     expect(state.importedLanguagePriorCount).toBeGreaterThan(0);
+    expect(state.joinPrograms).toHaveLength(1);
+    expect(state.joinPrograms[0]?.id).toBe(model.joinProgram.id);
   });
 
   it("does not project an induction model onto unrelated language profiles", () => {

@@ -21,6 +21,11 @@ import {
   learnSegmentationPopulations,
   type SegmentationPopulationModel
 } from "./segmentation-population.js";
+import {
+  compileJoinProgram,
+  compileJoinProgramMixture,
+  type JoinProgramMixture
+} from "./join-program.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -165,6 +170,7 @@ export interface InducedLanguageModel {
   boundaryStatistics: BoundarySufficientStatistics;
   boundaryEstimator: BoundaryEstimatorModel;
   segmentationPopulations: SegmentationPopulationModel;
+  joinProgram: JoinProgramMixture;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
   syntaxTemplates: SyntaxTemplate[];
@@ -228,6 +234,33 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           hasher
         })
       }));
+      const selectedPopulationByDocument = new Map(
+        segmentationPopulations.assignments.map(assignment => [
+          assignment.documentId,
+          assignment.selectedPopulationId
+        ])
+      );
+      const defaultPopulationId = segmentationPopulations.populations[0]!.id;
+      const joinProgram = compileJoinProgramMixture({
+        populationModelId: segmentationPopulations.id,
+        components: segmentationPopulations.populations.map(population => ({
+          populationId: population.id,
+          weight: population.prior,
+          program: compileJoinProgram({
+            populationId: population.id,
+            documents: lattices
+              .filter(({ doc }) =>
+                (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
+              .map(({ doc, lattice }) => ({
+                documentId: doc.id,
+                text: doc.text,
+                lattice
+              })),
+            hasher
+          })
+        })),
+        hasher
+      });
       const symbols = lattices.flatMap(({ doc, lattice }) =>
         canonicalSurfaceSequence(lattice).map(unit => ({ symbol: unit.surface, doc }))
       );
@@ -246,13 +279,14 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const semanticFrames = induceSemanticFrames(documents, hasher, input.maxFrames ?? 2048);
       const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
-      const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
+      const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
       const id = `language_model_${hasher.digestHex(JSON.stringify({
         docs: documents.map(d => d.id),
         symbols: symbolStrings.length,
         order,
         boundaryEstimatorId: boundaryEstimator.id,
-        segmentationPopulationModelId: segmentationPopulations.id
+        segmentationPopulationModelId: segmentationPopulations.id,
+        joinProgramId: joinProgram.id
       })).slice(0, 32)}`;
       return {
         id,
@@ -265,6 +299,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         boundaryStatistics,
         boundaryEstimator,
         segmentationPopulations,
+        joinProgram,
         boundarySignals,
         morphology,
         syntaxTemplates,
@@ -289,14 +324,24 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           segmentationPopulationModelId: segmentationPopulations.id,
           segmentationPopulationCount: segmentationPopulations.populations.length,
           segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
+          joinProgramId: joinProgram.id,
+          joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)
         })
       };
     },
 
-    scoreContinuation(input: { model: KneserNeyModel; prompt: string; generationExtent?: number }): JsonValue {
-      return toJsonValue(continueBoundedProse(input.model, input.prompt, { generationExtent: input.generationExtent ?? 64 }));
+    scoreContinuation(input: {
+      model: KneserNeyModel;
+      prompt: string;
+      generationExtent?: number;
+      joinProgram?: JoinProgramMixture;
+    }): JsonValue {
+      return toJsonValue(continueBoundedProse(input.model, input.prompt, {
+        generationExtent: input.generationExtent ?? 64,
+        joinProgram: input.joinProgram
+      }));
     }
   };
 }
@@ -970,9 +1015,17 @@ function translationBasis(sourceSymbol: string, targetSymbol: string, frames: re
   return "shared_context";
 }
 
-function proseDiagnostic(model: KneserNeyModel, symbols: readonly string[]): JsonValue {
+function proseDiagnostic(
+  model: KneserNeyModel,
+  symbols: readonly string[],
+  joinProgram: JoinProgramMixture
+): JsonValue {
   const sample = symbols.slice(0, Math.min(64, symbols.length)).join(" ");
-  const continuation = continueBoundedProse(model, sample, { generationExtent: 32, probabilityFloor: 1e-9 });
+  const continuation = continueBoundedProse(model, sample, {
+    generationExtent: 32,
+    probabilityFloor: 1e-9,
+    joinProgram
+  });
   const orderMass = new Map<number, number>();
   for (const key of Object.keys(model.counts)) {
     const order = key.split("\u0001").length;
