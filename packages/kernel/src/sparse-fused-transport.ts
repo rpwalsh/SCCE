@@ -112,6 +112,7 @@ export interface SparseFusedTransportPlan {
   typedNullCostModelId: string;
   populationOrderingModelId: string;
   crossDocumentAlignmentModelId: string | null;
+  excludedCandidateIds: string[];
   status: "converged" | "iteration_budget_exhausted" | "work_budget_exhausted";
   globalOptimalityClaimed: false;
   objective: SparseTransportObjective;
@@ -161,6 +162,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   typedNullCostModel?: TypedNullCostModel;
   populationOrderingModel?: PopulationOrderingModel;
   crossDocumentAlignmentModel?: CrossDocumentAlignmentModel;
+  excludedCandidateIds?: readonly string[];
   budget?: Partial<SparseTransportBudget>;
   hasher?: Hasher;
 }): SparseFusedTransportPlan {
@@ -192,12 +194,24 @@ export function solveSparseFusedUnbalancedTransport(input: {
     candidate.id,
     candidate
   ]));
+  const excludedCandidateIds = [...new Set(input.excludedCandidateIds ?? [])].sort();
+  for (const candidateId of excludedCandidateIds) {
+    const candidate = candidateById.get(candidateId);
+    if (!candidate) {
+      throw new Error(`excluded transport candidate ${candidateId} is outside support`);
+    }
+    if (candidate.supportKinds.includes("exact_observable_anchor")) {
+      throw new Error(`exact observable anchor ${candidateId} cannot be excluded`);
+    }
+  }
+  const excludedCandidateIdSet = new Set(excludedCandidateIds);
   const rowCandidateIds = new Map(input.support.rows.map(row => [
     row.surfaceUnitId,
     new Set(row.candidateIds)
   ]));
   const candidates = input.support.candidates.filter(candidate =>
-    rowCandidateIds.get(candidate.surfaceUnitId)?.has(candidate.id));
+    rowCandidateIds.get(candidate.surfaceUnitId)?.has(candidate.id)
+    && !excludedCandidateIdSet.has(candidate.id));
   const rowHasExactAnchor = new Set(candidates
     .filter(candidate => candidate.supportKinds.includes("exact_observable_anchor"))
     .map(candidate => candidate.surfaceUnitId));
@@ -387,6 +401,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
     typedNullCostModelId: typedNullCostModel.id,
     populationOrderingModelId: populationOrderingModel.id,
     crossDocumentAlignmentModelId: input.crossDocumentAlignmentModel?.id ?? null,
+    excludedCandidateIds,
     status,
     globalOptimalityClaimed: false as const,
     objective,
@@ -411,6 +426,8 @@ export function solveSparseFusedUnbalancedTransport(input: {
       typedNullCostModelCalibrated: typedNullCostModel.calibrated,
       populationOrderingModelId: populationOrderingModel.id,
       crossDocumentAlignmentModelId: input.crossDocumentAlignmentModel?.id ?? null,
+      excludedCandidateIds,
+      retainedCandidateCount: candidates.length,
       populationOrderingPosterior: input.support.populationPosterior,
       surfaceNullMass: quantize(rowMarginals.reduce(
         (sum, row) => sum + row.surfaceNullMass,

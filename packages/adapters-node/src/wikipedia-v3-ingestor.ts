@@ -19,6 +19,10 @@ import {
   compileTypedNullCostModel,
   compilePopulationOrderingModel,
   compileCrossDocumentAlignmentModel,
+  compileAlignmentAlternativeSet,
+  alignmentAlternativeSeriesId,
+  alignmentAlternativeSetsFromEventPayloads,
+  extractAlignmentAlternatives,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
@@ -965,6 +969,15 @@ export class WikipediaV3Ingestor {
       const typedNullCostModelIds = new Set<string>();
       const populationOrderingModelIds = new Set<string>();
       const crossDocumentAlignmentModelIds = new Set<string>();
+      const alignmentAlternativeSetIds: string[] = [];
+      const alignmentAlternativeSets:
+        ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
+      const historicalAlignmentPayloads = (await this.storage.events.readRange({
+        typeId: "SparseAlignmentCandidatesCompiled",
+        limit: 1_024
+      })).map(event => event.payload);
+      let retainedAlignmentHypothesisCount = 0;
+      let omittedAlignmentSearchBranchCount = 0;
       let surfaceNullMass = 0;
       let graphImplicitMass = 0;
       const alignmentSupports:
@@ -1045,11 +1058,46 @@ export class WikipediaV3Ingestor {
           (sum, column) => sum + column.graphImplicitMass,
           0
         );
-        const allocation = allocateTransportEvidence({
-          plan: transport,
+        const extractedAlternatives = extractAlignmentAlternatives({
+          basePlan: transport,
           support,
+          targetIndex: alignmentTargetIndex,
+          typedNullCostModel,
+          populationOrderingModel,
+          crossDocumentAlignmentModel,
           hasher: this.hasher
         });
+        const alternativeAllocations = extractedAlternatives.plans.map(plan =>
+          allocateTransportEvidence({
+            plan,
+            support,
+            hasher: this.hasher
+          }));
+        const seriesId = alignmentAlternativeSeriesId({
+          support,
+          targetIndex: alignmentTargetIndex,
+          hasher: this.hasher
+        });
+        const alternativeSet = compileAlignmentAlternativeSet({
+          seriesId,
+          plans: extractedAlternatives.plans,
+          evidenceAllocations: alternativeAllocations,
+          predecessorSets: [
+            ...alignmentAlternativeSetsFromEventPayloads(
+              historicalAlignmentPayloads,
+              seriesId
+            ),
+            ...alignmentAlternativeSets.filter(set => set.seriesId === seriesId)
+          ],
+          omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
+          hasher: this.hasher
+        });
+        alignmentAlternativeSetIds.push(alternativeSet.id);
+        alignmentAlternativeSets.push(alternativeSet);
+        retainedAlignmentHypothesisCount += alternativeSet.hypotheses.length;
+        omittedAlignmentSearchBranchCount += alternativeSet.omittedSearchBranchCount;
+        const allocation = alternativeAllocations.find(item =>
+          item.transportPlanId === transport.id)!;
         transportEvidenceAllocationIds.push(allocation.id);
         unresolvedTransportEvidenceCount += allocation.unresolvedCandidateIds.length;
         unresolvedTransportEvidenceAllocationCount +=
@@ -1103,6 +1151,12 @@ export class WikipediaV3Ingestor {
           populationOrderingModelIds: [...populationOrderingModelIds].sort(),
           crossDocumentAlignmentModelIds:
             [...crossDocumentAlignmentModelIds].sort(),
+          alignmentAlternativeSetIds,
+          alignmentAlternativeSets,
+          retainedAlignmentHypothesisCount,
+          omittedAlignmentSearchBranchCount,
+          alignmentPosteriorScope: "retained_candidate_set_only",
+          exactGlobalAlignmentPosteriorClaimed: false,
           surfaceNullMass,
           graphImplicitMass,
           transportSolver: "scce.sparse_fused_unbalanced_transport.v1",

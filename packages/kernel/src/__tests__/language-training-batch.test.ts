@@ -131,6 +131,18 @@ describe("shared language training batch", () => {
     expect(compiled.sparseTransportPlans[0]!.crossDocumentAlignmentModelId).toBe(
       compiled.crossDocumentAlignmentModel!.id
     );
+    expect(compiled.alignmentAlternativeSets).toHaveLength(1);
+    expect(compiled.alignmentAlternativeSets[0]).toMatchObject({
+      schema: "scce.alignment_alternative_set.v1",
+      posteriorScope: "retained_candidate_set_only",
+      exactGlobalPosteriorClaimed: false
+    });
+    expect(compiled.alignmentAlternativeSets[0]!.hypotheses.some(hypothesis =>
+      hypothesis.plan.id === compiled.sparseTransportPlans[0]!.id)).toBe(true);
+    expect(compiled.alignmentAlternativeSets[0]!.hypotheses.reduce(
+      (sum, hypothesis) => sum + hypothesis.restrictedGibbsWeight,
+      0
+    )).toBeCloseTo(1, 12);
     expect(compiled.sparseTransportPlans[0]!.rowMarginals.every(row =>
       row.surfaceNullMass >= 0)).toBe(true);
     expect(compiled.sparseTransportPlans[0]!.columnMarginals.every(column =>

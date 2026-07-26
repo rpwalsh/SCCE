@@ -114,6 +114,8 @@ export function createTrainingRuntime(options: {
     let typedNullCostModels = 0;
     let populationOrderingModels = 0;
     let crossDocumentAlignmentModels = 0;
+    let alignmentAlternativeSets = 0;
+    let retainedAlignmentHypotheses = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -193,6 +195,11 @@ export function createTrainingRuntime(options: {
       typedNullCostModels += memory.typedNullCostModel ? 1 : 0;
       populationOrderingModels += memory.populationOrderingModel ? 1 : 0;
       crossDocumentAlignmentModels += memory.crossDocumentAlignmentModel ? 1 : 0;
+      alignmentAlternativeSets += memory.alignmentAlternativeSets.length;
+      retainedAlignmentHypotheses += memory.alignmentAlternativeSets.reduce(
+        (sum, set) => sum + set.hypotheses.length,
+        0
+      );
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -230,6 +237,8 @@ export function createTrainingRuntime(options: {
         typedNullCostModels,
         populationOrderingModels,
         crossDocumentAlignmentModels,
+        alignmentAlternativeSets,
+        retainedAlignmentHypotheses,
         surfaceNullMass,
         graphImplicitMass
       })
