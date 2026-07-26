@@ -23,6 +23,10 @@ import {
   compileTypedNullCostModel,
   type TypedNullCostModel
 } from "./typed-null-alignment.js";
+import {
+  compilePopulationOrderingModel,
+  type PopulationOrderingModel
+} from "./population-ordering.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -108,6 +112,7 @@ export interface CompiledLanguageTrainingBatch {
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
   typedNullCostModel: TypedNullCostModel | null;
+  populationOrderingModel: PopulationOrderingModel | null;
   sparseTransportPlans: SparseFusedTransportPlan[];
   transportEvidenceAllocations: TransportEvidenceAllocation[];
   constructionCandidates: number;
@@ -166,12 +171,19 @@ export function compileLanguageTrainingBatch(input: {
       hasher: input.hasher
     })
     : null;
+  const populationOrderingModel = sparseAlignment
+    ? compilePopulationOrderingModel({
+      supports: sparseAlignmentCandidateSupports,
+      hasher: input.hasher
+    })
+    : null;
   const sparseTransportPlans = sparseAlignment
     ? sparseAlignmentCandidateSupports.map(support =>
       solveSparseFusedUnbalancedTransport({
         support,
         targetIndex: sparseAlignment.targetIndex,
         typedNullCostModel: typedNullCostModel!,
+        populationOrderingModel: populationOrderingModel!,
         hasher: input.hasher
       }))
     : [];
@@ -238,6 +250,7 @@ export function compileLanguageTrainingBatch(input: {
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
     typedNullCostModel,
+    populationOrderingModel,
     sparseTransportPlans,
     transportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
@@ -271,6 +284,16 @@ export function compileLanguageTrainingBatch(input: {
             surface: typedNullCostModel.surface,
             graph: typedNullCostModel.graph,
             audit: typedNullCostModel.audit
+          }
+          : null,
+        populationOrderingModel: populationOrderingModel
+          ? {
+            id: populationOrderingModel.id,
+            schema: populationOrderingModel.schema,
+            trainingSupportIds: populationOrderingModel.trainingSupportIds,
+            estimateCount: populationOrderingModel.estimates.length,
+            globalBackoffCount: populationOrderingModel.globalBackoff.length,
+            audit: populationOrderingModel.audit
           }
           : null,
         supportCount: sparseAlignmentCandidateSupports.length,

@@ -93,6 +93,8 @@ answer lane.
   residuals and no overlapping-evidence mass duplication.
 - `typed-null-alignment.ts`: learned source-exact costs for typed surface-null and
   graph-implicit transport mass, without grammatical or language-name routing.
+- `population-ordering.ts`: population-posterior-conditioned robust relative-order
+  estimates learned from exact anchors and consumed by sparse transport.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

@@ -959,6 +959,7 @@ export class WikipediaV3Ingestor {
       let unresolvedTransportEvidenceAllocationCount = 0;
       let maximumTransportEvidenceResidual = 0;
       const typedNullCostModelIds = new Set<string>();
+      const populationOrderingModelIds = new Set<string>();
       let surfaceNullMass = 0;
       let graphImplicitMass = 0;
       for (const span of evidence) {
@@ -990,6 +991,7 @@ export class WikipediaV3Ingestor {
         transportIterationCount += transport.iterations.length;
         transportedCellCount += transport.cells.length;
         typedNullCostModelIds.add(transport.typedNullCostModelId);
+        populationOrderingModelIds.add(transport.populationOrderingModelId);
         surfaceNullMass += transport.rowMarginals.reduce(
           (sum, row) => sum + row.surfaceNullMass,
           0
@@ -1053,6 +1055,7 @@ export class WikipediaV3Ingestor {
           evidenceMassConserved: unresolvedTransportEvidenceAllocationCount === 0,
           typedNullCostModelIds: [...typedNullCostModelIds].sort(),
           typedNullCostsCalibrated: false,
+          populationOrderingModelIds: [...populationOrderingModelIds].sort(),
           surfaceNullMass,
           graphImplicitMass,
           transportSolver: "scce.sparse_fused_unbalanced_transport.v1",

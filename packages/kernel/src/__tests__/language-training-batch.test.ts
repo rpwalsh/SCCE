@@ -119,6 +119,12 @@ describe("shared language training batch", () => {
     expect(compiled.sparseTransportPlans[0]!.typedNullCostModelId).toBe(
       compiled.typedNullCostModel!.id
     );
+    expect(compiled.populationOrderingModel).toMatchObject({
+      schema: "scce.population_relative_order_model.v1"
+    });
+    expect(compiled.sparseTransportPlans[0]!.populationOrderingModelId).toBe(
+      compiled.populationOrderingModel!.id
+    );
     expect(compiled.sparseTransportPlans[0]!.rowMarginals.every(row =>
       row.surfaceNullMass >= 0)).toBe(true);
     expect(compiled.sparseTransportPlans[0]!.columnMarginals.every(column =>

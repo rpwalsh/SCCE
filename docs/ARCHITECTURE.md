@@ -100,6 +100,9 @@ validation so credentials need not be committed.
 - `typed-null-alignment.ts`: source-exact Beta-Bernoulli cost induction for universal
   surface-null and graph-implicit states. Sparse transport retains candidate-free
   rows and targets and records typed deficit and excess mass explicitly.
+- `population-ordering.ts`: bounded source-exact relative-position induction keyed
+  by segmentation population, plus explicit global pair backoff. The sparse solver
+  evaluates its robust ordering term only on active candidate neighborhoods.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity
