@@ -28,7 +28,7 @@ function checkpoint(patch: Partial<SparseRankingCheckpoint> = {}): SparseRanking
     },
     trainingWindow: { firstExampleAt: 1_000, lastExampleAt: 1_000 },
     examplesSeen: 0,
-    informationLabel: { tenantId: "t", principals: [], compartments: [], exportClass: "internal", mergePolicy: "isolated" },
+    informationLabel: { tenantId: "t", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" },
     createdAt: 1_000,
     ...patch
   };
@@ -41,14 +41,24 @@ function fixture(rowsByModelId: Map<string, Record<string, unknown>>, activeByTa
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push({ sql, params });
     if (sql.includes("INSERT INTO") && sql.includes("sparse_ranking_models")) {
-      const [modelId, taskClass, featureSchemaId, lifecycle] = params as [string, string, string, string];
+      const [
+        modelId, taskClass, featureSchemaId, lifecycle,
+        stateJson, trainingWindowJson, examplesSeen, evaluationJson,
+        previousActiveModelId, rollbackReason, informationLabel, createdAt
+      ] = params as [string, string, string, string, string, string, number, string | null, string | null, string | null, string, number];
       rowsByModelId.set(modelId, {
         model_id: modelId,
         task_class: taskClass,
         feature_schema_id: featureSchemaId,
         lifecycle,
-        previous_active_model_id: (params[8] as string | null) ?? null,
-        rollback_reason: (params[9] as string | null) ?? null
+        state_json: JSON.parse(stateJson),
+        training_window_json: JSON.parse(trainingWindowJson),
+        examples_seen: examplesSeen,
+        evaluation_json: evaluationJson ? JSON.parse(evaluationJson) : null,
+        previous_active_model_id: previousActiveModelId ?? null,
+        rollback_reason: rollbackReason ?? null,
+        information_label: JSON.parse(informationLabel),
+        created_at: new Date(createdAt)
       });
       return [] as T[];
     }
@@ -162,5 +172,18 @@ describe("Postgres sparse ranking model store", () => {
     expect(insert).toBeDefined();
     expect(insert!.params[0]).toBe("model.new");
     expect(insert!.params[3]).toBe("candidate");
+
+    await adapter.sparseRanking.putCheckpoint(checkpoint({ modelId: "model.new", lifecycle: "approved" }));
+    await adapter.sparseRanking.activate({ modelId: "model.new", taskClass: TASK_CLASS, featureSchemaId: RETRIEVAL_RANK_FEATURE_SCHEMA_V1 });
+    const active = await adapter.sparseRanking.readActive(TASK_CLASS, RETRIEVAL_RANK_FEATURE_SCHEMA_V1);
+    expect(active).toMatchObject({
+      modelId: "model.new",
+      taskClass: TASK_CLASS,
+      featureSchemaId: RETRIEVAL_RANK_FEATURE_SCHEMA_V1,
+      lifecycle: "active",
+      examplesSeen: 0
+    });
+    expect(active?.state.coordinates).toEqual([]);
+    expect(active?.informationLabel).toEqual({ tenantId: "t", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" });
   });
 });
