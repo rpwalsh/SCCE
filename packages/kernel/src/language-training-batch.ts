@@ -48,6 +48,11 @@ import {
   type AlignmentCalibrationModel,
   type AlignmentCalibrationObservation
 } from "./alignment-calibration.js";
+import {
+  compileAlignmentPromotionModel,
+  type AlignmentPromotionModel,
+  type AlignmentPromotionObservation
+} from "./alignment-promotion.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -93,6 +98,7 @@ export interface LanguageTrainingBatch {
   maxAlignmentCandidateDegree?: number;
   alignmentAlternativePredecessorSets?: readonly AlignmentAlternativeSet[];
   alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
+  alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
 }
 
 export interface LanguageTrainingConstructionPromotionPolicy {
@@ -138,6 +144,7 @@ export interface CompiledLanguageTrainingBatch {
   alignmentCommunityRoutings: AlignmentCommunityRouting[];
   coarseToFineAlignments: CoarseToFineAlignmentResult[];
   alignmentCalibrationModel: AlignmentCalibrationModel;
+  alignmentPromotionModel: AlignmentPromotionModel;
   typedNullCostModel: TypedNullCostModel | null;
   populationOrderingModel: PopulationOrderingModel | null;
   crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
@@ -302,6 +309,11 @@ export function compileLanguageTrainingBatch(input: {
     observations: batch.alignmentCalibrationObservations ?? [],
     hasher: input.hasher
   });
+  const alignmentPromotionModel = compileAlignmentPromotionModel({
+    alternativeSets: alignmentAlternativeSets,
+    observations: batch.alignmentPromotionObservations ?? [],
+    hasher: input.hasher
+  });
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -361,6 +373,7 @@ export function compileLanguageTrainingBatch(input: {
     alignmentCommunityRoutings,
     coarseToFineAlignments,
     alignmentCalibrationModel,
+    alignmentPromotionModel,
     typedNullCostModel,
     populationOrderingModel,
     crossDocumentAlignmentModel,
@@ -466,6 +479,7 @@ export function compileLanguageTrainingBatch(input: {
           audit: result.audit
         })),
         alignmentCalibrationModel,
+        alignmentPromotionModel,
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
           id: allocation.id,
           status: allocation.status,

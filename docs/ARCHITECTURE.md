@@ -113,6 +113,9 @@ validation so credentials need not be committed.
   preservation and the unified routing/Sinkhorn/local-correction/k-best trace.
 - `alignment-calibration.ts`: source-family-disjoint labeled calibration over
   transport/cycle features with untouched holdout log loss, Brier and ECE.
+- `alignment-promotion.ts`: conservative source-family collapse and independent
+  held-out reuse admission requiring complete recovery, semantic-cycle fidelity,
+  exact-anchor preservation and zero unsupported additions.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

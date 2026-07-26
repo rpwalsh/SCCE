@@ -103,6 +103,9 @@ answer lane.
   the complete work-budgeted sparse alignment stage trace.
 - `alignment-calibration.ts`: empirical held-out correctness calibration with
   explicit source-family separation and insufficient-data refusal.
+- `alignment-promotion.ts`: independent held-out promotion decisions separated
+  from transport selection and confidence calibration; copied source families
+  cannot self-validate.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

@@ -119,6 +119,7 @@ export function createTrainingRuntime(options: {
     let alignmentCommunityRoutings = 0;
     let coarseToFineAlignments = 0;
     let calibratedAlignmentModels = 0;
+    let promotedAlignmentPlans = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -207,6 +208,9 @@ export function createTrainingRuntime(options: {
       coarseToFineAlignments += memory.coarseToFineAlignments.length;
       calibratedAlignmentModels +=
         memory.alignmentCalibrationModel.status === "calibrated" ? 1 : 0;
+      promotedAlignmentPlans += memory.alignmentPromotionModel.decisions.filter(
+        decision => decision.promoted
+      ).length;
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -249,6 +253,7 @@ export function createTrainingRuntime(options: {
         alignmentCommunityRoutings,
         coarseToFineAlignments,
         calibratedAlignmentModels,
+        promotedAlignmentPlans,
         surfaceNullMass,
         graphImplicitMass
       })

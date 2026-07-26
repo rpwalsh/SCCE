@@ -237,6 +237,15 @@ log loss, Brier and ECE only on untouched holdout families. Corpus ingestion
 without those labels records an explicit insufficient-data model and does not turn
 restricted alternative weights into correctness confidence.
 
+Item 25 keeps promotion separate from both selection and calibration.
+`scce.alignment_heldout_promotion.v1` requires an induction family and at least two
+dependency-independent held-out families. Copies within one family collapse to a
+single conservative observation. The default gate additionally requires complete
+graph-target recovery, worst-family cycle recall of at least `0.98`, preservation
+of every exact anchor, and zero unsupported additions. Ordinary and Wikipedia
+ingestion persist explicit nonpromotion because they do not possess independent
+held-out evaluation rows; explicit training must provide those observations.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

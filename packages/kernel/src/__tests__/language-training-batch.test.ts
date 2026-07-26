@@ -123,6 +123,12 @@ describe("shared language training batch", () => {
       status: "insufficient_data",
       holdoutMetrics: null
     });
+    expect(compiled.alignmentPromotionModel).toMatchObject({
+      schema: "scce.alignment_heldout_promotion.v1"
+    });
+    expect(compiled.alignmentPromotionModel.decisions.every(decision =>
+      !decision.promoted
+      && decision.reasons.includes("independent_heldout_families_low"))).toBe(true);
     expect(compiled.sparseTransportPlans).toHaveLength(1);
     expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length

@@ -60,6 +60,7 @@ import {
   compileCoarseToFineAlignmentResult
 } from "./coarse-to-fine-alignment.js";
 import { compileAlignmentCalibrationModel } from "./alignment-calibration.js";
+import { compileAlignmentPromotionModel } from "./alignment-promotion.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -692,6 +693,11 @@ export function createIngestionRuntime(options: {
             allocation.conservationResidual
           );
         }
+        const alignmentPromotionModel = compileAlignmentPromotionModel({
+          alternativeSets: alignmentAlternativeSets,
+          observations: [],
+          hasher
+        });
         events.push(await append(eventFactory.create({
           episodeId,
           typeId: "RelationPromotionCompiled",
@@ -747,6 +753,7 @@ export function createIngestionRuntime(options: {
             alignmentAlternativeSets,
             coarseToFineAlignments,
             alignmentCalibrationModel,
+            alignmentPromotionModel,
             retainedAlignmentHypothesisCount,
             omittedAlignmentSearchBranchCount,
             alignmentPosteriorScope: "retained_candidate_set_only",
