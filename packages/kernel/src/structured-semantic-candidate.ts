@@ -1,6 +1,16 @@
 import type { Observation } from "./ingestion-lanes.js";
 import { createHasher, toJsonValue } from "./primitives.js";
 import type { EvidenceId, Hasher, JsonValue, SourceId, SourceVersionId } from "./types.js";
+import {
+  canonicalNormalizationContract,
+  normalizeCanonicalSurface,
+  type NormalizationContract
+} from "./normalization-contract.js";
+import { createCanonicalIdentity } from "./canonical-identity.js";
+import {
+  canonicalTemporalCoordinates,
+  type CanonicalTemporalCoordinates
+} from "./canonical-temporal.js";
 
 export const STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA = "scce.structured_semantic_candidate.v1" as const;
 
@@ -32,6 +42,7 @@ export interface StructuredSemanticCandidate {
   }>;
   qualifiers: JsonValue;
   evidenceIds: EvidenceId[];
+  temporalCoordinates: CanonicalTemporalCoordinates;
   support: number;
   provenance: JsonValue;
 }
@@ -42,9 +53,13 @@ export function structuredSemanticCandidates(input: {
   metadata: JsonValue;
   observations: readonly Observation[];
   evidenceIds: readonly EvidenceId[];
+  observedAt: number;
+  normalizationContract?: NormalizationContract;
   hasher?: Hasher;
 }): StructuredSemanticCandidate[] {
   const hasher = input.hasher ?? createHasher();
+  const normalizationContract = input.normalizationContract
+    ?? canonicalNormalizationContract(hasher);
   const out = new Map<string, StructuredSemanticCandidate>();
   const add = (
     kind: StructuredSemanticCandidateKind,
@@ -65,9 +80,44 @@ export function structuredSemanticCandidates(input: {
       })),
       qualifiers,
       evidenceIds: [...new Set(evidenceIds)].sort(),
+      temporalCoordinates: canonicalTemporalCoordinates({
+        observedTime: input.observedAt,
+        sourceTime: finiteMetadataTime(input.metadata, "sourceTime"),
+        eventSurfaceMention: kind === "date"
+          ? toJsonValue(participants.map(participant => participant.value))
+          : null,
+        provenance: {
+          eventTimeParsed: false,
+          validityInferredFromObservedTime: false
+        }
+      }),
       support
     };
-    const id = `semantic_candidate.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`;
+    const participantIdentityIds = participants.map((participant, index) =>
+      participantIdentity({
+        participant,
+        index,
+        evidenceIds,
+        normalizationContract,
+        hasher
+      }));
+    const id = createCanonicalIdentity({
+      kind: "relation_hypothesis",
+      fields: {
+        relationSeedId: `relation_seed.${hasher.digestHex(kind).slice(0, 24)}`,
+        participantIncidences: canonical.participants.map((participant, index) => ({
+          portId: participant.portId,
+          identityId: participantIdentityIds[index]!,
+          valueKind: participant.valueKind,
+          realization: participant.realization
+        })),
+        qualifierHash: hasher.digestHex(JSON.stringify(qualifiers)),
+        temporalHash: hasher.digestHex(JSON.stringify(canonical.temporalCoordinates)),
+        evidenceIds: [...new Set(evidenceIds)].map(String)
+      },
+      normalizationContract,
+      hasher
+    }).id;
     out.set(id, {
       schema: STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA,
       id,
@@ -75,7 +125,9 @@ export function structuredSemanticCandidates(input: {
       ...canonical,
       provenance: toJsonValue({
         source: "typed_source_structure",
-        observationFirst: true
+        observationFirst: true,
+        normalizationContractId: normalizationContract.id,
+        participantIdentityIds
       })
     });
   };
@@ -203,6 +255,50 @@ export function structuredSemanticCandidates(input: {
   }
   return [...out.values()].sort((left, right) =>
     right.support - left.support || left.id.localeCompare(right.id));
+}
+
+function participantIdentity(input: {
+  participant: { value: JsonValue; valueKind: string };
+  index: number;
+  evidenceIds: readonly EvidenceId[];
+  normalizationContract: NormalizationContract;
+  hasher: Hasher;
+}): string {
+  if (typeof input.participant.value === "string") {
+    return createCanonicalIdentity({
+      kind: "normalized_surface_form",
+      fields: {
+        normalizationContractId: input.normalizationContract.id,
+        normalizedSurface: normalizeCanonicalSurface(
+          input.participant.value,
+          input.normalizationContract
+        )
+      },
+      normalizationContract: input.normalizationContract,
+      hasher: input.hasher
+    }).id;
+  }
+  return createCanonicalIdentity({
+    kind: "unresolved_entity",
+    fields: {
+      mentionIds: [
+        `mention_material.${input.hasher.digestHex(JSON.stringify([
+          input.participant.valueKind,
+          input.index,
+          input.participant.value
+        ])).slice(0, 40)}`
+      ],
+      evidenceIds: input.evidenceIds.map(String)
+    },
+    normalizationContract: input.normalizationContract,
+    hasher: input.hasher
+  }).id;
+}
+
+function finiteMetadataTime(metadata: JsonValue, key: string): number | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = metadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function record(value: unknown): Record<string, JsonValue> {

@@ -1,5 +1,6 @@
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
+import { canonicalNormalizationContract } from "./normalization-contract.js";
 
 export const SEGMENTATION_FOREST_SCHEMA = "scce.segmentation_forest.v1" as const;
 
@@ -31,6 +32,7 @@ export interface SurfaceSegmentationForest {
   id: string;
   latticeId: string;
   estimatorId: string;
+  normalizationContractId: string;
   graphemeCount: number;
   pathLimit: number;
   paths: SurfaceSegmentationPath[];
@@ -61,10 +63,13 @@ export function buildSegmentationForest(input: {
   estimatorId: string;
   units: readonly SegmentationForestUnit[];
   pathLimit?: number;
+  normalizationContractId?: string;
   hasher?: Hasher;
 }): SurfaceSegmentationForest {
   const hasher = input.hasher ?? createHasher();
   const pathLimit = Math.max(1, Math.min(64, Math.floor(input.pathLimit ?? 8)));
+  const normalizationContractId = input.normalizationContractId
+    ?? canonicalNormalizationContract(hasher).id;
   const graphemeCount = input.units
     .filter(unit => unit.overlapClass === "base_partition")
     .reduce((maximum, unit) => Math.max(maximum, unit.graphemeEnd), 0);
@@ -125,6 +130,7 @@ export function buildSegmentationForest(input: {
   const paths = kBest[graphemeCount]!.map(path => {
     const canonical = {
       latticeId: input.latticeId,
+      normalizationContractId,
       unitIds: path.unitIds,
       energy: path.energy
     };
@@ -140,6 +146,7 @@ export function buildSegmentationForest(input: {
     schema: SEGMENTATION_FOREST_SCHEMA,
     latticeId: input.latticeId,
     estimatorId: input.estimatorId,
+    normalizationContractId,
     graphemeCount,
     pathLimit,
     paths,
@@ -151,6 +158,7 @@ export function buildSegmentationForest(input: {
     id: `segmentation_forest.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
     audit: toJsonValue({
       compiler: "kernel.segmentation_forest.v1",
+      normalizationContractId,
       completeDagPartition: true,
       packedDynamicProgramming: true,
       candidateArcs: [...arcsByStart.values()].reduce((sum, arcs) => sum + arcs.length, 0),

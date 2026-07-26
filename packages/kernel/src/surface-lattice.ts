@@ -12,6 +12,12 @@ import {
 } from "./segmentation-forest.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
+import {
+  canonicalNormalizationContract,
+  normalizeCanonicalSurface,
+  type NormalizationContract
+} from "./normalization-contract.js";
+import { createCanonicalIdentity } from "./canonical-identity.js";
 
 export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v3" as const;
 export const UNTRAINED_BOUNDARY_ESTIMATOR_ID = "boundary_estimator.untrained-neutral.v1" as const;
@@ -54,6 +60,8 @@ export interface SurfaceBoundaryEvidence {
 
 export interface SurfaceLatticeUnit {
   id: string;
+  occurrenceId: string;
+  normalizedFormId: string;
   kind: SurfaceLatticeUnitKind;
   overlapClass: SurfaceLatticeOverlapClass;
   surface: string;
@@ -93,6 +101,7 @@ export interface SurfaceLattice {
   sourceVersionId?: string;
   evidenceIds: string[];
   textHash: string;
+  normalizationContract: NormalizationContract;
   units: SurfaceLatticeUnit[];
   edges: SurfaceLatticeEdge[];
   segmentationForest: SurfaceSegmentationForest;
@@ -114,6 +123,7 @@ export interface SurfaceLatticeBuildOptions {
   maxEdges?: number;
   segmentationPathLimit?: number;
   boundaryEstimator?: BoundaryEstimatorState;
+  normalizationContract?: NormalizationContract;
 }
 
 interface CandidateUnit {
@@ -136,6 +146,7 @@ const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "graphem
 
 export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
   const hasher = options.hasher ?? createHasher();
+  const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
   const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? 4096));
   const maxEdges = Math.max(64, Math.floor(options.maxEdges ?? 8192));
   const text = options.text;
@@ -149,7 +160,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     sourceVersionId,
     evidenceIds,
     hasher.digestHex(text),
-    estimatorId
+    estimatorId,
+    normalizationContract.id
   ])).slice(0, 32)}`;
   const coordinates = buildSurfaceCoordinateIndex(text);
   const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
@@ -175,7 +187,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const candidates = [...baseCandidates, ...higherCandidates];
 
   for (const candidate of candidates) {
-    const key = recurrenceKey(candidate);
+    const key = recurrenceKey(candidate, normalizationContract);
     normalizedCounts.set(key, (normalizedCounts.get(key) ?? 0) + 1);
   }
 
@@ -192,8 +204,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     const identity = `${candidate.kind}\u0001${candidate.codePointStart}\u0001${candidate.codePointEnd}\u0001${candidate.surface}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
-    const normalized = normalizeSurface(candidate.surface);
-    const recurrenceCount = normalizedCounts.get(recurrenceKey(candidate)) ?? 1;
+    const normalized = normalizeSurface(candidate.surface, normalizationContract);
+    const recurrenceCount = normalizedCounts.get(recurrenceKey(candidate, normalizationContract)) ?? 1;
     const before = boundaryEvidenceAt({
       text,
       positionCodePoint: candidate.codePointStart,
@@ -214,15 +226,33 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       repeatedContextSupport: recurrenceCount,
       boundaryEstimator: options.boundaryEstimator
     });
+    const occurrenceIdentity = createCanonicalIdentity({
+        kind: "surface_occurrence",
+        fields: {
+          evidenceId: evidenceIds[0] ?? options.documentId,
+          byteStart: coordinates.utf16ToByte[candidate.utf16Start] ?? 0,
+          byteEnd: coordinates.utf16ToByte[candidate.utf16End] ?? Buffer.byteLength(text, "utf8"),
+          exactSurfaceHash: hasher.digestHex(candidate.surface)
+        },
+        normalizationContract,
+        hasher
+      });
+    const normalizedFormIdentity = createCanonicalIdentity({
+      kind: "normalized_surface_form",
+      fields: {
+        normalizationContractId: normalizationContract.id,
+        normalizedSurface: normalized
+      },
+      normalizationContract,
+      hasher
+    });
     units.push({
-      id: `surface_unit.${hasher.digestHex(JSON.stringify([
-        SURFACE_LATTICE_SCHEMA,
-        options.documentId,
-        candidate.kind,
-        candidate.codePointStart,
-        candidate.codePointEnd,
-        candidate.surface
-      ])).slice(0, 32)}`,
+      id: `surface_arc.${hasher.digestHex(JSON.stringify([
+        occurrenceIdentity.id,
+        candidate.kind
+      ])).slice(0, 40)}`,
+      occurrenceId: occurrenceIdentity.id,
+      normalizedFormId: normalizedFormIdentity.id,
       kind: candidate.kind,
       overlapClass: overlapClassFor(candidate.kind),
       surface: candidate.surface,
@@ -255,6 +285,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     estimatorId,
     units,
     pathLimit: options.segmentationPathLimit,
+    normalizationContractId: normalizationContract.id,
     hasher
   });
   const countsByKind = new Map<SurfaceLatticeUnitKind, number>();
@@ -266,11 +297,13 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     ...(sourceVersionId ? { sourceVersionId } : {}),
     evidenceIds,
     textHash: hasher.digestHex(text),
+    normalizationContract,
     units,
     edges,
     segmentationForest,
     audit: toJsonValue({
       builder: "kernel.surface_lattice.v3",
+      normalizationContractId: normalizationContract.id,
       inputUtf16Length: text.length,
       inputBytes: Buffer.byteLength(text, "utf8"),
       inputCodePoints: [...text].length,
@@ -920,12 +953,18 @@ function pushEdge(
   });
 }
 
-function recurrenceKey(candidate: CandidateUnit): string {
-  return `${candidate.kind}\u0001${normalizeSurface(candidate.surface)}`;
+function recurrenceKey(
+  candidate: CandidateUnit,
+  normalizationContract: NormalizationContract
+): string {
+  return `${candidate.kind}\u0001${normalizeSurface(candidate.surface, normalizationContract)}`;
 }
 
-function normalizeSurface(surface: string): string {
-  return surface.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim();
+function normalizeSurface(
+  surface: string,
+  normalizationContract: NormalizationContract
+): string {
+  return normalizeCanonicalSurface(surface, normalizationContract).replace(/\s+/gu, " ").trim();
 }
 
 function overlapClassFor(kind: SurfaceLatticeUnitKind): SurfaceLatticeOverlapClass {

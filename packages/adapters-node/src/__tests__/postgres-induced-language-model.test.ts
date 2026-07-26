@@ -20,6 +20,7 @@ function fakeModel(id: string): InducedLanguageModel {
     boundaryStatistics: {
       schema: "scce.boundary_statistics.v1",
       populationId: "population.fixture",
+      normalizationContractId: "normalization_contract.fixture",
       featureOrder: [],
       scale: 1_000_000,
       rows: [],

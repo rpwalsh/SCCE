@@ -1,5 +1,6 @@
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
+import { canonicalNormalizationContract } from "./normalization-contract.js";
 
 export const BOUNDARY_ESTIMATOR_SCHEMA = "scce.boundary_estimator.v1" as const;
 export const BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA = "scce.boundary_estimator_mixture.v1" as const;
@@ -31,6 +32,7 @@ export interface BoundaryStatisticsRow {
 export interface BoundarySufficientStatistics {
   schema: typeof BOUNDARY_STATISTICS_SCHEMA;
   populationId: string;
+  normalizationContractId: string;
   featureOrder: readonly string[];
   scale: number;
   rows: BoundaryStatisticsRow[];
@@ -89,9 +91,12 @@ export function compileBoundaryStatistics(input: {
   populationId: string;
   observations: readonly BoundaryObservation[];
   sourceDocumentIds?: readonly string[];
+  normalizationContractId?: string;
   hasher?: Hasher;
 }): BoundarySufficientStatistics {
   const hasher = input.hasher ?? createHasher();
+  const normalizationContractId = input.normalizationContractId
+    ?? canonicalNormalizationContract(hasher).id;
   const rows = new Map<string, BoundaryStatisticsRow>();
   for (const observation of input.observations) {
     const featuresFixed = featureArray(observation.features)
@@ -114,6 +119,7 @@ export function compileBoundaryStatistics(input: {
   const canonical = {
     schema: BOUNDARY_STATISTICS_SCHEMA,
     populationId: input.populationId,
+    normalizationContractId,
     featureOrder: FEATURE_ORDER,
     scale: FIXED_SCALE,
     rows: ordered,
@@ -127,6 +133,7 @@ export function compileBoundaryStatistics(input: {
     negativeMass: ordered.reduce((sum, row) => sum + row.negativeMass, 0),
     audit: toJsonValue({
       compiler: "kernel.boundary_statistics.v1",
+      normalizationContractId,
       exactIntegerMass: true,
       canonicalRowOrder: true,
       rows: ordered.length,
@@ -151,6 +158,7 @@ export function mergeBoundaryStatistics(
   if (statistics.some(item =>
     item.schema !== BOUNDARY_STATISTICS_SCHEMA
     || item.populationId !== populationId
+    || item.normalizationContractId !== statistics[0]!.normalizationContractId
     || item.scale !== FIXED_SCALE
     || item.featureOrder.join("\u001f") !== FEATURE_ORDER.join("\u001f"))) {
     throw new Error("boundary statistics merge requires one schema and population");
@@ -180,6 +188,7 @@ export function mergeBoundaryStatistics(
     populationId: targetPopulationId ?? populationId,
     observations,
     sourceDocumentIds: statistics.flatMap(item => item.sourceDocumentIds),
+    normalizationContractId: statistics[0]!.normalizationContractId,
     hasher
   });
 }

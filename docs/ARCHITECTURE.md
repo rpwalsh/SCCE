@@ -85,6 +85,11 @@ validation so credentials need not be committed.
 - `typed-incidence-graph.ts`: lossless arbitrary-arity hyperedge lift into relation
   nodes and typed participant incidences. The field engine uses reversible incidence
   transitions without participant cliques; omitted ports remain null incidences.
+- `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
+  executable normalization, explicit identity-field allowlists, and independent
+  source/observation/event/validity coordinates.
+- `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
+  configuration, seed and sorted derived component identities.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field
