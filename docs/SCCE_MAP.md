@@ -90,6 +90,8 @@ answer lane.
   statistics, source-disjoint held-out calibration, exact forward/backward
   marginals, globally normalized traced forest energy, explicit omitted mass,
   bounded resume state, and no fixed recurrence/predictability production credits.
+- `segmentation-population.ts`: generative document-NLL population posteriors and
+  description-length plus per-child held-out non-regression merge admissibility.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

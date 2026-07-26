@@ -10,7 +10,7 @@ import {
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 
-export const SEGMENTATION_POPULATION_SCHEMA = "scce.segmentation_population_model.v1" as const;
+export const SEGMENTATION_POPULATION_SCHEMA = "scce.segmentation_population_model.v2" as const;
 
 export interface SegmentationPopulationTrainingDocument {
   documentId: string;
@@ -32,7 +32,9 @@ export interface SegmentationPopulationAssignment {
   posterior: Array<{
     populationId: string;
     probability: number;
+    negativeLogLikelihood: number;
     averageLogLoss: number;
+    documentMass: number;
   }>;
 }
 
@@ -51,6 +53,9 @@ export interface SegmentationPopulationModel {
       modelNats: number;
       descriptionNats: number;
       collapsed: boolean;
+      mergeBlocked: boolean;
+      mergeDescriptionDeltaNats: number | null;
+      heldoutRegressionPopulationIds: string[];
     }>;
     selectedPopulationCount: number;
     baselineDescriptionNats: number;
@@ -69,6 +74,9 @@ interface CandidateFit {
   modelNats: number;
   descriptionNats: number;
   collapsed: boolean;
+  mergeBlocked: boolean;
+  mergeDescriptionDeltaNats: number | null;
+  heldoutRegressionPopulationIds: string[];
 }
 
 const MIN_DOCUMENTS_PER_POPULATION = 2;
@@ -77,6 +85,8 @@ export function learnSegmentationPopulations(input: {
   rootPopulationId: string;
   documents: readonly SegmentationPopulationTrainingDocument[];
   maxPopulations?: number;
+  mergeDescriptionMarginNats?: number;
+  heldoutRegressionToleranceNats?: number;
   hasher?: Hasher;
 }): SegmentationPopulationModel {
   const hasher = input.hasher ?? createHasher();
@@ -98,8 +108,19 @@ export function learnSegmentationPopulations(input: {
       hasher
     }));
   }
-  const legalCandidates = candidateFits.filter(candidate => !candidate.collapsed);
-  const baseline = legalCandidates.find(candidate => candidate.populationCount === 1)
+  applyMergeGuards({
+    candidates: candidateFits,
+    holdout,
+    descriptionMarginNats: Math.max(0, input.mergeDescriptionMarginNats ?? 1),
+    heldoutRegressionToleranceNats: Math.max(
+      0,
+      input.heldoutRegressionToleranceNats ?? 0.01
+    )
+  });
+  const legalCandidates = candidateFits.filter(candidate =>
+    !candidate.collapsed && !candidate.mergeBlocked);
+  const baseline = candidateFits.find(candidate =>
+    candidate.populationCount === 1 && !candidate.collapsed)
     ?? emptyCandidate();
   const selected = legalCandidates
     .sort((left, right) =>
@@ -153,7 +174,10 @@ export function learnSegmentationPopulations(input: {
         heldoutDataNats: candidate.heldoutDataNats,
         modelNats: candidate.modelNats,
         descriptionNats: candidate.descriptionNats,
-        collapsed: candidate.collapsed
+        collapsed: candidate.collapsed,
+        mergeBlocked: candidate.mergeBlocked,
+        mergeDescriptionDeltaNats: candidate.mergeDescriptionDeltaNats,
+        heldoutRegressionPopulationIds: candidate.heldoutRegressionPopulationIds
       })),
       selectedPopulationCount: populations.length,
       baselineDescriptionNats: baseline.descriptionNats,
@@ -166,8 +190,18 @@ export function learnSegmentationPopulations(input: {
     id: `segmentation_population.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
     populations,
     audit: toJsonValue({
-      learner: "kernel.segmentation_population.heldout_mdl.v1",
+      learner: "kernel.segmentation_population.heldout_mdl.v2",
       documentDisjointSelection: true,
+      posterior: "generative_document_nll",
+      scriptMetadataUsed: false,
+      mergeGuard: {
+        descriptionMarginNats: Math.max(0, input.mergeDescriptionMarginNats ?? 1),
+        heldoutRegressionToleranceNats: Math.max(
+          0,
+          input.heldoutRegressionToleranceNats ?? 0.01
+        ),
+        childPopulationHeldoutNonRegressionRequired: true
+      },
       minimumDocumentsPerPopulation: MIN_DOCUMENTS_PER_POPULATION,
       candidatePopulationCounts: candidateFits.length,
       collapsedCandidatesRejected: candidateFits.filter(candidate => candidate.collapsed).length
@@ -278,8 +312,55 @@ function fitPopulationCandidate(input: {
     heldoutDataNats,
     modelNats,
     descriptionNats: quantize(heldoutDataNats + modelNats),
-    collapsed: false
+    collapsed: false,
+    mergeBlocked: false,
+    mergeDescriptionDeltaNats: null,
+    heldoutRegressionPopulationIds: []
   };
+}
+
+function applyMergeGuards(input: {
+  candidates: CandidateFit[];
+  holdout: readonly SegmentationPopulationTrainingDocument[];
+  descriptionMarginNats: number;
+  heldoutRegressionToleranceNats: number;
+}): void {
+  for (const coarse of input.candidates) {
+    if (coarse.collapsed) continue;
+    const fine = input.candidates.find(candidate =>
+      !candidate.collapsed
+      && candidate.populationCount === coarse.populationCount + 1);
+    if (!fine) continue;
+    const descriptionDelta = quantize(coarse.descriptionNats - fine.descriptionNats);
+    const regressions: string[] = [];
+    const lossesByFinePopulation = new Map<number, Array<{ fine: number; coarse: number }>>();
+    for (const document of input.holdout) {
+      const fineLosses = fine.estimators.map(estimator =>
+        boundaryNegativeLogLikelihood(estimator, document.statistics).averageLogLoss);
+      const coarseLosses = coarse.estimators.map(estimator =>
+        boundaryNegativeLogLikelihood(estimator, document.statistics).averageLogLoss);
+      const fineIndex = indexOfMinimum(fineLosses);
+      const rows = lossesByFinePopulation.get(fineIndex) ?? [];
+      rows.push({
+        fine: fineLosses[fineIndex] ?? Number.POSITIVE_INFINITY,
+        coarse: Math.min(...coarseLosses)
+      });
+      lossesByFinePopulation.set(fineIndex, rows);
+    }
+    for (let index = 0; index < fine.populationCount; index += 1) {
+      const rows = lossesByFinePopulation.get(index) ?? [];
+      if (!rows.length) continue;
+      const fineMean = rows.reduce((sum, row) => sum + row.fine, 0) / rows.length;
+      const coarseMean = rows.reduce((sum, row) => sum + row.coarse, 0) / rows.length;
+      if (coarseMean > fineMean + input.heldoutRegressionToleranceNats) {
+        regressions.push(`candidate.${fine.populationCount}.population.${index}`);
+      }
+    }
+    coarse.mergeDescriptionDeltaNats = descriptionDelta;
+    coarse.heldoutRegressionPopulationIds = regressions;
+    coarse.mergeBlocked = descriptionDelta >= -input.descriptionMarginNats
+      || regressions.length > 0;
+  }
 }
 
 function assignmentForDocument(
@@ -290,15 +371,19 @@ function assignmentForDocument(
     const score = boundaryNegativeLogLikelihood(population.estimator, document.statistics);
     return {
       populationId: population.id,
+      negativeLogLikelihood: score.negativeLogLikelihood,
       averageLogLoss: score.averageLogLoss,
-      logWeight: Math.log(Math.max(1e-12, population.prior)) - score.averageLogLoss
+      documentMass: score.mass,
+      logWeight: Math.log(Math.max(1e-12, population.prior)) - score.negativeLogLikelihood
     };
   });
   const logZ = logSumExp(rows.map(row => row.logWeight));
   const posterior = rows.map(row => ({
     populationId: row.populationId,
     probability: quantize(clamp01(Math.exp(row.logWeight - logZ))),
-    averageLogLoss: row.averageLogLoss
+    negativeLogLikelihood: row.negativeLogLikelihood,
+    averageLogLoss: row.averageLogLoss,
+    documentMass: row.documentMass
   })).sort((left, right) =>
     right.probability - left.probability
     || left.populationId.localeCompare(right.populationId));
@@ -468,7 +553,10 @@ function emptyCandidate(): CandidateFit {
     heldoutDataNats: 0,
     modelNats: 0,
     descriptionNats: 0,
-    collapsed: false
+    collapsed: false,
+    mergeBlocked: false,
+    mergeDescriptionDeltaNats: null,
+    heldoutRegressionPopulationIds: []
   };
 }
 
