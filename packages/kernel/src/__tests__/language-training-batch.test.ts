@@ -118,6 +118,11 @@ describe("shared language training batch", () => {
       schema: "scce.coarse_to_fine_alignment.v1",
       globalOptimalityClaimed: false
     });
+    expect(compiled.alignmentCalibrationModel).toMatchObject({
+      schema: "scce.alignment_calibration_model.v1",
+      status: "insufficient_data",
+      holdoutMetrics: null
+    });
     expect(compiled.sparseTransportPlans).toHaveLength(1);
     expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length

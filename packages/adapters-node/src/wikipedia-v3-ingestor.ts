@@ -25,6 +25,7 @@ import {
   extractAlignmentAlternatives,
   compileAlignmentCommunityRouting,
   compileCoarseToFineAlignmentResult,
+  compileAlignmentCalibrationModel,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
@@ -1045,6 +1046,10 @@ export class WikipediaV3Ingestor {
         targetIndex: alignmentTargetIndex,
         hasher: this.hasher
       });
+      const alignmentCalibrationModel = compileAlignmentCalibrationModel({
+        observations: [],
+        hasher: this.hasher
+      });
       const finalTransportPlans = routedAlignmentSupports.map(support =>
         solveSparseFusedUnbalancedTransport({
           support,
@@ -1183,6 +1188,7 @@ export class WikipediaV3Ingestor {
           alignmentAlternativeSetIds,
           alignmentAlternativeSets,
           coarseToFineAlignments,
+          alignmentCalibrationModel,
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
           alignmentPosteriorScope: "retained_candidate_set_only",

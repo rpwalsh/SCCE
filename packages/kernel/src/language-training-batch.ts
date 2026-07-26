@@ -43,6 +43,11 @@ import {
   type AlignmentCommunityRouting,
   type CoarseToFineAlignmentResult
 } from "./coarse-to-fine-alignment.js";
+import {
+  compileAlignmentCalibrationModel,
+  type AlignmentCalibrationModel,
+  type AlignmentCalibrationObservation
+} from "./alignment-calibration.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -87,6 +92,7 @@ export interface LanguageTrainingBatch {
   graphSnapshot?: GraphSnapshot;
   maxAlignmentCandidateDegree?: number;
   alignmentAlternativePredecessorSets?: readonly AlignmentAlternativeSet[];
+  alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
 }
 
 export interface LanguageTrainingConstructionPromotionPolicy {
@@ -131,6 +137,7 @@ export interface CompiledLanguageTrainingBatch {
   sparseAlignmentCandidateSummaries: JsonValue[];
   alignmentCommunityRoutings: AlignmentCommunityRouting[];
   coarseToFineAlignments: CoarseToFineAlignmentResult[];
+  alignmentCalibrationModel: AlignmentCalibrationModel;
   typedNullCostModel: TypedNullCostModel | null;
   populationOrderingModel: PopulationOrderingModel | null;
   crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
@@ -291,6 +298,10 @@ export function compileLanguageTrainingBatch(input: {
     (item, index) => item.evidenceAllocations.filter(allocation =>
       allocation.transportPlanId !== sparseTransportPlans[index]!.id)
   );
+  const alignmentCalibrationModel = compileAlignmentCalibrationModel({
+    observations: batch.alignmentCalibrationObservations ?? [],
+    hasher: input.hasher
+  });
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -349,6 +360,7 @@ export function compileLanguageTrainingBatch(input: {
     sparseAlignmentCandidateSummaries,
     alignmentCommunityRoutings,
     coarseToFineAlignments,
+    alignmentCalibrationModel,
     typedNullCostModel,
     populationOrderingModel,
     crossDocumentAlignmentModel,
@@ -453,6 +465,7 @@ export function compileLanguageTrainingBatch(input: {
           work: result.work,
           audit: result.audit
         })),
+        alignmentCalibrationModel,
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
           id: allocation.id,
           status: allocation.status,
