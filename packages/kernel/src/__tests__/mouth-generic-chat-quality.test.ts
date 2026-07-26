@@ -8,7 +8,7 @@ import {
   createMouth,
   createSemanticEntailmentEngine,
   featureSet,
-  legacyDetailProfileIdFromSignal
+  detailProfileIdFromSignal
 } from "../index.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, JsonValue, LanguageProfile, SemanticEntailmentResult, SourceVersion } from "../types.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "../storage.js";
@@ -29,9 +29,9 @@ describe("Mouth generic chat quality gate", () => {
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
 
     const conversational = await mouth.speak(baseInput({ source, evidence, field, entailment, languageMemory, construct: constructGraph(false) }));
-    const conciseProfileId = legacyDetailProfileIdFromSignal("brief");
-    const detailedProfileId = legacyDetailProfileIdFromSignal("detailed");
-    if (!conciseProfileId || !detailedProfileId) throw new Error("legacy detail boundary fixture failed");
+    const conciseProfileId = detailProfileIdFromSignal("brief");
+    const detailedProfileId = detailProfileIdFromSignal("detailed");
+    if (!conciseProfileId || !detailedProfileId) throw new Error("detail signal fixture failed");
     const concise = await mouth.speak({ ...baseInput({ source, evidence, field, entailment, languageMemory, construct: constructGraph(false) }), detailProfileId: conciseProfileId, style: { density: 0.24 } });
     const detailed = await mouth.speak({ ...baseInput({ source, evidence, field, entailment, languageMemory, construct: constructGraph(false) }), detailProfileId: detailedProfileId, style: { density: 0.88 } });
 

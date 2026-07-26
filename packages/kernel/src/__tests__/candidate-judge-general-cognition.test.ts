@@ -305,7 +305,7 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(field.candidates[0]?.kind).toBe("proof-answer");
     expect(field.candidates[0]?.answer).toBe("");
     expect(JSON.stringify(field.candidates[0]?.audit)).toContain('"frameId":"semantic.answer.proof.v1"');
-    expect(jsonRecord(field.audit).operatorRoutingFallback).toBe(true);
+    expect(jsonRecord(field.audit).operatorRoutingRecovery).toBe(true);
   });
 
   it("changes selection from truth support to novelty when the requirement vector changes", () => {

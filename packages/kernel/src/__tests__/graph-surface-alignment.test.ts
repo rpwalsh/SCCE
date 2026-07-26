@@ -31,6 +31,9 @@ describe("graph-surface alignment -> anti-unification -> realization (first JGSC
     expect(alignments.length).toBeGreaterThan(0);
     const set = alignments[0]!;
     expect(set.observations.length).toBeGreaterThanOrEqual(2);
+    expect(set.latticeSummaries?.length).toBeGreaterThan(0);
+    expect(set.transportTraces?.length).toBe(set.observations.length);
+    expect(set.transportTraces?.some(trace => trace.cells.some(cell => cell.selected && cell.roleId === GRAPH_SURFACE_ROLE_IDS.predicate))).toBe(true);
     for (const example of set.observations) {
       expect(example.evidenceIds).toEqual(["evidence:doc.1"]);
       for (const span of example.roleSpans) {
