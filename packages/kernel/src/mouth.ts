@@ -5904,8 +5904,8 @@ function stringFrom(value: JsonValue | undefined): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function numberFrom(value: JsonValue | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : clamp01(fallback);
+function numberFrom(value: JsonValue | undefined, defaultValue: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : clamp01(defaultValue);
 }
 
 function scoreLabel(value: number): string {
