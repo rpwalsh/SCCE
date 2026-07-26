@@ -696,8 +696,10 @@ function localOrderingCosts(input: {
           const expectation = populationOrderingExpectation({
             model: input.populationOrderingModel,
             populationPosterior: input.populationPosterior,
-            leftGraphTargetId: source.candidate.graphTargetId,
-            rightGraphTargetId: neighbor.candidate.graphTargetId
+            leftGraphOrderKey:
+              source.candidate.graphOrderKey ?? source.candidate.graphTargetId,
+            rightGraphOrderKey:
+              neighbor.candidate.graphOrderKey ?? neighbor.candidate.graphTargetId
           });
           if (expectation.source === "unresolved") continue;
           const surfaceDelta = (candidateCenter(neighbor.candidate)

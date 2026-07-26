@@ -51,9 +51,15 @@ export function compileAlignmentPromotionModel(input: {
 }): AlignmentPromotionModel {
   const hasher = input.hasher ?? createHasher();
   const minimumIndependentHeldoutFamilies = boundedInteger(
-    input.minimumIndependentHeldoutFamilies, 1, 32, 2);
-  const minimumHeldoutCoverage = unit(input.minimumHeldoutCoverage ?? 1);
-  const minimumCycleRecall = unit(input.minimumCycleRecall ?? 0.98);
+    input.minimumIndependentHeldoutFamilies, 2, 32, 2);
+  const minimumHeldoutCoverage = Math.max(
+    1,
+    unit(input.minimumHeldoutCoverage ?? 1)
+  );
+  const minimumCycleRecall = Math.max(
+    0.98,
+    unit(input.minimumCycleRecall ?? 0.98)
+  );
   const observations = canonicalObservations(input.observations);
   const decisions = input.alternativeSets.flatMap(set => set.hypotheses.map(hypothesis => {
     const rows = observations.filter(row =>

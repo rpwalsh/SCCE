@@ -61,7 +61,9 @@ import {
 } from "./coarse-to-fine-alignment.js";
 import { compileAlignmentCalibrationModel } from "./alignment-calibration.js";
 import { compileAlignmentPromotionModel } from "./alignment-promotion.js";
+import { compileAutomaticAlignmentEvaluation } from "./alignment-heldout-evaluation.js";
 import {
+  compileReversibleConstructionPattern,
   compileReversibleConstructions,
   reversibleConstructionCreationSnapshotId,
   reversibleConstructionProfileId
@@ -133,6 +135,7 @@ export function createIngestionRuntime(options: {
       const typedObservationCounts: Record<string, number> = {};
       const observationRouteCounts: Record<string, number> = {};
       const relationCandidates: StructuredSemanticCandidate[] = [];
+      const profileIdBySourceVersion = new Map<string, string>();
       const skipped: Array<{ path: string; reason: string }> = [];
       const stream = input.content !== undefined
         ? inlineIngestStream(input, clock.now(), hasher)
@@ -245,6 +248,7 @@ export function createIngestionRuntime(options: {
           ...language.acquire({ sourceVersionId, text: languageSurface, createdAt: now }),
           informationLabel
         };
+        profileIdBySourceVersion.set(String(sourceVersionId), profile.id);
         const extracted = evidenceExtractor.extract({
           sourceId,
           sourceVersionId,
@@ -614,10 +618,6 @@ export function createIngestionRuntime(options: {
           targetIndex: alignmentTargetIndex,
           hasher
         });
-        const alignmentCalibrationModel = compileAlignmentCalibrationModel({
-          observations: [],
-          hasher
-        });
         const finalTransportPlans = routedAlignmentSupports.map(support =>
           solveSparseFusedUnbalancedTransport({
             support,
@@ -704,9 +704,22 @@ export function createIngestionRuntime(options: {
             allocation.conservationResidual
           );
         }
+        const alignmentHeldoutEvaluation =
+          compileAutomaticAlignmentEvaluation({
+            alternativeSets: alignmentAlternativeSets,
+            supports: routedAlignmentSupports,
+            referencePlans: finalTransportPlans,
+            evidenceAllocations: allAlignmentEvidenceAllocations,
+            targetIndex: alignmentTargetIndex,
+            hasher
+          });
+        const alignmentCalibrationModel = compileAlignmentCalibrationModel({
+          observations: alignmentHeldoutEvaluation.calibrationObservations,
+          hasher
+        });
         const alignmentPromotionModel = compileAlignmentPromotionModel({
           alternativeSets: alignmentAlternativeSets,
-          observations: [],
+          observations: alignmentHeldoutEvaluation.promotionObservations,
           hasher
         });
         const reversibleConstructionCompilation =
@@ -725,6 +738,7 @@ export function createIngestionRuntime(options: {
                 support.populationPosterior),
               hasher
             }),
+            profileIdBySourceVersion,
             creationSnapshotId: reversibleConstructionCreationSnapshotId({
               sourceVersionId: [...new Set(relationEvidence.map(span =>
                 String(span.sourceVersionId)))].sort().join("\u001f"),
@@ -736,6 +750,23 @@ export function createIngestionRuntime(options: {
             createdAt: clock.now(),
             hasher
           });
+        const reversibleConstructionPatterns =
+          reversibleConstructionCompilation.constructions.map(
+            compileReversibleConstructionPattern
+          );
+        const labeledReversiblePatterns = labelRecords(
+          reversibleConstructionPatterns,
+          informationLabel
+        );
+        if (deps.storage.languageMemory.putLanguagePatterns) {
+          await deps.storage.languageMemory.putLanguagePatterns(
+            labeledReversiblePatterns
+          );
+        } else {
+          for (const pattern of labeledReversiblePatterns) {
+            await deps.storage.languageMemory.putLanguagePattern(pattern);
+          }
+        }
         events.push(await append(eventFactory.create({
           episodeId,
           typeId: "RelationPromotionCompiled",
@@ -792,6 +823,7 @@ export function createIngestionRuntime(options: {
             coarseToFineAlignments,
             alignmentCalibrationModel,
             alignmentPromotionModel,
+            alignmentHeldoutEvaluation,
             reversibleConstructions:
               reversibleConstructionCompilation.constructions,
             reversibleConstructionRejections:

@@ -94,13 +94,16 @@ answer lane.
 - `typed-null-alignment.ts`: learned source-exact costs for typed surface-null and
   graph-implicit transport mass, without grammatical or language-name routing.
 - `population-ordering.ts`: population-posterior-conditioned robust relative-order
-  estimates learned from exact anchors and consumed by sparse transport.
+  estimates over reusable typed port keys, learned from exact anchors and consumed
+  by sparse transport.
 - `cross-document-alignment.ts`: common graph-port projections and source-family-
   aware cross-document correction for two-pass sparse transport.
 - `alignment-alternatives.ts`: bounded retained sparse plans, restricted Gibbs
   weights, evidence-allocation identities and revision lineage.
-- `coarse-to-fine-alignment.ts`: exact-anchor-preserving community routing and
-  the complete work-budgeted sparse alignment stage trace.
+- `coarse-to-fine-alignment.ts`: exact-anchor-preserving structural quotient
+  routing with upper bounds and the complete work-budgeted sparse alignment trace.
+- `alignment-heldout-evaluation.ts`: automatic dependency-family cross-fit,
+  candidate-recall ceiling, graph recovery and evaluation-artifact generation.
 - `alignment-calibration.ts`: empirical held-out correctness calibration with
   explicit source-family separation and insufficient-data refusal.
 - `alignment-promotion.ts`: independent held-out promotion decisions separated

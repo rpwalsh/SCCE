@@ -101,16 +101,21 @@ validation so credentials need not be committed.
   surface-null and graph-implicit states. Sparse transport retains candidate-free
   rows and targets and records typed deficit and excess mass explicitly.
 - `population-ordering.ts`: bounded source-exact relative-position induction keyed
-  by segmentation population, plus explicit global pair backoff. The sparse solver
-  evaluates its robust ordering term only on active candidate neighborhoods.
+  by segmentation population and reusable typed relation/port/opaque-role keys,
+  plus explicit global structural-pair backoff. The sparse solver evaluates its
+  robust ordering term only on active candidate neighborhoods.
 - `cross-document-alignment.ts`: canonical typed graph-port projections, dependency
   family collapse, independent-family consistency distances, and second-pass sparse
   correction costs.
 - `alignment-alternatives.ts`: bounded non-anchor branch extraction, immutable
   alternative-plan revisions, evidence-allocation references and restricted-set
   Gibbs weights without a global-posterior claim.
-- `coarse-to-fine-alignment.ts`: opaque hyperedge-community routing, exact-anchor
-  preservation and the unified routing/Sinkhorn/local-correction/k-best trace.
+- `coarse-to-fine-alignment.ts`: reusable structural quotient-community routing,
+  exact-anchor preservation, selected/omitted upper bounds and the unified
+  routing/Sinkhorn/local-correction/k-best trace.
+- `alignment-heldout-evaluation.ts`: automatic source-family cross-fitting,
+  pre-transport candidate recall, graph recovery and content-addressed calibration
+  and promotion observations.
 - `alignment-calibration.ts`: source-family-disjoint labeled calibration over
   transport/cycle features with untouched holdout log loss, Brier and ECE.
 - `alignment-promotion.ts`: conservative source-family collapse and independent

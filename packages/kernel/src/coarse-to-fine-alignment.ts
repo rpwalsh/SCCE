@@ -9,13 +9,14 @@ import type { AlignmentAlternativeSet } from "./alignment-alternatives.js";
 import type { SparseFusedTransportPlan } from "./sparse-fused-transport.js";
 
 export const ALIGNMENT_COMMUNITY_ROUTING_SCHEMA =
-  "scce.alignment_community_routing.v1" as const;
+  "scce.alignment_community_routing.v2" as const;
 export const COARSE_TO_FINE_ALIGNMENT_SCHEMA =
   "scce.coarse_to_fine_alignment.v1" as const;
 
 export interface AlignmentTargetCommunity {
   id: string;
-  hyperedgeId: string;
+  quotientKey: string;
+  hyperedgeIds: string[];
   relationNodeIds: string[];
   targetIds: string[];
 }
@@ -26,6 +27,12 @@ export interface AlignmentCommunityRoute {
   exactAnchorCommunityIds: string[];
   retainedCandidateIds: string[];
   omittedCandidateCount: number;
+  selectedCommunityUpperBounds: Array<{
+    communityId: string;
+    upperBound: number;
+  }>;
+  omittedCommunityUpperBound: number;
+  routingRecallCertified: boolean;
 }
 
 export interface RoutedSparseAlignmentSupport
@@ -123,8 +130,9 @@ export function compileAlignmentCommunityRouting(input: {
       }
     }
     const selected = new Set(exact);
-    for (const [communityId] of [...scores.entries()].sort((left, right) =>
-      right[1] - left[1] || left[0].localeCompare(right[0]))) {
+    const rankedScores = [...scores.entries()].sort((left, right) =>
+      right[1] - left[1] || left[0].localeCompare(right[0]));
+    for (const [communityId] of rankedScores) {
       if (selected.size >= Math.max(maximumCommunitiesPerRow, exact.size)) break;
       selected.add(communityId);
     }
@@ -135,13 +143,30 @@ export function compileAlignmentCommunityRouting(input: {
       })
       .map(candidate => candidate.id)
       .sort();
+    const omittedCommunityUpperBound = Math.max(
+      0,
+      ...rankedScores.filter(([communityId]) => !selected.has(communityId))
+        .map(([, score]) => score)
+    );
+    const selectedNonAnchorBounds = rankedScores
+      .filter(([communityId]) => selected.has(communityId))
+      .map(([, score]) => score);
+    const selectedFloor = selectedNonAnchorBounds.length
+      ? Math.min(...selectedNonAnchorBounds)
+      : 0;
     return {
       surfaceUnitId: row.surfaceUnitId,
       selectedCommunityIds: [...selected].sort(),
       exactAnchorCommunityIds: [...exact].sort(),
       retainedCandidateIds,
       omittedCandidateCount:
-        row.omittedCandidateCount + candidates.length - retainedCandidateIds.length
+        row.omittedCandidateCount + candidates.length - retainedCandidateIds.length,
+      selectedCommunityUpperBounds: rankedScores
+        .filter(([communityId]) => selected.has(communityId))
+        .map(([communityId, upperBound]) => ({ communityId, upperBound })),
+      omittedCommunityUpperBound,
+      routingRecallCertified: row.omittedCandidateCount === 0
+        && omittedCommunityUpperBound < selectedFloor
     };
   });
   const retainedCandidateIds = new Set(routes.flatMap(route =>
@@ -188,7 +213,7 @@ export function compileAlignmentCommunityRouting(input: {
     ).slice(0, 40)}`,
     audit: toJsonValue({
       ...jsonRecord(input.support.audit),
-      compiler: "kernel.alignment.community_routing.v1",
+      compiler: "kernel.alignment.community_routing.v2",
       parentSupportId: input.support.id,
       routingId,
       communityCount: communities.length,
@@ -198,6 +223,10 @@ export function compileAlignmentCommunityRouting(input: {
         .filter(candidate =>
           candidate.supportKinds.includes("exact_observable_anchor"))
         .every(candidate => retainedCandidateIds.has(candidate.id)),
+      quotientCommunityRouting: true,
+      conservativeUpperBoundsRecorded: true,
+      recallCertifiedRows: routes.filter(route =>
+        route.routingRecallCertified).length,
       denseCommunityMatrixMaterialized: false
     })
   };
@@ -206,7 +235,7 @@ export function compileAlignmentCommunityRouting(input: {
     id: routingId,
     routedSupport,
     audit: toJsonValue({
-      compiler: "kernel.alignment.community_routing.v1",
+      compiler: "kernel.alignment.community_routing.v2",
       communityCount: communities.length,
       rowCount: routes.length,
       retainedCandidateCount: candidates.length,
@@ -312,17 +341,27 @@ function targetCommunities(
 ): AlignmentTargetCommunity[] {
   const grouped = new Map<string, typeof targetIndex.targets>();
   for (const target of targetIndex.targets) {
-    const values = grouped.get(target.hyperedgeId) ?? [];
+    const quotientKey = canonicalStringify({
+      relationId: target.relationId,
+      kind: target.kind,
+      portId: target.portId ?? null,
+      roleId: target.roleId ?? null,
+      valueKind: target.valueKind ?? null,
+      realization: target.realization ?? null
+    });
+    const values = grouped.get(quotientKey) ?? [];
     values.push(target);
-    grouped.set(target.hyperedgeId, values);
+    grouped.set(quotientKey, values);
   }
-  return [...grouped.entries()].map(([hyperedgeId, targets]) => ({
+  return [...grouped.entries()].map(([quotientKey, targets]) => ({
     id: `alignment_community.${hasher.digestHex(canonicalStringify({
       targetIndexId: targetIndex.id,
-      hyperedgeId,
+      quotientKey,
       targetIds: targets.map(target => target.id).sort()
     })).slice(0, 40)}`,
-    hyperedgeId,
+    quotientKey,
+    hyperedgeIds: [...new Set(targets.map(target =>
+      target.hyperedgeId))].sort(),
     relationNodeIds: [...new Set(targets.map(target =>
       String(target.relationNodeId)))].sort(),
     targetIds: targets.map(target => target.id).sort()

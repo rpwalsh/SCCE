@@ -200,8 +200,8 @@ graph-implicit and overflow mass; the learned source-exact estimates are not
 reported as calibrated confidence.
 
 Surface lattices also retain their normalized segmentation-population posterior.
-`scce.population_relative_order_model.v1` learns signed target-pair displacements
-from bounded exact-anchor neighborhoods. Explicit training fits one shared model
+`scce.population_relative_order_model.v2` learns signed reusable typed-port-pair
+displacements from bounded exact-anchor neighborhoods. Explicit training fits one shared model
 over the batch; ordinary and Wikipedia ingestion use the same compiler per active
 support. The transport objective consumes the posterior-conditioned robust order
 term without language or traditional role names.
@@ -223,28 +223,31 @@ versioned artifact. Runtime ingestion hydrates earlier sets by stable source-fam
 and canonical graph-port series identity before writing the next revision.
 
 Before either cross-document solve, item 23 routes each candidate support through
-opaque hyperedge communities while preserving every exact anchor. Typed-null and
+opaque structural quotient communities spanning equivalent relation/port states
+while preserving every exact anchor. Typed-null and
 ordering models, both transport passes, evidence allocation and alternative
 extraction consume the routed support. The resulting
 `scce.coarse_to_fine_alignment.v1` artifact binds routing, sparse Sinkhorn,
 conditional-gradient correction and retained alternatives into one persisted work
 trace.
 
-Item 24 accepts separately labeled alignment calibration rows. Fit and evaluation
-families are dependency-disjoint; the model learns from objective, anchor,
-semantic-cycle, unsupported-addition and marginal-residual features, then reports
-log loss, Brier and ECE only on untouched holdout families. Corpus ingestion
-without those labels records an explicit insufficient-data model and does not turn
-restricted alternative weights into correctness confidence.
+Item 24 automatically evaluates retained plans against dependency-independent
+source families. `scce.alignment_heldout_evaluation.v1` measures candidate recall
+before transport, final graph recovery, exact-anchor preservation and unsupported
+additions, while content-addressably binding the plan, evidence allocation, target
+index and source-family artifacts. Those rows plus any separately admitted labels
+feed source-family-disjoint fit and holdout partitions. The calibrator reports log
+loss, Brier and ECE only when both partitions and outcomes are sufficient;
+otherwise it remains explicitly `insufficient_data`.
 
 Item 25 keeps promotion separate from both selection and calibration.
 `scce.alignment_heldout_promotion.v1` requires an induction family and at least two
 dependency-independent held-out families. Copies within one family collapse to a
-single conservative observation. The default gate additionally requires complete
+single conservative observation. The non-weakenable gate requires complete
 graph-target recovery, worst-family cycle recall of at least `0.98`, preservation
-of every exact anchor, and zero unsupported additions. Ordinary and Wikipedia
-ingestion persist explicit nonpromotion because they do not possess independent
-held-out evaluation rows; explicit training must provide those observations.
+of every exact anchor, and zero unsupported additions. Ordinary, Wikipedia and
+explicit training all generate observations from their actual source-family
+cross-fit. A batch lacking two independent held-out families remains unpromoted.
 
 Item 26 compiles every constructible promoted plan into
 `scce.reversible_construction.v1`. The artifact binds typed relation/incidence

@@ -42,20 +42,24 @@ describe("population-specific relative ordering", () => {
       target.observableSurfaceKeys.includes("ada"))!;
     const engineTarget = compiled.targetIndex.targets.find(target =>
       target.observableSurfaceKeys.includes("engine"))!;
+    const adaOrderKey = supports[0]!.candidates.find(candidate =>
+      candidate.graphTargetId === adaTarget.id)!.graphOrderKey;
+    const engineOrderKey = supports[0]!.candidates.find(candidate =>
+      candidate.graphTargetId === engineTarget.id)!.graphOrderKey;
     const orderA = populationOrderingExpectation({
       model,
       populationPosterior: supports[0]!.populationPosterior,
-      leftGraphTargetId: adaTarget.id,
-      rightGraphTargetId: engineTarget.id
+      leftGraphOrderKey: adaOrderKey,
+      rightGraphOrderKey: engineOrderKey
     });
     const orderB = populationOrderingExpectation({
       model,
       populationPosterior: supports[1]!.populationPosterior,
-      leftGraphTargetId: adaTarget.id,
-      rightGraphTargetId: engineTarget.id
+      leftGraphOrderKey: adaOrderKey,
+      rightGraphOrderKey: engineOrderKey
     });
 
-    expect(model.schema).toBe("scce.population_relative_order_model.v1");
+    expect(model.schema).toBe("scce.population_relative_order_model.v2");
     expect(orderA.source).toBe("population");
     expect(orderB.source).toBe("population");
     expect(orderA.location).toBeGreaterThan(0);
