@@ -539,9 +539,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         context: { targetLanguageId: input.targetLanguage, targetScriptId: input.targetScript, registerVector: input.registerVector, meterPattern: input.meterPattern, surfaceKind: input.construct.program ? "program" : "answer" }
       });
       markMouthPhase("correction_influence");
-      // Structural creative output now goes through learned language memory and
-      // corpus-anchored assembly; the removed English-only realizer is not a
-      // fallback lane.
+      // Structural creative output goes through learned language memory and
+      // corpus-anchored assembly; no language-specific realizer lane is used.
       const nonEventCreativeMouthHandoff = selectedNonEventCreativeMouthHandoff(input);
       const basePriorPieces = importedSurfacePieces(input, undefined, undefined);
       markMouthPhase("base_prior_pieces");
