@@ -12,6 +12,10 @@ import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symb
 import { evaluateSemanticTransforms } from "./semantic-transform-registry.js";
 import { evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import {
+  compileRelationHypothesisModel,
+  inferRelationHypotheses
+} from "./relation-hypothesis.js";
+import {
   PROOF_COUNTEREXAMPLE_REASON,
   PROOF_GRAPH_KIND,
   PROOF_GRAPH_RELATION,
@@ -223,22 +227,37 @@ export function atomizeText(input: {
   const hasher = input.hasher ?? createHasher();
   const dimensions = Math.max(16, Math.floor(input.dimensions ?? 64));
   const sentences = splitSemanticSentences(input.text).slice(0, input.maxAtoms ?? 256);
+  const sentenceSymbols = sentences.map(sentence => symbolizeData(sentence));
+  const relationModel = compileRelationHypothesisModel({
+    observations: sentenceSymbols.map((symbols, sentenceIndex) => ({
+      sourceId: `${input.source}:${sentenceIndex}`,
+      symbols,
+      evidenceIds: input.evidenceIds
+    })),
+    hasher
+  });
   const atoms: SemanticAtom[] = [];
   for (let sentenceIndex = 0; sentenceIndex < sentences.length; sentenceIndex++) {
     const sentence = sentences[sentenceIndex]!;
-    const symbols = symbolizeData(sentence);
+    const symbols = sentenceSymbols[sentenceIndex] ?? [];
     if (symbols.length === 0) continue;
-    const predicateSymbol = selectPredicate(symbols);
+    const predicateHypotheses = inferRelationHypotheses({
+      symbols,
+      model: relationModel,
+      candidate: semanticSymbol
+    });
+    const predicateSymbol = predicateHypotheses[0];
+    if (!predicateSymbol) continue;
     const roles = deriveRoles(symbols, predicateSymbol.index, input.evidenceIds);
     const constraints = deriveConstraints(sentence, symbols, hasher, input.evidenceIds ?? []);
-    const predicateFeatures = buildPredicateFeatures(predicateSymbol.symbol, symbols, predicateSymbol.index);
+    const predicateFeatures = buildPredicateFeatures(predicateSymbol.surface, symbols, predicateSymbol.index);
     const polarity = polarityFromSurface(sentence, symbols);
     const alpha = clamp01((input.alpha ?? 0.5) * (0.65 + Math.min(0.35, symbols.length / 80)));
     const vector = stableVector([...predicateFeatures, ...roles.flatMap(role => role.features), ...constraints.map(c => `${c.kind}:${c.subject}:${c.operator}:${JSON.stringify(c.value)}`)], hasher, dimensions);
     const id = semanticAtomId(hasher, {
       source: input.source,
       sentenceIndex,
-      predicate: predicateSymbol.symbol,
+      predicate: predicateSymbol.surface,
       roles: roles.map(role => [role.name, role.normalized]),
       constraints: constraints.map(c => [c.kind, c.subject, c.operator, c.value]),
       polarity,
@@ -246,7 +265,8 @@ export function atomizeText(input: {
     });
     atoms.push({
       id,
-      predicate: predicateSymbol.symbol,
+      predicate: predicateSymbol.surface,
+      predicateHypotheses,
       predicateFeatures,
       roles,
       constraints,
@@ -517,9 +537,29 @@ function unifyAtoms(left: SemanticAtom, right: SemanticAtom): SemanticUnificatio
 
 function predicateSimilarity(left: SemanticAtom, right: SemanticAtom): number {
   const lexical = left.predicate === right.predicate ? 1 : normalizedEditSimilarity(left.predicate, right.predicate);
+  const posterior = relationPosteriorSimilarity(left, right);
   const feature = weightedJaccard(left.predicateFeatures, right.predicateFeatures);
   const vector = clamp01((cosineSimilarity(left.vector, right.vector) + 1) / 2);
-  return clamp01(0.45 * lexical + 0.35 * feature + 0.2 * vector);
+  return clamp01(0.35 * posterior + 0.25 * lexical + 0.25 * feature + 0.15 * vector);
+}
+
+function relationPosteriorSimilarity(left: SemanticAtom, right: SemanticAtom): number {
+  const leftRows = left.predicateHypotheses?.length
+    ? left.predicateHypotheses
+    : [{ surface: left.predicate, posterior: 1 }];
+  const rightRows = right.predicateHypotheses?.length
+    ? right.predicateHypotheses
+    : [{ surface: right.predicate, posterior: 1 }];
+  let score = 0;
+  for (const leftRow of leftRows) {
+    for (const rightRow of rightRows) {
+      const similarity = leftRow.surface === rightRow.surface
+        ? 1
+        : normalizedEditSimilarity(leftRow.surface, rightRow.surface);
+      score += leftRow.posterior * rightRow.posterior * similarity;
+    }
+  }
+  return clamp01(score);
 }
 
 function roleSimilarity(left: readonly SemanticRoleBinding[], right: readonly SemanticRoleBinding[]): {
@@ -714,6 +754,7 @@ function proofGraphFrom(search: ProofSearchIntermediate, claimAtoms: SemanticAto
 function atomMetadata(atom: SemanticAtom): JsonValue {
   return toJsonValue({
     predicate: atom.predicate,
+    predicateHypotheses: atom.predicateHypotheses ?? [],
     roles: atom.roles.map(role => ({ name: role.name, value: role.value, type: role.type, weight: role.weight })),
     constraints: atom.constraints.map(constraint => ({ kind: constraint.kind, subject: constraint.subject, operator: constraint.operator, value: constraint.value, confidence: constraint.confidence })),
     polarity: atom.polarity,
@@ -793,23 +834,6 @@ function splitSemanticSentences(text: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < symbols.length; i += 32) out.push(symbols.slice(i, i + 32).join(" "));
   return out;
-}
-
-function selectPredicate(symbols: readonly string[]): { symbol: string; index: number } {
-  let best = { symbol: symbols[0] ?? "unit", index: 0, score: -Infinity };
-  const counts = new Map<string, number>();
-  for (const symbol of symbols) counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
-  for (let i = 0; i < symbols.length; i++) {
-    const symbol = symbols[i]!;
-    if (!semanticSymbol(symbol)) continue;
-    const lengthScore = Math.min(1, symbol.length / 12);
-    const rarity = 1 / Math.max(1, counts.get(symbol) ?? 1);
-    const center = 1 - Math.abs(i - (symbols.length - 1) / 2) / Math.max(1, symbols.length);
-    const symbolicWeight = /[=<>:+*/\\-]/.test(symbol) ? 0.18 : 0;
-    const score = 0.38 * lengthScore + 0.32 * rarity + 0.22 * center + symbolicWeight;
-    if (score > best.score) best = { symbol, index: i, score };
-  }
-  return { symbol: best.symbol, index: best.index };
 }
 
 function deriveRoles(symbols: readonly string[], predicateIndex: number, evidenceIds: EvidenceId[] | undefined): SemanticRoleBinding[] {
