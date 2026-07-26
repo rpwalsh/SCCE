@@ -16,9 +16,12 @@ const schema = `yopp_rehearsal_adapter_${process.pid}_${Date.now()}`;
 if (!/^yopp_rehearsal_adapter_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
 const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "yopp-adapter-rehearsal-"));
 const documentPath = path.join(fixtureRoot, "document.txt");
+const secondDocumentPath = path.join(fixtureRoot, "document-corroborating.txt");
 const manifestPath = path.join(fixtureRoot, "corpus-manifest.json");
 const text = "The Azurite Marker calibration phrase is cobalt lattice seven.";
 const bytes = Buffer.from(text, "utf8");
+const corroboratingText = "The northern observatory verified the Azurite Marker calibration phrase cobalt lattice seven in 2019.";
+const corroboratingBytes = Buffer.from(corroboratingText, "utf8");
 const conditionInput = { conditionId: "full", seed: "live-adapter-rehearsal", clockIso: "2026-07-12T19:30:00.000-07:00", scope: "answer-quality" };
 const checks = [];
 let cleanupStorage;
@@ -27,10 +30,14 @@ let primaryError;
 
 try {
   await writeFile(documentPath, bytes);
+  await writeFile(secondDocumentPath, corroboratingBytes);
   await writeFile(manifestPath, `${JSON.stringify({
     schemaVersion: "1.0",
     corpusId: "live-adapter-rehearsal",
-    documents: [{ documentId: "doc-azurite", path: "document.txt", sha256: sha256(bytes), sizeBytes: bytes.length, mediaType: "text/plain", normalization: "none" }]
+    documents: [
+      { documentId: "doc-azurite", path: "document.txt", sha256: sha256(bytes), sizeBytes: bytes.length, mediaType: "text/plain", normalization: "none" },
+      { documentId: "doc-azurite-corroborating", path: "document-corroborating.txt", sha256: sha256(corroboratingBytes), sizeBytes: corroboratingBytes.length, mediaType: "text/plain", normalization: "none" }
+    ]
   }, null, 2)}\n`, "utf8");
 
   const loadedConfig = await readScceRuntimeConfig(configPath);
@@ -63,8 +70,44 @@ try {
     metadata: { title: "Azurite Marker", documentId: "doc-azurite", rehearsal: true }
   });
   check("corpus.ingest", ingest.evidence > 0, `evidence=${ingest.evidence}`);
+  const nodesBeforeCorroboration = await runtime.storage.graph.getSlice({ limitNodes: 200, limitEdges: 200, allowLatestFallback: true });
+  const corroboratingIngest = await runtime.kernel.ingest({
+    content: corroboratingBytes,
+    uri: pathToFileURL(secondDocumentPath).href,
+    namespace: "rehearsal",
+    mediaType: "text/plain",
+    sourceAdmission: {
+      sourceClass: "owner_local",
+      intendedUse: "direct_evidence",
+      promotionAuthority: "owner"
+    },
+    sourceTrust: {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 0.94,
+      directness: 1,
+      authority: 1,
+      freshness: 0.98,
+      independenceGroup: "live-adapter-rehearsal",
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    },
+    metadata: { title: "Azurite Marker corroboration", documentId: "doc-azurite-corroborating", rehearsal: true }
+  });
+  check("corpus.ingest_corroborating", corroboratingIngest.evidence > 0, `evidence=${corroboratingIngest.evidence}`);
   const training = await runtime.kernel.train({ config: { promotion: { minTrust: 0, namespaces: ["rehearsal"] }, learningGoals: [] } });
   check("corpus.promote", training.promotedEvidence > 0, `promotedEvidence=${training.promotedEvidence}`);
+  const nodesAfterCorroboration = await runtime.storage.graph.getSlice({ limitNodes: 200, limitEdges: 200, allowLatestFallback: true });
+  const azuriteNodesBefore = nodesBeforeCorroboration.nodes.filter(node => node.features.some(feature => feature.includes("azurite"))).length;
+  const azuriteNodesAfter = nodesAfterCorroboration.nodes.filter(node => node.features.some(feature => feature.includes("azurite"))).length;
+  // The second document repeats the same entity, so a second ingest
+  // should reuse/reinforce the existing azurite-tagged node(s) rather
+  // than multiplying disjoint duplicates one-for-one with each mention.
+  check(
+    "corpus.reuse_not_duplicate",
+    azuriteNodesAfter <= azuriteNodesBefore + 1,
+    `azuriteNodesBefore=${azuriteNodesBefore} azuriteNodesAfter=${azuriteNodesAfter}`
+  );
   const searchProbe = await runtime.storage.evidence.searchEvidence({ features: ["sym:azurite", "sym:marker"], limit: 8 });
   check("corpus.search_probe", searchProbe.some(row => row.span.status === "promoted"), JSON.stringify(searchProbe.map(row => ({ status: row.span.status, features: row.span.features.slice(0, 16) }))));
   await activateRehearsalBrain(runtime.storage, 1_000);
