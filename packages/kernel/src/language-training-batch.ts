@@ -37,6 +37,12 @@ import {
   extractAlignmentAlternatives,
   type AlignmentAlternativeSet
 } from "./alignment-alternatives.js";
+import {
+  compileAlignmentCommunityRouting,
+  compileCoarseToFineAlignmentResult,
+  type AlignmentCommunityRouting,
+  type CoarseToFineAlignmentResult
+} from "./coarse-to-fine-alignment.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -123,6 +129,8 @@ export interface CompiledLanguageTrainingBatch {
   graphSurfaceAlignmentSummaries: JsonValue[];
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
+  alignmentCommunityRoutings: AlignmentCommunityRouting[];
+  coarseToFineAlignments: CoarseToFineAlignmentResult[];
   typedNullCostModel: TypedNullCostModel | null;
   populationOrderingModel: PopulationOrderingModel | null;
   crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
@@ -180,21 +188,31 @@ export function compileLanguageTrainingBatch(input: {
     })
     : undefined;
   const sparseAlignmentCandidateSupports = sparseAlignment?.supports ?? [];
+  const alignmentCommunityRoutings = sparseAlignment
+    ? sparseAlignmentCandidateSupports.map(support =>
+      compileAlignmentCommunityRouting({
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        hasher: input.hasher
+      }))
+    : [];
+  const routedAlignmentSupports = alignmentCommunityRoutings.map(routing =>
+    routing.routedSupport);
   const typedNullCostModel = sparseAlignment
     ? compileTypedNullCostModel({
-      supports: sparseAlignmentCandidateSupports,
+      supports: routedAlignmentSupports,
       targetIndex: sparseAlignment.targetIndex,
       hasher: input.hasher
     })
     : null;
   const populationOrderingModel = sparseAlignment
     ? compilePopulationOrderingModel({
-      supports: sparseAlignmentCandidateSupports,
+      supports: routedAlignmentSupports,
       hasher: input.hasher
     })
     : null;
   const initialSparseTransportPlans = sparseAlignment
-    ? sparseAlignmentCandidateSupports.map(support =>
+    ? routedAlignmentSupports.map(support =>
       solveSparseFusedUnbalancedTransport({
         support,
         targetIndex: sparseAlignment.targetIndex,
@@ -205,14 +223,14 @@ export function compileLanguageTrainingBatch(input: {
     : [];
   const crossDocumentAlignmentModel = sparseAlignment
     ? compileCrossDocumentAlignmentModel({
-      supports: sparseAlignmentCandidateSupports,
+      supports: routedAlignmentSupports,
       plans: initialSparseTransportPlans,
       targetIndex: sparseAlignment.targetIndex,
       hasher: input.hasher
     })
     : null;
   const sparseTransportPlans = sparseAlignment
-    ? sparseAlignmentCandidateSupports.map(support =>
+    ? routedAlignmentSupports.map(support =>
       solveSparseFusedUnbalancedTransport({
         support,
         targetIndex: sparseAlignment.targetIndex,
@@ -224,7 +242,7 @@ export function compileLanguageTrainingBatch(input: {
     : [];
   const retainedAlternatives = sparseAlignment
     ? sparseTransportPlans.map((plan, index) => {
-      const support = sparseAlignmentCandidateSupports[index]!;
+      const support = routedAlignmentSupports[index]!;
       const extracted = extractAlignmentAlternatives({
         basePlan: plan,
         support,
@@ -240,9 +258,7 @@ export function compileLanguageTrainingBatch(input: {
           support,
           hasher: input.hasher
         }));
-      return {
-        evidenceAllocations,
-        set: compileAlignmentAlternativeSet({
+      const set = compileAlignmentAlternativeSet({
           seriesId: alignmentAlternativeSeriesId({
             support,
             targetIndex: sparseAlignment.targetIndex,
@@ -253,11 +269,21 @@ export function compileLanguageTrainingBatch(input: {
           predecessorSets: batch.alignmentAlternativePredecessorSets,
           omittedSearchBranchCount: extracted.omittedSearchBranchCount,
           hasher: input.hasher
+        });
+      return {
+        evidenceAllocations,
+        set,
+        result: compileCoarseToFineAlignmentResult({
+          routing: alignmentCommunityRoutings[index]!,
+          primaryPlan: plan,
+          alternativeSet: set,
+          hasher: input.hasher
         })
       };
     })
     : [];
   const alignmentAlternativeSets = retainedAlternatives.map(item => item.set);
+  const coarseToFineAlignments = retainedAlternatives.map(item => item.result);
   const transportEvidenceAllocations = retainedAlternatives.map((item, index) =>
     item.evidenceAllocations.find(allocation =>
       allocation.transportPlanId === sparseTransportPlans[index]!.id)!);
@@ -321,6 +347,8 @@ export function compileLanguageTrainingBatch(input: {
       .filter((summary): summary is JsonValue => summary !== undefined),
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
+    alignmentCommunityRoutings,
+    coarseToFineAlignments,
     typedNullCostModel,
     populationOrderingModel,
     crossDocumentAlignmentModel,
@@ -383,6 +411,17 @@ export function compileLanguageTrainingBatch(input: {
           }
           : null,
         supportCount: sparseAlignmentCandidateSupports.length,
+        communityRoutings: alignmentCommunityRoutings.map(routing => ({
+          id: routing.id,
+          parentSupportId: routing.parentSupportId,
+          routedSupportId: routing.routedSupport.id,
+          communityCount: routing.communities.length,
+          omittedCandidateCount: routing.routes.reduce(
+            (sum, route) => sum + route.omittedCandidateCount,
+            0
+          ),
+          audit: routing.audit
+        })),
         candidateCount: sparseAlignmentCandidateSupports.reduce(
           (sum, support) => sum + support.candidates.length,
           0
@@ -403,6 +442,16 @@ export function compileLanguageTrainingBatch(input: {
           exactGlobalPosteriorClaimed: set.exactGlobalPosteriorClaimed,
           omittedSearchBranchCount: set.omittedSearchBranchCount,
           audit: set.audit
+        })),
+        coarseToFineAlignments: coarseToFineAlignments.map(result => ({
+          id: result.id,
+          routingId: result.routingId,
+          primaryPlanId: result.primaryPlanId,
+          alternativeSetId: result.alternativeSetId,
+          termination: result.termination,
+          finalObjective: result.finalObjective,
+          work: result.work,
+          audit: result.audit
         })),
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
           id: allocation.id,

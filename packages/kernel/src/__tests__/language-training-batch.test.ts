@@ -107,6 +107,17 @@ describe("shared language training batch", () => {
     expect(compiled.sparseAlignmentCandidateSupports[0]!.candidates.some(candidate =>
       candidate.supportKinds.includes("exact_observable_anchor"))).toBe(true);
     expect(compiled.sparseAlignmentCandidateSummaries).toHaveLength(1);
+    expect(compiled.alignmentCommunityRoutings).toHaveLength(1);
+    expect(compiled.alignmentCommunityRoutings[0]).toMatchObject({
+      schema: "scce.alignment_community_routing.v1"
+    });
+    expect(compiled.alignmentCommunityRoutings[0]!.routedSupport.parentSupportId)
+      .toBe(compiled.sparseAlignmentCandidateSupports[0]!.id);
+    expect(compiled.coarseToFineAlignments).toHaveLength(1);
+    expect(compiled.coarseToFineAlignments[0]).toMatchObject({
+      schema: "scce.coarse_to_fine_alignment.v1",
+      globalOptimalityClaimed: false
+    });
     expect(compiled.sparseTransportPlans).toHaveLength(1);
     expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length

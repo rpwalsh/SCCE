@@ -55,6 +55,10 @@ import {
   alignmentAlternativeSetsFromEventPayloads,
   extractAlignmentAlternatives
 } from "./alignment-alternatives.js";
+import {
+  compileAlignmentCommunityRouting,
+  compileCoarseToFineAlignmentResult
+} from "./coarse-to-fine-alignment.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -514,6 +518,8 @@ export function createIngestionRuntime(options: {
         let alignmentSurfaceUnitCount = 0;
         let maximumAlignmentDegree = 0;
         const alignmentSupportIds: string[] = [];
+        const routedAlignmentSupportIds: string[] = [];
+        const alignmentCommunityRoutingIds: string[] = [];
         const transportPlanIds: string[] = [];
         let transportIterationCount = 0;
         let transportedCellCount = 0;
@@ -527,6 +533,8 @@ export function createIngestionRuntime(options: {
         const alignmentAlternativeSetIds: string[] = [];
         const alignmentAlternativeSets:
           ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
+        const coarseToFineAlignments:
+          ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
         const historicalAlignmentPayloads = (await deps.storage.events.readRange({
           typeId: "SparseAlignmentCandidatesCompiled",
           limit: 1_024
@@ -560,16 +568,27 @@ export function createIngestionRuntime(options: {
           );
           alignmentSupports.push(support);
         }
+        const alignmentCommunityRoutings = alignmentSupports.map(support =>
+          compileAlignmentCommunityRouting({
+            support,
+            targetIndex: alignmentTargetIndex,
+            hasher
+          }));
+        const routedAlignmentSupports = alignmentCommunityRoutings.map(routing => {
+          alignmentCommunityRoutingIds.push(routing.id);
+          routedAlignmentSupportIds.push(routing.routedSupport.id);
+          return routing.routedSupport;
+        });
         const typedNullCostModel = compileTypedNullCostModel({
-          supports: alignmentSupports,
+          supports: routedAlignmentSupports,
           targetIndex: alignmentTargetIndex,
           hasher
         });
         const populationOrderingModel = compilePopulationOrderingModel({
-          supports: alignmentSupports,
+          supports: routedAlignmentSupports,
           hasher
         });
-        const initialTransportPlans = alignmentSupports.map(support =>
+        const initialTransportPlans = routedAlignmentSupports.map(support =>
           solveSparseFusedUnbalancedTransport({
             support,
             targetIndex: alignmentTargetIndex,
@@ -578,12 +597,12 @@ export function createIngestionRuntime(options: {
             hasher
           }));
         const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
-          supports: alignmentSupports,
+          supports: routedAlignmentSupports,
           plans: initialTransportPlans,
           targetIndex: alignmentTargetIndex,
           hasher
         });
-        const finalTransportPlans = alignmentSupports.map(support =>
+        const finalTransportPlans = routedAlignmentSupports.map(support =>
           solveSparseFusedUnbalancedTransport({
             support,
             targetIndex: alignmentTargetIndex,
@@ -593,7 +612,7 @@ export function createIngestionRuntime(options: {
             hasher
           }));
         for (let index = 0; index < finalTransportPlans.length; index++) {
-          const support = alignmentSupports[index]!;
+          const support = routedAlignmentSupports[index]!;
           const transport = finalTransportPlans[index]!;
           transportPlanIds.push(transport.id);
           transportIterationCount += transport.iterations.length;
@@ -649,6 +668,12 @@ export function createIngestionRuntime(options: {
           });
           alignmentAlternativeSetIds.push(alternativeSet.id);
           alignmentAlternativeSets.push(alternativeSet);
+          coarseToFineAlignments.push(compileCoarseToFineAlignmentResult({
+            routing: alignmentCommunityRoutings[index]!,
+            primaryPlan: transport,
+            alternativeSet,
+            hasher
+          }));
           retainedAlignmentHypothesisCount += alternativeSet.hypotheses.length;
           omittedAlignmentSearchBranchCount += alternativeSet.omittedSearchBranchCount;
           const allocation = alternativeAllocations.find(item =>
@@ -694,6 +719,12 @@ export function createIngestionRuntime(options: {
             candidateCount: alignmentCandidateCount,
             maximumCandidateDegree: maximumAlignmentDegree,
             supportIds: alignmentSupportIds,
+            routedSupportIds: routedAlignmentSupportIds,
+            communityRoutingIds: alignmentCommunityRoutingIds,
+            communityCount: alignmentCommunityRoutings.reduce(
+              (sum, routing) => sum + routing.communities.length,
+              0
+            ),
             transportPlanIds,
             transportIterationCount,
             transportedCellCount,
@@ -709,6 +740,7 @@ export function createIngestionRuntime(options: {
               [...crossDocumentAlignmentModelIds].sort(),
             alignmentAlternativeSetIds,
             alignmentAlternativeSets,
+            coarseToFineAlignments,
             retainedAlignmentHypothesisCount,
             omittedAlignmentSearchBranchCount,
             alignmentPosteriorScope: "retained_candidate_set_only",
