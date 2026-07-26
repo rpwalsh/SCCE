@@ -46,6 +46,7 @@ import {
   generateSparseAlignmentCandidates
 } from "./sparse-alignment-candidates.js";
 import { solveSparseFusedUnbalancedTransport } from "./sparse-fused-transport.js";
+import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { liftHyperedgesToTypedIncidenceGraph } from "./typed-incidence-graph.js";
 import type { StructuredSemanticCandidate } from "./structured-semantic-candidate.js";
@@ -506,6 +507,10 @@ export function createIngestionRuntime(options: {
         const transportPlanIds: string[] = [];
         let transportIterationCount = 0;
         let transportedCellCount = 0;
+        const transportEvidenceAllocationIds: string[] = [];
+        let unresolvedTransportEvidenceCount = 0;
+        let unresolvedTransportEvidenceAllocationCount = 0;
+        let maximumTransportEvidenceResidual = 0;
         for (const span of relationEvidence) {
           const lattice = buildSurfaceLattice({
             documentId: String(span.id),
@@ -534,6 +539,19 @@ export function createIngestionRuntime(options: {
           transportPlanIds.push(transport.id);
           transportIterationCount += transport.iterations.length;
           transportedCellCount += transport.cells.length;
+          const allocation = allocateTransportEvidence({
+            plan: transport,
+            support,
+            hasher
+          });
+          transportEvidenceAllocationIds.push(allocation.id);
+          unresolvedTransportEvidenceCount += allocation.unresolvedCandidateIds.length;
+          unresolvedTransportEvidenceAllocationCount +=
+            allocation.status === "unresolved_evidence" ? 1 : 0;
+          maximumTransportEvidenceResidual = Math.max(
+            maximumTransportEvidenceResidual,
+            allocation.conservationResidual
+          );
         }
         events.push(await append(eventFactory.create({
           episodeId,
@@ -570,6 +588,11 @@ export function createIngestionRuntime(options: {
             transportPlanIds,
             transportIterationCount,
             transportedCellCount,
+            transportEvidenceAllocationIds,
+            unresolvedTransportEvidenceCount,
+            unresolvedTransportEvidenceAllocationCount,
+            maximumTransportEvidenceResidual,
+            evidenceMassConserved: unresolvedTransportEvidenceAllocationCount === 0,
             transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
             globalOptimalityClaimed: false,
             candidateMemory: "O(|S|*K_pi)",
