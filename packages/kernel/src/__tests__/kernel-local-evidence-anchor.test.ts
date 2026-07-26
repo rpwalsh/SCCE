@@ -419,6 +419,9 @@ describe("kernel local evidence source anchoring", () => {
     });
     nested.provenance = {
       uri: "fixture://nested/title",
+      sourceVersionId: nested.sourceVersionId,
+      byteRange: [0, nested.text.length],
+      charRange: [0, nested.text.length],
       metadata: { title: "Nested Title" }
     };
     const fixture = storageFixture({ evidence: [nested] });
@@ -1261,7 +1264,11 @@ function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; tit
     languageHints: { language: "fixture" },
     scriptHints: { script: "Latn" },
     trustVector: { trust: 0.94, sourceTrust: 0.94, structuralConfidence: 0.94, forceClass: "direct_evidence" },
-    provenance: { namespace: "local", source: "kernel-local-evidence-anchor-test", title: input.title, uri: input.uri, canonicalUri: input.uri },
+    // Mirrors real ingestion's provenance shape (see evidence.ts's chunk
+    // provenance: uri, sourceVersionId, byteRange, charRange) so this
+    // fixture satisfies proof-boundary.ts's hasExactSourceSemantics check
+    // the same way genuinely ingested evidence does.
+    provenance: { namespace: "local", source: "kernel-local-evidence-anchor-test", title: input.title, uri: input.uri, canonicalUri: input.uri, sourceVersionId: input.sourceVersionId, byteRange: [0, input.text.length], charRange: [0, input.text.length] },
     features: featureSet(input.text, 256),
     status: "promoted",
     alpha: input.alpha,
