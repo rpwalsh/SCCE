@@ -183,6 +183,7 @@ export function compileReversibleConstructions(input: {
   lattices: readonly SurfaceLattice[];
   evidenceAllocations: readonly TransportEvidenceAllocation[];
   profileId: string;
+  profileIdBySourceVersion?: ReadonlyMap<string, string>;
   creationSnapshotId: string;
   createdAt: number;
   calibrationProbabilityByPlanId?: ReadonlyMap<string, number>;
@@ -325,12 +326,15 @@ export function compileReversibleConstructions(input: {
         || calibrationProbability > 1)) {
       throw new Error(`invalid calibrated probability for ${plan.id}`);
     }
+    const constructionProfileId =
+      input.profileIdBySourceVersion?.get(lattice.sourceVersionId ?? "")
+      ?? input.profileId;
     const canonical = {
       schema: REVERSIBLE_CONSTRUCTION_SCHEMA,
       seriesId: decision.seriesId,
       planId: decision.planId,
       promotionModelId: input.promotionModel.id,
-      profileId: input.profileId,
+      profileId: constructionProfileId,
       graph: {
         hyperedgeIds: uniqueStrings(ports.map(port => port.hyperedgeId)),
         relationNodeIds: uniqueStrings(ports.map(port => port.relationNodeId)),

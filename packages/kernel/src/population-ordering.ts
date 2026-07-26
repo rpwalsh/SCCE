@@ -6,12 +6,12 @@ import type {
 import type { Hasher, JsonValue } from "./types.js";
 
 export const POPULATION_ORDERING_MODEL_SCHEMA =
-  "scce.population_relative_order_model.v1" as const;
+  "scce.population_relative_order_model.v2" as const;
 
 export interface PopulationRelativeOrderEstimate {
   populationId: string;
-  leftGraphTargetId: string;
-  rightGraphTargetId: string;
+  leftGraphOrderKey: string;
+  rightGraphOrderKey: string;
   location: number;
   robustScale: number;
   observationWeight: number;
@@ -36,8 +36,8 @@ export interface PopulationOrderingExpectation {
 
 interface OrderObservation {
   populationId: string;
-  leftGraphTargetId: string;
-  rightGraphTargetId: string;
+  leftGraphOrderKey: string;
+  rightGraphOrderKey: string;
   delta: number;
   weight: number;
 }
@@ -84,13 +84,13 @@ export function compilePopulationOrderingModel(input: {
 export function populationOrderingExpectation(input: {
   model: PopulationOrderingModel;
   populationPosterior: readonly { populationId: string; probability: number }[];
-  leftGraphTargetId: string;
-  rightGraphTargetId: string;
+  leftGraphOrderKey: string;
+  rightGraphOrderKey: string;
 }): PopulationOrderingExpectation {
   const byPopulation = new Map(input.model.estimates
     .filter(estimate =>
-      estimate.leftGraphTargetId === input.leftGraphTargetId
-      && estimate.rightGraphTargetId === input.rightGraphTargetId)
+      estimate.leftGraphOrderKey === input.leftGraphOrderKey
+      && estimate.rightGraphOrderKey === input.rightGraphOrderKey)
     .map(estimate => [estimate.populationId, estimate]));
   let supportedPosteriorMass = 0;
   let location = 0;
@@ -111,8 +111,8 @@ export function populationOrderingExpectation(input: {
     };
   }
   const fallback = input.model.globalBackoff.find(estimate =>
-    estimate.leftGraphTargetId === input.leftGraphTargetId
-    && estimate.rightGraphTargetId === input.rightGraphTargetId);
+    estimate.leftGraphOrderKey === input.leftGraphOrderKey
+    && estimate.rightGraphOrderKey === input.rightGraphOrderKey);
   return fallback
     ? {
       location: fallback.location,
@@ -151,15 +151,15 @@ function orderingObservations(
         if (population.probability <= 0) continue;
         observations.push({
           populationId: population.populationId,
-          leftGraphTargetId: first.graphTargetId,
-          rightGraphTargetId: second.graphTargetId,
+          leftGraphOrderKey: first.graphOrderKey ?? first.graphTargetId,
+          rightGraphOrderKey: second.graphOrderKey ?? second.graphTargetId,
           delta,
           weight: population.probability
         });
         observations.push({
           populationId: population.populationId,
-          leftGraphTargetId: second.graphTargetId,
-          rightGraphTargetId: first.graphTargetId,
+          leftGraphOrderKey: second.graphOrderKey ?? second.graphTargetId,
+          rightGraphOrderKey: first.graphOrderKey ?? first.graphTargetId,
           delta: -delta,
           weight: population.probability
         });
@@ -198,8 +198,8 @@ function compileEstimates(
   for (const observation of observations) {
     const key = [
       observation.populationId,
-      observation.leftGraphTargetId,
-      observation.rightGraphTargetId
+      observation.leftGraphOrderKey,
+      observation.rightGraphOrderKey
     ].join("\u001f");
     const existing = groups.get(key) ?? [];
     existing.push(observation);
@@ -215,8 +215,8 @@ function compileEstimates(
       : 1;
     return {
       populationId: group[0]!.populationId,
-      leftGraphTargetId: group[0]!.leftGraphTargetId,
-      rightGraphTargetId: group[0]!.rightGraphTargetId,
+      leftGraphOrderKey: group[0]!.leftGraphOrderKey,
+      rightGraphOrderKey: group[0]!.rightGraphOrderKey,
       location: quantize(location),
       robustScale: quantize(Math.max(1e-6, robustScale)),
       observationWeight: quantize(totalWeight),
@@ -224,8 +224,8 @@ function compileEstimates(
     };
   }).sort((left, right) =>
     left.populationId.localeCompare(right.populationId)
-    || left.leftGraphTargetId.localeCompare(right.leftGraphTargetId)
-    || left.rightGraphTargetId.localeCompare(right.rightGraphTargetId));
+    || left.leftGraphOrderKey.localeCompare(right.leftGraphOrderKey)
+    || left.rightGraphOrderKey.localeCompare(right.rightGraphOrderKey));
 }
 
 function robustLocation(observations: readonly OrderObservation[]): number {

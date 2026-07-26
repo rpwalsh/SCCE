@@ -42,8 +42,8 @@ describe("anchored coarse-to-fine alignment", () => {
         ),
         hyperedge(
           "hyperedge.coarse.place",
-          "relation.coarse.place",
-          [["port.coarse.paris", "node.coarse.paris"], ["port.coarse.france", "node.coarse.france"]]
+          "relation.coarse.engine",
+          [["port.coarse.ada", "node.coarse.paris"], ["port.coarse.engine", "node.coarse.france"]]
         )
       ],
       maxCandidateDegree: 16,
@@ -87,8 +87,10 @@ describe("anchored coarse-to-fine alignment", () => {
     const exact = sourceSupport.candidates.filter(candidate =>
       candidate.supportKinds.includes("exact_observable_anchor"));
 
-    expect(routing.schema).toBe("scce.alignment_community_routing.v1");
-    expect(routing.communities).toHaveLength(2);
+    expect(routing.schema).toBe("scce.alignment_community_routing.v2");
+    expect(routing.communities).toHaveLength(3);
+    expect(routing.communities.every(community =>
+      community.hyperedgeIds.length === 2)).toBe(true);
     expect(routing.routedSupport.parentSupportId).toBe(sourceSupport.id);
     expect(routing.routedSupport.candidates.length)
       .toBeLessThan(sourceSupport.candidates.length);
@@ -96,6 +98,11 @@ describe("anchored coarse-to-fine alignment", () => {
     expect(routing.routes.every(route =>
       route.selectedCommunityIds.length
       <= Math.max(1, route.exactAnchorCommunityIds.length))).toBe(true);
+    expect(routing.routes.every(route =>
+      Number.isFinite(route.omittedCommunityUpperBound)
+      && typeof route.routingRecallCertified === "boolean"
+      && route.selectedCommunityUpperBounds.every(bound =>
+        Number.isFinite(bound.upperBound)))).toBe(true);
     expect(plan.iterations.every(iteration =>
       iteration.conditionalGradientComparisons >= 0
       && iteration.conditionalGradientComparisons <= 10_000

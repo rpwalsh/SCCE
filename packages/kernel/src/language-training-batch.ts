@@ -54,6 +54,10 @@ import {
   type AlignmentPromotionObservation
 } from "./alignment-promotion.js";
 import {
+  compileAutomaticAlignmentEvaluation,
+  type AutomaticAlignmentEvaluation
+} from "./alignment-heldout-evaluation.js";
+import {
   compileReversibleConstructionPattern,
   compileReversibleConstructions,
   reversibleConstructionCreationSnapshotId,
@@ -153,6 +157,7 @@ export interface CompiledLanguageTrainingBatch {
   coarseToFineAlignments: CoarseToFineAlignmentResult[];
   alignmentCalibrationModel: AlignmentCalibrationModel;
   alignmentPromotionModel: AlignmentPromotionModel;
+  alignmentHeldoutEvaluation: AutomaticAlignmentEvaluation;
   reversibleConstructions: ReversibleConstruction[];
   reversibleConstructionRejections: ReversibleConstructionRejection[];
   typedNullCostModel: TypedNullCostModel | null;
@@ -318,13 +323,41 @@ export function compileLanguageTrainingBatch(input: {
     (item, index) => item.evidenceAllocations.filter(allocation =>
       allocation.transportPlanId !== sparseTransportPlans[index]!.id)
   );
+  const alignmentHeldoutEvaluation = sparseAlignment
+    ? compileAutomaticAlignmentEvaluation({
+      alternativeSets: alignmentAlternativeSets,
+      supports: routedAlignmentSupports,
+      referencePlans: sparseTransportPlans,
+      evidenceAllocations: retainedAlternatives.flatMap(item =>
+        item.evidenceAllocations),
+      targetIndex: sparseAlignment.targetIndex,
+      hasher: input.hasher
+    })
+    : {
+      artifacts: [],
+      promotionObservations: [],
+      calibrationObservations: [],
+      candidateRecall: {
+        evaluatedPlanCount: 0,
+        heldoutFamilyEvaluations: 0,
+        minimum: 0,
+        mean: 0,
+        perfectCount: 0
+      }
+    };
   const alignmentCalibrationModel = compileAlignmentCalibrationModel({
-    observations: batch.alignmentCalibrationObservations ?? [],
+    observations: [
+      ...alignmentHeldoutEvaluation.calibrationObservations,
+      ...(batch.alignmentCalibrationObservations ?? [])
+    ],
     hasher: input.hasher
   });
   const alignmentPromotionModel = compileAlignmentPromotionModel({
     alternativeSets: alignmentAlternativeSets,
-    observations: batch.alignmentPromotionObservations ?? [],
+    observations: [
+      ...alignmentHeldoutEvaluation.promotionObservations,
+      ...(batch.alignmentPromotionObservations ?? [])
+    ],
     hasher: input.hasher
   });
   const reversibleConstructionCompilation = sparseAlignment
@@ -415,6 +448,7 @@ export function compileLanguageTrainingBatch(input: {
     coarseToFineAlignments,
     alignmentCalibrationModel,
     alignmentPromotionModel,
+    alignmentHeldoutEvaluation,
     reversibleConstructions: reversibleConstructionCompilation.constructions,
     reversibleConstructionRejections:
       reversibleConstructionCompilation.rejections,
@@ -524,6 +558,7 @@ export function compileLanguageTrainingBatch(input: {
         })),
         alignmentCalibrationModel,
         alignmentPromotionModel,
+        alignmentHeldoutEvaluation,
         reversibleConstructions: reversibleConstructionCompilation.constructions,
         reversibleConstructionRejections:
           reversibleConstructionCompilation.rejections,

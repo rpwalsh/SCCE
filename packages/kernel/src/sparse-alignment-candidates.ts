@@ -35,6 +35,7 @@ export interface SparseAlignmentTarget {
   kind: SparseAlignmentTargetKind;
   relationNodeId: NodeId;
   hyperedgeId: string;
+  relationId: string;
   incidenceId?: string;
   participantNodeId?: NodeId;
   portId?: string;
@@ -59,6 +60,7 @@ export interface SparseAlignmentTargetIndex {
   targets: SparseAlignmentTarget[];
   evidencePostings: SparseAlignmentPosting[];
   surfacePostings: SparseAlignmentPosting[];
+  exactAnchorPostings: SparseAlignmentPosting[];
   relationMemberPostings: SparseAlignmentPosting[];
   maxTargetsPerPosting: number;
   audit: JsonValue;
@@ -70,6 +72,7 @@ export interface SparseAlignmentCandidate {
   surfaceFormClassId: string;
   graphTargetId: string;
   graphTargetKind: SparseAlignmentTargetKind;
+  graphOrderKey: string;
   supportKinds: SparseAlignmentSupportKind[];
   score: number;
   surfaceEvidenceIds: string[];
@@ -131,6 +134,7 @@ export function compileSparseAlignmentTargetIndex(input: {
       kind: "relation",
       relationNodeId: relation.id,
       hyperedgeId: String(relation.hyperedgeId),
+      relationId: String(relation.relationId),
       evidenceIds: canonicalStrings(relation.evidenceIds),
       observableSurfaceKeys: []
     });
@@ -150,6 +154,9 @@ export function compileSparseAlignmentTargetIndex(input: {
       kind: "incidence",
       relationNodeId: incidence.relationNodeId,
       hyperedgeId: String(incidence.hyperedgeId),
+      relationId: String(
+        relationTargetByNode.get(String(incidence.relationNodeId))!.relationId
+      ),
       incidenceId: incidence.id,
       ...(incidence.participantNodeId
         ? { participantNodeId: incidence.participantNodeId }
@@ -169,9 +176,15 @@ export function compileSparseAlignmentTargetIndex(input: {
   const evidence = new Map<string, string[]>();
   const surfaces = new Map<string, string[]>();
   const relationMembers = new Map<string, string[]>();
+  const exactAnchors = new Map<string, string[]>();
   for (const target of targets) {
     for (const evidenceId of target.evidenceIds) appendPosting(evidence, evidenceId, target.id);
     for (const key of target.observableSurfaceKeys) appendPosting(surfaces, key, target.id);
+    for (const evidenceId of target.evidenceIds) {
+      for (const key of target.observableSurfaceKeys) {
+        appendPosting(exactAnchors, exactAnchorKey(evidenceId, key), target.id);
+      }
+    }
     if (target.kind === "incidence") {
       appendPosting(relationMembers, String(target.relationNodeId), target.id);
       const relationTarget = relationTargetByNode.get(String(target.relationNodeId));
@@ -184,6 +197,7 @@ export function compileSparseAlignmentTargetIndex(input: {
   }
   const evidencePostings = compilePostings(evidence, maxTargetsPerPosting);
   const surfacePostings = compilePostings(surfaces, maxTargetsPerPosting);
+  const exactAnchorPostings = compileUntruncatedPostings(exactAnchors);
   const relationMemberPostings = compilePostings(relationMembers, maxTargetsPerPosting);
   const canonical = {
     schema: SPARSE_ALIGNMENT_TARGET_INDEX_SCHEMA,
@@ -192,6 +206,7 @@ export function compileSparseAlignmentTargetIndex(input: {
     targets,
     evidencePostings,
     surfacePostings,
+    exactAnchorPostings,
     relationMemberPostings,
     maxTargetsPerPosting
   };
@@ -215,6 +230,8 @@ export function compileSparseAlignmentTargetIndex(input: {
       incidenceTargetCount: targets.filter(target => target.kind === "incidence").length,
       evidencePostingCount: evidencePostings.length,
       surfacePostingCount: surfacePostings.length,
+      exactAnchorPostingCount: exactAnchorPostings.length,
+      exactAnchorPostingTargetsOmitted: 0,
       relationMemberPostingCount: relationMemberPostings.length,
       omittedPostingTargets: [
         ...evidencePostings,
@@ -240,6 +257,7 @@ export function generateSparseAlignmentCandidates(input: {
   const targetById = new Map(input.targetIndex.targets.map(target => [target.id, target]));
   const evidencePostings = postingMap(input.targetIndex.evidencePostings);
   const surfacePostings = postingMap(input.targetIndex.surfacePostings);
+  const exactAnchorPostings = postingMap(input.targetIndex.exactAnchorPostings);
   const relationMembers = postingMap(input.targetIndex.relationMemberPostings);
   const relationTargetByNodeId = new Map(input.targetIndex.targets
     .filter(target => target.kind === "relation")
@@ -249,10 +267,15 @@ export function generateSparseAlignmentCandidates(input: {
 
   for (const unit of [...input.lattice.units].sort(surfaceUnitOrder)) {
     const supportByTarget = new Map<string, Set<SparseAlignmentSupportKind>>();
-    const exactTargetIds = surfacePostings.get(surfaceKey(
+    const normalizedSurfaceKey = surfaceKey(
       unit.normalized,
       input.lattice.normalizationContract
-    )) ?? [];
+    );
+    const exactTargetIds = canonicalStrings(unit.evidenceIds.flatMap(evidenceId =>
+      exactAnchorPostings.get(exactAnchorKey(
+        String(evidenceId),
+        normalizedSurfaceKey
+      )) ?? []));
     for (const targetId of exactTargetIds) {
       addSupport(supportByTarget, targetId, "exact_observable_anchor");
       const target = targetById.get(targetId);
@@ -264,6 +287,11 @@ export function generateSparseAlignmentCandidates(input: {
             addSupport(supportByTarget, memberId, "typed_incidence_structure");
           }
         }
+      }
+    }
+    for (const targetId of surfacePostings.get(normalizedSurfaceKey) ?? []) {
+      if (!exactTargetIds.includes(targetId)) {
+        addSupport(supportByTarget, targetId, "surface_context");
       }
     }
     for (const evidenceId of unit.evidenceIds) {
@@ -290,7 +318,19 @@ export function generateSparseAlignmentCandidates(input: {
       right.score - left.score
       || targetKindOrder(left.target.kind) - targetKindOrder(right.target.kind)
       || left.target.id.localeCompare(right.target.id));
-    const retained = scored.slice(0, maxCandidateDegree);
+    const exact = scored.filter(row =>
+      row.supportKinds.includes("exact_observable_anchor"));
+    if (exact.length > maxCandidateDegree) {
+      throw new Error(
+        `exact alignment anchors exceed row degree for ${unit.id}`
+      );
+    }
+    const retained = [
+      ...exact,
+      ...scored.filter(row =>
+        !row.supportKinds.includes("exact_observable_anchor"))
+        .slice(0, maxCandidateDegree - exact.length)
+    ];
     const rowCandidateIds: string[] = [];
     for (const item of retained) {
       const sharedEvidenceIds = intersection(unit.evidenceIds, item.target.evidenceIds);
@@ -305,6 +345,7 @@ export function generateSparseAlignmentCandidates(input: {
         surfaceFormClassId: unit.surfaceFormClassId,
         graphTargetId: item.target.id,
         graphTargetKind: item.target.kind,
+        graphOrderKey: graphOrderKey(item.target, hasher),
         supportKinds: item.supportKinds,
         score: item.score,
         surfaceEvidenceIds: canonicalStrings(unit.evidenceIds),
@@ -354,6 +395,7 @@ export function generateSparseAlignmentCandidates(input: {
         : 0,
       memoryBound: `O(|S|*${maxCandidateDegree})`,
       candidatesOutsideSupportHaveZeroMass: true,
+      exactAnchorsReservedBeforeTruncation: true,
       denseMatrixMaterialized: false
     })
   };
@@ -461,6 +503,34 @@ function compilePostings(
       omittedTargetCount: Math.max(0, unique.length - limit)
     };
   }).sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function compileUntruncatedPostings(
+  values: ReadonlyMap<string, readonly string[]>
+): SparseAlignmentPosting[] {
+  return [...values].map(([key, targetIds]) => ({
+    key,
+    targetIds: [...new Set(targetIds)].sort(),
+    omittedTargetCount: 0
+  })).sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function exactAnchorKey(evidenceId: string, normalizedSurfaceKey: string): string {
+  return `${evidenceId}\u001f${normalizedSurfaceKey}`;
+}
+
+function graphOrderKey(
+  target: SparseAlignmentTarget,
+  hasher: Hasher
+): string {
+  return `alignment_order_port.${hasher.digestHex(canonicalStringify({
+    relationId: target.relationId,
+    kind: target.kind,
+    portId: target.portId ?? null,
+    roleId: target.roleId ?? null,
+    valueKind: target.valueKind ?? null,
+    realization: target.realization ?? null
+  })).slice(0, 40)}`;
 }
 
 function postingMap(postings: readonly SparseAlignmentPosting[]): Map<string, string[]> {

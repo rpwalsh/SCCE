@@ -109,7 +109,7 @@ describe("shared language training batch", () => {
     expect(compiled.sparseAlignmentCandidateSummaries).toHaveLength(1);
     expect(compiled.alignmentCommunityRoutings).toHaveLength(1);
     expect(compiled.alignmentCommunityRoutings[0]).toMatchObject({
-      schema: "scce.alignment_community_routing.v1"
+      schema: "scce.alignment_community_routing.v2"
     });
     expect(compiled.alignmentCommunityRoutings[0]!.routedSupport.parentSupportId)
       .toBe(compiled.sparseAlignmentCandidateSupports[0]!.id);
@@ -144,7 +144,7 @@ describe("shared language training batch", () => {
       compiled.typedNullCostModel!.id
     );
     expect(compiled.populationOrderingModel).toMatchObject({
-      schema: "scce.population_relative_order_model.v1"
+      schema: "scce.population_relative_order_model.v2"
     });
     expect(compiled.sparseTransportPlans[0]!.populationOrderingModelId).toBe(
       compiled.populationOrderingModel!.id

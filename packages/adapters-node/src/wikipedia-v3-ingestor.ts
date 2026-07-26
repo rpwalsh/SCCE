@@ -27,6 +27,8 @@ import {
   compileCoarseToFineAlignmentResult,
   compileAlignmentCalibrationModel,
   compileAlignmentPromotionModel,
+  compileAutomaticAlignmentEvaluation,
+  compileReversibleConstructionPattern,
   compileReversibleConstructions,
   reversibleConstructionCreationSnapshotId,
   solveSparseFusedUnbalancedTransport,
@@ -1054,10 +1056,6 @@ export class WikipediaV3Ingestor {
         targetIndex: alignmentTargetIndex,
         hasher: this.hasher
       });
-      const alignmentCalibrationModel = compileAlignmentCalibrationModel({
-        observations: [],
-        hasher: this.hasher
-      });
       const finalTransportPlans = routedAlignmentSupports.map(support =>
         solveSparseFusedUnbalancedTransport({
           support,
@@ -1144,9 +1142,22 @@ export class WikipediaV3Ingestor {
           allocation.conservationResidual
         );
       }
+      const alignmentHeldoutEvaluation =
+        compileAutomaticAlignmentEvaluation({
+          alternativeSets: alignmentAlternativeSets,
+          supports: routedAlignmentSupports,
+          referencePlans: finalTransportPlans,
+          evidenceAllocations: allAlignmentEvidenceAllocations,
+          targetIndex: alignmentTargetIndex,
+          hasher: this.hasher
+        });
+      const alignmentCalibrationModel = compileAlignmentCalibrationModel({
+        observations: alignmentHeldoutEvaluation.calibrationObservations,
+        hasher: this.hasher
+      });
       const alignmentPromotionModel = compileAlignmentPromotionModel({
         alternativeSets: alignmentAlternativeSets,
-        observations: [],
+        observations: alignmentHeldoutEvaluation.promotionObservations,
         hasher: this.hasher
       });
       const reversibleConstructionCompilation =
@@ -1170,6 +1181,20 @@ export class WikipediaV3Ingestor {
           createdAt,
           hasher: this.hasher
         });
+      const reversibleConstructionPatterns =
+        reversibleConstructionCompilation.constructions.map(construction => ({
+          ...compileReversibleConstructionPattern(construction),
+          informationLabel: WIKIPEDIA_INFORMATION_LABEL
+        }));
+      if (this.storage.languageMemory.putLanguagePatterns) {
+        await this.storage.languageMemory.putLanguagePatterns(
+          reversibleConstructionPatterns
+        );
+      } else {
+        for (const pattern of reversibleConstructionPatterns) {
+          await this.storage.languageMemory.putLanguagePattern(pattern);
+        }
+      }
       await this.storage.events.append(this.events.create({
         episodeId,
         typeId: "RelationPromotionCompiled",
@@ -1225,6 +1250,7 @@ export class WikipediaV3Ingestor {
           coarseToFineAlignments,
           alignmentCalibrationModel,
           alignmentPromotionModel,
+          alignmentHeldoutEvaluation,
           reversibleConstructions:
             reversibleConstructionCompilation.constructions,
           reversibleConstructionRejections:

@@ -111,6 +111,30 @@ describe("sparse typed-incidence alignment candidates", () => {
       sparseAlignmentCandidatesForUnit(compiled.supports[0]!, row.surfaceUnitId).length === 0
     )).toBe(true);
   });
+
+  it("never silently truncates exact anchors to satisfy a row-degree budget", () => {
+    const lattice = buildSurfaceLattice({
+      documentId: "document.duplicate-anchor",
+      sourceVersionId: "source-version.duplicate-anchor" as SourceVersionId,
+      text: "Ada",
+      evidenceIds: ["evidence.ada" as EvidenceId],
+      hasher
+    });
+    const duplicateNode = graphNode("node.ada.alias", "Ada");
+    const hyperedge = relationHyperedge();
+    hyperedge.participantPorts.push(
+      port("port.ada.alias", "role.opaque.3", "node.ada.alias")
+    );
+    hyperedge.memberNodeIds.push(duplicateNode.id);
+
+    expect(() => compileSparseAlignmentCandidateSupports({
+      lattices: [lattice],
+      nodes: [graphNode("node.ada", "Ada"), duplicateNode],
+      hyperedges: [hyperedge],
+      maxCandidateDegree: 1,
+      hasher
+    })).toThrow(/exact alignment anchors exceed row degree/iu);
+  });
 });
 
 function graphNode(id: string, representation: string): GraphNode {
