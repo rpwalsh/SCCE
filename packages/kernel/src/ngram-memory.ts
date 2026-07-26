@@ -15,7 +15,8 @@ import type {
 } from "./storage.js";
 import { learnedScriptIdForCharacter } from "./language.js";
 import { compactKneserNeyForProfile, trainKneserNey } from "./kneser-ney.js";
-import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
+import { clamp01, entropy, featureSet, stableVector, toJsonValue } from "./primitives.js";
+import { buildSurfaceLattice, canonicalSurfaceSequence } from "./surface-lattice.js";
 
 export interface NgramMemoryCompilation {
   observations: NgramObservation[];
@@ -44,7 +45,18 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
     compile(input: NgramMemoryInput): NgramMemoryCompilation {
       const maxOrder = Math.max(1, Math.min(6, input.maxOrder ?? 6));
       const maxCounters = Math.max(32, input.maxCountersPerOrder ?? 50000);
-      const symbols = symbolizeData(input.text);
+      const lattice = buildSurfaceLattice({
+        documentId: input.streamId,
+        text: input.text,
+        sourceVersionId: input.sourceVersionId,
+        evidenceIds: input.evidence.map(span => span.id),
+        hasher: options.hasher
+      });
+      const symbols = canonicalSurfaceSequence(lattice).map(unit => unit.surface);
+      const graphemes = lattice.units
+        .filter(unit => unit.kind === "grapheme")
+        .sort((left, right) => left.utf16Start - right.utf16Start)
+        .map(unit => unit.surface);
       const languageHint = primaryLanguageHint(input.profile);
       const evidenceIds = input.evidence.map(span => span.id);
       const alpha = input.evidence.length ? input.evidence.reduce((sum, span) => sum + span.alpha, 0) / input.evidence.length : 0.35;
@@ -96,8 +108,8 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         }),
         updatedAt: input.createdAt
       } satisfies NgramModelRecord));
-      const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
-      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory });
+      const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, graphemes, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
+      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory, hasher: options.hasher });
       const semanticFrames = input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
         span,
         index,
@@ -118,7 +130,11 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
           sourceVersionId: input.sourceVersionId,
           sourceSystem: input.sourceSystem ?? null,
           languageHint,
+          surfaceLatticeId: lattice.id,
+          surfaceLatticeSchema: lattice.schema,
+          sourceTextHash: lattice.textHash,
           symbolCount: symbols.length,
+          graphemeCount: graphemes.length,
           orders: counters.map(counter => ({ order: counter.order, retained: counter.size, total: counter.total })),
           observations: observations.length,
           models: models.length,
@@ -137,6 +153,7 @@ function compileLanguageUnits(input: {
   sourceVersionId: SourceVersionId;
   sourceSystem?: string;
   symbols: string[];
+  graphemes: string[];
   evidenceIds: EvidenceSpan["id"][];
   alpha: number;
   idFactory: IdFactory;
@@ -147,7 +164,7 @@ function compileLanguageUnits(input: {
     const features = featureSet(text, 64);
     return unit(input, "symbol", text, features, clamp01(input.alpha * Math.log2(c + 1) / 8));
   });
-  const graphemeCounts = count([...input.symbols.join("")]);
+  const graphemeCounts = count(input.graphemes);
   const graphemeUnits = [...graphemeCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 32).map(([text, c]) => {
     const features = [`grapheme:${text}`, `shape:${shapeOf(text)}`];
     return unit(input, "grapheme", text, features, clamp01(input.alpha * Math.log2(c + 1) / 8));
@@ -190,13 +207,14 @@ function compileLanguagePatterns(input: {
   evidenceIds: EvidenceSpan["id"][];
   createdAt: number;
   idFactory: IdFactory;
+  hasher: Hasher;
 }): LanguagePatternRecord[] {
   const shapes = input.symbols.map(shapeOf);
   const shapeEntropy = entropy([...count(shapes).values()]);
   const transitionCounts = count(shapes.slice(1).map((shape, i) => `${shapes[i]}→${shape}`));
-  const segmentSizes = input.evidence.map(span => symbolizeData(span.text).length);
-  const discourse = longFormDiscoursePattern(input.text, input.sourceSystem, input.sourceVersionId);
-  const narrative = narrativeSurfacePattern(input.text, input.sourceSystem, input.sourceVersionId);
+  const segmentSizes = input.evidence.map(span => surfaceSymbols(span.text, String(span.id), input.hasher).length);
+  const discourse = longFormDiscoursePattern(input.text, input.sourceSystem, input.sourceVersionId, input.hasher);
+  const narrative = narrativeSurfacePattern(input.text, input.sourceSystem, input.sourceVersionId, input.hasher);
   const patterns: Array<{ kind: LanguagePatternRecord["patternKind"]; support: number; entropy: number; payload: JsonValue }> = [
     { kind: "segmentation", support: clamp01(input.evidence.length / 64), entropy: entropy(segmentSizes), payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), segmentSizes: segmentSizes.slice(0, 256), sourceVersionId: input.sourceVersionId }) },
     { kind: "morphology", support: clamp01(new Set(shapes).size / Math.max(1, shapes.length)), entropy: shapeEntropy, payload: toJsonValue({ ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), topShapes: topEntries(count(shapes), 128) }) },
@@ -218,14 +236,14 @@ function compileLanguagePatterns(input: {
   }));
 }
 
-function longFormDiscoursePattern(text: string, sourceSystem: string | undefined, sourceVersionId: SourceVersionId): { support: number; entropy: number; payload: JsonValue } {
+function longFormDiscoursePattern(text: string, sourceSystem: string | undefined, sourceVersionId: SourceVersionId, hasher: Hasher): { support: number; entropy: number; payload: JsonValue } {
   const paragraphs = paragraphSurfaces(text);
   const sentences = sentenceSurfaces(text);
-  const sentenceSymbolLengths = sentences.map(sentence => symbolizeData(sentence).length).filter(length => length > 0);
-  const paragraphSymbolLengths = paragraphs.map(paragraph => symbolizeData(paragraph).length).filter(length => length > 0);
+  const sentenceSymbolLengths = sentences.map((sentence, index) => surfaceSymbols(sentence, `discourse.sentence.${index}`, hasher).length).filter(length => length > 0);
+  const paragraphSymbolLengths = paragraphs.map((paragraph, index) => surfaceSymbols(paragraph, `discourse.paragraph.${index}`, hasher).length).filter(length => length > 0);
   const boundaryCounts = count(boundarySurfaces(text));
-  const connectorCounts = count(sentences.map(sentence => openingPhrase(sentence, 3)).filter(nonemptyString));
-  const paragraphOpeningCounts = count(paragraphs.map(paragraph => openingPhrase(paragraph, 4)).filter(nonemptyString));
+  const connectorCounts = count(sentences.map((sentence, index) => openingPhrase(sentence, 3, hasher, `discourse.connector.${index}`)).filter(nonemptyString));
+  const paragraphOpeningCounts = count(paragraphs.map((paragraph, index) => openingPhrase(paragraph, 4, hasher, `discourse.opening.${index}`)).filter(nonemptyString));
   const dialogueMarkers = dialogueTurnSurfaces(text);
   const payload = toJsonValue({
     schema: "scce.long_form_discourse_pattern.v1",
@@ -248,13 +266,13 @@ function longFormDiscoursePattern(text: string, sourceSystem: string | undefined
   };
 }
 
-function narrativeSurfacePattern(text: string, sourceSystem: string | undefined, sourceVersionId: SourceVersionId): { support: number; entropy: number; payload: JsonValue } {
+function narrativeSurfacePattern(text: string, sourceSystem: string | undefined, sourceVersionId: SourceVersionId, hasher: Hasher): { support: number; entropy: number; payload: JsonValue } {
   const paragraphs = paragraphSurfaces(text);
   const sentences = sentenceSurfaces(text);
-  const symbols = symbolizeData(text);
+  const symbols = surfaceSymbols(text, `narrative.${String(sourceVersionId)}`, hasher);
   const anchors = repeatedAnchorSurfaces(symbols);
-  const paragraphShapes = paragraphs.map(paragraph => paragraphShape(paragraph));
-  const sentenceOpenings = sentences.map(sentence => openingPhrase(sentence, 2)).filter(nonemptyString);
+  const paragraphShapes = paragraphs.map((paragraph, index) => paragraphShape(paragraph, hasher, `narrative.paragraph.${index}`));
+  const sentenceOpenings = sentences.map((sentence, index) => openingPhrase(sentence, 2, hasher, `narrative.opening.${index}`)).filter(nonemptyString);
   const dialogueTurns = dialogueTurnSurfaces(text);
   const payload = toJsonValue({
     schema: "scce.narrative_surface_pattern.v1",
@@ -275,7 +293,7 @@ function narrativeSurfacePattern(text: string, sourceSystem: string | undefined,
 }
 
 function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: string, idFactory: IdFactory, hasher: Hasher, createdAt: number, sourceSystem?: string): SemanticFrameRecord {
-  const symbols = symbolizeData(span.text).slice(0, 256);
+  const symbols = surfaceSymbols(span.text, `semantic_frame.${String(span.id)}`, hasher).slice(0, 256);
   const features = featureSet(span.text, 256);
   const roles = syntaxSignatures(symbols).slice(0, 16);
   const frameJson = toJsonValue({
@@ -345,8 +363,8 @@ function dialogueTurnSurfaces(text: string): string[] {
   return markers;
 }
 
-function openingPhrase(text: string, maxSymbols: number): string {
-  return symbolizeData(text)
+function openingPhrase(text: string, maxSymbols: number, hasher: Hasher, documentId: string): string {
+  return surfaceSymbols(text, documentId, hasher)
     .filter(symbol => !isSentenceBoundarySurface(symbol))
     .slice(0, Math.max(1, maxSymbols))
     .join(" ")
@@ -365,12 +383,20 @@ function repeatedAnchorSurfaces(symbols: readonly string[]): string[] {
     .map(([symbol]) => symbol);
 }
 
-function paragraphShape(paragraph: string): string {
+function paragraphShape(paragraph: string, hasher: Hasher, documentId: string): string {
   const sentences = sentenceSurfaces(paragraph).length;
-  const symbols = symbolizeData(paragraph).length;
+  const symbols = surfaceSymbols(paragraph, documentId, hasher).length;
   const dialogue = dialogueTurnSurfaces(paragraph).length > 0 ? "dialogue" : "prose";
   const length = symbols < 40 ? "short" : symbols < 140 ? "medium" : "long";
   return `${dialogue}:${length}:${Math.min(8, sentences)}`;
+}
+
+function surfaceSymbols(text: string, documentId: string, hasher: Hasher): string[] {
+  return canonicalSurfaceSequence(buildSurfaceLattice({
+    documentId,
+    text,
+    hasher
+  })).map(unit => unit.surface);
 }
 
 function isSentenceBoundarySurface(value: string): boolean {
