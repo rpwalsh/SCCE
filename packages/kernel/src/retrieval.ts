@@ -16,6 +16,7 @@ export interface CorpusIndex {
 export interface IndexedDocument {
   id: string;
   evidenceId: string;
+  contentHash: string;
   sourceVersionId: string;
   length: number;
   symbols: string[];
@@ -51,12 +52,60 @@ export interface RetrievalPlan {
   audit: JsonValue;
 }
 
+/**
+ * Per-evidence-span tokenization is deterministic given the span's own
+ * content (evidenceRetrievalSurface(span) never changes for a fixed
+ * span.id+contentHash). The same evidence routinely recurs across turns
+ * within a conversation -- retokenizing it from scratch on every
+ * hybridRecall() call is pure avoidable repeated work (Phase L finding).
+ * Bounded LRU-ish cache: capped entry count, oldest evicted first.
+ */
+const DOCUMENT_SYMBOLS_CACHE_MAX_ENTRIES = 4096;
+const documentSymbolsCache = new Map<string, string[]>();
+
+function cachedDocumentSymbols(span: EvidenceSpan): string[] {
+  const cacheKey = `${String(span.id)}:${String(span.contentHash)}`;
+  const cached = documentSymbolsCache.get(cacheKey);
+  if (cached) return cached;
+  const symbols = symbolizeData(evidenceRetrievalSurface(span));
+  documentSymbolsCache.set(cacheKey, symbols);
+  if (documentSymbolsCache.size > DOCUMENT_SYMBOLS_CACHE_MAX_ENTRIES) {
+    const oldest = documentSymbolsCache.keys().next().value;
+    if (oldest !== undefined) documentSymbolsCache.delete(oldest);
+  }
+  return symbols;
+}
+
+/**
+ * Same rationale as documentSymbolsCache: doc.features is stable for a
+ * given span, so its hashed feature vector is too. stableVector's
+ * result depends on the hasher instance as well as the features, but the
+ * kernel constructs one hasher per process/runtime, so keying on span
+ * identity alone is safe for the lifetime of a cache entry.
+ */
+const DOCUMENT_VECTOR_CACHE_MAX_ENTRIES = 4096;
+const documentVectorCache = new Map<string, number[]>();
+
+function cachedDocumentVector(evidenceId: string, contentHash: string, features: readonly string[], hasher: Hasher): number[] {
+  const cacheKey = `${evidenceId}:${contentHash}`;
+  const cached = documentVectorCache.get(cacheKey);
+  if (cached) return cached;
+  const vector = stableVector(features, hasher, 96);
+  documentVectorCache.set(cacheKey, vector);
+  if (documentVectorCache.size > DOCUMENT_VECTOR_CACHE_MAX_ENTRIES) {
+    const oldest = documentVectorCache.keys().next().value;
+    if (oldest !== undefined) documentVectorCache.delete(oldest);
+  }
+  return vector;
+}
+
 function buildCorpusIndex(evidence: readonly EvidenceSpan[]): CorpusIndex {
   const documents = evidence.map(span => {
-    const symbols = symbolizeData(evidenceRetrievalSurface(span));
+    const symbols = cachedDocumentSymbols(span);
     return {
       id: String(span.id),
       evidenceId: String(span.id),
+      contentHash: String(span.contentHash),
       sourceVersionId: String(span.sourceVersionId),
       length: symbols.length,
       symbols,
@@ -93,7 +142,7 @@ export function hybridRecall(input: { query: string; evidence: readonly Evidence
   const queryVector = stableVector(queryFeatures, input.hasher, 96);
   const recall = index.documents.map(doc => {
     const bm25Score = bm25(querySymbols, doc, index);
-    const docVector = stableVector(doc.features, input.hasher, 96);
+    const docVector = cachedDocumentVector(doc.evidenceId, doc.contentHash, doc.features, input.hasher);
     const vectorScore = cosine(queryVector, docVector);
     const graphSignal = graphSignals.get(doc.evidenceId);
     const graphScore = graphSignal?.mass ?? 0;
