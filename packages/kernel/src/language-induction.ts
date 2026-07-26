@@ -1,7 +1,19 @@
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 import { clamp01, createHasher, entropy, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import {
+  compileBoundaryStatistics,
+  fitBoundaryEstimator,
+  type BoundaryEstimatorModel,
+  type BoundarySufficientStatistics
+} from "./boundary-estimator.js";
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
-import { buildSurfaceLattice, canonicalSurfaceSequence, type SurfaceLattice } from "./surface-lattice.js";
+import {
+  buildSurfaceLattice,
+  canonicalSurfaceSequence,
+  collectBoundaryObservations,
+  SURFACE_LATTICE_SCHEMA,
+  type SurfaceLattice
+} from "./surface-lattice.js";
 import type { SemanticRole } from "./semantic-graph.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
@@ -144,6 +156,8 @@ export interface InducedLanguageModel {
   scripts: ScriptProfile[];
   ngrams: InducedNgram[];
   kneserNey: JsonValue;
+  boundaryStatistics: BoundarySufficientStatistics;
+  boundaryEstimator: BoundaryEstimatorModel;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
   syntaxTemplates: SyntaxTemplate[];
@@ -163,6 +177,26 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
     induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
       const corpusText = documents.map(doc => doc.text).join("\n");
+      const initialLattices = documents.map(doc => ({
+        doc,
+        lattice: buildSurfaceLattice({
+          documentId: doc.id,
+          text: doc.text,
+          sourceVersionId: doc.sourceVersionId,
+          evidenceIds: doc.evidenceIds,
+          hasher
+        })
+      }));
+      const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
+        documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
+      )).slice(0, 32)}`;
+      const boundaryStatistics = compileBoundaryStatistics({
+        populationId,
+        observations: collectBoundaryObservations(initialLattices.map(({ lattice }) => lattice)),
+        sourceDocumentIds: documents.map(document => document.id),
+        hasher
+      });
+      const boundaryEstimator = fitBoundaryEstimator({ statistics: boundaryStatistics, hasher });
       const lattices = documents.map(doc => ({
         doc,
         lattice: buildSurfaceLattice({
@@ -170,6 +204,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           text: doc.text,
           sourceVersionId: doc.sourceVersionId,
           evidenceIds: doc.evidenceIds,
+          boundaryEstimator,
           hasher
         })
       }));
@@ -182,7 +217,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const counts = countNgrams(symbolStrings, order, vocabularyLimit);
       const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
       const kn = trainKneserNey(symbolStrings, { order, vocabularyLimit });
-      const boundarySignals = induceBoundaries(corpusText, hasher).slice(0, 2048);
+      const boundarySignals = induceBoundariesFromLattices(lattices.map(({ lattice }) => lattice), hasher).slice(0, 2048);
       const scripts = induceScripts(corpusText);
       const morphology = induceMorphology(lexicalStrings, hasher).slice(0, 2048);
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
@@ -192,7 +227,12 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
       const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
-      const id = `language_model_${hasher.digestHex(JSON.stringify({ docs: documents.map(d => d.id), symbols: symbolStrings.length, order })).slice(0, 32)}`;
+      const id = `language_model_${hasher.digestHex(JSON.stringify({
+        docs: documents.map(d => d.id),
+        symbols: symbolStrings.length,
+        order,
+        boundaryEstimatorId: boundaryEstimator.id
+      })).slice(0, 32)}`;
       return {
         id,
         corpusDocuments: documents.length,
@@ -201,6 +241,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         scripts,
         ngrams,
         kneserNey: compactKneserNeyForProfile(kn, corpusText.slice(0, 200000)),
+        boundaryStatistics,
+        boundaryEstimator,
         boundarySignals,
         morphology,
         syntaxTemplates,
@@ -215,8 +257,13 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           vocabularyLimit,
           sourceVersionIds: documents.map(doc => doc.sourceVersionId).filter(Boolean),
           evidenceIds: [...new Set(documents.flatMap(doc => doc.evidenceIds ?? []))],
-          surfaceLatticeSchema: "scce.surface_lattice.v2",
+          surfaceLatticeSchema: SURFACE_LATTICE_SCHEMA,
           surfaceLatticeIds: lattices.map(({ lattice }) => lattice.id),
+          segmentationForestIds: lattices.map(({ lattice }) => lattice.segmentationForest.id),
+          retainedSegmentationPosteriorMass: lattices.map(({ lattice }) => lattice.segmentationForest.retainedPosteriorMass),
+          boundaryStatisticsId: boundaryStatistics.id,
+          boundaryEstimatorId: boundaryEstimator.id,
+          boundaryEstimatorPopulationId: populationId,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)
         })
@@ -303,41 +350,43 @@ function ngramPmi(gram: readonly string[], count: number, total: number, unigram
   return Math.max(0, Math.log2(Math.max(1e-12, joint / Math.max(1e-12, independent))) / Math.max(1, gram.length));
 }
 
-function induceBoundaries(text: string, hasher: Hasher): BoundarySignal[] {
-  const cleaned = text.replace(/\u0000/g, " ");
+function induceBoundariesFromLattices(
+  lattices: readonly SurfaceLattice[],
+  hasher: Hasher
+): BoundarySignal[] {
   const pairCounts = new Map<string, number>();
-  const boundaryCounts = new Map<string, number>();
+  const boundaryMass = new Map<string, number>();
   const leftCounts = new Map<string, number>();
   const rightCounts = new Map<string, number>();
-  for (let i = 0; i < cleaned.length - 1; i++) {
-    const left = cleaned[i]!;
-    const right = cleaned[i + 1]!;
-    if (left === "\r" || right === "\r") continue;
-    const leftKey = charClass(left);
-    const rightKey = charClass(right);
-    const key = `${leftKey}\u0001${rightKey}`;
-    pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
-    leftCounts.set(leftKey, (leftCounts.get(leftKey) ?? 0) + 1);
-    rightCounts.set(rightKey, (rightCounts.get(rightKey) ?? 0) + 1);
-    if (/\s/u.test(left) || /\s/u.test(right) || /[.,;:!?()[\]{}]/u.test(left) || /[.,;:!?()[\]{}]/u.test(right)) {
-      boundaryCounts.set(key, (boundaryCounts.get(key) ?? 0) + 1);
+  for (const lattice of lattices) {
+    const graphemes = lattice.units
+      .filter(unit => unit.overlapClass === "base_partition")
+      .sort((left, right) => left.graphemeStart - right.graphemeStart);
+    for (let index = 0; index < graphemes.length - 1; index += 1) {
+      const left = graphemes[index]!;
+      const right = graphemes[index + 1]!;
+      const key = JSON.stringify([left.normalized, right.normalized]);
+      pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+      boundaryMass.set(key, (boundaryMass.get(key) ?? 0) + left.boundaryAfter.boundaryProbability);
+      leftCounts.set(left.normalized, (leftCounts.get(left.normalized) ?? 0) + 1);
+      rightCounts.set(right.normalized, (rightCounts.get(right.normalized) ?? 0) + 1);
     }
   }
   const total = [...pairCounts.values()].reduce((sum, count) => sum + count, 0);
   const signals: BoundarySignal[] = [];
   for (const [key, count] of pairCounts) {
-    const [left, right] = key.split("\u0001") as [string, string];
-    const boundary = boundaryCounts.get(key) ?? 0;
+    const [left, right] = JSON.parse(key) as [string, string];
+    const boundary = boundaryMass.get(key) ?? 0;
     const joint = count / Math.max(1, total);
     const independent = ((leftCounts.get(left) ?? 1) / Math.max(1, total)) * ((rightCounts.get(right) ?? 1) / Math.max(1, total));
     const mutualInformation = Math.max(0, Math.log2(Math.max(1e-12, joint / Math.max(1e-12, independent))));
-    const boundaryProbability = boundary / count;
+    const boundaryProbability = clamp01(boundary / count);
     signals.push({
       left,
       right,
       count,
       boundaryProbability,
-      joinProbability: clamp01((1 - boundaryProbability) * mutualInformation / 8),
+      joinProbability: clamp01(1 - boundaryProbability),
       mutualInformation
     });
   }
