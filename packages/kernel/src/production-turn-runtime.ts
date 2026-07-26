@@ -250,7 +250,6 @@ export function createProductionTurnRuntime(options: {
   } = graphRetrieval;
   const {
     hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, sourceOwnedLanguageClusterForAlias,
-    residentSurfaceLanguageMemory,
     sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached, surfaceLanguageProfilesCached,
     uniqueRecordsById
   } = surfaceLanguageRuntime;
@@ -1026,7 +1025,16 @@ export function createProductionTurnRuntime(options: {
           (bundle.creativeEvents?.length ?? 0) > 0
         )
       );
-      const residentEvidenceLanguage = residentSurfaceLanguageMemory(evidenceSurfaceCluster);
+      const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
+        ? await hydrateSurfaceLanguageMemoryCached(
+          12,
+          evidenceSurfaceCluster,
+          "evidence-source-cluster-selected",
+          undefined,
+          "",
+          { residentOnly: fastRuntimeBudget }
+        )
+        : undefined;
       const creativeOutputLanguage = preferredSurfaceCorpusRole
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
@@ -1040,9 +1048,12 @@ export function createProductionTurnRuntime(options: {
       let surfaceLanguage = preferredSurfaceCorpusRole
         ? exactCreativeAuthorityReady
           ? authorityLanguage
-          : creativeOutputLanguage ?? authorityLanguage
-        : evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
-          ? residentEvidenceLanguage ?? authorityLanguage
+          : requireHydratedSurfaceLanguage(
+            creativeOutputLanguage,
+            `creative corpus role ${preferredSurfaceCorpusRole}`
+          )
+        : evidenceOutputLanguage
+          ? evidenceOutputLanguage
           : authorityLanguage;
       const productionTranslationProfiles = translationTarget
         ? (await sourceOwnedLanguageProfilesCached(
@@ -2369,4 +2380,9 @@ async function dispatchBuildTestThroughExecutive(input: {
   );
 
   return { disposition: result.disposition, attemptId: result.attemptId, receipt: result.receipt, buildTest: capturedResult };
+}
+
+function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {
+  if (value) return value;
+  throw new Error(`hydrated runtime unavailable: required learned surface language for ${context}`);
 }
