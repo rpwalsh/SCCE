@@ -22,6 +22,10 @@ import { clamp01, featureSet, toJsonValue } from "./primitives.js";
 import { extensionOf, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, splitLines } from "./source-code-graph.js";
 import { createEngineeringCorpusProjection, engineeringCorpusProjectionFromJson } from "./engineering-corpus.js";
 import { bayesUpdate, shannonEntropy } from "./equation-operators.js";
+import {
+  structuredSemanticCandidates,
+  type StructuredSemanticCandidate
+} from "./structured-semantic-candidate.js";
 
 export interface TypedIngestPreview {
   lane: ReturnType<typeof classifyIngestionLane>;
@@ -35,6 +39,7 @@ export interface TypedIngestProjection extends TypedIngestPreview {
   routes: ObservationRoute[];
   graphNodes: GraphNode[];
   graphEdges: GraphEdge[];
+  semanticCandidates: StructuredSemanticCandidate[];
   diagnostics: JsonValue;
 }
 
@@ -106,7 +111,20 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
     const contracts = observations.map(observationContract);
     const languageText = languageTextFromObservations(observations) || (shouldSuppressRawTraining(lane, input.mediaType, input.uri) ? "" : languageBearingDocumentText(input.text, input.mediaType, input.metadata, input.uri));
     const confidenceTrace = observationConfidenceTrace(observations, routes);
-    const graph = graphFromObservations({ observations, routes, evidenceIds, observedAt: input.observedAt, ids, hasher });
+    const semanticCandidates = structuredSemanticCandidates({
+      sourceId: input.sourceId,
+      sourceVersionId: input.sourceVersionId,
+      metadata: input.metadata,
+      observations,
+      evidenceIds,
+      hasher
+    });
+    const observationGraph = graphFromObservations({ observations, routes, evidenceIds, observedAt: input.observedAt, ids, hasher });
+    const candidateGraph = graphFromStructuredSemanticCandidates({ candidates: semanticCandidates, observedAt: input.observedAt, ids, hasher });
+    const graph = {
+      nodes: uniqueGraphNodes([...observationGraph.nodes, ...candidateGraph.nodes]),
+      edges: uniqueGraphEdges([...observationGraph.edges, ...candidateGraph.edges])
+    };
     const observationCounts = countBy(observations.map(obs => obs.kind));
     const routeCounts = countBy(routes.flatMap(route => route.durableStores));
     return {
@@ -117,6 +135,7 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       routes,
       graphNodes: graph.nodes,
       graphEdges: graph.edges,
+      semanticCandidates,
       observationCounts,
       diagnostics: toJsonValue({
         lane,
@@ -126,6 +145,8 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
         suppressRawLanguageTraining: shouldSuppressRawTraining(lane, input.mediaType, input.uri),
         contracts: contracts.slice(0, 2048),
         confidenceTrace,
+        structuredSemanticCandidateCount: semanticCandidates.length,
+        weakFreeProseInference: false,
         forceClasses: countBy(contracts.map(contract => contract.forceClass)),
         graphNodes: graph.nodes.length,
         graphEdges: graph.edges.length
@@ -810,6 +831,89 @@ function graphFromObservations(input: { observations: Observation[]; routes: Obs
     }
   }
   return { nodes: [...nodes.values()], edges: [...edges.values()] };
+}
+
+function graphFromStructuredSemanticCandidates(input: {
+  candidates: readonly StructuredSemanticCandidate[];
+  observedAt: number;
+  ids: IdFactory;
+  hasher: Hasher;
+}): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  for (const candidate of input.candidates) {
+    const relationNodeId = input.ids.nodeId({
+      kind: "structured_semantic_candidate",
+      candidateId: candidate.id
+    });
+    nodes.push({
+      id: relationNodeId,
+      typeId: input.ids.dimensionId({ kind: "structured_semantic_candidate", candidateKind: candidate.kind }),
+      representation: toJsonValue(candidate),
+      alpha: candidate.support,
+      evidenceIds: candidate.evidenceIds,
+      features: [`candidate:${candidate.kind}`, `relation-seed:${candidate.relationSeedId}`],
+      createdAt: input.observedAt,
+      updatedAt: input.observedAt,
+      metadata: toJsonValue({
+        schema: candidate.schema,
+        promoted: false,
+        weakFreeProseInference: false
+      })
+    });
+    for (const participant of candidate.participants) {
+      const participantNodeId = input.ids.nodeId({
+        kind: "structured_semantic_participant",
+        candidateId: candidate.id,
+        portId: participant.portId,
+        value: participant.value
+      });
+      nodes.push({
+        id: participantNodeId,
+        typeId: input.ids.dimensionId({ kind: "structured_semantic_participant", valueKind: participant.valueKind }),
+        representation: participant.value,
+        alpha: candidate.support,
+        evidenceIds: candidate.evidenceIds,
+        features: [`participant:${participant.valueKind}`, `port:${participant.portId}`],
+        createdAt: input.observedAt,
+        updatedAt: input.observedAt,
+        metadata: toJsonValue({ candidateId: candidate.id, portId: participant.portId })
+      });
+      const relationId = input.ids.relationId({ relation: "candidate_participant", portId: participant.portId });
+      edges.push({
+        id: input.ids.edgeId({
+          source: relationNodeId,
+          target: participantNodeId,
+          relationId,
+          provenanceHash: input.hasher.digestHex(`${candidate.id}:${participant.portId}`)
+        }),
+        source: relationNodeId,
+        target: participantNodeId,
+        relationId,
+        alpha: candidate.support,
+        weight: candidate.support,
+        temporalScope: { validFrom: input.observedAt },
+        evidenceIds: candidate.evidenceIds,
+        createdAt: input.observedAt,
+        updatedAt: input.observedAt,
+        metadata: toJsonValue({
+          candidateId: candidate.id,
+          candidateKind: candidate.kind,
+          portId: participant.portId,
+          promoted: false
+        })
+      });
+    }
+  }
+  return { nodes, edges };
+}
+
+function uniqueGraphNodes(nodes: readonly GraphNode[]): GraphNode[] {
+  return [...new Map(nodes.map(node => [String(node.id), node])).values()];
+}
+
+function uniqueGraphEdges(edges: readonly GraphEdge[]): GraphEdge[] {
+  return [...new Map(edges.map(edge => [String(edge.id), edge])).values()];
 }
 
 function observationConfidenceTrace(observations: readonly Observation[], routes: readonly ObservationRoute[]) {
