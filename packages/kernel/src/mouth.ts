@@ -403,10 +403,23 @@ function createMouthGenerationWorkBudget(startedAtMs: number, input: SpeakInput)
     startedAtMs,
     deadlineAtMs: startedAtMs + MOUTH_GENERATION_WINDOW_MS,
     maxExtent,
-    remainingCalls: MOUTH_GENERATION_CALL_LIMIT,
+    remainingCalls: mouthGenerationCallLimit(input),
     admittedCalls: 0,
     deniedCalls: 0
   };
+}
+
+function mouthGenerationCallLimit(input: SpeakInput): number {
+  const creative = input.requestedAuthority === "creative"
+    || input.entailment.force === "invented";
+  if (!creative) return MOUTH_GENERATION_CALL_LIMIT;
+  const hasLongFormPrior = input.languageMemory.importedPatterns.some(pattern =>
+    pattern.patternKind === "discourse" || pattern.patternKind === "narrative"
+  );
+  const hasCreativeStructure = input.languageMemory.importedConstructionBundles.some(bundle =>
+    (bundle.creativeEvents?.length ?? 0) > 0
+  ) || input.languageMemory.creativeEventCompatibilityModels.length > 0;
+  return hasLongFormPrior || hasCreativeStructure ? 3 : 2;
 }
 
 function mouthGenerationExtentLimit(input: SpeakInput): number {
@@ -526,9 +539,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         context: { targetLanguageId: input.targetLanguage, targetScriptId: input.targetScript, registerVector: input.registerVector, meterPattern: input.meterPattern, surfaceKind: input.construct.program ? "program" : "answer" }
       });
       markMouthPhase("correction_influence");
-      // No language-specific structural-creative-narrative realizer exists anymore
-      // (Part B step 7 removed english-structural-realizer.ts entirely); this lane
-      // is permanently absent rather than routed through a hardcoded-language path.
+      // Structural creative output now goes through learned language memory and
+      // corpus-anchored assembly; the removed English-only realizer is not a
+      // fallback lane.
       const nonEventCreativeMouthHandoff = selectedNonEventCreativeMouthHandoff(input);
       const basePriorPieces = importedSurfacePieces(input, undefined, undefined);
       markMouthPhase("base_prior_pieces");
@@ -2837,7 +2850,7 @@ function structuralCreativeLanguageScore(candidate: SurfaceCandidate, input: Spe
     fit: semanticSelectionValue,
     orderScores: [],
     audit: toJsonValue({
-      source: "mouth.english_structural_creative.score",
+      source: "mouth.universal_structural_creative.score",
       role: "selected_semantic_plan_realization_feature",
       selectionCompetitive: false,
       calibrated: false,
