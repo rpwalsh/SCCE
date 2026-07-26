@@ -79,9 +79,10 @@ function fakeModel(id: string): InducedLanguageModel {
       audit: {}
     },
     joinProgram: {
-      schema: "scce.join_program_mixture.v1",
+      schema: "scce.join_program_mixture.v2",
       id: "join_program_mixture.fixture",
       populationModelId: "segmentation_population.fixture",
+      minimumConfidence: 0.67,
       components: []
     },
     relationHypothesisModel: {
