@@ -719,10 +719,31 @@ describe("kernel local evidence source anchoring", () => {
     const fixture = storageFixture({ evidence: acquiredEvidence });
     const calls: string[] = [];
     const sourceUri = "https://fixture.invalid/pump-alpha-control";
+    // Real connector-fetched content goes through the same ingestion
+    // pipeline as any other source, which requires an explicit
+    // multi-tenant information-access context (ingestion-runtime.ts
+    // throws without one) -- this is the only test in this file that
+    // exercises real ingestion via learnHydrateReplan, so it's the first
+    // to need this configured.
+    const informationAccess = {
+      tenantId: "fixture-tenant",
+      principalId: "fixture-principal",
+      compartments: [] as string[],
+      maximumExportClass: "public" as const
+    };
+    const sourceInformationLabel = {
+      tenantId: "fixture-tenant",
+      principals: [] as string[],
+      compartments: [] as string[],
+      exportClass: "public" as const,
+      mergePolicy: "isolated" as const
+    };
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
       buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      informationAccess,
+      sourceInformationLabel,
       connectors: {
         async search(query, limit) {
           calls.push(`search:${query}:${limit}`);
@@ -1287,6 +1308,10 @@ function storageFixture(input: {
   const metrics = { graphReads: 0, languageMemoryReads: 0 };
   const currentGraph = () => input.graph ?? graphSlice(input.evidence);
   const storage = {
+    // Real pass-through, not a no-op stub: the connector-ingestion test
+    // exercises the actual ingestion pipeline (ingestion-runtime.ts), which
+    // wraps each file in deps.storage.transaction(...) unconditionally.
+    transaction: async <T>(operation: () => Promise<T>): Promise<T> => operation(),
     events: {
       append: async (event: ScceEvent) => { events.push(event); },
       appendBatch: async (rows: ScceEvent[]) => { events.push(...rows); },
