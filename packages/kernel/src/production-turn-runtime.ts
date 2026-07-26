@@ -1018,8 +1018,16 @@ export function createProductionTurnRuntime(options: {
         });
       }
       const candidateLanguageStarted = Date.now();
+      // Unlike the other language-memory reads above, this one was never
+      // gated on disableLanguageMemory -- under the no_language_memory
+      // evaluation condition it still queried listLanguagePatterns (via
+      // surfaceLanguageProfilesCached), a real storage read the condition
+      // is supposed to eliminate entirely.
+      const evidenceSurfaceClusters = deps.evaluationCondition?.flags.disableLanguageMemory
+        ? []
+        : (await surfaceLanguageProfilesCached(fastRuntimeBudget)).clusters;
       const evidenceSurfaceCluster = selectLanguageProfileClusterForSourceVersions(
-        (await surfaceLanguageProfilesCached(fastRuntimeBudget)).clusters,
+        evidenceSurfaceClusters,
         selectedEvidence.map(span => span.sourceVersionId)
       );
       const preferredSurfaceCorpusRole = requestedAuthority === "creative"
