@@ -139,6 +139,14 @@ PostgreSQL schema version 12 is current. Brain lifecycle states are `CREATED`,
 enforces at most one ACTIVE lifecycle row, and the v12 migration deterministically
 repairs older duplicate-ACTIVE state before installing that constraint.
 
+Turn-local retrieval uses one shared compiled memory slice after the durable graph
+retriever has opened an admissible neighborhood. Term and sparse-feature postings,
+direct record maps, precomputed vectors, and bounded alpha-prior candidates prevent
+the semantic and role retrieval passes from rebuilding and rescoring that entire
+neighborhood independently. This is not yet the final nation-scale storage design:
+the durable quotient router and memory-mapped detail shard compiler remain specified
+in `BRAIN_COMPILER_AND_STORAGE.md`.
+
 ## Workspace Mutation Boundary
 
 The kernel defines exact-byte workspace revision snapshots and content-addressed

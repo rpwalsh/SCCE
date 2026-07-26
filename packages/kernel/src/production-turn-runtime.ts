@@ -692,18 +692,30 @@ export function createProductionTurnRuntime(options: {
       if (sourceAnchorAudit.required) graph = graphFilteredToEvidence(graph, sourceAnchorAudit.evidence);
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
       const semanticRetrievalStarted = Date.now();
+      const compiledMemorySlice = semanticMemory.buildSlice({
+        evidence: admissibleEvidence,
+        nodes: graph.nodes
+      });
       const semanticRetrieval = evaluationComponent(
         "learned-semantics",
         "retrieval.learned-semantics",
         () => ({
           retrieval: semanticMemory.search({
             query: { text: input.text, features: retrievalFeatures, limit: 80 },
-            slice: semanticMemory.buildSlice({ evidence: admissibleEvidence, nodes: graph.nodes }),
+            slice: compiledMemorySlice,
             corpusRows: { evidenceRows: Math.max(1, admissibleEvidence.length), nodeRows: Math.max(1, graph.nodes.length), edgeRows: Math.max(1, graph.edges.length) },
             calibrationModels,
             calibrationTaskClass
           }),
-          roleRetrieval: hybridRecall({ query: input.text, evidence: admissibleEvidence, graph, hasher, limit: 80, calibrationModels, calibrationTaskClass })
+          roleRetrieval: hybridRecall({
+            query: input.text,
+            index: compiledMemorySlice.corpusIndex,
+            graph,
+            hasher,
+            limit: 80,
+            calibrationModels,
+            calibrationTaskClass
+          })
         }),
         () => disabledLearnedSemanticRetrieval(input.text, retrievalFeatures, hasher)
       );
