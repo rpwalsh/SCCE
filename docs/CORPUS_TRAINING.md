@@ -98,6 +98,7 @@ The primary induction engine performs a two-pass surface compile:
 5. calculate the complete bounded segmentation-DAG partition and retain deterministic k-best exact covers.
 6. compile one source-exact join program per selected population from every retained path, weighted by its segmentation posterior;
 7. publish the population mixture with exact-context, Unicode-category-shape, and learned population-level join distributions.
+8. compile mergeable relation-hypothesis statistics by independent source and retain normalized candidate posteriors for frame induction.
 
 The full sufficient statistics and baseline estimator remain in the archived induced-language model for comparison. The selected mixture is also written to `segmentation_population_models` with profile/source ownership, component statistics, estimators, assignments, candidate objectives, and fit/holdout identities. Profile-overlap lookup loads those records into the cached surface-language bundle. Join programs are currently carried in the induced model's syntax projection and recovered by language-memory hydration; a dedicated indexed store is still required if broad-brain join state exceeds that projection boundary. Direct use by every interpretation lattice consumer, forest persistence, and affected-only overlay promotion still remain. ICU lexical segmentation still proposes some higher candidates and must be replaced by source-induced candidates before universal segmentation is complete.
 
@@ -112,3 +113,5 @@ and contributes the path posterior \(P(z\mid x,c)\) to that observation. Thus nu
 New n-gram state is emitted as `scce.kneser_ney.v2` with compiled successor arrays, overflow counts, base continuations, and precomputed backoff weights. Runtime hydration rejects model records without these compiled fields; turn-time inference does not rebuild an obsolete model by scanning all grams.
 
 The same canonical path applies when a low-support turn acquires new material: source identity and typed observations must be admitted before replanning. Factual answers still require admissible evidence and graph paths; language priors shape realization but do not certify claims. The production path has no external inference provider or prompt-construction fallback.
+
+Relation-hypothesis state is candidate memory, not promoted semantics. The compiler records occurrence, source independence, left/right substitution, context-pair diversity, Unicode-shape support, and evidence IDs. Frame observations are distributed by posterior mass. Later promotion still requires the structured-source candidates, held-out description-length gain, independent-source and shuffled/duplicate/random controls specified by items 10–11.

@@ -118,7 +118,10 @@ function patternsForProfile(input: {
         counts: Object.fromEntries(topCounts(input.model.syntaxTemplates.map(template => template.shape.join(" ")), 128))
       });
   }
-  if (input.model.semanticFrames.length || input.model.graphBoundConstructions.length || input.model.lexicalClasses.length) {
+  if (input.model.semanticFrames.length
+    || input.model.graphBoundConstructions.length
+    || input.model.lexicalClasses.length
+    || input.model.relationHypothesisModel.observationCount > 0) {
     add("semantic_role", "scce.induced_language_model.semantic_memory.v1",
       Math.log2(1 + input.model.semanticFrames.length + input.model.graphBoundConstructions.length + input.model.lexicalClasses.length) / 11,
       input.model.semanticFrames.map(frame => frame.support),
@@ -126,6 +129,7 @@ function patternsForProfile(input: {
         semanticFrames: input.model.semanticFrames.slice(0, 256) as unknown as JsonValue,
         graphBoundConstructions: input.model.graphBoundConstructions.slice(0, 256) as unknown as JsonValue,
         lexicalClasses: input.model.lexicalClasses.slice(0, 128) as unknown as JsonValue,
+        relationHypothesisModel: input.model.relationHypothesisModel as unknown as JsonValue,
         counts: Object.fromEntries(topCounts([
           ...input.model.semanticFrames.map(frame => frame.predicate),
           ...input.model.semanticFrames.flatMap(frame => frame.roles.flatMap(role => [role.name, role.filler])),

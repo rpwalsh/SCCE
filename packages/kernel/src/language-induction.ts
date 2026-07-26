@@ -26,6 +26,11 @@ import {
   compileJoinProgramMixture,
   type JoinProgramMixture
 } from "./join-program.js";
+import {
+  compileRelationHypothesisModel,
+  inferRelationHypotheses,
+  type RelationHypothesisModel
+} from "./relation-hypothesis.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -120,8 +125,14 @@ export interface SemanticFrameCandidate {
   roles: Array<{ name: string; filler: string; count: number; salience: number }>;
   support: number;
   alphaPrior: number;
-  /** Real, corpus-computed combinatorial-diversity score (see `computeGlobalContextDiversity`) that also drove predicate selection -- not a post-hoc label on an unrelated heuristic. */
+  /** Mean normalized posterior mass retained for this candidate. */
   predicateConfidence: number;
+  predicatePosteriorMass: number;
+  predicateAlternatives: Array<{
+    surface: string;
+    posterior: number;
+    energy: number;
+  }>;
   examples: string[];
   evidenceIds: EvidenceId[];
 }
@@ -171,6 +182,7 @@ export interface InducedLanguageModel {
   boundaryEstimator: BoundaryEstimatorModel;
   segmentationPopulations: SegmentationPopulationModel;
   joinProgram: JoinProgramMixture;
+  relationHypothesisModel: RelationHypothesisModel;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
   syntaxTemplates: SyntaxTemplate[];
@@ -266,6 +278,17 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       );
       const symbolStrings = symbols.map(item => item.symbol);
       const lexicalStrings = lattices.flatMap(({ lattice }) => lexicalSurfaceSequence(lattice));
+      const relationObservations = documents.flatMap(doc =>
+        sentenceSegments(doc.text, hasher).map((sentence, sentenceIndex) => ({
+          sourceId: doc.id,
+          symbols: lexicalSurfaceSymbols(sentence, `${doc.id}.relation.${sentenceIndex}`, hasher)
+            .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char))),
+          evidenceIds: doc.evidenceIds
+        })));
+      const relationHypothesisModel = compileRelationHypothesisModel({
+        observations: relationObservations,
+        hasher
+      });
       const order = clampOrder(input.order ?? 6);
       const counts = countNgrams(symbolStrings, order, vocabularyLimit);
       const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
@@ -276,7 +299,12 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
       const lexicalClasses = induceLexicalClasses(documents, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
-      const semanticFrames = induceSemanticFrames(documents, hasher, input.maxFrames ?? 2048);
+      const semanticFrames = induceSemanticFrames(
+        documents,
+        relationHypothesisModel,
+        hasher,
+        input.maxFrames ?? 2048
+      );
       const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
       const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
@@ -286,7 +314,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         order,
         boundaryEstimatorId: boundaryEstimator.id,
         segmentationPopulationModelId: segmentationPopulations.id,
-        joinProgramId: joinProgram.id
+        joinProgramId: joinProgram.id,
+        relationHypothesisModelId: relationHypothesisModel.id
       })).slice(0, 32)}`;
       return {
         id,
@@ -300,6 +329,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         boundaryEstimator,
         segmentationPopulations,
         joinProgram,
+        relationHypothesisModel,
         boundarySignals,
         morphology,
         syntaxTemplates,
@@ -326,6 +356,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
           joinProgramId: joinProgram.id,
           joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
+          relationHypothesisModelId: relationHypothesisModel.id,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)
         })
@@ -798,33 +829,73 @@ function induceMorphologyClassBindings(
   return bindings.sort((a, b) => b.confidence - a.confidence || b.stemOverlap - a.stemOverlap || a.id.localeCompare(b.id));
 }
 
-function induceSemanticFrames(documents: readonly LanguageInductionDocument[], hasher: Hasher, maxFrames: number): SemanticFrameCandidate[] {
-  // Real corpus-wide signal, computed once, used as an actual selection
-  // criterion below (not a post-hoc label on an unchanged heuristic): a
-  // word that recombines with many distinct immediate left/right neighbors
-  // across the corpus behaves like a real predicate (free combination with
-  // varying arguments); a word locked into the same one or two immediate
-  // contexts every time behaves like a fixed collocation, a modifier, or an
-  // argument filler -- not a predicate.
-  const combinatorialDiversity = computeGlobalContextDiversity(documents, hasher);
-  const frames = new Map<string, { predicate: string; left: Map<string, number>; right: Map<string, number>; examples: string[]; evidenceIds: Set<EvidenceId>; alpha: number }>();
+function induceSemanticFrames(
+  documents: readonly LanguageInductionDocument[],
+  relationModel: RelationHypothesisModel,
+  hasher: Hasher,
+  maxFrames: number
+): SemanticFrameCandidate[] {
+  const frames = new Map<string, {
+    predicate: string;
+    left: Map<string, number>;
+    right: Map<string, number>;
+    examples: string[];
+    evidenceIds: Set<EvidenceId>;
+    alpha: number;
+    posteriorMass: number;
+    hypothesisCount: number;
+    alternatives: Map<string, { posteriorMass: number; energyMass: number }>;
+  }>();
   for (const doc of documents) {
     const trust = clamp01(doc.trust ?? 0.5);
     for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
       const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.frame.${sentenceIndex}`, hasher)
         .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
       if (symbols.length < 2) continue;
-      const predicate = selectFramePredicate(symbols, combinatorialDiversity);
-      const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
-      const right = symbols.slice(predicate.index + 1, Math.min(symbols.length, predicate.index + 7));
-      const key = predicate.symbol;
-      const bucket = frames.get(key) ?? { predicate: key, left: new Map<string, number>(), right: new Map<string, number>(), examples: [] as string[], evidenceIds: new Set<EvidenceId>(), alpha: 0 };
-      for (const symbol of left) bucket.left.set(symbol, (bucket.left.get(symbol) ?? 0) + 1);
-      for (const symbol of right) bucket.right.set(symbol, (bucket.right.get(symbol) ?? 0) + 1);
-      if (bucket.examples.length < 12) bucket.examples.push(sentence);
-      for (const id of doc.evidenceIds ?? []) bucket.evidenceIds.add(id);
-      bucket.alpha += trust;
-      frames.set(key, bucket);
+      const hypotheses = inferRelationHypotheses({
+        symbols,
+        model: relationModel,
+        candidate: symbol => [...symbol].some(char => /\p{Letter}|\p{Symbol}/u.test(char))
+      });
+      for (const predicate of hypotheses) {
+        const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
+        const right = symbols.slice(predicate.index + 1, Math.min(symbols.length, predicate.index + 7));
+        const key = predicate.surface;
+        const bucket = frames.get(key) ?? {
+          predicate: key,
+          left: new Map<string, number>(),
+          right: new Map<string, number>(),
+          examples: [],
+          evidenceIds: new Set<EvidenceId>(),
+          alpha: 0,
+          posteriorMass: 0,
+          hypothesisCount: 0,
+          alternatives: new Map<string, { posteriorMass: number; energyMass: number }>()
+        };
+        for (const symbol of left) {
+          bucket.left.set(symbol, (bucket.left.get(symbol) ?? 0) + predicate.posterior);
+        }
+        for (const symbol of right) {
+          bucket.right.set(symbol, (bucket.right.get(symbol) ?? 0) + predicate.posterior);
+        }
+        if (bucket.examples.length < 12 && !bucket.examples.includes(sentence)) {
+          bucket.examples.push(sentence);
+        }
+        for (const id of doc.evidenceIds ?? []) bucket.evidenceIds.add(id);
+        bucket.alpha += trust * predicate.posterior;
+        bucket.posteriorMass += predicate.posterior;
+        bucket.hypothesisCount += 1;
+        for (const alternative of hypotheses) {
+          const row = bucket.alternatives.get(alternative.surface) ?? {
+            posteriorMass: 0,
+            energyMass: 0
+          };
+          row.posteriorMass += alternative.posterior * predicate.posterior;
+          row.energyMass += alternative.energy * predicate.posterior;
+          bucket.alternatives.set(alternative.surface, row);
+        }
+        frames.set(key, bucket);
+      }
     }
   }
   return [...frames.values()]
@@ -839,7 +910,19 @@ function induceSemanticFrames(documents: readonly LanguageInductionDocument[], h
         roles,
         support,
         alphaPrior: clamp01(frame.alpha / Math.max(1, frame.examples.length)),
-        predicateConfidence: combinatorialDiversity.get(frame.predicate) ?? 0,
+        predicateConfidence: clamp01(frame.posteriorMass / Math.max(1, frame.hypothesisCount)),
+        predicatePosteriorMass: frame.posteriorMass,
+        predicateAlternatives: [...frame.alternatives.entries()]
+          .map(([surface, row]) => ({
+            surface,
+            posterior: row.posteriorMass / Math.max(Number.EPSILON, frame.posteriorMass),
+            energy: row.energyMass / Math.max(Number.EPSILON, frame.posteriorMass)
+          }))
+          .sort((left, right) =>
+            right.posterior - left.posterior
+            || left.energy - right.energy
+            || left.surface.localeCompare(right.surface))
+          .slice(0, 16),
         examples: frame.examples,
         evidenceIds: [...frame.evidenceIds]
       };
@@ -1041,83 +1124,6 @@ function proseDiagnostic(
     orderMass: [...orderMass.entries()].sort((a, b) => a[0] - b[0]).map(([order, count]) => ({ order, count })),
     density: symbols.length ? Object.keys(model.counts).length / symbols.length : 0
   });
-}
-
-/**
- * Real distributional selection, not a positional/shape guess alone:
- * `combinatorialDiversity` (how many distinct immediate left/right contexts
- * this exact symbol type was observed in across the whole corpus, computed
- * once by `computeGlobalContextDiversity`) is now the single largest
- * weighted term, because it is the one real linguistic signal here --
- * predicates combine freely with varying arguments; fixed collocations,
- * modifiers, and most argument fillers recur in the same one or two
- * contexts. Length/center/rarity/symbol-shape remain as real but weaker
- * tie-breaking signals, not the dominant criterion they were before.
- */
-function selectFramePredicate(symbols: readonly string[], combinatorialDiversity: ReadonlyMap<string, number>): { symbol: string; index: number } {
-  let best = { symbol: symbols[0] ?? "unit", index: 0, score: -Infinity };
-  const counts = frequency(symbols);
-  for (let i = 0; i < symbols.length; i++) {
-    const symbol = symbols[i]!;
-    const center = 1 - Math.abs(i - (symbols.length - 1) / 2) / Math.max(1, symbols.length);
-    const rarity = 1 / Math.max(1, counts.get(symbol) ?? 1);
-    const shape = symbolShape(symbol);
-    const symbolic = shape.includes("symbol") ? 0.2 : 0;
-    const diversity = combinatorialDiversity.get(symbol) ?? 0;
-    // Additive, not a reallocation of the pre-existing weights: length and
-    // center position are real, if imperfect, signals in their own right
-    // (long, centrally-placed words are content words more often than not
-    // across many languages, not merely an English artifact) and stay at
-    // their original weight. Combinatorial diversity is a genuinely
-    // independent, corpus-grounded signal layered on top, not a wholesale
-    // replacement -- keeping both improves over either alone.
-    const score = Math.min(1, symbol.length / 16) * 0.36 + center * 0.34 + rarity * 0.2 + symbolic + diversity * 0.30;
-    if (score > best.score) best = { symbol, index: i, score };
-  }
-  return { symbol: best.symbol, index: best.index };
-}
-
-/**
- * Corpus-wide combinatorial diversity per symbol type: distinct immediate
- * `(left, right)` neighbor pairs observed, normalized by occurrence count,
- * requiring at least 3 real occurrences before reporting anything above
- * zero (avoids treating a single-occurrence word as maximally "diverse" by
- * accident). This is the real signal `selectFramePredicate` uses -- computed
- * once per `induceSemanticFrames` call, over the same canonical lattice
- * lexical stream frame induction already uses.
- */
-function computeGlobalContextDiversity(documents: readonly LanguageInductionDocument[], hasher: Hasher): Map<string, number> {
-  const occurrences = new Map<string, number>();
-  const contexts = new Map<string, Set<string>>();
-  for (const doc of documents) {
-    for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
-      const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.diversity.${sentenceIndex}`, hasher)
-        .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
-      for (let i = 0; i < symbols.length; i++) {
-        const symbol = symbols[i]!;
-        const left = symbols[i - 1] ?? "<s>";
-        const right = symbols[i + 1] ?? "</s>";
-        occurrences.set(symbol, (occurrences.get(symbol) ?? 0) + 1);
-        const set = contexts.get(symbol) ?? new Set<string>();
-        set.add(`${left}\u0001${right}`);
-        contexts.set(symbol, set);
-      }
-    }
-  }
-  const diversity = new Map<string, number>();
-  for (const [symbol, count] of occurrences) {
-    // Laplace-smoothed ratio (+2), not a raw distinctContexts/count ratio: an
-    // unsmoothed ratio rewards a word for being *rare* (a word seen twice in
-    // two different contexts scores a perfect 1.0, higher than a genuinely
-    // promiscuous word seen often with only modest repetition) -- confirmed
-    // by a real regression this caused (a controlled test corpus where a
-    // 4-occurrence noun outscored an 8-occurrence verb under the unsmoothed
-    // version). Smoothing requires real repeated evidence before rewarding
-    // diversity, and count < 2 is reported as zero rather than a lone
-    // coincidental context inflating the score.
-    diversity.set(symbol, count < 2 ? 0 : clamp01((contexts.get(symbol)?.size ?? 0) / (count + 2)));
-  }
-  return diversity;
 }
 
 function sentenceSegments(text: string, hasher: Hasher): string[] {

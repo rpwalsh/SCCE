@@ -1,4 +1,5 @@
 import type { EvidenceId, JsonValue, NodeId } from "./types.js";
+import type { RelationHypothesis } from "./relation-hypothesis.js";
 
 export type SemanticAtomPolarity = 1 | -1;
 export type SemanticProofVerdict = string;
@@ -44,6 +45,7 @@ export interface SemanticConstraint {
 export interface SemanticAtom {
   id: string;
   predicate: string;
+  predicateHypotheses?: RelationHypothesis[];
   predicateFeatures: string[];
   roles: SemanticRoleBinding[];
   constraints: SemanticConstraint[];

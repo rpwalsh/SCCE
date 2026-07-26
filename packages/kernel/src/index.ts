@@ -144,6 +144,7 @@ export * from "./workspace-transformation-family-selector.js";
 export * from "./construct-substrate.js";
 export * from "./tool-cognition.js";
 export * from "./language-induction.js";
+export * from "./relation-hypothesis.js";
 export * from "./alpha-field-persistence.js";
 export * from "./ingestion-lanes.js";
 export * from "./typed-ingest.js";

@@ -65,6 +65,14 @@ function fakeModel(id: string): InducedLanguageModel {
       populationModelId: "segmentation_population.fixture",
       components: []
     },
+    relationHypothesisModel: {
+      schema: "scce.relation_hypothesis_model.v1",
+      id: "relation_hypothesis_model.fixture",
+      observationCount: 0,
+      sourceCount: 0,
+      statistics: {},
+      audit: {}
+    },
     boundarySignals: [],
     morphology: [],
     syntaxTemplates: [],
