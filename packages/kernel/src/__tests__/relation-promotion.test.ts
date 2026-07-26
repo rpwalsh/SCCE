@@ -16,9 +16,9 @@ describe("held-out relation promotion", () => {
     const candidates = separableCandidates(80);
     const model = compileRelationPromotionModel({ candidates });
 
-    expect(model.schema).toBe("scce.relation_promotion_model.v1");
-    expect(model.fitSourceIds.length).toBeGreaterThan(0);
-    expect(model.holdoutSourceIds.length).toBeGreaterThan(0);
+    expect(model.schema).toBe("scce.relation_promotion_model.v2");
+    expect(model.fitSourceFamilyIds.length).toBeGreaterThan(0);
+    expect(model.holdoutSourceFamilyIds.length).toBeGreaterThan(0);
     expect(model.decisions).toHaveLength(2);
     expect(model.decisions.every(decision =>
       decision.promoted
@@ -39,6 +39,45 @@ describe("held-out relation promotion", () => {
     expect(model.decisions.every(decision => !decision.promoted)).toBe(true);
     expect(model.decisions.every(decision =>
       decision.reasons.includes("insufficient_independent_sources"))).toBe(true);
+  });
+
+  it("does not count mirrored source IDs in one dependency family as independent", () => {
+    const candidates = separableCandidates(80).map((candidate, index) => ({
+      ...candidate,
+      sourceId: `mirror.${index}` as SourceId,
+      provenance: {
+        ...candidate.provenance,
+        sourceIndependence: {
+          independentSourceCount: 1,
+          dependencyGroupIds: ["dependency.family.mirror"],
+          estimate: 1
+        }
+      }
+    }));
+    const model = compileRelationPromotionModel({ candidates });
+
+    expect(model.decisions.every(decision => !decision.promoted)).toBe(true);
+    expect(model.decisions.every(decision =>
+      decision.independentSourceCount === 1
+      && decision.reasons.includes("insufficient_independent_sources"))).toBe(true);
+  });
+
+  it("keeps unpromoted proposals out of the ordinary graph", () => {
+    const candidates = separableCandidates(2);
+    const hasher = createHasher();
+    const ids = createIdFactory({
+      clock: createClock({ fixedTime: 1 }),
+      hasher,
+      namespace: "relation-proposal-isolation"
+    });
+    const graph = graphFromStructuredSemanticCandidates({
+      candidates,
+      observedAt: 1,
+      ids,
+      hasher
+    });
+
+    expect(graph).toEqual({ nodes: [], edges: [], hyperedges: [] });
   });
 
   it("keeps shuffled and random-repetition controls below the promotion boundary", () => {
@@ -166,9 +205,10 @@ function separableCandidates(count: number): StructuredSemanticCandidate[] {
       ? ["anchor_surface", "target_ref"]
       : ["date_surface", "time_context"];
     return {
-      schema: "scce.structured_semantic_candidate.v1",
+      schema: "scce.semantic_candidate.v2",
       id: `candidate.${index}`,
       kind,
+      channel: "source_declared_structured",
       relationSeedId,
       sourceId: `source.${index}` as SourceId,
       sourceVersionId: `version.${index}` as SourceVersionId,
@@ -182,7 +222,23 @@ function separableCandidates(count: number): StructuredSemanticCandidate[] {
       evidenceIds: [`evidence.${index}` as EvidenceId],
       temporalCoordinates: canonicalTemporalCoordinates({ observedTime: index }),
       support: 1,
-      provenance: {}
+      provenance: {
+        exactEvidenceIds: [`evidence.${index}` as EvidenceId],
+        extractionChannel: "source_declared_structured",
+        anchors: [],
+        assumptions: [],
+        transformations: [],
+        alternativeInterpretations: [],
+        sourceIndependence: {
+          independentSourceCount: 1,
+          dependencyGroupIds: [`source.${index}`],
+          estimate: 1
+        },
+        producer: { modelId: "fixture", snapshotId: "fixture.snapshot" },
+        admissionState: "proposed",
+        normalizationContractId: "fixture.normalization",
+        participantIdentityIds: []
+      }
     };
   });
 }

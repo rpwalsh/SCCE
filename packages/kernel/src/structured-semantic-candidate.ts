@@ -14,7 +14,19 @@ import {
   type StructuredTemporalAuthority
 } from "./canonical-temporal.js";
 
-export const STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA = "scce.structured_semantic_candidate.v1" as const;
+export const STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA = "scce.semantic_candidate.v2" as const;
+
+export type SemanticCandidateChannel =
+  | "source_declared_structured"
+  | "anchor_derived"
+  | "cross_document_induced"
+  | "weak_free_surface";
+
+export type SemanticCandidateAdmissionState =
+  | "proposed"
+  | "quarantined"
+  | "promoted"
+  | "rejected";
 
 export type StructuredSemanticCandidateKind =
   | "link"
@@ -27,12 +39,37 @@ export type StructuredSemanticCandidateKind =
   | "repeated_reference"
   | "code_structure"
   | "repository_structure"
-  | "interaction_outcome";
+  | "interaction_outcome"
+  | "state_marker"
+  | "source_event"
+  | "opaque_induced_relation";
+
+export interface SemanticCandidateProvenance {
+  exactEvidenceIds: EvidenceId[];
+  extractionChannel: SemanticCandidateChannel;
+  anchors: JsonValue[];
+  assumptions: JsonValue[];
+  transformations: JsonValue[];
+  alternativeInterpretations: JsonValue[];
+  sourceIndependence: {
+    independentSourceCount: number;
+    dependencyGroupIds: string[];
+    estimate: number;
+  };
+  producer: {
+    modelId: string;
+    snapshotId: string;
+  };
+  admissionState: SemanticCandidateAdmissionState;
+  normalizationContractId: string;
+  participantIdentityIds: string[];
+}
 
 export interface StructuredSemanticCandidate {
   schema: typeof STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA;
   id: string;
   kind: StructuredSemanticCandidateKind;
+  channel: SemanticCandidateChannel;
   relationSeedId: string;
   sourceId: SourceId;
   sourceVersionId: SourceVersionId;
@@ -46,7 +83,7 @@ export interface StructuredSemanticCandidate {
   evidenceIds: EvidenceId[];
   temporalCoordinates: CanonicalTemporalCoordinates;
   support: number;
-  provenance: JsonValue;
+  provenance: SemanticCandidateProvenance;
 }
 
 export function structuredSemanticCandidates(input: {
@@ -56,6 +93,9 @@ export function structuredSemanticCandidates(input: {
   observations: readonly Observation[];
   evidenceIds: readonly EvidenceId[];
   observedAt: number;
+  producerModelId?: string;
+  producerSnapshotId?: string;
+  sourceDependencyGroupIds?: readonly string[];
   normalizationContract?: NormalizationContract;
   hasher?: Hasher;
 }): StructuredSemanticCandidate[] {
@@ -68,15 +108,51 @@ export function structuredSemanticCandidates(input: {
     participants: Array<{ value: JsonValue; valueKind: string }>,
     evidenceIds: readonly EvidenceId[],
     support: number,
-    qualifiers: JsonValue = {}
+    qualifiers: JsonValue = {},
+    channel: SemanticCandidateChannel = channelForKind(kind),
+    provenanceInput: {
+      anchors?: JsonValue[];
+      assumptions?: JsonValue[];
+      transformations?: JsonValue[];
+      alternativeInterpretations?: JsonValue[];
+    } = {}
   ) => {
-    if (!participants.length) return;
+    if (participants.length === 0 && kind !== "state_marker" && kind !== "source_event") {
+      return;
+    }
+    const occurrenceMaterialHash = hasher.digestHex(JSON.stringify([
+      input.sourceVersionId,
+      [...new Set(evidenceIds)].map(String).sort(),
+      channel,
+      channel === "source_declared_structured" || channel === "anchor_derived"
+        ? kind
+        : "opaque",
+      participants.map(participant => [jsonType(participant.value), participant.value]),
+      qualifiers
+    ]));
+    const relationSeedId = relationSeedFor({
+      kind,
+      channel,
+      participants,
+      qualifiers,
+      hasher
+    });
     const canonical = {
       kind,
+      channel,
       sourceId: input.sourceId,
       sourceVersionId: input.sourceVersionId,
       participants: participants.map((participant, index) => ({
-        portId: `port.${hasher.digestHex(`${kind}:${index}`).slice(0, 16)}`,
+        portId: portOccurrenceId({
+          sourceVersionId: input.sourceVersionId,
+          evidenceIds,
+          channel,
+          kind,
+          participant,
+          index,
+          occurrenceMaterialHash,
+          hasher
+        }),
         ...participant,
         realization: participant.value === null ? "omitted" as const : "observed" as const
       })),
@@ -99,9 +175,9 @@ export function structuredSemanticCandidates(input: {
         hasher
       }));
     const id = createCanonicalIdentity({
-      kind: "relation_hypothesis",
-      fields: {
-        relationSeedId: `relation_seed.${hasher.digestHex(kind).slice(0, 24)}`,
+        kind: "relation_hypothesis",
+        fields: {
+        relationSeedId,
         participantIncidences: canonical.participants.map((participant, index) => ({
           portId: participant.portId,
           identityId: participantIdentityIds[index]!,
@@ -110,7 +186,7 @@ export function structuredSemanticCandidates(input: {
         })),
         qualifierHash: hasher.digestHex(JSON.stringify(qualifiers)),
         temporalHash: hasher.digestHex(JSON.stringify(canonical.temporalCoordinates)),
-        evidenceIds: [...new Set(evidenceIds)].map(String)
+        evidenceIds: [...new Set(evidenceIds)].map(String).sort()
       },
       normalizationContract,
       hasher
@@ -118,14 +194,34 @@ export function structuredSemanticCandidates(input: {
     out.set(id, {
       schema: STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA,
       id,
-      relationSeedId: `relation_seed.${hasher.digestHex(kind).slice(0, 24)}`,
+      relationSeedId,
       ...canonical,
-      provenance: toJsonValue({
-        source: "typed_source_structure",
-        observationFirst: true,
+      provenance: {
+        exactEvidenceIds: [...new Set(evidenceIds)].sort(),
+        extractionChannel: channel,
+        anchors: [...(provenanceInput.anchors ?? [])],
+        assumptions: [...(provenanceInput.assumptions ?? [])],
+        transformations: [...(provenanceInput.transformations ?? [])],
+        alternativeInterpretations: [...(provenanceInput.alternativeInterpretations ?? [])],
+        sourceIndependence: {
+          independentSourceCount: 1,
+          dependencyGroupIds: [...new Set(
+            input.sourceDependencyGroupIds?.map(String) ?? [String(input.sourceId)]
+          )].sort(),
+          estimate: 1
+        },
+        producer: {
+          modelId: input.producerModelId ?? "kernel.semantic_candidate.channel_compiler.v2",
+          snapshotId: input.producerSnapshotId
+            ?? `candidate_snapshot.${hasher.digestHex(JSON.stringify([
+              input.sourceVersionId,
+              normalizationContract.id
+            ])).slice(0, 32)}`
+        },
+        admissionState: "proposed",
         normalizationContractId: normalizationContract.id,
         participantIdentityIds
-      })
+      }
     });
   };
 
@@ -194,6 +290,70 @@ export function structuredSemanticCandidates(input: {
   const metadata = record(input.metadata);
   const structure = record(metadata.structure);
   const typed = record(metadata.typedExtraction);
+  for (const marker of records(metadata.stateMarkers)) {
+    const declaredMarker = marker.marker ?? marker.state ?? marker.id;
+    if (declaredMarker === undefined || declaredMarker === null || declaredMarker === "") continue;
+    add(
+      "state_marker",
+      [],
+      input.evidenceIds,
+      numericSupport(marker.support, 0.8),
+      toJsonValue({
+        marker: declaredMarker,
+        sourceScope: marker.scope ?? "document"
+      }),
+      "source_declared_structured",
+      { anchors: [toJsonValue(marker)] }
+    );
+  }
+  for (const event of records(metadata.sourceEvents)) {
+    const declaredEvent = event.event ?? event.kind ?? event.id;
+    if (declaredEvent === undefined || declaredEvent === null || declaredEvent === "") continue;
+    add(
+      "source_event",
+      [],
+      input.evidenceIds,
+      numericSupport(event.support, 0.8),
+      toJsonValue({
+        event: declaredEvent,
+        sourceScope: event.scope ?? "source"
+      }),
+      "source_declared_structured",
+      { anchors: [toJsonValue(event)] }
+    );
+  }
+  for (const relation of records(metadata.crossDocumentRelations)) {
+    add(
+      "opaque_induced_relation",
+      opaqueParticipants(relation.participants),
+      input.evidenceIds,
+      numericSupport(relation.support, 0.5),
+      toJsonValue({ observableStructure: relation.structure ?? null }),
+      "cross_document_induced",
+      {
+        anchors: records(relation.anchors).map(toJsonValue),
+        assumptions: records(relation.assumptions).map(toJsonValue),
+        transformations: records(relation.transformations).map(toJsonValue),
+        alternativeInterpretations: records(relation.alternatives).map(toJsonValue)
+      }
+    );
+  }
+  for (const relation of records(metadata.weakFreeSurfaceRelations)) {
+    add(
+      "opaque_induced_relation",
+      opaqueParticipants(relation.participants),
+      input.evidenceIds,
+      numericSupport(relation.support, 0.25),
+      toJsonValue({ observableStructure: relation.structure ?? null }),
+      "weak_free_surface",
+      {
+        anchors: records(relation.anchors).map(toJsonValue),
+        assumptions: records(relation.assumptions).map(toJsonValue),
+        transformations: records(relation.transformations).map(toJsonValue),
+        alternativeInterpretations: records(relation.alternatives).map(toJsonValue)
+      }
+    );
+  }
   const links = [
     ...records(metadata.links),
     ...records(structure.links),
@@ -252,6 +412,21 @@ export function structuredSemanticCandidates(input: {
   }
   return [...out.values()].sort((left, right) =>
     right.support - left.support || left.id.localeCompare(right.id));
+}
+
+export function semanticCandidatesByChannel(
+  input: Parameters<typeof structuredSemanticCandidates>[0]
+): Record<SemanticCandidateChannel, StructuredSemanticCandidate[]> {
+  const grouped: Record<SemanticCandidateChannel, StructuredSemanticCandidate[]> = {
+    source_declared_structured: [],
+    anchor_derived: [],
+    cross_document_induced: [],
+    weak_free_surface: []
+  };
+  for (const candidate of structuredSemanticCandidates(input)) {
+    grouped[candidate.channel].push(candidate);
+  }
+  return grouped;
 }
 
 function participantIdentity(input: {
@@ -372,4 +547,89 @@ function text(value: unknown): string {
 
 function looksDate(value: string): boolean {
   return /^\p{Number}{4}[-/.]\p{Number}{1,2}[-/.]\p{Number}{1,2}(?:[T\s].*)?$/u.test(value.trim());
+}
+
+function channelForKind(kind: StructuredSemanticCandidateKind): SemanticCandidateChannel {
+  if (kind === "repeated_reference") return "cross_document_induced";
+  if (kind === "link"
+    || kind === "redirect"
+    || kind === "heading"
+    || kind === "citation") {
+    return "anchor_derived";
+  }
+  if (kind === "opaque_induced_relation") return "weak_free_surface";
+  return "source_declared_structured";
+}
+
+function portOccurrenceId(input: {
+  sourceVersionId: SourceVersionId;
+  evidenceIds: readonly EvidenceId[];
+  channel: SemanticCandidateChannel;
+  kind: StructuredSemanticCandidateKind;
+  participant: { value: JsonValue; valueKind: string };
+  index: number;
+  occurrenceMaterialHash: string;
+  hasher: Hasher;
+}): string {
+  return `port.${input.hasher.digestHex(JSON.stringify([
+    input.sourceVersionId,
+    [...new Set(input.evidenceIds)].map(String).sort(),
+    input.channel,
+    input.channel === "source_declared_structured" || input.channel === "anchor_derived"
+      ? input.kind
+      : "opaque",
+    input.index,
+    jsonType(input.participant.value),
+    input.occurrenceMaterialHash
+  ])).slice(0, 32)}`;
+}
+
+function relationSeedFor(input: {
+  kind: StructuredSemanticCandidateKind;
+  channel: SemanticCandidateChannel;
+  participants: readonly { value: JsonValue; valueKind: string }[];
+  qualifiers: JsonValue;
+  hasher: Hasher;
+}): string {
+  if (input.channel === "source_declared_structured"
+    || input.channel === "anchor_derived") {
+    return `relation_seed.declared.${input.hasher.digestHex(JSON.stringify([
+      input.channel,
+      input.kind
+    ])).slice(0, 24)}`;
+  }
+  const observableSignature = {
+    channel: input.channel,
+    arity: input.participants.length,
+    participantTypes: input.participants.map(participant => jsonType(participant.value)),
+    qualifierShape: jsonType(input.qualifiers)
+  };
+  return `relation_seed.opaque.${input.hasher.digestHex(JSON.stringify(observableSignature)).slice(0, 24)}`;
+}
+
+function opaqueParticipants(value: JsonValue | undefined): Array<{
+  value: JsonValue;
+  valueKind: string;
+}> {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => {
+    const row = record(item);
+    const participantValue = Object.hasOwn(row, "value") ? row.value! : item;
+    return {
+      value: participantValue,
+      valueKind: `observable.${jsonType(participantValue)}`
+    };
+  });
+}
+
+function jsonType(value: JsonValue): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function numericSupport(value: JsonValue | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : fallback;
 }
