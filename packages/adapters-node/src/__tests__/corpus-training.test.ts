@@ -197,6 +197,10 @@ function configFixture(corpora: ScceRuntimeConfig["runtime"]["corpora"]): ScceRu
       corpora
     },
     connectors: {},
+    security: {
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" },
+      defaultSourceInformationLabel: { tenantId: "fixture", principals: ["owner"], compartments: ["test"], exportClass: "restricted", mergePolicy: "isolated" }
+    },
     policy: {
       allowMutation: false,
       requireTwoPhaseCommit: true,

@@ -16,6 +16,7 @@ import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
+import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
@@ -511,10 +512,7 @@ export function createProductionTurnRuntime(options: {
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
       const requestedAuthority = authorityProjection.requestedAuthority;
-      // No English-specific request-frame compiler: creative narrative-event routing
-      // (invention-planner.ts's buildStructuralCreativeEventPlan) always sees this as
-      // absent and correctly returns no plan, matching the removal of its only producer.
-      const creativeRequestFrame = undefined;
+      let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
@@ -1085,6 +1083,13 @@ export function createProductionTurnRuntime(options: {
       }
       const surfaceLanguageModels = surfaceLanguage.models;
       const surfaceLanguageMemory = surfaceLanguage.state;
+      if (requestedAuthority === "creative") {
+        creativeRequestFrame = compileCreativeRequestFrameFromCompatibilityModels({
+          requestText: input.text,
+          models: surfaceLanguageMemory.creativeEventCompatibilityModels,
+          hasher
+        });
+      }
       kernelTrace({
         stage: "candidate.language.hydrate",
         label: "kernel.turn",
@@ -1096,9 +1101,26 @@ export function createProductionTurnRuntime(options: {
         },
         support: {
           requestedAuthority,
-          corpusRole: preferredSurfaceCorpusRole ?? null
+          corpusRole: preferredSurfaceCorpusRole ?? null,
+          creativeRequestFrameId: creativeRequestFrame?.id ?? null,
+          creativeRequestCompilerId: creativeRequestFrame?.compilerId ?? null,
+          creativeRequestActivations: creativeRequestFrame?.sourceActivationIds.length ?? 0
         }
       });
+      if (creativeRequestFrame) {
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "CreativeRequestFrameProjected",
+          payload: toJsonValue({
+            id: creativeRequestFrame.id,
+            compilerId: creativeRequestFrame.compilerId,
+            focusHash: hasher.digestHex(creativeRequestFrame.focus.span.text),
+            argumentCount: creativeRequestFrame.arguments.length,
+            explicitRelationId: creativeRequestFrame.explicitRelationId ?? null,
+            sourceActivationIds: creativeRequestFrame.sourceActivationIds.slice(0, 24)
+          })
+        })));
+      }
       const candidatePriorStarted = Date.now();
       const brain = await activeBrainMarker();
       events.push(await append(eventFactory.create({ episodeId, typeId: "BrainInfluenceObserved", payload: { ...brain as Record<string, JsonValue>, languageMemory: surfaceLanguageMemoryProfile(surfaceLanguageMemory, deps.evaluationCondition?.flags.disableLanguageMemory === true) } })));
