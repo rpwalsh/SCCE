@@ -234,6 +234,58 @@ describe("translation target evidence admission", () => {
     expect(plan.targetCluster).toBeUndefined();
     expect(plan.targetSelection).toBeUndefined();
   });
+
+  it("uses real induced cross-lingual seed correspondence to prefer the target frame that actually shares the source's content over an otherwise near-identical distractor", () => {
+    const target = profile("lang.seed-corroborated", "Latin");
+    // Both candidates are structurally near-identical Spanish sentences --
+    // they differ only in which number they carry. Only "48291" also occurs
+    // in the source text, so only the matching frame gets real cross-lingual
+    // corroboration; ordinary embedding/feature similarity alone has no
+    // principled way to prefer one over the other.
+    const matching = span("evidence.seed-match", "48291 aparece en el informe de ayer.", { language: target.id }, { script: "Latin" });
+    matching.sourceVersionId = target.sourceVersionId;
+    const distractor = span("evidence.seed-distractor", "99999 aparece en el informe de ayer.", { language: target.id }, { script: "Latin" });
+    distractor.sourceVersionId = target.sourceVersionId;
+
+    const plan = engine().plan({
+      text: "Invoice number 48291 needs review today.",
+      targetLanguage: target.id,
+      evidence: [matching, distractor],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    const matchingFrame = plan.targetFrames.find(frame => frame.text.includes("48291"));
+    const distractorFrame = plan.targetFrames.find(frame => frame.text.includes("99999"));
+    expect(matchingFrame).toBeDefined();
+    expect(distractorFrame).toBeDefined();
+
+    const alignment = plan.alignments.find(row => row.targetFrameId);
+    expect(alignment).toBeDefined();
+    expect(alignment!.targetFrameId).toBe(matchingFrame!.id);
+    expect(alignment!.targetFrameId).not.toBe(distractorFrame!.id);
+    expect((alignment!.audit as Record<string, JsonValue>).seedOverlap).toBeGreaterThan(0);
+  });
+
+  it("substitutes real seed-mapped terms into a bracketed gloss reference instead of leaving it purely source-language, only when a real seed clears the confidence bar", () => {
+    const target = profile("lang.gloss-seed", "Latin");
+    const evidence = span("evidence.gloss-seed", "48291 aparece en el informe meteorológico de ayer.", { language: target.id }, { script: "Latin" });
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      text: "Invoice number 48291 needs review today.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    const alignment = plan.alignments.find(row => row.targetFrameId)!;
+    expect(alignment).toBeDefined();
+    if (alignment.force === "gloss") {
+      const unit = plan.emission.units.find(row => row.sourceFrameId === alignment.sourceFrameId)!;
+      expect(unit.text).toContain("48291");
+    }
+  });
 });
 
 function engine(): ReturnType<typeof createTranslationEngine> {

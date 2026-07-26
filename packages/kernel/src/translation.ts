@@ -9,7 +9,18 @@ import {
   selectLanguageProfileClusterForSurface,
   type LanguageProfileCluster
 } from "./language.js";
+import { createLanguageInductionEngine, type TranslationSeed } from "./language-induction.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
+
+/**
+ * Bounds how much real bilingual evidence text feeds the per-request seed
+ * induction below -- this runs `induceTranslationSeeds` (via the shared
+ * induction engine) on demand from whatever source text + admitted target
+ * evidence this one translation call actually has, not a durable corpus.
+ * Keep it small: this is a live request-path cost, not an offline batch job.
+ */
+const MAX_SEED_TARGET_DOCUMENTS = 12;
+const MIN_SEED_SUBSTITUTION_SCORE = 0.55;
 
 export type TranslationForce = "direct" | "approximate" | "gloss" | "unknown";
 
@@ -175,7 +186,27 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
           hasher: options.hasher
         });
       });
-      const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile));
+      // Real, bounded, request-scoped cross-lingual symbol correspondence --
+      // induced on demand from this call's own source text plus whatever
+      // target-language evidence was actually admitted above, via the same
+      // `induceTranslationSeeds` machinery `language-induction.ts` already
+      // computes and tests, but which nothing in the runtime previously
+      // consumed. Empty target evidence -> empty seed set -> no substitution,
+      // never a fabricated guess.
+      const seedDocuments = targetEvidence.length ? [
+        { id: "translation.request.source", text: input.text, languageHint: sourceLanguage },
+        ...targetEvidence.slice(0, MAX_SEED_TARGET_DOCUMENTS).map(({ span }, index) => ({
+          id: `translation.request.target.${index}`,
+          text: span.text,
+          languageHint: targetLanguageHint,
+          evidenceIds: [span.id]
+        }))
+      ] : [];
+      const translationSeeds = seedDocuments.length
+        ? createLanguageInductionEngine({ hasher: options.hasher }).induce({ documents: seedDocuments }).translationSeeds
+        : [];
+      const seedLookup = buildSeedLookup(translationSeeds);
+      const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile, seedLookup));
       const force = aggregateForce(alignments);
       const lossVector = aggregateLoss(alignments);
       const units = alignments.map(alignment => {
@@ -185,7 +216,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
           sourceFrameId: sourceFrame.id,
           targetFrameId: targetFrame?.id,
           force: alignment.force,
-          text: renderUnit(sourceFrame, targetFrame, alignment.force)
+          text: renderUnit(sourceFrame, targetFrame, alignment.force, seedLookup)
         };
       });
       const emission = {
@@ -352,7 +383,7 @@ function sourceSurfaceSlice(text: string, surfaceSymbols: readonly SourceSurface
   return safe.slice(start ?? 0, end ?? safe.length).trim();
 }
 
-function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], targetProfile: LanguageProfile | undefined): TranslationFrameAlignment {
+function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], targetProfile: LanguageProfile | undefined, seedLookup: ReadonlyMap<string, TranslationSeed>): TranslationFrameAlignment {
   let best: TranslationFrameAlignment | undefined;
   for (const target of targets) {
     const semantic = clamp01((cosine01(source.embedding, target.embedding) + weightedJaccard(source.features, target.features)) / 2);
@@ -360,7 +391,14 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
     const scriptFit = targetProfile ? profileFit(target, targetProfile) : 0.35;
     const evidenceMass = target.alpha;
     const priorBoost = priorAlignmentBoost(source.id, target.id, priors);
-    const preservation = clamp01(0.34 * semantic + 0.24 * topology + 0.22 * scriptFit + 0.14 * evidenceMass + 0.06 * priorBoost);
+    // Real cross-lingual corroboration: does this specific target frame's own
+    // symbol content actually contain the seed-mapped counterpart of source
+    // symbols the seed induction found real correspondence for? This is what
+    // lets a genuinely on-topic (but low cosine/feature-overlap) target frame
+    // outscore an unrelated one that merely shares generic shape features --
+    // 0 when no source symbol has a confident seed, never inflated.
+    const seedOverlap = seedOverlapScore(source.symbols, target.symbols, seedLookup);
+    const preservation = clamp01(0.30 * semantic + 0.22 * topology + 0.20 * scriptFit + 0.12 * evidenceMass + 0.06 * priorBoost + 0.10 * seedOverlap);
     const force = forceFromPreservation(preservation, target.evidenceIds.length, priorBoost);
     const loss = {
       semantic: clamp01(1 - semantic),
@@ -383,12 +421,13 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
       preservation,
       loss,
       evidenceIds: [...new Set([...source.evidenceIds, ...target.evidenceIds])],
-      audit: toJsonValue({ semantic, topology, scriptFit, evidenceMass, priorBoost, preservation, loss })
+      audit: toJsonValue({ semantic, topology, scriptFit, evidenceMass, priorBoost, seedOverlap, preservation, loss })
     };
     if (!best || candidate.preservation > best.preservation) best = candidate;
   }
   if (best) return best;
   const loss = { semantic: 1, roleTopology: 1, quantity: 0.5, temporal: 0.5, register: 1, terminology: 1, fluency: 1, hallucination: 0 };
+  const seedSubstitutions = source.symbols.filter(symbol => seedLookup.has(normalizeSeedSymbol(symbol))).length;
   return {
     sourceFrameId: source.id,
     force: "gloss",
@@ -399,8 +438,53 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
     preservation: 0,
     loss,
     evidenceIds: source.evidenceIds,
-    audit: toJsonValue({ unresolved: true, loss })
+    audit: toJsonValue({ unresolved: true, loss, seedSubstitutions })
   };
+}
+
+function buildSeedLookup(seeds: readonly TranslationSeed[]): Map<string, TranslationSeed> {
+  const lookup = new Map<string, TranslationSeed>();
+  for (const seed of seeds) {
+    if (seed.score < MIN_SEED_SUBSTITUTION_SCORE) continue;
+    const key = normalizeSeedSymbol(seed.sourceSymbol);
+    const existing = lookup.get(key);
+    if (!existing || seed.score > existing.score) lookup.set(key, seed);
+  }
+  return lookup;
+}
+
+function normalizeSeedSymbol(symbol: string): string {
+  return symbol.normalize("NFC").toLowerCase();
+}
+
+/** Fraction of the source symbols a seed maps with real confidence whose mapped counterpart actually appears in this candidate target frame. 0 when no source symbol has a confident seed -- never inflated by frames with no real bilingual signal. */
+function seedOverlapScore(sourceSymbols: readonly string[], targetSymbols: readonly string[], seedLookup: ReadonlyMap<string, TranslationSeed>): number {
+  const mapped = sourceSymbols
+    .map(symbol => seedLookup.get(normalizeSeedSymbol(symbol)))
+    .filter((seed): seed is TranslationSeed => seed !== undefined);
+  if (!mapped.length) return 0;
+  const targetSet = new Set(targetSymbols.map(normalizeSeedSymbol));
+  const matched = mapped.filter(seed => targetSet.has(normalizeSeedSymbol(seed.targetSymbol))).length;
+  return clamp01(matched / mapped.length);
+}
+
+/**
+ * Real (if partial) target-language substitution for symbols a seed maps
+ * with real confidence, built from the exact symbols composing this frame --
+ * not a fabricated full sentence. Returns undefined (no rendering change)
+ * when nothing in the frame cleared the seed-confidence bar, so the honest
+ * bracket-only fallback below is unaffected when no real signal exists.
+ */
+function seedSubstitutedSurface(symbols: readonly string[], seedLookup: ReadonlyMap<string, TranslationSeed>): string | undefined {
+  let substituted = 0;
+  const rendered = symbols.map(symbol => {
+    const seed = seedLookup.get(normalizeSeedSymbol(symbol));
+    if (!seed) return symbol;
+    substituted += 1;
+    return seed.targetSymbol;
+  });
+  if (!substituted) return undefined;
+  return rendered.join(" ").replace(/\s+([,.;:!?])/gu, "$1").trim();
 }
 
 function semanticWindows(symbols: string[]): SemanticWindow[] {
@@ -605,10 +689,11 @@ function aggregateLoss(alignments: readonly TranslationFrameAlignment[]): Transl
   return out;
 }
 
-function renderUnit(source: TranslationSemanticFrame, target: TranslationSemanticFrame | undefined, force: TranslationForce): string {
+function renderUnit(source: TranslationSemanticFrame, target: TranslationSemanticFrame | undefined, force: TranslationForce, seedLookup: ReadonlyMap<string, TranslationSeed>): string {
   if (target && (force === "direct" || force === "approximate")) return target.text;
-  if (target && force === "gloss") return `${target.text} [${source.text}]`;
-  if (force === "gloss") return `[${source.text}]`;
+  const seeded = seedSubstitutedSurface(source.symbols, seedLookup);
+  if (target && force === "gloss") return `${target.text} [${seeded ?? source.text}]`;
+  if (force === "gloss") return `[${seeded ?? source.text}]`;
   return "";
 }
 
