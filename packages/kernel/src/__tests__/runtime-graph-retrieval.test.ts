@@ -392,6 +392,7 @@ function graphHyperedge(
     relationId: "relation:co-occurs" as Hyperedge["relationId"],
     participantPorts: members.map((node, index) => ({
       portId: `port.${index}`,
+      roleId: "role.fixture",
       nodeId: node.id,
       valueKind: "fixture",
       realization: "observed",

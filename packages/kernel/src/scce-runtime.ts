@@ -43,6 +43,10 @@ import {
   type RelationPromotionModel
 } from "./relation-promotion.js";
 import {
+  compileOpaqueRoleModel,
+  type OpaqueRoleModel
+} from "./opaque-role-induction.js";
+import {
   promoteWorkspaceAnalysisToCoreRecords,
   type WorkspaceCoreAnalysisInput,
   type WorkspaceCorePromotionResult,
@@ -138,6 +142,7 @@ export interface ScceRuntimeIngestResult {
   evidence: EvidenceSpan[];
   typedProjections: TypedIngestProjection[];
   relationPromotionModel: RelationPromotionModel;
+  opaqueRoleModel: OpaqueRoleModel;
   graph: { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] };
   graphLearning: RuntimeGraphLearningReport;
   classificationCounts: Record<string, number>;
@@ -451,12 +456,18 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
       hasher
     });
+    const opaqueRoleModel = compileOpaqueRoleModel({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      promotionModel: relationPromotionModel,
+      hasher
+    });
     const promotedCandidateGraph = graphFromStructuredSemanticCandidates({
       candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
       observedAt: now,
       ids: idFactory,
       hasher,
-      relationPromotionModel
+      relationPromotionModel,
+      opaqueRoleModel
     });
     graphNodes.push(...promotedCandidateGraph.nodes);
     graphEdges.push(...promotedCandidateGraph.edges);
@@ -492,6 +503,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       evidence,
       typedProjections,
       relationPromotionModel,
+      opaqueRoleModel,
       graph,
       graphLearning,
       classificationCounts: countStrings(typedProjections.flatMap(item => item.observations.map(obs => obs.kind))),
@@ -503,6 +515,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
         evidenceIds: evidence.map(item => String(item.id)),
         observationCounts: typedProjections.map(item => item.observationCounts),
         relationPromotionModelId: relationPromotionModel.id,
+        opaqueRoleModelId: opaqueRoleModel.id,
         promotedRelationSeedIds: relationPromotionModel.decisions
           .filter(decision => decision.promoted)
           .map(decision => decision.relationSeedId),

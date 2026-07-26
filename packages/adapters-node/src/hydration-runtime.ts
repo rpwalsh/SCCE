@@ -312,6 +312,7 @@ function recordForEntry(entry: Scce2ShardIndexEntry, importRunId: string): Sourc
     base.relationId = `${importRunId}:relation:${entry.id}`;
     base.participantPorts = [{
       portId: `port.${entry.id}`,
+      roleId: `role.${entry.id}`,
       nodeId,
       valueKind: "hydrated_shard_member",
       realization: "observed",
