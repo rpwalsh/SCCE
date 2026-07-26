@@ -1017,6 +1017,15 @@ export interface ScceKernelDeps {
    * dispatcher keep working without modification.
    */
   executive?: DurableExecutiveEpisode;
+  /**
+   * Durable FTRL model lifecycle store for shadow-mode retrieval reranking
+   * (Part A finding 9, stage 2). When present, `runtime-graph-retrieval.ts`
+   * computes an FTRL shadow ranking alongside BM25 for the active checkpoint
+   * of `graph.node_rank.v1` and traces the comparison -- it never changes
+   * which candidates a turn actually uses. When absent, no shadow ranking is
+   * computed; this keeps every pre-existing `ScceKernelDeps` fixture valid.
+   */
+  sparseRankingModels?: import("./sparse-ranking-lifecycle.js").SparseRankingModelStore;
 }
 
 export interface ApprovalPort {
