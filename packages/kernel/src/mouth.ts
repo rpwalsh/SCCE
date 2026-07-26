@@ -5038,16 +5038,19 @@ function preserveSurfaceExtent(text: string, maxLength?: number, plan?: SurfaceP
   const eligibleSurface = tidySurface(eligibleUnits.join(" "));
   const required = plan ? extentRequiredSurfaces(plan, eligibleSurface) : [];
   const selected: string[] = [];
+  const selectedSet = new Set<string>();
   for (const unit of eligibleUnits
     .filter(unit => required.some(term => containsSurface(unit, term)))
     .sort((left, right) => extentCoverage(right, required) - extentCoverage(left, required) || surfaceCodePointLength(left) - surfaceCodePointLength(right))) {
-    if (appendExtentUnit(selected, unit, maxLength)) continue;
+    if (appendExtentUnit(selected, unit, maxLength)) selectedSet.add(unit);
   }
   for (const unit of eligibleUnits) {
-    if (selected.includes(unit)) continue;
-    if (!selected.length || surfaceCodePointLength(selected.join(" ")) < Math.floor(maxLength * 0.72)) appendExtentUnit(selected, unit, maxLength);
+    if (selectedSet.has(unit)) continue;
+    if (!selected.length || surfaceCodePointLength(selected.join(" ")) < Math.floor(maxLength * 0.72)) {
+      if (appendExtentUnit(selected, unit, maxLength)) selectedSet.add(unit);
+    }
   }
-  const ordered = eligibleUnits.filter(unit => selected.includes(unit));
+  const ordered = eligibleUnits.filter(unit => selectedSet.has(unit));
   const candidate = tidySurface(ordered.join(" "));
   if (candidate && required.every(term => containsSurface(candidate, term) || !containsSurface(eligibleSurface, term))) return candidate;
   const anchorSurface = compactAnchorSurface(required, maxLength);
