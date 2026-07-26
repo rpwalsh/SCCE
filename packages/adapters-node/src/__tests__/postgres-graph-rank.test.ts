@@ -17,7 +17,7 @@ describe("Postgres graph-node rank contract", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.sql).toContain("FROM \"fixture\".\"graph_nodes\"");
     expect(calls[0]?.sql).toContain("ORDER BY alpha DESC, updated_at DESC, id LIMIT $1");
-    expect(calls[0]?.params).toEqual([3000]);
+    expect(calls[0]?.params).toEqual([3000, "fixture-tenant", ["public"], "fixture-principal", "[]"]);
   });
 
   it("migrates one idempotent index matching the exact fallback rank", async () => {
@@ -55,7 +55,15 @@ function fixture(): {
   adapter: PostgresStorageAdapter;
   calls: Array<{ sql: string; params: unknown[] }>;
 } {
-  const adapter = createPostgresStorageAdapter({ url: "postgres://fixture:fixture@127.0.0.1/fixture", schema: "fixture" });
+  const adapter = createPostgresStorageAdapter({
+    url: "postgres://fixture:fixture@127.0.0.1/fixture",
+    schema: "fixture",
+    // Real graph queries require an explicit multi-tenant access context
+    // (postgres.ts's requireInformationAccess throws without one); this
+    // fixture never needed it before this test started exercising
+    // getSlice() directly instead of just asserting on migration SQL.
+    informationAccess: { tenantId: "fixture-tenant", principalId: "fixture-principal", compartments: [], maximumExportClass: "public" }
+  });
   adapters.push(adapter);
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
