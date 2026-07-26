@@ -177,24 +177,63 @@ export function renderWorkbench(serverUrl: string): string {
     }
     function log(text) { terminal.textContent += "\\n$ " + text; terminal.scrollTop=terminal.scrollHeight; }
     async function postTurnStream(url, body, onFrame) {
-      const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify(body)});
-      if(!r.ok) { const t=await r.text(); throw new Error(t||('HTTP '+r.status)); }
-      if(!r.body) throw new Error('streaming response body unavailable');
-      const reader=r.body.getReader(); const decoder=new TextDecoder(); let pending=''; let result;
-      while(true) {
-        const next=await reader.read(); pending+=decoder.decode(next.value||new Uint8Array(),{stream:!next.done});
-        const lines=pending.split('\\n'); pending=lines.pop()||'';
-        for(const line of lines) {
-          if(!line.trim()) continue;
-          const frame=JSON.parse(line); onFrame(frame);
-          if(frame.type==='result') result=frame.value;
-          if(frame.type==='error') throw new Error(frame.error||JSON.stringify(frame.value)||'streaming turn failed');
+      const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify(body)});
+      return continueTurnStream(response,{reconnectUrl:'',latestSequence:0,promptText:String(body.text||'')},onFrame);
+    }
+    async function continueTurnStream(response,state,onFrame) {
+      let result;
+      while(!result) {
+        let terminalFailure=false;
+        if(!response.ok) { const text=await response.text(); throw new Error(text||('HTTP '+response.status)); }
+        if(!response.body) throw new Error('streaming response body unavailable');
+        const reader=response.body.getReader(); const decoder=new TextDecoder(); let pending='';
+        try {
+          while(true) {
+            const next=await reader.read(); pending+=decoder.decode(next.value||new Uint8Array(),{stream:!next.done});
+            const lines=pending.split('\\n'); pending=lines.pop()||'';
+            for(const line of lines) {
+              if(!line.trim()) continue;
+              const frame=JSON.parse(line); onFrame(frame);
+              if(frame.streamUrl) state.reconnectUrl=String(frame.streamUrl);
+              if(Number.isFinite(Number(frame.sequence))) state.latestSequence=Math.max(state.latestSequence,Number(frame.sequence));
+              if(frame.taskId) state.taskId=String(frame.taskId);
+              if(state.reconnectUrl) localStorage.setItem('scce.activeTurnTask',JSON.stringify(state));
+              if(frame.type==='result') result=frame.value;
+              if(frame.type==='error'||frame.type==='cancelled') { terminalFailure=true; throw new Error(frame.error||JSON.stringify(frame.value)||'streaming turn failed'); }
+            }
+            if(next.done) break;
+          }
+          if(pending.trim()) {
+            const frame=JSON.parse(pending); onFrame(frame);
+            if(frame.streamUrl) state.reconnectUrl=String(frame.streamUrl);
+            if(Number.isFinite(Number(frame.sequence))) state.latestSequence=Math.max(state.latestSequence,Number(frame.sequence));
+            if(frame.taskId) state.taskId=String(frame.taskId);
+            if(frame.type==='result') result=frame.value;
+            if(frame.type==='error'||frame.type==='cancelled') { terminalFailure=true; throw new Error(frame.error||JSON.stringify(frame.value)||'streaming turn failed'); }
+          }
+        } catch(error) {
+          if(terminalFailure||!state.reconnectUrl) throw error;
         }
-        if(next.done) break;
+        if(result) break;
+        if(!state.reconnectUrl) throw new Error('streaming turn ended without a reconnectable task receipt');
+        await new Promise(resolve=>setTimeout(resolve,500));
+        response=await fetch(state.reconnectUrl+'?after='+state.latestSequence,{headers:{'accept':'application/x-ndjson'}});
       }
-      if(pending.trim()) { const frame=JSON.parse(pending); onFrame(frame); if(frame.type==='result') result=frame.value; if(frame.type==='error') throw new Error(frame.error||JSON.stringify(frame.value)||'streaming turn failed'); }
-      if(!result) throw new Error('streaming turn ended without a result frame');
+      localStorage.removeItem('scce.activeTurnTask');
       return result;
+    }
+    async function resumeStoredTurn() {
+      const raw=localStorage.getItem('scce.activeTurnTask'); if(!raw) return;
+      let state; try { state=JSON.parse(raw); } catch { localStorage.removeItem('scce.activeTurnTask'); return; }
+      if(!state||!state.reconnectUrl) { localStorage.removeItem('scce.activeTurnTask'); return; }
+      const response=add('scce','Reconnecting to SCCE task '+String(state.taskId||'')+'…');
+      try {
+        const stream=await fetch(state.reconnectUrl+'?after='+Number(state.latestSequence||0),{headers:{'accept':'application/x-ndjson'}});
+        const result=await continueTurnStream(stream,state,frame=>{ if(frame.type==='progress') response.textContent='SCCE is working… '+String(frame.phase||''); });
+        response.textContent=turnSurface(result);
+        addFeedbackControls(result.dialogue,String(state.promptText||''));
+        inspector.textContent=JSON.stringify({ dialogue:result.dialogue, proof:result.entailment?.proof, actionGraph:result.actionGraph },null,2);
+      } catch(error) { response.textContent=t('error.prefix')+' '+error.message; }
     }
     async function post(url, body) { const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); const t=await r.text(); const j=t?JSON.parse(t):null; if(!r.ok) throw new Error(JSON.stringify(j)); return j; }
     async function get(url) { const r=await fetch(url); const t=await r.text(); const j=t?JSON.parse(t):null; if(!r.ok) throw new Error(JSON.stringify(j)); return j; }
@@ -226,6 +265,7 @@ export function renderWorkbench(serverUrl: string): string {
     document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r=await refreshApprovals(); inspector.textContent=JSON.stringify(r,null,2); } catch(e) { inspector.textContent=t('error.prefix')+' '+e.message; } };
     document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant '+e.target.checked); try { const r=await post('/api/session/operator-grant',{enabled:e.target.checked}); renderApprovals(r); inspector.textContent=JSON.stringify(r,null,2); } catch(err) { inspector.textContent=t('error.prefix')+' '+err.message; e.target.checked=!e.target.checked; } };
     refreshApprovals().catch(()=>{});
+    resumeStoredTurn().catch(()=>{});
   </script>
 </body>
 </html>`;

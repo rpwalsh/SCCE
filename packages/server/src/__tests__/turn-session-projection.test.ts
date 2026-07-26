@@ -183,10 +183,29 @@ describe("turn session metadata projection", () => {
       type: "accepted",
       initialVisibleResponseDeadlineMs: 5_000
     });
+    expect(frames[0]?.taskId).toEqual(expect.any(String));
+    expect(frames[0]?.streamUrl).toContain("/api/turn/task/");
+    expect(frames[0]?.cancelUrl).toContain("/api/turn/task/");
     expect(frames.at(-1)).toMatchObject({
       schema: "scce.turn_stream.v1",
       type: "error",
       status: 500
     });
+
+    const taskId = String(frames[0]?.taskId);
+    const taskStatus = await fetch(`http://127.0.0.1:${address.port}/api/turn/task/${encodeURIComponent(taskId)}`);
+    expect(taskStatus.status).toBe(200);
+    await expect(taskStatus.json()).resolves.toMatchObject({
+      schema: "scce.turn_task.v1",
+      taskId,
+      status: "failed"
+    });
+
+    const replay = await fetch(`http://127.0.0.1:${address.port}/api/turn/task/${encodeURIComponent(taskId)}/stream?after=1`, {
+      headers: { accept: "application/x-ndjson" }
+    });
+    const replayFrames = (await replay.text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(replayFrames.every(frame => Number(frame.sequence) > 1)).toBe(true);
+    expect(replayFrames.at(-1)).toMatchObject({ type: "error", taskId });
   });
 });
