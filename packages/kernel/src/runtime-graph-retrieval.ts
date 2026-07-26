@@ -29,7 +29,7 @@ import {
   createTypedSparseFeatureId,
   type Bm25SparseIndex
 } from "./sparse-ranking.js";
-import { computeFtrlShadowRanking, type FtrlShadowCandidate } from "./sparse-ranking-shadow.js";
+import { computeFtrlShadowRanking, type FtrlShadowCandidate, type FtrlShadowRanking } from "./sparse-ranking-shadow.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import type {
   EvidenceSpan,
@@ -1266,12 +1266,10 @@ export function createRuntimeGraphRetrieval(options: {
    * comparison for later held-out evaluation. A no-op when no
    * `sparseRankingModels` store is configured or no model is active yet.
    */
-  function scheduleFtrlShadowRanking(
+  function shadowCandidatesFromRanked(
     hot: HotGraphNeighborhood,
-    queryFeatures: readonly string[],
     ranked: Array<{ nodeId: string; score: number }>
-  ): void {
-    if (!deps.sparseRankingModels || !ranked.length) return;
+  ): FtrlShadowCandidate[] {
     const candidates: FtrlShadowCandidate[] = [];
     for (const row of ranked) {
       const node = hot.nodeById.get(row.nodeId);
@@ -1281,6 +1279,16 @@ export function createRuntimeGraphRetrieval(options: {
         .filter((span): span is EvidenceSpan => Boolean(span));
       candidates.push({ nodeId: row.nodeId, bm25Score: row.score, node, evidence });
     }
+    return candidates;
+  }
+
+  function scheduleFtrlShadowRanking(
+    hot: HotGraphNeighborhood,
+    queryFeatures: readonly string[],
+    ranked: Array<{ nodeId: string; score: number }>
+  ): void {
+    if (!deps.sparseRankingModels || !ranked.length) return;
+    const candidates = shadowCandidatesFromRanked(hot, ranked);
     if (!candidates.length) return;
     computeFtrlShadowRanking({ store: deps.sparseRankingModels, hasher, queryFeatures, candidates })
       .then(shadow => {
@@ -1295,6 +1303,31 @@ export function createRuntimeGraphRetrieval(options: {
       .catch(error => {
         failures.push(`ftrl shadow ranking failed: ${error instanceof Error ? error.message : String(error)}`);
       });
+  }
+
+  /**
+   * Turn-scoped, awaited counterpart to scheduleFtrlShadowRanking (Part A
+   * finding 9, stage 3). The fire-and-forget path above only traces
+   * aggregate stats; outcome-based learning needs the actual ranked
+   * candidates (with feature vectors) to still exist once this turn's
+   * proof/certification result is known, which can be well after the
+   * graph slice itself was resolved (or served from cache). Recomputing
+   * against the resident hot neighborhood is cheap (no I/O beyond the
+   * store's readActive) and keeps this fully decoupled from the graph
+   * slice cache, which must never carry per-turn learning state.
+   */
+  async function ftrlShadowRankingForFeatures(
+    queryFeatures: readonly string[]
+  ): Promise<{ ranking: FtrlShadowRanking; nodesById: ReadonlyMap<string, GraphNode> } | undefined> {
+    if (!deps.sparseRankingModels) return undefined;
+    const hot = await hotNeighborhoodCached();
+    if (!hot) return undefined;
+    const ranked = rankHotNeighborhoodNodes(hot, queryFeatures);
+    if (!ranked.length) return undefined;
+    const candidates = shadowCandidatesFromRanked(hot, ranked);
+    if (!candidates.length) return undefined;
+    const ranking = await computeFtrlShadowRanking({ store: deps.sparseRankingModels, hasher, queryFeatures, candidates });
+    return ranking ? { ranking, nodesById: hot.nodeById } : undefined;
   }
 
 
@@ -1582,6 +1615,7 @@ export function createRuntimeGraphRetrieval(options: {
     currentOwnerSessionEvidence,
     mergeEvidenceSpans,
     graphRetrievalFeatures,
+    ftrlShadowRankingForFeatures,
     invalidate() {
       runtimeCacheEpoch++;
       requireDurableGraphLookup = true;

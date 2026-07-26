@@ -111,6 +111,7 @@ import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { createRuntimeGraphRetrieval } from "./runtime-graph-retrieval.js";
+import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
 import type { RuntimeReplanMotion } from "./runtime-motion.js";
 import {
@@ -247,7 +248,7 @@ export function createProductionTurnRuntime(options: {
     currentOwnerSessionEvidence, evidenceFromTurnMetadata, evidenceOnlyForIds, evidenceOnlyForText,
     graphForEvidenceIds, graphForEvidenceIdsUnrouted, graphForText, graphForTextUncached,
     graphRetrievalFeatures, mergeEvidenceSpans, retrievalTextForTurn, runtimeEvidenceIdsFromMetadata,
-    sessionEvidenceFromMetadata
+    sessionEvidenceFromMetadata, ftrlShadowRankingForFeatures
   } = graphRetrieval;
   const {
     hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, sourceOwnedLanguageClusterForAlias,
@@ -655,6 +656,16 @@ export function createProductionTurnRuntime(options: {
           evidence: graphSlice.evidence.length
         }
       });
+      // Kicked off here (not awaited) so it can resolve concurrently with
+      // the rest of turn processing; only awaited later, right where this
+      // turn's proof/certification outcome becomes known (Part A finding
+      // 9, stage 3). Deliberately recomputed against the resident hot
+      // neighborhood rather than reading anything off graphSlice, which
+      // may be served from a cache shared across turns/queries and must
+      // never carry per-turn learning state.
+      const ftrlShadowRankingPromise = requestedAuthority === "creative"
+        ? Promise.resolve(undefined)
+        : ftrlShadowRankingForFeatures(graphRetrievalFeatures(retrievalText)).catch(() => undefined);
       const semanticFrameBoundEvidenceIds = new Set(graphSlice.semanticFrameBoundEvidenceIds ?? []);
       let graph = graphSlice.graph;
       const evidencePool = discourseEvidenceBound
@@ -877,6 +888,36 @@ export function createProductionTurnRuntime(options: {
         )
         : emptySupportBundle();
       const { promoted, entailmentResult, semanticProof, ccrResult, pfaceEstimate } = supportBundle;
+      if (factualProofRequired) {
+        // Fire-and-forget: outcome-based FTRL learning must never affect
+        // or delay this turn's response. proofCandidateEvidence is the
+        // full pool the entailment check chose from -- the candidate
+        // pool a pairwise label is contrasted against (Part A finding 9,
+        // stage 3).
+        const candidatePoolEvidenceIds = proofCandidateEvidence.map(span => span.id);
+        ftrlShadowRankingPromise
+          .then(shadow => shadow
+            ? updateFtrlFromTurnOutcome({
+              store: deps.sparseRankingModels,
+              shadowRanking: shadow.ranking,
+              nodesById: shadow.nodesById,
+              entailment: entailmentResult,
+              candidatePoolEvidenceIds,
+              clock
+            })
+            : undefined)
+          .then(result => {
+            if (!result) return;
+            kernelTrace({
+              stage: "retrieval.ftrl_outcome",
+              label: "kernel.turn",
+              support: { updated: result.updated, reason: result.reason }
+            });
+          })
+          .catch(error => {
+            failures.push(`ftrl outcome update failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
+      }
       const entailmentAssistantForce = assistantForceDecision({
         requestedAuthority,
         epistemicForce: entailmentResult.force,

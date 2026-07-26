@@ -6,6 +6,7 @@ import {
   type RetrievalRankFeaturesV1
 } from "./retrieval-rank-features.js";
 import { createFtrlProximalRanker } from "./sparse-ranking.js";
+import type { SparseVector } from "./sparse-ranking.js";
 import type { SparseRankingCheckpoint, SparseRankingModelStore } from "./sparse-ranking-lifecycle.js";
 import type { EvidenceSpan, GraphNode, Hasher } from "./types.js";
 
@@ -26,6 +27,14 @@ export interface FtrlShadowRankedEntry {
   bm25Rank: number;
   ftrlScore: number;
   ftrlRank: number;
+  /**
+   * The exact feature vector scored for this candidate, retained so a
+   * later outcome-based update (Part A finding 9, stage 3) can call
+   * `updatePair` without recomputing retrieval features from scratch --
+   * and, more importantly, without needing this turn's now-stale BM25/
+   * hot-neighborhood state to still be resident.
+   */
+  featureVector: SparseVector;
 }
 
 export interface FtrlShadowRanking {
@@ -121,7 +130,7 @@ function rankWithCheckpoint(
       evidence: candidate.evidence
     });
     const vector = retrievalRankFeatureVector(features, hasher);
-    return { nodeId: candidate.nodeId, bm25Rank, ftrlScore: ranker.score(vector).rawScore };
+    return { nodeId: candidate.nodeId, bm25Rank, ftrlScore: ranker.score(vector).rawScore, featureVector: vector };
   });
   const ranked = [...scored]
     .sort((left, right) => right.ftrlScore - left.ftrlScore || left.bm25Rank - right.bm25Rank)
@@ -136,7 +145,13 @@ function rankWithCheckpoint(
     candidates: bounded.length,
     ranked: bounded.map((candidate, bm25Rank) => {
       const entry = rankedByNodeId.get(candidate.nodeId);
-      return { nodeId: candidate.nodeId, bm25Rank, ftrlScore: entry?.ftrlScore ?? 0, ftrlRank: entry?.ftrlRank ?? bm25Rank };
+      return {
+        nodeId: candidate.nodeId,
+        bm25Rank,
+        ftrlScore: entry?.ftrlScore ?? 0,
+        ftrlRank: entry?.ftrlRank ?? bm25Rank,
+        featureVector: entry?.featureVector ?? scored[bm25Rank]!.featureVector
+      };
     }),
     topAgreement: topK > 0 ? agreementCount / topK : 0
   };
