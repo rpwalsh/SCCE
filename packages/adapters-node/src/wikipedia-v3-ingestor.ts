@@ -13,6 +13,7 @@ import {
   createTypedIngestProjector,
   compileRelationPromotionModel,
   compileOpaqueRoleModel,
+  compileRoleSurfaceOrderModel,
   graphFromStructuredSemanticCandidates,
   toJsonValue,
   validateBrainManifestContract,
@@ -878,6 +879,12 @@ export class WikipediaV3Ingestor {
       promotionModel: relationPromotionModel,
       hasher: this.hasher
     });
+    const roleSurfaceOrderModel = compileRoleSurfaceOrderModel({
+      candidates: semanticCandidates,
+      promotionModel: relationPromotionModel,
+      opaqueRoleModel,
+      hasher: this.hasher
+    });
     if (semanticCandidates.length) {
       const promotedGraph = graphFromStructuredSemanticCandidates({
         candidates: semanticCandidates,
@@ -906,6 +913,7 @@ export class WikipediaV3Ingestor {
           shardUri,
           modelId: relationPromotionModel.id,
           opaqueRoleModelId: opaqueRoleModel.id,
+          roleSurfaceOrderModelId: roleSurfaceOrderModel.id,
           candidateCount: semanticCandidates.length,
           decisions: relationPromotionModel.decisions.map(decision => ({
             relationSeedId: decision.relationSeedId,

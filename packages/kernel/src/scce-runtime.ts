@@ -47,6 +47,10 @@ import {
   type OpaqueRoleModel
 } from "./opaque-role-induction.js";
 import {
+  compileRoleSurfaceOrderModel,
+  type RoleSurfaceOrderModel
+} from "./role-surface-order.js";
+import {
   promoteWorkspaceAnalysisToCoreRecords,
   type WorkspaceCoreAnalysisInput,
   type WorkspaceCorePromotionResult,
@@ -143,6 +147,7 @@ export interface ScceRuntimeIngestResult {
   typedProjections: TypedIngestProjection[];
   relationPromotionModel: RelationPromotionModel;
   opaqueRoleModel: OpaqueRoleModel;
+  roleSurfaceOrderModel: RoleSurfaceOrderModel;
   graph: { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] };
   graphLearning: RuntimeGraphLearningReport;
   classificationCounts: Record<string, number>;
@@ -461,6 +466,12 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       promotionModel: relationPromotionModel,
       hasher
     });
+    const roleSurfaceOrderModel = compileRoleSurfaceOrderModel({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      promotionModel: relationPromotionModel,
+      opaqueRoleModel,
+      hasher
+    });
     const promotedCandidateGraph = graphFromStructuredSemanticCandidates({
       candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
       observedAt: now,
@@ -504,6 +515,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       typedProjections,
       relationPromotionModel,
       opaqueRoleModel,
+      roleSurfaceOrderModel,
       graph,
       graphLearning,
       classificationCounts: countStrings(typedProjections.flatMap(item => item.observations.map(obs => obs.kind))),
@@ -516,6 +528,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
         observationCounts: typedProjections.map(item => item.observationCounts),
         relationPromotionModelId: relationPromotionModel.id,
         opaqueRoleModelId: opaqueRoleModel.id,
+        roleSurfaceOrderModelId: roleSurfaceOrderModel.id,
         promotedRelationSeedIds: relationPromotionModel.decisions
           .filter(decision => decision.promoted)
           .map(decision => decision.relationSeedId),

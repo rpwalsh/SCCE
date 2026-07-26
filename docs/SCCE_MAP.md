@@ -77,6 +77,8 @@ answer lane.
   evidence fields.
 - `opaque-role-induction.ts`: content-addressed opaque role populations selected by
   source-disjoint held-out MDL and applied to promoted hyperedge occurrences.
+- `role-surface-order.ts`: position-free semantic-role probabilities plus separately
+  conditioned surface order, omission and repetition probabilities.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,
