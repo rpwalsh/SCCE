@@ -287,7 +287,11 @@ export function createRuntimeGraphRetrieval(options: {
         }
       }
       const anchoredEvidenceStarted = Date.now();
-      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
+      // A resident-only turn already attempted the semantic-frame lookup
+      // above (residentOnly: true) before falling through here; retrying
+      // it non-resident would both double the lookup and break the bounded
+      // turn's residency contract, so only attempt it once per turn.
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly);
       kernelTrace({
         stage: "graph.resolve.anchor_evidence",
         label: "kernel.graphForText",
@@ -460,11 +464,10 @@ export function createRuntimeGraphRetrieval(options: {
         return results;
       });
     const evidenceResults = await evidenceSearch;
-    const semanticFrameEvidence: SourceAnchoredEvidenceSelection = {
-      evidence: [],
-      semanticFrameBoundEvidenceIds: []
-    };
-    const promoted = mergeEvidenceSpans(evidenceResults.map(item => item.span))
+    const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
+      ? await sourceAnchorSemanticFrameEvidence(text)
+      : { evidence: [], semanticFrameBoundEvidenceIds: [] };
+    const promoted = mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence])
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof);
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
