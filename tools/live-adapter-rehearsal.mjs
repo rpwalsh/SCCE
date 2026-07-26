@@ -44,6 +44,22 @@ try {
     uri: pathToFileURL(documentPath).href,
     namespace: "rehearsal",
     mediaType: "text/plain",
+    sourceAdmission: {
+      sourceClass: "owner_local",
+      intendedUse: "direct_evidence",
+      promotionAuthority: "owner"
+    },
+    sourceTrust: {
+      identity: 1,
+      integrity: 1,
+      parserReliability: 0.94,
+      directness: 1,
+      authority: 1,
+      freshness: 0.98,
+      independenceGroup: "live-adapter-rehearsal",
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    },
     metadata: { title: "Azurite Marker", documentId: "doc-azurite", rehearsal: true }
   });
   check("corpus.ingest", ingest.evidence > 0, `evidence=${ingest.evidence}`);
