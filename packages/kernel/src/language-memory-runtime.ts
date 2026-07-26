@@ -2924,9 +2924,19 @@ function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationE
     && !fragmentHeavyDiscourseSurface(discourse.text);
 }
 
+// A punctuation/symbol run only counts as a clause boundary when it sits
+// next to whitespace (or the string edge). Punctuation glued directly
+// between two non-space characters on both sides -- the hyphen in
+// "quiet-hours", the colon in "9:00", the periods in "p.m." -- is normal
+// word-internal formatting, not a sentence fragment break; splitting on
+// every punctuation run regardless of adjacency wrongly flagged ordinary
+// sentences containing times, percentages, or hyphenated compounds as
+// "fragment heavy" phrase salad.
+const DISCOURSE_FRAGMENT_BOUNDARY = /(?<=^|\s)[\p{Punctuation}\p{Symbol}]+|[\p{Punctuation}\p{Symbol}]+(?=\s|$)/gu;
+
 function fragmentHeavyDiscourseSurface(text: string): boolean {
   const fragments = text
-    .split(/[\p{Punctuation}\p{Symbol}]+/gu)
+    .split(DISCOURSE_FRAGMENT_BOUNDARY)
     .map(fragment => symbolizeData(fragment)
       .filter(symbol => [...symbol].some(char => isLetterLike(char) || isDigitLike(char))))
     .filter(fragment => fragment.length > 0);
@@ -2935,7 +2945,7 @@ function fragmentHeavyDiscourseSurface(text: string): boolean {
   if (lexicalTokenCount < 12) return false;
   const shortFragmentCount = fragments.filter(fragment => fragment.length <= 2).length;
   const shortFragmentRatio = shortFragmentCount / fragments.length;
-  const punctuationRuns = text.match(/[\p{Punctuation}\p{Symbol}]+/gu)?.length ?? 0;
+  const punctuationRuns = text.match(DISCOURSE_FRAGMENT_BOUNDARY)?.length ?? 0;
   const punctuationDensity = punctuationRuns / Math.max(1, lexicalTokenCount);
   return shortFragmentRatio >= 0.5 && punctuationDensity >= 0.24;
 }
