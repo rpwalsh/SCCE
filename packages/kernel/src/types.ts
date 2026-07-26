@@ -251,9 +251,21 @@ export interface GraphEdge {
 }
 
 export interface Hyperedge {
+  schema: "scce.hyperedge.v2";
   id: HyperedgeId;
   relationId: RelationId;
+  participantPorts: Array<{
+    portId: string;
+    nodeId: NodeId | null;
+    valueKind: string;
+    realization: "observed" | "omitted";
+    evidenceIds: EvidenceId[];
+  }>;
+  /** Derived retrieval index over observed participant ports, never role semantics. */
   memberNodeIds: NodeId[];
+  qualifiers: JsonValue;
+  modality: JsonValue;
+  evidenceIds: EvidenceId[];
   weightVector: JsonValue;
   temporalScope: JsonValue;
   provenanceRefs: string[];
@@ -1041,6 +1053,7 @@ export interface IngestResult {
   evidence: number;
   graphNodes: number;
   graphEdges: number;
+  graphHyperedges: number;
   languageProfiles: number;
   relationCandidates: number;
   promotedRelations: number;

@@ -72,6 +72,9 @@ answer lane.
 - `structured-semantic-candidate.ts`, `relation-promotion.ts`: source-structured
   relation candidates followed by source-disjoint two-part codelength promotion,
   held-out recovery, duplicate collapse and shuffled/duplicate/random controls.
+- `typed-ingest.ts`, `types.ts`: `scce.hyperedge.v2` materialization with arbitrary
+  observed/omitted participant ports and separate qualifier, modality, time and
+  evidence fields.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

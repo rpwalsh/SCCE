@@ -74,6 +74,7 @@ export interface WikipediaV3IngestResult {
   evidence: number;
   graphNodes: number;
   graphEdges: number;
+  graphHyperedges: number;
   languageProfiles: number;
   ngramObservations: number;
   ngramModels: number;
@@ -108,6 +109,7 @@ interface WikipediaPageImport {
   evidence: number;
   graphNodes: number;
   graphEdges: number;
+  graphHyperedges: number;
   languageProfiles: number;
   ngramObservations: number;
   ngramModels: number;
@@ -129,6 +131,7 @@ interface WikipediaLanguageShardImport {
   semanticFrames: number;
   relationCandidates: number;
   promotedRelations: number;
+  graphHyperedges: number;
   warnings: string[];
 }
 
@@ -147,6 +150,7 @@ export interface WikipediaV3IngestStatus {
   evidence: number;
   graphNodes: number;
   graphEdges: number;
+  graphHyperedges: number;
   ngramObservations: number;
   ngramModels: number;
   languageUnits: number;
@@ -240,6 +244,7 @@ export class WikipediaV3Ingestor {
       evidence: 0,
       graphNodes: 0,
       graphEdges: 0,
+      graphHyperedges: 0,
       languageProfiles: 0,
       ngramObservations: 0,
       ngramModels: 0,
@@ -271,6 +276,7 @@ export class WikipediaV3Ingestor {
       result.semanticFrames += imported.semanticFrames;
       result.relationCandidates += imported.relationCandidates;
       result.promotedRelations += imported.promotedRelations;
+      result.graphHyperedges += imported.graphHyperedges;
       result.warnings.push(...imported.warnings);
     };
     const flushLanguageShard = async (shardUri: string): Promise<void> => {
@@ -297,6 +303,7 @@ export class WikipediaV3Ingestor {
         evidence: result.evidence,
         graphNodes: result.graphNodes,
         graphEdges: result.graphEdges,
+        graphHyperedges: result.graphHyperedges,
         ngramObservations: result.ngramObservations,
         ngramModels: result.ngramModels,
         languageUnits: result.languageUnits,
@@ -361,6 +368,7 @@ export class WikipediaV3Ingestor {
         result.evidence += imported.evidence;
         result.graphNodes += imported.graphNodes;
         result.graphEdges += imported.graphEdges;
+        result.graphHyperedges += imported.graphHyperedges;
         result.languageProfiles += imported.languageProfiles;
         result.ngramObservations += imported.ngramObservations;
         result.ngramModels += imported.ngramModels;
@@ -747,12 +755,19 @@ export class WikipediaV3Ingestor {
     const typedProjection = this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: file.text, metadata, evidence: admittedSpans, observedAt: now });
     const typedNodes = stampGraphNodes(typedProjection.graphNodes, WIKIPEDIA_INFORMATION_LABEL);
     const typedEdges = stampGraphEdges(typedProjection.graphEdges, WIKIPEDIA_INFORMATION_LABEL);
+    const typedHyperedges = typedProjection.graphHyperedges.map(hyperedge => ({
+      ...hyperedge,
+      informationLabel: WIKIPEDIA_INFORMATION_LABEL
+    }));
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(typedNodes);
     else for (const node of typedNodes) await this.storage.graph.upsertNode(node);
     if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(typedEdges);
     else for (const edge of typedEdges) await this.storage.graph.upsertEdge(edge);
+    if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(typedHyperedges);
+    else for (const hyperedge of typedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
     graphNodes += typedProjection.graphNodes.length;
     graphEdges += typedProjection.graphEdges.length;
+    let graphHyperedges = typedProjection.graphHyperedges.length;
     const builtGraph = this.graphBuilder.build({ sourceVersionId, uri: file.uri, mediaType: file.mediaType, languageProfile: profile, evidence: admittedSpans, observedAt: now });
     const builtNodes = stampGraphNodes(builtGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
     const builtEdges = stampGraphEdges(builtGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
@@ -765,6 +780,7 @@ export class WikipediaV3Ingestor {
     else for (const hyperedge of builtHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
     graphNodes += builtGraph.nodes.length;
     graphEdges += builtGraph.edges.length;
+    graphHyperedges += builtGraph.hyperedges.length;
 
     await this.storage.ingestion.put({
       ...checkpoint,
@@ -789,6 +805,7 @@ export class WikipediaV3Ingestor {
       evidence: admittedSpans.length,
       graphNodes,
       graphEdges,
+      graphHyperedges,
       // Page profiles are transient extraction aids. Only bounded, trained
       // language-shard profiles become durable turn-time surface profiles.
       languageProfiles: 0,
@@ -865,10 +882,16 @@ export class WikipediaV3Ingestor {
       });
       const promotedNodes = stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
       const promotedEdges = stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
+      const promotedHyperedges = promotedGraph.hyperedges.map(hyperedge => ({
+        ...hyperedge,
+        informationLabel: WIKIPEDIA_INFORMATION_LABEL
+      }));
       if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(promotedNodes);
       else for (const node of promotedNodes) await this.storage.graph.upsertNode(node);
       if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(promotedEdges);
       else for (const edge of promotedEdges) await this.storage.graph.upsertEdge(edge);
+      if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(promotedHyperedges);
+      else for (const hyperedge of promotedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
       await this.storage.events.append(this.events.create({
         episodeId,
         typeId: "RelationPromotionCompiled",
@@ -895,6 +918,11 @@ export class WikipediaV3Ingestor {
       semanticFrames: trained.semanticFrames,
       relationCandidates: semanticCandidates.length,
       promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length,
+      graphHyperedges: relationPromotionModel.decisions.filter(decision => decision.promoted).length
+        ? semanticCandidates.filter(candidate =>
+          relationPromotionModel.decisions.some(decision =>
+            decision.promoted && decision.relationSeedId === candidate.relationSeedId)).length
+        : 0,
       warnings: trained.warnings
     };
   }
@@ -906,6 +934,7 @@ function zeroPage(input: { warnings: string[] }): WikipediaPageImport {
     evidence: 0,
     graphNodes: 0,
     graphEdges: 0,
+    graphHyperedges: 0,
     languageProfiles: 0,
     ngramObservations: 0,
     ngramModels: 0,
@@ -928,6 +957,7 @@ function zeroLanguageShard(input: { warnings: string[] }): WikipediaLanguageShar
     semanticFrames: 0,
     relationCandidates: 0,
     promotedRelations: 0,
+    graphHyperedges: 0,
     warnings: input.warnings
   };
 }

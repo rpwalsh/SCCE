@@ -82,9 +82,24 @@ export function createSourceGraphBuilder(deps: { idFactory: IdFactory }) {
         if (members.length > 1) {
           const relationId = deps.idFactory.relationId({ relation: "evidence-feature-bag" });
           const h: Hyperedge = {
+            schema: "scce.hyperedge.v2",
             id: deps.idFactory.hyperedgeId({ relationId, members: members.map(member => member.id), provenanceHash: span.id }),
             relationId,
+            participantPorts: members.map((member, index) => ({
+              portId: String(deps.idFactory.dimensionId({
+                kind: "evidence_feature_bag_port",
+                relationId,
+                index
+              })),
+              nodeId: member.id,
+              valueKind: index === 0 ? "evidence_chunk" : "surface_feature",
+              realization: "observed",
+              evidenceIds: [span.id]
+            })),
             memberNodeIds: members.map(member => member.id),
+            qualifiers: toJsonValue({ byteRange: [span.byteStart, span.byteEnd] }),
+            modality: toJsonValue({ sourceObserved: true }),
+            evidenceIds: [span.id],
             weightVector: toJsonValue({ alpha: span.alpha, featureCount: topSymbols.length, byteRange: [span.byteStart, span.byteEnd] }),
             temporalScope: { validFrom: t },
             provenanceRefs: [span.id],

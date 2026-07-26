@@ -6,6 +6,7 @@ import type {
   GraphEdge,
   GraphNode,
   Hasher,
+  Hyperedge,
   JsonValue,
   LanguageProfile,
   NodeId,
@@ -137,7 +138,7 @@ export interface ScceRuntimeIngestResult {
   evidence: EvidenceSpan[];
   typedProjections: TypedIngestProjection[];
   relationPromotionModel: RelationPromotionModel;
-  graph: { nodes: GraphNode[]; edges: GraphEdge[] };
+  graph: { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] };
   graphLearning: RuntimeGraphLearningReport;
   classificationCounts: Record<string, number>;
   unsupportedRecords: JsonValue[];
@@ -410,6 +411,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
     const typedProjections: TypedIngestProjection[] = [];
     const graphNodes: GraphNode[] = [];
     const graphEdges: GraphEdge[] = [];
+    const graphHyperedges: Hyperedge[] = [];
     const unsupportedRecords: JsonValue[] = [];
 
     for (const file of input.files) {
@@ -441,6 +443,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       typedProjections.push(projection);
       graphNodes.push(...projection.graphNodes);
       graphEdges.push(...projection.graphEdges);
+      graphHyperedges.push(...projection.graphHyperedges);
       if (!projection.observations.length) unsupportedRecords.push(toJsonValue({ path: file.path, reasonId: "runtime.ingest.no_typed_observations" }));
     }
 
@@ -457,6 +460,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
     });
     graphNodes.push(...promotedCandidateGraph.nodes);
     graphEdges.push(...promotedCandidateGraph.edges);
+    graphHyperedges.push(...promotedCandidateGraph.hyperedges);
 
     const analysis: WorkspaceCoreAnalysisInput = {
       schema: "scce.runtime.fixture_analysis.v1",
@@ -473,7 +477,11 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       tasks: input.analysis?.tasks ?? [],
       reports: input.analysis?.reports
     };
-    const graph = { nodes: dedupeById(graphNodes), edges: dedupeById(graphEdges) };
+    const graph = {
+      nodes: dedupeById(graphNodes),
+      edges: dedupeById(graphEdges),
+      hyperedges: dedupeById(graphHyperedges)
+    };
     const graphLearning = graphLearningReport({ graph, typedObservationCount: typedProjections.flatMap(item => item.observations).length, hasher, now });
     const result: ScceRuntimeIngestResult = {
       schema: "scce.runtime.fixture_ingest.v1",

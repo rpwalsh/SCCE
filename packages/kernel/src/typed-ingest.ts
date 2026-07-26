@@ -1,5 +1,5 @@
 import type { IdFactory } from "./ids.js";
-import type { EvidenceSpan, GraphEdge, GraphNode, Hasher, JsonValue, SourceId, SourceVersionId } from "./types.js";
+import type { EvidenceSpan, GraphEdge, GraphNode, Hasher, Hyperedge, JsonValue, SourceId, SourceVersionId } from "./types.js";
 import {
   classifyIngestionLane,
   observationContract,
@@ -30,6 +30,7 @@ import {
   relationPromotionDecision,
   type RelationPromotionModel
 } from "./relation-promotion.js";
+import { assertCanonicalHyperedge } from "./hyperedge.js";
 
 export interface TypedIngestPreview {
   lane: ReturnType<typeof classifyIngestionLane>;
@@ -43,6 +44,7 @@ export interface TypedIngestProjection extends TypedIngestPreview {
   routes: ObservationRoute[];
   graphNodes: GraphNode[];
   graphEdges: GraphEdge[];
+  graphHyperedges: Hyperedge[];
   semanticCandidates: StructuredSemanticCandidate[];
   diagnostics: JsonValue;
 }
@@ -146,6 +148,7 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       routes,
       graphNodes: graph.nodes,
       graphEdges: graph.edges,
+      graphHyperedges: candidateGraph.hyperedges,
       semanticCandidates,
       observationCounts,
       diagnostics: toJsonValue({
@@ -160,7 +163,8 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
         weakFreeProseInference: false,
         forceClasses: countBy(contracts.map(contract => contract.forceClass)),
         graphNodes: graph.nodes.length,
-        graphEdges: graph.edges.length
+        graphEdges: graph.edges.length,
+        graphHyperedges: candidateGraph.hyperedges.length
       })
     };
   }
@@ -850,9 +854,10 @@ export function graphFromStructuredSemanticCandidates(input: {
   ids: IdFactory;
   hasher: Hasher;
   relationPromotionModel?: RelationPromotionModel;
-}): { nodes: GraphNode[]; edges: GraphEdge[] } {
+}): { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
+  const hyperedges: Hyperedge[] = [];
   for (const candidate of input.candidates) {
     const promotion = relationPromotionDecision(input.relationPromotionModel, candidate.relationSeedId);
     const promoted = promotion?.promoted === true;
@@ -883,12 +888,20 @@ export function graphFromStructuredSemanticCandidates(input: {
         weakFreeProseInference: false
       })
     });
+    const participantPorts: Hyperedge["participantPorts"] = [];
     for (const participant of candidate.participants) {
       const participantNodeId = input.ids.nodeId({
         kind: "structured_semantic_participant",
         candidateId: candidate.id,
         portId: participant.portId,
         value: participant.value
+      });
+      participantPorts.push({
+        portId: participant.portId,
+        nodeId: participant.realization === "omitted" ? null : participantNodeId,
+        valueKind: participant.valueKind,
+        realization: participant.realization,
+        evidenceIds: candidate.evidenceIds
       });
       nodes.push({
         id: participantNodeId,
@@ -928,8 +941,64 @@ export function graphFromStructuredSemanticCandidates(input: {
         })
       });
     }
+    if (promoted) {
+      const relationId = input.ids.relationId({
+        kind: "promoted_structured_relation",
+        relationSeedId: candidate.relationSeedId
+      });
+      const memberNodeIds = participantPorts
+        .map(port => port.nodeId)
+        .filter((nodeId): nodeId is NonNullable<typeof nodeId> => nodeId !== null);
+      const hyperedge: Hyperedge = {
+        schema: "scce.hyperedge.v2",
+        id: input.ids.hyperedgeId({
+          relationId,
+          members: memberNodeIds,
+          provenanceHash: input.hasher.digestHex(candidate.id)
+        }),
+        relationId,
+        participantPorts,
+        memberNodeIds,
+        qualifiers: candidate.qualifiers,
+        modality: toJsonValue({
+          sourceObserved: true,
+          candidateKind: candidate.kind,
+          support: candidate.support
+        }),
+        evidenceIds: candidate.evidenceIds,
+        weightVector: toJsonValue({
+          alpha: candidate.support,
+          descriptionLengthGainNats: promotion.descriptionLength.gainNats,
+          heldoutRecoveryGain: promotion.recovery.gain
+        }),
+        temporalScope: temporalScopeForCandidate(candidate, input.observedAt),
+        provenanceRefs: candidate.evidenceIds,
+        createdAt: input.observedAt,
+        updatedAt: input.observedAt
+      };
+      assertCanonicalHyperedge(hyperedge);
+      hyperedges.push(hyperedge);
+    }
   }
-  return { nodes, edges };
+  return { nodes, edges, hyperedges };
+}
+
+function temporalScopeForCandidate(
+  candidate: StructuredSemanticCandidate,
+  observedAt: number
+): JsonValue {
+  const qualifiers = candidate.qualifiers && typeof candidate.qualifiers === "object" && !Array.isArray(candidate.qualifiers)
+    ? candidate.qualifiers as Record<string, JsonValue>
+    : {};
+  const validFrom = typeof qualifiers.validFrom === "number" && Number.isFinite(qualifiers.validFrom)
+    ? qualifiers.validFrom
+    : observedAt;
+  const validTo = typeof qualifiers.validTo === "number"
+    && Number.isFinite(qualifiers.validTo)
+    && qualifiers.validTo >= validFrom
+    ? qualifiers.validTo
+    : undefined;
+  return toJsonValue(validTo === undefined ? { validFrom } : { validFrom, validTo });
 }
 
 function uniqueGraphNodes(nodes: readonly GraphNode[]): GraphNode[] {

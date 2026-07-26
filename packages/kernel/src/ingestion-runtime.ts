@@ -96,6 +96,7 @@ export function createIngestionRuntime(options: {
       let evidenceCount = 0;
       let graphNodes = 0;
       let graphEdges = 0;
+      let graphHyperedges = 0;
       let languageProfiles = 0;
       const typedObservationCounts: Record<string, number> = {};
       const observationRouteCounts: Record<string, number> = {};
@@ -318,8 +319,12 @@ export function createIngestionRuntime(options: {
           else for (const graphNode of typedGraphNodes) await deps.storage.graph.upsertNode(graphNode);
           if (deps.storage.graph.upsertEdges) await deps.storage.graph.upsertEdges(typedGraphEdges);
           else for (const graphEdge of typedGraphEdges) await deps.storage.graph.upsertEdge(graphEdge);
+          const typedHyperedges = labelRecords(typedProjection.graphHyperedges, informationLabel);
+          if (deps.storage.graph.upsertHyperedges) await deps.storage.graph.upsertHyperedges(typedHyperedges);
+          else for (const hyperedge of typedHyperedges) await deps.storage.graph.upsertHyperedge(hyperedge);
           graphNodes += typedProjection.graphNodes.length;
           graphEdges += typedProjection.graphEdges.length;
+          graphHyperedges += typedProjection.graphHyperedges.length;
           events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { typedIngest: typedProjection.diagnostics } })));
         }
 
@@ -428,6 +433,7 @@ export function createIngestionRuntime(options: {
           else for (const hyperedge of builtHyperedges) await deps.storage.graph.upsertHyperedge(hyperedge);
           graphNodes += builtGraph.nodes.length;
           graphEdges += builtGraph.edges.length;
+          graphHyperedges += builtGraph.hyperedges.length;
           events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: builtGraph.diagnostics })));
         }
         await deps.storage.ingestion.put({ ...item.checkpoint, phase: "stored", status: "complete", offsetBytes: file.bytes.byteLength, contentHash: originalContentHash, byteLength: file.bytes.byteLength, updatedAt: clock.now(), metadata: { ...(item.checkpoint.metadata as Record<string, JsonValue>), typedIngest: typedProjection.diagnostics } });
@@ -452,6 +458,10 @@ export function createIngestionRuntime(options: {
         else for (const node of promotedNodes) await deps.storage.graph.upsertNode(node);
         if (deps.storage.graph.upsertEdges) await deps.storage.graph.upsertEdges(promotedEdges);
         else for (const edge of promotedEdges) await deps.storage.graph.upsertEdge(edge);
+        const promotedHyperedges = labelRecords(promotedGraph.hyperedges, informationLabel);
+        if (deps.storage.graph.upsertHyperedges) await deps.storage.graph.upsertHyperedges(promotedHyperedges);
+        else for (const hyperedge of promotedHyperedges) await deps.storage.graph.upsertHyperedge(hyperedge);
+        graphHyperedges += promotedGraph.hyperedges.length;
         events.push(await append(eventFactory.create({
           episodeId,
           typeId: "RelationPromotionCompiled",
@@ -472,7 +482,7 @@ export function createIngestionRuntime(options: {
         })));
       }
       const output = `ingested ${sources} source version(s), ${evidenceCount} evidence span(s), ${sumRecord(typedObservationCounts)} typed observation(s)`;
-      const invalidateRuntimeCaches = Boolean(sources || evidenceCount || graphNodes || graphEdges || languageProfiles);
+      const invalidateRuntimeCaches = Boolean(sources || evidenceCount || graphNodes || graphEdges || graphHyperedges || languageProfiles);
       onKernelStateMutation({ episodeId, output, invalidateRuntimeCaches });
       events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output, typedObservations: typedObservationCounts, observationRoutes: observationRouteCounts } })));
 
@@ -483,6 +493,7 @@ export function createIngestionRuntime(options: {
         evidence: evidenceCount,
         graphNodes,
         graphEdges,
+        graphHyperedges,
         languageProfiles,
         relationCandidates: relationCandidates.length,
         promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length,

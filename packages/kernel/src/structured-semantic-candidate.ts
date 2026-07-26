@@ -28,6 +28,7 @@ export interface StructuredSemanticCandidate {
     portId: string;
     value: JsonValue;
     valueKind: string;
+    realization: "observed" | "omitted";
   }>;
   qualifiers: JsonValue;
   evidenceIds: EvidenceId[];
@@ -59,7 +60,8 @@ export function structuredSemanticCandidates(input: {
       sourceVersionId: input.sourceVersionId,
       participants: participants.map((participant, index) => ({
         portId: `port.${hasher.digestHex(`${kind}:${index}`).slice(0, 16)}`,
-        ...participant
+        ...participant,
+        realization: participant.value === null ? "omitted" as const : "observed" as const
       })),
       qualifiers,
       evidenceIds: [...new Set(evidenceIds)].sort(),

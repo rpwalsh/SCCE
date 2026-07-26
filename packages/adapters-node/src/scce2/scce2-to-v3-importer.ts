@@ -905,9 +905,20 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       const relationId = this.ids.relationId({ source: "scce2", predicate: "shard_contains_concepts" });
       const members = hyperedgeMembers;
       const hyperedge: Hyperedge = {
+        schema: "scce.hyperedge.v2",
         id: this.ids.hyperedgeId({ relationId, members, provenanceHash: this.hasher.digestHex(`${sourceVersionId}:${shard.shardId}:${hyperedgePage}:${members.length}`) }),
         relationId,
+        participantPorts: members.map((nodeId, index) => ({
+          portId: `port.${this.hasher.digestHex(`${relationId}:${index}`).slice(0, 16)}`,
+          nodeId,
+          valueKind: "imported_concept",
+          realization: "observed",
+          evidenceIds: []
+        })),
         memberNodeIds: members,
+        qualifiers: toJsonValue({ sourceSystem: "scce2", page: hyperedgePage }),
+        modality: toJsonValue({ imported: true, provenanceClass: "learned_concept_prior" }),
+        evidenceIds: [],
         weightVector: toJsonValue({ sourceSystem: "scce2", memberCount: members.length, page: hyperedgePage, provenanceClass: "learned_concept_prior" }),
         temporalScope: toJsonValue({ validFrom: now }),
         provenanceRefs: [String(sourceVersionId), shard.shardId],

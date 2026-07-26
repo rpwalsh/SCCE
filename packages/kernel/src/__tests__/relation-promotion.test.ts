@@ -6,6 +6,7 @@ import {
   relationPromotionDecision
 } from "../relation-promotion.js";
 import { graphFromStructuredSemanticCandidates } from "../typed-ingest.js";
+import { assertCanonicalHyperedge } from "../hyperedge.js";
 import type { StructuredSemanticCandidate } from "../structured-semantic-candidate.js";
 import type { EvidenceId, SourceId, SourceVersionId } from "../types.js";
 
@@ -77,6 +78,63 @@ describe("held-out relation promotion", () => {
       && !Array.isArray(edge.metadata)
       && edge.metadata.promoted === true)).toBe(true);
   });
+
+  it("materializes promoted relations with arbitrary observed and omitted ports", () => {
+    const trained = separableCandidates(80);
+    const model = compileRelationPromotionModel({ candidates: trained });
+    const hasher = createHasher();
+    const ids = createIdFactory({
+      clock: createClock({ fixedTime: 1 }),
+      hasher,
+      namespace: "arbitrary-relation-test"
+    });
+    const observedAndOmitted: StructuredSemanticCandidate = {
+      ...trained[0]!,
+      id: "candidate.arbitrary",
+      qualifiers: { validFrom: 10, validTo: 20, quantity: 3 },
+      participants: [
+        trained[0]!.participants[0]!,
+        {
+          portId: "port.omitted",
+          value: null,
+          valueKind: "unrealized_participant",
+          realization: "omitted"
+        }
+      ]
+    };
+    const zeroArity: StructuredSemanticCandidate = {
+      ...trained[0]!,
+      id: "candidate.zero-arity",
+      participants: [],
+      qualifiers: { eventState: "observed_without_participants" }
+    };
+    const graph = graphFromStructuredSemanticCandidates({
+      candidates: [observedAndOmitted, zeroArity],
+      observedAt: 1,
+      ids,
+      hasher,
+      relationPromotionModel: model
+    });
+
+    expect(graph.hyperedges).toHaveLength(2);
+    expect(graph.hyperedges[0]).toMatchObject({
+      schema: "scce.hyperedge.v2",
+      qualifiers: { validFrom: 10, validTo: 20, quantity: 3 },
+      temporalScope: { validFrom: 10, validTo: 20 }
+    });
+    expect(graph.hyperedges[0]!.participantPorts).toHaveLength(2);
+    expect(graph.hyperedges[0]!.memberNodeIds).toHaveLength(1);
+    expect(graph.hyperedges[0]!.participantPorts[1]).toMatchObject({
+      nodeId: null,
+      realization: "omitted"
+    });
+    expect(graph.hyperedges[1]!.participantPorts).toEqual([]);
+    expect(graph.hyperedges[1]!.memberNodeIds).toEqual([]);
+    expect(() => assertCanonicalHyperedge({
+      ...graph.hyperedges[0]!,
+      memberNodeIds: []
+    })).toThrow(/must equal observed participant-port node IDs/u);
+  });
 });
 
 function separableCandidates(count: number): StructuredSemanticCandidate[] {
@@ -97,7 +155,8 @@ function separableCandidates(count: number): StructuredSemanticCandidate[] {
       participants: valueKinds.map((valueKind, port) => ({
         portId: `port.${port}`,
         value: `${valueKind}.${index}`,
-        valueKind
+        valueKind,
+        realization: "observed"
       })),
       qualifiers: {},
       evidenceIds: [`evidence.${index}` as EvidenceId],

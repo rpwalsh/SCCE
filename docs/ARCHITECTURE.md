@@ -72,6 +72,10 @@ validation so credentials need not be committed.
   separate source-disjoint description-length compiler that decides whether their
   incidence may be marked reusable. This path uses explicit data/model codes and
   negative controls; it is distinct from turn-time relation-potential scoring.
+- `scce.hyperedge.v2` in `types.ts` and typed-ingest materialization: canonical
+  zero-or-more-arity relations with observed/omitted ports, qualifiers, modality,
+  temporal scope and evidence. PostgreSQL v23 persists these fields directly;
+  `memberNodeIds` is a derived retrieval index only.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field
