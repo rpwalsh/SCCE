@@ -1,7 +1,12 @@
 import { clamp01, symbolizeData, toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
 
+export const KNESER_NEY_SCHEMA = "scce.kneser_ney.v2" as const;
+const MAX_SUCCESSORS_PER_CONTEXT = 256;
+const MAX_BASE_CONTINUATIONS = 128;
+
 export interface KneserNeyModel {
+  schema: typeof KNESER_NEY_SCHEMA;
   order: number;
   discount: number;
   observedSymbolCount: number;
@@ -14,6 +19,10 @@ export interface KneserNeyModel {
   unigramCounts: Record<string, number>;
   totalUnigramCount: number;
   vocabulary: string[];
+  successorIndex: Record<string, string[]>;
+  successorOverflowCounts: Record<string, number>;
+  backoffWeights: Record<string, number>;
+  baseContinuations: string[];
 }
 
 export interface KneserNeyPrediction {
@@ -54,6 +63,7 @@ export function trainKneserNey(text: string | readonly string[], options: { orde
   const contextCounts = new Map<string, number>();
   const continuationContexts = new Map<string, Set<string>>();
   const contextContinuationTypes = new Map<string, Set<string>>();
+  const successorCounts = new Map<string, Map<string, number>>();
   const unigramCounts = new Map<string, number>();
   for (const symbol of [...normalized, "</s>"]) unigramCounts.set(symbol, (unigramCounts.get(symbol) ?? 0) + 1);
   for (let n = 1; n <= order; n++) {
@@ -69,13 +79,25 @@ export function trainKneserNey(text: string | readonly string[], options: { orde
         continuationContexts.get(symbol)!.add(context);
         if (!contextContinuationTypes.has(context)) contextContinuationTypes.set(context, new Set());
         contextContinuationTypes.get(context)!.add(symbol);
+        const successors = successorCounts.get(context) ?? new Map<string, number>();
+        successors.set(symbol, (successors.get(symbol) ?? 0) + 1);
+        successorCounts.set(context, successors);
       }
     }
   }
   const continuationCounts = new Map<string, number>();
   for (const [symbol, contexts] of continuationContexts) continuationCounts.set(symbol, contexts.size);
   const totalContinuationTypes = [...continuationContexts.values()].reduce((sum, contexts) => sum + contexts.size, 0);
+  const compiled = compileSuccessorIndexes({
+    successorCounts,
+    continuationCounts,
+    unigramCounts,
+    contextCounts,
+    contextContinuationTypes: new Map([...contextContinuationTypes.entries()].map(([key, set]) => [key, set.size])),
+    discount
+  });
   return {
+    schema: KNESER_NEY_SCHEMA,
     order,
     discount,
     observedSymbolCount: normalized.length,
@@ -87,24 +109,31 @@ export function trainKneserNey(text: string | readonly string[], options: { orde
     totalContinuationTypes,
     unigramCounts: Object.fromEntries(unigramCounts),
     totalUnigramCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
-    vocabulary
+    vocabulary,
+    ...compiled
   };
 }
 
 export function kneserNeyProbability(model: KneserNeyModel, context: readonly string[], symbol: string): number {
-  const normalizedSymbol = model.vocabulary.includes(symbol) || symbol === "</s>" ? symbol : "<unk>";
+  assertCompiledKneserNey(model);
+  const normalizedSymbol = runtimeIndex(model).vocabulary.has(symbol) || symbol === "</s>" ? symbol : "<unk>";
   return recursiveProbability(model, context.slice(-(model.order - 1)), normalizedSymbol, model.order);
 }
 
 export function predictKneserNey(model: KneserNeyModel, context: readonly string[], limit = 16): KneserNeyPrediction[] {
-  const candidates = [...new Set([...model.vocabulary.slice(0, 5000), "</s>"])];
-  return candidates
-    .map(symbol => {
+  assertCompiledKneserNey(model);
+  const boundedLimit = Math.max(1, Math.floor(limit));
+  const candidates = activeSuccessors(model, context, Math.max(64, boundedLimit * 8));
+  const best: KneserNeyPrediction[] = [];
+  for (const symbol of candidates) {
       const probability = kneserNeyProbability(model, context, symbol);
-      return { symbol, probability, logProbability: Math.log(Math.max(1e-300, probability)) };
-    })
-    .sort((a, b) => b.probability - a.probability || a.symbol.localeCompare(b.symbol))
-    .slice(0, limit);
+      insertPrediction(best, {
+        symbol,
+        probability,
+        logProbability: Math.log(Math.max(1e-300, probability))
+      }, boundedLimit);
+  }
+  return best;
 }
 
 export function kneserNeyPerplexity(model: KneserNeyModel, text: string | readonly string[]): number {
@@ -229,7 +258,15 @@ export function compactKneserNeyForProfile(model: KneserNeyModel, text: string):
   const summary = summarizeKneserNey(model, text);
   const topContinuation = Object.entries(model.continuationCounts).sort((a, b) => b[1] - a[1]).slice(0, 128);
   const topContexts = Object.entries(model.contextContinuationTypes).sort((a, b) => b[1] - a[1]).slice(0, 128);
-  return toJsonValue({ summary, topContinuation, topContexts });
+  return toJsonValue({
+    schema: KNESER_NEY_SCHEMA,
+    summary,
+    topContinuation,
+    topContexts,
+    compiledContexts: Object.keys(model.successorIndex).length,
+    maximumSuccessorsPerContext: MAX_SUCCESSORS_PER_CONTEXT,
+    baseContinuations: model.baseContinuations.length
+  });
 }
 
 function orderSummary(model: KneserNeyModel): Array<{ order: number; grams: number; contexts: number }> {
@@ -267,8 +304,141 @@ function recursiveProbability(model: KneserNeyModel, rawContext: readonly string
   const continuationTypes = model.contextContinuationTypes[contextKey] ?? 0;
   if (contextCount <= 0) return recursiveProbability(model, context.slice(1), symbol, order - 1);
   const discounted = Math.max(count - model.discount, 0) / contextCount;
-  const lambda = (model.discount * continuationTypes) / contextCount;
+  const lambda = model.backoffWeights[contextKey]
+    ?? (model.discount * continuationTypes) / contextCount;
   return Math.max(1e-12, discounted + lambda * recursiveProbability(model, context.slice(1), symbol, order - 1));
+}
+
+export function compileKneserNeyRuntimeIndexes(input: {
+  discount: number;
+  counts: Record<string, number>;
+  contextCounts: Record<string, number>;
+  continuationCounts: Record<string, number>;
+  contextContinuationTypes: Record<string, number>;
+  unigramCounts: Record<string, number>;
+}): Pick<KneserNeyModel, "schema" | "successorIndex" | "successorOverflowCounts" | "backoffWeights" | "baseContinuations"> {
+  const successorCounts = new Map<string, Map<string, number>>();
+  for (const [key, count] of Object.entries(input.counts)) {
+    const parts = key.split("\u0001");
+    if (parts.length <= 1) continue;
+    const symbol = parts[parts.length - 1]!;
+    const context = gramKey(parts.slice(0, -1));
+    const bucket = successorCounts.get(context) ?? new Map<string, number>();
+    bucket.set(symbol, (bucket.get(symbol) ?? 0) + count);
+    successorCounts.set(context, bucket);
+  }
+  return {
+    schema: KNESER_NEY_SCHEMA,
+    ...compileSuccessorIndexes({
+      successorCounts,
+      continuationCounts: new Map(Object.entries(input.continuationCounts)),
+      unigramCounts: new Map(Object.entries(input.unigramCounts)),
+      contextCounts: new Map(Object.entries(input.contextCounts)),
+      contextContinuationTypes: new Map(Object.entries(input.contextContinuationTypes)),
+      discount: input.discount
+    })
+  };
+}
+
+function compileSuccessorIndexes(input: {
+  successorCounts: ReadonlyMap<string, ReadonlyMap<string, number>>;
+  continuationCounts: ReadonlyMap<string, number>;
+  unigramCounts: ReadonlyMap<string, number>;
+  contextCounts: ReadonlyMap<string, number>;
+  contextContinuationTypes: ReadonlyMap<string, number>;
+  discount: number;
+}): Pick<KneserNeyModel, "successorIndex" | "successorOverflowCounts" | "backoffWeights" | "baseContinuations"> {
+  const successorIndex: Record<string, string[]> = {};
+  const successorOverflowCounts: Record<string, number> = {};
+  for (const [context, counts] of [...input.successorCounts.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
+    const ordered = [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+    successorIndex[context] = ordered.slice(0, MAX_SUCCESSORS_PER_CONTEXT).map(([symbol]) => symbol);
+    if (ordered.length > MAX_SUCCESSORS_PER_CONTEXT) {
+      successorOverflowCounts[context] = ordered.length - MAX_SUCCESSORS_PER_CONTEXT;
+    }
+  }
+  const baseCounts = input.continuationCounts.size > 0
+    ? input.continuationCounts
+    : input.unigramCounts;
+  const baseContinuations = [...baseCounts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, MAX_BASE_CONTINUATIONS)
+    .map(([symbol]) => symbol);
+  if (!baseContinuations.includes("</s>")) baseContinuations.push("</s>");
+  const backoffWeights: Record<string, number> = {};
+  for (const [context, denominator] of input.contextCounts) {
+    if (denominator <= 0) continue;
+    backoffWeights[context] = (input.discount * (input.contextContinuationTypes.get(context) ?? 0)) / denominator;
+  }
+  return { successorIndex, successorOverflowCounts, backoffWeights, baseContinuations };
+}
+
+interface KneserNeyRuntimeIndex {
+  vocabulary: Set<string>;
+}
+
+const runtimeIndexes = new WeakMap<KneserNeyModel, KneserNeyRuntimeIndex>();
+
+function runtimeIndex(model: KneserNeyModel): KneserNeyRuntimeIndex {
+  const cached = runtimeIndexes.get(model);
+  if (cached) return cached;
+  const compiled = { vocabulary: new Set(model.vocabulary) };
+  runtimeIndexes.set(model, compiled);
+  return compiled;
+}
+
+function assertCompiledKneserNey(model: KneserNeyModel): void {
+  if (model.schema !== KNESER_NEY_SCHEMA
+    || !model.successorIndex
+    || !model.backoffWeights
+    || !Array.isArray(model.baseContinuations)) {
+    throw new Error("Kneser-Ney model is not compiled for bounded successor-index inference");
+  }
+}
+
+function activeSuccessors(model: KneserNeyModel, rawContext: readonly string[], maximum: number): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const context = rawContext.slice(-(model.order - 1));
+  for (let start = 0; start < context.length && out.length < maximum; start += 1) {
+    const key = gramKey(context.slice(start));
+    for (const symbol of model.successorIndex[key] ?? []) {
+      if (seen.has(symbol)) continue;
+      seen.add(symbol);
+      out.push(symbol);
+      if (out.length >= maximum) break;
+    }
+  }
+  for (const symbol of model.baseContinuations) {
+    if (seen.has(symbol)) continue;
+    seen.add(symbol);
+    out.push(symbol);
+    if (out.length >= maximum) break;
+  }
+  if (!seen.has("</s>") && out.length < maximum) out.push("</s>");
+  return out;
+}
+
+function insertPrediction(
+  predictions: KneserNeyPrediction[],
+  candidate: KneserNeyPrediction,
+  limit: number
+): void {
+  let low = 0;
+  let high = predictions.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const current = predictions[middle]!;
+    if (candidate.probability > current.probability
+      || (candidate.probability === current.probability && candidate.symbol.localeCompare(current.symbol) < 0)) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  predictions.splice(low, 0, candidate);
+  if (predictions.length > limit) predictions.pop();
 }
 
 function topVocabulary(symbols: readonly string[], limit: number): string[] {

@@ -176,6 +176,26 @@ export function renderWorkbench(serverUrl: string): string {
       row.appendChild(accept); row.appendChild(reject); row.appendChild(correct); chat.appendChild(row); chat.scrollTop=chat.scrollHeight;
     }
     function log(text) { terminal.textContent += "\\n$ " + text; terminal.scrollTop=terminal.scrollHeight; }
+    async function postTurnStream(url, body, onFrame) {
+      const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify(body)});
+      if(!r.ok) { const t=await r.text(); throw new Error(t||('HTTP '+r.status)); }
+      if(!r.body) throw new Error('streaming response body unavailable');
+      const reader=r.body.getReader(); const decoder=new TextDecoder(); let pending=''; let result;
+      while(true) {
+        const next=await reader.read(); pending+=decoder.decode(next.value||new Uint8Array(),{stream:!next.done});
+        const lines=pending.split('\\n'); pending=lines.pop()||'';
+        for(const line of lines) {
+          if(!line.trim()) continue;
+          const frame=JSON.parse(line); onFrame(frame);
+          if(frame.type==='result') result=frame.value;
+          if(frame.type==='error') throw new Error(frame.error||JSON.stringify(frame.value)||'streaming turn failed');
+        }
+        if(next.done) break;
+      }
+      if(pending.trim()) { const frame=JSON.parse(pending); onFrame(frame); if(frame.type==='result') result=frame.value; if(frame.type==='error') throw new Error(frame.error||JSON.stringify(frame.value)||'streaming turn failed'); }
+      if(!result) throw new Error('streaming turn ended without a result frame');
+      return result;
+    }
     async function post(url, body) { const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); const t=await r.text(); const j=t?JSON.parse(t):null; if(!r.ok) throw new Error(JSON.stringify(j)); return j; }
     async function get(url) { const r=await fetch(url); const t=await r.text(); const j=t?JSON.parse(t):null; if(!r.ok) throw new Error(JSON.stringify(j)); return j; }
     async function refreshApprovals() { const r=await get('/api/session/approvals'); renderApprovals(r); return r; }
@@ -201,7 +221,7 @@ export function renderWorkbench(serverUrl: string): string {
     paletteInput.oninput = () => renderPalette(paletteInput.value);
     paletteInput.onkeydown = e => { if(e.key==='Escape') closePalette(); if(e.key==='Enter') paletteList.querySelector('.cmd')?.click(); };
     document.addEventListener('keydown', e => { if((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='k') { e.preventDefault(); openPalette(); } if((e.ctrlKey || e.metaKey) && e.key==='Enter') { e.preventDefault(); document.getElementById('send').click(); } });
-    document.getElementById('send').onclick = async () => { const text=prompt.value.trim(); if(!text) return; add('owner', text); log('POST /api/turn'); try { const r=await post('/api/turn',{text,sessionId,conversationId:sessionId}); add('scce', turnSurface(r)); addFeedbackControls(r.dialogue,text); inspector.textContent=JSON.stringify({ dialogue:r.dialogue, proof:r.entailment?.proof, pca:r.proofCarryingAnswer, pface:r.pface, language:r.languageAcquisition, actionGraph:r.actionGraph, functionalCognition:r.functionalCognition },null,2); trace.textContent=(r.events||[]).map(e=>e.typeId+' '+e.id).join('\\n'); await refreshApprovals(); } catch(e) { add('scce',t('error.prefix')+' '+e.message); } };
+    document.getElementById('send').onclick = async () => { const text=prompt.value.trim(); if(!text) return; add('owner', text); const response=add('scce','SCCE is starting…'); log('POST /api/turn?stream=1'); try { const r=await postTurnStream('/api/turn?stream=1',{text,sessionId,conversationId:sessionId},frame=>{ if(frame.type==='accepted') response.textContent='SCCE is working…'; else if(frame.type==='progress') response.textContent='SCCE is working… '+String(frame.phase||''); }); response.textContent=turnSurface(r); addFeedbackControls(r.dialogue,text); inspector.textContent=JSON.stringify({ dialogue:r.dialogue, proof:r.entailment?.proof, pca:r.proofCarryingAnswer, pface:r.pface, language:r.languageAcquisition, actionGraph:r.actionGraph, functionalCognition:r.functionalCognition },null,2); trace.textContent=(r.events||[]).map(e=>e.typeId+' '+e.id).join('\\n'); await refreshApprovals(); } catch(e) { response.textContent=t('error.prefix')+' '+e.message; } };
     document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r=await get('/api/inspect?target=snapshot'); inspector.textContent=JSON.stringify(r,null,2); } catch(e) { inspector.textContent=t('error.prefix')+' '+e.message; } };
     document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r=await refreshApprovals(); inspector.textContent=JSON.stringify(r,null,2); } catch(e) { inspector.textContent=t('error.prefix')+' '+e.message; } };
     document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant '+e.target.checked); try { const r=await post('/api/session/operator-grant',{enabled:e.target.checked}); renderApprovals(r); inspector.textContent=JSON.stringify(r,null,2); } catch(err) { inspector.textContent=t('error.prefix')+' '+err.message; e.target.checked=!e.target.checked; } };

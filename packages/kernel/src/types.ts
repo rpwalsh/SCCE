@@ -1158,6 +1158,17 @@ export interface OwnerInput {
   text: string;
   metadata?: JsonValue;
   requestedAuthority?: RequestedAuthority;
+  /**
+   * Trusted in-process execution control. This is never accepted from JSON
+   * request metadata and is deliberately excluded from durable input state.
+   */
+  runtimeControl?: {
+    signal?: AbortSignal;
+    onProgress?: (progress: {
+      phase: string;
+      observedAtMonotonicMs: number;
+    }) => void;
+  };
 }
 
 export interface RuntimeWarmupInput {

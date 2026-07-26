@@ -154,12 +154,39 @@ describe("turn session metadata projection", () => {
     const runtime = metadata.runtime as Record<string, unknown>;
     expect(runtime.fastLocalEvidenceAnswer).toBe(true);
     expect(runtime.productionBoundedAnswer).toBe(true);
-    expect(runtime.deadline).toMatchObject({
-      schema: "scce.runtime_deadline.v1",
+    expect(runtime.initialResponseDeadline).toMatchObject({
+      schema: "scce.initial_visible_response.v1",
       clock: "node.performance.v1",
-      budgetMs: 5_000,
-      responseReserveMs: 1_000
+      budgetMs: 5_000
     });
-    expect(runtime.deadline).not.toMatchObject({ schema: "untrusted.deadline" });
+    expect(runtime).not.toHaveProperty("deadline");
+
+    const streamed = await fetch(`http://127.0.0.1:${address.port}/api/turn?stream=1`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/x-ndjson"
+      },
+      body: JSON.stringify({
+        text: "Continue the session",
+        requestedAuthority: "factual",
+        sessionId: "session.fixture"
+      })
+    });
+    const frames = (await streamed.text())
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(streamed.headers.get("content-type")).toContain("application/x-ndjson");
+    expect(frames[0]).toMatchObject({
+      schema: "scce.turn_stream.v1",
+      type: "accepted",
+      initialVisibleResponseDeadlineMs: 5_000
+    });
+    expect(frames.at(-1)).toMatchObject({
+      schema: "scce.turn_stream.v1",
+      type: "error",
+      status: 500
+    });
   });
 });
