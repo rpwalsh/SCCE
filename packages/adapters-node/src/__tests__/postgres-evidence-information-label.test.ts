@@ -13,7 +13,7 @@ afterEach(async () => {
 
 describe("Postgres evidence informationLabel round-trip (plan item 16)", () => {
   (liveDatabaseUrl ? it : it.skip)(
-    "returns informationLabel from getEvidence, getEvidenceBatch, and searchEvidence",
+    "returns informationLabel from getEvidence, getEvidenceBatch, searchEvidence, and sourceVersionsForEvidence",
     async () => {
       const informationAccess = {
         tenantId: "scce.local",
@@ -85,10 +85,12 @@ describe("Postgres evidence informationLabel round-trip (plan item 16)", () => {
         // hits the feature/source bounded branch without needing to
         // contrive anchor-index-specific feature shapes for the others.
         const searched = await adapter.evidence.searchEvidence({ sourceVersionId, status: "any" });
+        const versions = await adapter.evidence.sourceVersionsForEvidence([span.id]);
 
         expect(single?.informationLabel).toEqual(informationLabel);
         expect(batch[0]?.informationLabel).toEqual(informationLabel);
         expect(searched.find(row => String(row.span.id) === String(span.id))?.span.informationLabel).toEqual(informationLabel);
+        expect(versions.find(v => String(v.sourceVersionId) === String(sourceVersionId))?.informationLabel).toEqual(informationLabel);
       } finally {
         await adapter.transaction(async () => {
           await adapter.query(`DELETE FROM ${adapter.table("evidence_spans")} WHERE id=$1`, [span.id]);
