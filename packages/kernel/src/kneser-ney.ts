@@ -14,6 +14,17 @@ export interface KneserNeyModel {
   unigramCounts: Record<string, number>;
   totalUnigramCount: number;
   vocabulary: string[];
+  /**
+   * Observed next-symbol sets per context key, for every context length
+   * from `order-1` down to 1, built once during training. Lets
+   * predictKneserNey score only symbols actually observed to follow this
+   * context (or a shorter backoff context) -- typically tens of
+   * candidates -- instead of the full vocabulary (up to `vocabularyLimit`,
+   * default 20000). Optional so models trained before this field existed
+   * still deserialize; predictKneserNey falls back to a small top-frequency
+   * slice for those.
+   */
+  contextSuccessorSymbols?: Record<string, string[]>;
 }
 
 export interface KneserNeyPrediction {
@@ -87,17 +98,55 @@ export function trainKneserNey(text: string | readonly string[], options: { orde
     totalContinuationTypes,
     unigramCounts: Object.fromEntries(unigramCounts),
     totalUnigramCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
-    vocabulary
+    vocabulary,
+    contextSuccessorSymbols: Object.fromEntries([...contextContinuationTypes.entries()].map(([key, set]) => [key, [...set]]))
   };
 }
 
+const vocabularySetCache = new WeakMap<KneserNeyModel, Set<string>>();
+
+function vocabularySet(model: KneserNeyModel): Set<string> {
+  let set = vocabularySetCache.get(model);
+  if (!set) {
+    set = new Set(model.vocabulary);
+    vocabularySetCache.set(model, set);
+  }
+  return set;
+}
+
 export function kneserNeyProbability(model: KneserNeyModel, context: readonly string[], symbol: string): number {
-  const normalizedSymbol = model.vocabulary.includes(symbol) || symbol === "</s>" ? symbol : "<unk>";
+  const normalizedSymbol = vocabularySet(model).has(symbol) || symbol === "</s>" ? symbol : "<unk>";
   return recursiveProbability(model, context.slice(-(model.order - 1)), normalizedSymbol, model.order);
 }
 
+/** Small top-frequency fallback pool used only when no context (at any backoff length) has any observed successor recorded -- e.g. a genuinely unseen context, or a model persisted before contextSuccessorSymbols existed. model.vocabulary is already frequency-sorted (topVocabulary), so a short prefix slice is the top-frequency symbols, not an arbitrary subset. */
+const FALLBACK_CANDIDATE_LIMIT = 64;
+
+/**
+ * Bounded candidate symbols for one prediction step: the union of symbols
+ * actually observed to follow `context` at its full backoff length down to
+ * length 1 (typically tens of symbols, per KneserNeyModel.contextSuccessorSymbols),
+ * plus "</s>". Falls back to a small top-frequency slice only when no
+ * backoff context has any recorded successor at all. Replaces scoring the
+ * entire vocabulary (up to 5000 candidates) per generated symbol.
+ */
+function boundedCandidateSymbols(model: KneserNeyModel, context: readonly string[]): string[] {
+  const candidates = new Set<string>(["</s>"]);
+  if (model.contextSuccessorSymbols) {
+    for (let length = context.length; length >= 1; length--) {
+      const key = gramKey(context.slice(context.length - length));
+      const successors = model.contextSuccessorSymbols[key];
+      if (successors) for (const symbol of successors) candidates.add(symbol);
+    }
+  }
+  if (candidates.size <= 1) {
+    for (const symbol of model.vocabulary.slice(0, FALLBACK_CANDIDATE_LIMIT)) candidates.add(symbol);
+  }
+  return [...candidates];
+}
+
 export function predictKneserNey(model: KneserNeyModel, context: readonly string[], limit = 16): KneserNeyPrediction[] {
-  const candidates = [...new Set([...model.vocabulary.slice(0, 5000), "</s>"])];
+  const candidates = boundedCandidateSymbols(model, context.slice(-(model.order - 1)));
   return candidates
     .map(symbol => {
       const probability = kneserNeyProbability(model, context, symbol);
