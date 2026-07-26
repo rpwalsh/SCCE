@@ -81,7 +81,7 @@ The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded 
 
 ## Activation and evidence limits
 
-- PostgreSQL schema v22 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, and adds durable segmentation-population models.
+- PostgreSQL schema v23 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.
 - Generic lifecycle CAS cannot enter or leave ACTIVE; activation must use the locked READY-only path.
 - Corpus promotion and language-memory eligibility do not certify facts. Exact evidence spans and graph/proof admissibility remain required for source-backed claims.
 
@@ -126,6 +126,11 @@ Positive held-out codelength gain and improved held-out relation recovery are bo
 required. A shuffled relation assignment, a duplicate-only one-source corpus and a
 deterministic random-repetition corpus must all fail the same promotion boundary.
 The frozen model ID and gain are written back to candidate incidence metadata.
+Promoted candidates additionally materialize as `scce.hyperedge.v2`. A relation may
+have zero or more ports; an omitted participant remains an explicit port with a null
+node reference. Qualifiers, temporal validity, modality and evidence have dedicated
+fields. The `memberNodeIds` array is derived only from observed ports for bounded
+retrieval and does not define role semantics.
 
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,

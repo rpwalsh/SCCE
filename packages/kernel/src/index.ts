@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./hyperedge.js";
 export * from "./primitives.js";
 export * from "./ids.js";
 export * from "./storage.js";

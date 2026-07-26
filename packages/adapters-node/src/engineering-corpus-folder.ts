@@ -145,6 +145,7 @@ export interface EngineeringCorpusFolderRuntimeReport {
     observationCounts: Record<string, number>;
     graphNodes: number;
     graphEdges: number;
+    graphHyperedges: number;
     languageTextChars: number;
   }>;
   engineering: {
@@ -407,6 +408,7 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
       observationCounts: projection.observationCounts,
       graphNodes: projection.graphNodes.length,
       graphEdges: projection.graphEdges.length,
+      graphHyperedges: projection.graphHyperedges.length,
       languageTextChars: projection.languageText.length
     })),
     engineering: {

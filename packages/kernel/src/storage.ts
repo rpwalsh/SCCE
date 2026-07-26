@@ -907,7 +907,7 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-export const POSTGRES_SCHEMA_VERSION = 22;
+export const POSTGRES_SCHEMA_VERSION = 23;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
