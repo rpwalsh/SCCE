@@ -98,15 +98,27 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
   }
   let force: AssistantForceClass;
   const reasonIds: string[] = [];
-  if (creative) {
-    force = "creative_answer";
-    reasonIds.push(input.requestedAuthority === "creative" ? "assistant_force.requested_creative_authority" : "assistant_force.creative_construct");
+  if (translation && input.requestedAuthority === "translation") {
+    // An explicitly requested translation authority outranks incidental
+    // creative signals (epistemicForce "invented", outputForce "creative")
+    // that a translated surface can legitimately also carry -- the
+    // request itself, not a side effect of how the surface was realized,
+    // decides the force here.
+    force = "translation_answer";
+    reasonIds.push("assistant_force.requested_translation_authority");
   } else if (contradicted) {
+    // Contradiction pressure outranks a merely-incidental creative signal
+    // too: an "invented" epistemic force paired with high contradiction
+    // means the claim is unsupportable, not that it should be waved
+    // through as intentionally creative output.
     force = "insufficient_support";
     reasonIds.push("assistant_force.contradiction_pressure");
+  } else if (creative) {
+    force = "creative_answer";
+    reasonIds.push(input.requestedAuthority === "creative" ? "assistant_force.requested_creative_authority" : "assistant_force.creative_construct");
   } else if (translation) {
     force = "translation_answer";
-    reasonIds.push(input.requestedAuthority === "translation" ? "assistant_force.requested_translation_authority" : "assistant_force.translation_surface");
+    reasonIds.push("assistant_force.translation_surface");
   } else if ((input.epistemicForce === "proved" || truthState === "truth.certified" || proof === "scce.verdict.002") && hasDirectEvidence) {
     force = "certified_fact";
     reasonIds.push("assistant_force.certified_direct_evidence");
