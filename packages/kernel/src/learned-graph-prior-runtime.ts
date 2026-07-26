@@ -411,7 +411,7 @@ export function attachLearnedGraphPriorConstruct(input: {
   const gateSelectedSubject = gate.candidateSubjectMatches[0]?.label || cognitiveTopicForRequest(input.requestText);
   const selectedSubject = gateSelectedSubject || initialAlphaPlan?.selectedSubject || "";
   const initialAlphaPlanUsable = Boolean(initialAlphaPlan && semanticAnswerSubjectAllowed(input.requestText, initialAlphaPlan.selectedSubject, gate) && (!gateSelectedSubject || samePriorEntity(initialAlphaPlan.selectedSubject, gateSelectedSubject)));
-  const alphaPlan = initialAlphaPlanUsable ? initialAlphaPlan : createFallbackAlphaRhetoricalPlan({
+  const alphaPlan = initialAlphaPlanUsable ? initialAlphaPlan : createRecoveryAlphaRhetoricalPlan({
     ranked,
     selectedSubject,
     requestText: input.requestText,
@@ -602,12 +602,12 @@ export function attachLearnedGraphPriorConstruct(input: {
     explanationCompleteness: input.cognitiveFabric.supportMass,
     targetSentenceCount: Math.max(2, Math.min(4, subjectFacts.length)),
     proofBoundaryId: "output.force.import_bound",
-    audit: toJsonValue({ fallback: "minimal_cognitive_fabric", selectedFitCount: input.cognitiveFabric.selectedFits.length })
+    audit: toJsonValue({ activationPath: "minimal_cognitive_fabric", selectedFitCount: input.cognitiveFabric.selectedFits.length })
   };
 }
 
 
- function createFallbackAlphaRhetoricalPlan(input: {
+ function createRecoveryAlphaRhetoricalPlan(input: {
   ranked: readonly LearnedGraphPriorFact[];
   selectedSubject: string;
   requestText: string;
@@ -625,11 +625,11 @@ export function attachLearnedGraphPriorConstruct(input: {
     .map(fact => alphaRhetoricalAssignment({ fact, subject, anchors, bridgeAnchors, contradictionPressure, hasher: input.hasher }))
     .sort((left, right) => right.arc - left.arc || right.pathScore - left.pathScore || left.factKey.localeCompare(right.factKey));
   const assignments = assignmentCandidates.filter(assignment => assignment.arc > 0.0001 || assignment.pathScore > 0.18);
-  const fallbackAssignments = assignments.length ? assignments : assignmentCandidates.slice(0, 12);
-  if (!fallbackAssignments.length) return undefined;
-  const selected = selectAlphaRhetoricalAssignments(fallbackAssignments);
+  const recoverableAssignments = assignments.length ? assignments : assignmentCandidates.slice(0, 12);
+  if (!recoverableAssignments.length) return undefined;
+  const selected = selectAlphaRhetoricalAssignments(recoverableAssignments);
   const selectedKeys = new Set(selected.map(assignment => assignment.factKey));
-  const allAssignments = fallbackAssignments.map(assignment => ({
+  const allAssignments = recoverableAssignments.map(assignment => ({
     ...assignment,
     selected: selectedKeys.has(assignment.factKey),
     shouldSurface: selectedKeys.has(assignment.factKey) && assignment.shouldSurface
@@ -664,7 +664,7 @@ export function attachLearnedGraphPriorConstruct(input: {
       bridgeCoverage,
       missingRequired,
       selectedRoleIds,
-      fallback: true
+      activationPath: "question_slot_recovery"
     })
   };
 }
@@ -744,7 +744,7 @@ export function attachLearnedGraphPriorConstruct(input: {
 }
 
 
- function fallbackQuestionSlotAssignments(facts: readonly LearnedGraphPriorFact[], requestText: string): QuestionSlotAssignment[] {
+ function graphNeighborhoodQuestionSlotAssignments(facts: readonly LearnedGraphPriorFact[], requestText: string): QuestionSlotAssignment[] {
   const anchors = priorRequestAnchors(requestText);
   const selected = uniqueLearnedFacts([
     ...facts.filter(topicCompoundMembershipAnswerFact),

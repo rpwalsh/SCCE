@@ -30,6 +30,8 @@ describe("graph-surface alignment -> real corpus-training constructionSets wirin
     expect(sets.length).toBeGreaterThan(0);
     const set = sets[0]!;
     expect(set.observations.length).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(set.alignmentSummary)).toContain("scce.graph_surface_alignment.summary.v1");
+    expect(JSON.stringify(set.alignmentSummary)).toContain("sparse_anchor_transport_v1");
 
     const compiled = compileLanguageConstructionPattern({
       bindingId: set.bindingId,

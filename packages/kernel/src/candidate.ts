@@ -109,10 +109,10 @@ export function createCandidateEngine() {
       const supportedCandidates = candidatesBeforeFunctionalGate.filter(candidate =>
         functionalCandidateGateFailures(candidate.kind, input.functionalGate).length === 0
       );
-      const fallbackCandidates = supportedCandidates.length === 0
+      const recoveryCandidates = supportedCandidates.length === 0
         ? [proofAnswer(input)]
         : [];
-      const candidates = supportedCandidates.length > 0 ? supportedCandidates : fallbackCandidates;
+      const candidates = supportedCandidates.length > 0 ? supportedCandidates : recoveryCandidates;
       const candidateOperators = candidateOperatorRows(candidates, input.requestedAuthority, input.calibrationModels, input.requirementField);
       const rawTotal = candidates.reduce((sum, candidate) => sum + candidateMass(candidate), 0);
       const scoreTrace = candidates.flatMap(candidate => candidate.scoreTrace ?? []);
@@ -178,7 +178,7 @@ export function createCandidateEngine() {
           surfaceMass,
           rawMass,
           candidateOperators,
-          operatorRoutingFallback: supportedCandidates.length === 0,
+          operatorRoutingRecovery: supportedCandidates.length === 0,
           functionalGate: input.functionalGate ?? null,
           functionalGateRejected: functionallyRejected.map(row => ({
             candidateId: row.candidate.id,
@@ -654,13 +654,13 @@ function normalizeCandidateAnswer(answer: string, input: { requestText: string; 
 }
 
 function normalizedSemanticProofRoute(proof: SemanticEntailmentResult["proof"]): { transformIds: string[]; edgeCount: number } {
-  const legacy = proof as unknown as { transformIds?: unknown; proofGraph?: { edges?: unknown } };
-  const transformIds = Array.isArray(legacy.transformIds)
-    ? legacy.transformIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+  const routedProof = proof as unknown as { transformIds?: unknown; proofGraph?: { edges?: unknown } };
+  const transformIds = Array.isArray(routedProof.transformIds)
+    ? routedProof.transformIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   return {
     transformIds,
-    edgeCount: Array.isArray(legacy.proofGraph?.edges) ? legacy.proofGraph.edges.length : 0
+    edgeCount: Array.isArray(routedProof.proofGraph?.edges) ? routedProof.proofGraph.edges.length : 0
   };
 }
 
@@ -821,9 +821,9 @@ function cleanGraphInferenceSurface(input: {
   entailment: SemanticEntailmentResult;
   evidence: EvidenceSpan[];
 }): string {
-  const legacyProof = input.entailment.proof as unknown as { claim?: { text?: unknown } };
-  const legacyClaimText = typeof legacyProof.claim?.text === "string" ? legacyProof.claim.text : "";
-  const claim = cleanIncomingSurface(input.entailment.claim?.text ?? legacyClaimText);
+  const routedProof = input.entailment.proof as unknown as { claim?: { text?: unknown } };
+  const routedClaimText = typeof routedProof.claim?.text === "string" ? routedProof.claim.text : "";
+  const claim = cleanIncomingSurface(input.entailment.claim?.text ?? routedClaimText);
   if (claim) return claim;
   return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence);
 }
@@ -860,15 +860,15 @@ function proposalCandidate(
       .map(id => evidenceById.get(String(id)))
       .filter((id): id is EvidenceId => Boolean(id));
     const boundFromProof = evidenceIds.length > 0 || proofEvidenceIds.length > 0;
-    const fallbackEvidenceIds = evidenceIds.length
+    const recoveryEvidenceIds = evidenceIds.length
       ? evidenceIds
       : proofEvidenceIds.length
         ? proofEvidenceIds
         : input.evidence.map(span => span.id);
-    const evidenceSurface = boundEvidenceSurface(fallbackEvidenceIds, input.evidence);
+    const evidenceSurface = boundEvidenceSurface(recoveryEvidenceIds, input.evidence);
     if (evidenceSurface) {
       answer = evidenceSurface;
-      evidenceIds = [...new Set([...evidenceIds, ...fallbackEvidenceIds].map(String))]
+      evidenceIds = [...new Set([...evidenceIds, ...recoveryEvidenceIds].map(String))]
         .map(id => evidenceById.get(id))
         .filter((id): id is EvidenceId => Boolean(id));
       surfaceOriginId = boundFromProof

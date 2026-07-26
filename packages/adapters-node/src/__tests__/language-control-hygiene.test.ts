@@ -162,7 +162,7 @@ describe("language control hygiene scanner", () => {
         "  return \"surface.detail.profile.1\";",
         "}",
         "export function legacy(input: { detailLevel?: string }): unknown {",
-        "  return { legacyDetailSignal: input.detailLevel };",
+        "  return { detailSignal: input.detailLevel };",
         "}",
         "export function parseCorrection(ownerFeedback: string): string | undefined {",
         "  if (/brief/u.test(ownerFeedback)) return \"surface.detail.profile.0\";",
@@ -184,7 +184,7 @@ describe("language control hygiene scanner", () => {
       const rules = result.issues.map(issue => issue.ruleId);
       expect(result.failed).toBe(true);
       expect(rules).toContain("display_string_branch");
-      expect(rules).toContain("legacy_detail_signal_runtime");
+      expect(rules).toContain("detail_signal_runtime");
       expect(rules).toContain("regex_correction_parser");
       expect(rules).toContain("operation_display_label");
       expect(rules).toContain("loose_section_classifier");
@@ -235,8 +235,8 @@ describe("language control hygiene scanner", () => {
         "export const parserOptions = { sheetStubs: false };",
         "export const risks = [{ id: \"gap\", level: \"info\", message: \"No spectral gap is reported because its assumptions were not established.\", evidence: {} }];",
         "// Unrelated answer families are not reopened as a fallback.",
-        "export function bindEvidence(fallbackEvidenceIds: string[], evidence: unknown): unknown {",
-        "  return boundEvidenceSurface(fallbackEvidenceIds, evidence);",
+        "export function bindEvidence(recoveryEvidenceIds: string[], evidence: unknown): unknown {",
+        "  return boundEvidenceSurface(recoveryEvidenceIds, evidence);",
         "}",
         "declare function boundEvidenceSurface(ids: string[], evidence: unknown): unknown;"
       ].join("\n"));

@@ -79,6 +79,7 @@ export interface LanguageCorpusTrainingReport {
   semanticFrames: number;
   constructionCandidates: number;
   languageConstructions: number;
+  graphSurfaceAlignments: number;
   rejectedLanguageConstructions: number;
   eventId: string;
   warnings: string[];
@@ -255,6 +256,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       evidence: evidence.length,
       constructionCandidates: compiledBatch.constructionCandidates,
       languageConstructions: compiledConstructionPatterns.length,
+      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries,
       rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
       constructionPromotion: compiledBatch.constructionPromotion as unknown as JsonValue,
       corpusMetadata: metadata
@@ -277,6 +279,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     semanticFrames: frames.length,
     constructionCandidates: compiledBatch.constructionCandidates,
     languageConstructions: compiledConstructionPatterns.length,
+    graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
     rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
     eventId: String(learned.id),
     warnings: [...new Set(constructionWarnings)].sort()
