@@ -1,8 +1,20 @@
 import { clamp01, createHasher, entropy, toJsonValue } from "./primitives.js";
+import {
+  scoreBoundary,
+  type BoundaryEstimatorModel,
+  type BoundaryFeatureVector,
+  type BoundaryObservation
+} from "./boundary-estimator.js";
+import {
+  buildSegmentationForest,
+  SEGMENTATION_FOREST_SCHEMA,
+  type SurfaceSegmentationForest
+} from "./segmentation-forest.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 
-export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v2" as const;
+export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v3" as const;
+export const UNTRAINED_BOUNDARY_ESTIMATOR_ID = "boundary_estimator.untrained-neutral.v1" as const;
 
 export type SurfaceLatticeUnitKind =
   | "grapheme"
@@ -35,16 +47,9 @@ export interface SurfaceBoundaryEvidence {
   positionByte: number;
   positionCodePoint: number;
   positionGrapheme: number;
-  bootstrapBoundaryProbability: number;
-  features: {
-    whitespaceAdjacent: number;
-    punctuationAdjacent: number;
-    lineBreakAdjacent: number;
-    scriptTransition: number;
-    structuralBoundary: number;
-    localTransitionEntropy: number;
-    repeatedContextSupport: number;
-  };
+  boundaryProbability: number;
+  estimatorId: string;
+  features: BoundaryFeatureVector;
 }
 
 export interface SurfaceLatticeUnit {
@@ -90,6 +95,7 @@ export interface SurfaceLattice {
   textHash: string;
   units: SurfaceLatticeUnit[];
   edges: SurfaceLatticeEdge[];
+  segmentationForest: SurfaceSegmentationForest;
   audit: JsonValue;
 }
 
@@ -106,6 +112,8 @@ export interface SurfaceLatticeBuildOptions {
   hasher?: Hasher;
   maxUnits?: number;
   maxEdges?: number;
+  segmentationPathLimit?: number;
+  boundaryEstimator?: BoundaryEstimatorModel;
 }
 
 interface CandidateUnit {
@@ -134,6 +142,15 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const model = segmentUnicodeSurfaceV2(text, hasher);
   const evidenceIds = (options.evidenceIds ?? []).map(String).sort();
   const sourceVersionId = options.sourceVersionId === undefined ? undefined : String(options.sourceVersionId);
+  const estimatorId = options.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID;
+  const latticeId = `surface_lattice.${hasher.digestHex(JSON.stringify([
+    SURFACE_LATTICE_SCHEMA,
+    options.documentId,
+    sourceVersionId,
+    evidenceIds,
+    hasher.digestHex(text),
+    estimatorId
+  ])).slice(0, 32)}`;
   const coordinates = buildSurfaceCoordinateIndex(text);
   const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
@@ -184,7 +201,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       positionGrapheme: coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0,
       structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
       transitionEntropyByPosition,
-      repeatedContextSupport: recurrenceCount
+      repeatedContextSupport: recurrenceCount,
+      boundaryEstimator: options.boundaryEstimator
     });
     const after = boundaryEvidenceAt({
       text,
@@ -193,7 +211,8 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       positionGrapheme: coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length,
       structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
       transitionEntropyByPosition,
-      repeatedContextSupport: recurrenceCount
+      repeatedContextSupport: recurrenceCount,
+      boundaryEstimator: options.boundaryEstimator
     });
     units.push({
       id: `surface_unit.${hasher.digestHex(JSON.stringify([
@@ -231,25 +250,27 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
 
   const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);
   const edges = latticeEdges(units, hasher, effectiveMaxEdges);
+  const segmentationForest = buildSegmentationForest({
+    latticeId,
+    estimatorId,
+    units,
+    pathLimit: options.segmentationPathLimit,
+    hasher
+  });
   const countsByKind = new Map<SurfaceLatticeUnitKind, number>();
   for (const unit of units) countsByKind.set(unit.kind, (countsByKind.get(unit.kind) ?? 0) + 1);
   return {
     schema: SURFACE_LATTICE_SCHEMA,
-    id: `surface_lattice.${hasher.digestHex(JSON.stringify([
-      SURFACE_LATTICE_SCHEMA,
-      options.documentId,
-      sourceVersionId,
-      evidenceIds,
-      hasher.digestHex(text)
-    ])).slice(0, 32)}`,
+    id: latticeId,
     documentId: options.documentId,
     ...(sourceVersionId ? { sourceVersionId } : {}),
     evidenceIds,
     textHash: hasher.digestHex(text),
     units,
     edges,
+    segmentationForest,
     audit: toJsonValue({
-      builder: "kernel.surface_lattice.v2",
+      builder: "kernel.surface_lattice.v3",
       inputUtf16Length: text.length,
       inputBytes: Buffer.byteLength(text, "utf8"),
       inputCodePoints: [...text].length,
@@ -262,10 +283,12 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       edgeCapReached: edges.length >= effectiveMaxEdges,
       unitsByKind: Object.fromEntries([...countsByKind.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
       boundaryEstimator: {
-        id: "bootstrap_surface_lattice_boundary_v2",
-        status: "bootstrap_calibratable_features",
-        note: "features are persisted for later calibration; punctuation/space are evidence, not mandatory grammar"
-      }
+        id: estimatorId,
+        status: options.boundaryEstimator ? "corpus_fitted" : "untrained_neutral",
+        trainingStatisticsId: options.boundaryEstimator?.trainingStatisticsId
+      },
+      segmentationForestId: segmentationForest.id,
+      retainedSegmentationPosteriorMass: segmentationForest.retainedPosteriorMass
     })
   };
 }
@@ -273,13 +296,64 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
 export function canonicalSurfaceSequence(
   lattice: SurfaceLattice
 ): SurfaceLatticeUnit[] {
-  const preferred = lattice.units
-    .filter(unit => unit.kind === "surface_segment" && unit.surface.length > 0 && !/^\s+$/u.test(unit.surface))
-    .sort(comparePersistedUnits);
-  if (preferred.length > 0) return preferred;
-  return lattice.units
-    .filter(unit => unit.kind === "grapheme" && unit.surface.length > 0 && !/^\s+$/u.test(unit.surface) && !/^\p{Control}+$/u.test(unit.surface))
-    .sort(comparePersistedUnits);
+  const selected = lattice.segmentationForest.paths[0];
+  if (!selected) return [];
+  const unitsById = new Map(lattice.units.map(unit => [unit.id, unit]));
+  return selected.unitIds
+    .map(unitId => {
+      const unit = unitsById.get(unitId);
+      if (!unit) throw new Error(`segmentation forest references missing unit ${unitId}`);
+      return unit;
+    })
+    .filter(unit => unit.surface.length > 0 && !/^\s+$/u.test(unit.surface) && !/^\p{Control}+$/u.test(unit.surface));
+}
+
+/**
+ * Extracts self-supervised boundary labels from exact lattice agreement.
+ * Alternative-unit endpoints add positive mass; stable units spanning a
+ * position add negative mass. Structural spans contribute endpoints only.
+ */
+export function collectBoundaryObservations(
+  lattices: readonly SurfaceLattice[]
+): BoundaryObservation[] {
+  const observations: BoundaryObservation[] = [];
+  for (const lattice of [...lattices].sort((left, right) => left.id.localeCompare(right.id))) {
+    const graphemes = lattice.units
+      .filter(unit => unit.overlapClass === "base_partition")
+      .sort(comparePersistedUnits);
+    const hypotheses = lattice.units.filter(unit => unit.overlapClass !== "base_partition");
+    const positiveMass = new Array<number>(graphemes.length + 1).fill(0);
+    const negativeDelta = new Array<number>(graphemes.length + 2).fill(0);
+    for (const unit of hypotheses) {
+      const recurrence = Math.max(1, Math.log1p(unit.recurrenceCount));
+      if (unit.graphemeStart >= 0 && unit.graphemeStart <= graphemes.length) {
+        positiveMass[unit.graphemeStart] = positiveMass[unit.graphemeStart]!
+          + (unit.overlapClass === "structure" ? 0.5 : recurrence);
+      }
+      if (unit.graphemeEnd >= 0 && unit.graphemeEnd <= graphemes.length) {
+        positiveMass[unit.graphemeEnd] = positiveMass[unit.graphemeEnd]!
+          + (unit.overlapClass === "structure" ? 0.5 : recurrence);
+      }
+      if (unit.overlapClass === "segmentation_alternative"
+        && unit.graphemeEnd - unit.graphemeStart > 1) {
+        negativeDelta[unit.graphemeStart + 1] = negativeDelta[unit.graphemeStart + 1]! + recurrence;
+        negativeDelta[unit.graphemeEnd] = negativeDelta[unit.graphemeEnd]! - recurrence;
+      }
+    }
+    let interiorMass = 0;
+    for (let position = 1; position < graphemes.length; position += 1) {
+      interiorMass += negativeDelta[position] ?? 0;
+      const evidence = graphemes[position - 1]!.boundaryAfter;
+      const positive = positiveMass[position] ?? 0;
+      if (positive + interiorMass <= 0) continue;
+      observations.push({
+        features: evidence.features,
+        positiveMass: positive,
+        negativeMass: interiorMass
+      });
+    }
+  }
+  return observations;
 }
 
 export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): SurfaceLatticeValidation {
@@ -313,6 +387,37 @@ export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): S
     || codePointCursor !== [...text].length
     || graphemeCursor !== graphemes.length) {
     issues.push("base_partition_incomplete");
+  }
+  if (lattice.segmentationForest.schema !== SEGMENTATION_FOREST_SCHEMA
+    || lattice.segmentationForest.latticeId !== lattice.id
+    || lattice.segmentationForest.graphemeCount !== graphemes.length) {
+    issues.push("segmentation_forest_identity");
+  }
+  const unitsById = new Map(lattice.units.map(unit => [unit.id, unit]));
+  let retainedMass = 0;
+  for (const path of lattice.segmentationForest.paths) {
+    let cursor = 0;
+    retainedMass += path.posterior;
+    for (const unitId of path.unitIds) {
+      const unit = unitsById.get(unitId);
+      if (!unit) {
+        issues.push(`segmentation_missing_unit:${unitId}`);
+        continue;
+      }
+      if (unit.graphemeStart !== cursor || unit.graphemeEnd <= unit.graphemeStart) {
+        issues.push(`segmentation_gap:${path.id}:${unitId}`);
+      }
+      cursor = unit.graphemeEnd;
+    }
+    if (cursor !== graphemes.length) issues.push(`segmentation_incomplete:${path.id}`);
+    if (path.posterior < 0 || path.posterior > 1) issues.push(`segmentation_posterior:${path.id}`);
+  }
+  if (graphemes.length > 0 && lattice.segmentationForest.paths.length === 0) {
+    issues.push("segmentation_forest_empty");
+  }
+  if (Math.abs(retainedMass - lattice.segmentationForest.retainedPosteriorMass) > 1e-8
+    || retainedMass > 1 + 1e-8) {
+    issues.push("segmentation_retained_mass");
   }
   for (const unit of lattice.units) {
     if (unit.byteStart < 0 || unit.byteEnd < unit.byteStart || unit.byteEnd > bytes.length
@@ -665,6 +770,7 @@ function boundaryEvidenceAt(input: {
   structuralBoundary: number;
   transitionEntropyByPosition: ReadonlyMap<number, number>;
   repeatedContextSupport: number;
+  boundaryEstimator?: BoundaryEstimatorModel;
 }): SurfaceBoundaryEvidence {
   const chars = [...input.text];
   const left = chars[input.positionCodePoint - 1] ?? "";
@@ -675,30 +781,24 @@ function boundaryEvidenceAt(input: {
   const scriptTransition = left && right && !/\s/u.test(left) && !/\s/u.test(right) && dominantScriptId(left) !== dominantScriptId(right) ? 1 : 0;
   const localTransitionEntropy = clamp01((input.transitionEntropyByPosition.get(input.positionCodePoint) ?? 0) / 4);
   const repeatedContextSupport = clamp01(Math.log1p(input.repeatedContextSupport) / 6);
-  const bootstrapBoundaryProbability = clamp01(
-    0.06
-    + whitespaceAdjacent * 0.34
-    + punctuationAdjacent * 0.18
-    + lineBreakAdjacent * 0.2
-    + scriptTransition * 0.08
-    + input.structuralBoundary * 0.18
-    + localTransitionEntropy * 0.08
-    + repeatedContextSupport * 0.06
-  );
+  const features: BoundaryFeatureVector = {
+    whitespaceAdjacent,
+    punctuationAdjacent,
+    lineBreakAdjacent,
+    scriptTransition,
+    structuralBoundary: input.structuralBoundary,
+    localTransitionEntropy,
+    repeatedContextSupport
+  };
   return {
     positionByte: input.positionByte,
     positionCodePoint: input.positionCodePoint,
     positionGrapheme: input.positionGrapheme,
-    bootstrapBoundaryProbability,
-    features: {
-      whitespaceAdjacent,
-      punctuationAdjacent,
-      lineBreakAdjacent,
-      scriptTransition,
-      structuralBoundary: input.structuralBoundary,
-      localTransitionEntropy,
-      repeatedContextSupport
-    }
+    boundaryProbability: input.boundaryEstimator
+      ? scoreBoundary(input.boundaryEstimator, features)
+      : 0.5,
+    estimatorId: input.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID,
+    features
   };
 }
 

@@ -1,6 +1,6 @@
 # Corpus Training
 
-SCCE training is corpus compilation. Source material first becomes an exact `scce.surface_lattice.v2`, then source versions, evidence spans, language profiles, n-gram observations and models, language units, language patterns, semantic frames, and traceable events in PostgreSQL. The base lattice is not truncated by higher-hypothesis caps: every admitted UTF-8 byte remains recoverable through byte, UTF-16, code-point, and grapheme coordinates.
+SCCE training is corpus compilation. Source material first becomes an exact `scce.surface_lattice.v3`, then source versions, evidence spans, language profiles, n-gram observations and models, language units, language patterns, semantic frames, and traceable events in PostgreSQL. The base lattice is not truncated by higher-hypothesis caps: every admitted UTF-8 byte remains recoverable through byte, UTF-16, code-point, and grapheme coordinates.
 
 The current first-class language-memory source systems are:
 
@@ -88,6 +88,16 @@ The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded 
 ## Corpus compilation boundary
 
 Corpus material is compiled into PostgreSQL-backed evidence and language memory. The n-gram compiler and primary language-induction engine consume the canonical surface lattice and record its identity in compilation audit data. Remaining production language consumers are being migrated; see `IMPLEMENTATION_STATUS.md`.
+
+The primary induction engine performs a two-pass surface compile:
+
+1. build exact neutral lattices and collect weighted endpoint/interior agreement;
+2. reduce those observations into quantized integer sufficient statistics;
+3. fit one deterministic versioned boundary estimator for the current corpus population;
+4. rebuild each lattice with learned probabilities;
+5. calculate the complete bounded segmentation-DAG partition and retain deterministic k-best exact covers.
+
+The full sufficient statistics and estimator are stored inside the archived induced-language model. That makes the learned score reproducible and inspectable, but it is not yet the final compiled-brain activation path: dedicated population records, split/merge lifecycle, and direct forest hydration still remain. ICU lexical segmentation still proposes some higher candidates and must be replaced by source-induced candidates before universal segmentation is complete.
 
 New n-gram state is emitted as `scce.kneser_ney.v2` with compiled successor arrays, overflow counts, base continuations, and precomputed backoff weights. Runtime hydration rejects model records without these compiled fields; turn-time inference does not rebuild an obsolete model by scanning all grams.
 

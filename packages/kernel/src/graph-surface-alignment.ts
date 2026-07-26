@@ -647,7 +647,7 @@ function transportCell(input: {
   const anchorBonus = exactAnchor ? 0.24 : 0;
   const massPenalty = input.unit ? clamp01(1 / Math.max(1, input.unit.recurrenceCount + 1)) * 0.08 : 0.08;
   const boundaryFit = input.unit
-    ? 1 - ((input.unit.boundaryBefore.bootstrapBoundaryProbability + input.unit.boundaryAfter.bootstrapBoundaryProbability) / 2)
+    ? 1 - ((input.unit.boundaryBefore.boundaryProbability + input.unit.boundaryAfter.boundaryProbability) / 2)
     : 0.5;
   const cost = clamp01(0.42 * featureCost + 0.22 * structuralCost + 0.08 * massPenalty + 0.04 * priorPenalty + 0.24 * boundaryFit - anchorBonus);
   const hasher = input.hasher;

@@ -19,7 +19,7 @@ describe("universal surface lattice", () => {
       hasher
     });
 
-    expect(lattice.schema).toBe("scce.surface_lattice.v2");
+    expect(lattice.schema).toBe("scce.surface_lattice.v3");
     expect(lattice.units.some(unit => unit.kind === "grapheme" && unit.surface === "猫")).toBe(true);
     expect(lattice.units.some(unit => unit.kind === "lexical" && unit.surface.includes("dog"))).toBe(true);
     expect(lattice.units.some(unit => unit.kind === "numeric" && unit.surface === "7")).toBe(true);
@@ -28,11 +28,14 @@ describe("universal surface lattice", () => {
       expect(text.slice(unit.utf16Start, unit.utf16End)).toBe(unit.surface);
       expect(Buffer.from(text, "utf8").subarray(unit.byteStart, unit.byteEnd).toString("utf8")).toBe(unit.surface);
       expect(unit.evidenceIds).toEqual(["evidence.mixed"]);
-      expect(unit.boundaryBefore.bootstrapBoundaryProbability).toBeGreaterThanOrEqual(0);
-      expect(unit.boundaryAfter.bootstrapBoundaryProbability).toBeLessThanOrEqual(1);
+      expect(unit.boundaryBefore.boundaryProbability).toBe(0.5);
+      expect(unit.boundaryAfter.boundaryProbability).toBe(0.5);
+      expect(unit.boundaryBefore.estimatorId).toBe("boundary_estimator.untrained-neutral.v1");
     }
     expect(lattice.edges.some(edge => edge.kind === "sequence")).toBe(true);
-    expect(JSON.stringify(lattice.audit)).toContain("bootstrap_surface_lattice_boundary_v2");
+    expect(lattice.segmentationForest.schema).toBe("scce.segmentation_forest.v1");
+    expect(lattice.segmentationForest.paths.length).toBeGreaterThan(0);
+    expect(JSON.stringify(lattice.audit)).toContain("untrained_neutral");
     expect(validateSurfaceLattice(lattice, text)).toEqual({ valid: true, issues: [] });
   });
 
@@ -83,7 +86,7 @@ describe("universal surface lattice", () => {
     expect(lattice.edges.some(edge => edge.kind === "licensed_overlap")).toBe(true);
   });
 
-  it("keeps repeated sequence units as exact source spans and exposes one canonical sequence", () => {
+  it("keeps repeated sequence units as exact source spans and exposes a posterior-ranked canonical sequence", () => {
     const text = "red blue. red blue.";
     const lattice = buildSurfaceLattice({
       documentId: "doc.repeat",
@@ -100,5 +103,8 @@ describe("universal surface lattice", () => {
     const canonical = canonicalSurfaceSequence(lattice);
     expect(canonical.length).toBeGreaterThan(0);
     expect(canonical.every((unit, index) => index === 0 || canonical[index - 1]!.utf16Start <= unit.utf16Start)).toBe(true);
+    expect(lattice.segmentationForest.paths.length).toBeGreaterThan(1);
+    expect(lattice.segmentationForest.retainedPosteriorMass).toBeGreaterThan(0);
+    expect(lattice.segmentationForest.retainedPosteriorMass).toBeLessThanOrEqual(1);
   });
 });
