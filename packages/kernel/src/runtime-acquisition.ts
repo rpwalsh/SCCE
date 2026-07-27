@@ -1,3 +1,4 @@
+import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor } from "./capability-dispatcher.js";
 import { createEventFactory } from "./events.js";
 import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createHasher, redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
@@ -11,10 +12,109 @@ import type {
   EpisodeId,
   IngestInput,
   IngestResult,
+  JsonValue,
   OwnerInput,
   RequestedAuthority,
   ScceEvent
 } from "./types.js";
+
+const WEB_SEARCH_CAPABILITY_ID = "connector.web_search";
+
+/**
+ * Routes the read-only web-search connector call through the executive
+ * dispatcher (Part A finding 9's dispatcher work, plan item 43: one
+ * real, low-risk connector capability end to end). Deliberately
+ * fail-open on the ledger, never on execution -- matching
+ * dispatchBuildTestThroughExecutive's pattern: if deps.executive is
+ * absent or dispatch itself throws, the caller falls back to calling
+ * deps.connectors.search directly, so durable attestation can never
+ * prevent a real search from happening.
+ */
+async function dispatchWebSearchThroughExecutive(input: {
+  deps: ScceKernelDeps;
+  episodeId: EpisodeId;
+  queryHash: string;
+  query: string;
+  limit: number;
+  hasher: ReturnType<typeof createHasher>;
+}): Promise<Awaited<ReturnType<NonNullable<ScceKernelDeps["connectors"]>["search"]>> | undefined> {
+  const executive = input.deps.executive;
+  const connectors = input.deps.connectors;
+  if (!executive || !connectors) return undefined;
+
+  let capturedRows: Awaited<ReturnType<typeof connectors.search>> | undefined;
+  const executor: CapabilityExecutor = {
+    // A read query has no durable effect to duplicate, so retrying it
+    // is inherently as safe as if the provider deduplicated by key --
+    // the closest fit among the three declared contracts.
+    descriptor: { capabilityId: WEB_SEARCH_CAPABILITY_ID, idempotency: "provider-enforced", rollback: "unavailable" },
+    execute: async request => {
+      const payload = request.payload as unknown as { query: string; limit: number };
+      const rows = await connectors.search(payload.query, payload.limit);
+      capturedRows = rows;
+      return {
+        status: "succeeded",
+        outputRefs: rows.map(row => row.uri),
+        evidenceRefs: [`web_search.results.${rows.length}`],
+        attestationRef: `web_search.${request.invocation.idempotencyKey}`
+      };
+    }
+  };
+
+  const ownerId = input.deps.informationAccess?.principalId ?? "scce-runtime";
+  const policyVersionId = `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {})).slice(0, 32)}`;
+  const goalId = `goal_web_search_${input.queryHash}`;
+  const taskId = `task_web_search_${input.queryHash}`;
+
+  try {
+    await dispatchCapabilityTask(
+      { executive, executors: createCapabilityExecutorRegistry([executor]), hasher: input.hasher, now: () => Date.now() },
+      {
+        episodeId: input.episodeId,
+        ownerId,
+        policyVersionId,
+        goal: { id: goalId, goalClassId: "goal.class.web_search", objectiveRef: input.queryHash, requirementIds: [], ownerId },
+        task: {
+          id: taskId,
+          goalId,
+          taskClassId: "task.class.web_search",
+          requirementIds: [],
+          dependencyTaskIds: [],
+          capabilityId: WEB_SEARCH_CAPABILITY_ID,
+          inputRef: input.queryHash,
+          policyVersionId,
+          controls: {
+            authority: {
+              authorityClassId: "authority.class.web_search",
+              subjectId: ownerId,
+              requiredScopeIds: [],
+              state: "not_required",
+              justificationRef: input.queryHash
+            },
+            approval: {
+              policyId: "approval.policy.web_search",
+              state: "not_required",
+              approverClassIds: [],
+              justificationRef: input.queryHash
+            }
+          },
+          rollback: {
+            mode: "not_required",
+            justificationRef: "read-only web search has no durable effect to roll back"
+          }
+        },
+        payload: { query: input.query, limit: input.limit } as unknown as JsonValue,
+        outcomeEvidenceRefs: []
+      }
+    );
+  } catch {
+    // Fail-open: an executive/journal error must never block the real
+    // search. If the executor already ran and captured rows, those are
+    // still used below; if not, the caller's own try/catch around this
+    // whole helper falls back to calling connectors.search directly.
+  }
+  return capturedRows;
+}
 
 export function createRuntimeAcquisition(options: {
   deps: ScceKernelDeps;
@@ -62,7 +162,10 @@ export function createRuntimeAcquisition(options: {
     if (deps.connectors) {
       let searchRows: Awaited<ReturnType<typeof deps.connectors.search>> = [];
       try {
-        searchRows = await deps.connectors.search(input.ownerInput.text, 3);
+        const dispatched = deps.executive
+          ? await dispatchWebSearchThroughExecutive({ deps, episodeId: input.episodeId, queryHash, query: input.ownerInput.text, limit: 3, hasher })
+          : undefined;
+        searchRows = dispatched ?? await deps.connectors.search(input.ownerInput.text, 3);
         searchResultCount = searchRows.length;
         sourceSurfaces.push(...searchRows.flatMap(row => [row.title, row.snippet])
           .map(surface => sourceTextSurface(surface, 320))
