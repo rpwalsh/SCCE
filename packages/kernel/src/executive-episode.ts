@@ -272,6 +272,18 @@ export type ExecutiveCommand =
       receipt: ExecutiveCapabilityReceipt;
     })
   | (ExecutiveCommandBase & {
+      /**
+       * Resolves a previously-indeterminate receipt via an out-of-band
+       * provider lookup (Part A finding 3 / plan item 42) -- never a
+       * blind retry. The original indeterminate receipt is preserved
+       * (attempts and receipts are append-only); this attaches a new,
+       * resolved receipt so `record_outcome` can proceed against it.
+       */
+      type: "reconcile_receipt";
+      attemptId: ExecutiveAttemptId;
+      receipt: ExecutiveCapabilityReceipt;
+    })
+  | (ExecutiveCommandBase & {
       type: "record_outcome";
       outcome: Omit<ExecutiveOutcome, "recordedAt">;
     })
@@ -329,6 +341,11 @@ export type ExecutiveEvent =
     })
   | (ExecutiveEventBase & {
       type: "capability_receipt_observed";
+      receipt: ExecutiveCapabilityReceipt;
+    })
+  | (ExecutiveEventBase & {
+      type: "capability_receipt_reconciled";
+      attemptId: ExecutiveAttemptId;
       receipt: ExecutiveCapabilityReceipt;
     })
   | (ExecutiveEventBase & {
@@ -525,6 +542,23 @@ export function createExecutiveEpisodeMachine(hasher: Hasher): ExecutiveEpisodeM
         emit({ type: "capability_receipt_observed", receipt: clone(command.receipt) });
         break;
       }
+      case "reconcile_receipt": {
+        const attempt = requireAttempt(state, command.attemptId);
+        if (attempt.status !== "receipt_observed" || !attempt.receiptId) {
+          throw new Error("only an attempt with an observed receipt can be reconciled");
+        }
+        const original = state.receipts[attempt.receiptId];
+        if (!original) throw new Error("attempt receipt is unavailable");
+        if (original.status !== "indeterminate") throw new Error("only an indeterminate receipt can be reconciled");
+        validateReceipt(command.receipt);
+        if (command.receipt.status === "indeterminate") throw new Error("reconciliation must resolve to succeeded or failed, not indeterminate again");
+        if (command.receipt.attemptId !== attempt.id) throw new Error("reconciled receipt attempt mismatch");
+        if (command.receipt.invocationKey !== attempt.invocation.idempotencyKey) throw new Error("reconciled receipt invocation key mismatch");
+        if (command.receipt.capabilityId !== attempt.invocation.capabilityId) throw new Error("reconciled receipt capability mismatch");
+        if (state.receipts[command.receipt.id]) throw new Error(`executive receipt already exists: ${command.receipt.id}`);
+        emit({ type: "capability_receipt_reconciled", attemptId: attempt.id, receipt: clone(command.receipt) });
+        break;
+      }
       case "record_outcome": {
         validateOutcome(command.outcome);
         const attempt = requireAttempt(state, command.outcome.attemptId);
@@ -658,6 +692,18 @@ export function createExecutiveEpisodeMachine(hasher: Hasher): ExecutiveEpisodeM
         attempt.status = "receipt_observed";
         attempt.receiptId = event.receipt.id;
         requireTask(state, attempt.taskId).status = "awaiting_outcome";
+        break;
+      }
+      case "capability_receipt_reconciled": {
+        state.receipts[event.receipt.id] = clone(event.receipt);
+        const attempt = requireAttempt(state, event.attemptId);
+        // The original indeterminate receipt stays in state.receipts
+        // (append-only, still the historical record of what the first
+        // observation actually was); only the attempt's pointer moves
+        // to the newly-resolved receipt so record_outcome validates
+        // against the real, reconciled status. Task stays
+        // "awaiting_outcome" -- record_outcome is what resolves it.
+        attempt.receiptId = event.receipt.id;
         break;
       }
       case "outcome_recorded": {

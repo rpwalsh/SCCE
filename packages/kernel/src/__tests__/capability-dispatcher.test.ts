@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   createCapabilityExecutorRegistry,
   dispatchCapabilityTask,
+  reconcileIndeterminateCapability,
   type CapabilityExecutionRequest,
   type CapabilityExecutionResult,
-  type CapabilityExecutor
+  type CapabilityExecutor,
+  type CapabilityReconciliationRequest
 } from "../capability-dispatcher.js";
 import {
   createExecutiveEpisodeMachine,
@@ -239,5 +241,84 @@ describe("capability dispatcher", () => {
     expect(retried.disposition).toBe("succeeded");
     expect(retried.outcome?.id).toBe(first.outcome?.id);
     expect(invocations).toBe(1);
+  });
+
+  it("resolves an indeterminate outcome to succeeded via a real provider-lookup reconciliation, not a blind retry of execute", async () => {
+    let executeInvocations = 0;
+    let reconcileInvocations = 0;
+    const executor: CapabilityExecutor = {
+      descriptor: { capabilityId: "process.build_test", idempotency: "reconcilable", rollback: "unavailable" },
+      execute: async () => {
+        executeInvocations += 1;
+        return { status: "indeterminate", outputRefs: [], evidenceRefs: ["execution.log.build.unknown"], attestationRef: "executor.signature.build.unknown" };
+      },
+      reconcile: async (request: CapabilityReconciliationRequest) => {
+        reconcileInvocations += 1;
+        expect(request.indeterminateReceipt.status).toBe("indeterminate");
+        return { status: "succeeded", outputRefs: ["artifact.build.reconciled"], evidenceRefs: ["provider.lookup.build"], attestationRef: "executor.signature.build.reconciled" };
+      }
+    };
+    const deps = dispatcherFixture([executor]);
+    const dispatched = await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+    expect(dispatched.disposition).toBe("indeterminate");
+    expect(executeInvocations).toBe(1);
+
+    const reconciled = await reconcileIndeterminateCapability(deps, {
+      episodeId: "episode.dispatch",
+      taskId: "task.build",
+      outcomeEvidenceRefs: ["build.log.alpha"]
+    });
+    expect(reconciled.disposition).toBe("succeeded");
+    expect(reconcileInvocations).toBe(1);
+    expect(executeInvocations).toBe(1);
+    expect(reconciled.outcome).toMatchObject({ disposition: "accepted" });
+    expect(reconciled.receipt?.status).toBe("succeeded");
+    expect(reconciled.state.tasks["task.build"]?.status).toBe("succeeded");
+    // The original indeterminate receipt is preserved, not overwritten.
+    const originalReceiptId = dispatched.receipt!.id;
+    expect(reconciled.state.receipts[originalReceiptId]?.status).toBe("indeterminate");
+  });
+
+  it("resolves an indeterminate outcome to failed (rejected) when the provider lookup confirms it never happened", async () => {
+    const executor: CapabilityExecutor = {
+      descriptor: { capabilityId: "process.build_test", idempotency: "reconcilable", rollback: "unavailable" },
+      execute: async () => ({ status: "indeterminate", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build.unknown" }),
+      reconcile: async () => ({ status: "failed", outputRefs: [], evidenceRefs: ["provider.lookup.build.absent"], attestationRef: "executor.signature.build.absent" })
+    };
+    const deps = dispatcherFixture([executor]);
+    await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+    const reconciled = await reconcileIndeterminateCapability(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(reconciled.disposition).toBe("failed");
+    expect(reconciled.outcome).toMatchObject({ disposition: "rejected" });
+    expect(reconciled.state.tasks["task.build"]?.status).toBe("failed");
+  });
+
+  it("reports not_reconcilable rather than throwing when the executor has no reconcile method", async () => {
+    const executor = fakeExecutor("process.build_test", () => ({ status: "indeterminate", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build.unknown" }));
+    const deps = dispatcherFixture([executor]);
+    await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+    const reconciled = await reconcileIndeterminateCapability(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(reconciled.disposition).toBe("not_reconcilable");
+  });
+
+  it("reports still_indeterminate rather than throwing when the provider lookup itself can't resolve it yet", async () => {
+    const executor: CapabilityExecutor = {
+      descriptor: { capabilityId: "process.build_test", idempotency: "reconcilable", rollback: "unavailable" },
+      execute: async () => ({ status: "indeterminate", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build.unknown" }),
+      reconcile: async () => ({ status: "indeterminate", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build.still_unknown" })
+    };
+    const deps = dispatcherFixture([executor]);
+    await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+    const reconciled = await reconcileIndeterminateCapability(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(reconciled.disposition).toBe("still_indeterminate");
+    expect(reconciled.state.tasks["task.build"]?.status).toBe("awaiting_outcome");
+  });
+
+  it("reports not_pending for a task that never reached an indeterminate outcome", async () => {
+    const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+    const deps = dispatcherFixture([executor]);
+    await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+    const reconciled = await reconcileIndeterminateCapability(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(reconciled.disposition).toBe("not_pending");
   });
 });
