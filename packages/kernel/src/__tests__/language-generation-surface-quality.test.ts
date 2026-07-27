@@ -13,7 +13,15 @@ describe("learned language generation surface quality", () => {
     expect(languageGenerationSurfaceAdequate(generation(text, 0.18))).toBe(false);
   });
 
-  it("admits complete multilingual discourse without English word rules", () => {
+  // `languageGenerationSurfaceAdequate` is a script-agnostic structural
+  // heuristic (fragment density, symbol count) -- it has no language- or
+  // translation-specific logic, so a hand-typed Korean sentence here proves
+  // only that the heuristic doesn't special-case Latin script, not that
+  // SCCE has any trained/held-out multilingual generation capability. See
+  // docs/PRODUCTION_COMPLETION_PLAN_250.md Phase 10 item 126 for the real
+  // (still-open) held-out multilingual translation test gap this must not
+  // be conflated with.
+  it("admits a complete non-Latin-script discourse the same way as any other script (heuristic is script-agnostic, not a multilingual-capability claim)", () => {
     const text = "용은 깊은 계곡을 건넜다. 과학자는 별빛을 따라 산 정상으로 올랐다. 두 사람은 새벽이 올 때까지 서로의 계획을 시험했다.";
 
     expect(languageGenerationSurfaceAdequate(generation(text, 0.06))).toBe(true);
