@@ -70,6 +70,17 @@ export interface CapabilityExecutor {
    * "indeterminate" again is rejected by the state machine.
    */
   reconcile?(request: CapabilityReconciliationRequest): Promise<CapabilityExecutionResult>;
+  /**
+   * The real compensating action for a task whose `rollback.mode` is
+   * "capability" (plan item 48). Registered on the capability being
+   * rolled back *back*, keyed by `task.rollback.capabilityId` -- which
+   * may be a different capability id than the one that ran originally
+   * (e.g. "outlook.mail.draft.create" rolled back by
+   * "outlook.mail.draft.delete"). Absent means no compensating action
+   * exists for this capability; `dispatchRollbackAttempt` fails closed
+   * ("no_rollback_executor") rather than silently reporting success.
+   */
+  rollback?(request: CapabilityExecutionRequest): Promise<CapabilityExecutionResult>;
 }
 
 export interface CapabilityExecutorRegistry {
@@ -429,6 +440,191 @@ export async function reconcileIndeterminateCapability(
   };
 }
 
+export type CapabilityRollbackDispatchDisposition =
+  | "rolled_back"
+  | "rollback_failed"
+  | "no_rollback_needed"
+  | "no_rollback_executor"
+  | "not_ready";
+
+export interface CapabilityRollbackDispatchResult {
+  disposition: CapabilityRollbackDispatchDisposition;
+  state: ExecutiveEpisodeState;
+  attemptId?: string;
+  receipt?: ExecutiveCapabilityReceipt;
+  outcome?: ExecutiveOutcome;
+  blockedStatus?: ExecutiveTask["status"];
+}
+
+/**
+ * Drives a task's compensating action through the same durable
+ * execution machine as the primary attempt (plan item 48). Mirrors
+ * `dispatchCapabilityTask`'s structure exactly, but for
+ * `attempt.kind === "rollback"`: prepare -> dispatch -> invoke the
+ * *rollback* executor -> observe receipt -> record outcome. Fails
+ * closed ("no_rollback_executor") rather than reporting success when
+ * no compensating action is registered for `task.rollback.capabilityId`
+ * -- a rollback that cannot actually run must never be silently
+ * treated as having succeeded.
+ */
+export async function dispatchRollbackAttempt(
+  deps: CapabilityDispatcherDeps,
+  input: {
+    episodeId: ExecutiveEpisodeId;
+    taskId: ExecutiveTaskId;
+    /** Supplied only when the rollback's own controls mark authority as pending. */
+    authorityDecision?: ExecutiveAuthorityDecision;
+    /** Supplied only when the rollback's own controls mark approval as pending. */
+    approvalDecision?: ExecutiveApprovalDecision;
+    outcomeEvidenceRefs: string[];
+  }
+): Promise<CapabilityRollbackDispatchResult> {
+  let state = await deps.executive.load(input.episodeId);
+  let task = requireTask(state, input.taskId);
+
+  if (task.rollback.mode !== "capability") {
+    return { disposition: "no_rollback_needed", state };
+  }
+
+  if (task.status === "rolled_back" || task.status === "rollback_failed") {
+    const attempt = latestRollbackAttempt(state, task.id);
+    const receipt = attempt?.receiptId ? state.receipts[attempt.receiptId] : undefined;
+    const outcome = attempt?.outcomeId ? state.outcomes[attempt.outcomeId] : undefined;
+    return { disposition: task.status, state, attemptId: attempt?.id, receipt, outcome };
+  }
+
+  const executor = deps.executors.get(task.rollback.capabilityId);
+  if (!executor?.rollback) {
+    return { disposition: "no_rollback_executor", state };
+  }
+
+  const commandId = (stage: string): string =>
+    `cmd_${deps.hasher.digestHex(canonicalStringify({ episodeId: input.episodeId, taskId: task.id, stage: `rollback.${stage}` })).slice(0, 40)}`;
+
+  if (task.status === "rollback_blocked" && input.authorityDecision) {
+    state = await deps.executive.dispatch({
+      type: "record_authority",
+      episodeId: input.episodeId,
+      commandId: commandId("record_authority"),
+      occurredAt: deps.now(),
+      taskId: task.id,
+      target: "rollback",
+      decision: input.authorityDecision
+    });
+    task = requireTask(state, input.taskId);
+  }
+  if (task.status === "rollback_blocked" && input.approvalDecision) {
+    state = await deps.executive.dispatch({
+      type: "record_approval",
+      episodeId: input.episodeId,
+      commandId: commandId("record_approval"),
+      occurredAt: deps.now(),
+      taskId: task.id,
+      target: "rollback",
+      decision: input.approvalDecision
+    });
+    task = requireTask(state, input.taskId);
+  }
+
+  if (task.status !== "rollback_ready") {
+    return { disposition: "not_ready", state, blockedStatus: task.status };
+  }
+
+  state = await deps.executive.dispatch({
+    type: "prepare_attempt",
+    episodeId: input.episodeId,
+    commandId: commandId("prepare_attempt"),
+    occurredAt: deps.now(),
+    taskId: task.id,
+    kind: "rollback"
+  });
+  task = requireTask(state, input.taskId);
+  const attemptId = task.activeAttemptId;
+  if (!attemptId) throw new Error("executive rollback attempt preparation did not activate an attempt");
+  const attempt = state.attempts[attemptId];
+  if (!attempt) throw new Error("executive rollback attempt preparation lost its own attempt record");
+
+  const dispatchEvidenceRef = `dispatch_rollback_${deps.hasher.digestHex(attempt.invocation.idempotencyKey).slice(0, 32)}`;
+  state = await deps.executive.dispatch({
+    type: "record_dispatch",
+    episodeId: input.episodeId,
+    commandId: commandId("record_dispatch"),
+    occurredAt: deps.now(),
+    attemptId,
+    executorId: executor.descriptor.capabilityId,
+    dispatchEvidenceRef
+  });
+
+  let result: CapabilityExecutionResult;
+  const startedAt = deps.now();
+  try {
+    result = await executor.rollback({ invocation: attempt.invocation, payload: {} });
+  } catch (error) {
+    result = {
+      status: "indeterminate",
+      outputRefs: [],
+      evidenceRefs: [dispatchEvidenceRef],
+      attestationRef: `error_${deps.hasher.digestHex(String(error instanceof Error ? error.message : error)).slice(0, 32)}`
+    };
+  }
+
+  const receiptId = `receipt_${deps.hasher.digestHex(canonicalStringify({ attemptId, invocationKey: attempt.invocation.idempotencyKey })).slice(0, 40)}`;
+  const receipt: ExecutiveCapabilityReceipt = {
+    id: receiptId,
+    attemptId,
+    invocationKey: attempt.invocation.idempotencyKey,
+    capabilityId: attempt.invocation.capabilityId,
+    executorId: executor.descriptor.capabilityId,
+    status: result.status,
+    startedAt,
+    completedAt: deps.now(),
+    outputRefs: result.outputRefs,
+    evidenceRefs: result.evidenceRefs.length > 0 ? result.evidenceRefs : [dispatchEvidenceRef],
+    attestationRef: result.attestationRef
+  };
+  state = await deps.executive.dispatch({
+    type: "observe_receipt",
+    episodeId: input.episodeId,
+    commandId: commandId("observe_receipt"),
+    occurredAt: deps.now(),
+    receipt
+  });
+
+  if (result.status === "indeterminate") {
+    // The rollback task lands in awaiting_outcome, same as an
+    // indeterminate execution attempt -- reconcileIndeterminateCapability
+    // resolves it once a provider lookup exists, same mechanism, no
+    // separate rollback-specific reconciliation path needed.
+    return { disposition: "rollback_failed", state, attemptId, receipt };
+  }
+
+  const outcomeId = `outcome_${deps.hasher.digestHex(canonicalStringify({ attemptId, receiptId })).slice(0, 40)}`;
+  const outcome: Omit<ExecutiveOutcome, "recordedAt"> = {
+    id: outcomeId,
+    attemptId,
+    disposition: result.status === "succeeded" ? "accepted" : "rejected",
+    evidenceRefs: input.outcomeEvidenceRefs.length > 0 ? input.outcomeEvidenceRefs : receipt.evidenceRefs,
+    testEvidenceRefs: [],
+    correctionRefs: [],
+    scoreTraceRefs: []
+  };
+  state = await deps.executive.dispatch({
+    type: "record_outcome",
+    episodeId: input.episodeId,
+    commandId: commandId("record_outcome"),
+    occurredAt: deps.now(),
+    outcome
+  });
+
+  return {
+    disposition: result.status === "succeeded" ? "rolled_back" : "rollback_failed",
+    state,
+    attemptId,
+    receipt,
+    outcome: state.outcomes[outcomeId]
+  };
+}
+
 function requireTask(state: ExecutiveEpisodeState, taskId: ExecutiveTaskId): ExecutiveTask {
   const task = state.tasks[taskId];
   if (!task) throw new Error(`executive task not found after declaration: ${taskId}`);
@@ -438,6 +634,12 @@ function requireTask(state: ExecutiveEpisodeState, taskId: ExecutiveTaskId): Exe
 function latestExecutionAttempt(state: ExecutiveEpisodeState, taskId: ExecutiveTaskId) {
   return Object.values(state.attempts)
     .filter(attempt => attempt.taskId === taskId && attempt.kind === "execution")
+    .sort((left, right) => right.ordinal - left.ordinal)[0];
+}
+
+function latestRollbackAttempt(state: ExecutiveEpisodeState, taskId: ExecutiveTaskId) {
+  return Object.values(state.attempts)
+    .filter(attempt => attempt.taskId === taskId && attempt.kind === "rollback")
     .sort((left, right) => right.ordinal - left.ordinal)[0];
 }
 
