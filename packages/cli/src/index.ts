@@ -9,6 +9,14 @@ import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@s
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
 import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent } from "@scce/kernel";
+import {
+  createFtrlProximalRanker,
+  evaluateFtrlHeldOut,
+  fitFtrlCalibration,
+  FTRL_GRAPH_NODE_RANK_TASK_CLASS,
+  RETRIEVAL_RANK_FEATURE_SCHEMA_V1,
+  type SparseRankingCheckpoint
+} from "@scce/kernel";
 
 interface Parsed {
   configPath: string;
@@ -199,6 +207,9 @@ async function main(): Promise<void> {
         return;
       case "scce2":
         await scce2(runtime, parsed.args);
+        return;
+      case "ranker":
+        await ranker(runtime, parsed.args);
         return;
       default:
         usage(`unknown command: ${parsed.command}`);
@@ -932,6 +943,124 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[])
   return usage("scce db <status|init|migrate|verify|stats|reset --confirm-local-dev-only>");
 }
 
+// Default thresholds a shadow model must clear to be considered
+// promotable. Conservative starting defaults, not yet validated against
+// real production comparison volume -- see docs/IMPLEMENTATION_STATUS.md
+// (plan item 36) for the honest caveat and how to override them.
+const RANKER_DEFAULT_MIN_RECALL_AT_1 = 0.6;
+const RANKER_DEFAULT_MIN_PAIRWISE_ACCURACY = 0.6;
+const RANKER_DEFAULT_HOLDOUT_FRACTION = 0.2;
+const RANKER_DEFAULT_EXAMPLE_LIMIT = 2000;
+
+async function ranker(runtime: ReturnType<typeof createNodeRuntime>, args: string[]): Promise<void> {
+  const sub = args[0];
+  const rest = args.slice(1);
+  const taskClass = flagValue(rest, "--task-class=") ?? FTRL_GRAPH_NODE_RANK_TASK_CLASS;
+  const featureSchemaId = RETRIEVAL_RANK_FEATURE_SCHEMA_V1;
+  const store = runtime.storage.sparseRanking;
+  const comparisons = runtime.storage.sparseRankingComparisons;
+  if (!store) return usage("no sparseRanking model store configured on this runtime");
+
+  if (sub === "init") {
+    const existing = await store.readActive(taskClass, featureSchemaId);
+    if (existing) {
+      printJson({ status: "already_active", modelId: existing.modelId, lifecycle: existing.lifecycle });
+      return;
+    }
+    const modelId = `ftrl:${taskClass}:${Date.now()}`;
+    const now = Date.now();
+    // Bootstrap only: a freshly-created model with zero coordinates
+    // scores every candidate identically (rawScore=0), so it cannot
+    // yet influence anything -- it exists purely as the canonical
+    // checkpoint id that shadow ranking and comparison logging attach
+    // real, later-evaluated updates to. This is the one place
+    // "approved"/"active" is assigned without a held-out evaluation
+    // pass, and only because an empty model has nothing to evaluate.
+    // Every subsequent promotion of a *trained* model must go through
+    // `evaluate` -- this bootstrap step runs exactly once per task
+    // class (guarded by the readActive check above).
+    const bootstrap: SparseRankingCheckpoint = {
+      modelId,
+      taskClass,
+      featureSchemaId,
+      lifecycle: "approved",
+      state: {
+        schemaVersion: "scce.ftrl-proximal-ranker.v1",
+        modelId,
+        featureSchemaId,
+        hyperparameters: { alpha: 0.1, beta: 1, l1: 0.1, l2: 1 },
+        createdAt: now,
+        updatedAt: now,
+        examplesSeen: 0,
+        coordinates: []
+      },
+      trainingWindow: { firstExampleAt: now, lastExampleAt: now },
+      examplesSeen: 0,
+      informationLabel: { tenantId: "scce.local", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" },
+      createdAt: now
+    };
+    await store.putCheckpoint(bootstrap);
+    await store.activate({ modelId, taskClass, featureSchemaId });
+    printJson({ status: "bootstrapped", modelId, note: "empty model, zero coordinates -- collects shadow comparisons until a real evaluate/promote cycle trains and validates it" });
+    return;
+  }
+
+  if (sub === "evaluate") {
+    if (!comparisons) return usage("no sparseRankingComparisons log configured on this runtime");
+    const checkpoint = await store.readActive(taskClass, featureSchemaId);
+    if (!checkpoint) return usage(`no active checkpoint for task class ${taskClass} -- run "scce ranker init" first`);
+    const holdoutFraction = numberFlag(rest, "--holdout=") ?? RANKER_DEFAULT_HOLDOUT_FRACTION;
+    const limit = numberFlag(rest, "--examples=") ?? RANKER_DEFAULT_EXAMPLE_LIMIT;
+    const minRecallAt1 = numberFlag(rest, "--min-recall-at-1=") ?? RANKER_DEFAULT_MIN_RECALL_AT_1;
+    const minPairwiseAccuracy = numberFlag(rest, "--min-pairwise-accuracy=") ?? RANKER_DEFAULT_MIN_PAIRWISE_ACCURACY;
+    const examples = await comparisons.listRecent({ taskClass, featureSchemaId, limit });
+    const evaluation = evaluateFtrlHeldOut({
+      examples,
+      modelId: checkpoint.modelId,
+      featureSchemaId,
+      holdoutFraction,
+      kValues: [1, 3, 5]
+    });
+    if (!evaluation) {
+      printJson({ status: "insufficient_data", modelId: checkpoint.modelId, exampleCount: examples.length, note: "not enough comparison examples on both sides of the temporal holdout split to produce a real evaluation" });
+      return;
+    }
+    const evaluationRanker = createFtrlProximalRanker({ modelId: checkpoint.modelId, featureSchemaId, state: checkpoint.state });
+    const calibration = fitFtrlCalibration({ ranker: evaluationRanker, examples, calibrationId: `${checkpoint.modelId}:${Date.now()}` });
+    const passed = evaluation.recallAtK[1]! >= minRecallAt1 && evaluation.pairwiseAccuracy >= minPairwiseAccuracy;
+    const evaluationRecord = {
+      evaluation,
+      calibration,
+      thresholds: { minRecallAt1, minPairwiseAccuracy },
+      passed,
+      evaluatedAt: Date.now()
+    };
+    await store.putCheckpoint({ ...checkpoint, lifecycle: "evaluated", evaluation: toJsonValue(evaluationRecord) });
+    printJson({ status: "evaluated", modelId: checkpoint.modelId, ...evaluationRecord });
+    return;
+  }
+
+  if (sub === "promote") {
+    const checkpoint = await store.readActive(taskClass, featureSchemaId);
+    if (!checkpoint) return usage(`no active checkpoint for task class ${taskClass}`);
+    if (checkpoint.lifecycle !== "evaluated") {
+      printJson({ status: "refused", reason: `checkpoint lifecycle is "${checkpoint.lifecycle}", not "evaluated" -- run "scce ranker evaluate" first` });
+      return;
+    }
+    const record = checkpoint.evaluation as { passed?: boolean } | undefined;
+    if (!record?.passed) {
+      printJson({ status: "refused", reason: "the recorded evaluation did not pass its thresholds", evaluation: checkpoint.evaluation });
+      return;
+    }
+    await store.putCheckpoint({ ...checkpoint, lifecycle: "approved" });
+    await store.activate({ modelId: checkpoint.modelId, taskClass, featureSchemaId, expectedCurrentModelId: checkpoint.modelId });
+    printJson({ status: "promoted", modelId: checkpoint.modelId });
+    return;
+  }
+
+  return usage("scce ranker <init|evaluate|promote> [--task-class=graph.node_rank.v1] [--holdout=0.2] [--examples=2000] [--min-recall-at-1=0.6] [--min-pairwise-accuracy=0.6]");
+}
+
 async function inspect(runtime: ReturnType<typeof createNodeRuntime>, config: Awaited<ReturnType<typeof readScceRuntimeConfig>>, args: string[]): Promise<void> {
   const target = args[0] ?? "last";
   if (target === "v2-artifacts") {
@@ -1032,6 +1161,19 @@ function parseInspect(args: string[]): InspectionTarget {
   if (value === "brain" && args[1] === "--import" && args[2]) return { kind: "brain-import", importRunId: args[2] };
   if (value === "last" || value === "graph" || value === "ingestion" || value === "codebase" || value === "model" || value === "self" || value === "snapshot" || value === "proofs" || value === "brain" || value === "language" || value === "graph-priors" || value === "language-memory" || value === "localization" || value === "corrections" || value === "math-spine") return value;
   return { kind: "episode", episodeId: value as never };
+}
+
+function flagValue(args: string[], prefix: string): string | undefined {
+  const arg = args.find(entry => entry.startsWith(prefix));
+  return arg ? requiredStringFlag(arg, prefix) : undefined;
+}
+
+function numberFlag(args: string[], prefix: string): number | undefined {
+  const value = flagValue(args, prefix);
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`invalid ${prefix.slice(0, -1)} value`);
+  return parsed;
 }
 
 function parseArgs(argv: string[]): Parsed {

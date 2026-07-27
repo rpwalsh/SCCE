@@ -16,6 +16,7 @@ export * from "./sparse-ranking-labels.js";
 export * from "./sparse-ranking-outcome.js";
 export * from "./sparse-ranking-comparison-log.js";
 export * from "./sparse-ranking-calibration.js";
+export { FTRL_GRAPH_NODE_RANK_TASK_CLASS, type FtrlShadowRanking, type FtrlShadowRankedEntry } from "./sparse-ranking-shadow.js";
 export * from "./benchmarks.js";
 export * from "./evidence.js";
 export * from "./evidence-mass.js";
