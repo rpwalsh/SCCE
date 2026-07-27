@@ -1,12 +1,14 @@
-import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor } from "./capability-dispatcher.js";
+import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor, type CapabilityDispatchDisposition } from "./capability-dispatcher.js";
 import { createEventFactory } from "./events.js";
 import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
-import { createHasher, redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
+import { canonicalStringify, createHasher, redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
+import { POLICY_OBJECTIVE_SCHEMA_ID, policyFingerprint, policyObjectiveVector, type PolicyEvaluation } from "./policy-evolution.js";
 import { type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import type { RuntimeReplanMotion, RuntimeReplanTrigger } from "./runtime-motion.js";
 import {
   runtimeMotionFailure
 } from "./runtime-motion.js";
+import { DEFAULT_POLICY } from "./safety.js";
 import type { ScceKernelDeps } from "./storage.js";
 import type {
   EpisodeId,
@@ -67,7 +69,7 @@ async function dispatchWebSearchThroughExecutive(input: {
   const taskId = `task_web_search_${input.queryHash}`;
 
   try {
-    await dispatchCapabilityTask(
+    const dispatched = await dispatchCapabilityTask(
       { executive, executors: createCapabilityExecutorRegistry([executor]), hasher: input.hasher, now: () => Date.now() },
       {
         episodeId: input.episodeId,
@@ -107,6 +109,15 @@ async function dispatchWebSearchThroughExecutive(input: {
         outcomeEvidenceRefs: []
       }
     );
+    if (input.deps.storage.policyEvolution) {
+      await recordConnectorDispatchPolicyEvaluation({
+        deps: input.deps,
+        hasher: input.hasher,
+        disposition: dispatched.disposition,
+        windowRef: dispatched.receipt?.id ?? dispatched.attemptId ?? input.queryHash,
+        createdAt: Date.now()
+      });
+    }
   } catch {
     // Fail-open: an executive/journal error must never block the real
     // search. If the executor already ran and captured rows, those are
@@ -114,6 +125,59 @@ async function dispatchWebSearchThroughExecutive(input: {
     // whole helper falls back to calling connectors.search directly.
   }
   return capturedRows;
+}
+
+/**
+ * Records one real PolicyEvaluation from a real, in-production dispatch
+ * decision (plan item 53 -- the first thing that actually writes to
+ * `policyEvolution.putEvaluation`; the store and aggregation logic
+ * already existed with nothing feeding it). Deliberately narrow: a
+ * connector dispatch has no evidence/contradiction concept at all, so
+ * `evidenceCoverage`/`contradictionRate` are set to their vacuous
+ * best-case values (1 and 0) rather than fabricated -- this evaluation
+ * genuinely only measures governance/task success for this one
+ * dispatch, not proof quality. `governanceSuccessRate` and
+ * `taskSuccessRate` collapse to the same real signal at this scope:
+ * there is no separate "task" concept apart from whether the dispatch
+ * itself succeeded.
+ */
+async function recordConnectorDispatchPolicyEvaluation(input: {
+  deps: ScceKernelDeps;
+  hasher: ReturnType<typeof createHasher>;
+  disposition: CapabilityDispatchDisposition;
+  windowRef: string;
+  createdAt: number;
+}): Promise<void> {
+  const policyEvolution = input.deps.storage.policyEvolution;
+  if (!policyEvolution) return;
+  const successRate = input.disposition === "succeeded" ? 1 : input.disposition === "indeterminate" ? 0.5 : 0;
+  const rates = {
+    evidenceCoverage: 1,
+    governanceSuccessRate: successRate,
+    contradictionRate: 0,
+    rollbackRate: 0,
+    taskSuccessRate: successRate
+  };
+  const resolvedPolicy = { ...DEFAULT_POLICY, ...(input.deps.policy ?? {}) };
+  const fingerprint = policyFingerprint(resolvedPolicy);
+  const evaluation: PolicyEvaluation = {
+    id: `policy_eval_${input.hasher.digestHex(canonicalStringify({ fingerprint, windowRef: input.windowRef, createdAt: input.createdAt })).slice(0, 40)}`,
+    policyFingerprint: fingerprint,
+    objectiveSchemaId: POLICY_OBJECTIVE_SCHEMA_ID,
+    vector: rates,
+    objectives: policyObjectiveVector(rates),
+    evaluationWindow: { firstEventId: input.windowRef, lastEventId: input.windowRef },
+    observations: 1,
+    createdAt: input.createdAt,
+    informationLabel: {
+      tenantId: input.deps.informationAccess?.tenantId ?? "scce.local",
+      principals: [],
+      compartments: [],
+      exportClass: "internal",
+      mergePolicy: "isolated"
+    }
+  };
+  await policyEvolution.putEvaluation(evaluation);
 }
 
 export function createRuntimeAcquisition(options: {
