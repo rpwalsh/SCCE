@@ -50,9 +50,26 @@ export interface CapabilityExecutionResult {
  * a crash between invocation and receipt observation always resumes as
  * "indeterminate" rather than silently forgotten or blindly retried.
  */
+export interface CapabilityReconciliationRequest {
+  invocation: CapabilityInvocationEnvelope;
+  /** The original indeterminate receipt this reconciliation is resolving. */
+  indeterminateReceipt: ExecutiveCapabilityReceipt;
+}
+
 export interface CapabilityExecutor {
   descriptor: CapabilityExecutorDescriptor;
   execute(request: CapabilityExecutionRequest): Promise<CapabilityExecutionResult>;
+  /**
+   * Provider-lookup reconciliation for an indeterminate outcome (Part A
+   * finding 3 / plan item 42) -- never a blind retry of `execute`. Looks
+   * up the real, already-happened-or-not status of a specific
+   * invocation (by idempotency key) from the provider itself. Absent
+   * means this capability has no reconciliation path yet; the attempt
+   * stays indeterminate until one is added or a human resolves it.
+   * Must itself resolve to "succeeded" or "failed" -- returning
+   * "indeterminate" again is rejected by the state machine.
+   */
+  reconcile?(request: CapabilityReconciliationRequest): Promise<CapabilityExecutionResult>;
 }
 
 export interface CapabilityExecutorRegistry {
@@ -303,6 +320,111 @@ export async function dispatchCapabilityTask(
     state,
     attemptId,
     receipt,
+    outcome: state.outcomes[outcomeId]
+  };
+}
+
+export type CapabilityReconciliationDisposition =
+  | "succeeded"
+  | "failed"
+  | "still_indeterminate"
+  | "not_reconcilable"
+  | "not_pending";
+
+export interface CapabilityReconciliationResult {
+  disposition: CapabilityReconciliationDisposition;
+  state: ExecutiveEpisodeState;
+  attemptId?: string;
+  receipt?: ExecutiveCapabilityReceipt;
+  outcome?: ExecutiveOutcome;
+}
+
+/**
+ * Resolves one task's indeterminate attempt via the executor's provider
+ * lookup (Part A finding 3, plan item 42) -- never a blind retry of
+ * `execute`. A lookup is safe to repeat if this call itself gets retried
+ * before the reconciliation is durably recorded (checking status is
+ * inherently idempotent, unlike `execute`, which is why `execute` gets
+ * the full prepare-before-invoke durability treatment and a lookup does
+ * not need it). No-ops (returns "not_pending") for a task that isn't
+ * actually awaiting an indeterminate outcome, and "not_reconcilable"
+ * when the registered executor has no `reconcile` method at all.
+ */
+export async function reconcileIndeterminateCapability(
+  deps: CapabilityDispatcherDeps,
+  input: { episodeId: ExecutiveEpisodeId; taskId: ExecutiveTaskId; outcomeEvidenceRefs: string[] }
+): Promise<CapabilityReconciliationResult> {
+  const initialState = await deps.executive.load(input.episodeId);
+  const task = requireTask(initialState, input.taskId);
+  if (task.status !== "awaiting_outcome") return { disposition: "not_pending", state: initialState };
+
+  const attempt = latestExecutionAttempt(initialState, task.id);
+  if (!attempt?.receiptId) return { disposition: "not_pending", state: initialState };
+  const receipt = initialState.receipts[attempt.receiptId];
+  if (!receipt || receipt.status !== "indeterminate") return { disposition: "not_pending", state: initialState };
+
+  const executor = deps.executors.get(attempt.invocation.capabilityId);
+  if (!executor?.reconcile) return { disposition: "not_reconcilable", state: initialState, attemptId: attempt.id, receipt };
+
+  const commandId = (stage: string): string =>
+    `cmd_${deps.hasher.digestHex(canonicalStringify({ episodeId: input.episodeId, taskId: task.id, attemptId: attempt.id, stage })).slice(0, 40)}`;
+
+  let lookup: CapabilityExecutionResult;
+  try {
+    lookup = await executor.reconcile({ invocation: attempt.invocation, indeterminateReceipt: receipt });
+  } catch {
+    return { disposition: "still_indeterminate", state: initialState, attemptId: attempt.id, receipt };
+  }
+  if (lookup.status === "indeterminate") {
+    return { disposition: "still_indeterminate", state: initialState, attemptId: attempt.id, receipt };
+  }
+
+  const reconciledReceiptId = `receipt_${deps.hasher.digestHex(canonicalStringify({ attemptId: attempt.id, invocationKey: attempt.invocation.idempotencyKey, reconciliation: true })).slice(0, 40)}`;
+  const reconciledReceipt: ExecutiveCapabilityReceipt = {
+    id: reconciledReceiptId,
+    attemptId: attempt.id,
+    invocationKey: attempt.invocation.idempotencyKey,
+    capabilityId: attempt.invocation.capabilityId,
+    executorId: executor.descriptor.capabilityId,
+    status: lookup.status,
+    startedAt: receipt.startedAt,
+    completedAt: deps.now(),
+    outputRefs: lookup.outputRefs,
+    evidenceRefs: lookup.evidenceRefs.length > 0 ? lookup.evidenceRefs : receipt.evidenceRefs,
+    attestationRef: lookup.attestationRef
+  };
+  let state = await deps.executive.dispatch({
+    type: "reconcile_receipt",
+    episodeId: input.episodeId,
+    commandId: commandId("reconcile_receipt"),
+    occurredAt: deps.now(),
+    attemptId: attempt.id,
+    receipt: reconciledReceipt
+  });
+
+  const outcomeId = `outcome_${deps.hasher.digestHex(canonicalStringify({ attemptId: attempt.id, receiptId: reconciledReceiptId })).slice(0, 40)}`;
+  const outcome: Omit<ExecutiveOutcome, "recordedAt"> = {
+    id: outcomeId,
+    attemptId: attempt.id,
+    disposition: lookup.status === "succeeded" ? "accepted" : "rejected",
+    evidenceRefs: input.outcomeEvidenceRefs.length > 0 ? input.outcomeEvidenceRefs : reconciledReceipt.evidenceRefs,
+    testEvidenceRefs: [],
+    correctionRefs: [],
+    scoreTraceRefs: []
+  };
+  state = await deps.executive.dispatch({
+    type: "record_outcome",
+    episodeId: input.episodeId,
+    commandId: commandId("record_outcome"),
+    occurredAt: deps.now(),
+    outcome
+  });
+
+  return {
+    disposition: lookup.status === "succeeded" ? "succeeded" : "failed",
+    state,
+    attemptId: attempt.id,
+    receipt: reconciledReceipt,
     outcome: state.outcomes[outcomeId]
   };
 }
