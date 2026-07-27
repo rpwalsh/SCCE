@@ -29,7 +29,7 @@ describe("runtimeMotionCandidateField (plan item: kernel-training sessionBound i
       candidates: [realAnswer],
       surfaceMass: [{ candidateId: realAnswer.id, mass: 0.8, reason: "fixture" }],
       audit: { source: "fixture-base" },
-      scoreTrace: [{ candidateId: realAnswer.id, features: {} } as CandidateField["scoreTrace"][number]]
+      scoreTrace: []
     };
     const motion: RuntimeReplanMotion = {
       schema: "scce.runtime_motion.learn_hydrate_replan.v1",
