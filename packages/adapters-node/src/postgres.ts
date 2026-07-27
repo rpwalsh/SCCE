@@ -709,6 +709,22 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE SCHEMA IF NOT EXISTS ${q}`,
     `CREATE TABLE IF NOT EXISTS ${q}.storage_meta (key TEXT PRIMARY KEY, value_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.events (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, type_id TEXT NOT NULL, t BIGINT NOT NULL, payload_json JSONB NOT NULL, parents TEXT[] NOT NULL, hash TEXT NOT NULL UNIQUE, ledger_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    // Plan item 63: the event ledger's append-only guarantee must not
+    // depend on application discipline alone. This trigger rejects
+    // UPDATE/DELETE unconditionally, regardless of which role executes
+    // it -- unlike a role-privilege restriction (which needs a second,
+    // migration-only connection role and is an operator deployment
+    // decision left undone deliberately, see observeImmutabilityControls),
+    // a trigger is safe to provision here because it can never make an
+    // already-working deployment lose access it needs: no legitimate
+    // code path ever updates or deletes an event row.
+    `CREATE OR REPLACE FUNCTION ${q}.reject_event_mutation() RETURNS TRIGGER AS $trigger$
+       BEGIN
+         RAISE EXCEPTION 'events table is append-only: % on % is not permitted', TG_OP, TG_TABLE_NAME;
+       END;
+     $trigger$ LANGUAGE plpgsql`,
+    `DROP TRIGGER IF EXISTS events_immutable ON ${q}.events`,
+    `CREATE TRIGGER events_immutable BEFORE UPDATE OR DELETE ON ${q}.events FOR EACH ROW EXECUTE FUNCTION ${q}.reject_event_mutation()`,
     `CREATE TABLE IF NOT EXISTS ${q}.conversation_turns (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, episode_id TEXT NOT NULL, turn_index BIGINT NOT NULL, role_id TEXT NOT NULL, text TEXT NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ingestion_checkpoints (id TEXT PRIMARY KEY, root_uri TEXT NOT NULL, item_uri TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, offset_bytes BIGINT NOT NULL, content_hash TEXT, byte_length BIGINT, reason TEXT, metadata_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.blobs (content_hash TEXT PRIMARY KEY, media_type TEXT NOT NULL, byte_length BIGINT NOT NULL, content BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
