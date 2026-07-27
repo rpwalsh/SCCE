@@ -221,7 +221,13 @@ export function createIngestionRuntime(options: {
             }
           }
           : originalSource;
-        const requestRequirementCorpus = parseRequestRequirementCorpus(sourceText);
+        // Request-requirement corpora are a hand-authored English intent-routing
+        // bootstrap, not organically observed language evidence -- schema-sniffing
+        // alone must not be enough to let anyone promote one into production
+        // authority/response-form patterns by simply pointing ingestion at a file.
+        const requestRequirementCorpus = deps.allowSyntheticRequestRequirementBootstrap
+          ? parseRequestRequirementCorpus(sourceText)
+          : undefined;
         const creativeEventCompatibilityCorpus = parseCreativeEventCompatibilityCorpus(sourceText);
         if (derivative) await deps.storage.evidence.putSourceVersion(source);
         events.push(await append(eventFactory.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace } })));

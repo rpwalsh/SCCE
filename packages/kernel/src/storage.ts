@@ -1056,6 +1056,19 @@ export interface ScceKernelDeps {
    * pre-existing `ScceKernelDeps` fixture valid.
    */
   sparseRankingComparisons?: import("./sparse-ranking-comparison-log.js").SparseRankingComparisonLogStore;
+  /**
+   * Explicit opt-in required before the ingestion runtime will recognize and
+   * compile `scce.request_requirement_corpus.v1` source text into production
+   * authority/response-form patterns. This corpus format is a hand-authored
+   * English intent-routing bootstrap (see examples/bootstrap/request-requirements),
+   * not organically observed language evidence, and its categories/phrasings/
+   * layouts are manually supplied -- the opposite of "hardcode the learner,
+   * not English." When false or absent (the safe default), matching source
+   * text is ingested as ordinary language/document evidence and the corpus's
+   * schema is never inspected, so it cannot silently become production
+   * request-routing control just by being pointed at generic ingestion.
+   */
+  allowSyntheticRequestRequirementBootstrap?: boolean;
 }
 
 export interface ApprovalPort {
