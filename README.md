@@ -1,169 +1,90 @@
-# SCCE v3
+# SCCE — Self-Contained Cognitive Engine
 
-SCCE is a TypeScript and Node.js implementation of the Self Contained Cognitive Engine: a local, graph-native runtime with PostgreSQL-backed durable state, evidence-aware answer construction, and developer tooling.
+**A local-first reasoning engine that answers from evidence, not from vibes.**
 
-The repository is an active pre-release source tree. Implemented paths and passing local checks are evidence about specific engineering contracts; they are not production certification or a general-quality result. The source is available for inspection under a proprietary license; it is not an open-source distribution.
+Most AI systems generate the most statistically plausible next words. SCCE is built around a different idea: ingest real source material, track exactly where every fact came from, reason over that material as a graph, and only answer what the evidence actually supports — with an inspectable trail behind every response.
 
-## Runtime path
+It runs on your own machine against your own PostgreSQL database. Nothing about what it knows lives in a black box.
+
+## Why SCCE
+
+- **Every answer is traceable.** SCCE doesn't just produce a response — it produces a trace of the evidence, the reasoning steps, and the confidence behind it. You can inspect exactly why it said what it said.
+- **It says "I don't know" instead of making things up.** When the evidence doesn't support a confident answer, SCCE says so, offers a qualified answer, or goes and looks for more support — it doesn't fabricate facts to sound helpful.
+- **It learns your language, not just your facts.** SCCE builds its own language model from what it reads, rather than leaning on a fixed pretrained voice — so its writing style is grounded in what it's actually been shown.
+- **It reasons over a real knowledge graph.** Ingested material becomes structured, queryable graph state — not just embeddings in a vector store.
+- **It's yours.** Local runtime, your database, your data. No API keys sent to a third party, no telemetry by default.
+
+## What it does
+
+- Ingest documents, code, and spreadsheets (including `.xlsx` / `.xlsm` / `.xls`) with full source identity, byte-level provenance, and timestamps.
+- Build and reason over a directed knowledge graph, with learned activation instead of keyword search.
+- Construct answers through a pipeline that tracks proof and contradiction at every step, and never lets an answer outrun its evidence.
+- Recognize when it's under-supported and recover: look for more evidence, or clearly label a lower-confidence attempt as such — never silently overreach.
+- Apply reviewed code patches through a loopback-only VS Code integration, with exact-byte workspace snapshots so nothing is touched without an explicit, auditable diff.
+
+## Under the hood, briefly
 
 ```text
-source bytes
--> typed observations and evidence spans
--> graph edges and role-bearing hyperedges
--> alpha-normalized field activation
--> route and contradiction assessment
--> requirement-conditioned proposals and candidates
--> proof-aware selection
--> one bounded support-recovery transition when needed
--> Mouth realization and bounded revision
--> answer plus inspectable trace
+source material
+  -> tracked evidence (who said it, when, exactly which bytes)
+  -> knowledge graph (entities, relations, structure)
+  -> reasoning over that graph
+  -> a proposed answer, checked against the evidence that supports it
+  -> natural-language realization, grounded in learned language patterns
+  -> an answer, plus the full trace behind it
 ```
 
-The kernel selects what may be said. The Mouth is the realization boundary: it consumes learned language memory and permitted source-bound surfaces without choosing facts or turning proof/control identifiers into prose. PostgreSQL is the canonical durable store, while graph activation and reasoning remain in the kernel rather than being delegated to text search.
+The reasoning layer decides *what* can be said; a separate realization layer decides *how* to phrase it — it never gets to invent facts of its own. If you want the deep technical version of this pipeline, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Current capabilities
-
-- Typed ingestion with source identity, byte ranges, provenance, language, and temporal metadata.
-- Lossless multiscale surface lattices with detector-proposal quotienting,
-  packed latent-boundary inference, and source-disjoint calibrated boundary models.
-- Directed graph activation through PPF and PowerWalk structures.
-- Learned turn-requirement fields, cognitive-operator activation, bounded proposals, claim bases, candidate selection, and answer revision.
-- A source-only in-memory runtime factory that shares the kernel's source-neutral requirement-to-authority projection and operator-activation helpers, with its own traced input semantics.
-- Proof and contradiction records carried into answer traces.
-- Local document and spreadsheet ingestion, including bounded `.xlsx`, `.xlsm`, and `.xls` parsing without macro execution or formula recalculation.
-- Exact-byte workspace revision snapshots and content-addressed patch plans.
-- A loopback-only VS Code client for reviewed, explicitly authorized patch application.
-
-### Low-support turns
-
-Insufficient support is a routing state, not a final refusal. The kernel can make one bounded recovery transition: learn from eligible local material or perform a configured search/fetch, admit any returned material through the canonical typed-ingest and provenance path, then replan. Recovery may not loop indefinitely or treat fetched text as evidence before source identity, spans, and temporal metadata are recorded.
-
-The replanned answer keeps factual certification separate from useful speech. It may present a source-backed correction or negative answer, or a qualified inference. If one acquisition attempt is exhausted and a factual or reasoned turn is still under-supported, the current user policy licenses one bounded creative continuation only through an admitted `learned_continuation` or `learned_structural_composition` realization with nonempty `sourcePieceIds`, bounded repetition, and useful material not copied from the request. Structural composition records exact request-owned code-point and UTF-8 byte spans with their source-activation IDs; those spans constrain realization but are not evidence. The candidate must pass non-echo, risk, and unsupported-fact gates; carry an `invented` claim basis, no evidence references, and `generated_not_evidence` provenance; and receive no factual certification.
-
-False-premise answers still require contradiction or temporal evidence for the correction; invention may not supply the negation. With empty connector, graph, and language state, SCCE cannot honestly synthesize useful knowledge without hardcoded or fabricated text, so the planner selects a non-assertive terminal answer limited to source-derived material that actually exists and the Mouth realizes that selection. An empty Mouth surface returns control to the kernel for terminal selection; it is never the final user response.
-
-Important limits:
-
-- Sparse or source-only cold-start realization is not a fluent-assistant claim; output may be fragmentary until a compatible learned language profile is hydrated.
-- Checked-in scoring coefficients are bootstrap or provisional unless a trace identifies a fitted calibrator.
-- Patch validation defaults to an explicit trusted-host provider. An optional, digest-pinned Docker provider runs validation with networking disabled and bounded host/container resources; approval binds the exact server-owned validation lane. Docker daemon, host-kernel, and operator trust remain deployment boundaries.
-- A packaged VSIX has been installed in an isolated VS Code 1.96.4 profile; the host
-  activated it, observed its registered commands, and reached `GET /api/ready`. That
-  smoke test does not cover visual layout, restart recovery, or a live patch round trip.
-- `POST /api/workspace/patch/plan/request` has two tested TypeScript repair paths: a
-  source-proven unused type-only import removal and official TypeScript LanguageService
-  code fix rooted at one existing requested TypeScript file. The planner uses exact
-  durable snapshot bytes. Compiler-action requests carry `diagnosticCodes` as structured
-  data (`--diagnostic-code=<integer>` in the CLI); request prose never selects a code
-  action, and the structured scope must resolve to one candidate. A
-  selected action may close as one compiler-owned repair transaction over as many as
-  32 affected files and 128 exact text changes, including bounded TypeScript or
-  JavaScript file creation in an existing workspace directory. It returns an
-  unauthorized, unexecuted plan requiring compiler, typecheck, and test validation.
-  Compiler context is limited to the durable snapshot plus the TypeScript standard
-  library and must resolve an exact project config from the source-observed direct
-  `tsc` invocation. Command-bearing actions, implicit or ambiguous action selection,
-  paths outside the workspace, replacement targets outside the snapshot, and creation
-  outside existing workspace directories are rejected. Arbitrary feature synthesis is
-  not part of this compiler-action path, and source-observed build and test commands are
-  required.
-- Formula cells retain source formulas and cached values when present; SCCE does not calculate workbook formulas.
-
-## Workspace
+## Project layout
 
 ```text
-packages/kernel         cognitive runtime, graph, proof, planning, and Mouth
-packages/adapters-node  PostgreSQL, files, documents, spreadsheets, and ingestion
+packages/kernel         core reasoning runtime: graph, evidence, planning, language
+packages/adapters-node  PostgreSQL, file, document, and spreadsheet ingestion
 packages/server         HTTP API and workbench server
-packages/cli            local command-line interface
-packages/ui             workbench-facing models and surfaces
-packages/vscode         loopback-only VS Code client
-tools/scce-dev-mcp      bounded repository and trace inspection tools
-docs                    architecture, contracts, guides, and status records
+packages/cli            command-line interface
+packages/ui             workbench-facing UI models and surfaces
+packages/vscode         loopback-only VS Code integration
+tools/scce-dev-mcp      repository and trace inspection tooling
+docs                    architecture, guides, and status records
 ```
 
-## Setup and verification
+## Getting started
 
-Requirements:
-
-- Node.js 20 or newer
-- pnpm 10
-- PostgreSQL for durable runtime, ingestion, and rehearsal commands
+Requirements: Node.js 20+, pnpm 10, and a PostgreSQL database.
 
 ```powershell
 pnpm install
 pnpm validate
 ```
 
-`pnpm validate` runs the repository's configured build and validation checks. Run it against the exact checkout under review; this README does not freeze test counts.
-
-Database-dependent checks are separate:
+Point SCCE at your database and set it up:
 
 ```powershell
 $env:SCCE_DATABASE_URL="postgresql://<user>:<password>@<host>:<port>/<database>"
 pnpm scce db migrate
 pnpm scce db verify
-pnpm rehearsal:postgres
-pnpm rehearsal:adapter
-pnpm rehearsal:sparse-ranking
 ```
 
-The server does not migrate PostgreSQL automatically. Run the migration for the exact
-checkout before verification or startup, preferably in an explicit maintenance window
-for a populated database. Startup verifies the schema and refuses to start with a clear
-error if it is missing or incompatible. Set `SCCE_STARTUP_MIGRATE=1` to let local
-development startup migrate automatically instead of failing closed; this opt-in is not
-for populated or shared databases.
-
-Common runtime commands:
+Then run it:
 
 ```powershell
-pnpm build
-pnpm cognition:gate
-pnpm runtime:authority-matrix
-pnpm vscode:package
-pnpm vscode:test:host
-pnpm scce
-pnpm server
-pnpm mcp:build
-pnpm mcp:start
+pnpm server   # HTTP API + workbench
+pnpm scce     # command-line interface
 ```
 
-Generated `dist/`, coverage, trace, and diagnostic-output directories are local build products, not committed source artifacts.
+Full setup detail (rehearsal commands, configuration options, VS Code packaging, startup behavior) lives in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) and [`docs/README.md`](docs/README.md).
 
-## Configuration
+## Learn more
 
-Runtime configuration is loaded from `scce.config.json`. A non-empty
-`SCCE_DATABASE_URL` overrides `database.url` before validation, so PostgreSQL
-credentials can remain outside committed configuration. Keep credentials out of
-committed files.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the reasoning pipeline actually works
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — setup, configuration, and day-to-day usage
+- [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — the HTTP API
+- [`docs/README.md`](docs/README.md) — full documentation index
+- [`SECURITY.md`](SECURITY.md) — security posture and reporting
 
-Large imports and live answering require a configured PostgreSQL instance. Tracing is disabled by default; enable it only for bounded diagnosis:
-
-```powershell
-$env:SCCE_TRACE="1"
-$env:SCCE_TRACE_DIR=".scce/traces"
-```
-
-The normal server binds its loopback socket before optional cache warmup and performs
-that warmup in the background. The listening message means the socket is bound;
-`GET /api/ready` remains the database-readiness check. Set
-`SCCE_STARTUP_WARMUP=0` to skip warmup, `SCCE_STARTUP_WARMUP_STRICT=1` to make it a
-pre-listen gate, or `SCCE_STARTUP_LANGUAGE_LIMIT` to bound the language warmup count.
-
-## Documentation
-
-Start with [`docs/README.md`](docs/README.md). Key references include:
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- [`docs/API_SURFACE.md`](docs/API_SURFACE.md)
-- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
-- [`docs/REPO_COMPLETION_MAP.md`](docs/REPO_COMPLETION_MAP.md)
-- [`docs/SERIOUS_VERSION_MATH_APPENDIX.md`](docs/SERIOUS_VERSION_MATH_APPENDIX.md)
-- [`SECURITY.md`](SECURITY.md)
-
-Coding agents should read [`AGENTS.md`](AGENTS.md) before modifying the repository.
+Contributing an AI coding agent to this repo? Read [`AGENTS.md`](AGENTS.md) first.
 
 ## License
 
-SCCE is proprietary software. Publishing or sharing this source for inspection does not grant open-source rights. Workspace packages are marked `private` and `UNLICENSED`; see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+The source is available here for inspection under a proprietary license — that means you can read it, but this is **not** an open-source project, and no license to use, copy, or redistribute it is granted. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for the exact terms.
