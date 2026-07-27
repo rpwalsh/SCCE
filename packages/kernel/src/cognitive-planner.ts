@@ -4,6 +4,7 @@ import type { InventionConstruct } from "./prediction.js";
 import type { TranslationPlan } from "./translation.js";
 import { canonicalStringify, clamp01, createHasher, mean, symbolizeData, toJsonValue } from "./primitives.js";
 import { projectGraphEdgeRelationPotential } from "./relation-potential.js";
+import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 import {
   COGNITIVE_OPERATOR_IDS,
   type ActivatedOperator,
@@ -945,10 +946,14 @@ export function scoreReasoningProposal(input: {
   const contradictionPressure = clamp01(input.field.alphaTrace.contradictionMass);
   const internalContradiction = proposalInternalContradiction(claims, input.proposal.relations, input.graph);
   const contradictionHandling = clamp01(1 - Math.max(contradictionPressure, internalContradiction));
-  const temporalEdges = graphEdgesForProposal(input.proposal, input.graph).filter(edge => edge.temporalScope.validTo !== undefined || edge.temporalScope.validFrom > 0);
-  const temporalConsistency = temporalEdges.length === 0
+  const temporalScopes = graphEdgesForProposal(input.proposal, input.graph)
+    .flatMap(edge => isKnownGraphTemporalScope(edge.temporalScope)
+      ? [edge.temporalScope]
+      : []);
+  const temporalConsistency = temporalScopes.length === 0
     ? 1
-    : mean(temporalEdges.map(edge => edge.temporalScope.validTo === undefined || edge.temporalScope.validFrom <= edge.temporalScope.validTo ? 1 : 0));
+    : mean(temporalScopes.map(scope =>
+      scope.validTo === undefined || scope.validFrom <= scope.validTo ? 1 : 0));
   const complexity = claims.length + input.proposal.relations.length + input.proposal.steps.length + input.proposal.artifacts.length;
   const simplicity = clamp01(1 - Math.max(0, complexity - 4) / 16);
   const usefulness = clamp01(mean([

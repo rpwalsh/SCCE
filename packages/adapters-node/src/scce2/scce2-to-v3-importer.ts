@@ -8,10 +8,13 @@ import {
   createEventFactory,
   createHasher,
   createIdFactory,
+  compileKneserNeyRuntimeIndexes,
   featureSet,
   stableVector,
   toJsonValue,
   validateBrainManifestContract,
+  compileBrainReplayManifest,
+  assertBrainManifestReplayForActivation,
   validationDisposition,
   type BrainLifecycleState,
   type BrainLifecycleRecord,
@@ -186,7 +189,10 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       if (lifecycle.state === "IMPORTING" || lifecycle.state === "VALIDATING") {
         lifecycle = await this.validateCompletedImport({ lifecycleState: lifecycle.state, manifest: identity.manifest, importRunId, activeBrainVersion, manifestHash, completedLedger, now });
       }
-      if (lifecycle.state === "READY") await this.storage.brainImports.activateReady({ brainVersion: activeBrainVersion, importRunId, updatedAt: now });
+      if (lifecycle.state === "READY") {
+        assertBrainManifestReplayForActivation(identity.manifest, this.hasher);
+        await this.storage.brainImports.activateReady({ brainVersion: activeBrainVersion, importRunId, updatedAt: now });
+      }
       else if (lifecycle.state !== "ACTIVE") throw new Error(`completed brain import ${importRunId} is not activatable from ${lifecycle.state}`);
       return importResultFromLedger({ manifest, importRunId, activeBrainVersion, ledger: existingLedger });
     }
@@ -619,6 +625,7 @@ export class Scce2ToV3Importer implements BrainShardImporter {
     if (readyLifecycle.state !== "READY") throw new Error(`brain import ${importRunId} did not reach READY`);
     await this.storage.events.append(events.create({ episodeId: importEpisodeId, typeId: "Scce2ImportCompleted", payload: { importRunId, activeBrainVersion, counters, warnings, stopped: false, stopReason: null } }));
     await emitStatus("completed");
+    assertBrainManifestReplayForActivation(identity.manifest, this.hasher);
     await this.storage.brainImports.activateReady({ brainVersion: activeBrainVersion, importRunId, updatedAt: now });
     return {
       manifest,
@@ -904,9 +911,21 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       const relationId = this.ids.relationId({ source: "scce2", predicate: "shard_contains_concepts" });
       const members = hyperedgeMembers;
       const hyperedge: Hyperedge = {
+        schema: "scce.hyperedge.v2",
         id: this.ids.hyperedgeId({ relationId, members, provenanceHash: this.hasher.digestHex(`${sourceVersionId}:${shard.shardId}:${hyperedgePage}:${members.length}`) }),
         relationId,
+        participantPorts: members.map((nodeId, index) => ({
+          portId: `port.${this.hasher.digestHex(`${relationId}:${index}`).slice(0, 16)}`,
+          roleId: `role.${this.hasher.digestHex(`${relationId}:imported_concept`).slice(0, 16)}`,
+          nodeId,
+          valueKind: "imported_concept",
+          realization: "observed",
+          evidenceIds: []
+        })),
         memberNodeIds: members,
+        qualifiers: toJsonValue({ sourceSystem: "scce2", page: hyperedgePage }),
+        modality: toJsonValue({ imported: true, provenanceClass: "learned_concept_prior" }),
+        evidenceIds: [],
         weightVector: toJsonValue({ sourceSystem: "scce2", memberCount: members.length, page: hyperedgePage, provenanceClass: "learned_concept_prior" }),
         temporalScope: toJsonValue({ validFrom: now }),
         provenanceRefs: [String(sourceVersionId), shard.shardId],
@@ -1484,6 +1503,24 @@ function scce2ImportIdentity(input: { manifest: BrainShardManifest; rootPath: st
         ngramStateCount: input.manifest.ngramStates.length,
         priorSectionCount: input.manifest.priorSections.length
       },
+      replayManifest: compileBrainReplayManifest({
+        sourceSchema: input.manifest.schema,
+        sourceManifestHash: manifestHash,
+        componentIds: [
+          ...(input.manifest.graph?.shards.map(shard => shard.shardId) ?? []),
+          ...(input.manifest.language?.shards.map(shard => shard.shardId) ?? []),
+          ...input.manifest.ngramStates.map(state => state.path),
+          ...input.manifest.priorSections.map(section => section.sha256 ?? section.path)
+        ],
+        content: {
+          graphShardCount: input.manifest.graph?.shards.length ?? 0,
+          languageShardCount: input.manifest.language?.shards.length ?? 0,
+          ngramStateCount: input.manifest.ngramStates.length,
+          priorSectionCount: input.manifest.priorSections.length
+        },
+        configuration: stableImportManifestIdentity(input.manifest),
+        hasher: input.hasher
+      }),
       metadata: toJsonValue({ sourceSystem: input.manifest.sourceSystem, observedAt: input.manifest.observedAt }),
       createdAt: input.now
     }
@@ -1857,7 +1894,7 @@ function kneserModelFromImportedCounts(items: Array<{ order: number; history: st
   const continuationCounts = new Map<string, number>();
   for (const [symbol, contexts] of continuationContexts) continuationCounts.set(symbol, contexts.size);
   const vocabulary = [...unigramCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 24000).map(([symbol]) => symbol);
-  return {
+  const core = {
     order: Math.max(1, Math.min(6, maxOrder)),
     discount: 0.75,
     observedSymbolCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
@@ -1870,6 +1907,10 @@ function kneserModelFromImportedCounts(items: Array<{ order: number; history: st
     unigramCounts: Object.fromEntries(unigramCounts),
     totalUnigramCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
     vocabulary
+  };
+  return {
+    ...core,
+    ...compileKneserNeyRuntimeIndexes(core)
   };
 }
 

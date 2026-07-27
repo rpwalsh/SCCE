@@ -23,22 +23,22 @@ describe("Kneser-Ney bounded candidate generation (plan item L1)", () => {
     expect(topSymbols.some(symbol => ["jumps", "runs", "sleeps"].includes(symbol))).toBe(true);
   });
 
-  it("bounds recorded context successor sets to well under the full vocabulary size", () => {
+  it("bounds compiled per-context successor indexes to well under the full vocabulary size", () => {
     const words = Array.from({ length: 300 }, (_, i) => `word${i}`);
     const corpus = `alpha beta ${words.join(" ")} alpha beta gamma`;
     const model = trainKneserNey(corpus, { vocabularyLimit: 5000 });
     expect(model.vocabularySize).toBeGreaterThan(200);
-    const successorLists = Object.values(model.contextSuccessorSymbols ?? {});
+    const successorLists = Object.values(model.successorIndex);
     expect(successorLists.length).toBeGreaterThan(0);
     for (const successors of successorLists) expect(successors.length).toBeLessThan(20);
   });
 
-  it("falls back to a small top-frequency slice when contextSuccessorSymbols is absent (legacy persisted model)", () => {
+  it("strictly rejects an uncompiled model rather than silently falling back (compiled successor-index contract)", () => {
     const model = trainKneserNey("alpha beta gamma alpha beta delta alpha beta epsilon");
-    const legacyModel: KneserNeyModel = { ...model, contextSuccessorSymbols: undefined };
-    const predictions = predictKneserNey(legacyModel, ["nonexistent", "context"], 8);
-    expect(predictions.length).toBeGreaterThan(0);
-    expect(predictions.length).toBeLessThanOrEqual(65);
+    const uncompiledModel = { ...model, successorIndex: undefined } as unknown as KneserNeyModel;
+    expect(() => predictKneserNey(uncompiledModel, ["nonexistent", "context"], 8)).toThrow(
+      "Kneser-Ney model is not compiled for bounded successor-index inference"
+    );
   });
 
   it("keeps kneserNeyProbability correct (Set-based vocabulary membership matches array-based behavior)", () => {
@@ -50,7 +50,7 @@ describe("Kneser-Ney bounded candidate generation (plan item L1)", () => {
     expect(known).not.toBe(unknown);
   });
 
-  it("predictKneserNey's cached-backoff-chain scores match per-symbol kneserNeyProbability exactly (plan item L4)", () => {
+  it("predictKneserNey's scores match per-symbol kneserNeyProbability exactly (plan item L4)", () => {
     const model = trainKneserNey(
       "the quick fox jumps over the lazy dog the quick fox runs past the lazy cat the quick fox sleeps under the lazy tree"
     );

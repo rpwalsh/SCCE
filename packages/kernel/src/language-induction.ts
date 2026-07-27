@@ -1,8 +1,40 @@
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
-import { clamp01, createHasher, entropy, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
+import { clamp01, createHasher, entropy, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import {
+  compileBoundaryStatistics,
+  fitBoundaryEstimator,
+  mergeBoundaryStatistics,
+  type BoundaryEstimatorModel,
+  type BoundarySufficientStatistics
+} from "./boundary-estimator.js";
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
-import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import {
+  buildSurfaceLattice,
+  canonicalSurfaceSequence,
+  collectBoundaryTrainingObservations,
+  compileBoundaryFeatureContext,
+  SURFACE_LATTICE_SCHEMA,
+  type BoundaryAnchor,
+  type CompiledBoundaryFeatureContext,
+  type SurfaceLattice
+} from "./surface-lattice.js";
 import type { SemanticRole } from "./semantic-graph.js";
+import {
+  boundaryMixtureForDocument,
+  learnSegmentationPopulations,
+  type SegmentationPopulationModel
+} from "./segmentation-population.js";
+import {
+  compileJoinProgram,
+  compileJoinProgramMixture,
+  type JoinProgramMixture
+} from "./join-program.js";
+import {
+  compileRelationHypothesisModel,
+  inferRelationHypotheses,
+  type RelationHypothesisModel
+} from "./relation-hypothesis.js";
+import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -10,9 +42,11 @@ export interface LanguageInductionDocument {
   id: string;
   text: string;
   sourceVersionId?: SourceVersionId;
+  sourceFamilyId?: string;
   evidenceIds?: EvidenceId[];
   languageHint?: string;
   trust?: number;
+  boundaryAnchors?: Array<Omit<BoundaryAnchor, "documentId">>;
 }
 
 export interface InducedNgram {
@@ -97,8 +131,14 @@ export interface SemanticFrameCandidate {
   roles: Array<{ name: string; filler: string; count: number; salience: number }>;
   support: number;
   alphaPrior: number;
-  /** Real, corpus-computed combinatorial-diversity score (see `computeGlobalContextDiversity`) that also drove predicate selection -- not a post-hoc label on an unrelated heuristic. */
+  /** Mean normalized posterior mass retained for this candidate. */
   predicateConfidence: number;
+  predicatePosteriorMass: number;
+  predicateAlternatives: Array<{
+    surface: string;
+    posterior: number;
+    energy: number;
+  }>;
   examples: string[];
   evidenceIds: EvidenceId[];
 }
@@ -144,6 +184,12 @@ export interface InducedLanguageModel {
   scripts: ScriptProfile[];
   ngrams: InducedNgram[];
   kneserNey: JsonValue;
+  boundaryStatistics: BoundarySufficientStatistics;
+  boundaryEstimator: BoundaryEstimatorModel;
+  boundaryFeatureContext: CompiledBoundaryFeatureContext;
+  segmentationPopulations: SegmentationPopulationModel;
+  joinProgram: JoinProgramMixture;
+  relationHypothesisModel: RelationHypothesisModel;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
   syntaxTemplates: SyntaxTemplate[];
@@ -163,26 +209,152 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
     induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
       const corpusText = documents.map(doc => doc.text).join("\n");
-      const symbols = documents.flatMap(doc => symbolizeData(doc.text).map(symbol => ({ symbol, doc })));
-      const symbolStrings = symbols.map(item => item.symbol);
-      const lexicalStrings = documents.flatMap(doc =>
-        segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments.map(segment => segment.normalized)
+      const initialLattices = documents.map(doc => ({
+        doc,
+        lattice: buildSurfaceLattice({
+          documentId: doc.id,
+          text: doc.text,
+          sourceVersionId: doc.sourceVersionId,
+          evidenceIds: doc.evidenceIds,
+          hasher
+        })
+      }));
+      const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
+        documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
+      )).slice(0, 32)}`;
+      const boundaryObservations = collectBoundaryTrainingObservations({
+        lattices: initialLattices.map(row => row.lattice),
+        anchors: initialLattices.flatMap(({ doc }) =>
+          (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
+      });
+      const boundaryFeatureContext = compileBoundaryFeatureContext({
+        lattices: initialLattices.map(row => row.lattice),
+        hasher
+      });
+      const documentBoundaryStatistics = initialLattices.map(({ doc }) => ({
+        documentId: doc.id,
+        sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
+        statistics: compileBoundaryStatistics({
+          populationId,
+          observations: boundaryObservations.filter(observation =>
+            observation.sourceDocumentId === doc.id),
+          sourceDocumentIds: [doc.id],
+          hasher
+        })
+      }));
+      const boundaryStatistics = mergeBoundaryStatistics(
+        documentBoundaryStatistics.map(document => document.statistics),
+        hasher,
+        populationId
       );
+      const boundarySplit = splitBoundaryCalibrationDocuments(documentBoundaryStatistics, hasher);
+      const trainingBoundaryStatistics = mergeBoundaryStatistics(
+        boundarySplit.training.map(document => document.statistics),
+        hasher,
+        populationId
+      );
+      const heldoutBoundaryStatistics = boundarySplit.heldout.length
+        ? mergeBoundaryStatistics(
+          boundarySplit.heldout.map(document => document.statistics),
+          hasher,
+          populationId
+        )
+        : undefined;
+      const boundaryEstimator = fitBoundaryEstimator({
+        statistics: trainingBoundaryStatistics,
+        calibrationStatistics: heldoutBoundaryStatistics,
+        calibrationShards: boundarySplit.heldout.map(document => document.statistics),
+        hasher
+      });
+      const segmentationPopulations = learnSegmentationPopulations({
+        rootPopulationId: populationId,
+        documents: documentBoundaryStatistics,
+        hasher
+      });
+      const lattices = documents.map(doc => ({
+        doc,
+        lattice: buildSurfaceLattice({
+          documentId: doc.id,
+          text: doc.text,
+          sourceVersionId: doc.sourceVersionId,
+          evidenceIds: doc.evidenceIds,
+          boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
+          boundaryFeatureContext,
+          hasher
+        })
+      }));
+      const selectedPopulationByDocument = new Map(
+        segmentationPopulations.assignments.map(assignment => [
+          assignment.documentId,
+          assignment.selectedPopulationId
+        ])
+      );
+      const defaultPopulationId = segmentationPopulations.populations[0]!.id;
+      const joinProgram = compileJoinProgramMixture({
+        populationModelId: segmentationPopulations.id,
+        components: segmentationPopulations.populations.map(population => ({
+          populationId: population.id,
+          weight: population.prior,
+          program: compileJoinProgram({
+            populationId: population.id,
+            documents: lattices
+              .filter(({ doc }) =>
+                (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
+              .map(({ doc, lattice }) => ({
+                documentId: doc.id,
+                sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
+                text: doc.text,
+                lattice
+              })),
+            hasher
+          })
+        })),
+        hasher
+      });
+      const symbols = lattices.flatMap(({ doc, lattice }) =>
+        canonicalSurfaceSequence(lattice).map(unit => ({ symbol: unit.surface, doc }))
+      );
+      const symbolStrings = symbols.map(item => item.symbol);
+      const lexicalStrings = lattices.flatMap(({ lattice }) => lexicalSurfaceSequence(lattice));
+      const relationObservations = documents.flatMap(doc =>
+        sentenceSegments(doc.text, hasher).map((sentence, sentenceIndex) => ({
+          sourceId: doc.id,
+          symbols: lexicalSurfaceSymbols(sentence, `${doc.id}.relation.${sentenceIndex}`, hasher)
+            .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char))),
+          evidenceIds: doc.evidenceIds
+        })));
+      const relationHypothesisModel = compileRelationHypothesisModel({
+        observations: relationObservations,
+        hasher
+      });
       const order = clampOrder(input.order ?? 6);
       const counts = countNgrams(symbolStrings, order, vocabularyLimit);
       const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
       const kn = trainKneserNey(symbolStrings, { order, vocabularyLimit });
-      const boundarySignals = induceBoundaries(corpusText, hasher).slice(0, 2048);
+      const boundarySignals = induceBoundariesFromLattices(lattices.map(({ lattice }) => lattice), hasher).slice(0, 2048);
       const scripts = induceScripts(corpusText);
       const morphology = induceMorphology(lexicalStrings, hasher).slice(0, 2048);
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
       const lexicalClasses = induceLexicalClasses(documents, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
-      const semanticFrames = induceSemanticFrames(documents, hasher, input.maxFrames ?? 2048);
+      const semanticFrames = induceSemanticFrames(
+        documents,
+        relationHypothesisModel,
+        hasher,
+        input.maxFrames ?? 2048
+      );
       const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
-      const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
-      const id = `language_model_${hasher.digestHex(JSON.stringify({ docs: documents.map(d => d.id), symbols: symbolStrings.length, order })).slice(0, 32)}`;
+      const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
+      const id = `language_model_${hasher.digestHex(JSON.stringify({
+        docs: documents.map(d => d.id),
+        symbols: symbolStrings.length,
+        order,
+        boundaryEstimatorId: boundaryEstimator.id,
+        segmentationPopulationModelId: segmentationPopulations.id,
+        joinProgramId: joinProgram.id,
+        relationHypothesisModelId: relationHypothesisModel.id
+      })).slice(0, 32)}`;
       return {
         id,
         corpusDocuments: documents.length,
@@ -191,6 +363,12 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         scripts,
         ngrams,
         kneserNey: compactKneserNeyForProfile(kn, corpusText.slice(0, 200000)),
+        boundaryStatistics,
+        boundaryEstimator,
+        boundaryFeatureContext,
+        segmentationPopulations,
+        joinProgram,
+        relationHypothesisModel,
         boundarySignals,
         morphology,
         syntaxTemplates,
@@ -205,14 +383,35 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           vocabularyLimit,
           sourceVersionIds: documents.map(doc => doc.sourceVersionId).filter(Boolean),
           evidenceIds: [...new Set(documents.flatMap(doc => doc.evidenceIds ?? []))],
+          surfaceLatticeSchema: SURFACE_LATTICE_SCHEMA,
+          surfaceLatticeIds: lattices.map(({ lattice }) => lattice.id),
+          segmentationForestIds: lattices.map(({ lattice }) => lattice.segmentationForest.id),
+          retainedSegmentationPosteriorMass: lattices.map(({ lattice }) => lattice.segmentationForest.retainedPosteriorMass),
+          boundaryStatisticsId: boundaryStatistics.id,
+          boundaryEstimatorId: boundaryEstimator.id,
+          boundaryEstimatorPopulationId: populationId,
+          segmentationPopulationModelId: segmentationPopulations.id,
+          segmentationPopulationCount: segmentationPopulations.populations.length,
+          segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
+          joinProgramId: joinProgram.id,
+          joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
+          relationHypothesisModelId: relationHypothesisModel.id,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)
         })
       };
     },
 
-    scoreContinuation(input: { model: KneserNeyModel; prompt: string; generationExtent?: number }): JsonValue {
-      return toJsonValue(continueBoundedProse(input.model, input.prompt, { generationExtent: input.generationExtent ?? 64 }));
+    scoreContinuation(input: {
+      model: KneserNeyModel;
+      prompt: string;
+      generationExtent?: number;
+      joinProgram?: JoinProgramMixture;
+    }): JsonValue {
+      return toJsonValue(continueBoundedProse(input.model, input.prompt, {
+        generationExtent: input.generationExtent ?? 64,
+        joinProgram: input.joinProgram
+      }));
     }
   };
 }
@@ -291,41 +490,43 @@ function ngramPmi(gram: readonly string[], count: number, total: number, unigram
   return Math.max(0, Math.log2(Math.max(1e-12, joint / Math.max(1e-12, independent))) / Math.max(1, gram.length));
 }
 
-function induceBoundaries(text: string, hasher: Hasher): BoundarySignal[] {
-  const cleaned = text.replace(/\u0000/g, " ");
+function induceBoundariesFromLattices(
+  lattices: readonly SurfaceLattice[],
+  hasher: Hasher
+): BoundarySignal[] {
   const pairCounts = new Map<string, number>();
-  const boundaryCounts = new Map<string, number>();
+  const boundaryMass = new Map<string, number>();
   const leftCounts = new Map<string, number>();
   const rightCounts = new Map<string, number>();
-  for (let i = 0; i < cleaned.length - 1; i++) {
-    const left = cleaned[i]!;
-    const right = cleaned[i + 1]!;
-    if (left === "\r" || right === "\r") continue;
-    const leftKey = charClass(left);
-    const rightKey = charClass(right);
-    const key = `${leftKey}\u0001${rightKey}`;
-    pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
-    leftCounts.set(leftKey, (leftCounts.get(leftKey) ?? 0) + 1);
-    rightCounts.set(rightKey, (rightCounts.get(rightKey) ?? 0) + 1);
-    if (/\s/u.test(left) || /\s/u.test(right) || /[.,;:!?()[\]{}]/u.test(left) || /[.,;:!?()[\]{}]/u.test(right)) {
-      boundaryCounts.set(key, (boundaryCounts.get(key) ?? 0) + 1);
+  for (const lattice of lattices) {
+    const graphemes = lattice.units
+      .filter(unit => unit.overlapClass === "base_partition")
+      .sort((left, right) => left.graphemeStart - right.graphemeStart);
+    for (let index = 0; index < graphemes.length - 1; index += 1) {
+      const left = graphemes[index]!;
+      const right = graphemes[index + 1]!;
+      const key = JSON.stringify([left.normalized, right.normalized]);
+      pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+      boundaryMass.set(key, (boundaryMass.get(key) ?? 0) + left.boundaryAfter.boundaryProbability);
+      leftCounts.set(left.normalized, (leftCounts.get(left.normalized) ?? 0) + 1);
+      rightCounts.set(right.normalized, (rightCounts.get(right.normalized) ?? 0) + 1);
     }
   }
   const total = [...pairCounts.values()].reduce((sum, count) => sum + count, 0);
   const signals: BoundarySignal[] = [];
   for (const [key, count] of pairCounts) {
-    const [left, right] = key.split("\u0001") as [string, string];
-    const boundary = boundaryCounts.get(key) ?? 0;
+    const [left, right] = JSON.parse(key) as [string, string];
+    const boundary = boundaryMass.get(key) ?? 0;
     const joint = count / Math.max(1, total);
     const independent = ((leftCounts.get(left) ?? 1) / Math.max(1, total)) * ((rightCounts.get(right) ?? 1) / Math.max(1, total));
     const mutualInformation = Math.max(0, Math.log2(Math.max(1e-12, joint / Math.max(1e-12, independent))));
-    const boundaryProbability = boundary / count;
+    const boundaryProbability = clamp01(boundary / count);
     signals.push({
       left,
       right,
       count,
       boundaryProbability,
-      joinProbability: clamp01((1 - boundaryProbability) * mutualInformation / 8),
+      joinProbability: clamp01(1 - boundaryProbability),
       mutualInformation
     });
   }
@@ -454,7 +655,7 @@ function induceMorphology(symbols: readonly string[], hasher: Hasher): Morpholog
   return rules.sort((a, b) => b.productivity - a.productivity || b.stemCount - a.stemCount || a.pattern.localeCompare(b.pattern));
 }
 
-const MORPHOLOGY_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const MORPHOLOGY_GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
 
 function graphemeUnits(value: string): string[] {
   return [...MORPHOLOGY_GRAPHEME_SEGMENTER.segment(value)].map(row => row.segment);
@@ -463,8 +664,8 @@ function graphemeUnits(value: string): string[] {
 function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], hasher: Hasher): SyntaxTemplate[] {
   const counts = new Map<string, { count: number; examples: string[]; nextShapes: Map<string, number> }>();
   for (const doc of documents) {
-    for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = segmentUnicodeSurfaceV2(sentence, hasher).lexicalSegments.map(segment => segment.normalized);
+    for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
+      const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.syntax.${sentenceIndex}`, hasher);
       if (symbols.length === 0) continue;
       const shape = symbols.slice(0, 32).map(symbolShape);
       for (let width = 2; width <= Math.min(8, shape.length); width++) {
@@ -499,9 +700,9 @@ function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], 
  * Distributional lexical-class induction (Part B step 4): words are
  * substitutable, and therefore belong to the same latent class, when they
  * are observed in the same left/right context slots (Harris's distributional
- * hypothesis). Deliberately built on `segmentUnicodeSurfaceV2()`'s real
- * word-level `lexicalSegments` rather than `symbolizeData()`. N-gram fluency
- * may legitimately retain symbol-level granularity, while lexical,
+ * hypothesis). Deliberately built on the canonical surface lattice's
+ * lexical hypotheses. N-gram fluency retains the lattice's canonical
+ * sequence, while lexical,
  * morphology, syntax, and semantic induction require the actual lexical unit
  * a script's speakers use, or every non-Latin "word" collapses to a single
  * grapheme and every class becomes a same-script character bag rather than a
@@ -520,7 +721,13 @@ function induceLexicalClasses(documents: readonly LanguageInductionDocument[], h
   const symbolContexts = new Map<string, Map<string, number>>();
 
   for (const doc of documents) {
-    const lexical = segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments;
+    const lexical = lexicalUnits(buildSurfaceLattice({
+      documentId: doc.id,
+      text: doc.text,
+      sourceVersionId: doc.sourceVersionId,
+      evidenceIds: doc.evidenceIds,
+      hasher
+    }));
     for (let i = 0; i < lexical.length; i++) {
       const symbol = lexical[i]!.normalized;
       if (!symbol) continue;
@@ -661,34 +868,73 @@ function induceMorphologyClassBindings(
   return bindings.sort((a, b) => b.confidence - a.confidence || b.stemOverlap - a.stemOverlap || a.id.localeCompare(b.id));
 }
 
-function induceSemanticFrames(documents: readonly LanguageInductionDocument[], hasher: Hasher, maxFrames: number): SemanticFrameCandidate[] {
-  // Real corpus-wide signal, computed once, used as an actual selection
-  // criterion below (not a post-hoc label on an unchanged heuristic): a
-  // word that recombines with many distinct immediate left/right neighbors
-  // across the corpus behaves like a real predicate (free combination with
-  // varying arguments); a word locked into the same one or two immediate
-  // contexts every time behaves like a fixed collocation, a modifier, or an
-  // argument filler -- not a predicate.
-  const combinatorialDiversity = computeGlobalContextDiversity(documents);
-  const frames = new Map<string, { predicate: string; left: Map<string, number>; right: Map<string, number>; examples: string[]; evidenceIds: Set<EvidenceId>; alpha: number }>();
+function induceSemanticFrames(
+  documents: readonly LanguageInductionDocument[],
+  relationModel: RelationHypothesisModel,
+  hasher: Hasher,
+  maxFrames: number
+): SemanticFrameCandidate[] {
+  const frames = new Map<string, {
+    predicate: string;
+    left: Map<string, number>;
+    right: Map<string, number>;
+    examples: string[];
+    evidenceIds: Set<EvidenceId>;
+    alpha: number;
+    posteriorMass: number;
+    hypothesisCount: number;
+    alternatives: Map<string, { posteriorMass: number; energyMass: number }>;
+  }>();
   for (const doc of documents) {
     const trust = clamp01(doc.trust ?? 0.5);
-    for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = segmentUnicodeSurfaceV2(sentence, hasher).lexicalSegments
-        .map(segment => segment.normalized)
+    for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
+      const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.frame.${sentenceIndex}`, hasher)
         .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
       if (symbols.length < 2) continue;
-      const predicate = selectFramePredicate(symbols, combinatorialDiversity);
-      const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
-      const right = symbols.slice(predicate.index + 1, Math.min(symbols.length, predicate.index + 7));
-      const key = predicate.symbol;
-      const bucket = frames.get(key) ?? { predicate: key, left: new Map<string, number>(), right: new Map<string, number>(), examples: [] as string[], evidenceIds: new Set<EvidenceId>(), alpha: 0 };
-      for (const symbol of left) bucket.left.set(symbol, (bucket.left.get(symbol) ?? 0) + 1);
-      for (const symbol of right) bucket.right.set(symbol, (bucket.right.get(symbol) ?? 0) + 1);
-      if (bucket.examples.length < 12) bucket.examples.push(sentence);
-      for (const id of doc.evidenceIds ?? []) bucket.evidenceIds.add(id);
-      bucket.alpha += trust;
-      frames.set(key, bucket);
+      const hypotheses = inferRelationHypotheses({
+        symbols,
+        model: relationModel,
+        candidate: symbol => [...symbol].some(char => /\p{Letter}|\p{Symbol}/u.test(char))
+      });
+      for (const predicate of hypotheses) {
+        const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
+        const right = symbols.slice(predicate.index + 1, Math.min(symbols.length, predicate.index + 7));
+        const key = predicate.surface;
+        const bucket = frames.get(key) ?? {
+          predicate: key,
+          left: new Map<string, number>(),
+          right: new Map<string, number>(),
+          examples: [],
+          evidenceIds: new Set<EvidenceId>(),
+          alpha: 0,
+          posteriorMass: 0,
+          hypothesisCount: 0,
+          alternatives: new Map<string, { posteriorMass: number; energyMass: number }>()
+        };
+        for (const symbol of left) {
+          bucket.left.set(symbol, (bucket.left.get(symbol) ?? 0) + predicate.posterior);
+        }
+        for (const symbol of right) {
+          bucket.right.set(symbol, (bucket.right.get(symbol) ?? 0) + predicate.posterior);
+        }
+        if (bucket.examples.length < 12 && !bucket.examples.includes(sentence)) {
+          bucket.examples.push(sentence);
+        }
+        for (const id of doc.evidenceIds ?? []) bucket.evidenceIds.add(id);
+        bucket.alpha += trust * predicate.posterior;
+        bucket.posteriorMass += predicate.posterior;
+        bucket.hypothesisCount += 1;
+        for (const alternative of hypotheses) {
+          const row = bucket.alternatives.get(alternative.surface) ?? {
+            posteriorMass: 0,
+            energyMass: 0
+          };
+          row.posteriorMass += alternative.posterior * predicate.posterior;
+          row.energyMass += alternative.energy * predicate.posterior;
+          bucket.alternatives.set(alternative.surface, row);
+        }
+        frames.set(key, bucket);
+      }
     }
   }
   return [...frames.values()]
@@ -703,7 +949,19 @@ function induceSemanticFrames(documents: readonly LanguageInductionDocument[], h
         roles,
         support,
         alphaPrior: clamp01(frame.alpha / Math.max(1, frame.examples.length)),
-        predicateConfidence: combinatorialDiversity.get(frame.predicate) ?? 0,
+        predicateConfidence: clamp01(frame.posteriorMass / Math.max(1, frame.hypothesisCount)),
+        predicatePosteriorMass: frame.posteriorMass,
+        predicateAlternatives: [...frame.alternatives.entries()]
+          .map(([surface, row]) => ({
+            surface,
+            posterior: row.posteriorMass / Math.max(Number.EPSILON, frame.posteriorMass),
+            energy: row.energyMass / Math.max(Number.EPSILON, frame.posteriorMass)
+          }))
+          .sort((left, right) =>
+            right.posterior - left.posterior
+            || left.energy - right.energy
+            || left.surface.localeCompare(right.surface))
+          .slice(0, 16),
         examples: frame.examples,
         evidenceIds: [...frame.evidenceIds]
       };
@@ -828,7 +1086,7 @@ function induceTranslationSeeds(documents: readonly LanguageInductionDocument[],
   const languageProfiles = [...byLanguage.entries()].map(([lang, docs]) => ({
     lang,
     symbols: frequency(docs.flatMap(doc =>
-      segmentUnicodeSurfaceV2(doc.text, hasher).lexicalSegments.map(segment => segment.normalized)
+      lexicalSurfaceSymbols(doc.text, doc.id, hasher)
     )),
     features: featureSet(docs.map(doc => doc.text).join("\n"), 4096),
     evidenceIds: [...new Set(docs.flatMap(doc => doc.evidenceIds ?? []))]
@@ -879,9 +1137,17 @@ function translationBasis(sourceSymbol: string, targetSymbol: string, frames: re
   return "shared_context";
 }
 
-function proseDiagnostic(model: KneserNeyModel, symbols: readonly string[]): JsonValue {
+function proseDiagnostic(
+  model: KneserNeyModel,
+  symbols: readonly string[],
+  joinProgram: JoinProgramMixture
+): JsonValue {
   const sample = symbols.slice(0, Math.min(64, symbols.length)).join(" ");
-  const continuation = continueBoundedProse(model, sample, { generationExtent: 32, probabilityFloor: 1e-9 });
+  const continuation = continueBoundedProse(model, sample, {
+    generationExtent: 32,
+    probabilityFloor: 1e-9,
+    joinProgram
+  });
   const orderMass = new Map<number, number>();
   for (const key of Object.keys(model.counts)) {
     const order = key.split("\u0001").length;
@@ -899,84 +1165,7 @@ function proseDiagnostic(model: KneserNeyModel, symbols: readonly string[]): Jso
   });
 }
 
-/**
- * Real distributional selection, not a positional/shape guess alone:
- * `combinatorialDiversity` (how many distinct immediate left/right contexts
- * this exact symbol type was observed in across the whole corpus, computed
- * once by `computeGlobalContextDiversity`) is now the single largest
- * weighted term, because it is the one real linguistic signal here --
- * predicates combine freely with varying arguments; fixed collocations,
- * modifiers, and most argument fillers recur in the same one or two
- * contexts. Length/center/rarity/symbol-shape remain as real but weaker
- * tie-breaking signals, not the dominant criterion they were before.
- */
-function selectFramePredicate(symbols: readonly string[], combinatorialDiversity: ReadonlyMap<string, number>): { symbol: string; index: number } {
-  let best = { symbol: symbols[0] ?? "unit", index: 0, score: -Infinity };
-  const counts = frequency(symbols);
-  for (let i = 0; i < symbols.length; i++) {
-    const symbol = symbols[i]!;
-    const center = 1 - Math.abs(i - (symbols.length - 1) / 2) / Math.max(1, symbols.length);
-    const rarity = 1 / Math.max(1, counts.get(symbol) ?? 1);
-    const shape = symbolShape(symbol);
-    const symbolic = shape.includes("symbol") ? 0.2 : 0;
-    const diversity = combinatorialDiversity.get(symbol) ?? 0;
-    // Additive, not a reallocation of the pre-existing weights: length and
-    // center position are real, if imperfect, signals in their own right
-    // (long, centrally-placed words are content words more often than not
-    // across many languages, not merely an English artifact) and stay at
-    // their original weight. Combinatorial diversity is a genuinely
-    // independent, corpus-grounded signal layered on top, not a wholesale
-    // replacement -- keeping both improves over either alone.
-    const score = Math.min(1, symbol.length / 16) * 0.36 + center * 0.34 + rarity * 0.2 + symbolic + diversity * 0.30;
-    if (score > best.score) best = { symbol, index: i, score };
-  }
-  return { symbol: best.symbol, index: best.index };
-}
-
-/**
- * Corpus-wide combinatorial diversity per symbol type: distinct immediate
- * `(left, right)` neighbor pairs observed, normalized by occurrence count,
- * requiring at least 3 real occurrences before reporting anything above
- * zero (avoids treating a single-occurrence word as maximally "diverse" by
- * accident). This is the real signal `selectFramePredicate` uses -- computed
- * once per `induceSemanticFrames` call, over the same `symbolizeData()`
- * stream frame induction already uses (kept consistent, not mixed with the
- * v2 word-level stream steps 4-6 use for a different purpose).
- */
-function computeGlobalContextDiversity(documents: readonly LanguageInductionDocument[]): Map<string, number> {
-  const occurrences = new Map<string, number>();
-  const contexts = new Map<string, Set<string>>();
-  for (const doc of documents) {
-    for (const sentence of sentenceSegments(doc.text)) {
-      const symbols = symbolizeData(sentence).filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
-      for (let i = 0; i < symbols.length; i++) {
-        const symbol = symbols[i]!;
-        const left = symbols[i - 1] ?? "<s>";
-        const right = symbols[i + 1] ?? "</s>";
-        occurrences.set(symbol, (occurrences.get(symbol) ?? 0) + 1);
-        const set = contexts.get(symbol) ?? new Set<string>();
-        set.add(`${left}\u0001${right}`);
-        contexts.set(symbol, set);
-      }
-    }
-  }
-  const diversity = new Map<string, number>();
-  for (const [symbol, count] of occurrences) {
-    // Laplace-smoothed ratio (+2), not a raw distinctContexts/count ratio: an
-    // unsmoothed ratio rewards a word for being *rare* (a word seen twice in
-    // two different contexts scores a perfect 1.0, higher than a genuinely
-    // promiscuous word seen often with only modest repetition) -- confirmed
-    // by a real regression this caused (a controlled test corpus where a
-    // 4-occurrence noun outscored an 8-occurrence verb under the unsmoothed
-    // version). Smoothing requires real repeated evidence before rewarding
-    // diversity, and count < 2 is reported as zero rather than a lone
-    // coincidental context inflating the score.
-    diversity.set(symbol, count < 2 ? 0 : clamp01((contexts.get(symbol)?.size ?? 0) / (count + 2)));
-  }
-  return diversity;
-}
-
-function sentenceSegments(text: string): string[] {
+function sentenceSegments(text: string, hasher: Hasher): string[] {
   const cleaned = text.replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) return [];
   const out: string[] = [];
@@ -1003,10 +1192,24 @@ function sentenceSegments(text: string): string[] {
   const tail = cleaned.slice(start).trim();
   if (tail) out.push(tail);
   if (out.length) return out;
-  const symbols = segmentUnicodeSurfaceV2(cleaned).lexicalSegments.map(segment => segment.surface);
+  const symbols = lexicalSurfaceSymbols(cleaned, `sentence_fallback.${hasher.digestHex(cleaned).slice(0, 24)}`, hasher);
   const chunks: string[] = [];
   for (let i = 0; i < symbols.length; i += 40) chunks.push(symbols.slice(i, i + 40).join(" "));
   return chunks;
+}
+
+function lexicalUnits(lattice: SurfaceLattice) {
+  return lattice.units
+    .filter(unit => unit.proposalSources.includes("lexical"))
+    .sort((left, right) => left.utf16Start - right.utf16Start || left.utf16End - right.utf16End);
+}
+
+function lexicalSurfaceSequence(lattice: SurfaceLattice): string[] {
+  return lexicalUnits(lattice).map(unit => unit.normalized);
+}
+
+function lexicalSurfaceSymbols(text: string, documentId: string, hasher: Hasher): string[] {
+  return lexicalSurfaceSequence(buildSurfaceLattice({ documentId, text, hasher }));
 }
 
 function symbolShape(symbol: string): string {
@@ -1047,6 +1250,26 @@ function frequency(symbols: readonly string[]): Map<string, number> {
 
 function topEntries(map: Map<string, number>, limit: number): Array<[string, number]> {
   return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, Math.max(1, limit));
+}
+
+function splitBoundaryCalibrationDocuments<T extends { documentId: string }>(
+  documents: readonly T[],
+  hasher: Hasher
+): { training: T[]; heldout: T[] } {
+  if (documents.length < 4) return { training: [...documents], heldout: [] };
+  const ranked = documents.map(document => ({
+    document,
+    rank: hasher.digestHex(`boundary-calibration-holdout\u001f${document.documentId}`)
+  })).sort((left, right) =>
+    left.rank.localeCompare(right.rank)
+    || left.document.documentId.localeCompare(right.document.documentId));
+  const heldoutCount = Math.max(1, Math.floor(documents.length / 5));
+  const heldoutIds = new Set(ranked.slice(0, heldoutCount)
+    .map(row => row.document.documentId));
+  return {
+    training: documents.filter(document => !heldoutIds.has(document.documentId)),
+    heldout: documents.filter(document => heldoutIds.has(document.documentId))
+  };
 }
 
 function gramKey(symbols: readonly string[]): string {

@@ -10,6 +10,9 @@ import {
   createSourceCodeFileFacts,
   createSourceRepositoryFacts,
   createTypedIngestProjector,
+  compileRelationPromotionModel,
+  compileOpaqueRoleModel,
+  compileRoleSurfaceOrderModel,
   observationContract,
   toJsonValue,
   type EvidenceSpan,
@@ -131,6 +134,15 @@ export interface EngineeringCorpusFolderRuntimeReport {
   };
   fileProjections: EngineeringCorpusFileProjectionSummary[];
   routeAudit: EngineeringCorpusRouteAudit;
+  relationPromotion: {
+    modelId: string;
+    candidateCount: number;
+    promotedRelationSeedIds: string[];
+    rejectedRelationSeedIds: string[];
+    opaqueRoleModelId: string;
+    opaqueRoleCount: number;
+    roleSurfaceOrderModelId: string;
+  };
   projections: Array<{
     sourceUri: string;
     mediaType: string;
@@ -138,6 +150,7 @@ export interface EngineeringCorpusFolderRuntimeReport {
     observationCounts: Record<string, number>;
     graphNodes: number;
     graphEdges: number;
+    graphHyperedges: number;
     languageTextChars: number;
   }>;
   engineering: {
@@ -345,6 +358,21 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
   }
   const allObservations = projections.flatMap(projection => projection.observations);
   const allRoutes = projections.flatMap(projection => projection.routes);
+  const relationPromotionModel = compileRelationPromotionModel({
+    candidates: projections.flatMap(projection => projection.semanticCandidates),
+    hasher
+  });
+  const opaqueRoleModel = compileOpaqueRoleModel({
+    candidates: projections.flatMap(projection => projection.semanticCandidates),
+    promotionModel: relationPromotionModel,
+    hasher
+  });
+  const roleSurfaceOrderModel = compileRoleSurfaceOrderModel({
+    candidates: projections.flatMap(projection => projection.semanticCandidates),
+    promotionModel: relationPromotionModel,
+    opaqueRoleModel,
+    hasher
+  });
   const contracts = allObservations.map(observationContract);
   const fileProjections = projectedFiles.map(projected => summarizeFileProjection(projected));
   const routeAudit = auditEngineeringRoutes(fileProjections);
@@ -377,6 +405,19 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
     },
     fileProjections,
     routeAudit,
+    relationPromotion: {
+      modelId: relationPromotionModel.id,
+      candidateCount: relationPromotionModel.candidateIds.length,
+      promotedRelationSeedIds: relationPromotionModel.decisions
+        .filter(decision => decision.promoted)
+        .map(decision => decision.relationSeedId),
+      rejectedRelationSeedIds: relationPromotionModel.decisions
+        .filter(decision => !decision.promoted)
+        .map(decision => decision.relationSeedId),
+      opaqueRoleModelId: opaqueRoleModel.id,
+      opaqueRoleCount: opaqueRoleModel.clusters.length,
+      roleSurfaceOrderModelId: roleSurfaceOrderModel.id
+    },
     projections: projections.map(projection => ({
       sourceUri: projection.observations[0]?.provenance && typeof projection.observations[0].provenance === "object" && !Array.isArray(projection.observations[0].provenance)
         ? String((projection.observations[0].provenance as Record<string, JsonValue>).uri ?? "")
@@ -386,6 +427,7 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
       observationCounts: projection.observationCounts,
       graphNodes: projection.graphNodes.length,
       graphEdges: projection.graphEdges.length,
+      graphHyperedges: projection.graphHyperedges.length,
       languageTextChars: projection.languageText.length
     })),
     engineering: {

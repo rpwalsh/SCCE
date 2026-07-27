@@ -4,6 +4,7 @@ import {
   normalizePriorKey
 } from "./kernel-answer-primitives.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
+import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import { hashTextForLocalProof } from "./local-evidence-runtime.js";
 import type {
   PowerWalkResult,
@@ -32,6 +33,8 @@ export function emptySurfaceLanguageMemory(): {
   units: never[];
   patterns: never[];
   semanticFrames: never[];
+  segmentationPopulationModels: SegmentationPopulationModelRecord[];
+  constructionEvidence: never[];
   requestControlPatterns: never[];
   surfaceProfile: LanguageProfile | undefined;
   state: LanguageMemoryRuntimeState;
@@ -57,6 +60,8 @@ export function emptySurfaceLanguageMemory(): {
     units: [],
     patterns: [],
     semanticFrames: [],
+    segmentationPopulationModels: [],
+    constructionEvidence: [],
     requestControlPatterns: [],
     surfaceProfile: undefined,
     state: {
@@ -72,6 +77,7 @@ export function emptySurfaceLanguageMemory(): {
       importedObservations: [],
       importedSemanticFrames: [],
       importedConstructionBundles: [],
+      joinPrograms: [],
       creativeEventCompatibilityModels: [],
       rejectedConstructionPatterns: [],
       importedLanguagePriorCount: 0,

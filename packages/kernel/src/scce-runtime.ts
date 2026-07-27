@@ -6,6 +6,7 @@ import type {
   GraphEdge,
   GraphNode,
   Hasher,
+  Hyperedge,
   JsonValue,
   LanguageProfile,
   NodeId,
@@ -20,6 +21,7 @@ import type {
   SourceVersion
 } from "./types.js";
 import { canonicalStringify, clamp01, createClock, createHasher, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
+import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 import { launchContractForTurn } from "./launch-contract.js";
 import { INTERACTION_FEATURE_IDS, updateDialogueState, type DialogueFeedback, type DialogueState, type UserStyleProfile } from "./dialogue-pragmatics.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
@@ -32,7 +34,23 @@ import {
   calibrationObservationRecord,
   type CalibrationModelSet
 } from "./calibration-spine.js";
-import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
+import {
+  createTypedIngestProjector,
+  graphFromStructuredSemanticCandidates,
+  type TypedIngestProjection
+} from "./typed-ingest.js";
+import {
+  compileRelationPromotionModel,
+  type RelationPromotionModel
+} from "./relation-promotion.js";
+import {
+  compileOpaqueRoleModel,
+  type OpaqueRoleModel
+} from "./opaque-role-induction.js";
+import {
+  compileRoleSurfaceOrderModel,
+  type RoleSurfaceOrderModel
+} from "./role-surface-order.js";
 import {
   promoteWorkspaceAnalysisToCoreRecords,
   type WorkspaceCoreAnalysisInput,
@@ -128,7 +146,10 @@ export interface ScceRuntimeIngestResult {
   sourceVersions: SourceVersion[];
   evidence: EvidenceSpan[];
   typedProjections: TypedIngestProjection[];
-  graph: { nodes: GraphNode[]; edges: GraphEdge[] };
+  relationPromotionModel: RelationPromotionModel;
+  opaqueRoleModel: OpaqueRoleModel;
+  roleSurfaceOrderModel: RoleSurfaceOrderModel;
+  graph: { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] };
   graphLearning: RuntimeGraphLearningReport;
   classificationCounts: Record<string, number>;
   unsupportedRecords: JsonValue[];
@@ -401,6 +422,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
     const typedProjections: TypedIngestProjection[] = [];
     const graphNodes: GraphNode[] = [];
     const graphEdges: GraphEdge[] = [];
+    const graphHyperedges: Hyperedge[] = [];
     const unsupportedRecords: JsonValue[] = [];
 
     for (const file of input.files) {
@@ -432,8 +454,36 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       typedProjections.push(projection);
       graphNodes.push(...projection.graphNodes);
       graphEdges.push(...projection.graphEdges);
+      graphHyperedges.push(...projection.graphHyperedges);
       if (!projection.observations.length) unsupportedRecords.push(toJsonValue({ path: file.path, reasonId: "runtime.ingest.no_typed_observations" }));
     }
+
+    const relationPromotionModel = compileRelationPromotionModel({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      hasher
+    });
+    const opaqueRoleModel = compileOpaqueRoleModel({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      promotionModel: relationPromotionModel,
+      hasher
+    });
+    const roleSurfaceOrderModel = compileRoleSurfaceOrderModel({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      promotionModel: relationPromotionModel,
+      opaqueRoleModel,
+      hasher
+    });
+    const promotedCandidateGraph = graphFromStructuredSemanticCandidates({
+      candidates: typedProjections.flatMap(projection => projection.semanticCandidates),
+      observedAt: now,
+      ids: idFactory,
+      hasher,
+      relationPromotionModel,
+      opaqueRoleModel
+    });
+    graphNodes.push(...promotedCandidateGraph.nodes);
+    graphEdges.push(...promotedCandidateGraph.edges);
+    graphHyperedges.push(...promotedCandidateGraph.hyperedges);
 
     const analysis: WorkspaceCoreAnalysisInput = {
       schema: "scce.runtime.fixture_analysis.v1",
@@ -450,7 +500,11 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       tasks: input.analysis?.tasks ?? [],
       reports: input.analysis?.reports
     };
-    const graph = { nodes: dedupeById(graphNodes), edges: dedupeById(graphEdges) };
+    const graph = {
+      nodes: dedupeById(graphNodes),
+      edges: dedupeById(graphEdges),
+      hyperedges: dedupeById(graphHyperedges)
+    };
     const graphLearning = graphLearningReport({ graph, typedObservationCount: typedProjections.flatMap(item => item.observations).length, hasher, now });
     const result: ScceRuntimeIngestResult = {
       schema: "scce.runtime.fixture_ingest.v1",
@@ -460,6 +514,9 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       sourceVersions,
       evidence,
       typedProjections,
+      relationPromotionModel,
+      opaqueRoleModel,
+      roleSurfaceOrderModel,
       graph,
       graphLearning,
       classificationCounts: countStrings(typedProjections.flatMap(item => item.observations.map(obs => obs.kind))),
@@ -470,6 +527,12 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
         fileCount: input.files.length,
         evidenceIds: evidence.map(item => String(item.id)),
         observationCounts: typedProjections.map(item => item.observationCounts),
+        relationPromotionModelId: relationPromotionModel.id,
+        opaqueRoleModelId: opaqueRoleModel.id,
+        roleSurfaceOrderModelId: roleSurfaceOrderModel.id,
+        promotedRelationSeedIds: relationPromotionModel.decisions
+          .filter(decision => decision.promoted)
+          .map(decision => decision.relationSeedId),
         graphLearningReportId: graphLearning.id
       })
     };
@@ -544,14 +607,15 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
     const runtimeGraph = {
       nodes: dedupeById([...workspaceAnswer.graph.nodes, ...(sourceIngest?.graph.nodes ?? [])]),
       edges: dedupeById([...workspaceAnswer.graph.edges, ...(sourceIngest?.graph.edges ?? [])]),
-      hyperedges: [],
+      hyperedges: dedupeById(sourceIngest?.graph.hyperedges ?? []),
       bounded: true as const,
       query: { features: featureSet(input.text, 256) }
     };
     const runtimeField = createAlphaFieldEngine().activate({
       text: input.text,
       nodes: runtimeGraph.nodes,
-      edges: runtimeGraph.edges
+      edges: runtimeGraph.edges,
+      hyperedges: runtimeGraph.hyperedges
     });
     const operatorActivations = activateCognitiveOperators({
       requirementField,
@@ -1637,7 +1701,7 @@ function graphLearningReport(input: { graph: { nodes: GraphNode[]; edges: GraphE
       model: emptyModel,
       linkPrediction: { positiveEdgeCount: edges.length, negativeEdgeCount: 0, heldOutCount: 0, learnedAuc: 0.5, lexicalBaselineAuc: 0.5, learnedAucAboveLexicalBaseline: false },
       evidenceConstructAlignment: { evidenceLinkedEdgeCount: edges.filter(edge => edge.evidenceIds.length).length, typedObservationCount: input.typedObservationCount, sourceBoundRatio: edges.length ? edges.filter(edge => edge.evidenceIds.length).length / edges.length : 0 },
-      temporalPrediction: { temporallyScopedEdgeCount: edges.filter(edge => edge.temporalScope.validFrom > 0 || edge.temporalScope.validTo !== undefined).length, freshEdgeRatio: 0 },
+      temporalPrediction: { temporallyScopedEdgeCount: edges.filter(edge => isKnownGraphTemporalScope(edge.temporalScope)).length, freshEdgeRatio: 0 },
       trace: toJsonValue({ source: "source-only-runtime.graph_learning", status: "insufficient_graph" })
     };
   }
@@ -1673,7 +1737,7 @@ function graphLearningReport(input: { graph: { nodes: GraphNode[]; edges: GraphE
       sourceBoundRatio: clamp01(evidenceLinkedEdgeCount / Math.max(1, edges.length))
     },
     temporalPrediction: {
-      temporallyScopedEdgeCount: edges.filter(edge => edge.temporalScope.validFrom > 0 || edge.temporalScope.validTo !== undefined).length,
+      temporallyScopedEdgeCount: edges.filter(edge => isKnownGraphTemporalScope(edge.temporalScope)).length,
       freshEdgeRatio: clamp01(freshEdges / Math.max(1, edges.length))
     },
     trace: toJsonValue({

@@ -32,6 +32,7 @@ import type {
   ValidationId
 } from "./types.js";
 import { canonicalStringify, randomHex } from "./primitives.js";
+import { createCanonicalIdentity } from "./canonical-identity.js";
 
 export interface IdFactory {
   episodeId(): EpisodeId;
@@ -104,10 +105,26 @@ export function createIdFactory(options: {
     toolOutputContentId: bytes => `tool_output_${options.hasher.digestHex(bytes).slice(0, 56)}` as ToolOutputContentId,
     transcriptVersionId: bytes => `transcript_version_${options.hasher.digestHex(bytes).slice(0, 56)}` as TranscriptVersionId,
     sourceId: (sourceNamespace, canonicalUri) =>
-      digest("source", { namespace: sourceNamespace, canonicalUri: canonicalUri.trim().replace(/\\/g, "/") }) as SourceId,
+      createCanonicalIdentity({
+        kind: "source",
+        fields: {
+          namespace: sourceNamespace,
+          canonicalUri: canonicalUri.trim().replace(/\\/g, "/")
+        },
+        hasher: options.hasher
+      }).id as SourceId,
     sourceVersionId: bytes => `source_version_${options.hasher.digestHex(bytes).slice(0, 56)}` as SourceVersionId,
     chunkId: input => digest("chunk", input) as ChunkId,
-    evidenceId: input => digest("evidence", input) as EvidenceId,
+    evidenceId: input => createCanonicalIdentity({
+      kind: "evidence_span",
+      fields: {
+        sourceVersionId: input.sourceVersionId,
+        byteStart: input.byteStart,
+        byteEnd: input.byteEnd,
+        contentHash: input.spanHash
+      },
+      hasher: options.hasher
+    }).id as EvidenceId,
     nodeId: representation => digest("node", representation) as NodeId,
     edgeId: input => digest("edge", input) as EdgeId,
     hyperedgeId: input => digest("hyperedge", input) as HyperedgeId,
@@ -117,7 +134,24 @@ export function createIdFactory(options: {
     shapeId: representation => digest("shape", representation) as ShapeId,
     claimId: canonicalProposition => digest("claim", canonicalProposition) as ClaimId,
     proofId: input => digest("proof", input) as ProofId,
-    constructId: input => digest("construct", input) as ConstructId,
+    constructId: input => {
+      const record = input && typeof input === "object" && !Array.isArray(input)
+        ? input as Record<string, unknown>
+        : {};
+      return createCanonicalIdentity({
+        kind: "construction",
+        fields: {
+          profileId: typeof record.profileId === "string"
+            ? record.profileId
+            : "profile.runtime.unspecified",
+          roleSignature: input as never,
+          sourceExampleIds: Array.isArray(record.evidenceIds)
+            ? record.evidenceIds.filter((value): value is string => typeof value === "string")
+            : []
+        },
+        hasher: options.hasher
+      }).id as ConstructId;
+    },
     validationId: input => digest("validation", input) as ValidationId,
     emissionId: input => digest("emission", input) as EmissionId,
     semanticId: (prefix, representation) => digest(prefix, representation)

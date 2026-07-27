@@ -16,6 +16,7 @@ import {
   isRequestRequirementPattern
 } from "./request-requirement-learning.js";
 import type { LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
+import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
   EvidenceSpan,
   JsonValue,
@@ -130,6 +131,7 @@ export function createSurfaceLanguageRuntime(options: {
         units: [],
         patterns: [],
         semanticFrames: [],
+        segmentationPopulationModels: [] as SegmentationPopulationModelRecord[],
         requestControlPatterns: learnedRequestControlPatterns,
         state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
         surfaceProfile: undefined as LanguageProfile | undefined,
@@ -161,7 +163,8 @@ export function createSurfaceLanguageRuntime(options: {
       unitsBySource,
       patternsBySource,
       semanticFramesBySource,
-      persistedProfiles
+      persistedProfiles,
+      segmentationPopulationModels
     ] = await Promise.all([
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels) }))),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))),
@@ -172,7 +175,13 @@ export function createSurfaceLanguageRuntime(options: {
         ? surfaceProfileCache
           ? Promise.resolve(surfaceProfileCache.value)
           : deps.storage.model.listLanguageProfiles({ limit: surfaceLanguageProfileLimit, referencedByLanguageMemory: true })
-        : Promise.resolve([] as LanguageProfile[])
+        : Promise.resolve([] as LanguageProfile[]),
+      deps.storage.segmentationPopulations
+        ? deps.storage.segmentationPopulations.listRecent({
+          profileIds,
+          limit: Math.max(4, Math.min(32, boundedLimit))
+        })
+        : Promise.resolve([] as SegmentationPopulationModelRecord[])
     ]);
     const models = uniqueRecordsById(modelsBySource.flat(), Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
     const observations = uniqueRecordsById(observationsBySource.flat(), Math.max(1200, boundedLimit * 320));
@@ -231,6 +240,7 @@ export function createSurfaceLanguageRuntime(options: {
       units,
       patterns,
       semanticFrames,
+      segmentationPopulationModels,
       constructionEvidence,
       requestControlPatterns: learnedRequestControlPatterns,
       state,

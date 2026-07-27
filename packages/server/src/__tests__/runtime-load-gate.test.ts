@@ -45,8 +45,10 @@ describe("runtime load gate", () => {
         response.end(JSON.stringify({ ok: true, runtime: "fixture" }));
         return;
       }
-      if (request.url === "/api/turn?full=1" && request.method === "POST") {
-        response.end(JSON.stringify({ answer: "fixture answer", evidence: [] }));
+      if (request.url === "/api/turn?stream=1&full=1" && request.method === "POST") {
+        response.setHeader("content-type", "application/x-ndjson");
+        response.write(`${JSON.stringify({ schema: "scce.turn_stream.v1", type: "accepted" })}\n`);
+        response.end(`${JSON.stringify({ schema: "scce.turn_stream.v1", type: "result", status: 200, value: { answer: "fixture answer", evidence: [] } })}\n`);
         return;
       }
       response.statusCode = 404;
@@ -78,7 +80,7 @@ describe("runtime load gate", () => {
       expect(result.code).toBe(0);
       expect(result.stderr).toBe("");
       const report = JSON.parse(result.stdout) as Record<string, unknown>;
-      expect(report.schema).toBe("scce.runtime_load_report.v1");
+      expect(report.schema).toBe("scce.runtime_load_report.v2");
       expect(report.ok).toBe(true);
       expect(report.requests).toBe(8);
       expect(report.successes).toBe(8);
@@ -90,7 +92,12 @@ describe("runtime load gate", () => {
         workloadHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u)
       });
       expect(report.claimBoundary).toBe("local_client_observation_not_independent_capacity_attestation");
-      expect(report.successfulRequestLatencyEstimateMs).toMatchObject({
+      expect(report.firstVisibleFrameLatencyEstimateMs).toMatchObject({
+        populationCount: 8,
+        sampleCount: 8,
+        estimator: "all_first_visible_frames"
+      });
+      expect(report.successfulCompletionLatencyEstimateMs).toMatchObject({
         populationCount: 8,
         sampleCount: 8,
         estimator: "all_successful_requests"
@@ -108,7 +115,7 @@ describe("runtime load gate", () => {
         response.end("{}");
         return;
       }
-      if (request.url === "/api/turn?full=1") turnRequests += 1;
+      if (request.url === "/api/turn?stream=1&full=1") turnRequests += 1;
       response.end(JSON.stringify({ answer: "should not run" }));
     });
     await new Promise<void>((resolve, reject) => {
@@ -144,7 +151,11 @@ describe("runtime load gate", () => {
     const server = createServer((request, response) => {
       response.setHeader("content-type", "application/json");
       if (request.url === "/api/ready") response.end(JSON.stringify({ ok: true }));
-      else response.end(JSON.stringify({ answer: "fast fixture" }));
+      else {
+        response.setHeader("content-type", "application/x-ndjson");
+        response.write(`${JSON.stringify({ schema: "scce.turn_stream.v1", type: "accepted" })}\n`);
+        response.end(`${JSON.stringify({ schema: "scce.turn_stream.v1", type: "result", status: 200, value: { answer: "fast fixture" } })}\n`);
+      }
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);

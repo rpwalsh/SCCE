@@ -10,6 +10,7 @@ import {
 } from "./turn-requirements.js";
 import type { CandidateField, CandidateSurface } from "./candidate-contract.js";
 import type { EvidenceSpan, FieldState, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
+import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 
 export const REQUESTED_AUTHORITY_IDS = [
   "factual",
@@ -235,7 +236,9 @@ export function requestOperatorGraphSupport(input: {
   const graphMass = clamp01(Math.log2(1 + input.graph.edges.length) / 8);
   const evidenceMass = clamp01(Math.log2(1 + input.evidence.length) / 5);
   const causalMass = clamp01(mean(input.field.causalMass.slice(0, 12).map(row => row.mass)));
-  const hasQualifiedTime = input.graph.edges.some(edge => edge.temporalScope.validTo !== undefined);
+  const hasQualifiedTime = input.graph.edges.some(edge =>
+    isKnownGraphTemporalScope(edge.temporalScope)
+    && edge.temporalScope.validTo !== undefined);
   return {
     [COGNITIVE_OPERATOR_IDS.evidenceActivation]: evidenceMass,
     [COGNITIVE_OPERATOR_IDS.graphPropagation]: graphMass,

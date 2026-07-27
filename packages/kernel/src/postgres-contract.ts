@@ -427,8 +427,13 @@ function auxiliaryTableContract(
     case "graph_hyperedges":
       return table(name, "higher arity graph relations", [
         col("id", "TEXT", false, "hyperedge id", { primary: true }),
+        col("schema_id", "TEXT", false, "hyperedge schema"),
         col("relation_id", "TEXT", false, "relation"),
-        col("member_node_ids", "JSONB", false, "member nodes"),
+        col("participant_ports", "JSONB", false, "typed participant ports"),
+        col("member_node_ids", "JSONB", false, "derived observed-member index"),
+        col("qualifiers_json", "JSONB", false, "relation qualifiers"),
+        col("modality_json", "JSONB", false, "relation modality"),
+        col("evidence_ids", "JSONB", false, "evidence ids"),
         col("weight_vector", "JSONB", false, "alpha weights"),
         col("temporal_scope", "JSONB", false, "temporal scope"),
         col("provenance_refs", "JSONB", false, "source refs"),

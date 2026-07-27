@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   POSTGRES_REQUIRED_TABLES,
   POSTGRES_SCHEMA_VERSION,
+  assertCanonicalHyperedge,
   createAlphaLayer,
   featureSet,
   informationLabelAllowsRead,
@@ -84,6 +85,9 @@ import {
   type InducedLanguageModel,
   type InducedLanguageModelRecord,
   type InducedLanguageModelStore,
+  type SegmentationPopulationModel,
+  type SegmentationPopulationModelRecord,
+  type SegmentationPopulationModelStore,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -154,6 +158,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly sparseRankingComparisons: SparseRankingComparisonLogStore;
   readonly segmentationAggregates: SegmentationAggregateStore;
   readonly inducedLanguageModels: InducedLanguageModelStore;
+  readonly segmentationPopulations: SegmentationPopulationModelStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -190,6 +195,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.sparseRankingComparisons = createSparseRankingComparisonLogStore(this);
     this.segmentationAggregates = createSegmentationAggregateStore(this);
     this.inducedLanguageModels = createInducedLanguageModelStore(this);
+    this.segmentationPopulations = createSegmentationPopulationModelStore(this);
   }
 
   table(name: string): string {
@@ -715,7 +721,12 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, relation_id TEXT NOT NULL, member_node_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, schema_id TEXT NOT NULL, relation_id TEXT NOT NULL, participant_ports JSONB NOT NULL, member_node_ids TEXT[] NOT NULL, qualifiers_json JSONB NOT NULL, modality_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS schema_id TEXT NOT NULL DEFAULT 'scce.hyperedge.v2'`,
+    `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS participant_ports JSONB NOT NULL DEFAULT '[]'::jsonb`,
+    `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS qualifiers_json JSONB NOT NULL DEFAULT '{}'::jsonb`,
+    `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS modality_json JSONB NOT NULL DEFAULT '{}'::jsonb`,
+    `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS evidence_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[]`,
     `CREATE TABLE IF NOT EXISTS ${q}.quarantine_sources (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, source_version_id TEXT NOT NULL, uri TEXT NOT NULL, content_hash TEXT NOT NULL, media_type TEXT NOT NULL, fetched_at TIMESTAMPTZ NOT NULL, trust_vector JSONB NOT NULL, permission_vector JSONB NOT NULL, license_hint TEXT, decision TEXT NOT NULL, decision_json JSONB)`,
     `CREATE TABLE IF NOT EXISTS ${q}.semantic_proofs (id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, verdict TEXT NOT NULL, confidence_json JSONB NOT NULL, proof_graph_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, transform_ids TEXT[] NOT NULL, scores_json JSONB NOT NULL, validator_version TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.construct_graphs (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, force_vector JSONB NOT NULL, graph_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -896,6 +907,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
     `CREATE TABLE IF NOT EXISTS ${q}.induced_language_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, corpus_documents INTEGER NOT NULL, vocabulary_size INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_induced_language_models_created ON ${q}.induced_language_models(created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.segmentation_population_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, profile_ids TEXT[] NOT NULL, source_version_ids TEXT[] NOT NULL, population_count INTEGER NOT NULL, mdl_gain_nats DOUBLE PRECISION NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
@@ -1021,7 +1035,7 @@ function requiredHydrationColumns(): Record<string, string[]> {
     evidence_anchor_index: ["evidence_id", "features"],
     graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json", "information_label"],
     graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json", "information_label"],
-    graph_hyperedges: ["id", "relation_id", "member_node_ids", "weight_vector", "provenance_refs", "information_label"],
+    graph_hyperedges: ["id", "schema_id", "relation_id", "participant_ports", "member_node_ids", "qualifiers_json", "modality_json", "evidence_ids", "weight_vector", "provenance_refs", "information_label"],
     semantic_proofs: ["id", "claim_id", "verdict", "proof_graph_json", "evidence_ids", "scores_json"],
     construct_graphs: ["id", "episode_id", "force_vector", "graph_json"],
     validation_graphs: ["id", "construct_id", "graph_json", "passed"],
@@ -1679,6 +1693,7 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
 
 async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges: readonly Hyperedge[]): Promise<void> {
   if (!edges.length) return;
+  for (const edge of edges) assertCanonicalHyperedge(edge);
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(
       storage,
@@ -1687,8 +1702,13 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
     );
     const payload = edges.map(edge => ({
       id: edge.id,
+      schema_id: edge.schema,
       relation_id: edge.relationId,
+      participant_ports_json: edge.participantPorts,
       member_node_ids_json: edge.memberNodeIds,
+      qualifiers_json: edge.qualifiers,
+      modality_json: edge.modality,
+      evidence_ids_json: edge.evidenceIds,
       weight_vector: edge.weightVector,
       temporal_scope: edge.temporalScope,
       provenance_refs_json: edge.provenanceRefs,
@@ -1697,11 +1717,16 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
       information_label: labels.get(edge.id)!
     }));
     await storage.query(
-    `INSERT INTO ${storage.table("graph_hyperedges")} AS h(id,relation_id,member_node_ids,weight_vector,temporal_scope,provenance_refs,created_at,updated_at,information_label)
+    `INSERT INTO ${storage.table("graph_hyperedges")} AS h(id,schema_id,relation_id,participant_ports,member_node_ids,qualifiers_json,modality_json,evidence_ids,weight_vector,temporal_scope,provenance_refs,created_at,updated_at,information_label)
      SELECT
        r.id,
+       r.schema_id,
        r.relation_id,
+       r.participant_ports_json,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.member_node_ids_json) AS v(value)),
+       r.qualifiers_json,
+       r.modality_json,
+       (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
        r.weight_vector,
        r.temporal_scope,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.provenance_refs_json) AS v(value)),
@@ -1710,8 +1735,13 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
+       schema_id text,
        relation_id text,
+       participant_ports_json jsonb,
        member_node_ids_json jsonb,
+       qualifiers_json jsonb,
+       modality_json jsonb,
+       evidence_ids_json jsonb,
        weight_vector jsonb,
        temporal_scope jsonb,
        provenance_refs_json jsonb,
@@ -1719,7 +1749,7 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        updated_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET weight_vector=EXCLUDED.weight_vector, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET schema_id=EXCLUDED.schema_id, participant_ports=EXCLUDED.participant_ports, member_node_ids=EXCLUDED.member_node_ids, qualifiers_json=EXCLUDED.qualifiers_json, modality_json=EXCLUDED.modality_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(h.evidence_ids || EXCLUDED.evidence_ids))), weight_vector=EXCLUDED.weight_vector, temporal_scope=EXCLUDED.temporal_scope, provenance_refs=(SELECT ARRAY(SELECT DISTINCT unnest(h.provenance_refs || EXCLUDED.provenance_refs))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
     [JSON.stringify(payload)]
     );
   });
@@ -2370,6 +2400,73 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         [limit]
       );
       return rows.map(rowToInducedLanguageModelRecord);
+    }
+  };
+}
+
+interface SegmentationPopulationModelRow {
+  id: string;
+  training_plan_id: string;
+  model_json: SegmentationPopulationModel;
+  profile_ids: string[];
+  source_version_ids: SourceVersionId[];
+  information_label: JsonValue;
+  created_at: Date;
+}
+
+function rowToSegmentationPopulationModelRecord(
+  row: SegmentationPopulationModelRow
+): SegmentationPopulationModelRecord {
+  return {
+    id: row.id,
+    model: row.model_json,
+    trainingPlanId: row.training_plan_id,
+    profileIds: row.profile_ids,
+    sourceVersionIds: row.source_version_ids,
+    createdAt: row.created_at.getTime(),
+    informationLabel: normalizeInformationLabel(row.information_label as never)
+  };
+}
+
+function createSegmentationPopulationModelStore(
+  storage: PostgresStorageAdapter
+): SegmentationPopulationModelStore {
+  return {
+    async putModel(record) {
+      await storage.query(
+        `INSERT INTO ${storage.table("segmentation_population_models")}(id,training_plan_id,model_json,profile_ids,source_version_ids,population_count,mdl_gain_nats,information_label,created_at)
+         VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0))
+         ON CONFLICT(id) DO NOTHING`,
+        [
+          record.id,
+          record.trainingPlanId,
+          JSON.stringify(record.model),
+          [...new Set(record.profileIds)].sort(),
+          [...new Set(record.sourceVersionIds.map(String))].sort(),
+          record.model.populations.length,
+          record.model.selection.mdlGainNats,
+          JSON.stringify(record.informationLabel),
+          record.createdAt
+        ]
+      );
+    },
+    async readById(id) {
+      const rows = await storage.query<SegmentationPopulationModelRow>(
+        `SELECT * FROM ${storage.table("segmentation_population_models")} WHERE id=$1`,
+        [id]
+      );
+      return rows[0] ? rowToSegmentationPopulationModelRecord(rows[0]) : undefined;
+    },
+    async listRecent(query = {}) {
+      const limit = Math.max(1, Math.min(200, query.limit ?? 20));
+      const profileIds = [...new Set(query.profileIds ?? [])].sort();
+      const rows = await storage.query<SegmentationPopulationModelRow>(
+        profileIds.length
+          ? `SELECT * FROM ${storage.table("segmentation_population_models")} WHERE profile_ids && $1::text[] ORDER BY created_at DESC,id LIMIT $2`
+          : `SELECT * FROM ${storage.table("segmentation_population_models")} ORDER BY created_at DESC,id LIMIT $1`,
+        profileIds.length ? [profileIds, limit] : [limit]
+      );
+      return rows.map(rowToSegmentationPopulationModelRecord);
     }
   };
 }
@@ -4081,8 +4178,8 @@ function rowToConversationTurn(row: ConversationTurnRow): ConversationTurnRecord
 interface IngestionCheckpointRow { id: string; root_uri: string; item_uri: string; phase: IngestionCheckpoint["phase"]; status: IngestionCheckpoint["status"]; offset_bytes: string; content_hash: string | null; byte_length: string | null; reason: string | null; metadata_json: JsonValue; updated_at: Date }
 function rowToIngestionCheckpoint(row: IngestionCheckpointRow): IngestionCheckpoint { return { id: row.id, rootUri: row.root_uri, itemUri: row.item_uri, phase: row.phase, status: row.status, offsetBytes: Number(row.offset_bytes), contentHash: row.content_hash ? row.content_hash as ContentHash : undefined, byteLength: row.byte_length ? Number(row.byte_length) : undefined, reason: row.reason ?? undefined, updatedAt: row.updated_at.getTime(), metadata: row.metadata_json }; }
 
-interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date; information_label: JsonValue }
-function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime(), informationLabel: row.information_label ? normalizeInformationLabel(row.information_label as never) : undefined }; }
+interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date }
+function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime() }; }
 
 interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust_vector: JsonValue; metadata_json: JsonValue; namespace: string; canonical_uri: string; information_label: JsonValue }
 function rowToSourceVersion(row: SourceVersionRow): SourceVersion {
@@ -4174,8 +4271,8 @@ function rowToGraphNode(row: GraphNodeRow): GraphNode { return { id: row.id as n
 interface GraphEdgeRow { id: string; source_node_id: string; target_node_id: string; relation_id: string; alpha: string; weight: string; temporal_scope: JsonValue; evidence_ids: string[]; created_at: Date; updated_at: Date; metadata_json: JsonValue; information_label: InformationLabel }
 function rowToGraphEdge(row: GraphEdgeRow): GraphEdge { return { id: row.id as never, source: row.source_node_id as never, target: row.target_node_id as never, relationId: row.relation_id as never, alpha: Number(row.alpha), weight: Number(row.weight), temporalScope: row.temporal_scope as never, evidenceIds: row.evidence_ids as EvidenceId[], createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
 
-interface HyperedgeRow { id: string; relation_id: string; member_node_ids: string[]; weight_vector: JsonValue; temporal_scope: JsonValue; provenance_refs: string[]; created_at: Date; updated_at: Date; information_label: InformationLabel }
-function rowToHyperedge(row: HyperedgeRow): Hyperedge { return { id: row.id as never, relationId: row.relation_id as never, memberNodeIds: row.member_node_ids as never[], weightVector: row.weight_vector, temporalScope: row.temporal_scope, provenanceRefs: row.provenance_refs, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
+interface HyperedgeRow { id: string; schema_id: "scce.hyperedge.v2"; relation_id: string; participant_ports: Hyperedge["participantPorts"]; member_node_ids: string[]; qualifiers_json: JsonValue; modality_json: JsonValue; evidence_ids: string[]; weight_vector: JsonValue; temporal_scope: JsonValue; provenance_refs: string[]; created_at: Date; updated_at: Date; information_label: InformationLabel }
+function rowToHyperedge(row: HyperedgeRow): Hyperedge { return { schema: row.schema_id, id: row.id as never, relationId: row.relation_id as never, participantPorts: row.participant_ports, memberNodeIds: row.member_node_ids as never[], qualifiers: row.qualifiers_json, modality: row.modality_json, evidenceIds: row.evidence_ids as EvidenceId[], weightVector: row.weight_vector, temporalScope: row.temporal_scope, provenanceRefs: row.provenance_refs, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface QuarantineRow { id: string; source_id: string; source_version_id: string; uri: string; content_hash: string; media_type: string; fetched_at: Date; trust_vector: JsonValue; permission_vector: JsonValue; license_hint: string | null; decision: "pending" | "promoted" | "rejected"; decision_json: JsonValue | null }
 function rowToQuarantine(row: QuarantineRow): QuarantineSource { return { id: row.id, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, uri: row.uri, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, fetchedAt: row.fetched_at.getTime(), trustVector: row.trust_vector, permissionVector: row.permission_vector, licenseHint: row.license_hint ?? undefined, decision: row.decision, decisionJson: row.decision_json ?? undefined }; }

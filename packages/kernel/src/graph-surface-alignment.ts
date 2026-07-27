@@ -156,7 +156,7 @@ export function induceGraphSurfaceAlignments(input: {
       transportTraces: tracesByConstructionId.get(construction.id) ?? []
     });
   }
-  return sets.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
+  return sets;
 }
 
 /**
@@ -647,7 +647,7 @@ function transportCell(input: {
   const anchorBonus = exactAnchor ? 0.24 : 0;
   const massPenalty = input.unit ? clamp01(1 / Math.max(1, input.unit.recurrenceCount + 1)) * 0.08 : 0.08;
   const boundaryFit = input.unit
-    ? 1 - ((input.unit.boundaryBefore.bootstrapBoundaryProbability + input.unit.boundaryAfter.bootstrapBoundaryProbability) / 2)
+    ? 1 - ((input.unit.boundaryBefore.boundaryProbability + input.unit.boundaryAfter.boundaryProbability) / 2)
     : 0.5;
   const cost = clamp01(0.42 * featureCost + 0.22 * structuralCost + 0.08 * massPenalty + 0.04 * priorPenalty + 0.24 * boundaryFit - anchorBonus);
   const hasher = input.hasher;
@@ -672,7 +672,7 @@ function transportCell(input: {
 function lexicalLatticeUnitMap(lattice: SurfaceLattice): Map<string, SurfaceLatticeUnit> {
   const out = new Map<string, SurfaceLatticeUnit>();
   for (const unit of lattice.units) {
-    if (unit.kind !== "lexical") continue;
+    if (!unit.proposalSources.includes("lexical")) continue;
     out.set(`${unit.codePointStart}\u0001${unit.codePointEnd}\u0001${unit.normalized}`, unit);
   }
   return out;

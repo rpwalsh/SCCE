@@ -67,6 +67,106 @@ validation so credentials need not be committed.
   content-addressed model is consumed by the production field when configured. No
   representative production model has been fitted, so the default path is an explicit
   identity-unconfigured mode.
+- `packages/kernel/src/structured-semantic-candidate.ts` and
+  `relation-promotion.ts`: evidence-bearing structured relation candidates and the
+  separate source-family-disjoint description-length compiler that decides whether
+  their incidence may be marked reusable. Proposed candidates remain outside the
+  ordinary graph. This path uses explicit data/model codes and negative controls; it
+  is distinct from turn-time relation-potential scoring.
+- `scce.hyperedge.v2` in `types.ts` and typed-ingest materialization: canonical
+  zero-or-more-arity relations with observed/omitted ports, qualifiers, modality,
+  temporal scope and evidence. PostgreSQL v23 persists these fields directly;
+  `memberNodeIds` is a derived retrieval index only.
+- `opaque-role-induction.ts`: source-disjoint held-out-MDL selection of opaque role
+  populations from surface, neighborhood, substitution, transformation and discourse
+  evidence. Learned `roleId` is separate from per-occurrence `portId`.
+- `role-surface-order.ts`: separately compiled \(P(p\mid r,G)\) semantic-role and
+  \(P(\operatorname{position}\mid p,r,c,d)\) realization fields. Position never
+  defines a role; omission and repeated realization are explicit learned states.
+- `typed-incidence-graph.ts`: lossless arbitrary-arity hyperedge lift into relation
+  nodes and typed participant incidences. The field engine uses reversible incidence
+  transitions without participant cliques; omitted ports remain null incidences.
+- `sparse-alignment-candidates.ts`: content-addressed typed-incidence target indexes
+  and hard-degree-bounded anchor/evidence/structure/context candidate support. The
+  production ingestion and explicit-training paths materialize
+  \(O(|S|K_\Pi)\) candidates rather than a dense surface×graph matrix.
+- `sparse-fused-transport.ts`: sparse generalized Sinkhorn scaling, exact-anchor
+  row-mass reservation and bounded local fused structural correction with explicit
+  objective, residual, work and memory traces. The non-convex solver makes no global
+  optimum claim.
+- `transport-evidence-allocation.ts`: normalized per-cell evidence conditionals that
+  partition transport mass exactly. Positive mass without evidence remains
+  explicitly unresolved instead of receiving invented provenance.
+- `typed-null-alignment.ts`: source-exact Beta-Bernoulli cost induction for universal
+  surface-null and graph-implicit states. Sparse transport retains candidate-free
+  rows and targets and records typed deficit and excess mass explicitly.
+- `population-ordering.ts`: bounded source-exact relative-position induction keyed
+  by segmentation population and reusable typed relation/port/opaque-role keys,
+  plus explicit global structural-pair backoff. The sparse solver evaluates its
+  robust ordering term only on active candidate neighborhoods.
+- `cross-document-alignment.ts`: canonical typed graph-port projections, dependency
+  family collapse, independent-family consistency distances, and second-pass sparse
+  correction costs.
+- `alignment-alternatives.ts`: bounded non-anchor branch extraction, immutable
+  alternative-plan revisions, evidence-allocation references and restricted-set
+  Gibbs weights without a global-posterior claim.
+- `coarse-to-fine-alignment.ts`: reusable structural quotient-community routing,
+  exact-anchor preservation, selected/omitted upper bounds and the unified
+  routing/Sinkhorn/local-correction/k-best trace.
+- `alignment-heldout-evaluation.ts`: automatic source-family cross-fitting,
+  pre-transport candidate recall, graph recovery and content-addressed calibration
+  and promotion observations.
+- `alignment-calibration.ts`: source-family-disjoint labeled calibration over
+  transport/cycle features with untouched holdout log loss, Brier and ECE.
+- `alignment-promotion.ts`: conservative source-family collapse and independent
+  held-out reuse admission requiring complete recovery, semantic-cycle fidelity,
+  exact-anchor preservation and zero unsupported additions.
+- `reversible-construction.ts`: the first executable
+  \((H_r,\partial H_r)\Longleftrightarrow(P_r,\partial P_r)\) schema, exact
+  interpretation/realization cycle, durable language-memory projection and
+  creation-snapshot identity.
+- `paired-anti-unification.ts`: source-family-independent least-general
+  graph/surface generalization, graph-correlated localized variables,
+  profile-specific persistence wrappers and typed bidirectional execution.
+- `graph-correlated-variability.ts`: source-family cross-validated delta
+  mutual information, predictive gain, deterministic permutation controls and
+  the mandatory admission between generalized construction and persistence.
+- `optional-null-realization.ts`: dependency-family-collapsed absent/realized/
+  unrealized observations, leave-one-family-out calibration, cost-sensitive
+  realization thresholds, content-addressed shard merging and the Mouth omission
+  gate over present graph meaning plus matching discourse context.
+- `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
+  vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
+  identity-field allowlists and independent source/observation/event/validity
+  coordinates.
+- `graph-temporal.ts`: explicit known, unknown and atemporal graph scopes. Unknown
+  validity is uncertainty and never an unbounded historical interval.
+- `surface-lattice.ts`: exact-occurrence quotient over detector proposals, separate
+  occurrence/form/surface-form-class identity, lossless base-partition conservation, and
+  independent-anchor/packed-marginal boundary supervision.
+- `boundary-estimator.ts`, `segmentation-forest.ts`: mergeable anchored/latent
+  statistics, source-disjoint held-out Platt calibration, globally normalized traced
+  path energy, complete-DAG forward/backward marginals, non-renormalized top-k mass,
+  bounded resumable materialization, and learned-only final coefficients.
+- `segmentation-population.ts`: source-disjoint MDL population selection, exact
+  prior-times-document-likelihood posteriors for stored and unseen documents,
+  source-family-disjoint fit/selection/guard/evaluation partitions, content-derived
+  population identities, and per-child merge guards without language-specific routing.
+- `join-program.ts`: derivation- and task-population-conditioned opaque exact-source
+  join distributions; source-family-disjoint fit, threshold selection and final
+  evaluation; exact coordinate provenance; factored backoff; explicit unknown
+  population mass; and typed uncertainty outcomes with no global join or
+  silent-concatenation fallback.
+- `structured-semantic-candidate.ts`, `typed-ingest.ts`: four explicit semantic
+  candidate channels, mandatory provenance decomposition, opaque induced relation
+  identity, proposal isolation, and exact-evidence-gated source-declared zero-arity
+  state/event hyperedges.
+- `relation-promotion.ts`: source-family-disjoint promotion evaluation with
+  channel-local background distributions so structured extraction cannot score weak
+  induction.
+- `canonical-replay.ts`: byte-stable snapshot manifests binding corpus, code,
+  configuration, seed and sorted derived component identities, with nested unordered
+  field canonicalization, duplicate-ID rejection and graph-reference integrity.
 - `packages/kernel/src/proof-carrying-answer.ts`, `semantic-proof-engine.ts`, and
   `semantic-proof-system.ts`: proof, evidence, truth-state, and contradiction handling.
 - `packages/kernel/src/turn-requirements.ts`: a 16-dimensional requirement field
@@ -138,6 +238,28 @@ PostgreSQL schema version 12 is current. Brain lifecycle states are `CREATED`,
 `INCOMPATIBLE`. Activation is transactional and READY-only. A partial unique index
 enforces at most one ACTIVE lifecycle row, and the v12 migration deterministically
 repairs older duplicate-ACTIVE state before installing that constraint.
+
+Turn-local retrieval uses one shared compiled memory slice after the durable graph
+retriever has opened an admissible neighborhood. Term and sparse-feature postings,
+direct record maps, precomputed vectors, and bounded alpha-prior candidates prevent
+the semantic and role retrieval passes from rebuilding and rescoring that entire
+neighborhood independently. This is not yet the final nation-scale storage design:
+the durable quotient router and memory-mapped detail shard compiler remain specified
+in `BRAIN_COMPILER_AND_STORAGE.md`.
+
+## Long-running turn transport
+
+The interactive deadline governs first visible output, not completion. A streamed turn
+receives a stable task ID immediately and continues independently of its original HTTP
+subscriber. Accepted, phase-change, terminal, and cancellation frames are appended to
+the event ledger under that task episode; heartbeat frames are ephemeral. Clients can
+query task status, reconnect from a sequence number, or explicitly cancel. A socket
+close only unsubscribes.
+
+Terminal tasks remain replayable after a process restart. A nonterminal durable receipt
+is reported as interrupted after restart because SCCE does not yet checkpoint and resume
+the complete in-flight cognitive stack. This boundary is explicit: reconnectable
+transport is implemented; crash-resumable execution is not.
 
 ## Workspace Mutation Boundary
 

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import path from "node:path";
 import {
   BRAIN_LIFECYCLE_STATES,
   assertBrainLifecycleTransition,
@@ -10,6 +13,22 @@ import {
 } from "../brain-lifecycle.js";
 
 describe("brain lifecycle contract", () => {
+  it("replays byte-identically across processes and shuffled shard order", () => {
+    const worker = path.resolve(
+      "packages/kernel/src/__tests__/fixtures/brain-replay-process.ts"
+    );
+    const viteNode = createRequire(import.meta.url).resolve("vite-node/vite-node.mjs");
+    const run = (components: string[]) => spawnSync(
+      process.execPath,
+      [viteNode, worker, ...components],
+      { encoding: "utf8" }
+    );
+    const left = run(["shard.c", "shard.a", "shard.b"]);
+    const right = run(["shard.b", "shard.c", "shard.a"]);
+    expect(left.status, left.stderr).toBe(0);
+    expect(right.status, right.stderr).toBe(0);
+    expect(JSON.parse(left.stdout)).toEqual(JSON.parse(right.stdout));
+  });
   it("allows only declared state transitions", () => {
     expect(BRAIN_LIFECYCLE_STATES).toEqual([
       "CREATED", "IMPORTING", "VALIDATING", "READY", "ACTIVE", "STOPPED", "FAILED", "QUARANTINED", "INCOMPATIBLE"

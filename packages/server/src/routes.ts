@@ -5,10 +5,11 @@ import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, RuntimeDeadlineMetadata, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, RUNTIME_DEADLINE_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
+import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 
 export interface ApiContext {
   runtime: ReturnType<typeof createNodeRuntime>;
@@ -37,17 +38,25 @@ type TurnPersistence = {
 type ScceTraceHandle = Parameters<typeof traceEvent>[0];
 
 const HYDRATED_RUNTIME_READY_TTL_MS = 5 * 60 * 1000;
-const PRODUCTION_TURN_DEADLINE_MS = 5_000;
-const PRODUCTION_TURN_RESPONSE_RESERVE_MS = 1_000;
+const INITIAL_VISIBLE_RESPONSE_DEADLINE_MS = 5_000;
+const INITIAL_VISIBLE_RESPONSE_SCHEMA = "scce.initial_visible_response.v1" as const;
 const hydratedRuntimeReadyByStorage = new WeakMap<object, { marker: HydratedRuntimeMarker; verifiedAt: number; epoch: number }>();
 const hydratedRuntimeEpochByStorage = new WeakMap<object, number>();
 const dialoguePersistenceTails = new Map<string, Promise<void>>();
 
 interface RequestTiming {
   readonly startedMonotonicMs: number;
+  firstVisibleFrameMonotonicMs?: number;
+  turnExecution?: NonNullable<OwnerInput["runtimeControl"]>;
 }
 
-type ProductionTurnDeadline = RuntimeDeadlineMetadata;
+interface ProductionTurnDeadline {
+  readonly schema: typeof INITIAL_VISIBLE_RESPONSE_SCHEMA;
+  readonly clock: "node.performance.v1";
+  readonly budgetMs: number;
+  readonly startedMonotonicMs: number;
+  readonly deadlineMonotonicMs: number;
+}
 
 export const ROUTES = [
   { method: "GET", path: "/", label: "workbench", mutates: false, requiresDb: false },
@@ -105,6 +114,9 @@ export const ROUTES = [
   { method: "POST", path: "/api/causal/analyze", label: "identified causal analysis", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn", label: "turn", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn/outcome", label: "turn dialogue outcome", mutates: true, requiresDb: true },
+  { method: "GET", path: "/api/turn/task/:id", label: "long-running turn status", mutates: false, requiresDb: true },
+  { method: "GET", path: "/api/turn/task/:id/stream", label: "long-running turn stream", mutates: false, requiresDb: true },
+  { method: "POST", path: "/api/turn/task/:id/cancel", label: "cancel long-running turn", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/:id", label: "turn lookup", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/brain", label: "inspect brain", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/import/:id", label: "inspect import", mutates: false, requiresDb: true },
@@ -124,6 +136,22 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     assertAuthorizedRequest(req, url, context);
     const readinessMutation = invalidatesHydratedRuntimeReadiness(req.method, url.pathname);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
+    if (reconnectingTurnStreamRequested(req, url)) {
+      await streamExistingTurnTask({ req, res, url, context, requestId, started });
+      return;
+    }
+    if (streamingTurnRequested(req, url)) {
+      await streamTurnResponse({
+        req,
+        res,
+        url,
+        context,
+        requestTiming,
+        requestId,
+        started
+      });
+      return;
+    }
     const response = await dispatch(req, url, context, requestTiming);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
     send(res, response.status, response.body, response.contentType, { requestId, started });
@@ -209,7 +237,8 @@ async function dispatch(
   req: http.IncomingMessage,
   url: URL,
   context: ApiContext,
-  requestTiming: RequestTiming
+  requestTiming: RequestTiming,
+  preloadedBody?: unknown
 ): Promise<{ status: number; body: string; contentType: string }> {
   if (req.method === "GET" && url.pathname === "/") return html(renderWorkbench(context.config.server.url));
   if (req.method === "GET" && url.pathname === "/health") {
@@ -407,7 +436,7 @@ async function dispatch(
     const trace = (globalThis as any).__sccTrace;
     const turnStarted = Date.now();
     try {
-      const body = await readBody(req, context.maxBodyBytes);
+      const body = preloadedBody ?? await readBody(req, context.maxBodyBytes);
       const turn = validateTurn(body);
       const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
       const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
@@ -463,6 +492,7 @@ async function dispatch(
       const {
         workspacePlans: _untrustedWorkspacePlans,
         deadline: _untrustedDeadline,
+        initialResponseDeadline: _untrustedInitialResponseDeadline,
         ...trustedOriginalRuntime
       } = originalRuntime;
       const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
@@ -482,7 +512,7 @@ async function dispatch(
             ...trustedOriginalRuntime,
             fastLocalEvidenceAnswer: true,
             productionBoundedAnswer: true,
-            deadline: productionDeadlineRuntime,
+            initialResponseDeadline: productionDeadlineRuntime,
             ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
             workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
           },
@@ -498,13 +528,12 @@ async function dispatch(
           activeImportRunIds: active.activeImportRunIds
         }
       };
-      traceEvent(trace, {
-        stage: "turn.deadline.propagated",
-        label: "api.turn",
-        durationMs: performance.now() - productionDeadline.startedMonotonicMs,
-        support: productionDeadlineRuntime
+      const result = await context.runtime.kernel.turn({
+        ...turnInput,
+        ...(requestTiming.turnExecution ? {
+          runtimeControl: requestTiming.turnExecution
+        } : {})
       });
-      const result = await context.runtime.kernel.turn(turnInput);
       if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(500, "runtime produced no answer surface");
       const calibrationModels = await loadCalibrationModelSet({
         store: context.runtime.storage.dialogueMemory,
@@ -577,13 +606,16 @@ async function dispatch(
         : undefined;
       const turnResponse = url.searchParams.get("full") === "1" ? result : compactTurnResult(result);
       const dialogueResponse = compactTurnDialogue(dialogue);
-      const deadlineStatus = productionTurnDeadlineStatus(productionDeadline);
+      const deadlineStatus = productionTurnDeadlineStatus(
+        productionDeadline,
+        requestTiming.firstVisibleFrameMonotonicMs ?? performance.now()
+      );
       traceEvent(trace, {
         stage: "turn.deadline.observed",
         label: "api.turn",
         durationMs: Number(deadlineStatus.elapsedMs),
         support: deadlineStatus,
-        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its monotonic response deadline"] } : {})
+        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its first-visible-frame deadline"] } : {})
       });
       const baseResponse = {
         ...turnResponse,
@@ -647,6 +679,17 @@ async function dispatch(
       correctionId: learned.correction?.id,
       reversible: true
     });
+  }
+  const taskRoute = turnTaskRoute(url.pathname);
+  if (taskRoute && req.method === "GET" && taskRoute.action === "status") {
+    const task = await turnTaskRegistryFor(context.runtime.storage).get(taskRoute.taskId);
+    if (!task) throw new HttpError(404, "turn task not found");
+    return json(task);
+  }
+  if (taskRoute && req.method === "POST" && taskRoute.action === "cancel") {
+    const task = turnTaskRegistryFor(context.runtime.storage).cancel(taskRoute.taskId);
+    if (!task) throw new HttpError(404, "live turn task not found");
+    return json(task, 202);
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/turn/")) return json(await context.runtime.kernel.replay(decodeURIComponent(path.basename(url.pathname)) as never));
   if (req.method === "GET" && url.pathname === "/api/inspect/brain") return json(await context.runtime.kernel.inspect("brain"));
@@ -1178,15 +1221,13 @@ function invalidatesHydratedRuntimeReadiness(method: string | undefined, pathnam
 }
 
 function createProductionTurnDeadline(startedMonotonicMs: number): ProductionTurnDeadline {
-  const deadlineMonotonicMs = startedMonotonicMs + PRODUCTION_TURN_DEADLINE_MS;
+  const deadlineMonotonicMs = startedMonotonicMs + INITIAL_VISIBLE_RESPONSE_DEADLINE_MS;
   return {
-    schema: RUNTIME_DEADLINE_SCHEMA,
+    schema: INITIAL_VISIBLE_RESPONSE_SCHEMA,
     clock: "node.performance.v1",
-    budgetMs: PRODUCTION_TURN_DEADLINE_MS,
-    responseReserveMs: PRODUCTION_TURN_RESPONSE_RESERVE_MS,
+    budgetMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS,
     startedMonotonicMs,
-    deadlineMonotonicMs,
-    computeDeadlineMonotonicMs: deadlineMonotonicMs - PRODUCTION_TURN_RESPONSE_RESERVE_MS
+    deadlineMonotonicMs
   };
 }
 
@@ -1196,27 +1237,32 @@ function productionTurnDeadlineMetadata(deadline: ProductionTurnDeadline): Recor
     schema: deadline.schema,
     clock: deadline.clock,
     budgetMs: deadline.budgetMs,
-    responseReserveMs: deadline.responseReserveMs,
     startedMonotonicMs: deadline.startedMonotonicMs,
     deadlineMonotonicMs: deadline.deadlineMonotonicMs,
-    computeDeadlineMonotonicMs: deadline.computeDeadlineMonotonicMs,
     propagatedAtMonotonicMs,
-    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - propagatedAtMonotonicMs),
-    computeRemainingMs: Math.max(0, deadline.computeDeadlineMonotonicMs - propagatedAtMonotonicMs)
+    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - propagatedAtMonotonicMs)
   };
 }
 
-function productionTurnDeadlineStatus(deadline: ProductionTurnDeadline): Record<string, JsonValue> {
+function productionTurnDeadlineStatus(
+  deadline: ProductionTurnDeadline,
+  firstVisibleFrameMonotonicMs: number
+): Record<string, JsonValue> {
   const observedAtMonotonicMs = performance.now();
   const elapsedMs = Math.max(0, observedAtMonotonicMs - deadline.startedMonotonicMs);
+  const firstVisibleFrameMs = Math.max(
+    0,
+    firstVisibleFrameMonotonicMs - deadline.startedMonotonicMs
+  );
   return {
     schema: deadline.schema,
     budgetMs: deadline.budgetMs,
-    responseReserveMs: deadline.responseReserveMs,
     elapsedMs,
-    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - observedAtMonotonicMs),
-    computeRemainingMs: Math.max(0, deadline.computeDeadlineMonotonicMs - observedAtMonotonicMs),
-    status: observedAtMonotonicMs <= deadline.deadlineMonotonicMs ? "met" : "exceeded",
+    firstVisibleFrameMs,
+    completionMs: elapsedMs,
+    remainingMs: Math.max(0, deadline.deadlineMonotonicMs - firstVisibleFrameMonotonicMs),
+    status: firstVisibleFrameMonotonicMs <= deadline.deadlineMonotonicMs ? "met" : "exceeded",
+    contract: "time_to_first_visible_frame",
     outputSource: "runtime"
   };
 }
@@ -2367,6 +2413,233 @@ function html(body: string): { status: number; body: string; contentType: string
 
 function json(value: unknown, status = 200): { status: number; body: string; contentType: string } {
   return { status, body: JSON.stringify(value), contentType: "application/json; charset=utf-8" };
+}
+
+function streamingTurnRequested(req: http.IncomingMessage, url: URL): boolean {
+  if (req.method !== "POST" || url.pathname !== "/api/turn") return false;
+  if (url.searchParams.get("stream") === "1") return true;
+  const accept = Array.isArray(req.headers.accept)
+    ? req.headers.accept.join(",")
+    : req.headers.accept ?? "";
+  return accept.toLocaleLowerCase().includes("application/x-ndjson");
+}
+
+async function streamTurnResponse(input: {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  url: URL;
+  context: ApiContext;
+  requestTiming: RequestTiming;
+  requestId: string;
+  started: number;
+}): Promise<void> {
+  const { req, res, url, context, requestTiming, requestId, started } = input;
+  const registry = turnTaskRegistryFor(context.runtime.storage);
+  const task = registry.create({ requestId });
+  const controller = registry.controller(task.taskId);
+  if (!controller) throw new Error("turn task controller was not created");
+  res.writeHead(200, {
+    "content-type": "application/x-ndjson; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    "x-request-id": requestId,
+    "x-scce-turn-task-id": task.taskId,
+    "transfer-encoding": "chunked"
+  });
+  res.flushHeaders();
+  requestTiming.firstVisibleFrameMonotonicMs = performance.now();
+  writeTurnStreamFrame(res, turnTaskWireFrame(task.frames[0]!, {
+    initialVisibleResponseDeadlineMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS,
+    elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+    statusUrl: `/api/turn/task/${encodeURIComponent(task.taskId)}`,
+    streamUrl: `/api/turn/task/${encodeURIComponent(task.taskId)}/stream`,
+    cancelUrl: `/api/turn/task/${encodeURIComponent(task.taskId)}/cancel`
+  }));
+  const unsubscribe = registry.subscribe(task.taskId, frame => {
+    if (frame.sequence === 1) return;
+    writeTurnStreamFrame(res, turnTaskWireFrame(frame));
+  });
+  res.once("close", () => unsubscribe?.());
+  requestTiming.turnExecution = {
+    signal: controller.signal,
+    onProgress(progress) {
+      registry.append(task.taskId, {
+        type: "progress",
+        requestId,
+        phase: progress.phase,
+        elapsedMs: progress.observedAtMonotonicMs - requestTiming.startedMonotonicMs
+      });
+    }
+  };
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded || res.destroyed) return;
+    writeTurnStreamFrame(res, {
+      schema: "scce.turn_stream.v1",
+      type: "progress",
+      taskId: task.taskId,
+      requestId,
+      phase: "runtime.working",
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs
+    });
+  }, 3_000);
+  heartbeat.unref();
+  try {
+    const body = await readBody(req, context.maxBodyBytes);
+    registry.markRunning(task.taskId);
+    const response = await dispatch(req, url, context, requestTiming, body);
+    const value = response.contentType.startsWith("application/json")
+      ? JSON.parse(response.body)
+      : response.body;
+    registry.append(task.taskId, {
+      type: response.status >= 200 && response.status < 300 ? "result" : "error",
+      requestId,
+      status: response.status,
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+      value: toJsonValue(value)
+    });
+  } catch (error) {
+    const current = await registry.get(task.taskId);
+    if (current?.status !== "cancelled") {
+      const status = error instanceof HttpError ? error.status : 500;
+      registry.append(task.taskId, {
+        type: "error",
+        requestId,
+        status,
+        elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  } finally {
+    clearInterval(heartbeat);
+    requestTiming.turnExecution = undefined;
+    await registry.drain(task.taskId);
+    unsubscribe?.();
+    if (!res.writableEnded) res.end();
+    const trace = (globalThis as any).__sccTrace;
+    if (trace) {
+      traceEvent(trace, {
+        stage: "api.response",
+        label: `200 ${req.method} ${req.url}`,
+        durationMs: Date.now() - started,
+        support: {
+          streaming: true,
+          taskId: task.taskId,
+          firstVisibleFrameMs: (requestTiming.firstVisibleFrameMonotonicMs ?? performance.now())
+            - requestTiming.startedMonotonicMs
+        }
+      });
+    }
+  }
+}
+
+function reconnectingTurnStreamRequested(req: http.IncomingMessage, url: URL): boolean {
+  return req.method === "GET" && turnTaskRoute(url.pathname)?.action === "stream";
+}
+
+async function streamExistingTurnTask(input: {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  url: URL;
+  context: ApiContext;
+  requestId: string;
+  started: number;
+}): Promise<void> {
+  const route = turnTaskRoute(input.url.pathname);
+  if (!route || route.action !== "stream") throw new HttpError(404, "turn task stream not found");
+  const registry = turnTaskRegistryFor(input.context.runtime.storage);
+  const task = await registry.get(route.taskId);
+  if (!task) throw new HttpError(404, "turn task not found");
+  const after = boundedSequence(input.url.searchParams.get("after"));
+  input.res.writeHead(200, {
+    "content-type": "application/x-ndjson; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    "x-request-id": input.requestId,
+    "x-scce-turn-task-id": task.taskId,
+    "transfer-encoding": "chunked"
+  });
+  input.res.flushHeaders();
+  for (const frame of task.frames) {
+    if (frame.sequence > after) writeTurnStreamFrame(input.res, turnTaskWireFrame(frame));
+  }
+  if (task.status === "interrupted") {
+    writeTurnStreamFrame(input.res, {
+      schema: "scce.turn_stream.v1",
+      type: "error",
+      taskId: task.taskId,
+      status: 503,
+      error: "turn execution was interrupted by a server restart; persisted frames remain replayable"
+    });
+    input.res.end();
+    return;
+  }
+  if (task.status === "succeeded" || task.status === "failed" || task.status === "cancelled") {
+    input.res.end();
+    return;
+  }
+  let latestSequence = task.latestSequence;
+  const unsubscribe = registry.subscribe(task.taskId, frame => {
+    if (frame.sequence <= latestSequence) return;
+    latestSequence = frame.sequence;
+    writeTurnStreamFrame(input.res, turnTaskWireFrame(frame));
+    if (frame.type === "result" || frame.type === "error" || frame.type === "cancelled") {
+      unsubscribe?.();
+      if (!input.res.writableEnded) input.res.end();
+    }
+  });
+  if (!unsubscribe) {
+    input.res.end();
+    return;
+  }
+  const heartbeat = setInterval(() => {
+    writeTurnStreamFrame(input.res, {
+      schema: "scce.turn_stream.v1",
+      type: "progress",
+      taskId: task.taskId,
+      requestId: input.requestId,
+      phase: "runtime.working",
+      elapsedMs: Date.now() - task.createdAt
+    });
+  }, 3_000);
+  heartbeat.unref();
+  input.res.once("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+function turnTaskWireFrame(
+  frame: TurnTaskFrame,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    ...frame,
+    schema: "scce.turn_stream.v1",
+    ...overrides
+  };
+}
+
+function turnTaskRoute(pathname: string): { taskId: string; action: "status" | "stream" | "cancel" } | undefined {
+  const match = /^\/api\/turn\/task\/([^/]+)(?:\/(stream|cancel))?$/u.exec(pathname);
+  if (!match?.[1]) return undefined;
+  return {
+    taskId: decodeURIComponent(match[1]),
+    action: match[2] === "stream" ? "stream" : match[2] === "cancel" ? "cancel" : "status"
+  };
+}
+
+function boundedSequence(value: string | null): number {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(parsed)));
+}
+
+function writeTurnStreamFrame(
+  res: http.ServerResponse,
+  frame: Record<string, unknown>
+): void {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(`${JSON.stringify(frame)}\n`);
 }
 
 function pendingApproval(context: ApiContext, capabilityId: string, input: unknown): { status: number; body: string; contentType: string } {

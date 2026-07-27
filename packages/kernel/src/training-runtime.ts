@@ -24,6 +24,7 @@ import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import type {
   EpisodeId,
   EvidenceSpan,
+  GraphSnapshot,
   JsonValue,
   LanguageProfile,
   PolicyProfile,
@@ -88,7 +89,8 @@ export function createTrainingRuntime(options: {
   async function persistTrainingLanguageMemory(
     evidence: readonly EvidenceSpan[],
     existingProfiles: readonly LanguageProfile[],
-    trainingPlanId: string
+    trainingPlanId: string,
+    graphSnapshot: GraphSnapshot
   ): Promise<{ profiles: LanguageProfile[]; audit: JsonValue }> {
     if (!evidence.length) {
       return { profiles: [...existingProfiles], audit: toJsonValue({ source: "kernel.train.language_memory", skipped: "no promoted evidence selected", observations: 0, models: 0, units: 0, patterns: 0, semanticFrames: 0, profilesCreated: 0 }) };
@@ -103,6 +105,31 @@ export function createTrainingRuntime(options: {
     let patterns = 0;
     let semanticFrames = 0;
     let graphSurfaceAlignments = 0;
+    let sparseAlignmentCandidateSupports = 0;
+    let sparseAlignmentCandidates = 0;
+    let sparseTransportPlans = 0;
+    let sparseTransportCells = 0;
+    let transportEvidenceAllocations = 0;
+    let unresolvedTransportEvidenceAllocations = 0;
+    let typedNullCostModels = 0;
+    let populationOrderingModels = 0;
+    let crossDocumentAlignmentModels = 0;
+    let alignmentAlternativeSets = 0;
+    let retainedAlignmentHypotheses = 0;
+    let alignmentCommunityRoutings = 0;
+    let coarseToFineAlignments = 0;
+    let calibratedAlignmentModels = 0;
+    let promotedAlignmentPlans = 0;
+    let reversibleConstructions = 0;
+    let reversibleConstructionRejections = 0;
+    let pairedAntiUnifiedConstructions = 0;
+    let pairedAntiUnifiedConstructionRejections = 0;
+    let admittedPairedAntiUnifiedConstructions = 0;
+    let graphCorrelatedVariabilityModels = 0;
+    let optionalNullRealizationModels = 0;
+    let calibratedOptionalNullRealizationModels = 0;
+    let surfaceNullMass = 0;
+    let graphImplicitMass = 0;
     let profilesCreated = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
@@ -141,7 +168,8 @@ export function createTrainingRuntime(options: {
           createdAt: trainedAt,
           maxOrder: 6,
           maxCountersPerOrder: 12000,
-          vocabularyLimit: 24000
+          vocabularyLimit: 24000,
+          graphSnapshot
         }
       });
       await observeLanguageTrainingSegmentation({
@@ -163,6 +191,61 @@ export function createTrainingRuntime(options: {
       patterns += memory.patterns.length;
       semanticFrames += memory.semanticFrames.length;
       graphSurfaceAlignments += memory.graphSurfaceAlignmentSummaries.length;
+      sparseAlignmentCandidateSupports += memory.sparseAlignmentCandidateSupports.length;
+      sparseAlignmentCandidates += memory.sparseAlignmentCandidateSupports.reduce(
+        (sum, support) => sum + support.candidates.length,
+        0
+      );
+      sparseTransportPlans += memory.sparseTransportPlans.length;
+      sparseTransportCells += memory.sparseTransportPlans.reduce(
+        (sum, plan) => sum + plan.cells.length,
+        0
+      );
+      transportEvidenceAllocations += memory.transportEvidenceAllocations.length;
+      unresolvedTransportEvidenceAllocations += memory.transportEvidenceAllocations
+        .filter(allocation => allocation.status === "unresolved_evidence").length;
+      typedNullCostModels += memory.typedNullCostModel ? 1 : 0;
+      populationOrderingModels += memory.populationOrderingModel ? 1 : 0;
+      crossDocumentAlignmentModels += memory.crossDocumentAlignmentModel ? 1 : 0;
+      alignmentAlternativeSets += memory.alignmentAlternativeSets.length;
+      retainedAlignmentHypotheses += memory.alignmentAlternativeSets.reduce(
+        (sum, set) => sum + set.hypotheses.length,
+        0
+      );
+      alignmentCommunityRoutings += memory.alignmentCommunityRoutings.length;
+      coarseToFineAlignments += memory.coarseToFineAlignments.length;
+      calibratedAlignmentModels +=
+        memory.alignmentCalibrationModel.status === "calibrated" ? 1 : 0;
+      promotedAlignmentPlans += memory.alignmentPromotionModel.decisions.filter(
+        decision => decision.promoted
+      ).length;
+      reversibleConstructions += memory.reversibleConstructions.length;
+      reversibleConstructionRejections +=
+        memory.reversibleConstructionRejections.length;
+      pairedAntiUnifiedConstructions +=
+        memory.pairedAntiUnifiedConstructions.length;
+      pairedAntiUnifiedConstructionRejections +=
+        memory.pairedAntiUnifiedConstructionRejections.length;
+      admittedPairedAntiUnifiedConstructions +=
+        memory.admittedPairedAntiUnifiedConstructions.length;
+      graphCorrelatedVariabilityModels += 1;
+      optionalNullRealizationModels += 1;
+      calibratedOptionalNullRealizationModels +=
+        memory.optionalNullRealizationModel.status === "ready" ? 1 : 0;
+      surfaceNullMass += memory.sparseTransportPlans.reduce(
+        (sum, plan) => sum + plan.rowMarginals.reduce(
+          (rowSum, row) => rowSum + row.surfaceNullMass,
+          0
+        ),
+        0
+      );
+      graphImplicitMass += memory.sparseTransportPlans.reduce(
+        (sum, plan) => sum + plan.columnMarginals.reduce(
+          (columnSum, column) => columnSum + column.graphImplicitMass,
+          0
+        ),
+        0
+      );
     }
     return {
       profiles,
@@ -176,7 +259,32 @@ export function createTrainingRuntime(options: {
         units,
         patterns,
         semanticFrames,
-        graphSurfaceAlignments
+        graphSurfaceAlignments,
+        sparseAlignmentCandidateSupports,
+        sparseAlignmentCandidates,
+        sparseTransportPlans,
+        sparseTransportCells,
+        transportEvidenceAllocations,
+        unresolvedTransportEvidenceAllocations,
+        typedNullCostModels,
+        populationOrderingModels,
+        crossDocumentAlignmentModels,
+        alignmentAlternativeSets,
+        retainedAlignmentHypotheses,
+        alignmentCommunityRoutings,
+        coarseToFineAlignments,
+        calibratedAlignmentModels,
+        promotedAlignmentPlans,
+        reversibleConstructions,
+        reversibleConstructionRejections,
+        pairedAntiUnifiedConstructions,
+        pairedAntiUnifiedConstructionRejections,
+        admittedPairedAntiUnifiedConstructions,
+        graphCorrelatedVariabilityModels,
+        optionalNullRealizationModels,
+        calibratedOptionalNullRealizationModels,
+        surfaceNullMass,
+        graphImplicitMass
       })
     };
   }
@@ -187,17 +295,7 @@ export function createTrainingRuntime(options: {
       const episodeId = idFactory.episodeId();
       const events: ScceEvent[] = [];
       let model = await deps.storage.model.readModel();
-      // Bootstrap seed for evidenceForLearning below: without an explicit
-      // seedNodeIds/evidenceIds/features filter, getSlice's Postgres
-      // implementation returns zero rows unless allowLatestFallback is set
-      // (queryNodes, postgres.ts) -- it refuses to guess what to return
-      // rather than silently scanning the whole table. Omitting this flag
-      // here meant every train() call's own graph-node bootstrap query was
-      // unconditionally empty, which made the derived evidence-search
-      // feature list empty, which made searchEvidence's own no-filter guard
-      // return [] too -- so promotion candidates were always empty
-      // regardless of what evidence or graph structure actually existed.
-      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000, allowLatestFallback: true });
+      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000 });
       const featureSketches = featureSketchLearner.learn(slice.nodes, 24);
       const pending = await deps.storage.quarantine.listPending({ limit: 500 });
       let profiles = await deps.storage.model.listLanguageProfiles(200);
@@ -207,7 +305,12 @@ export function createTrainingRuntime(options: {
       const mvpTrainPlan = trainingOrchestrator.plan({ train: input, evidence: evidenceForLearning, modelState: model, policy });
       const promotionIds = trainingPromotionEvidenceIds(mvpTrainPlan);
       const promoted = await deps.storage.evidence.promoteEvidence(promotionIds, trainingPromotionReason(input, plan, mvpTrainPlan));
-      const trainingLanguage = await persistTrainingLanguageMemory(evidenceForLearning.filter(span => promotionIds.some(id => String(id) === String(span.id))), profiles, mvpTrainPlan.id);
+      const trainingLanguage = await persistTrainingLanguageMemory(
+        evidenceForLearning.filter(span => promotionIds.some(id => String(id) === String(span.id))),
+        profiles,
+        mvpTrainPlan.id,
+        slice
+      );
       profiles = trainingLanguage.profiles;
       model = learning.updateModel(model, plan, profiles);
       // Keep the historical model_state key for JSON compatibility; the
@@ -242,6 +345,20 @@ export function createTrainingRuntime(options: {
         for (const pattern of projection.patterns) {
           await deps.storage.languageMemory.putLanguagePattern(pattern);
         }
+        if (deps.storage.segmentationPopulations) {
+          const projectedProfileIds = new Set(projection.profileIds);
+          await deps.storage.segmentationPopulations.putModel({
+            id: inducedLanguageModel.segmentationPopulations.id,
+            model: inducedLanguageModel.segmentationPopulations,
+            trainingPlanId: mvpTrainPlan.id,
+            profileIds: projection.profileIds,
+            sourceVersionIds: profiles
+              .filter(profile => projectedProfileIds.has(profile.id))
+              .map(profile => profile.sourceVersionId),
+            createdAt: clock.now(),
+            informationLabel: deps.sourceInformationLabel
+          });
+        }
         const languageModelPersistedEvent = await append(eventFactory.create({
           episodeId,
           typeId: "InducedLanguageModelPersisted",
@@ -250,6 +367,9 @@ export function createTrainingRuntime(options: {
             trainingPlanId: mvpTrainPlan.id,
             corpusDocuments: inducedLanguageModel.corpusDocuments,
             vocabularySize: inducedLanguageModel.vocabularySize,
+            segmentationPopulationModelId: inducedLanguageModel.segmentationPopulations.id,
+            segmentationPopulationCount: inducedLanguageModel.segmentationPopulations.populations.length,
+            segmentationPopulationRuntimeActive: Boolean(deps.storage.segmentationPopulations),
             memoryProjection: projection as unknown as JsonValue,
             runtimeActivePatterns: projection.patterns.length
           })
@@ -262,7 +382,12 @@ export function createTrainingRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPlanBuilt", payload: eviPlan.audit })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "LearningPromoted", payload: { promotedEvidence: promoted, selectedEvidenceIds: promotionIds.map(String), weightedFeatureSketches: featureSketches.length, modelStateKey: "latentConcepts", languageProfiles: profiles.length, trainingLanguage: trainingLanguage.audit, promotionPlan: plan.promotion, trainingPromotion: mvpTrainPlan.promotion.slice(0, 64).map(item => ({ evidenceId: item.evidenceId, promote: item.promote, score: item.score, reasons: item.reasons })) } })));
       const selfState = await createFunctionalSelfModel({ storage: deps.storage, model, policy, recentFailures: failures });
-      const trainField = fieldEngine.activate({ text: model.learningGoals.join("\n"), nodes: slice.nodes, edges: slice.edges });
+      const trainField = fieldEngine.activate({
+        text: model.learningGoals.join("\n"),
+        nodes: slice.nodes,
+        edges: slice.edges,
+        hyperedges: slice.hyperedges
+      });
       const trainForecastState = prediction.state({ episodeId, graph: slice, alphaTrace: trainField.alphaTrace, t: clock.now() });
       const trainSsd = ssd.distill({ model, graph: slice, state: trainForecastState, self: selfState });
       const trainFcs = fcs.score({ self: selfState, ssd: trainSsd });
