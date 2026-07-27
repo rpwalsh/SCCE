@@ -28,6 +28,18 @@ function discourse(text: string): LanguageDiscourseTrace {
     cohesion: 1,
     repetitionPenalty: 0,
     discourseScore: 1,
-    fluency: { averageLogProbability: 0, order: 1, backoffRate: 0 } as LanguageDiscourseTrace["fluency"]
+    fluency: {
+      beamWidth: 1,
+      beamExpansions: 0,
+      candidateMoveCount: 0,
+      selectedBeamScore: 0,
+      selectedUnitIds: [],
+      latentCoherence: 0,
+      ngramMeanActivation: 0,
+      priorSupport: 0,
+      coverageGain: 0,
+      repetitionPenalty: 0,
+      symbolCount: 0
+    }
   };
 }
