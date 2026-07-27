@@ -1,64 +1,109 @@
-# SCCE — Self-Contained Cognitive Engine
+# SCCE
 
-**A local-first reasoning engine that answers from evidence, not from vibes.**
+**GO WEIGHTLESS.**
 
-Most AI systems generate the most statistically plausible next words. SCCE is built around a different idea: ingest real source material, track exactly where every fact came from, reason over that material as a graph, and only answer what the evidence actually supports — with an inspectable trail behind every response.
+Sovereign intelligence on ordinary hardware.
 
-It runs on your own machine against your own PostgreSQL database. Nothing about what it knows lives in a black box.
+SCCE is a self-contained cognitive engine that ingests evidence, builds durable knowledge, reasons, plans, acts, and learns — without a foundation-model runtime.
 
-## Why SCCE
+No LLM inference. No vector-database RAG loop. No GPU cluster. No cloud dependency.
 
-- **Every answer is traceable.** SCCE doesn't just produce a response — it produces a trace of the evidence, the reasoning steps, and the confidence behind it. You can inspect exactly why it said what it said.
-- **It says "I don't know" instead of making things up.** When the evidence doesn't support a confident answer, SCCE says so, offers a qualified answer, or goes and looks for more support — it doesn't fabricate facts to sound helpful.
-- **It learns your language, not just your facts.** SCCE builds its own language model from what it reads, rather than leaning on a fixed pretrained voice — so its writing style is grounded in what it's actually been shown.
-- **It reasons over a real knowledge graph.** Ingested material becomes structured, queryable graph state — not just embeddings in a vector store.
-- **It's yours.** Local runtime, your database, your data. No API keys sent to a third party, no telemetry by default.
+SCCE compiles evidence, language, reasoning, and learned skills into sparse, inspectable cognitive structures. At runtime, it activates only the structures relevant to the task.
 
-## What it does
+**CPU-native · Local · Persistent · Evidence-bound**
 
-- Ingest documents, code, and spreadsheets (including `.xlsx` / `.xlsm` / `.xls`) with full source identity, byte-level provenance, and timestamps.
-- Build and reason over a directed knowledge graph, with learned activation instead of keyword search.
-- Construct answers through a pipeline that tracks proof and contradiction at every step, and never lets an answer outrun its evidence.
-- Recognize when it's under-supported and recover: look for more evidence, or clearly label a lower-confidence attempt as such — never silently overreach.
-- Apply reviewed code patches through a loopback-only VS Code integration, with exact-byte workspace snapshots so nothing is touched without an explicit, auditable diff.
+## A third architecture for AI
 
-## Under the hood, briefly
+Closed-weight AI rents intelligence from somebody else's data center.
+
+Open-weight AI lets you host the weights yourself — but still requires billions of parameters, accelerator infrastructure, and repeated dense inference.
+
+SCCE removes foundation-model weights from the runtime architecture entirely.
+
+| Dense AI | SCCE |
+|---|---|
+| Intelligence encoded in opaque model weights | Intelligence compiled into inspectable graph structures |
+| Dense model evaluated repeatedly | Bounded, task-local activation |
+| Knowledge blended into parameters | Evidence retains identity, time, and provenance |
+| Context disappears between sessions | Knowledge, skills, and outcomes persist |
+| Accelerator-centered inference | CPU-native execution |
+| Provider or model controls the intelligence | The operator owns the runtime and its memory |
+
+## What SCCE does
+
+**INGEST → STRUCTURE → ACTIVATE → REASON → PLAN → ACT → LEARN**
+
+- Ingests documents, source code, and spreadsheets while preserving exact source identity, coordinates, and timestamps.
+- Compiles observations into a directed cognitive graph instead of embedding text into a retrieval index.
+- Activates a bounded, task-relevant graph field instead of evaluating a dense model for every generated token.
+- Constructs answers with explicit evidence, contradiction, and confidence traces.
+- Separates what may be claimed from how it is expressed.
+- Applies reviewed code patches through a loopback-only VS Code integration backed by exact-byte workspace snapshots.
+- Preserves learned knowledge and outcomes in operator-controlled storage.
+
+## Evidence is part of the answer
+
+SCCE does not treat provenance as a citation added after generation.
+
+Every admitted observation retains:
+
+- where it came from;
+- when it was observed;
+- the exact source span that supports it;
+- how it entered the graph;
+- which reasoning path activated it;
+- what contradictions or uncertainty remain.
+
+When the available evidence cannot support an answer, SCCE can qualify the result, request more information, or decline to invent one.
+
+## The cognitive pipeline
 
 ```text
-source material
-  -> tracked evidence (who said it, when, exactly which bytes)
-  -> knowledge graph (entities, relations, structure)
-  -> reasoning over that graph
-  -> a proposed answer, checked against the evidence that supports it
-  -> natural-language realization, grounded in learned language patterns
-  -> an answer, plus the full trace behind it
+Source material
+      |
+Evidence-preserving ingestion
+      |
+Entities, relations, events, and constructions
+      |
+Persistent cognitive graph
+      |
+Task-conditioned local activation
+      |
+Reasoning, planning, and capability selection
+      |
+Evidence-bound answer or proposed action
+      |
+Outcome recording and continued learning
 ```
 
-The reasoning layer decides *what* can be said; a separate realization layer decides *how* to phrase it — it never gets to invent facts of its own. If you want the deep technical version of this pipeline, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+The reasoning layer determines what the evidence licenses SCCE to say or do. A separate realization layer determines how to express it. Surface fluency cannot authorize unsupported facts.
 
-## Project layout
+For the complete technical design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-```text
-packages/kernel         core reasoning runtime: graph, evidence, planning, language
-packages/adapters-node  PostgreSQL, file, document, and spreadsheet ingestion
-packages/server         HTTP API and workbench server
-packages/cli            command-line interface
-packages/ui             workbench-facing UI models and surfaces
-packages/vscode         loopback-only VS Code integration
-tools/scce-dev-mcp      repository and trace inspection tooling
-docs                    architecture, guides, and status records
-```
+## One engine, multiple surfaces
 
-## Getting started
+SCCE is exposed through:
 
-Requirements: Node.js 20+, pnpm 10, and a PostgreSQL database.
+- a local HTTP API and workbench;
+- a command-line interface;
+- a loopback-only VS Code integration;
+- repository and trace inspection through `scce-dev-mcp`;
+- PostgreSQL-backed persistent cognitive state.
+
+The interfaces do not contain separate intelligence. They operate against the same local cognitive engine.
+
+## Run SCCE
+
+Requirements: Node.js 20+, pnpm 10, and PostgreSQL.
+
+Install and validate:
 
 ```powershell
 pnpm install
 pnpm validate
 ```
 
-Point SCCE at your database and set it up:
+Configure the database:
 
 ```powershell
 $env:SCCE_DATABASE_URL="postgresql://<user>:<password>@<host>:<port>/<database>"
@@ -66,25 +111,43 @@ pnpm scce db migrate
 pnpm scce db verify
 ```
 
-Then run it:
+Start the server or CLI:
 
 ```powershell
-pnpm server   # HTTP API + workbench
-pnpm scce     # command-line interface
+pnpm server
+pnpm scce
 ```
 
-Full setup detail (rehearsal commands, configuration options, VS Code packaging, startup behavior) lives in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) and [`docs/README.md`](docs/README.md).
+Full setup, configuration, rehearsal commands, and VS Code packaging are documented in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
 
-## Learn more
+## Repository map
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the reasoning pipeline actually works
-- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — setup, configuration, and day-to-day usage
-- [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — the HTTP API
-- [`docs/README.md`](docs/README.md) — full documentation index
-- [`SECURITY.md`](SECURITY.md) — security posture and reporting
+```text
+packages/kernel         cognition, graph, evidence, planning, and language
+packages/adapters-node  PostgreSQL, files, documents, and spreadsheet ingestion
+packages/server         HTTP API and workbench server
+packages/cli            command-line interface
+packages/ui             workbench-facing models and surfaces
+packages/vscode         loopback-only VS Code integration
+tools/scce-dev-mcp      repository and trace inspection
+docs                    architecture, guides, and implementation records
+```
 
-Contributing an AI coding agent to this repo? Read [`AGENTS.md`](AGENTS.md) first.
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — cognitive architecture and runtime pipeline
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — installation and operation
+- [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
+- [`docs/README.md`](docs/README.md) — complete documentation index
+- [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
+- [`AGENTS.md`](AGENTS.md) — instructions for coding agents working in this repository
 
 ## License
 
-The source is available here for inspection under a proprietary license — that means you can read it, but this is **not** an open-source project, and no license to use, copy, or redistribute it is granted. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for the exact terms.
+SCCE is source-available for inspection under a proprietary license. It is not open source, and no license to use, copy, or redistribute the software is granted except as stated in [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+---
+
+**Own the runtime. Keep the learning.**
+
+SCCE — the weightless cognitive engine.
