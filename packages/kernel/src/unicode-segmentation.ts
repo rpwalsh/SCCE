@@ -1,3 +1,5 @@
+import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
+
 export type UnicodeSurfaceSegmentKind =
   | "word"
   | "grapheme"
@@ -35,7 +37,7 @@ interface GraphemeSlice {
   codePointEnd: number;
 }
 
-const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
 
 /**
  * Produces an exact, reversible source segmentation. Unicode grapheme

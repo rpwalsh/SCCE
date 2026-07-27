@@ -7,8 +7,82 @@ import {
   induceSourceBoundConstructionTrainingSets,
   type HeldOutConstructionCoverageReport
 } from "./graph-surface-alignment.js";
+import {
+  compileSparseAlignmentCandidateSupports,
+  type SparseAlignmentCandidateSupport
+} from "./sparse-alignment-candidates.js";
+import {
+  solveSparseFusedUnbalancedTransport,
+  type SparseFusedTransportPlan
+} from "./sparse-fused-transport.js";
+import {
+  allocateTransportEvidence,
+  type TransportEvidenceAllocation
+} from "./transport-evidence-allocation.js";
+import {
+  compileTypedNullCostModel,
+  type TypedNullCostModel
+} from "./typed-null-alignment.js";
+import {
+  compilePopulationOrderingModel,
+  type PopulationOrderingModel
+} from "./population-ordering.js";
+import {
+  compileCrossDocumentAlignmentModel,
+  type CrossDocumentAlignmentModel
+} from "./cross-document-alignment.js";
+import {
+  compileAlignmentAlternativeSet,
+  alignmentAlternativeSeriesId,
+  extractAlignmentAlternatives,
+  type AlignmentAlternativeSet
+} from "./alignment-alternatives.js";
+import {
+  compileAlignmentCommunityRouting,
+  compileCoarseToFineAlignmentResult,
+  type AlignmentCommunityRouting,
+  type CoarseToFineAlignmentResult
+} from "./coarse-to-fine-alignment.js";
+import {
+  compileAlignmentCalibrationModel,
+  type AlignmentCalibrationModel,
+  type AlignmentCalibrationObservation
+} from "./alignment-calibration.js";
+import {
+  compileAlignmentPromotionModel,
+  type AlignmentPromotionModel,
+  type AlignmentPromotionObservation
+} from "./alignment-promotion.js";
+import {
+  compileAutomaticAlignmentEvaluation,
+  type AutomaticAlignmentEvaluation
+} from "./alignment-heldout-evaluation.js";
+import {
+  compileReversibleConstructionPattern,
+  compileReversibleConstructions,
+  reversibleConstructionCreationSnapshotId,
+  type ReversibleConstruction,
+  type ReversibleConstructionRejection
+} from "./reversible-construction.js";
+import {
+  compilePairedAntiUnifiedConstructions,
+  compilePairedAntiUnifiedPatterns,
+  type PairedAntiUnifiedConstruction
+} from "./paired-anti-unification.js";
+import {
+  admittedPairedAntiUnifiedConstructions,
+  compileGraphCorrelatedVariabilityModel,
+  type GraphCorrelatedVariabilityModel
+} from "./graph-correlated-variability.js";
+import {
+  compileOptionalNullRealizationModel,
+  compileOptionalNullRealizationPatterns,
+  type OptionalNullRealizationModel
+} from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
+import { buildSurfaceLattice } from "./surface-lattice.js";
+import { evidenceSourceFamilyId } from "./source-family.js";
 import type {
   LanguagePatternRecord,
   LanguageUnitRecord,
@@ -20,6 +94,7 @@ import type { ScceStorage } from "./storage.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type {
   EvidenceSpan,
+  GraphSnapshot,
   Hasher,
   JsonValue,
   LanguageProfile,
@@ -45,6 +120,11 @@ export interface LanguageTrainingBatch {
   vocabularyLimit?: number;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   additionalPatterns?: readonly LanguagePatternRecord[];
+  graphSnapshot?: GraphSnapshot;
+  maxAlignmentCandidateDegree?: number;
+  alignmentAlternativePredecessorSets?: readonly AlignmentAlternativeSet[];
+  alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
+  alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
 }
 
 export interface LanguageTrainingConstructionPromotionPolicy {
@@ -84,7 +164,32 @@ export interface CompiledLanguageTrainingBatch {
   patterns: LanguagePatternRecord[];
   semanticFrames: SemanticFrameRecord[];
   constructionPatterns: LanguagePatternRecord[];
+  reversibleConstructionPatterns: LanguagePatternRecord[];
+  pairedAntiUnifiedConstructionPatterns: LanguagePatternRecord[];
+  optionalNullRealizationPatterns: LanguagePatternRecord[];
   graphSurfaceAlignmentSummaries: JsonValue[];
+  sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
+  sparseAlignmentCandidateSummaries: JsonValue[];
+  alignmentCommunityRoutings: AlignmentCommunityRouting[];
+  coarseToFineAlignments: CoarseToFineAlignmentResult[];
+  alignmentCalibrationModel: AlignmentCalibrationModel;
+  alignmentPromotionModel: AlignmentPromotionModel;
+  alignmentHeldoutEvaluation: AutomaticAlignmentEvaluation;
+  reversibleConstructions: ReversibleConstruction[];
+  reversibleConstructionRejections: ReversibleConstructionRejection[];
+  pairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
+  admittedPairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
+  graphCorrelatedVariabilityModel: GraphCorrelatedVariabilityModel;
+  optionalNullRealizationModel: OptionalNullRealizationModel;
+  pairedAntiUnifiedConstructionRejections:
+    ReturnType<typeof compilePairedAntiUnifiedConstructions>["rejections"];
+  typedNullCostModel: TypedNullCostModel | null;
+  populationOrderingModel: PopulationOrderingModel | null;
+  crossDocumentAlignmentModel: CrossDocumentAlignmentModel | null;
+  sparseTransportPlans: SparseFusedTransportPlan[];
+  transportEvidenceAllocations: TransportEvidenceAllocation[];
+  alignmentAlternativeSets: AlignmentAlternativeSet[];
+  alternativeTransportEvidenceAllocations: TransportEvidenceAllocation[];
   constructionCandidates: number;
   rejectedConstructionCandidates: number;
   constructionPromotion: LanguageTrainingConstructionPromotionReport;
@@ -118,6 +223,237 @@ export function compileLanguageTrainingBatch(input: {
     profileId: batch.profile.id,
     hasher: input.hasher
   });
+  const alignmentLattices = batch.graphSnapshot?.hyperedges.length
+    ? batch.evidence.map(span => buildSurfaceLattice({
+      documentId: String(span.id),
+      sourceFamilyId: evidenceSourceFamilyId(span),
+      text: span.text,
+      sourceVersionId: span.sourceVersionId,
+      evidenceIds: [span.id],
+      hasher: input.hasher
+    }))
+    : [];
+  const sparseAlignment = alignmentLattices.length
+    ? compileSparseAlignmentCandidateSupports({
+      lattices: alignmentLattices,
+      nodes: batch.graphSnapshot!.nodes,
+      hyperedges: batch.graphSnapshot!.hyperedges,
+      maxCandidateDegree: batch.maxAlignmentCandidateDegree,
+      hasher: input.hasher
+    })
+    : undefined;
+  const sparseAlignmentCandidateSupports = sparseAlignment?.supports ?? [];
+  const alignmentCommunityRoutings = sparseAlignment
+    ? sparseAlignmentCandidateSupports.map(support =>
+      compileAlignmentCommunityRouting({
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        hasher: input.hasher
+      }))
+    : [];
+  const routedAlignmentSupports = alignmentCommunityRoutings.map(routing =>
+    routing.routedSupport);
+  const typedNullCostModel = sparseAlignment
+    ? compileTypedNullCostModel({
+      supports: routedAlignmentSupports,
+      targetIndex: sparseAlignment.targetIndex,
+      hasher: input.hasher
+    })
+    : null;
+  const populationOrderingModel = sparseAlignment
+    ? compilePopulationOrderingModel({
+      supports: routedAlignmentSupports,
+      hasher: input.hasher
+    })
+    : null;
+  const initialSparseTransportPlans = sparseAlignment
+    ? routedAlignmentSupports.map(support =>
+      solveSparseFusedUnbalancedTransport({
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        typedNullCostModel: typedNullCostModel!,
+        populationOrderingModel: populationOrderingModel!,
+        hasher: input.hasher
+      }))
+    : [];
+  const crossDocumentAlignmentModel = sparseAlignment
+    ? compileCrossDocumentAlignmentModel({
+      supports: routedAlignmentSupports,
+      plans: initialSparseTransportPlans,
+      targetIndex: sparseAlignment.targetIndex,
+      hasher: input.hasher
+    })
+    : null;
+  const sparseTransportPlans = sparseAlignment
+    ? routedAlignmentSupports.map(support =>
+      solveSparseFusedUnbalancedTransport({
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        typedNullCostModel: typedNullCostModel!,
+        populationOrderingModel: populationOrderingModel!,
+        crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
+        hasher: input.hasher
+      }))
+    : [];
+  const retainedAlternatives = sparseAlignment
+    ? sparseTransportPlans.map((plan, index) => {
+      const support = routedAlignmentSupports[index]!;
+      const extracted = extractAlignmentAlternatives({
+        basePlan: plan,
+        support,
+        targetIndex: sparseAlignment.targetIndex,
+        typedNullCostModel: typedNullCostModel!,
+        populationOrderingModel: populationOrderingModel!,
+        crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
+        hasher: input.hasher
+      });
+      const evidenceAllocations = extracted.plans.map(alternativePlan =>
+        allocateTransportEvidence({
+          plan: alternativePlan,
+          support,
+          hasher: input.hasher
+        }));
+      const set = compileAlignmentAlternativeSet({
+          seriesId: alignmentAlternativeSeriesId({
+            support,
+            targetIndex: sparseAlignment.targetIndex,
+            hasher: input.hasher
+          }),
+          plans: extracted.plans,
+          evidenceAllocations,
+          predecessorSets: batch.alignmentAlternativePredecessorSets,
+          omittedSearchBranchCount: extracted.omittedSearchBranchCount,
+          hasher: input.hasher
+        });
+      return {
+        evidenceAllocations,
+        set,
+        result: compileCoarseToFineAlignmentResult({
+          routing: alignmentCommunityRoutings[index]!,
+          primaryPlan: plan,
+          alternativeSet: set,
+          hasher: input.hasher
+        })
+      };
+    })
+    : [];
+  const alignmentAlternativeSets = retainedAlternatives.map(item => item.set);
+  const coarseToFineAlignments = retainedAlternatives.map(item => item.result);
+  const transportEvidenceAllocations = retainedAlternatives.map((item, index) =>
+    item.evidenceAllocations.find(allocation =>
+      allocation.transportPlanId === sparseTransportPlans[index]!.id)!);
+  const alternativeTransportEvidenceAllocations = retainedAlternatives.flatMap(
+    (item, index) => item.evidenceAllocations.filter(allocation =>
+      allocation.transportPlanId !== sparseTransportPlans[index]!.id)
+  );
+  const alignmentHeldoutEvaluation = sparseAlignment
+    ? compileAutomaticAlignmentEvaluation({
+      alternativeSets: alignmentAlternativeSets,
+      supports: routedAlignmentSupports,
+      referencePlans: sparseTransportPlans,
+      evidenceAllocations: retainedAlternatives.flatMap(item =>
+        item.evidenceAllocations),
+      targetIndex: sparseAlignment.targetIndex,
+      hasher: input.hasher
+    })
+    : {
+      artifacts: [],
+      promotionObservations: [],
+      calibrationObservations: [],
+      candidateRecall: {
+        evaluatedPlanCount: 0,
+        heldoutFamilyEvaluations: 0,
+        minimum: 0,
+        mean: 0,
+        perfectCount: 0
+      }
+    };
+  const alignmentCalibrationModel = compileAlignmentCalibrationModel({
+    observations: [
+      ...alignmentHeldoutEvaluation.calibrationObservations,
+      ...(batch.alignmentCalibrationObservations ?? [])
+    ],
+    hasher: input.hasher
+  });
+  const alignmentPromotionModel = compileAlignmentPromotionModel({
+    alternativeSets: alignmentAlternativeSets,
+    observations: [
+      ...alignmentHeldoutEvaluation.promotionObservations,
+      ...(batch.alignmentPromotionObservations ?? [])
+    ],
+    hasher: input.hasher
+  });
+  const reversibleConstructionCompilation = sparseAlignment
+    ? compileReversibleConstructions({
+      alternativeSets: alignmentAlternativeSets,
+      promotionModel: alignmentPromotionModel,
+      calibrationModel: alignmentCalibrationModel,
+      supports: routedAlignmentSupports,
+      targetIndex: sparseAlignment.targetIndex,
+      lattices: alignmentLattices,
+      evidenceAllocations: retainedAlternatives.flatMap(item =>
+        item.evidenceAllocations),
+      profileId: batch.profile.id,
+      creationSnapshotId: reversibleConstructionCreationSnapshotId({
+        sourceVersionId: String(batch.sourceVersionId),
+        graphNodeIds: batch.graphSnapshot!.nodes.map(node => String(node.id)),
+        graphEdgeIds: batch.graphSnapshot!.edges.map(edge => String(edge.id)),
+        hyperedgeIds: batch.graphSnapshot!.hyperedges.map(edge => String(edge.id)),
+        hasher: input.hasher
+      }),
+      createdAt: batch.createdAt,
+      hasher: input.hasher
+    })
+    : { constructions: [], rejections: [] };
+  const reversibleConstructionPatterns =
+    reversibleConstructionCompilation.constructions.map(
+      compileReversibleConstructionPattern
+    );
+  const pairedAntiUnifiedCompilation =
+    compilePairedAntiUnifiedConstructions({
+      constructions: reversibleConstructionCompilation.constructions,
+      createdAt: batch.createdAt,
+      creationSnapshotId: `paired_anti_unification_snapshot.${
+        input.hasher.digestHex(reversibleConstructionCompilation.constructions
+          .map(construction => construction.id).sort().join("\u001f")).slice(0, 40)
+      }`,
+      hasher: input.hasher
+    });
+  const graphCorrelatedVariabilityModel =
+    compileGraphCorrelatedVariabilityModel({
+      constructions: pairedAntiUnifiedCompilation.constructions,
+      hasher: input.hasher
+    });
+  const admittedPairedConstructions =
+    admittedPairedAntiUnifiedConstructions({
+      constructions: pairedAntiUnifiedCompilation.constructions,
+      model: graphCorrelatedVariabilityModel
+    });
+  const pairedAntiUnifiedConstructionPatterns =
+    admittedPairedConstructions.flatMap(({ construction, admission }) =>
+      compilePairedAntiUnifiedPatterns(construction, admission));
+  const optionalNullRealizationModel =
+    compileOptionalNullRealizationModel({
+      constructions: reversibleConstructionCompilation.constructions,
+      hasher: input.hasher
+    });
+  const optionalNullRealizationPatterns =
+    compileOptionalNullRealizationPatterns(
+      optionalNullRealizationModel,
+      batch.createdAt
+    );
+  const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
+    toJsonValue({
+      schema: support.schema,
+      id: support.id,
+      latticeId: support.latticeId,
+      targetIndexId: support.targetIndexId,
+      incidenceGraphId: support.incidenceGraphId,
+      maxCandidateDegree: support.maxCandidateDegree,
+      candidateCount: support.candidates.length,
+      rowCount: support.rows.length,
+      audit: support.audit
+    }));
   const constructionPatterns: LanguagePatternRecord[] = [];
   const warnings: string[] = [];
   const promotion = evaluateConstructionPromotion({
@@ -153,13 +489,44 @@ export function compileLanguageTrainingBatch(input: {
     patterns: uniquePatterns([
       ...memories.flatMap(memory => memory.patterns),
       ...constructionPatterns,
+      ...reversibleConstructionPatterns,
+      ...pairedAntiUnifiedConstructionPatterns,
+      ...optionalNullRealizationPatterns,
       ...(batch.additionalPatterns ?? [])
     ]),
     semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
     constructionPatterns,
+    reversibleConstructionPatterns,
+    pairedAntiUnifiedConstructionPatterns,
+    optionalNullRealizationPatterns,
     graphSurfaceAlignmentSummaries: sets
       .map(item => item.set.alignmentSummary)
       .filter((summary): summary is JsonValue => summary !== undefined),
+    sparseAlignmentCandidateSupports,
+    sparseAlignmentCandidateSummaries,
+    alignmentCommunityRoutings,
+    coarseToFineAlignments,
+    alignmentCalibrationModel,
+    alignmentPromotionModel,
+    alignmentHeldoutEvaluation,
+    reversibleConstructions: reversibleConstructionCompilation.constructions,
+    reversibleConstructionRejections:
+      reversibleConstructionCompilation.rejections,
+    pairedAntiUnifiedConstructions:
+      pairedAntiUnifiedCompilation.constructions,
+    admittedPairedAntiUnifiedConstructions:
+      admittedPairedConstructions.map(row => row.construction),
+    graphCorrelatedVariabilityModel,
+    optionalNullRealizationModel,
+    pairedAntiUnifiedConstructionRejections:
+      pairedAntiUnifiedCompilation.rejections,
+    typedNullCostModel,
+    populationOrderingModel,
+    crossDocumentAlignmentModel,
+    sparseTransportPlans,
+    transportEvidenceAllocations,
+    alignmentAlternativeSets,
+    alternativeTransportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
     rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
     constructionPromotion: promotion.report,
@@ -177,7 +544,120 @@ export function compileLanguageTrainingBatch(input: {
       graphSurfaceAlignment: sets
         .map(item => item.set.alignmentSummary)
         .filter(summary => summary !== undefined) as JsonValue[],
+      sparseTypedIncidenceAlignment: {
+        targetIndexId: sparseAlignment?.targetIndex.id ?? null,
+        incidenceGraphId: sparseAlignment?.incidenceGraph.id ?? null,
+        typedNullCostModel: typedNullCostModel
+          ? {
+            id: typedNullCostModel.id,
+            schema: typedNullCostModel.schema,
+            targetIndexId: typedNullCostModel.targetIndexId,
+            trainingSupportIds: typedNullCostModel.trainingSupportIds,
+            supervision: typedNullCostModel.supervision,
+            calibrated: typedNullCostModel.calibrated,
+            surface: typedNullCostModel.surface,
+            graph: typedNullCostModel.graph,
+            audit: typedNullCostModel.audit
+          }
+          : null,
+        populationOrderingModel: populationOrderingModel
+          ? {
+            id: populationOrderingModel.id,
+            schema: populationOrderingModel.schema,
+            trainingSupportIds: populationOrderingModel.trainingSupportIds,
+            estimateCount: populationOrderingModel.estimates.length,
+            globalBackoffCount: populationOrderingModel.globalBackoff.length,
+            audit: populationOrderingModel.audit
+          }
+          : null,
+        crossDocumentAlignmentModel: crossDocumentAlignmentModel
+          ? {
+            id: crossDocumentAlignmentModel.id,
+            schema: crossDocumentAlignmentModel.schema,
+            sourceFamilyIds: crossDocumentAlignmentModel.sourceFamilyIds,
+            projectionCount: crossDocumentAlignmentModel.projections.length,
+            estimateCount: crossDocumentAlignmentModel.estimates.length,
+            pairwiseDistances: crossDocumentAlignmentModel.pairwiseDistances,
+            audit: crossDocumentAlignmentModel.audit
+          }
+          : null,
+        supportCount: sparseAlignmentCandidateSupports.length,
+        communityRoutings: alignmentCommunityRoutings.map(routing => ({
+          id: routing.id,
+          parentSupportId: routing.parentSupportId,
+          routedSupportId: routing.routedSupport.id,
+          communityCount: routing.communities.length,
+          omittedCandidateCount: routing.routes.reduce(
+            (sum, route) => sum + route.omittedCandidateCount,
+            0
+          ),
+          audit: routing.audit
+        })),
+        candidateCount: sparseAlignmentCandidateSupports.reduce(
+          (sum, support) => sum + support.candidates.length,
+          0
+        ),
+        summaries: sparseAlignmentCandidateSummaries,
+        transportPlans: sparseTransportPlans.map(plan => ({
+          id: plan.id,
+          status: plan.status,
+          transportedCellCount: plan.cells.length,
+          iterations: plan.iterations.length,
+          finalObjective: plan.iterations.at(-1)?.objective ?? null,
+          audit: plan.audit
+        })),
+        alignmentAlternativeSets: alignmentAlternativeSets.map(set => ({
+          id: set.id,
+          hypothesisCount: set.hypotheses.length,
+          posteriorScope: set.posteriorScope,
+          exactGlobalPosteriorClaimed: set.exactGlobalPosteriorClaimed,
+          omittedSearchBranchCount: set.omittedSearchBranchCount,
+          audit: set.audit
+        })),
+        coarseToFineAlignments: coarseToFineAlignments.map(result => ({
+          id: result.id,
+          routingId: result.routingId,
+          primaryPlanId: result.primaryPlanId,
+          alternativeSetId: result.alternativeSetId,
+          termination: result.termination,
+          finalObjective: result.finalObjective,
+          work: result.work,
+          audit: result.audit
+        })),
+        alignmentCalibrationModel,
+        alignmentPromotionModel,
+        alignmentHeldoutEvaluation,
+        reversibleConstructions: reversibleConstructionCompilation.constructions,
+        reversibleConstructionRejections:
+          reversibleConstructionCompilation.rejections,
+        pairedAntiUnifiedConstructions:
+          pairedAntiUnifiedCompilation.constructions,
+        admittedPairedAntiUnifiedConstructions:
+          admittedPairedConstructions.map(row => row.construction),
+        graphCorrelatedVariabilityModel,
+        optionalNullRealizationModel,
+        pairedAntiUnifiedConstructionRejections:
+          pairedAntiUnifiedCompilation.rejections,
+        evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
+          id: allocation.id,
+          status: allocation.status,
+          totalTransportMass: allocation.totalTransportMass,
+          totalAllocatedMass: allocation.totalAllocatedMass,
+          conservationResidual: allocation.conservationResidual,
+          unresolvedCandidateCount: allocation.unresolvedCandidateIds.length,
+          audit: allocation.audit
+        })),
+        alternativeEvidenceAllocationCount:
+          alternativeTransportEvidenceAllocations.length
+      },
       compiledConstructions: constructionPatterns.length,
+      compiledReversibleConstructions: reversibleConstructionPatterns.length,
+      compiledPairedAntiUnifiedConstructions:
+        pairedAntiUnifiedCompilation.constructions.length,
+      admittedPairedAntiUnifiedConstructions:
+        admittedPairedConstructions.length,
+      compiledOptionalNullRealizationPatterns:
+        optionalNullRealizationPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
   };

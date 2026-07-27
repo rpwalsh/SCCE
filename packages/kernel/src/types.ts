@@ -235,6 +235,13 @@ export interface GraphNode {
   informationLabel?: InformationLabel;
 }
 
+export type GraphTemporalScope =
+  | { status: "known"; validFrom: number; validTo?: number; provenance?: JsonValue }
+  | { status: "unknown"; uncertainty: number; provenance?: JsonValue }
+  | { status: "atemporal"; provenance?: JsonValue }
+  /** Read compatibility only; production compilation audits reject this shape. */
+  | { status?: undefined; validFrom: number; validTo?: number };
+
 export interface GraphEdge {
   id: EdgeId;
   source: NodeId;
@@ -242,7 +249,7 @@ export interface GraphEdge {
   relationId: RelationId;
   alpha: number;
   weight: number;
-  temporalScope: { validFrom: number; validTo?: number };
+  temporalScope: GraphTemporalScope;
   evidenceIds: EvidenceId[];
   createdAt: number;
   updatedAt: number;
@@ -251,9 +258,22 @@ export interface GraphEdge {
 }
 
 export interface Hyperedge {
+  schema: "scce.hyperedge.v2";
   id: HyperedgeId;
   relationId: RelationId;
+  participantPorts: Array<{
+    portId: string;
+    roleId: string;
+    nodeId: NodeId | null;
+    valueKind: string;
+    realization: "observed" | "omitted";
+    evidenceIds: EvidenceId[];
+  }>;
+  /** Derived retrieval index over observed participant ports, never role semantics. */
   memberNodeIds: NodeId[];
+  qualifiers: JsonValue;
+  modality: JsonValue;
+  evidenceIds: EvidenceId[];
   weightVector: JsonValue;
   temporalScope: JsonValue;
   provenanceRefs: string[];
@@ -1041,7 +1061,13 @@ export interface IngestResult {
   evidence: number;
   graphNodes: number;
   graphEdges: number;
+  graphHyperedges: number;
   languageProfiles: number;
+  relationCandidates: number;
+  promotedRelations: number;
+  relationPromotionModelId: string;
+  opaqueRoleModelId: string;
+  roleSurfaceOrderModelId: string;
   typedObservations: Record<string, number>;
   observationRoutes: Record<string, number>;
   skipped: Array<{ path: string; reason: string }>;
@@ -1158,6 +1184,17 @@ export interface OwnerInput {
   text: string;
   metadata?: JsonValue;
   requestedAuthority?: RequestedAuthority;
+  /**
+   * Trusted in-process execution control. This is never accepted from JSON
+   * request metadata and is deliberately excluded from durable input state.
+   */
+  runtimeControl?: {
+    signal?: AbortSignal;
+    onProgress?: (progress: {
+      phase: string;
+      observedAtMonotonicMs: number;
+    }) => void;
+  };
 }
 
 export interface RuntimeWarmupInput {

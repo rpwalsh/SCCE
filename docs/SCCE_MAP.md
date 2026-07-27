@@ -69,6 +69,78 @@ answer lane.
   uncalibrated.
 - `relation-potential.ts`: source-neutral edge projection, three-way-disjoint fitting,
   Platt calibration, holdout metrics, and strict content-addressed model validation.
+- `structured-semantic-candidate.ts`, `relation-promotion.ts`: source-structured
+  relation candidates followed by source-family-disjoint two-part codelength
+  promotion, held-out recovery, dependency-family duplicate collapse and
+  shuffled/duplicate/random controls.
+- `typed-ingest.ts`, `types.ts`: `scce.hyperedge.v2` materialization with arbitrary
+  observed/omitted participant ports and separate qualifier, modality, time and
+  evidence fields.
+- `opaque-role-induction.ts`: content-addressed opaque role populations selected by
+  source-disjoint held-out MDL and applied to promoted hyperedge occurrences.
+- `role-surface-order.ts`: position-free semantic-role probabilities plus separately
+  conditioned surface order, omission and repetition probabilities.
+- `typed-incidence-graph.ts`, `field.ts`: lossless hyperedge-to-incidence projection
+  and reversible arbitrary-arity alpha/PPF activation.
+- `sparse-alignment-candidates.ts`: bounded compiled target postings and
+  \(O(|S|K_\Pi)\) graph/surface candidate support over typed incidences, consumed by
+  ordinary ingestion and explicit training without a dense pair matrix.
+- `sparse-fused-transport.ts`: unbalanced sparse Sinkhorn plus bounded local fused
+  typed-structure correction and exact-anchor mass reservation, with complete
+  objective/residual/budget traces and no global-optimum claim.
+- `transport-evidence-allocation.ts`: exact normalized evidence allocation
+  \(R_{uv\epsilon}=\Pi_{uv}q(\epsilon\mid u,v)\) with cell and plan conservation
+  residuals and no overlapping-evidence mass duplication.
+- `typed-null-alignment.ts`: learned source-exact costs for typed surface-null and
+  graph-implicit transport mass, without grammatical or language-name routing.
+- `population-ordering.ts`: population-posterior-conditioned robust relative-order
+  estimates over reusable typed port keys, learned from exact anchors and consumed
+  by sparse transport.
+- `cross-document-alignment.ts`: common graph-port projections and source-family-
+  aware cross-document correction for two-pass sparse transport.
+- `alignment-alternatives.ts`: bounded retained sparse plans, restricted Gibbs
+  weights, evidence-allocation identities and revision lineage.
+- `coarse-to-fine-alignment.ts`: exact-anchor-preserving structural quotient
+  routing with upper bounds and the complete work-budgeted sparse alignment trace.
+- `alignment-heldout-evaluation.ts`: automatic dependency-family cross-fit,
+  candidate-recall ceiling, graph recovery and evaluation-artifact generation.
+- `alignment-calibration.ts`: empirical held-out correctness calibration with
+  explicit source-family separation and insufficient-data refusal.
+- `alignment-promotion.ts`: independent held-out promotion decisions separated
+  from transport selection and confidence calibration; copied source families
+  cannot self-validate.
+- `reversible-construction.ts`: promoted typed graph ports, coordinate-bearing
+  surface slots and one source-exact program with executable interpretation and
+  realization, persistence, hydration and cycle checking.
+- `paired-anti-unification.ts`: Item-27 paired least-general generalization over
+  promoted exact constructions, with localized graph-correlated surface variables,
+  executable typed bindings, persistence and hydration.
+- `graph-correlated-variability.ts`: Item-28 cross-family surface/graph delta
+  dependence, predictive-gain and shuffled-null gate required before Item-27
+  artifacts can persist or hydrate.
+- `optional-null-realization.ts`: Item-29 source-family-collapsed conditional
+  realization state, held-out calibration, durable model merging and
+  graph/discourse-supported Mouth omission.
+- `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
+  `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
+- `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.
+- `surface-lattice.ts`: Phase-2 proposal quotient, occurrence/class separation, and
+  exact byte/code-point/grapheme partition conservation; Phase-3 training consumes
+  independent source anchors or packed-forest marginals rather than detector labels.
+- `boundary-estimator.ts`, `segmentation-forest.ts`: versioned mergeable boundary
+  statistics, source-disjoint held-out calibration, exact forward/backward
+  marginals, globally normalized traced forest energy, explicit omitted mass,
+  bounded resume state, and no fixed recurrence/predictability production credits.
+- `segmentation-population.ts`: generative document-NLL population posteriors and
+  description-length plus per-child held-out non-regression merge admissibility.
+- `join-program.ts`: opaque source-exact joins conditioned on lattice/derivation,
+  construction, discourse, boundary and population context; uncertainty remains an
+  explicit runtime state rather than a global join guess.
+- `structured-semantic-candidate.ts`, `typed-ingest.ts`: channel-separated candidates,
+  decomposed provenance, opaque induced identities, isolated proposal state, and
+  exact-evidence-gated zero-arity source-state/source-event extraction.
+- `relation-promotion.ts`: channel-local, source-family-disjoint held-out promotion
+  evaluation.
 - `graph-analytics.ts`, `causal*.ts`, `ccr.ts`: additional graph and causal analysis.
 
 The PowerWalk fitter publishes its candidate only when fit and untouched,

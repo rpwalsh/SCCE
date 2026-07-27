@@ -387,9 +387,21 @@ function graphHyperedge(
   provenanceRefs: string[] = []
 ): Hyperedge {
   return {
+    schema: "scce.hyperedge.v2",
     id: id as Hyperedge["id"],
     relationId: "relation:co-occurs" as Hyperedge["relationId"],
+    participantPorts: members.map((node, index) => ({
+      portId: `port.${index}`,
+      roleId: "role.fixture",
+      nodeId: node.id,
+      valueKind: "fixture",
+      realization: "observed",
+      evidenceIds: provenanceRefs as Hyperedge["evidenceIds"]
+    })),
     memberNodeIds: members.map(node => node.id),
+    qualifiers: {},
+    modality: {},
+    evidenceIds: provenanceRefs as Hyperedge["evidenceIds"],
     weightVector: { alpha: potential },
     temporalScope: { validFrom: 1 },
     provenanceRefs,

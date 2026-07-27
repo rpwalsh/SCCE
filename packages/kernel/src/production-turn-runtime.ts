@@ -89,7 +89,12 @@ import {
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
 import { formatSurfaceMessage, localeFromMetadata } from "./localization.js";
-import { createDeterministicMouth, createMouth, type SpokenOutput } from "./mouth.js";
+import {
+  createDeterministicMouth,
+  createMouth,
+  type MouthSemanticInput,
+  type SpokenOutput
+} from "./mouth.js";
 import { createMultilingualAcquisitionEngine } from "./multilingual-acquisition.js";
 import {
   createTypedTemporalWalkEngine,
@@ -393,6 +398,16 @@ export function createProductionTurnRuntime(options: {
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
       const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
+        input.runtimeControl?.onProgress?.({
+          phase,
+          observedAtMonotonicMs: performance.now()
+        });
+        if (input.runtimeControl?.signal?.aborted) {
+          const reason = input.runtimeControl.signal.reason;
+          throw reason instanceof Error
+            ? reason
+            : new Error(`runtime turn aborted at ${phase}`);
+        }
         const decision = runtimeDeadline?.checkpoint(phase, requiredMs);
         const deadlineMetadata = runtimeDeadline?.metadata;
         if (decision && deadlineMetadata) {
@@ -432,6 +447,7 @@ export function createProductionTurnRuntime(options: {
           sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null
         }
       });
+      deadlineCheckpoint("runtime.seed.surface_cluster.complete", 0);
       const selectedSurfaceProfile = selectedSurfaceCluster?.members[0];
       const authorityLanguageStarted = Date.now();
       const baseAuthorityLanguage = await evaluationComponent(
@@ -457,6 +473,7 @@ export function createProductionTurnRuntime(options: {
           semanticFrames: baseAuthorityLanguage.semanticFrames.length
         }
       });
+      deadlineCheckpoint("runtime.seed.language.complete", 0);
       const exactRequestFramesStarted = Date.now();
       const exactRequestFrames = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
@@ -467,6 +484,7 @@ export function createProductionTurnRuntime(options: {
         durationMs: Date.now() - exactRequestFramesStarted,
         counts: { semanticFrames: exactRequestFrames.length }
       });
+      deadlineCheckpoint("runtime.seed.request_frames.complete", 0);
       const authorityLanguage = exactRequestFrames.length
         ? {
           ...baseAuthorityLanguage,
@@ -691,18 +709,30 @@ export function createProductionTurnRuntime(options: {
       if (sourceAnchorAudit.required) graph = graphFilteredToEvidence(graph, sourceAnchorAudit.evidence);
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
       const semanticRetrievalStarted = Date.now();
+      const compiledMemorySlice = semanticMemory.buildSlice({
+        evidence: admissibleEvidence,
+        nodes: graph.nodes
+      });
       const semanticRetrieval = evaluationComponent(
         "learned-semantics",
         "retrieval.learned-semantics",
         () => ({
           retrieval: semanticMemory.search({
             query: { text: input.text, features: retrievalFeatures, limit: 80 },
-            slice: semanticMemory.buildSlice({ evidence: admissibleEvidence, nodes: graph.nodes }),
+            slice: compiledMemorySlice,
             corpusRows: { evidenceRows: Math.max(1, admissibleEvidence.length), nodeRows: Math.max(1, graph.nodes.length), edgeRows: Math.max(1, graph.edges.length) },
             calibrationModels,
             calibrationTaskClass
           }),
-          roleRetrieval: hybridRecall({ query: input.text, evidence: admissibleEvidence, graph, hasher, limit: 80, calibrationModels, calibrationTaskClass })
+          roleRetrieval: hybridRecall({
+            query: input.text,
+            index: compiledMemorySlice.corpusIndex,
+            graph,
+            hasher,
+            limit: 80,
+            calibrationModels,
+            calibrationTaskClass
+          })
         }),
         () => disabledLearnedSemanticRetrieval(input.text, retrievalFeatures, hasher)
       );
@@ -751,6 +781,7 @@ export function createProductionTurnRuntime(options: {
         text: retrievalText,
         nodes: graph.nodes,
         edges: graph.edges,
+        hyperedges: graph.hyperedges,
         previous: runtimeState.lastField,
         evaluation: fieldEvaluation,
         seedPriors: [...semanticSeedAnchors, ...walkSeedExpansion.seeds]
@@ -791,6 +822,7 @@ export function createProductionTurnRuntime(options: {
         support: discourseObjectTrace ? { discourseObject: discourseObjectTrace, queryConcatenationUsed: false } : { queryConcatenationUsed: false }
       });
       markTiming("graphSliceMs");
+      deadlineCheckpoint("runtime.graph_slice.complete", 0);
       const factualProofRequired = requestedAuthority !== "creative";
       const supportCandidates = factualProofRequired
         ? runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit))
@@ -974,6 +1006,7 @@ export function createProductionTurnRuntime(options: {
         ?? selectedTemporalCandidateEvidence;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       markTiming("proofMs");
+      deadlineCheckpoint("runtime.proof.complete", 0);
       const semanticProofContradiction = typeof semanticProof.contradiction === "number"
         && Number.isFinite(semanticProof.contradiction)
         ? semanticProof.contradiction
@@ -1648,6 +1681,7 @@ export function createProductionTurnRuntime(options: {
         }
       });
       markTiming("candidateMs");
+      deadlineCheckpoint("runtime.candidates.complete", 0);
       const answerEntailment = selectedCandidateEntailment(answerEntailmentSeed, judged.selected);
       const selectedInvention = selectedInventionForCandidate(judged.selected, inventionCandidates);
       await deps.storage.proofs.putProof(answerEntailment.proof);
@@ -1804,6 +1838,7 @@ export function createProductionTurnRuntime(options: {
       if (construct.program) events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramGraphBuilt", payload: construct.program })));
       if (construct.artifacts.length) events.push(await append(eventFactory.create({ episodeId, typeId: "FileGraphBuilt", payload: { files: construct.artifacts.map(file => ({ path: file.path, contentHash: file.contentHash, role: file.role })) } })));
       markTiming("planningMs");
+      deadlineCheckpoint("runtime.planning.complete", 0);
       const mouthStarted = Date.now();
       const speakInput = {
         construct: spokenConstructGraph,
@@ -1841,7 +1876,11 @@ export function createProductionTurnRuntime(options: {
               sourceId: judged.selected.proposalId
             }]
           }
-          : undefined
+          : typedSemanticInputForMouth({
+            construct: spokenConstructGraph,
+            graph,
+            authority: requestedAuthority
+          })
       };
       const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", 750);
       let spoken = await evaluationComponent(
@@ -1852,6 +1891,7 @@ export function createProductionTurnRuntime(options: {
           : mouth.speak(speakInput),
         () => deterministicMouth.speak(speakInput)
       );
+      deadlineCheckpoint("runtime.mouth.primary.complete", 0);
       const emptyAuthoritySurface = !spoken.text.trim()
         && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         && !runtimeDiagnosticRequested;
@@ -2132,6 +2172,7 @@ export function createProductionTurnRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { assistantForce: runtimeCoherence.assistantForceAfter, assistantForceBeforeCoherence: mouthAssistantForce.force, assistantForceTrace: mouthAssistantForce.audit, surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, evidenceRefs: spoken.evidenceRefs, uncertainty: spoken.uncertainty, answerRevision: answerRevisionTrace ?? null, runtimeCoherence: runtimeCoherenceTrace } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: { ...emission, assistantForceTrace: emissionAssistantForce.audit, runtimeCoherence: runtimeCoherenceTrace } })));
       markTiming("validationMs");
+      deadlineCheckpoint("runtime.validation.complete", 0);
       const actionGraph = actionGraphBuilder.build({ episodeId, plans: capabilityPlans, emission, policy });
       const afterTurnMaintenance = afterTurnMaintenanceDecision({ translationTarget, construct, capabilityPlans, assistantForce: emission.assistantForce });
       const incrementalLearningDisabled = deps.evaluationCondition?.flags.disableIncrementalLearning === true;
@@ -2452,4 +2493,89 @@ async function dispatchBuildTestThroughExecutive(input: {
 function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {
   if (value) return value;
   throw new Error(`hydrated runtime unavailable: required learned surface language for ${context}`);
+}
+
+export function typedSemanticInputForMouth(input: {
+  construct: ConstructGraph;
+  graph: GraphSnapshot;
+  authority: MouthSemanticInput["authority"];
+}): MouthSemanticInput | undefined {
+  const nodes = (input.construct as unknown as {
+    nodes?: Array<{ kind?: string; metadata?: JsonValue }>;
+  }).nodes ?? [];
+  const selectedFacts = nodes.flatMap(node => {
+    if (node.kind !== "construct:semantic_answer") return [];
+    const value = jsonRecord(node.metadata ?? {});
+    return Array.isArray(value.selectedFacts)
+      ? value.selectedFacts.map(jsonRecord)
+      : [];
+  });
+  if (selectedFacts.length !== 1) return undefined;
+  const fact = selectedFacts[0]!;
+  const sourceNodeId = kernelString(fact.sourceNodeId);
+  const targetNodeId = kernelString(fact.targetNodeId);
+  const relationId = kernelString(fact.relationId);
+  const subject = kernelString(fact.subject);
+  const object = kernelString(fact.object);
+  if (!sourceNodeId || !targetNodeId || !relationId || !subject || !object) {
+    return undefined;
+  }
+  const matching = input.graph.hyperedges.filter(hyperedge =>
+    String(hyperedge.relationId) === relationId
+    && hyperedge.participantPorts.some(port =>
+      String(port.nodeId ?? "") === sourceNodeId)
+    && hyperedge.participantPorts.some(port =>
+      String(port.nodeId ?? "") === targetNodeId));
+  if (matching.length !== 1) return undefined;
+  const hyperedge = matching[0]!;
+  const sourcePorts = hyperedge.participantPorts.filter(port =>
+    String(port.nodeId ?? "") === sourceNodeId
+    && port.realization === "observed"
+    && Boolean(port.roleId));
+  const targetPorts = hyperedge.participantPorts.filter(port =>
+    String(port.nodeId ?? "") === targetNodeId
+    && port.realization === "observed"
+    && Boolean(port.roleId));
+  if (sourcePorts.length !== 1 || targetPorts.length !== 1) return undefined;
+  const sourcePort = sourcePorts[0]!;
+  const targetPort = targetPorts[0]!;
+  const factEvidenceIds = Array.isArray(fact.evidenceIds)
+    ? fact.evidenceIds
+    : [];
+  const evidenceIds = uniqueKernelStrings([
+    ...factEvidenceIds.flatMap(value =>
+      typeof value === "string" ? [value] : []),
+    ...hyperedge.evidenceIds.map(String)
+  ]);
+  const sourceSlotId = `mouth.slot.graph.${sourceNodeId}.source`;
+  const targetSlotId = `mouth.slot.graph.${targetNodeId}.target`;
+  return {
+    schema: "scce.mouth.semantic_input.v1",
+    authority: input.authority,
+    slots: [
+      {
+        id: sourceSlotId,
+        roleId: String(sourcePort.roleId),
+        value: subject,
+        evidenceIds: evidenceIds as MouthSemanticInput["slots"][number]["evidenceIds"],
+        sourceId: sourceNodeId
+      },
+      {
+        id: targetSlotId,
+        roleId: String(targetPort.roleId),
+        value: object,
+        evidenceIds: evidenceIds as MouthSemanticInput["slots"][number]["evidenceIds"],
+        sourceId: targetNodeId
+      }
+    ],
+    relations: [{
+      id: `mouth.relation.graph.${hyperedge.id}`,
+      relationId,
+      sourceSlotId,
+      targetSlotId,
+      evidenceIds: evidenceIds as NonNullable<
+        MouthSemanticInput["relations"]
+      >[number]["evidenceIds"]
+    }]
+  };
 }

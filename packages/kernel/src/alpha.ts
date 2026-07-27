@@ -1,6 +1,7 @@
 import type { AlphaFactors, AlphaNormalizationDiagnostics, AlphaRelation, AlphaRelationState, AlphaTrace, GraphEdge, GraphNode } from "./types.js";
 import { clamp01, mean } from "./primitives.js";
 import { laplacian } from "./math.js";
+import { evaluateGraphTemporalScope } from "./graph-temporal.js";
 
 export type AlphaThresholds = AlphaTrace["thresholds"];
 
@@ -253,8 +254,10 @@ export function relationStrength(factors: AlphaFactors): number {
 
 function edgeFactors(edge: GraphEdge, now: number): AlphaFactors {
   const ageMs = Math.max(0, now - edge.updatedAt);
-  const inValidityInterval = edge.temporalScope.validFrom <= now && (edge.temporalScope.validTo === undefined || now <= edge.temporalScope.validTo);
-  const temporalFit = inValidityInterval ? Math.exp(-ageMs / (1000 * 60 * 60 * 24 * 90)) : 0;
+  const temporal = evaluateGraphTemporalScope(edge.temporalScope, now);
+  const temporalFit = temporal.fit * (temporal.status === "valid"
+    ? Math.exp(-ageMs / (1000 * 60 * 60 * 24 * 90))
+    : 1);
   const metadata = edge.metadata as { contradiction?: unknown; modalityAgreement?: unknown; utility?: unknown };
   const contradictionPenalty = finiteFactor(metadata.contradiction, 0);
   return {

@@ -154,12 +154,58 @@ describe("turn session metadata projection", () => {
     const runtime = metadata.runtime as Record<string, unknown>;
     expect(runtime.fastLocalEvidenceAnswer).toBe(true);
     expect(runtime.productionBoundedAnswer).toBe(true);
-    expect(runtime.deadline).toMatchObject({
-      schema: "scce.runtime_deadline.v1",
+    expect(runtime.initialResponseDeadline).toMatchObject({
+      schema: "scce.initial_visible_response.v1",
       clock: "node.performance.v1",
-      budgetMs: 5_000,
-      responseReserveMs: 1_000
+      budgetMs: 5_000
     });
-    expect(runtime.deadline).not.toMatchObject({ schema: "untrusted.deadline" });
+    expect(runtime).not.toHaveProperty("deadline");
+
+    const streamed = await fetch(`http://127.0.0.1:${address.port}/api/turn?stream=1`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/x-ndjson"
+      },
+      body: JSON.stringify({
+        text: "Continue the session",
+        requestedAuthority: "factual",
+        sessionId: "session.fixture"
+      })
+    });
+    const frames = (await streamed.text())
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(streamed.headers.get("content-type")).toContain("application/x-ndjson");
+    expect(frames[0]).toMatchObject({
+      schema: "scce.turn_stream.v1",
+      type: "accepted",
+      initialVisibleResponseDeadlineMs: 5_000
+    });
+    expect(frames[0]?.taskId).toEqual(expect.any(String));
+    expect(frames[0]?.streamUrl).toContain("/api/turn/task/");
+    expect(frames[0]?.cancelUrl).toContain("/api/turn/task/");
+    expect(frames.at(-1)).toMatchObject({
+      schema: "scce.turn_stream.v1",
+      type: "error",
+      status: 500
+    });
+
+    const taskId = String(frames[0]?.taskId);
+    const taskStatus = await fetch(`http://127.0.0.1:${address.port}/api/turn/task/${encodeURIComponent(taskId)}`);
+    expect(taskStatus.status).toBe(200);
+    await expect(taskStatus.json()).resolves.toMatchObject({
+      schema: "scce.turn_task.v1",
+      taskId,
+      status: "failed"
+    });
+
+    const replay = await fetch(`http://127.0.0.1:${address.port}/api/turn/task/${encodeURIComponent(taskId)}/stream?after=1`, {
+      headers: { accept: "application/x-ndjson" }
+    });
+    const replayFrames = (await replay.text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(replayFrames.every(frame => Number(frame.sequence) > 1)).toBe(true);
+    expect(replayFrames.at(-1)).toMatchObject({ type: "error", taskId });
   });
 });

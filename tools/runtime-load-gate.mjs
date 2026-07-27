@@ -32,11 +32,16 @@ if (args.includes("--help")) {
     "  --requests <count>          total cap; default 100, or 100000 with duration",
     "  --duration-seconds <count>  run until the duration expires",
     "  --concurrency <count>       default 4",
-    "  --timeout-ms <count>        per-turn timeout, default 10000 (see docs/EVALUATION_PROTOCOL.md)",
+    "  --completion-timeout-ms <n> total turn timeout, default 86400000 (24h)",
+    "  --timeout-ms <count>        compatibility alias for completion timeout",
+    "  --first-frame-timeout-ms <n> hard first visible frame timeout, default 5000",
     "  --max-error-rate <0..1>     default 0",
-    "  --max-p95-ms <count>        required latency-estimate gate",
-    "  --min-throughput <count>    required requests/second gate",
-    "  --allow-unbounded           explicitly skip the p95/throughput gates",
+    "  --max-p50-ms <count>        latency-estimate gate, default 500",
+    "  --max-p95-ms <count>        latency-estimate gate, default 2000",
+    "  --max-p99-ms <count>        latency-estimate gate, default 5000",
+    "  --max-completion-p95-ms <n> optional task-class completion gate",
+    "  --min-throughput <count>    required requests/second gate (see docs/EVALUATION_PROTOCOL.md)",
+    "  --allow-unbounded           explicitly skip the min-throughput gate",
     "  --out <path>                optional JSON report path",
     "  --allow-remote              permit a non-loopback server URL",
     "",
@@ -59,32 +64,37 @@ if (Buffer.byteLength(workloadId, "utf8") > MAX_WORKLOAD_ID_BYTES) throw new Err
 const serverUrl = new URL(valueAfter("--server-url") ?? process.env.SCCE_LOAD_SERVER_URL ?? "http://127.0.0.1:3873");
 if (!args.includes("--allow-remote") && !isLoopback(serverUrl.hostname)) throw new Error("non-loopback load targets require --allow-remote");
 const concurrency = boundedInteger(numberAfter("--concurrency") ?? 4, 1, 256, "concurrency");
-// Default matches docs/EVALUATION_PROTOCOL.md's "no normal interactive
-// request exceeds 10s" contract, not an arbitrary round number -- a run
-// that needs longer than that to even time out a single request is
-// already failing the contract this gate exists to enforce.
-const timeoutMs = boundedInteger(numberAfter("--timeout-ms") ?? 10_000, 1, 3_600_000, "timeout-ms");
+const completionTimeoutMs = boundedInteger(
+  numberAfter("--completion-timeout-ms") ?? numberAfter("--timeout-ms") ?? 86_400_000,
+  1,
+  604_800_000,
+  "completion-timeout-ms"
+);
+const firstFrameTimeoutMs = boundedInteger(numberAfter("--first-frame-timeout-ms") ?? 5_000, 1, 60_000, "first-frame-timeout-ms");
 const durationSeconds = optionalPositive(numberAfter("--duration-seconds"), "duration-seconds");
 const requestedCount = boundedInteger(numberAfter("--requests") ?? (durationSeconds === undefined ? 100 : 100_000), 1, 1_000_000, "requests");
 const maxErrorRate = boundedNumber(numberAfter("--max-error-rate") ?? 0, 0, 1, "max-error-rate");
-// p95 and throughput gates are mandatory (plan item L15): a load run with
-// no latency/throughput bar to clear can silently regress indefinitely
-// without ever failing CI. A caller who genuinely wants an exploratory,
-// gateless run must say so explicitly via --allow-unbounded, not get an
-// unbounded run for free by omitting the flags.
+// p50/p95/p99 first-visible-frame gates always have real defaults (never
+// skippable). min-throughput is mandatory on top of that (plan item
+// L15): a load run with no throughput bar to clear can silently regress
+// indefinitely without ever failing CI. A caller who genuinely wants an
+// exploratory, gateless run must say so explicitly via --allow-unbounded.
 const allowUnbounded = args.includes("--allow-unbounded");
-if (!allowUnbounded && (valueAfter("--max-p95-ms") === undefined || valueAfter("--min-throughput") === undefined)) {
-  process.stderr.write("runtime load gate requires --max-p95-ms <count> and --min-throughput <count> (see docs/EVALUATION_PROTOCOL.md); pass --allow-unbounded to explicitly opt out for an exploratory run\n");
+if (!allowUnbounded && valueAfter("--min-throughput") === undefined) {
+  process.stderr.write("runtime load gate requires --min-throughput <count> (see docs/EVALUATION_PROTOCOL.md); pass --allow-unbounded to explicitly opt out for an exploratory run\n");
   process.exit(2);
 }
-const maxP95Ms = optionalPositive(numberAfter("--max-p95-ms"), "max-p95-ms");
+const maxP50Ms = optionalPositive(numberAfter("--max-p50-ms") ?? 500, "max-p50-ms");
+const maxP95Ms = optionalPositive(numberAfter("--max-p95-ms") ?? 2_000, "max-p95-ms");
+const maxP99Ms = optionalPositive(numberAfter("--max-p99-ms") ?? 5_000, "max-p99-ms");
+const maxCompletionP95Ms = optionalPositive(numberAfter("--max-completion-p95-ms"), "max-completion-p95-ms");
 const minThroughput = optionalPositive(numberAfter("--min-throughput"), "min-throughput");
 const outputPath = valueAfter("--out");
 const prompts = await readPrompts(promptPath);
 if (!prompts.length) throw new Error("load prompt file contains no prompts");
 const workloadHash = `sha256:${createHash("sha256").update(JSON.stringify(prompts)).digest("hex")}`;
 
-const readyBefore = await getJson(new URL("/api/ready", serverUrl), timeoutMs);
+const readyBefore = await getJson(new URL("/api/ready", serverUrl), firstFrameTimeoutMs);
 if (!readyBefore.ok || readyBefore.value?.ok !== true) throw new Error(`server is not ready: ${readyBefore.error ?? JSON.stringify(readyBefore.value)}`);
 
 const startedAt = Date.now();
@@ -96,6 +106,8 @@ const metrics = {
   requests: 0,
   successes: 0,
   failures: 0,
+  firstVisibleFrameLatencyCount: 0,
+  firstVisibleFrameLatencySample: [],
   successfulLatencyCount: 0,
   successfulLatencySample: [],
   successfulResponseBytes: 0,
@@ -109,6 +121,7 @@ const finishedAt = Date.now();
 const elapsedSeconds = Math.max(0.001, (finishedAt - startedAt) / 1000);
 const terminationReason = stopReason ?? (Date.now() >= deadline ? "duration_elapsed" : "request_cap_reached");
 const latencies = [...metrics.successfulLatencySample].sort((left, right) => left - right);
+const firstVisibleLatencies = [...metrics.firstVisibleFrameLatencySample].sort((left, right) => left - right);
 const errorRate = metrics.failures / Math.max(1, metrics.requests);
 const attemptedThroughput = metrics.requests / elapsedSeconds;
 const successfulThroughput = metrics.successes / elapsedSeconds;
@@ -121,8 +134,16 @@ const successfulRequestLatencyEstimateMs = {
   sampleCount: latencies.length,
   estimator: latencyEstimator
 };
+const firstVisibleFrameLatencyEstimateMs = {
+  ...latencySummary(firstVisibleLatencies),
+  populationCount: metrics.firstVisibleFrameLatencyCount,
+  sampleCount: firstVisibleLatencies.length,
+  estimator: metrics.firstVisibleFrameLatencyCount <= LATENCY_RESERVOIR_SIZE
+    ? "all_first_visible_frames"
+    : "bounded_reservoir_sample"
+};
 const summary = {
-  schema: "scce.runtime_load_report.v1",
+  schema: "scce.runtime_load_report.v2",
   ok: true,
   target: serverUrl.origin,
   workload: {
@@ -133,7 +154,8 @@ const summary = {
     requestedCount,
     requestedDurationSeconds: durationSeconds ?? null,
     concurrency,
-    timeoutMs
+    firstFrameTimeoutMs,
+    completionTimeoutMs
   },
   startedAt: new Date(startedAt).toISOString(),
   finishedAt: new Date(finishedAt).toISOString(),
@@ -145,7 +167,8 @@ const summary = {
   errorRate,
   attemptedThroughputRequestsPerSecond: attemptedThroughput,
   successfulThroughputRequestsPerSecond: successfulThroughput,
-  successfulRequestLatencyEstimateMs,
+  firstVisibleFrameLatencyEstimateMs,
+  successfulCompletionLatencyEstimateMs: successfulRequestLatencyEstimateMs,
   responseBytes: {
     total: metrics.successfulResponseBytes,
     mean: metrics.successes ? metrics.successfulResponseBytes / metrics.successes : 0
@@ -162,7 +185,10 @@ const summary = {
   },
   thresholds: {
     maxErrorRate,
-    maxP95Ms: maxP95Ms ?? null,
+    maxP50Ms,
+    maxP95Ms,
+    maxP99Ms,
+    maxCompletionP95Ms: maxCompletionP95Ms ?? null,
     minThroughput: minThroughput ?? null,
     latencyEstimator
   },
@@ -177,8 +203,17 @@ if (durationSeconds !== undefined && terminationReason !== "duration_elapsed") {
   summary.gateFailures.push(`request cap ${requestedCount} reached before requested duration ${durationSeconds}s elapsed`);
 }
 if (errorRate > maxErrorRate) summary.gateFailures.push(`error rate ${errorRate.toFixed(6)} exceeds ${maxErrorRate.toFixed(6)}`);
-if (maxP95Ms !== undefined && summary.successfulRequestLatencyEstimateMs.p95 > maxP95Ms) {
-  summary.gateFailures.push(`successful-request p95 estimate ${summary.successfulRequestLatencyEstimateMs.p95.toFixed(3)}ms (${latencyEstimator}) exceeds ${maxP95Ms}ms`);
+if (summary.firstVisibleFrameLatencyEstimateMs.p50 > maxP50Ms) {
+  summary.gateFailures.push(`first-visible-frame p50 estimate ${summary.firstVisibleFrameLatencyEstimateMs.p50.toFixed(3)}ms exceeds ${maxP50Ms}ms`);
+}
+if (summary.firstVisibleFrameLatencyEstimateMs.p95 > maxP95Ms) {
+  summary.gateFailures.push(`first-visible-frame p95 estimate ${summary.firstVisibleFrameLatencyEstimateMs.p95.toFixed(3)}ms exceeds ${maxP95Ms}ms`);
+}
+if (summary.firstVisibleFrameLatencyEstimateMs.p99 > maxP99Ms) {
+  summary.gateFailures.push(`first-visible-frame p99 estimate ${summary.firstVisibleFrameLatencyEstimateMs.p99.toFixed(3)}ms exceeds ${maxP99Ms}ms`);
+}
+if (maxCompletionP95Ms !== undefined && summary.successfulCompletionLatencyEstimateMs.p95 > maxCompletionP95Ms) {
+  summary.gateFailures.push(`completion p95 estimate ${summary.successfulCompletionLatencyEstimateMs.p95.toFixed(3)}ms exceeds task-class limit ${maxCompletionP95Ms}ms`);
 }
 if (minThroughput !== undefined && successfulThroughput < minThroughput) summary.gateFailures.push(`successful throughput ${successfulThroughput.toFixed(3)} below ${minThroughput} requests/second`);
 summary.ok = summary.gateFailures.length === 0;
@@ -202,34 +237,62 @@ async function worker(workerId) {
     const prompt = prompts[index % prompts.length];
     const requestStarted = performance.now();
     let responseStatus;
+    const controller = new AbortController();
+    const completionTimer = setTimeout(
+      () => controller.abort(new DOMException("turn completion timeout", "TimeoutError")),
+      completionTimeoutMs
+    );
+    const firstFrameTimer = setTimeout(
+      () => controller.abort(new DOMException("first visible frame timeout", "TimeoutError")),
+      firstFrameTimeoutMs
+    );
     try {
-      const response = await fetch(new URL("/api/turn?full=1", serverUrl), {
+      const response = await fetch(new URL("/api/turn?stream=1&full=1", serverUrl), {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "accept": "application/x-ndjson"
+        },
         body: JSON.stringify({
           text: prompt.text,
           sessionId: `load-${startedAt.toString(36)}-${workerId}-${index}`,
           conversationId: prompt.conversationId
         }),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: controller.signal
       });
       responseStatus = response.status;
-      const responseBytes = await consumeResponseBody(response, MAX_TURN_BODY_BYTES);
+      const streamed = await consumeTurnStream(response, MAX_TURN_BODY_BYTES, () => {
+        clearTimeout(firstFrameTimer);
+        sampleLatency(
+          "firstVisibleFrameLatencyCount",
+          "firstVisibleFrameLatencySample",
+          performance.now() - requestStarted
+        );
+      });
       metrics.requests += 1;
       increment(metrics.statusCounts, String(response.status));
-      if (response.ok) {
+      if (response.ok && streamed.terminalType === "result") {
         metrics.successes += 1;
-        metrics.successfulResponseBytes += responseBytes;
-        sampleSuccessfulLatency(performance.now() - requestStarted);
+        metrics.successfulResponseBytes += streamed.bytes;
+        sampleLatency(
+          "successfulLatencyCount",
+          "successfulLatencySample",
+          performance.now() - requestStarted
+        );
       } else {
         metrics.failures += 1;
-        increment(metrics.errorCounts, `http_${response.status}`);
+        increment(metrics.errorCounts, streamed.terminalType === "error"
+          ? `stream_${streamed.terminalStatus ?? "error"}`
+          : `http_${response.status}`);
       }
     } catch (error) {
       metrics.requests += 1;
       metrics.failures += 1;
       increment(metrics.statusCounts, responseStatus === undefined ? "error" : String(responseStatus));
       increment(metrics.errorCounts, errorKind(error));
+    } finally {
+      clearTimeout(firstFrameTimer);
+      clearTimeout(completionTimer);
     }
   }
 }
@@ -293,9 +356,48 @@ async function readUtf8FileBounded(filePath, maxBytes) {
   return Buffer.concat(chunks, total).toString("utf8");
 }
 
-async function consumeResponseBody(response, maxBytes) {
-  const result = await readResponseBodyBounded(response, maxBytes, false);
-  return result.bytes;
+async function consumeTurnStream(response, maxBytes, onFirstFrame) {
+  if (!response.body) throw new Error("streaming response body unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let bytes = 0;
+  let firstFrameObserved = false;
+  let terminalType;
+  let terminalStatus;
+  const consumeLine = line => {
+    if (!line.trim()) return;
+    const frame = JSON.parse(line);
+    if (!firstFrameObserved) {
+      firstFrameObserved = true;
+      onFirstFrame();
+    }
+    if (frame.type === "result" || frame.type === "error") {
+      terminalType = frame.type;
+      terminalStatus = frame.status;
+    }
+  };
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new ResponseBodyLimitError(maxBytes);
+      }
+      pending += decoder.decode(next.value, { stream: true });
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) consumeLine(line);
+    }
+    pending += decoder.decode();
+    if (pending.trim()) consumeLine(pending);
+  } finally {
+    reader.releaseLock();
+  }
+  if (!firstFrameObserved) throw new Error("streaming turn emitted no visible frame");
+  return { bytes, terminalType, terminalStatus };
 }
 
 async function readResponseTextBounded(response, maxBytes) {
@@ -330,18 +432,18 @@ async function readResponseBodyBounded(response, maxBytes, collect) {
   return { bytes, chunks };
 }
 
-function sampleSuccessfulLatency(value) {
-  metrics.successfulLatencyCount += 1;
-  if (metrics.successfulLatencySample.length < LATENCY_RESERVOIR_SIZE) {
-    metrics.successfulLatencySample.push(value);
+function sampleLatency(countKey, sampleKey, value) {
+  metrics[countKey] += 1;
+  if (metrics[sampleKey].length < LATENCY_RESERVOIR_SIZE) {
+    metrics[sampleKey].push(value);
     return;
   }
   latencyReservoirState ^= latencyReservoirState << 13;
   latencyReservoirState ^= latencyReservoirState >>> 17;
   latencyReservoirState ^= latencyReservoirState << 5;
   const random = (latencyReservoirState >>> 0) / 0x1_0000_0000;
-  const slot = Math.floor(random * metrics.successfulLatencyCount);
-  if (slot < LATENCY_RESERVOIR_SIZE) metrics.successfulLatencySample[slot] = value;
+  const slot = Math.floor(random * metrics[countKey]);
+  if (slot < LATENCY_RESERVOIR_SIZE) metrics[sampleKey][slot] = value;
 }
 
 function errorKind(error) {

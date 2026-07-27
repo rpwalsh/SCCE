@@ -306,6 +306,22 @@ function recordForEntry(entry: Scce2ShardIndexEntry, importRunId: string): Sourc
     base.target = `${importRunId}:node:target:${entry.id}`;
     base.relationId = `${importRunId}:relation:${entry.id}`;
   }
+  if (familyId === "graph_hyperedges") {
+    const nodeId = `${importRunId}:node:${entry.id}`;
+    base.schema = "scce.hyperedge.v2";
+    base.relationId = `${importRunId}:relation:${entry.id}`;
+    base.participantPorts = [{
+      portId: `port.${entry.id}`,
+      roleId: `role.${entry.id}`,
+      nodeId,
+      valueKind: "hydrated_shard_member",
+      realization: "observed",
+      evidenceIds: []
+    }];
+    base.qualifiers = {};
+    base.modality = { hydrated: true };
+    base.evidenceIds = [];
+  }
   if (familyId === "language_units") {
     base.profileId = `${importRunId}:profile:${entry.id}`;
   }

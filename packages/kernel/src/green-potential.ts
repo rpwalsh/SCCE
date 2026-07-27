@@ -1,6 +1,7 @@
 import type { AlphaTrace, GraphEdge, GraphNode, JsonValue, NodeId } from "./types.js";
 import { clamp01, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { conductanceEquation } from "./equation-operators.js";
+import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 
 const DEFAULT_ITERATIONS = 24;
 const DEFAULT_NODE_LIMIT = 96;
@@ -136,7 +137,9 @@ function solverGraph(input: GreenPotentialInput): SolverGraph {
 function edgeConductance(edge: GraphEdge, alphaStrength?: number): number {
   const metadata = objectRecord(edge.metadata);
   const sourceQuality = edge.evidenceIds.length ? 1 : 0.58;
-  const temporalFit = edge.temporalScope.validTo === undefined ? 1 : 0.86;
+  const temporalFit = isKnownGraphTemporalScope(edge.temporalScope)
+    ? (edge.temporalScope.validTo === undefined ? 1 : 0.86)
+    : edge.temporalScope.status === "atemporal" ? 1 : 0;
   const modalityAgreement = numberField(metadata, "modalityAgreement", 1);
   const contradictionPenalty = numberField(metadata, "contradiction", 0);
   const alpha = Math.max(edge.alpha, alphaStrength ?? 0);

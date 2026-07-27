@@ -1,5 +1,9 @@
 import { canonicalStringify, createHasher } from "./primitives.js";
 import type { GraphEdge } from "./types.js";
+import {
+  evaluateGraphTemporalScope,
+  isKnownGraphTemporalScope
+} from "./graph-temporal.js";
 
 export const RELATION_POTENTIAL_FEATURES = [
   "compatibility",
@@ -246,7 +250,7 @@ export function projectGraphEdgeRelationPotential(
   const features = Object.freeze({
     compatibility: saturatingNonnegative(edge.weight),
     provenance: countSaturation(edge.evidenceIds.length),
-    temporalFit: edge.temporalScope.validFrom <= snapshotTime && (edge.temporalScope.validTo === undefined || snapshotTime <= edge.temporalScope.validTo) ? 1 : 0,
+    temporalFit: evaluateGraphTemporalScope(edge.temporalScope, snapshotTime).fit,
     modalityAgreement: typedSignals.modalityAgreement ?? 0,
     recurrence: countSaturation(Math.max(0, peers.length - 1)),
     utility: saturatingNonnegative(edge.alpha),
@@ -385,10 +389,16 @@ function validateProjectionEdge(edge: GraphEdge): void {
   if (!edge || typeof edge !== "object") throw new TypeError("relation-potential projection edge must be an object");
   nonnegativeFinite(edge.weight, `relation-potential edge ${String(edge.id)} weight`);
   nonnegativeFinite(edge.alpha, `relation-potential edge ${String(edge.id)} alpha`);
-  finite(edge.temporalScope?.validFrom, `relation-potential edge ${String(edge.id)} temporalScope.validFrom`);
-  if (edge.temporalScope.validTo !== undefined) {
+  if (isKnownGraphTemporalScope(edge.temporalScope)) {
+    finite(edge.temporalScope.validFrom, `relation-potential edge ${String(edge.id)} temporalScope.validFrom`);
+  }
+  if (isKnownGraphTemporalScope(edge.temporalScope)
+    && edge.temporalScope.validTo !== undefined) {
     finite(edge.temporalScope.validTo, `relation-potential edge ${String(edge.id)} temporalScope.validTo`);
     if (edge.temporalScope.validTo < edge.temporalScope.validFrom) throw new RangeError(`relation-potential edge ${String(edge.id)} temporalScope.validTo must not precede validFrom`);
+  }
+  if (edge.temporalScope.status === "unknown") {
+    finite(edge.temporalScope.uncertainty, `relation-potential edge ${String(edge.id)} temporalScope.uncertainty`);
   }
   if (!Array.isArray(edge.evidenceIds)) throw new TypeError(`relation-potential edge ${String(edge.id)} evidenceIds must be an array`);
 }

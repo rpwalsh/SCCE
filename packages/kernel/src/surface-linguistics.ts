@@ -56,11 +56,13 @@ function sentenceBoundaryMayOmitWhitespace(chars: readonly string[], index: numb
     && next.toLocaleLowerCase() === next.toLocaleUpperCase();
 }
 
-export function ensureSurfaceSentence(text: string, boundary = "."): string {
+export function ensureSurfaceSentence(text: string, boundary = ""): string {
   const clean = collapseSurfaceWhitespace(text);
   if (!clean) return "";
   const last = [...clean].at(-1) ?? "";
-  return isSentenceBoundarySymbol(last) ? clean : `${clean}${isSentenceBoundarySymbol(boundary) ? boundary : "."}`;
+  return isSentenceBoundarySymbol(last) || !isSentenceBoundarySymbol(boundary)
+    ? clean
+    : `${clean}${boundary}`;
 }
 
 export function stripTerminalSentenceBoundary(text: string): string {

@@ -1,5 +1,6 @@
 import type { GraphEdge, GraphNode, GraphSnapshot, Hasher, JsonValue, NodeId } from "./types.js";
 import { clamp01, createHasher, mean, normalizeVector, toJsonValue, weightedJaccard } from "./primitives.js";
+import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 
 export interface CausalVariable {
   nodeId: NodeId;
@@ -340,6 +341,8 @@ function lagFromEdge(edge: GraphEdge): number {
     if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
   }
   const scope = edge.temporalScope;
-  if (scope.validTo !== undefined) return Math.max(0, scope.validTo - scope.validFrom);
+  if (isKnownGraphTemporalScope(scope) && scope.validTo !== undefined) {
+    return Math.max(0, scope.validTo - scope.validFrom);
+  }
   return 1;
 }
