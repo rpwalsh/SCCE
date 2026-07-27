@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createCapabilityExecutorRegistry,
   dispatchCapabilityTask,
+  dispatchRollbackAttempt,
   reconcileIndeterminateCapability,
   type CapabilityExecutionRequest,
   type CapabilityExecutionResult,
@@ -76,6 +77,24 @@ function governedControls(): ExecutiveControlState {
       state: "pending",
       approverClassIds: ["approver.class.build"],
       justificationRef: "approval.required.build"
+    }
+  };
+}
+
+function authorityGovernedControls(): ExecutiveControlState {
+  return {
+    authority: {
+      authorityClassId: "authority.class.build",
+      subjectId: "principal.build",
+      requiredScopeIds: ["scope.build"],
+      state: "pending",
+      justificationRef: "authority.required.build"
+    },
+    approval: {
+      policyId: "approval.policy.build",
+      state: "not_required",
+      approverClassIds: [],
+      justificationRef: "approval.none.build"
     }
   };
 }
@@ -320,5 +339,175 @@ describe("capability dispatcher", () => {
     await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
     const reconciled = await reconcileIndeterminateCapability(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
     expect(reconciled.disposition).toBe("not_pending");
+  });
+
+  it("blocks on pending authority and never invokes the executor, distinct from pending approval (plan item 47)", async () => {
+    let invocations = 0;
+    const executor = fakeExecutor("process.build_test", () => {
+      invocations += 1;
+      return { status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" };
+    });
+    const deps = dispatcherFixture([executor]);
+    const input = baseInput({ controls: authorityGovernedControls() });
+
+    const blocked = await dispatchCapabilityTask(deps, input);
+    expect(blocked.disposition).toBe("not_ready");
+    expect(blocked.blockedStatus).toBe("awaiting_authority");
+    expect(invocations).toBe(0);
+  });
+
+  it("fails closed permanently on an explicit authority denial -- never proceeds even on retry", async () => {
+    let invocations = 0;
+    const executor = fakeExecutor("process.build_test", () => {
+      invocations += 1;
+      return { status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" };
+    });
+    const deps = dispatcherFixture([executor]);
+    const input = baseInput({ controls: authorityGovernedControls() });
+
+    const denied = await dispatchCapabilityTask(deps, {
+      ...input,
+      authorityDecision: {
+        decisionId: "authority.denial.build",
+        decision: "denied",
+        authorityClassId: "authority.class.build",
+        subjectId: "principal.build",
+        grantedScopeIds: [],
+        decidedBy: "authority.service.build",
+        evidenceRefs: ["authority.denial.evidence.build"]
+      }
+    });
+    expect(denied.disposition).toBe("not_ready");
+    expect(denied.blockedStatus).toBe("authority_denied");
+    expect(invocations).toBe(0);
+
+    // A bare retry (no new decision) must stay denied, not silently proceed.
+    const retried = await dispatchCapabilityTask(deps, input);
+    expect(retried.disposition).toBe("not_ready");
+    expect(retried.blockedStatus).toBe("authority_denied");
+    expect(invocations).toBe(0);
+  });
+
+  it("refuses to even declare an irreversible task without a genuine risk acceptance (plan item 47)", async () => {
+    const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+    const deps = dispatcherFixture([executor]);
+    const input = baseInput({ controls: ungovernedControls() });
+    const unconfirmedIrreversible = {
+      ...input,
+      task: {
+        ...input.task,
+        rollback: { mode: "unavailable" as const, justificationRef: "risk.build", riskAcceptanceId: "", riskAcceptanceEvidenceRefs: [] }
+      }
+    };
+    // executive-episode.ts's declare_task validation (not a dispatcher-
+    // level check) is what fails this closed: an empty riskAcceptanceId
+    // is structurally rejected, so an irreversible action can never be
+    // declared without real, non-empty confirmation evidence.
+    await expect(dispatchCapabilityTask(deps, unconfirmedIrreversible)).rejects.toThrow();
+  });
+
+  it("proceeds for an irreversible task once a genuine risk acceptance is supplied", async () => {
+    const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+    const deps = dispatcherFixture([executor]);
+    const input = baseInput({ controls: ungovernedControls() });
+    const confirmedIrreversible = {
+      ...input,
+      task: {
+        ...input.task,
+        rollback: { mode: "unavailable" as const, justificationRef: "risk.build", riskAcceptanceId: "risk.acceptance.build.001", riskAcceptanceEvidenceRefs: ["risk.acceptance.evidence.build"] }
+      }
+    };
+    const result = await dispatchCapabilityTask(deps, confirmedIrreversible);
+    expect(result.disposition).toBe("succeeded");
+  });
+
+  it("executes a real compensating action when the primary attempt fails and a rollback executor is registered (plan item 48)", async () => {
+    let rollbackInvocations = 0;
+    const primaryExecutor = fakeExecutor("outlook.mail.draft.create", () => ({
+      status: "failed",
+      outputRefs: [],
+      evidenceRefs: ["execution.log.draft.failed"],
+      attestationRef: "executor.signature.draft.failed"
+    }));
+    const rollbackExecutor: CapabilityExecutor = {
+      descriptor: { capabilityId: "outlook.mail.draft.delete", idempotency: "non-repeatable", rollback: "unavailable" },
+      execute: async () => { throw new Error("this capability is only ever invoked via rollback()"); },
+      rollback: async () => {
+        rollbackInvocations += 1;
+        return { status: "succeeded", outputRefs: [], evidenceRefs: ["compensating.action.log"], attestationRef: "executor.signature.draft.deleted" };
+      }
+    };
+    const deps = dispatcherFixture([primaryExecutor, rollbackExecutor]);
+    const input = {
+      ...baseInput({ controls: ungovernedControls() }),
+      task: {
+        ...baseInput({ controls: ungovernedControls() }).task,
+        capabilityId: "outlook.mail.draft.create",
+        rollback: {
+          mode: "capability" as const,
+          planId: "plan.rollback.draft",
+          capabilityId: "outlook.mail.draft.delete",
+          inputRef: "content.input.build",
+          justificationRef: "risk.draft.create",
+          controls: ungovernedControls()
+        }
+      }
+    };
+
+    const primary = await dispatchCapabilityTask(deps, { ...input, task: { ...input.task, capabilityId: "outlook.mail.draft.create" } });
+    expect(primary.disposition).toBe("failed");
+    expect(primary.state.tasks["task.build"]?.status).toBe("rollback_ready");
+    expect(rollbackInvocations).toBe(0);
+
+    const rolledBack = await dispatchRollbackAttempt(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(rolledBack.disposition).toBe("rolled_back");
+    expect(rollbackInvocations).toBe(1);
+    expect(rolledBack.state.tasks["task.build"]?.status).toBe("rolled_back");
+
+    // Retrying is safe -- it must not re-invoke the compensating action.
+    const retried = await dispatchRollbackAttempt(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(retried.disposition).toBe("rolled_back");
+    expect(rollbackInvocations).toBe(1);
+  });
+
+  it("fails closed (no_rollback_executor) instead of silently succeeding when no compensating action is registered", async () => {
+    const primaryExecutor = fakeExecutor("outlook.mail.draft.create", () => ({
+      status: "failed",
+      outputRefs: [],
+      evidenceRefs: [],
+      attestationRef: "executor.signature.draft.failed"
+    }));
+    const deps = dispatcherFixture([primaryExecutor]); // no rollback executor registered at all
+    const input = {
+      ...baseInput({ controls: ungovernedControls() }),
+      task: {
+        ...baseInput({ controls: ungovernedControls() }).task,
+        capabilityId: "outlook.mail.draft.create",
+        rollback: {
+          mode: "capability" as const,
+          planId: "plan.rollback.draft",
+          capabilityId: "outlook.mail.draft.delete",
+          inputRef: "content.input.build",
+          justificationRef: "risk.draft.create",
+          controls: ungovernedControls()
+        }
+      }
+    };
+    await dispatchCapabilityTask(deps, input);
+
+    const result = await dispatchRollbackAttempt(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(result.disposition).toBe("no_rollback_executor");
+    // The task must NOT be reported as rolled back -- a rollback that
+    // cannot run is a distinct, visible failure state, not a silent
+    // success.
+    expect(result.state.tasks["task.build"]?.status).not.toBe("rolled_back");
+  });
+
+  it("reports no_rollback_needed for a task that never declared a rollback capability", async () => {
+    const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+    const deps = dispatcherFixture([executor]);
+    await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+    const result = await dispatchRollbackAttempt(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
+    expect(result.disposition).toBe("no_rollback_needed");
   });
 });
