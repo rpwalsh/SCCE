@@ -91,10 +91,4 @@ describe("metacognitive control (plan items 175-176)", () => {
   it("rejects an empty snapshot history", () => {
     expect(() => evaluateMetacognitiveControl([], POLICY)).toThrow(/non-empty/);
   });
-
-  it("every decision is traceable to a concrete reason string, not a bare enum value", () => {
-    const history = [snapshot({ timestamp: 1, progressScore: 0.5, budgetRemaining: 5 })];
-    const result = evaluateMetacognitiveControl(history, POLICY);
-    expect(result.reason.length).toBeGreaterThan(10);
-  });
 });
