@@ -131,6 +131,10 @@ validation so credentials need not be committed.
 - `graph-correlated-variability.ts`: source-family cross-validated delta
   mutual information, predictive gain, deterministic permutation controls and
   the mandatory admission between generalized construction and persistence.
+- `optional-null-realization.ts`: dependency-family-collapsed absent/realized/
+  unrealized observations, leave-one-family-out calibration, cost-sensitive
+  realization thresholds, content-addressed shard merging and the Mouth omission
+  gate over present graph meaning plus matching discourse context.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`:
   vendored Unicode-17 simple folding, ICU/Unicode runtime pins, explicit
   identity-field allowlists and independent source/observation/event/validity

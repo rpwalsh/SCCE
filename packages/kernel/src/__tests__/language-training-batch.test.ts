@@ -138,6 +138,11 @@ describe("shared language training batch", () => {
       schema: "scce.graph_correlated_surface_variability.v1",
       decisions: []
     });
+    expect(compiled.optionalNullRealizationModel).toMatchObject({
+      schema: "scce.optional_null_realization_model.v1",
+      status: "insufficient_observations"
+    });
+    expect(compiled.optionalNullRealizationPatterns).toEqual([]);
     expect(compiled.sparseTransportPlans).toHaveLength(1);
     expect(compiled.sparseTransportPlans[0]!.cells).toHaveLength(
       compiled.sparseAlignmentCandidateSupports[0]!.candidates.length

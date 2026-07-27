@@ -126,6 +126,8 @@ export function createTrainingRuntime(options: {
     let pairedAntiUnifiedConstructionRejections = 0;
     let admittedPairedAntiUnifiedConstructions = 0;
     let graphCorrelatedVariabilityModels = 0;
+    let optionalNullRealizationModels = 0;
+    let calibratedOptionalNullRealizationModels = 0;
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
@@ -227,6 +229,9 @@ export function createTrainingRuntime(options: {
       admittedPairedAntiUnifiedConstructions +=
         memory.admittedPairedAntiUnifiedConstructions.length;
       graphCorrelatedVariabilityModels += 1;
+      optionalNullRealizationModels += 1;
+      calibratedOptionalNullRealizationModels +=
+        memory.optionalNullRealizationModel.status === "ready" ? 1 : 0;
       surfaceNullMass += memory.sparseTransportPlans.reduce(
         (sum, plan) => sum + plan.rowMarginals.reduce(
           (rowSum, row) => rowSum + row.surfaceNullMass,
@@ -276,6 +281,8 @@ export function createTrainingRuntime(options: {
         pairedAntiUnifiedConstructionRejections,
         admittedPairedAntiUnifiedConstructions,
         graphCorrelatedVariabilityModels,
+        optionalNullRealizationModels,
+        calibratedOptionalNullRealizationModels,
         surfaceNullMass,
         graphImplicitMass
       })

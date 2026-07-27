@@ -37,7 +37,13 @@ describe("first reversible construction schema", () => {
       id: "target-index.1",
       targets: [
         target("target.ada", "port.ada", "role.opaque.1"),
-        target("target.writes", "port.writes", "role.opaque.2")
+        target("target.writes", "port.writes", "role.opaque.2"),
+        target(
+          "target.implicit",
+          "port.implicit",
+          "role.opaque.3",
+          "omitted"
+        )
       ]
     } as unknown as SparseAlignmentTargetIndex;
     const support = {
@@ -67,7 +73,11 @@ describe("first reversible construction schema", () => {
       cells: [
         transportCell("candidate.ada", ada.id, "target.ada"),
         transportCell("candidate.writes", writes.id, "target.writes")
-      ]
+      ],
+      columnMarginals: [{
+        graphTargetId: "target.implicit",
+        graphImplicitMass: 1
+      }]
     } as unknown as SparseFusedTransportPlan;
     const alternativeSet = {
       seriesId: "series.1",
@@ -109,7 +119,12 @@ describe("first reversible construction schema", () => {
       surface: { sourceSurface: "Ada writes" },
       executableDirections: ["interpretation", "realization"]
     });
-    expect(construction.graph.ports).toHaveLength(2);
+    expect(construction.graph.ports).toHaveLength(3);
+    expect(construction.graph.ports.find(port =>
+      port.graphTargetId === "target.implicit")).toMatchObject({
+        realization: "omitted",
+        surfaceSlotIds: []
+      });
     expect(construction.surface.slots).toHaveLength(2);
     expect(construction.surface.slots.every(slot =>
       slot.evidence.reduce((sum, row) =>
@@ -127,7 +142,7 @@ describe("first reversible construction schema", () => {
     expect(interpreted.status).toBe("interpreted");
     const realized = realizeReversibleConstruction({
       construction,
-      graphTargetIds: ["target.writes", "target.ada"],
+      graphTargetIds: ["target.writes", "target.ada", "target.implicit"],
       profileId: "profile.opaque"
     });
     expect(realized).toMatchObject({
@@ -169,8 +184,8 @@ describe("first reversible construction schema", () => {
       planId: "plan.1",
       sourceFamilyId,
       partition,
-      requiredGraphTargetCount: 2,
-      recoveredGraphTargetCount: 2,
+      requiredGraphTargetCount: 3,
+      recoveredGraphTargetCount: 3,
       exactAnchorsPreserved: true,
       cycleRecall: 1,
       unsupportedAdditionCount: 0
@@ -178,7 +193,12 @@ describe("first reversible construction schema", () => {
   }
 });
 
-function target(id: string, portId: string, roleId: string) {
+function target(
+  id: string,
+  portId: string,
+  roleId: string,
+  realization: "observed" | "omitted" = "observed"
+) {
   return {
     id,
     kind: "incidence",
@@ -190,7 +210,7 @@ function target(id: string, portId: string, roleId: string) {
     portId,
     roleId,
     valueKind: "opaque",
-    realization: "observed",
+    realization,
     evidenceIds: ["evidence.1"],
     observableSurfaceKeys: []
   };

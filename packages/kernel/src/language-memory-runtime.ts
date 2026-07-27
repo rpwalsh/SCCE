@@ -44,6 +44,12 @@ import {
   pairedAntiUnifiedConstructionsFromPatterns,
   type PairedAntiUnifiedConstruction
 } from "./paired-anti-unification.js";
+import {
+  compileOptionalNullRealizationModel,
+  isOptionalNullRealizationPattern,
+  optionalNullRealizationModelsFromPatterns,
+  type OptionalNullRealizationModel
+} from "./optional-null-realization.js";
 
 const composedJoinProgramCache = new WeakMap<
   LanguageMemoryRuntimeState,
@@ -65,6 +71,7 @@ export interface LanguageMemoryRuntimeState {
   importedConstructionBundles: DurableLanguageConstructionBundle[];
   importedReversibleConstructions?: ReversibleConstruction[];
   importedPairedAntiUnifiedConstructions?: PairedAntiUnifiedConstruction[];
+  optionalNullRealizationModels?: OptionalNullRealizationModel[];
   joinPrograms: JoinProgramMixture[];
   creativeEventCompatibilityModels: CreativeEventCompatibilityModel[];
   rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
@@ -449,12 +456,15 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         !isLanguageConstructionPattern(pattern)
         && !isReversibleConstructionPattern(pattern)
         && !isPairedAntiUnifiedPattern(pattern)
+        && !isOptionalNullRealizationPattern(pattern)
         && !isCreativeEventCompatibilityPattern(pattern)
       ));
       const importedReversibleConstructions =
         reversibleConstructionsFromPatterns(persistedPatterns);
       const importedPairedAntiUnifiedConstructions =
         pairedAntiUnifiedConstructionsFromPatterns(persistedPatterns);
+      const optionalNullRealizationModels =
+        optionalNullRealizationModelsFromPatterns(persistedPatterns);
       const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.id, b.id)).slice(0, 2048);
       const constructionMemory = hydrateLanguageConstructionPatterns({
         patterns: persistedPatterns,
@@ -469,7 +479,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       );
       const joinPrograms = joinProgramsFromPatterns(importedPatterns);
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
-      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + creativeEventCompatibilityModels.length + joinPrograms.length + input.models.filter(isImportedLanguagePriorModel).length;
+      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + joinPrograms.length + input.models.filter(isImportedLanguagePriorModel).length;
       const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
       return {
         models,
@@ -486,6 +496,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedConstructionBundles: constructionMemory.bundles,
         importedReversibleConstructions,
         importedPairedAntiUnifiedConstructions,
+        optionalNullRealizationModels,
         joinPrograms,
         creativeEventCompatibilityModels,
         rejectedConstructionPatterns: constructionMemory.rejected,
@@ -515,6 +526,8 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
             importedReversibleConstructions.length,
           importedPairedAntiUnifiedConstructions:
             importedPairedAntiUnifiedConstructions.length,
+          optionalNullRealizationModels:
+            optionalNullRealizationModels.length,
           joinPrograms: joinPrograms.map(program => program.id),
           creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
           rejectedConstructionPatterns: constructionMemory.rejected,
@@ -569,6 +582,15 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
               profileIds: construction.profileIds,
               sourceConstructionIds: construction.sourceConstructionIds,
               variableSlotIds: construction.surfaceProgram.variableSlotIds
+            })),
+        optionalNullRealizationModels:
+          (input.state.optionalNullRealizationModels ?? []).slice(0, 24)
+            .map(model => ({
+              id: model.id,
+              status: model.status,
+              observations: model.observations.length,
+              estimates: model.estimates.length,
+              threshold: model.threshold.selected
             })),
         joinPrograms: input.state.joinPrograms.slice(0, 24).map(program => ({
           id: program.id,
@@ -1641,6 +1663,15 @@ export function scopeLanguageMemoryStateToCluster(
   const importedPairedAntiUnifiedConstructions =
     (state.importedPairedAntiUnifiedConstructions ?? []).filter(construction =>
       construction.profileIds.some(profileId => profileIds.has(profileId)));
+  const optionalNullRealizationModels =
+    (() => {
+      const observations = (state.optionalNullRealizationModels ?? [])
+        .flatMap(model => model.observations)
+        .filter(row => profileIds.has(row.profileId));
+      return observations.length
+        ? [compileOptionalNullRealizationModel({ observations })]
+        : [];
+    })();
   const retainedCreativeCompilerIds = new Set(importedConstructionBundles.flatMap(bundle => (
     (bundle.creativeEvents ?? []).map(event => event.compilerId)
   )));
@@ -1667,6 +1698,7 @@ export function scopeLanguageMemoryStateToCluster(
     + importedConstructionBundles.length
     + importedReversibleConstructions.length
     + importedPairedAntiUnifiedConstructions.length
+    + optionalNullRealizationModels.length
     + creativeEventCompatibilityModels.length
     + joinPrograms.length
     + records.filter(isImportedLanguagePriorModel).length;
@@ -1699,6 +1731,7 @@ export function scopeLanguageMemoryStateToCluster(
     importedConstructionBundles,
     importedReversibleConstructions,
     importedPairedAntiUnifiedConstructions,
+    optionalNullRealizationModels,
     joinPrograms,
     creativeEventCompatibilityModels,
     rejectedConstructionPatterns,
@@ -1731,6 +1764,8 @@ export function scopeLanguageMemoryStateToCluster(
         reversibleConstructions: importedReversibleConstructions.length,
         pairedAntiUnifiedConstructions:
           importedPairedAntiUnifiedConstructions.length,
+        optionalNullRealizationModels:
+          optionalNullRealizationModels.length,
         joinPrograms: joinPrograms.length,
         creativeEventCompatibilityModels: creativeEventCompatibilityModels.length
       },
@@ -1747,6 +1782,9 @@ export function scopeLanguageMemoryStateToCluster(
         pairedAntiUnifiedConstructions:
           (state.importedPairedAntiUnifiedConstructions?.length ?? 0)
           - importedPairedAntiUnifiedConstructions.length,
+        optionalNullRealizationModels:
+          (state.optionalNullRealizationModels?.length ?? 0)
+          - optionalNullRealizationModels.length,
         creativeEventCompatibilityModels:
           state.creativeEventCompatibilityModels.length - creativeEventCompatibilityModels.length
       }
@@ -1783,6 +1821,7 @@ export function markLanguageMemoryStateUnscoped(
     importedConstructionBundles: [],
     importedReversibleConstructions: [],
     importedPairedAntiUnifiedConstructions: [],
+    optionalNullRealizationModels: [],
     joinPrograms: [],
     creativeEventCompatibilityModels: [],
     rejectedConstructionPatterns: [],

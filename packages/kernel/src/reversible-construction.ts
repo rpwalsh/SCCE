@@ -271,8 +271,16 @@ export function compileReversibleConstructions(input: {
       continue;
     }
 
+    const implicitTargetIds = uniqueStrings((plan.columnMarginals ?? [])
+      .filter(column => column.graphImplicitMass > 1e-12)
+      .map(column => column.graphTargetId)
+      .filter(targetId => targetById.get(targetId)?.realization === "omitted"));
+    const constructionTargetIds = uniqueStrings([
+      ...positiveCells.map(cell => cell.graphTargetId),
+      ...implicitTargetIds
+    ]);
     const portIdByTargetId = new Map<string, string>();
-    for (const targetId of uniqueStrings(positiveCells.map(cell => cell.graphTargetId))) {
+    for (const targetId of constructionTargetIds) {
       portIdByTargetId.set(targetId, stableId(hasher, "reversible_graph_port", [
         decision.seriesId,
         decision.planId,
@@ -305,7 +313,7 @@ export function compileReversibleConstructions(input: {
           allocationCellByCandidateId.get(cell.candidateId)!))
       };
     });
-    const ports = uniqueStrings(positiveCells.map(cell => cell.graphTargetId))
+    const ports = constructionTargetIds
       .map(targetId => {
         const target = targetById.get(targetId)!;
         const surfaceSlotIds = uniqueStrings(positiveCells
@@ -395,6 +403,7 @@ export function compileReversibleConstructions(input: {
         antiUnificationDeferred: true,
         exactSourceProgram: true,
         graphPortCount: ports.length,
+        implicitGraphPortCount: implicitTargetIds.length,
         surfaceSlotCount: slots.length,
         interpretationExecutable: true,
         realizationExecutable: true

@@ -74,6 +74,7 @@ export * from "./alignment-heldout-evaluation.js";
 export * from "./reversible-construction.js";
 export * from "./paired-anti-unification.js";
 export * from "./graph-correlated-variability.js";
+export * from "./optional-null-realization.js";
 export * from "./sparse-fused-transport.js";
 export * from "./transport-evidence-allocation.js";
 export * from "./language-training-batch.js";

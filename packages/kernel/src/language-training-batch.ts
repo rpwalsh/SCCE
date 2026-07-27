@@ -74,6 +74,11 @@ import {
   compileGraphCorrelatedVariabilityModel,
   type GraphCorrelatedVariabilityModel
 } from "./graph-correlated-variability.js";
+import {
+  compileOptionalNullRealizationModel,
+  compileOptionalNullRealizationPatterns,
+  type OptionalNullRealizationModel
+} from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -161,6 +166,7 @@ export interface CompiledLanguageTrainingBatch {
   constructionPatterns: LanguagePatternRecord[];
   reversibleConstructionPatterns: LanguagePatternRecord[];
   pairedAntiUnifiedConstructionPatterns: LanguagePatternRecord[];
+  optionalNullRealizationPatterns: LanguagePatternRecord[];
   graphSurfaceAlignmentSummaries: JsonValue[];
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
@@ -174,6 +180,7 @@ export interface CompiledLanguageTrainingBatch {
   pairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
   admittedPairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
   graphCorrelatedVariabilityModel: GraphCorrelatedVariabilityModel;
+  optionalNullRealizationModel: OptionalNullRealizationModel;
   pairedAntiUnifiedConstructionRejections:
     ReturnType<typeof compilePairedAntiUnifiedConstructions>["rejections"];
   typedNullCostModel: TypedNullCostModel | null;
@@ -425,6 +432,16 @@ export function compileLanguageTrainingBatch(input: {
   const pairedAntiUnifiedConstructionPatterns =
     admittedPairedConstructions.flatMap(({ construction, admission }) =>
       compilePairedAntiUnifiedPatterns(construction, admission));
+  const optionalNullRealizationModel =
+    compileOptionalNullRealizationModel({
+      constructions: reversibleConstructionCompilation.constructions,
+      hasher: input.hasher
+    });
+  const optionalNullRealizationPatterns =
+    compileOptionalNullRealizationPatterns(
+      optionalNullRealizationModel,
+      batch.createdAt
+    );
   const sparseAlignmentCandidateSummaries = sparseAlignmentCandidateSupports.map(support =>
     toJsonValue({
       schema: support.schema,
@@ -474,12 +491,14 @@ export function compileLanguageTrainingBatch(input: {
       ...constructionPatterns,
       ...reversibleConstructionPatterns,
       ...pairedAntiUnifiedConstructionPatterns,
+      ...optionalNullRealizationPatterns,
       ...(batch.additionalPatterns ?? [])
     ]),
     semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
     constructionPatterns,
     reversibleConstructionPatterns,
     pairedAntiUnifiedConstructionPatterns,
+    optionalNullRealizationPatterns,
     graphSurfaceAlignmentSummaries: sets
       .map(item => item.set.alignmentSummary)
       .filter((summary): summary is JsonValue => summary !== undefined),
@@ -498,6 +517,7 @@ export function compileLanguageTrainingBatch(input: {
     admittedPairedAntiUnifiedConstructions:
       admittedPairedConstructions.map(row => row.construction),
     graphCorrelatedVariabilityModel,
+    optionalNullRealizationModel,
     pairedAntiUnifiedConstructionRejections:
       pairedAntiUnifiedCompilation.rejections,
     typedNullCostModel,
@@ -615,6 +635,7 @@ export function compileLanguageTrainingBatch(input: {
         admittedPairedAntiUnifiedConstructions:
           admittedPairedConstructions.map(row => row.construction),
         graphCorrelatedVariabilityModel,
+        optionalNullRealizationModel,
         pairedAntiUnifiedConstructionRejections:
           pairedAntiUnifiedCompilation.rejections,
         evidenceAllocations: transportEvidenceAllocations.map(allocation => ({
@@ -635,6 +656,8 @@ export function compileLanguageTrainingBatch(input: {
         pairedAntiUnifiedCompilation.constructions.length,
       admittedPairedAntiUnifiedConstructions:
         admittedPairedConstructions.length,
+      compiledOptionalNullRealizationPatterns:
+        optionalNullRealizationPatterns.length,
       constructionWarnings: [...new Set(warnings)].sort()
     })
   };

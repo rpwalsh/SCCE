@@ -96,6 +96,12 @@ import {
   realizeAntiUnifiedConstruction,
   type AntiUnifiedBinding
 } from "./paired-anti-unification.js";
+import {
+  decideOptionalNullRealization,
+  optionalComponentKey,
+  optionalConstructionContextId,
+  optionalPopulationContextId
+} from "./optional-null-realization.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
   sourceQuote: "rel.1f7c4a92",
@@ -2051,10 +2057,37 @@ function semanticAntiUnifiedConstructionCandidate(
       construction.profileIds.includes(input.languageProfile.id))
     .flatMap(construction => {
       const bindings: AntiUnifiedBinding[] = [];
+      const unrealizedGraphVariableIds: string[] = [];
+      const optionalDecisions: Array<{
+        graphVariableId: string;
+        modelId: string;
+        estimateId: string;
+        probability: number;
+      }> = [];
       for (const variable of construction.graphVariables) {
         if (variable.relationId !== relation.relationId) return [];
         if (variable.kind === "relation") {
           if (!fact.predicate) return [];
+          if (variable.realization === "omitted") {
+            const decision = supportedOptionalOmission({
+              input,
+              discoursePlan,
+              variable,
+              construction
+            });
+            if (!decision) return [];
+            bindings.push({
+              graphVariableId: variable.id,
+              graphTargetId: fact.relationId,
+              relationId: variable.relationId,
+              ...(variable.valueKind ? { valueKind: variable.valueKind } : {}),
+              surface: "",
+              evidenceIds: proofEvidenceIds
+            });
+            unrealizedGraphVariableIds.push(variable.id);
+            optionalDecisions.push(decision);
+            continue;
+          }
           bindings.push({
             graphVariableId: variable.id,
             graphTargetId: fact.relationId,
@@ -2069,15 +2102,36 @@ function semanticAntiUnifiedConstructionCandidate(
           Boolean(variable.roleId) && slot.roleId === variable.roleId);
         if (matches.length !== 1) return [];
         const slot = matches[0]!;
+        const participantNodeId = slot.id === relation.sourceSlotId
+          ? fact.sourceNodeId
+          : fact.targetNodeId;
+        if (variable.realization === "omitted") {
+          const decision = supportedOptionalOmission({
+            input,
+            discoursePlan,
+            variable,
+            construction
+          });
+          if (!decision) return [];
+          bindings.push({
+            graphVariableId: variable.id,
+            graphTargetId: participantNodeId,
+            relationId: variable.relationId,
+            participantNodeId,
+            ...(variable.valueKind ? { valueKind: variable.valueKind } : {}),
+            surface: "",
+            evidenceIds: proofEvidenceIds
+          });
+          unrealizedGraphVariableIds.push(variable.id);
+          optionalDecisions.push(decision);
+          continue;
+        }
         const surface = admittedSemanticSlotSurface(
           input,
           slot.roleId,
           slot.value
         );
         if (!surface) return [];
-        const participantNodeId = slot.id === relation.sourceSlotId
-          ? fact.sourceNodeId
-          : fact.targetNodeId;
         bindings.push({
           graphVariableId: variable.id,
           graphTargetId: participantNodeId,
@@ -2090,7 +2144,8 @@ function semanticAntiUnifiedConstructionCandidate(
       }
       const realized = realizeAntiUnifiedConstruction({
         construction,
-        bindings
+        bindings,
+        unrealizedGraphVariableIds
       });
       if (realized.status !== "realized"
         || !exactSurfaceSatisfiesPlan(realized.text, input, plan)
@@ -2122,6 +2177,10 @@ function semanticAntiUnifiedConstructionCandidate(
           graphVariableIds: realized.bindings.map(binding =>
             binding.graphVariableId),
           proofEvidenceIds,
+          optionalNullRealization: {
+            omittedGraphVariableIds: unrealizedGraphVariableIds,
+            decisions: optionalDecisions
+          },
           typedSemanticBindingsOnly: true,
           positionalSurfaceGuessing: false
         })
@@ -2130,6 +2189,70 @@ function semanticAntiUnifiedConstructionCandidate(
   return rows.sort((left, right) =>
     right.fit - left.fit
     || compareSurfaceText(left.id, right.id))[0];
+}
+
+function supportedOptionalOmission(input: {
+  input: SpeakInput;
+  discoursePlan: DiscoursePlan;
+  variable: {
+    id: string;
+    kind: "relation" | "incidence";
+    relationId: string;
+    portId?: string;
+    roleId?: string;
+    valueKind?: string;
+  };
+  construction: {
+    populationPosteriors: Array<{
+      posterior: Array<{ populationId: string; probability: number }>;
+    }>;
+  };
+}): {
+  graphVariableId: string;
+  modelId: string;
+  estimateId: string;
+  probability: number;
+} | undefined {
+  const componentKey = optionalComponentKey(input.variable);
+  const populationContextIds = uniqueStrings(
+    input.construction.populationPosteriors.map(row =>
+      optionalPopulationContextId(row.posterior))
+  );
+  const discourseStateIds = uniqueStrings([
+    input.discoursePlan.id,
+    ...input.discoursePlan.units.flatMap(unit => [
+      unit.role,
+      unit.groupId
+    ])
+  ]);
+  for (const populationContextId of populationContextIds) {
+    const constructionContextId = optionalConstructionContextId({
+      populationContextId,
+      relationId: input.variable.relationId
+    });
+    for (const model of input.input.languageMemory
+      .optionalNullRealizationModels ?? []) {
+      const decision = decideOptionalNullRealization({
+        model,
+        profileId: input.input.languageProfile.id,
+        relationId: input.variable.relationId,
+        componentKey,
+        constructionContextId,
+        populationContextId,
+        meaningStatus: "present",
+        discourseStateIds
+      });
+      if (decision.status === "unrealized_meaning") {
+        return {
+          graphVariableId: input.variable.id,
+          modelId: model.id,
+          estimateId: decision.estimateId,
+          probability: decision.probability
+        };
+      }
+    }
+  }
+  return undefined;
 }
 
 interface LearnedConstructionCandidateRow {

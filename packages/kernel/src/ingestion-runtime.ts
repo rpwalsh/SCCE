@@ -76,6 +76,10 @@ import {
   admittedPairedAntiUnifiedConstructions,
   compileGraphCorrelatedVariabilityModel
 } from "./graph-correlated-variability.js";
+import {
+  compileOptionalNullRealizationModel,
+  compileOptionalNullRealizationPatterns
+} from "./optional-null-realization.js";
 import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
@@ -791,10 +795,21 @@ export function createIngestionRuntime(options: {
                 compilePairedAntiUnifiedPatterns(construction, admission))
             };
           })();
+        const optionalNullRealizationModel =
+          compileOptionalNullRealizationModel({
+            constructions: reversibleConstructionCompilation.constructions,
+            hasher
+          });
+        const optionalNullRealizationPatterns =
+          compileOptionalNullRealizationPatterns(
+            optionalNullRealizationModel,
+            clock.now()
+          );
         const labeledReversiblePatterns = labelRecords(
           [
             ...reversibleConstructionPatterns,
-            ...pairedAntiUnifiedPatterns.patterns
+            ...pairedAntiUnifiedPatterns.patterns,
+            ...optionalNullRealizationPatterns
           ],
           informationLabel
         );
@@ -874,6 +889,7 @@ export function createIngestionRuntime(options: {
               pairedAntiUnifiedCompilation.rejections,
             graphCorrelatedVariabilityModel:
               pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
+            optionalNullRealizationModel,
             admittedPairedAntiUnifiedConstructions:
               pairedAntiUnifiedPatterns.admitted.map(row => row.construction),
             retainedAlignmentHypothesisCount,
