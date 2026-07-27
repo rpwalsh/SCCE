@@ -275,6 +275,17 @@ touching the held-out families. Deterministic graph-label permutations define th
 null distribution. Only a content-addressed passing admission can be projected to
 language memory; raw paired anti-unifications remain non-runtime hypotheses.
 
+Item 29 learns optional and null realization without treating missing meaning as
+implicit meaning. Exact reversible constructions retain supported omitted graph
+ports with no surface slots. The shared training compiler generates
+content-addressed observations for absent, realized and unrealized states,
+collapses copies by dependency family, excludes conflicting family cells and
+cross-fits \(P(z_c=1\mid G,D,C)\). Ordinary, Wikipedia and explicit training
+persist the same model wrapper. Hydration merges observation shards and Mouth
+permits an already-typed omitted graph variable only when its profile, relation,
+component, construction context and active discourse states meet the learned
+non-weakenable omission gate.
+
 Typed ingest now constructs structured semantic candidates before weak prose inference.
 The versioned candidate contract covers links, redirects, headings, table cells,
 numbers, dates, citations, repeated references, formulas, code/repository graphs,

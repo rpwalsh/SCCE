@@ -339,8 +339,10 @@ export function compilePairedAntiUnifiedConstructions(input: {
 export function realizeAntiUnifiedConstruction(input: {
   construction: PairedAntiUnifiedConstruction;
   bindings: readonly AntiUnifiedBinding[];
+  unrealizedGraphVariableIds?: readonly string[];
 }): AntiUnifiedRealization {
-  const indexed = bindingMap(input.construction, input.bindings);
+  const unrealized = new Set(input.unrealizedGraphVariableIds ?? []);
+  const indexed = bindingMap(input.construction, input.bindings, unrealized);
   if ("reasons" in indexed) {
     return {
       status: "rejected",
@@ -354,8 +356,11 @@ export function realizeAntiUnifiedConstruction(input: {
       output.push(part.surface);
       continue;
     }
+    const realizedVariableIds = part.graphVariableIds.filter(id =>
+      !unrealized.has(id));
+    if (!realizedVariableIds.length) continue;
     if (part.mode === "fixed") {
-      if (part.graphVariableIds.some(id =>
+      if (realizedVariableIds.some(id =>
         indexed.bindings.get(id)!.surface !== part.fixedSurface)) {
         return rejectedRealization(input.construction.id, [
           "fixed_surface_binding_mismatch"
@@ -364,7 +369,7 @@ export function realizeAntiUnifiedConstruction(input: {
       output.push(part.fixedSurface!);
       continue;
     }
-    const surfaces = uniqueStrings(part.graphVariableIds.map(id =>
+    const surfaces = uniqueStrings(realizedVariableIds.map(id =>
       indexed.bindings.get(id)!.surface));
     if (surfaces.length !== 1 || !surfaces[0]) {
       return rejectedRealization(input.construction.id, [
@@ -724,7 +729,8 @@ function pairedSlotValuesByFamily(
 
 function bindingMap(
   construction: PairedAntiUnifiedConstruction,
-  bindings: readonly AntiUnifiedBinding[]
+  bindings: readonly AntiUnifiedBinding[],
+  unrealized: ReadonlySet<string> = new Set()
 ): { bindings: Map<string, AntiUnifiedBinding> } | { reasons: string[] } {
   const expected = new Map(construction.graphVariables.map(variable => [
     variable.id,
@@ -742,7 +748,8 @@ function bindingMap(
       reasons.push("duplicate_graph_variable_binding");
       continue;
     }
-    if (!binding.graphTargetId || !binding.surface
+    if (!binding.graphTargetId || (!binding.surface
+      && !unrealized.has(binding.graphVariableId))
       || binding.relationId !== variable.relationId
       || (variable.valueKind && binding.valueKind !== variable.valueKind)) {
       reasons.push("incompatible_graph_variable_binding");
@@ -753,8 +760,13 @@ function bindingMap(
       evidenceIds: binding.evidenceIds ?? []
     });
   }
-  if ([...expected.keys()].some(id => !indexed.has(id))) {
+  if ([...expected.keys()].some(id =>
+    !indexed.has(id) && !unrealized.has(id))) {
     reasons.push("graph_variable_binding_missing");
+  }
+  if ([...unrealized].some(id =>
+    !expected.has(id) || !indexed.has(id))) {
+    reasons.push("unrealized_graph_variable_binding_missing");
   }
   return reasons.length ? { reasons: uniqueStrings(reasons) } : { bindings: indexed };
 }

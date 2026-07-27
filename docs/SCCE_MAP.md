@@ -118,6 +118,9 @@ answer lane.
 - `graph-correlated-variability.ts`: Item-28 cross-family surface/graph delta
   dependence, predictive-gain and shuffled-null gate required before Item-27
   artifacts can persist or hydrate.
+- `optional-null-realization.ts`: Item-29 source-family-collapsed conditional
+  realization state, held-out calibration, durable model merging and
+  graph/discourse-supported Mouth omission.
 - `normalization-contract.ts`, `canonical-identity.ts`, `canonical-temporal.ts`,
   `canonical-replay.ts`: Phase-1 canonical evidence identity and deterministic replay.
 - `graph-temporal.ts`: explicit known/unknown/atemporal activation semantics.

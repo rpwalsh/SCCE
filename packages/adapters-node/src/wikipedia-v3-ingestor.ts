@@ -34,6 +34,8 @@ import {
   compilePairedAntiUnifiedPatterns,
   compileGraphCorrelatedVariabilityModel,
   admittedPairedAntiUnifiedConstructions,
+  compileOptionalNullRealizationModel,
+  compileOptionalNullRealizationPatterns,
   reversibleConstructionCreationSnapshotId,
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
@@ -1225,17 +1227,32 @@ export class WikipediaV3Ingestor {
               })))
           };
         })();
+      const optionalNullRealizationModel =
+        compileOptionalNullRealizationModel({
+          constructions: reversibleConstructionCompilation.constructions,
+          hasher: this.hasher
+        });
+      const optionalNullRealizationPatterns =
+        compileOptionalNullRealizationPatterns(
+          optionalNullRealizationModel,
+          createdAt
+        ).map(pattern => ({
+          ...pattern,
+          informationLabel: WIKIPEDIA_INFORMATION_LABEL
+        }));
       if (this.storage.languageMemory.putLanguagePatterns) {
         await this.storage.languageMemory.putLanguagePatterns(
           [
             ...reversibleConstructionPatterns,
-            ...pairedAntiUnifiedPatterns.patterns
+            ...pairedAntiUnifiedPatterns.patterns,
+            ...optionalNullRealizationPatterns
           ]
         );
       } else {
         for (const pattern of [
           ...reversibleConstructionPatterns,
-          ...pairedAntiUnifiedPatterns.patterns
+          ...pairedAntiUnifiedPatterns.patterns,
+          ...optionalNullRealizationPatterns
         ]) {
           await this.storage.languageMemory.putLanguagePattern(pattern);
         }
@@ -1304,9 +1321,10 @@ export class WikipediaV3Ingestor {
             pairedAntiUnifiedCompilation.constructions,
           pairedAntiUnifiedConstructionRejections:
             pairedAntiUnifiedCompilation.rejections,
-          graphCorrelatedVariabilityModel:
-            pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
-          admittedPairedAntiUnifiedConstructions:
+            graphCorrelatedVariabilityModel:
+              pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
+            optionalNullRealizationModel,
+            admittedPairedAntiUnifiedConstructions:
             pairedAntiUnifiedPatterns.admitted.map(row => row.construction),
           retainedAlignmentHypothesisCount,
           omittedAlignmentSearchBranchCount,
