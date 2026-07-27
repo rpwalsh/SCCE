@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -940,7 +940,26 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[])
   }
   if (sub === "verify") return printJson(await runtime.storage.verify());
   if (sub === "stats") return printJson(await runtime.storage.stats());
-  return usage("scce db <status|init|migrate|verify|stats|reset --confirm-local-dev-only>");
+  if (sub === "audit") {
+    // Plan items 66/68: the periodic full-audit maintenance command --
+    // deliberately ignores any in-process governance checkpoint and
+    // recomputes the entire event hash chain from scratch (item 67
+    // proved live that the bounded/incremental verification path used
+    // during normal turn processing cannot see a tamper before its
+    // checkpoint anchor; this command is the only thing that can).
+    // Run this on a real schedule (see docs/IMPLEMENTATION_STATUS.md's
+    // governance verification section for the recommended cadence) --
+    // this repo does not install an automated cron for it.
+    const storage = runtime.storage as unknown as {
+      query<T>(sql: string, params?: unknown[]): Promise<T[]>;
+      table(name: string): string;
+    };
+    const report = await fullyVerifyEventLedger(storage);
+    printJson(report);
+    if (!report.passed) process.exitCode = 1;
+    return;
+  }
+  return usage("scce db <status|init|migrate|verify|stats|audit|reset --confirm-local-dev-only>");
 }
 
 // Default thresholds a shadow model must clear to be considered
