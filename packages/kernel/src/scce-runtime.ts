@@ -1066,6 +1066,7 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     entailment: routedEntailment,
     construct: routedConstruct,
     requirementField: input.requirementField,
+    selectedCandidate,
     selectedProposal,
     claimBases: requestedAuthority === "translation" ? undefined : selectedProposal?.claims,
     answerDraft: "",

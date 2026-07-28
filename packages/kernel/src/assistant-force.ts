@@ -62,6 +62,16 @@ export interface AssistantForceDecision {
   force: AssistantForceClass;
   reasonIds: string[];
   audit: JsonValue;
+  /**
+   * Per-claim breakdown, populated only when selectedProposal.claims was
+   * non-empty (compositional path). Empty for the flat single-force path.
+   * Callers that need Valid(Y) = ∧ᵢ Valid(yᵢ | force(yᵢ)) rather than the
+   * single collapsed `force` label should read this instead of relying on
+   * precedence-based collapse hiding a failing unit behind a passing one.
+   */
+  claimDecisions: readonly AssistantForceClaimDecision[];
+  /** claimIds whose own declared basis required evidence/a receipt it didn't have. */
+  unsupportedClaimIds: readonly string[];
 }
 
 export function assistantForceClass(input: AssistantForceInput): AssistantForceClass {
@@ -144,6 +154,8 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
   return {
     force,
     reasonIds,
+    claimDecisions: [],
+    unsupportedClaimIds: [],
     audit: toJsonValue({
       source: "assistant.force",
       force,
@@ -188,17 +200,29 @@ function proposalForceDecision(input: {
   }));
   const invalidActionClaims = claimDecisions.filter(decision => decision.basis === "action_result" && !decision.verifiedActionReceipt);
   const inventedClaims = claimDecisions.filter(decision => decision.basis === "invented");
+  // A claim only ever resolves to "insufficient_support" when its OWN
+  // declared basis required evidence/a receipt and didn't have one --
+  // invented/conjectured/translated bases never land here (see
+  // claimForceDecision). So this is exactly the per-unit failure set for
+  // Valid(Y) = ∧ᵢ Valid(yᵢ | force(yᵢ)): if any non-fictional unit in this
+  // composed answer fails its own bar, the whole answer is unsupported,
+  // regardless of which other units (including invented ones) would
+  // otherwise win precedence and mask that failure.
+  const unsupportedClaims = claimDecisions.filter(decision => decision.force === "insufficient_support");
   let force: AssistantForceClass;
   const reasonIds: string[] = [];
   if (invalidActionClaims.length > 0) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.action_result_without_durable_receipt");
-  } else if (input.input.requestedAuthority === "creative" && inventedClaims.length > 0) {
-    force = "creative_answer";
-    reasonIds.push("assistant_force.proposal.requested_invention");
   } else if (input.contradicted) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.contradiction_pressure");
+  } else if (unsupportedClaims.length > 0) {
+    force = "insufficient_support";
+    reasonIds.push("assistant_force.proposal.unsupported_claim_among_composed_units");
+  } else if (input.input.requestedAuthority === "creative" && inventedClaims.length > 0) {
+    force = "creative_answer";
+    reasonIds.push("assistant_force.proposal.requested_invention");
   } else {
     force = selectProposalForce(claimDecisions);
     reasonIds.push(reasonForProposalForce(force));
@@ -206,6 +230,8 @@ function proposalForceDecision(input: {
   return {
     force,
     reasonIds,
+    claimDecisions,
+    unsupportedClaimIds: unsupportedClaims.map(decision => decision.claimId),
     audit: toJsonValue({
       source: "assistant.force.claim_basis",
       force,
@@ -230,6 +256,7 @@ function proposalForceDecision(input: {
       ],
       durableReceiptCount: [...receipts.values()].filter(isDurableActionReceipt).length,
       invalidActionClaimIds: invalidActionClaims.map(decision => decision.claimId),
+      unsupportedClaimIds: unsupportedClaims.map(decision => decision.claimId),
       claimBasis: claimDecisions.map(decision => ({
         claimId: decision.claimId,
         basis: decision.basis,

@@ -1,9 +1,50 @@
+import type { AssistantForceClaim, AssistantForceSelectedProposal } from "./assistant-force.js";
 import type { CandidateSurface } from "./candidate.js";
-import type { CognitiveProposal } from "./cognitive-planner.js";
+import type { ClaimBasis, CognitiveProposal } from "./cognitive-planner.js";
 import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
 import { inventionConstructNode, type InventionConstruct } from "./prediction.js";
 import { toJsonValue } from "./primitives.js";
 import type { ConstructGraph } from "./types.js";
+
+const INVENTION_CLAIM_FORCE_TO_BASIS: Record<string, ClaimBasis> = {
+  observed: "direct_evidence",
+  proved: "direct_evidence",
+  inferred: "reasoned_inference",
+  invented: "invented",
+  conjectured: "conjectured"
+};
+
+/**
+ * Lifts a creative candidate's own per-sub-claim InventionClaimBasis[]
+ * (attached to candidate.audit.claimBasis by candidate.ts's
+ * creativeCandidate(), one entry per factual_premise/deduction/invention/
+ * performance_prediction unit inside that ONE generated surface) into the
+ * same AssistantForceClaim[] shape assistantForceDecision already knows how
+ * to validate per-unit for cognitive-planner proposals. Without this, a
+ * creative-candidate's embedded factual premises are invisible to
+ * assistantForceDecision and the whole candidate collapses to one flat
+ * "creative_answer" force regardless of whether an embedded factual claim
+ * actually had the evidence its own basis required.
+ */
+export function assistantForceProposalFromCandidateClaimBasis(
+  candidate: CandidateSurface
+): AssistantForceSelectedProposal | undefined {
+  const claimBasis = jsonRecord(candidate.audit).claimBasis;
+  if (!Array.isArray(claimBasis) || claimBasis.length === 0) return undefined;
+  const claims: AssistantForceClaim[] = [];
+  for (const item of claimBasis) {
+    const row = jsonRecord(item);
+    const id = kernelString(row.id);
+    const forceValue = kernelString(row.force);
+    const basis = forceValue ? INVENTION_CLAIM_FORCE_TO_BASIS[forceValue] : undefined;
+    if (!id || !basis) continue;
+    const evidenceIds = Array.isArray(row.evidenceIds)
+      ? row.evidenceIds.filter((value): value is string => typeof value === "string")
+      : [];
+    claims.push({ id, basis, evidenceIds });
+  }
+  return claims.length > 0 ? { id: candidate.id, claims } : undefined;
+}
 
 export function cognitiveProposalForCandidate(
   candidate: CandidateSurface,

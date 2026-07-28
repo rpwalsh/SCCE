@@ -4088,6 +4088,19 @@ function supportBoundaryCandidate(
     text,
     activeJoinProgram(input.languageMemory)
   );
+  // KNOWN GAP (not fixed here): when learned generation can't produce
+  // admissible target-language prose for this caveat, this candidate drops
+  // out entirely and a contradiction turn can end up with zero surface
+  // candidates -- currently surfacing as an empty final answer instead of
+  // the correct fallback (target-language gloss, language-neutral
+  // structure, or clarification -- never raw English text). An earlier
+  // version of this patch fell back to the raw runtime-derived English
+  // reason string directly; that was reverted because it hardcodes English
+  // onto a user-visible surface, which is exactly the anti-pattern the
+  // multilingual invariant forbids. A real fix needs a language-neutral
+  // semantic caveat record routed through the same construction-grammar/
+  // Mouth realization pipeline as ordinary answers, not a raw-string
+  // shortcut. See docs/PRODUCTION_COMPLETION_PLAN_250.md.
   if (!admissibleLearnedSurface(generatedText, generation)) return undefined;
   return {
     id: "candidate:generated:proof-boundary",

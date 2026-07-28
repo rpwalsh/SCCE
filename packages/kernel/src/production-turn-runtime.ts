@@ -6,7 +6,7 @@ import {
   createAnswerRevisionCoordinator
 } from "./answer-revision.js";
 import { assistantForceDecision } from "./assistant-force.js";
-import { attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
+import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
@@ -657,7 +657,13 @@ export function createProductionTurnRuntime(options: {
             ? graphForEvidenceIds([...metadataEvidenceIds])
             : graphForText(retrievalText, {
               allowSemanticFrameEvidence,
-              sourceAnchoringRequired: requestedAuthority !== "creative",
+              // Always required: an embedded factual claim inside an
+              // otherwise-creative-authority turn still needs its evidence
+              // anchored (Part 1, compositional force refactor). Whether
+              // the request wants that evidence USED is decided later, per
+              // claim, by assistantForceDecision -- not by discarding the
+              // anchoring here where it can never be recovered.
+              sourceAnchoringRequired: true,
               residentOnly: fastRuntimeBudget
             }),
           () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText)
@@ -696,15 +702,13 @@ export function createProductionTurnRuntime(options: {
         new Set([
           ...metadataEvidenceIds,
           ...semanticFrameBoundEvidenceIds,
-          ...(requestedAuthority === "creative" ? [] : graphSlice.evidence.map(span => String(span.id)))
+          ...graphSlice.evidence.map(span => String(span.id))
         ])
       );
       const calibrationModels = await calibrationModelsCached();
       const sourceAnchorAudit = discourseEvidenceBound
         ? { required: false, anchors: [] as string[], evidence }
-        : requestedAuthority === "creative"
-          ? { required: false, anchors: [] as string[], evidence }
-          : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
+        : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
       const admissibleEvidence = sourceAnchorAudit.required ? sourceAnchorAudit.evidence : evidence;
       if (sourceAnchorAudit.required) graph = graphFilteredToEvidence(graph, sourceAnchorAudit.evidence);
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
@@ -823,19 +827,21 @@ export function createProductionTurnRuntime(options: {
       });
       markTiming("graphSliceMs");
       deadlineCheckpoint("runtime.graph_slice.complete", 0);
-      const factualProofRequired = requestedAuthority !== "creative";
-      const supportCandidates = factualProofRequired
-        ? runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit))
-        : [];
-      const proofNodes = factualProofRequired ? graph.nodes : [];
-      const proofEdges = factualProofRequired ? graph.edges : [];
-      const answerProposal = factualProofRequired
-        ? proposeSourceExactEvidenceAnswer({
-          requestText: input.text,
-          selectedEvidence: supportCandidates,
-          semanticFrameBoundEvidenceIds
-        })
-        : undefined;
+      // Always computed regardless of requestedAuthority: a creative-authority
+      // turn can still embed a factual claim that needs real evidence and a
+      // real proof verdict (Valid(Y) = ∧ᵢ Valid(yᵢ | force(yᵢ))), and a
+      // factual/reasoned turn can still embed an invented analogy that must
+      // NOT be forced through this machinery as if it were a claim. Which
+      // candidates/claims actually consume this is decided per-unit later
+      // by assistantForceDecision, not by skipping the computation itself.
+      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit));
+      const proofNodes = graph.nodes;
+      const proofEdges = graph.edges;
+      const answerProposal = proposeSourceExactEvidenceAnswer({
+        requestText: input.text,
+        selectedEvidence: supportCandidates,
+        semanticFrameBoundEvidenceIds
+      });
       const proofClaimText = answerProposal
         ? localEvidenceAnswerClaimSurface(answerProposal) || input.text
         : input.text;
@@ -864,8 +870,7 @@ export function createProductionTurnRuntime(options: {
           ccrResult: emptyCcrResult(proofClaimText),
           pfaceEstimate: undefined
         });
-      const supportBundle = factualProofRequired
-        ? evaluationComponent(
+      const supportBundle = evaluationComponent(
           "support-engine",
           "proof.support-engine",
           () => {
@@ -917,10 +922,9 @@ export function createProductionTurnRuntime(options: {
             };
           },
           emptySupportBundle
-        )
-        : emptySupportBundle();
+        );
       const { promoted, entailmentResult, semanticProof, ccrResult, pfaceEstimate } = supportBundle;
-      if (factualProofRequired) {
+      {
         // Fire-and-forget: outcome-based FTRL learning must never affect
         // or delay this turn's response. proofCandidateEvidence is the
         // full pool the entailment check chose from -- the candidate
@@ -1056,6 +1060,15 @@ export function createProductionTurnRuntime(options: {
       const localEvidenceAnswer = deps.evaluationCondition?.flags.disableSupportEngine
         ? undefined
         : selectedPoolLocalEvidenceAnswer;
+      // Reverted from an unconditional use of localEvidenceAnswer: that
+      // change caused a real regression (a creative candidate's own
+      // factual-premise evidenceIds were getting silently cleared by
+      // bindSelectedEvidenceToEntailment's rebinding, meant for non-creative
+      // answers, once it started firing for creative turns too -- see
+      // kernel-local-evidence-anchor.test.ts's "keeps a source-inspired
+      // request creative..." case). The compositional per-claim fix
+      // (assistant-force.ts) does not depend on this variable; only this
+      // one downstream rebinding path does, and it isn't creative-safe.
       const longPathBasisAnswer = requestedAuthority === "creative" ? undefined : localEvidenceAnswer;
       // bindSelectedEvidenceToEntailment binds longPathBasisAnswer's evidence
       // into the entailment (evidenceIds, proof graph nodes/edges) and, for
@@ -1598,12 +1611,13 @@ export function createProductionTurnRuntime(options: {
       const generatedCandidates = new Map<string, CandidateSurface>();
       for (const candidate of [...candidateField.candidates, ...authorityCandidateField.candidates]) generatedCandidates.set(candidate.id, candidate);
       for (const candidate of generatedCandidates.values()) {
-        const candidateProposal = cognitiveProposalForCandidate(candidate, cognitiveProposals);
+        const candidateProposal = cognitiveProposalForCandidate(candidate, cognitiveProposals)
+          ?? assistantForceProposalFromCandidateClaimBasis(candidate);
         const candidateAssistantForce = assistantForceDecision({
           requestedAuthority,
           selectedProposal: candidateProposal,
           epistemicForce: candidate.force,
-          proofVerdict: requestedAuthority === "creative" ? undefined : semanticProof.verdict,
+          proofVerdict: semanticProof.verdict,
           evidenceIds: candidate.evidenceIds,
           directEvidenceIds: selectedEvidence.map(span => span.id),
           constructForces: candidate.kind === "creative-candidate" ? ["CreativeConstruct"] : [],
@@ -1626,9 +1640,10 @@ export function createProductionTurnRuntime(options: {
             force: candidate.force,
             assistantForce: assistantForceDecision({
               requestedAuthority,
-              selectedProposal: cognitiveProposalForCandidate(candidate, cognitiveProposals),
+              selectedProposal: cognitiveProposalForCandidate(candidate, cognitiveProposals)
+                ?? assistantForceProposalFromCandidateClaimBasis(candidate),
               epistemicForce: candidate.force,
-              proofVerdict: requestedAuthority === "creative" ? undefined : semanticProof.verdict,
+              proofVerdict: semanticProof.verdict,
               evidenceIds: candidate.evidenceIds,
               directEvidenceIds: selectedEvidence.map(span => span.id),
               constructForces: candidate.kind === "creative-candidate" ? ["CreativeConstruct"] : [],
@@ -1651,12 +1666,20 @@ export function createProductionTurnRuntime(options: {
         functionalGate
       });
       const selectedProposal = cognitiveProposalForCandidate(judged.selected, cognitiveProposals);
+      // Kept separate from selectedProposal above: that variable must stay a
+      // real CognitiveProposal (attachCognitiveProposal / Mouth claimBases /
+      // answer-revision all read fields -- operatorActivations, quality,
+      // trace, claim.text -- a creative candidate's proposal doesn't have.
+      // Force computation only needs id+claims, so it can also see a
+      // creative candidate's own embedded factual-premise sub-claims.
+      const selectedAssistantForceProposal = selectedProposal
+        ?? assistantForceProposalFromCandidateClaimBasis(judged.selected);
       for (const rejected of judged.rejected) events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateRejected", payload: { candidateId: rejected.candidate.id, score: rejected.score, reasons: rejected.reasons } })));
       const selectedAssistantForce = assistantForceDecision({
         requestedAuthority,
-        selectedProposal,
+        selectedProposal: selectedAssistantForceProposal,
         epistemicForce: judged.selected.force,
-        proofVerdict: requestedAuthority === "creative" ? undefined : semanticProof.verdict,
+        proofVerdict: semanticProof.verdict,
         evidenceIds: judged.selected.evidenceIds,
         directEvidenceIds: selectedEvidence.map(span => span.id),
         constructForces: judged.selected.kind === "creative-candidate" ? ["CreativeConstruct"] : [],
@@ -1935,9 +1958,9 @@ export function createProductionTurnRuntime(options: {
       if (!answer.trim()) answer = "";
       const mouthAssistantForce = assistantForceDecision({
         requestedAuthority,
-        selectedProposal,
+        selectedProposal: selectedAssistantForceProposal,
         epistemicForce: answerEntailment.force,
-        proofVerdict: requestedAuthority === "creative" ? undefined : semanticProof.verdict,
+        proofVerdict: semanticProof.verdict,
         outputForce: spoken.force,
         evidenceIds: spoken.evidenceRefs,
         directEvidenceIds: selectedEvidence.map(span => span.id),
@@ -1945,9 +1968,7 @@ export function createProductionTurnRuntime(options: {
         support: answerEntailment.support,
         contradiction: candidateUsesNonFactualPlanSemantics(judged.selected)
           ? judged.selected.scores.contradiction
-          : requestedAuthority === "creative"
-            ? judged.selected.scores.contradiction
-            : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
+          : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
       });
       kernelTrace({
@@ -2094,9 +2115,9 @@ export function createProductionTurnRuntime(options: {
       }
       const emissionAssistantForce = assistantForceDecision({
         requestedAuthority,
-        selectedProposal,
+        selectedProposal: selectedAssistantForceProposal,
         epistemicForce: rawEmission.epistemicForce,
-        proofVerdict: requestedAuthority === "creative" ? undefined : semanticProof.verdict,
+        proofVerdict: semanticProof.verdict,
         outputForce: spoken.force,
         evidenceIds: rawEmission.evidenceIds,
         directEvidenceIds: selectedEvidence.map(span => span.id),
@@ -2104,9 +2125,7 @@ export function createProductionTurnRuntime(options: {
         support: answerEntailment.support,
         contradiction: candidateUsesNonFactualPlanSemantics(judged.selected)
           ? judged.selected.scores.contradiction
-          : requestedAuthority === "creative"
-            ? judged.selected.scores.contradiction
-            : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
+          : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
       });
       const runtimeReadinessForEmission = runtimeOrchestrator.readiness({ dag: runtimeDag, safety: safetyWithPlans, retrieval, field, alphaRecord, entailment: answerEntailment, construct: spokenConstructGraph, assembly, toolPlan, capabilityPlans, counterfactual: counterfactualWorld, validation, emission: rawEmission });
@@ -2128,6 +2147,18 @@ export function createProductionTurnRuntime(options: {
       const coherenceRequiresContinuation = !runtimeCoherence.emitAllowed
         || runtimeCoherence.demotionRequired
         || runtimeCoherence.assistantForceAfter === "insufficient_support";
+      // requestedAuthority === "creative" stays exempt from this whole-turn
+      // recovery/regenerate loop, deliberately. The compositional claim
+      // check (assistant-force.ts's unsupportedClaimIds) is real now and a
+      // creative answer's own force can in principle read
+      // "insufficient_support" -- but replanning the ENTIRE turn is the
+      // wrong response to that for creative content: it can silence or
+      // rewrite freely-invented material because of one flagged sub-claim,
+      // which is a heavier-handed "proof bound" behavior than what was
+      // asked for. The Mouth must stay free to speak a creative answer;
+      // the claim-level data (unsupportedClaimIds/claimDecisions) is
+      // preserved in the trace for a future targeted caveat/citation on
+      // just the affected unit, not a full-turn veto.
       if (
         coherenceRequiresContinuation
         && requestedAuthority !== "creative"
