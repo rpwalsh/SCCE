@@ -84,9 +84,9 @@ For the complete technical design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 
 SCCE is exposed through:
 
-- a local HTTP API and workbench;
+- a local HTTP API and a chat-first workbench in the browser;
+- a chat sidebar in VS Code, with reviewed code-change requests reachable from the same conversation;
 - a command-line interface;
-- a loopback-only VS Code integration;
 - repository and trace inspection through `scce-dev-mcp`;
 - PostgreSQL-backed persistent cognitive state.
 
@@ -94,7 +94,7 @@ The interfaces do not contain separate intelligence. They operate against the sa
 
 ## Run SCCE
 
-Requirements: Node.js 20+, pnpm 10, and PostgreSQL.
+Requirements: Node.js 24.18+ (24.x), pnpm 10, and PostgreSQL.
 
 Install and validate:
 
