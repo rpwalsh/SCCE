@@ -244,7 +244,11 @@ describe("kernel training", () => {
     });
 
     await kernel.turn({ text: "Zephyr valve pressure stabilizes after calibration." });
-    expect(fixture.evidenceSearchCalls).toBe(1);
+    // sourceAnchoredEvidenceForText now searches each candidate anchor
+    // phrase as its own query instead of blending them into one
+    // overlap-ranked search, so this request's four top-ranked multi-word
+    // anchor candidates produce four independent searchEvidence calls.
+    expect(fixture.evidenceSearchCalls).toBe(4);
 
     evidence.push(evidenceSpan({
       id: "evidence:zephyr",

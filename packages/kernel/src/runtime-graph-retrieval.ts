@@ -268,7 +268,7 @@ export function createRuntimeGraphRetrieval(options: {
           .filter(span => evidenceProofBoundary(span).certifiesFactualProof);
         const semanticIds = new Set(semanticSelection.semanticFrameBoundEvidenceIds
           .filter(id => certifyingSemanticEvidence.some(span => String(span.id) === id)));
-        const anchored = sourceAnchoredEvidenceForRequest(text, certifyingSemanticEvidence, semanticIds);
+        const anchored = sourceIdentityAdmissibleEvidenceForRequest(text, certifyingSemanticEvidence, semanticIds);
         const evidence = anchored.evidence.slice(0, 24);
         if (evidence.length) {
           const admittedIds = new Set(evidence.map(span => String(span.id)));
@@ -444,26 +444,38 @@ export function createRuntimeGraphRetrieval(options: {
 
 
   async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
-    const anchorFeatures = sourceAnchorRetrievalFeatures(text);
+    const anchorFeatureGroups = sourceAnchorRetrievalFeatureGroups(text);
+    const anchorFeatures = uniqueKernelStrings(anchorFeatureGroups.flat());
     // Source-bound retrieval should rank on the subject anchors themselves. Mixing
     // the full request feature field into this query makes common prompt fragments
     // match a large share of a hydrated corpus and turns overlap ranking into the
     // dominant turn cost. Fall back to the broader field only when no admissible
     // anchor feature could be derived.
-    const retrievalFeatures = uniqueKernelStrings(anchorFeatures.length ? anchorFeatures : features).slice(0, 128);
     const evidenceSearchStarted = Date.now();
-    const evidenceSearch = deps.storage.evidence.searchEvidence({ features: retrievalFeatures, limit: anchorFeatures.length ? 96 : 48 })
-      .then(results => {
-        kernelTrace({
-          stage: "graph.resolve.anchor_evidence_search",
-          label: "kernel.sourceAnchoredEvidenceForText",
-          durationMs: Date.now() - evidenceSearchStarted,
-          counts: { results: results.length, features: retrievalFeatures.length },
-          support: { retrievalFeatures }
-        });
-        return results;
-      });
-    const evidenceResults = await evidenceSearch;
+    // Each candidate anchor is searched as its own query rather than
+    // blending every anchor's features into one overlap-ranked search: the
+    // postgres anchor-posting search ranks by raw feature-overlap count, so
+    // a document that only matches the real subject's anchor (one feature)
+    // would lose to a document that happens to match several *other*
+    // candidate anchors' generic bigrams (verified live: an all-lowercase
+    // "who was ada lovelace..." query retrieved an unrelated "software
+    // engineering"/"artificial intelligence" article instead of the Ada
+    // Lovelace article once "computer science"-style anchors were blended
+    // in alongside "ada lovelace"). Searching per-group and unioning
+    // results lets sourceIdentityAdmissibleEvidenceForRequest's real
+    // exact-title-match ranking see every candidate document at all.
+    const evidenceResults = anchorFeatureGroups.length
+      ? await Promise.all(anchorFeatureGroups.map(group =>
+        deps.storage.evidence.searchEvidence({ features: group, limit: 32 })
+      )).then(groupResults => groupResults.flat())
+      : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48 });
+    kernelTrace({
+      stage: "graph.resolve.anchor_evidence_search",
+      label: "kernel.sourceAnchoredEvidenceForText",
+      durationMs: Date.now() - evidenceSearchStarted,
+      counts: { results: evidenceResults.length, features: anchorFeatures.length, groups: anchorFeatureGroups.length },
+      support: { anchorFeatures }
+    });
     const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
       ? await sourceAnchorSemanticFrameEvidence(text)
       : { evidence: [], semanticFrameBoundEvidenceIds: [] };
@@ -526,26 +538,56 @@ export function createRuntimeGraphRetrieval(options: {
   }
 
 
-  function sourceAnchorRetrievalFeatures(text: string): string[] {
+  // sourceEvidenceAnchorsForRequest's ranking is a length/specificity
+  // heuristic, not a guaranteed identification of the request's true named
+  // subject -- it is systematically biased against short proper nouns
+  // (e.g. "Ada") whenever the request carries no capitalization signal to
+  // mark them as named entities (an all-lowercase request never populates
+  // surfaceEntityRuns/namedSubjectAnchors at all, since hasPriorAnchorSignal
+  // only fires on case or non-Latin scripts). Each candidate anchor's
+  // features are kept in their own group (rather than flattened into one
+  // blended feature list) so a DB search can query them independently: the
+  // postgres anchor-posting search ranks by raw overlap_count across all
+  // features handed to a single query, so blending "ada lovelace" together
+  // with "computer science"/"contribute computer" let dedicated-topic
+  // articles that match multiple generic anchors outrank the one document
+  // that specifically matches the real named subject. Searching per-anchor
+  // and merging the unions means a document matching only its own
+  // best-ranked anchor still gets a chance to be seen at all before the
+  // real evidence-driven disambiguation (primarySourceAnchorForRequest/
+  // sourceAnchoredEvidenceForRequest) picks the winner.
+  function sourceAnchorRetrievalFeatureGroups(text: string): string[][] {
     const anchors = sourceEvidenceAnchorsForRequest(text);
-    const primary = anchors.find(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2)
-      ?? anchors[0];
-    if (!primary) return [];
-    const ordered = anchorFeatureSet(primary, 64);
-    const phraseFeatures = ordered
-      .filter(feature => feature.startsWith("anchor:bi:"))
-      .filter(feature => {
-        const units = retrievalFeatureUnits(feature.slice("anchor:".length)).filter(unit => !genericQuestionSignal(unit));
-        return units.length >= 2 && units.reduce((sum, unit) => sum + [...normalizePriorKey(unit)].length, 0) >= 6;
-      });
-    if (phraseFeatures.length) return phraseFeatures.slice(0, 4);
-    return ordered
-      .filter(feature => feature.startsWith("anchor:sym:"))
-      .filter(feature => {
-        const unit = normalizePriorKey(feature.slice("anchor:sym:".length));
-        return !genericQuestionSignal(unit) && [...unit].length >= 3;
-      })
-      .slice(0, 4);
+    if (!anchors.length) return [];
+    const specificAnchors = anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
+    const candidateAnchors = uniqueKernelStrings(specificAnchors.length ? specificAnchors : anchors).slice(0, 4);
+    const groups: string[][] = [];
+    for (const anchor of candidateAnchors) {
+      const ordered = anchorFeatureSet(anchor, 64);
+      const phraseFeatures = ordered
+        .filter(feature => feature.startsWith("anchor:bi:"))
+        .filter(feature => {
+          const units = retrievalFeatureUnits(feature.slice("anchor:".length)).filter(unit => !genericQuestionSignal(unit));
+          return units.length >= 2 && units.reduce((sum, unit) => sum + [...normalizePriorKey(unit)].length, 0) >= 6;
+        });
+      if (phraseFeatures.length) {
+        groups.push(phraseFeatures.slice(0, 4));
+        continue;
+      }
+      const symFeatures = ordered
+        .filter(feature => feature.startsWith("anchor:sym:"))
+        .filter(feature => {
+          const unit = normalizePriorKey(feature.slice("anchor:sym:".length));
+          return !genericQuestionSignal(unit) && [...unit].length >= 3;
+        })
+        .slice(0, 4);
+      if (symFeatures.length) groups.push(symFeatures);
+    }
+    return groups;
+  }
+
+  function sourceAnchorRetrievalFeatures(text: string): string[] {
+    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text).flat()).slice(0, 16);
   }
 
 
@@ -957,8 +999,19 @@ export function createRuntimeGraphRetrieval(options: {
       .filter((span): span is EvidenceSpan => Boolean(span));
     const candidates = indexedEvidence
       .filter(span => evidenceProofBoundary(span).certifiesFactualProof);
+    // sourceAnchoredEvidenceForRequest's generic fallback ("selected") only
+    // requires loose content/anchor overlap, not an exact or
+    // title-distinct match -- the full DB-backed path already guards
+    // against that via sourceIdentityAdmissibleEvidenceForRequest, but this
+    // resident-only hot-neighborhood path did not, so it could confidently
+    // return a topically-unrelated document (one that merely shares a
+    // generic anchor bigram) for a request whose real subject wasn't in
+    // the bounded hot set at all. Since this hot-path result short-circuits
+    // the entire rest of retrieval when non-empty (see graphForText), an
+    // unguarded weak match here was strictly worse than falling through to
+    // the real search.
     const indexedAnchored = candidates.length
-      ? sourceAnchoredEvidenceForRequest(text, candidates)
+      ? sourceIdentityAdmissibleEvidenceForRequest(text, candidates)
       : { evidence: [] };
     if (indexedAnchored.evidence.length) return evidenceForRequest(text, indexedAnchored.evidence).slice(0, 24);
     return [];
