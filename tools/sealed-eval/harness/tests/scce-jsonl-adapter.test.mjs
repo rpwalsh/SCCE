@@ -7,17 +7,17 @@ import {
   mapExactCitations,
   ownerInputForEvaluationQuestion,
   parseEvaluationEnvironment
-} from "../../integration/yopp-jsonl-adapter-lib.mjs";
+} from "../../integration/scce-jsonl-adapter-lib.mjs";
 
 test("evaluation environment produces one explicit typed condition input", () => {
   const parsed = parseEvaluationEnvironment({
-    YOPP_EVAL_CONDITION: "no_graph",
-    YOPP_EVAL_SEED: "sealed-seed-1",
-    YOPP_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
-    YOPP_EVAL_RUN_ID: "run-1",
-    YOPP_EVAL_CORPUS_MANIFEST: "fixtures/corpus.json",
-    YOPP_EVAL_CONFIG_PATH: "fixture.config.json",
-    YOPP_EVAL_DATABASE_SCHEMA: "sealed_run_1"
+    SCCE_EVAL_CONDITION: "no_graph",
+    SCCE_EVAL_SEED: "sealed-seed-1",
+    SCCE_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
+    SCCE_EVAL_RUN_ID: "run-1",
+    SCCE_EVAL_CORPUS_MANIFEST: "fixtures/corpus.json",
+    SCCE_EVAL_CONFIG_PATH: "fixture.config.json",
+    SCCE_EVAL_DATABASE_SCHEMA: "sealed_run_1"
   });
   assert.deepEqual(parsed.conditionInput, {
     conditionId: "no_graph",
@@ -28,34 +28,34 @@ test("evaluation environment produces one explicit typed condition input", () =>
   assert.equal(parsed.runId, "run-1");
   assert.equal(parsed.corpusManifestPath, path.resolve("fixtures/corpus.json"));
   assert.equal(parsed.databaseSchema, "sealed_run_1");
-  assert.throws(() => parseEvaluationEnvironment({}), /missing YOPP_EVAL_CONDITION/u);
+  assert.throws(() => parseEvaluationEnvironment({}), /missing SCCE_EVAL_CONDITION/u);
   assert.throws(() => parseEvaluationEnvironment({
-    YOPP_EVAL_CONDITION: "not-a-condition",
-    YOPP_EVAL_SEED: "x",
-    YOPP_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
-    YOPP_EVAL_RUN_ID: "x",
-    YOPP_EVAL_CORPUS_MANIFEST: "x"
-  }), /unknown YOPP_EVAL_CONDITION/u);
+    SCCE_EVAL_CONDITION: "not-a-condition",
+    SCCE_EVAL_SEED: "x",
+    SCCE_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
+    SCCE_EVAL_RUN_ID: "x",
+    SCCE_EVAL_CORPUS_MANIFEST: "x"
+  }), /unknown SCCE_EVAL_CONDITION/u);
   assert.throws(() => parseEvaluationEnvironment({
-    YOPP_EVAL_CONDITION: "full",
-    YOPP_EVAL_SEED: "x",
-    YOPP_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
-    YOPP_EVAL_RUN_ID: "x",
-    YOPP_EVAL_CORPUS_MANIFEST: "x",
-    YOPP_EVAL_DATABASE_SCHEMA: "unsafe-schema;drop"
+    SCCE_EVAL_CONDITION: "full",
+    SCCE_EVAL_SEED: "x",
+    SCCE_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
+    SCCE_EVAL_RUN_ID: "x",
+    SCCE_EVAL_CORPUS_MANIFEST: "x",
+    SCCE_EVAL_DATABASE_SCHEMA: "unsafe-schema;drop"
   }), /safe PostgreSQL schema identifier/u);
 });
 
 test("no_shard_router is constrained to the performance-recovery scope", () => {
   const base = {
-    YOPP_EVAL_CONDITION: "no_shard_router",
-    YOPP_EVAL_SEED: "sealed-seed-1",
-    YOPP_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
-    YOPP_EVAL_RUN_ID: "run-1",
-    YOPP_EVAL_CORPUS_MANIFEST: "corpus.json"
+    SCCE_EVAL_CONDITION: "no_shard_router",
+    SCCE_EVAL_SEED: "sealed-seed-1",
+    SCCE_EVAL_CLOCK: "2026-01-01T00:00:00.000Z",
+    SCCE_EVAL_RUN_ID: "run-1",
+    SCCE_EVAL_CORPUS_MANIFEST: "corpus.json"
   };
   assert.equal(parseEvaluationEnvironment(base).conditionInput.scope, "performance-recovery");
-  assert.throws(() => parseEvaluationEnvironment({ ...base, YOPP_EVAL_SCOPE: "answer-quality" }), /requires.*performance-recovery/u);
+  assert.throws(() => parseEvaluationEnvironment({ ...base, SCCE_EVAL_SCOPE: "answer-quality" }), /requires.*performance-recovery/u);
 });
 
 test("question mapping passes conversation identity but never gold or protected metadata", () => {

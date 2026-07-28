@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { verifyYoppEvaluationTrace } from "../../integration/yopp-trace-verifier.mjs";
+import { verifyScceEvaluationTrace } from "../../integration/scce-trace-verifier.mjs";
 
 test("trace verifier accepts an explicit disabled-component bypass", () => {
   const condition = makeCondition("no_relation_potential");
   const events = [event(condition, 0, "componentBypassed", "relation-potential", { reason: "condition-disabled" })];
-  const result = verifyYoppEvaluationTrace(condition, events);
+  const result = verifyScceEvaluationTrace(condition, events);
   assert.equal(result.valid, true);
   assert.deepEqual(result.bypassedDisabledComponents, ["relation-potential"]);
 });
@@ -24,7 +24,7 @@ test("trace verifier rejects a planted full-condition cache marker", () => {
       hit: true
     })
   ];
-  const result = verifyYoppEvaluationTrace(ablated, events);
+  const result = verifyScceEvaluationTrace(ablated, events);
   assert.equal(result.valid, false);
   assert.deepEqual(new Set(result.violations.map(item => item.code)), new Set([
     "CACHE_KEY_NAMESPACE_MISMATCH",
@@ -38,7 +38,7 @@ test("trace verifier rejects a label-only ablation configuration", () => {
   const condition = makeCondition("no_support_engine");
   condition.flags.disableSupportEngine = false;
   const events = [event(condition, 0, "componentBypassed", "support-engine", { reason: "condition-disabled" })];
-  const result = verifyYoppEvaluationTrace(condition, events);
+  const result = verifyScceEvaluationTrace(condition, events);
   assert.equal(result.valid, false);
   assert.equal(result.violations.some(item => item.code === "CONFIG_FEATURE_MATRIX_MISMATCH"), true);
   assert.equal(result.violations.some(item => item.code === "CONFIG_HASH_MISMATCH"), true);

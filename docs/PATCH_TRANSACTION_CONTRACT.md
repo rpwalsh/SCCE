@@ -33,8 +33,8 @@ commits no files.
 ## Server and IDE boundary
 
 `POST /api/workspace/patch` accepts only
-`yopp.workspace-patch-request.v1`: the exact latest persisted workspace ID, a
-verified `yopp.patch-transaction-plan.v1`, and the registered validation-policy
+`scce.workspace-patch-request.v1`: the exact latest persisted workspace ID, a
+verified `scce.patch-transaction-plan.v1`, and the registered validation-policy
 ID. A request cannot supply a filesystem root, executable, argument vector, or
 environment. The server derives and canonicalizes the stored root, enforces
 `runtime.allowedRoots`, and requires the existing two-phase capability approval
@@ -42,7 +42,7 @@ over `{ workspaceId, planHash, validationPolicyId, validationBinding }`. The
 server computes `validationBinding` from the complete policy and the selected
 provider's stable configuration identity; request data cannot supply it.
 
-The `yopp.*` schema prefix is a versioned SCCE wire-compatibility identifier. It does
+The `scce.*` schema prefix is a versioned SCCE wire-compatibility identifier. It does
 not name a separate product or runtime lane.
 
 The default server policy is `trusted-host-pnpm-validate.v1`. It is available

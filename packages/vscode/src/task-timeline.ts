@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { TASK_TIMELINE_SCHEMA, type ExtensionTaskState, type YoppEndpoint } from "./protocol.js";
+import { TASK_TIMELINE_SCHEMA, type ExtensionTaskState, type ScceEndpoint } from "./protocol.js";
 
-export const TASK_STORAGE_KEY = "yopp.taskTimeline.v1";
+export const TASK_STORAGE_KEY = "scce.taskTimeline.v1";
 const MAX_TASKS = 100;
 
 export interface MementoLike {
@@ -11,7 +11,7 @@ export interface MementoLike {
 
 export interface ExtensionTaskRecord {
   id: string;
-  endpoint: YoppEndpoint;
+  endpoint: ScceEndpoint;
   label: string;
   state: ExtensionTaskState;
   mutates: boolean;
@@ -49,7 +49,7 @@ export class TaskTimeline {
     return recovered;
   }
 
-  async start(endpoint: YoppEndpoint, label: string, mutates: boolean): Promise<ExtensionTaskRecord> {
+  async start(endpoint: ScceEndpoint, label: string, mutates: boolean): Promise<ExtensionTaskRecord> {
     const observedAt = this.now();
     const task: ExtensionTaskRecord = {
       id: randomUUID(),
@@ -67,9 +67,9 @@ export class TaskTimeline {
 
   async transition(id: string, state: ExtensionTaskState, detail?: string): Promise<ExtensionTaskRecord> {
     const index = this.tasks.findIndex(task => task.id === id);
-    if (index < 0) throw new Error(`unknown Yopp task: ${id}`);
+    if (index < 0) throw new Error(`unknown SCCE task: ${id}`);
     const current = this.tasks[index]!;
-    if (!allowedTransition(current.state, state)) throw new Error(`invalid Yopp task transition: ${current.state} -> ${state}`);
+    if (!allowedTransition(current.state, state)) throw new Error(`invalid SCCE task transition: ${current.state} -> ${state}`);
     const updated = { ...current, state, updatedAt: this.now(), detail };
     this.tasks = this.tasks.map(task => task.id === id ? updated : task);
     await this.persist();
@@ -111,7 +111,7 @@ function parseTask(value: unknown): ExtensionTaskRecord[] {
   }];
 }
 
-function isEndpoint(value: unknown): value is YoppEndpoint {
+function isEndpoint(value: unknown): value is ScceEndpoint {
   return value === "ready"
     || value === "workspace.initialize"
     || value === "workspace.ingest"

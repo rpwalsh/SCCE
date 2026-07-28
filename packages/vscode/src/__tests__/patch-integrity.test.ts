@@ -151,14 +151,14 @@ function fixturePlan(inputs: FixtureOperation[]): ReviewedPatchPlan {
     }
     return { kind: "delete", path: input.path, beforeContentHash: sha256(input.before), afterContentHash: null };
   }).sort((left, right) => left.path.localeCompare(right.path));
-  const payload = { schemaVersion: "yopp.patch-transaction-plan.v1" as const, operations };
+  const payload = { schemaVersion: "scce.patch-transaction-plan.v1" as const, operations };
   return { ...payload, planHash: sha256(JSON.stringify(canonical(payload))) };
 }
 
 function fixtureApplied(plan: ReviewedPatchPlan): AppliedWorkspacePatch {
   const mutations = plan.operations.map((operation, operationIndex) => {
     const payload = {
-      schemaVersion: "yopp.patch-mutation-receipt.v1" as const,
+      schemaVersion: "scce.patch-mutation-receipt.v1" as const,
       planHash: plan.planHash,
       operationIndex,
       kind: operation.kind,
@@ -169,14 +169,14 @@ function fixtureApplied(plan: ReviewedPatchPlan): AppliedWorkspacePatch {
     return { ...payload, mutationHash: canonicalPatchHash(payload) };
   });
   const receiptPayload = {
-    schemaVersion: "yopp.patch-transaction-receipt.v1" as const,
+    schemaVersion: "scce.patch-transaction-receipt.v1" as const,
     transactionScope: "atomic-per-file-with-verified-transaction-rollback" as const,
     planHash: plan.planHash,
     validation: { validatorId: "trusted-host-pnpm-validate.v1", evidenceHash: sha256("validation-evidence") },
     mutations
   };
   return {
-    schemaVersion: "yopp.workspace-patch-response.v1",
+    schemaVersion: "scce.workspace-patch-response.v1",
     workspaceId: "workspace-1",
     validationPolicyId: "trusted-host-pnpm-validate.v1",
     receipt: { ...receiptPayload, receiptHash: canonicalPatchHash(receiptPayload) }

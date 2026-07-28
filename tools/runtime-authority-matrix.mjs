@@ -13,7 +13,7 @@ import {
   createWorkspaceRuntime,
   readScceRuntimeConfig
 } from "../packages/adapters-node/dist/index.js";
-import { verifyYoppEvaluationTrace } from "./sealed-eval/integration/yopp-trace-verifier.mjs";
+import { verifyScceEvaluationTrace } from "./sealed-eval/integration/scce-trace-verifier.mjs";
 
 const outputDirectory = path.resolve(".tmp/runtime-authority-matrix");
 const configPath = path.resolve(process.env.SCCE_AUTHORITY_MATRIX_CONFIG ?? "scce.config.json");
@@ -261,7 +261,7 @@ try {
       }
     });
     const selected = objectRecord(result.selectedCandidate) ?? selectedCandidateFromEvents(result.events);
-    const traceVerification = verifyYoppEvaluationTrace(condition, result.evaluationTrace);
+    const traceVerification = verifyScceEvaluationTrace(condition, result.evaluationTrace);
     const row = {
       id: request.id,
       request: { text: request.text, expectedAuthority: request.authority, explicitRequestedAuthority: null, metadata: request.metadata ?? null },

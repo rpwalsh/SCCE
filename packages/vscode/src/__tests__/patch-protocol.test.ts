@@ -108,7 +108,7 @@ function fixturePlan(inputs: Array<{ kind: "create"; path: string; content: stri
     ? { kind: "create", path: input.path, beforeContentHash: null, afterContentHash: sha256(input.content), content: input.content }
     : { kind: "replace", path: input.path, beforeContentHash: sha256(input.before), afterContentHash: sha256(input.content), content: input.content })
     .sort((left, right) => left.path.localeCompare(right.path));
-  const payload = { schemaVersion: "yopp.patch-transaction-plan.v1", operations };
+  const payload = { schemaVersion: "scce.patch-transaction-plan.v1", operations };
   return { ...payload, planHash: sha256(JSON.stringify(canonical(payload))) };
 }
 

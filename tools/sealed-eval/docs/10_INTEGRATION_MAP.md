@@ -1,6 +1,6 @@
 # SCCE integration map
 
-The `yopp-*` integration basenames below are retained compatibility identifiers for
+The `scce-*` integration basenames below are retained compatibility identifiers for
 the SCCE evaluation interface.
 
 The current production and evaluation boundaries are:
@@ -9,7 +9,7 @@ The current production and evaluation boundaries are:
   `packages/kernel/src/evaluation-flags.ts`;
 - component event recording and verification:
   `packages/kernel/src/evaluation-trace.ts` and
-  `tools/sealed-eval/integration/yopp-trace-verifier.mjs`;
+  `tools/sealed-eval/integration/scce-trace-verifier.mjs`;
 - evidence bytes and offsets: `packages/kernel/src/evidence.ts`;
 - graph construction: `packages/kernel/src/graphbuild.ts`;
 - empirical alpha normalization: `packages/kernel/src/alpha.ts`;
@@ -51,7 +51,7 @@ The current production and evaluation boundaries are:
   `packages/kernel/src/runtime-orchestrator.ts`, and
   `packages/kernel/src/scce-runtime.ts`;
 - normal evaluation bridge:
-  `tools/sealed-eval/integration/yopp-jsonl-adapter.mjs`.
+  `tools/sealed-eval/integration/scce-jsonl-adapter.mjs`.
 
 Evaluation flags execute in the production kernel, field, retrieval, support,
 mouth, learning, and shard boundaries. The harness observes them; it does not

@@ -7,7 +7,7 @@ const root = process.cwd();
 const vitestFiles = await collect(path.join(root, "packages"), file => /(?:test|spec)\.(?:ts|tsx|js|mjs|cjs)$/u.test(file));
 const sealedFiles = await collect(path.join(root, "tools", "sealed-eval", "harness", "tests"), file => /\.test\.mjs$/u.test(file));
 const record = {
-  schema: "yopp.test-inventory.v1",
+  schema: "scce.test-inventory.v1",
   generatedAt: new Date().toISOString(),
   sourceCommit: git(["rev-parse", "HEAD"]),
   worktreeDirty: git(["status", "--porcelain"]).trim().length > 0,

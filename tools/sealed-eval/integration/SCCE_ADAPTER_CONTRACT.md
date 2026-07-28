@@ -1,6 +1,6 @@
 # SCCE adapter contract
 
-This file, the `yopp-*` adapter basenames, and the `YOPP_EVAL_*` environment names
+This file, the `scce-*` adapter basenames, and the `SCCE_EVAL_*` environment names
 retain their legacy compatibility identifiers. They refer to the SCCE production
 runtime.
 
@@ -47,14 +47,14 @@ The trace must avoid proprietary formula values where disclosure is not required
 
 ## Production adapter
 
-Run `pnpm build` first, then launch `integration/yopp-jsonl-adapter.mjs` from the repository root. The harness supplies:
+Run `pnpm build` first, then launch `integration/scce-jsonl-adapter.mjs` from the repository root. The harness supplies:
 
-- `YOPP_EVAL_CONDITION`
-- `YOPP_EVAL_SEED`
-- `YOPP_EVAL_CLOCK`
-- `YOPP_EVAL_RUN_ID`
-- `YOPP_EVAL_CORPUS_MANIFEST`
-- optionally `YOPP_EVAL_SCOPE` and `YOPP_EVAL_CONFIG_PATH`
+- `SCCE_EVAL_CONDITION`
+- `SCCE_EVAL_SEED`
+- `SCCE_EVAL_CLOCK`
+- `SCCE_EVAL_RUN_ID`
+- `SCCE_EVAL_CORPUS_MANIFEST`
+- optionally `SCCE_EVAL_SCOPE` and `SCCE_EVAL_CONFIG_PATH`
 
 The production adapter emits the kernel's `evaluationTrace` component events verbatim. It does not synthesize the generic lifecycle labels above. At present, those exact labels are not all exposed as first-class events by `TurnResult`; `metadata.runtimeEventTypes` records the real kernel event types that did execute. A sealed run requiring the exact generic lifecycle names must remain blocked until those stages exist in the production runtime. This is intentional: an adapter-generated label would not prove that the named kernel stage participated.
 

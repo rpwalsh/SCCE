@@ -3,18 +3,18 @@ const http = require("node:http");
 const path = require("node:path");
 const vscode = require("vscode");
 
-const EXTENSION_ID = "yopp-local.yopp-vscode";
+const EXTENSION_ID = "walsh-technical-group.scce-vscode";
 const REQUIRED_COMMANDS = [
-  "yopp.checkReadiness",
-  "yopp.setServerToken",
-  "yopp.workspace.initialize",
-  "yopp.workspace.ingest",
-  "yopp.workspace.codingRequest",
-  "yopp.workspace.applyPatchPlan",
-  "yopp.project.summary",
-  "yopp.workspace.ask",
-  "yopp.workspace.status",
-  "yopp.tasks.clear"
+  "scce.checkReadiness",
+  "scce.setServerToken",
+  "scce.workspace.initialize",
+  "scce.workspace.ingest",
+  "scce.workspace.codingRequest",
+  "scce.workspace.applyPatchPlan",
+  "scce.project.summary",
+  "scce.workspace.ask",
+  "scce.workspace.status",
+  "scce.tasks.clear"
 ];
 
 async function run() {
@@ -35,7 +35,7 @@ async function run() {
     const address = server.address();
     assert.ok(address && typeof address === "object", "smoke server did not expose a TCP address");
 
-    const configuration = vscode.workspace.getConfiguration("yopp");
+    const configuration = vscode.workspace.getConfiguration("scce");
     await configuration.update("serverUrl", `http://127.0.0.1:${address.port}`, vscode.ConfigurationTarget.Global);
     await configuration.update("requestTimeoutMs", 2_000, vscode.ConfigurationTarget.Global);
 
@@ -56,9 +56,9 @@ async function run() {
     }
 
     await waitFor(() => requests.length >= 1, "activation readiness request");
-    await vscode.commands.executeCommand("yopp.checkReadiness");
+    await vscode.commands.executeCommand("scce.checkReadiness");
     await waitFor(() => requests.length >= 2, "explicit readiness request");
-    await vscode.commands.executeCommand("yopp.tasks.clear");
+    await vscode.commands.executeCommand("scce.tasks.clear");
 
     assert.deepEqual(requests.slice(0, 2), [
       { method: "GET", url: "/api/ready" },

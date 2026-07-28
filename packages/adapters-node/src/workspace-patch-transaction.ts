@@ -371,7 +371,7 @@ async function cleanupPrepared(prepared: readonly PreparedOperation[]): Promise<
 
 function temporarySibling(targetPath: string, planHash: PatchContentHash, index: number, suffix: "stage" | "backup"): string {
   const token = randomBytes(12).toString("hex");
-  return join(dirname(targetPath), `.${basename(targetPath)}.yopp-${planHash.slice(7, 19)}-${index}-${token}.${suffix}`);
+  return join(dirname(targetPath), `.${basename(targetPath)}.scce-${planHash.slice(7, 19)}-${index}-${token}.${suffix}`);
 }
 
 function requiredStage(entry: PreparedOperation): string {

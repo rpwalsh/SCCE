@@ -23,7 +23,7 @@
     "test:unit": "vitest run",
     "test:structural": "vitest run packages/kernel/src/__tests__/runtime-coherence.test.ts packages/kernel/src/__tests__/discourse-state.test.ts packages/kernel/src/__tests__/postgres-contract.test.ts",
     "launch:ready": "node tools/launch-ready.mjs",
-    "yopp:eval": "node tools/yopp-blind-eval/index.mjs",
+    "scce:eval": "node tools/scce-blind-eval/index.mjs",
     "calibration:evaluate": "node tools/calibration-holdout.mjs",
     "eval:kit:verify": "pnpm --dir tools/sealed-eval verify",
     "eval:seal": "node tools/sealed-eval/harness/cli.mjs seal",

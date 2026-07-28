@@ -1,4 +1,4 @@
-import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken, type YoppConnectionConfig } from "./config.js";
+import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken, type ScceConnectionConfig } from "./config.js";
 import {
   parseProjectSummaryResponse,
   parseReadyResponse,
@@ -61,17 +61,17 @@ export interface HttpResponseLike {
 
 export type HttpTransport = (input: string, init: RequestInit) => Promise<HttpResponseLike>;
 
-export class YoppHttpError extends Error {
+export class ScceHttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
-    this.name = "YoppHttpError";
+    this.name = "ScceHttpError";
   }
 }
 
-export class YoppClient {
-  private readonly config: YoppConnectionConfig;
+export class ScceClient {
+  private readonly config: ScceConnectionConfig;
 
-  constructor(config: YoppConnectionConfig, private readonly transport: HttpTransport = fetch) {
+  constructor(config: ScceConnectionConfig, private readonly transport: HttpTransport = fetch) {
     this.config = {
       serverUrl: normalizeLocalServerUrl(config.serverUrl),
       token: normalizeToken(config.token),
@@ -160,8 +160,8 @@ export class YoppClient {
     let latestSequence = 0;
     let result: TurnAnswer | undefined;
     while (!result) {
-      if (!response.ok) throw new YoppHttpError(response.status, `Yopp turn stream failed (${response.status})`);
-      if (!response.body) throw new Error("Yopp turn stream response had no body");
+      if (!response.ok) throw new ScceHttpError(response.status, `SCCE turn stream failed (${response.status})`);
+      if (!response.body) throw new Error("SCCE turn stream response had no body");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = "";
@@ -172,7 +172,7 @@ export class YoppClient {
           const next = await reader.read();
           if (next.value) {
             receivedBytes += next.value.byteLength;
-            if (receivedBytes > MAX_STREAM_BYTES) throw new Error("Yopp turn stream exceeded the extension size limit");
+            if (receivedBytes > MAX_STREAM_BYTES) throw new Error("SCCE turn stream exceeded the extension size limit");
           }
           pending += decoder.decode(next.value ?? new Uint8Array(), { stream: !next.done });
           const lines = pending.split("\n");
@@ -186,7 +186,7 @@ export class YoppClient {
             if (frame.type === "result") result = frame.value as TurnAnswer;
             if (frame.type === "error" || frame.type === "cancelled") {
               terminalFailure = true;
-              throw new Error(frame.error ?? "Yopp turn stream failed");
+              throw new Error(frame.error ?? "SCCE turn stream failed");
             }
           }
           if (next.done) break;
@@ -198,14 +198,14 @@ export class YoppClient {
           if (frame.type === "result") result = frame.value as TurnAnswer;
           if (frame.type === "error" || frame.type === "cancelled") {
             terminalFailure = true;
-            throw new Error(frame.error ?? "Yopp turn stream failed");
+            throw new Error(frame.error ?? "SCCE turn stream failed");
           }
         }
       } catch (error) {
         if (terminalFailure || !reconnectUrl) throw error;
       }
       if (result) break;
-      if (!reconnectUrl) throw new Error("Yopp turn stream ended without a reconnectable task receipt");
+      if (!reconnectUrl) throw new Error("SCCE turn stream ended without a reconnectable task receipt");
       await delay(500, signal);
       response = await fetch(`${reconnectUrl}?after=${latestSequence}`, {
         headers: { accept: "application/x-ndjson", ...(this.config.token ? { Authorization: `Bearer ${this.config.token}` } : {}) },
@@ -229,11 +229,11 @@ export class YoppClient {
         signal: controller.signal
       });
       const declaredLength = Number(response.headers.get("content-length") ?? "0");
-      if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) throw new Error("Yopp response exceeded the extension size limit");
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) throw new Error("SCCE response exceeded the extension size limit");
       const text = await response.text();
-      if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error("Yopp response exceeded the extension size limit");
+      if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error("SCCE response exceeded the extension size limit");
       const payload = parseJson(text);
-      if (!response.ok) throw new YoppHttpError(response.status, errorMessage(payload, response.status));
+      if (!response.ok) throw new ScceHttpError(response.status, errorMessage(payload, response.status));
       return parse(payload);
     } finally {
       clearTimeout(timer);
@@ -317,16 +317,16 @@ function parseJson(text: string): unknown {
   try {
     return text ? JSON.parse(text) : null;
   } catch {
-    throw new Error("Yopp server returned invalid JSON");
+    throw new Error("SCCE server returned invalid JSON");
   }
 }
 
 function errorMessage(payload: unknown, status: number): string {
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     const error = (payload as Record<string, unknown>).error;
-    if (typeof error === "string" && error.trim()) return `Yopp request failed (${status}): ${error.slice(0, 1000)}`;
+    if (typeof error === "string" && error.trim()) return `SCCE request failed (${status}): ${error.slice(0, 1000)}`;
   }
-  return `Yopp request failed (${status})`;
+  return `SCCE request failed (${status})`;
 }
 
 function identity(value: unknown): unknown {
@@ -338,13 +338,13 @@ export function parseTurnStreamFrame(line: string): TurnStreamFrame {
   try {
     parsed = JSON.parse(line);
   } catch {
-    throw new Error("Yopp turn stream sent a non-JSON line");
+    throw new Error("SCCE turn stream sent a non-JSON line");
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Yopp turn stream frame was not an object");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("SCCE turn stream frame was not an object");
   const record = parsed as Record<string, unknown>;
   const type = record.type;
   if (type !== "accepted" && type !== "progress" && type !== "result" && type !== "error" && type !== "cancelled") {
-    throw new Error("Yopp turn stream frame had an unrecognized type");
+    throw new Error("SCCE turn stream frame had an unrecognized type");
   }
   return record as unknown as TurnStreamFrame;
 }

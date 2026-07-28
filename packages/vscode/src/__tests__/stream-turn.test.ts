@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { YoppClient, parseTurnStreamFrame, type TurnStreamFrame } from "../client.js";
+import { ScceClient, parseTurnStreamFrame, type TurnStreamFrame } from "../client.js";
 
-describe("YoppClient.streamTurn", () => {
+describe("ScceClient.streamTurn", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -14,7 +14,7 @@ describe("YoppClient.streamTurn", () => {
     ];
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => streamingResponse(lines));
     vi.stubGlobal("fetch", fetchMock);
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
     const phases: string[] = [];
 
     const answer = await client.streamTurn(
@@ -46,7 +46,7 @@ describe("YoppClient.streamTurn", () => {
       .mockResolvedValueOnce(streamingResponse(second));
     vi.stubGlobal("fetch", fetchMock);
     vi.useFakeTimers();
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
 
     const pending = client.streamTurn({ text: "hello", sessionId: "session-2" }, () => {});
     await vi.advanceTimersByTimeAsync(600);
@@ -63,7 +63,7 @@ describe("YoppClient.streamTurn", () => {
       { schema: "scce.turn_stream.v1", type: "error", taskId: "task-3", sequence: 1, error: "runtime failure: no candidate selected" }
     ];
     vi.stubGlobal("fetch", vi.fn(async () => streamingResponse(lines)));
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
 
     await expect(client.streamTurn({ text: "hello", sessionId: "session-3" }, () => {}))
       .rejects.toThrow("runtime failure: no candidate selected");
@@ -78,7 +78,7 @@ describe("YoppClient.streamTurn", () => {
       throw error;
     });
     vi.stubGlobal("fetch", fetchMock);
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
 
     await expect(client.streamTurn({ text: "hello", sessionId: "session-4" }, () => {}, controller.signal))
       .rejects.toMatchObject({ name: "AbortError" });

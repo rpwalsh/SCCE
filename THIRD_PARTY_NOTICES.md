@@ -17,4 +17,4 @@ The vendored tarball is the official upstream distribution archive and is stored
 
 The Apache License 2.0 is also available at [https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
-Yopp resolves the `xlsx` dependency from the local archive through `packages/adapters-node/package.json`. See [`vendor/README.md`](vendor/README.md) for checksum verification and [`docs/SPREADSHEET_INGESTION_CONTRACT.md`](docs/SPREADSHEET_INGESTION_CONTRACT.md) for the bounded ingestion contract around this library.
+SCCE resolves the `xlsx` dependency from the local archive through `packages/adapters-node/package.json`. See [`vendor/README.md`](vendor/README.md) for checksum verification and [`docs/SPREADSHEET_INGESTION_CONTRACT.md`](docs/SPREADSHEET_INGESTION_CONTRACT.md) for the bounded ingestion contract around this library.

@@ -119,7 +119,7 @@ describe("Docker sandbox patch validation", () => {
     expect(evidence.dependencyMaterialization.containerId).toMatch(/^[0-9a-f]{12,64}$/u);
     expect(evidence.commands).toEqual([expect.objectContaining({ code: 0, stdout: "isolated-ok" })]);
     await expect(readFile(join(root, "patched.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readFile(join(root, ".yopp-validation"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, ".scce-validation"))).rejects.toMatchObject({ code: "ENOENT" });
   }, 180_000);
 });
 
@@ -151,7 +151,7 @@ function materialization() {
 
 function policy(commands: StructuredPatchValidationPolicy["commands"]): StructuredPatchValidationPolicy {
   return {
-    schemaVersion: "yopp.patch-validation-policy.v1",
+    schemaVersion: "scce.patch-validation-policy.v1",
     id: "docker-live-fixture.v1",
     commands,
     timeoutMs: 120_000,

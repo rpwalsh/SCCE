@@ -12,7 +12,7 @@ export async function createSeal({ evaluationId, prereg, corpus, questions, sour
   if (source) hashes.sourceTree = (await treeManifest(source)).treeHash;
   if (build) hashes.buildTree = (await treeManifest(build)).treeHash;
   if (brain) hashes.brainManifest = await sha256File(brain);
-  const body = { schemaVersion:"1.0", evaluationId, createdAt:new Date().toISOString(), hashes, metadata:{ tool:"yopp-sealed-eval-kit", version:"1.0.0" } };
+  const body = { schemaVersion:"1.0", evaluationId, createdAt:new Date().toISOString(), hashes, metadata:{ tool:"scce-sealed-eval-kit", version:"1.0.0" } };
   const sealHash = sha256Text(stableStringify(body));
   const seal = { ...body, sealHash };
   await writeJson(out, seal); return seal;

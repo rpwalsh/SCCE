@@ -1,8 +1,8 @@
 import { canonicalStringify, createHasher } from "./primitives.js";
 import type { Hasher } from "./types.js";
 
-export const PATCH_TRANSACTION_PLAN_SCHEMA = "yopp.patch-transaction-plan.v1" as const;
-export const PATCH_TRANSACTION_RECEIPT_SCHEMA = "yopp.patch-transaction-receipt.v1" as const;
+export const PATCH_TRANSACTION_PLAN_SCHEMA = "scce.patch-transaction-plan.v1" as const;
+export const PATCH_TRANSACTION_RECEIPT_SCHEMA = "scce.patch-transaction-receipt.v1" as const;
 export const PATCH_TRANSACTION_SCOPE = "atomic-per-file-with-verified-transaction-rollback" as const;
 
 export type PatchContentHash = `sha256:${string}`;
@@ -47,7 +47,7 @@ export interface PatchValidationReceipt {
 }
 
 export interface PatchMutationReceipt {
-  readonly schemaVersion: "yopp.patch-mutation-receipt.v1";
+  readonly schemaVersion: "scce.patch-mutation-receipt.v1";
   readonly planHash: PatchContentHash;
   readonly operationIndex: number;
   readonly kind: PatchOperationKind;
@@ -123,7 +123,7 @@ export function createPatchMutationReceipt(
     throw new Error(`mutation receipt does not match the plan for ${input.operation.path}`);
   }
   const payload = {
-    schemaVersion: "yopp.patch-mutation-receipt.v1" as const,
+    schemaVersion: "scce.patch-mutation-receipt.v1" as const,
     planHash: input.planHash,
     operationIndex: input.operationIndex,
     kind: input.operation.kind,

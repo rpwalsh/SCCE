@@ -9,7 +9,7 @@ import {
   ownerInputForEvaluationQuestion,
   parseEvaluationEnvironment,
   sanitizeAdapterError
-} from "./yopp-jsonl-adapter-lib.mjs";
+} from "./scce-jsonl-adapter-lib.mjs";
 
 let parsedEnvironment;
 let environmentError;
@@ -93,7 +93,7 @@ try {
         }
       });
     } catch (error) {
-      write({ status: "error", answer: "", citations: [], support: {}, trace: [], metrics: {}, error: adapterError("YOPP_RUNTIME_ERROR", error) });
+      write({ status: "error", answer: "", citations: [], support: {}, trace: [], metrics: {}, error: adapterError("SCCE_RUNTIME_ERROR", error) });
     }
   }
 } finally {

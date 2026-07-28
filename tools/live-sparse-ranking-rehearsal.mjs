@@ -4,9 +4,9 @@ import path from "node:path";
 import { RETRIEVAL_RANK_FEATURE_SCHEMA_V1 } from "../packages/kernel/dist/index.js";
 import { createPostgresStorageAdapter, readScceRuntimeConfig } from "../packages/adapters-node/dist/index.js";
 
-const configPath = path.resolve(process.env.YOPP_REHEARSAL_CONFIG ?? "scce.config.json");
-const schema = `yopp_rehearsal_sparse_ranking_${process.pid}_${Date.now()}`;
-if (!/^yopp_rehearsal_sparse_ranking_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
+const configPath = path.resolve(process.env.SCCE_REHEARSAL_CONFIG ?? "scce.config.json");
+const schema = `scce_rehearsal_sparse_ranking_${process.pid}_${Date.now()}`;
+if (!/^scce_rehearsal_sparse_ranking_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
 const TASK_CLASS = "graph.node_rank.v1";
 const checks = [];
 let storage;
@@ -57,7 +57,7 @@ try {
 } finally {
   if (storage) {
     try {
-      if (!/^yopp_rehearsal_sparse_ranking_[a-z0-9_]+$/u.test(storage.schema)) throw new Error("refusing cleanup outside rehearsal schema");
+      if (!/^scce_rehearsal_sparse_ranking_[a-z0-9_]+$/u.test(storage.schema)) throw new Error("refusing cleanup outside rehearsal schema");
       await storage.query(`DROP SCHEMA IF EXISTS "${storage.schema}" CASCADE`);
       checks.push({ id: "cleanup.drop_disposable_schema", passed: true, detail: storage.schema });
     } catch (error) {
@@ -69,7 +69,7 @@ try {
 }
 
 const report = {
-  schema: "yopp.live_sparse_ranking_rehearsal.v1",
+  schema: "scce.live_sparse_ranking_rehearsal.v1",
   completedAt: new Date().toISOString(),
   configPath,
   disposableSchema: schema,

@@ -58,7 +58,7 @@ afterEach(async () => {
 });
 
 const passingPolicy = {
-  schemaVersion: "yopp.patch-validation-policy.v1" as const,
+  schemaVersion: "scce.patch-validation-policy.v1" as const,
   id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
   commands: [{ executable: process.execPath, argv: ["-e", "process.exit(0)"] }],
   timeoutMs: 5_000,
@@ -69,7 +69,7 @@ const passingPolicy = {
 
 describe("workspace patch execution routed through the durable executive dispatcher (plan item 45)", () => {
   it("performs the real mutation and returns the real receipt when executive is provided", async () => {
-    const root = await mkdtemp(join(tmpdir(), "yopp-patch-executive-"));
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-executive-"));
     roots.push(root);
     await writeFile(join(root, "value.txt"), "before", "utf8");
     const plan = createPatchTransactionPlan({
@@ -97,7 +97,7 @@ describe("workspace patch execution routed through the durable executive dispatc
   });
 
   it("does not attempt the mutation a second time when the dispatched executor already failed", async () => {
-    const root = await mkdtemp(join(tmpdir(), "yopp-patch-executive-fail-"));
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-executive-fail-"));
     roots.push(root);
     await writeFile(join(root, "value.txt"), "before", "utf8");
     // baseContentHash deliberately wrong -- the real transaction must fail
@@ -130,7 +130,7 @@ describe("workspace patch execution routed through the durable executive dispatc
   });
 
   it("dispatching the identical request twice against a real journal replays as a duplicate rather than mutating twice", async () => {
-    const root = await mkdtemp(join(tmpdir(), "yopp-patch-executive-dup-"));
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-executive-dup-"));
     roots.push(root);
     await writeFile(join(root, "value.txt"), "before", "utf8");
     const plan = createPatchTransactionPlan({
@@ -174,7 +174,7 @@ describe("workspace patch execution routed through the durable executive dispatc
   });
 
   it("falls back to the exact pre-existing direct path when executive is absent", async () => {
-    const root = await mkdtemp(join(tmpdir(), "yopp-patch-executive-absent-"));
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-executive-absent-"));
     roots.push(root);
     await writeFile(join(root, "value.txt"), "before", "utf8");
     const plan = createPatchTransactionPlan({

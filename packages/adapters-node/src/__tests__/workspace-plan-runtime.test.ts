@@ -109,7 +109,7 @@ async function durableWorkspaceFixture(content: string): Promise<{
   contentHash: string;
   store: MemoryWorkspaceStore;
 }> {
-  const root = await mkdtemp(path.join(tmpdir(), "yopp-workspace-plan-"));
+  const root = await mkdtemp(path.join(tmpdir(), "scce-workspace-plan-"));
   temporaryRoots.push(root);
   const absolutePath = path.join(root, "README.md");
   await writeFile(absolutePath, content, "utf8");

@@ -9,12 +9,12 @@ import { spawn } from "node:child_process";
 import { createEvaluationCondition } from "../packages/kernel/dist/index.js";
 import { createNodeRuntime, createPostgresStorageAdapter, readScceRuntimeConfig } from "../packages/adapters-node/dist/index.js";
 import { verifyCitations } from "./sealed-eval/harness/lib/citations.mjs";
-import { verifyYoppEvaluationTrace } from "./sealed-eval/integration/yopp-trace-verifier.mjs";
+import { verifyScceEvaluationTrace } from "./sealed-eval/integration/scce-trace-verifier.mjs";
 
-const configPath = path.resolve(process.env.YOPP_REHEARSAL_CONFIG ?? "scce.config.json");
-const schema = `yopp_rehearsal_adapter_${process.pid}_${Date.now()}`;
-if (!/^yopp_rehearsal_adapter_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
-const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "yopp-adapter-rehearsal-"));
+const configPath = path.resolve(process.env.SCCE_REHEARSAL_CONFIG ?? "scce.config.json");
+const schema = `scce_rehearsal_adapter_${process.pid}_${Date.now()}`;
+if (!/^scce_rehearsal_adapter_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
+const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "scce-adapter-rehearsal-"));
 const documentPath = path.join(fixtureRoot, "document.txt");
 const secondDocumentPath = path.join(fixtureRoot, "document-corroborating.txt");
 const manifestPath = path.join(fixtureRoot, "corpus-manifest.json");
@@ -114,18 +114,18 @@ try {
   await runtime.close();
   runtime = undefined;
 
-  const child = spawn(process.execPath, ["tools/sealed-eval/integration/yopp-jsonl-adapter.mjs"], {
+  const child = spawn(process.execPath, ["tools/sealed-eval/integration/scce-jsonl-adapter.mjs"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
-      YOPP_EVAL_CONDITION: conditionInput.conditionId,
-      YOPP_EVAL_SCOPE: conditionInput.scope,
-      YOPP_EVAL_SEED: conditionInput.seed,
-      YOPP_EVAL_CLOCK: conditionInput.clockIso,
-      YOPP_EVAL_RUN_ID: "live-adapter-rehearsal",
-      YOPP_EVAL_CORPUS_MANIFEST: manifestPath,
-      YOPP_EVAL_CONFIG_PATH: configPath,
-      YOPP_EVAL_DATABASE_SCHEMA: schema
+      SCCE_EVAL_CONDITION: conditionInput.conditionId,
+      SCCE_EVAL_SCOPE: conditionInput.scope,
+      SCCE_EVAL_SEED: conditionInput.seed,
+      SCCE_EVAL_CLOCK: conditionInput.clockIso,
+      SCCE_EVAL_RUN_ID: "live-adapter-rehearsal",
+      SCCE_EVAL_CORPUS_MANIFEST: manifestPath,
+      SCCE_EVAL_CONFIG_PATH: configPath,
+      SCCE_EVAL_DATABASE_SCHEMA: schema
     },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true
@@ -143,10 +143,10 @@ try {
   check("adapter.one_output", lines.length === 1, `lines=${lines.length}`);
   const answer = JSON.parse(lines[0]);
   check("adapter.answer", answer.status === "ok" && typeof answer.answer === "string" && answer.answer.length > 0, JSON.stringify({ status: answer.status, answer: answer.answer, support: answer.support, metadata: answer.metadata, error: answer.error ?? null }));
-  const citationChecks = await verifyCitations([{ ...answer, questionId: "q-azurite", systemId: "yopp", conditionId: "full" }], manifestPath);
+  const citationChecks = await verifyCitations([{ ...answer, questionId: "q-azurite", systemId: "scce", conditionId: "full" }], manifestPath);
   check("adapter.exact_citation", citationChecks.length > 0 && citationChecks.every(row => row.ok), JSON.stringify(citationChecks));
   const condition = createEvaluationCondition(conditionInput);
-  const traceVerification = verifyYoppEvaluationTrace(condition, answer.trace);
+  const traceVerification = verifyScceEvaluationTrace(condition, answer.trace);
   check("adapter.evaluation_trace", traceVerification.valid, JSON.stringify(traceVerification.violations));
   checks.push({ id: "adapter.output_summary", passed: true, detail: JSON.stringify({ answerChars: answer.answer.length, citations: answer.citations.length, traceEvents: answer.trace.length }) });
 } catch (error) {
@@ -156,7 +156,7 @@ try {
   try {
     const config = await readScceRuntimeConfig(configPath);
     cleanupStorage = createPostgresStorageAdapter({ url: config.database.url, schema, ssl: config.database.ssl });
-    if (!/^yopp_rehearsal_adapter_[a-z0-9_]+$/u.test(cleanupStorage.schema)) throw new Error("refusing cleanup outside rehearsal schema");
+    if (!/^scce_rehearsal_adapter_[a-z0-9_]+$/u.test(cleanupStorage.schema)) throw new Error("refusing cleanup outside rehearsal schema");
     await cleanupStorage.query(`DROP SCHEMA IF EXISTS "${cleanupStorage.schema}" CASCADE`);
     checks.push({ id: "cleanup.drop_disposable_schema", passed: true, detail: cleanupStorage.schema });
   } catch (error) {
@@ -168,7 +168,7 @@ try {
 }
 
 const report = {
-  schema: "yopp.live_adapter_rehearsal.v1",
+  schema: "scce.live_adapter_rehearsal.v1",
   completedAt: new Date().toISOString(),
   configPath,
   disposableSchema: schema,
@@ -193,7 +193,7 @@ async function activateRehearsalBrain(storage, createdAt) {
     brainVersion,
     rootPath: "rehearsal://adapter",
     manifestHash,
-    sourceSchema: "yopp.live_adapter_rehearsal.v1",
+    sourceSchema: "scce.live_adapter_rehearsal.v1",
     runtimeContractVersion: 1,
     content: { graphShardCount: 1, languageShardCount: 0, ngramStateCount: 0, priorSectionCount: 1 },
     metadata: { rehearsal: true },

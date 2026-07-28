@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-export const PATCH_PLAN_SCHEMA = "yopp.patch-transaction-plan.v1" as const;
-export const WORKSPACE_PATCH_REQUEST_SCHEMA = "yopp.workspace-patch-request.v1" as const;
-export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "yopp.workspace-patch-response.v1" as const;
+export const PATCH_PLAN_SCHEMA = "scce.patch-transaction-plan.v1" as const;
+export const WORKSPACE_PATCH_REQUEST_SCHEMA = "scce.workspace-patch-request.v1" as const;
+export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "scce.workspace-patch-response.v1" as const;
 export const WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA = "scce.workspace-coding-patch-plan-request.v1" as const;
 export const WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA = "scce.workspace.compiler_patch_plan.v1" as const;
 export const WORKSPACE_TRANSFORMATION_FAMILY_SELECTION_SCHEMA = "scce.workspace.transformation_family_selection.v1" as const;
@@ -92,12 +92,12 @@ export interface AppliedWorkspacePatch {
   workspaceId: string;
   validationPolicyId: string;
   receipt: {
-    schemaVersion: "yopp.patch-transaction-receipt.v1";
+    schemaVersion: "scce.patch-transaction-receipt.v1";
     transactionScope: "atomic-per-file-with-verified-transaction-rollback";
     planHash: PatchHash;
     validation: { validatorId: string; evidenceHash: PatchHash };
     mutations: Array<{
-      schemaVersion: "yopp.patch-mutation-receipt.v1";
+      schemaVersion: "scce.patch-mutation-receipt.v1";
       planHash: PatchHash;
       operationIndex: number;
       kind: "create" | "replace" | "delete";
@@ -132,7 +132,7 @@ export function parseReviewedPatchPlan(value: unknown): ReviewedPatchPlan {
 
 export function parseWorkspaceStatus(value: unknown): WorkspaceStatusResponse {
   const input = record(value, "workspace status");
-  if (input.workspace === null) throw new Error("no durable Yopp workspace is initialized; initialize and ingest the open folder first");
+  if (input.workspace === null) throw new Error("no durable SCCE workspace is initialized; initialize and ingest the open folder first");
   const workspace = record(input.workspace, "workspace status workspace");
   const sources = array(input.sources, "workspace sources").map((value, index) => {
     const source = record(value, `workspace source ${index}`);
@@ -365,13 +365,13 @@ export function parseWorkspacePatchAttempt(value: unknown): WorkspacePatchAttemp
   exactRecord(value, "workspace patch response", ["schemaVersion", "workspaceId", "validationPolicyId", "receipt"]);
   literal(input.schemaVersion, WORKSPACE_PATCH_RESPONSE_SCHEMA, "workspace patch response schema");
   const receipt = exactRecord(input.receipt, "workspace patch receipt", ["schemaVersion", "transactionScope", "planHash", "validation", "mutations", "receiptHash"]);
-  literal(receipt.schemaVersion, "yopp.patch-transaction-receipt.v1", "workspace patch receipt schema");
+  literal(receipt.schemaVersion, "scce.patch-transaction-receipt.v1", "workspace patch receipt schema");
   const planHash = patchHash(receipt.planHash, "receipt planHash");
   const transactionScope = literal(receipt.transactionScope, "atomic-per-file-with-verified-transaction-rollback", "receipt transactionScope");
   const validation = parseValidationReceipt(receipt.validation);
   const mutations = array(receipt.mutations, "receipt mutations").map((value, index) => parseMutationReceipt(value, index, planHash));
   const receiptHash = patchHash(receipt.receiptHash, "receipt receiptHash");
-  const expectedReceiptHash = canonicalPatchHash({ schemaVersion: "yopp.patch-transaction-receipt.v1", transactionScope, planHash, validation, mutations });
+  const expectedReceiptHash = canonicalPatchHash({ schemaVersion: "scce.patch-transaction-receipt.v1", transactionScope, planHash, validation, mutations });
   if (receiptHash !== expectedReceiptHash) throw new Error(`workspace patch receipt content does not match receiptHash; expected ${expectedReceiptHash}`);
   const validationPolicyId = nonEmptyString(input.validationPolicyId, "workspace patch validationPolicyId");
   if (validation.validatorId !== validationPolicyId) throw new Error("workspace patch validation receipt does not match validationPolicyId");
@@ -380,7 +380,7 @@ export function parseWorkspacePatchAttempt(value: unknown): WorkspacePatchAttemp
     workspaceId: nonEmptyString(input.workspaceId, "workspace patch workspaceId"),
     validationPolicyId,
     receipt: {
-      schemaVersion: "yopp.patch-transaction-receipt.v1",
+      schemaVersion: "scce.patch-transaction-receipt.v1",
       transactionScope,
       planHash,
       validation,
@@ -445,7 +445,7 @@ function parseUnexecutedSelectionState(value: unknown, label: string): void {
 
 function parseMutationReceipt(value: unknown, index: number, expectedPlanHash: PatchHash): AppliedWorkspacePatch["receipt"]["mutations"][number] {
   const input = exactRecord(value, `patch mutation ${index}`, ["schemaVersion", "planHash", "operationIndex", "kind", "path", "beforeContentHash", "afterContentHash", "mutationHash"]);
-  const schemaVersion = literal(input.schemaVersion, "yopp.patch-mutation-receipt.v1", `patch mutation ${index} schema`);
+  const schemaVersion = literal(input.schemaVersion, "scce.patch-mutation-receipt.v1", `patch mutation ${index} schema`);
   const planHash = patchHash(input.planHash, `patch mutation ${index} planHash`);
   if (planHash !== expectedPlanHash) throw new Error(`patch mutation ${index} belongs to another plan`);
   const operationIndex = finiteNumber(input.operationIndex, `patch mutation ${index} operationIndex`);

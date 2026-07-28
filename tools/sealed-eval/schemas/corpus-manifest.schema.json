@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yopp.local/schemas/corpus-manifest.schema.json",
+  "$id": "https://scce.local/schemas/corpus-manifest.schema.json",
   "title": "CorpusManifest",
   "type": "object",
   "additionalProperties": false,
