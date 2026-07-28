@@ -854,6 +854,19 @@ export function createProductionTurnRuntime(options: {
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds
       });
+      // Not input.text directly: evaluateSemanticObligations/structural.check
+      // extract material assertable items from claim.text -- a raw
+      // interrogative request ("Who was X, and what did Y?") doesn't carry
+      // the same clean predicate structure a declarative excerpt does, so
+      // substituting it here left entailmentResult.evidenceIds empty for
+      // otherwise well-supported compound questions (verified: this exact
+      // substitution alone turned a real source_grounded_answer into a
+      // degraded reasoned_answer with no other change). The excerpt is
+      // still a legitimate proposition to check -- entailment.ts no longer
+      // fabricates perfect scores for it (see the exact-source-excerpt
+      // fix), so checking "does the evidence support this excerpt" is now
+      // a real, non-tautological check, including correctly rejecting a
+      // discourse-dependent or irrelevant excerpt.
       const proofClaimText = answerProposal
         ? localEvidenceAnswerClaimSurface(answerProposal) || input.text
         : input.text;
@@ -1037,21 +1050,30 @@ export function createProductionTurnRuntime(options: {
         && proofSourceExcerpts.length > 0
         && proposalContradiction < 0.72
       );
-      const selectedPoolLocalEvidenceAnswer = evidenceProposalAdmissible
-        ? answerProposal
-        : proofSelectedEvidence.length
-          ? localEvidenceAnswerSurface({
-              requestText: input.text,
-              selectedEvidence,
-              temporalEvidence: selectedTemporalEvidence,
-              entailment: entailmentResult,
-              semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
-              translationTarget,
-              sessionContextEvidence,
-              explicitContextEvidenceIds,
-              semanticFrameBoundEvidenceIds
-            })
-          : undefined;
+      // localEvidenceAnswerSurface (backed by localEvidenceAnswerPlan) covers
+      // however many sentences a compound request actually needs
+      // (evidenceAnswerSentenceLimit) and optimizes for request coverage,
+      // not just top lexical/anchor score -- so it is tried first. Falling
+      // back to answerProposal (proposeSourceExactEvidenceAnswer's single
+      // highest-scoring sentence, uncorrelated with how many parts the
+      // request asked about) only when the richer plan finds nothing keeps
+      // the exact-single-sentence path available without letting it
+      // pre-empt a real compound answer by default.
+      const richLocalEvidenceAnswer = proofSelectedEvidence.length
+        ? localEvidenceAnswerSurface({
+            requestText: input.text,
+            selectedEvidence,
+            temporalEvidence: selectedTemporalEvidence,
+            entailment: entailmentResult,
+            semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
+            translationTarget,
+            sessionContextEvidence,
+            explicitContextEvidenceIds,
+            semanticFrameBoundEvidenceIds
+          })
+        : undefined;
+      const selectedPoolLocalEvidenceAnswer = richLocalEvidenceAnswer
+        ?? (evidenceProposalAdmissible ? answerProposal : undefined);
       // Direct source evidence may propose a bounded answer without full proof.
       // Proof strengthens force; material contradiction can still reject it.
       kernelTrace({
