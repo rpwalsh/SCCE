@@ -31,7 +31,7 @@ const scannedFiles = [];
 for (const relativeRoot of SCAN_ROOTS) await scanDirectory(path.resolve(ROOT, relativeRoot));
 
 const report = {
-  schema: "yopp.no-hidden-model-check.v1",
+  schema: "scce.no-hidden-model-check.v1",
   generatedAt: new Date().toISOString(),
   sourceCommit: gitCommit(),
   scope: "static package dependencies, source module imports, and known hosted/local model endpoints",

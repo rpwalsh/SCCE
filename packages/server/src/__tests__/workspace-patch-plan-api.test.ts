@@ -103,7 +103,7 @@ describe("workspace patch planning API contract", () => {
   });
 
   it("builds an exact-byte plan through WorkspaceRuntime without changing the workspace", async () => {
-    const root = await mkdtemp(join(tmpdir(), "yopp-patch-plan-api-"));
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-plan-api-"));
     roots.push(root);
     const filePath = join(root, "README.md");
     const before = "# Before\n";
@@ -168,10 +168,10 @@ describe("workspace patch planning API contract", () => {
     const result = await planWorkspacePatchApiRequest(context, request);
 
     expect(result).toMatchObject({
-      schemaVersion: "yopp.workspace-plan-generation.v1",
+      schemaVersion: "scce.workspace-plan-generation.v1",
       workspaceId: workspace.id,
       plan: {
-        schemaVersion: "yopp.patch-transaction-plan.v1",
+        schemaVersion: "scce.patch-transaction-plan.v1",
         operations: [{ kind: "replace", path: "README.md", content: after }]
       },
       authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },

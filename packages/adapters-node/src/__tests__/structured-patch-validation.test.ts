@@ -37,7 +37,7 @@ describe("structured patch validation", () => {
     expect(await readFile(join(root, "value.txt"), "utf8")).toBe("after");
     expect(receipt.validation?.validatorId).toBe("fixture-policy.v1");
     expect(receipt.validation?.evidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
-    await expect(readFile(join(root, ".yopp-validation"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, ".scce-validation"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("a failed command prevents mutation", async () => {
@@ -59,7 +59,7 @@ describe("structured patch validation", () => {
     expect(failure).toBeInstanceOf(WorkspacePatchTransactionError);
     expect((failure as WorkspacePatchTransactionError).code).toBe("VALIDATION_FAILED");
     expect(await readFile(join(root, "value.txt"), "utf8")).toBe("before");
-    await expect(readFile(join(root, ".yopp-validation"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, ".scce-validation"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("terminates commands at timeout and output bounds and cleans both stages", async () => {
@@ -89,12 +89,12 @@ describe("structured patch validation", () => {
     expect(bounded.ok).toBe(false);
     expect(evidence(bounded).commands[0]?.outputLimitExceeded).toBe(true);
     expect(Buffer.byteLength(evidence(bounded).commands[0]?.stdout ?? "")).toBeLessThanOrEqual(1024);
-    await expect(readFile(join(root, ".yopp-validation"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, ".scce-validation"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
 async function fixture(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "yopp-structured-validation-"));
+  const root = await mkdtemp(join(tmpdir(), "scce-structured-validation-"));
   roots.push(root);
   return root;
 }
@@ -104,7 +104,7 @@ function policy(
   overrides: Partial<StructuredPatchValidationPolicy> = {}
 ): StructuredPatchValidationPolicy {
   return {
-    schemaVersion: "yopp.patch-validation-policy.v1",
+    schemaVersion: "scce.patch-validation-policy.v1",
     id: "fixture-policy.v1",
     commands,
     timeoutMs: 5000,

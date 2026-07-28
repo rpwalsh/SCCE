@@ -244,7 +244,7 @@ export function summarizeBlindEval(input: {
 
 export function blindEvalReportMarkdown(report: BlindEvalReport): string {
   const lines = [
-    "# Yopp Blind Eval Report",
+    "# SCCE Blind Eval Report",
     "",
     `Prompts: ${report.promptCount}`,
     `Judgments: ${report.judgmentCount}`,

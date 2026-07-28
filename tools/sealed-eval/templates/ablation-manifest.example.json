@@ -6,7 +6,7 @@
       "conditionId": "full",
       "disabledComponents": [],
       "environment": {
-        "YOPP_EVAL_CONDITION": "full"
+        "SCCE_EVAL_CONDITION": "full"
       },
       "cacheNamespace": "eval-full",
       "requiredTraceAssertions": []
@@ -17,7 +17,7 @@
         "relation-potential"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_relation_potential"
+        "SCCE_EVAL_CONDITION": "no_relation_potential"
       },
       "cacheNamespace": "eval-no-relation-potential",
       "requiredTraceAssertions": [
@@ -37,7 +37,7 @@
         "query-diffusion"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_query_diffusion"
+        "SCCE_EVAL_CONDITION": "no_query_diffusion"
       },
       "cacheNamespace": "eval-no-query-diffusion",
       "requiredTraceAssertions": [
@@ -53,7 +53,7 @@
         "powerwalk"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_powerwalk"
+        "SCCE_EVAL_CONDITION": "no_powerwalk"
       },
       "cacheNamespace": "eval-no-powerwalk",
       "requiredTraceAssertions": [
@@ -69,7 +69,7 @@
         "graph"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_graph"
+        "SCCE_EVAL_CONDITION": "no_graph"
       },
       "cacheNamespace": "eval-no-graph",
       "requiredTraceAssertions": [
@@ -88,7 +88,7 @@
         "powerwalk"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "lexical_only"
+        "SCCE_EVAL_CONDITION": "lexical_only"
       },
       "cacheNamespace": "eval-lexical-only",
       "requiredTraceAssertions": [
@@ -104,7 +104,7 @@
         "support-engine"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_support_engine"
+        "SCCE_EVAL_CONDITION": "no_support_engine"
       },
       "cacheNamespace": "eval-no-support",
       "requiredTraceAssertions": [
@@ -120,7 +120,7 @@
         "learned-mouth"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "deterministic_mouth"
+        "SCCE_EVAL_CONDITION": "deterministic_mouth"
       },
       "cacheNamespace": "eval-template-mouth",
       "requiredTraceAssertions": [
@@ -136,7 +136,7 @@
         "language-memory"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_language_memory"
+        "SCCE_EVAL_CONDITION": "no_language_memory"
       },
       "cacheNamespace": "eval-no-language-memory",
       "requiredTraceAssertions": [
@@ -152,7 +152,7 @@
         "incremental-learning"
       ],
       "environment": {
-        "YOPP_EVAL_CONDITION": "no_incremental_learning"
+        "SCCE_EVAL_CONDITION": "no_incremental_learning"
       },
       "cacheNamespace": "eval-no-learning",
       "requiredTraceAssertions": [

@@ -153,7 +153,7 @@ async function checkArchive(candidate) {
 
 function defaultArchivePath() {
   const short = runSyncText("git", ["rev-parse", "--short", "HEAD"]).trim();
-  return short ? path.join("..", `yopp-source-${short}.zip`) : undefined;
+  return short ? path.join("..", `scce-source-${short}.zip`) : undefined;
 }
 
 function runSyncText(command, args) {

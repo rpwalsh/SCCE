@@ -112,7 +112,7 @@ export function verifyCacheIsolation(config, events) {
   function add(code, message, eventIndex, component) { violations.push({ code, message, eventIndex, ...(component ? { component } : {}) }); }
 }
 
-export function verifyYoppEvaluationTrace(config, events) {
+export function verifyScceEvaluationTrace(config, events) {
   const configuration = verifyEvaluationConfiguration(config);
   const violations = configuration.violations.map(item => ({ ...item }));
   const expectedDisabled = Array.isArray(config?.disabledComponents) ? config.disabledComponents : [];
@@ -162,10 +162,10 @@ export function verifyYoppEvaluationTrace(config, events) {
   }
 }
 
-export async function verifyYoppEvaluationTraceFiles({ conditionPath, tracePath, outPath }) {
+export async function verifyScceEvaluationTraceFiles({ conditionPath, tracePath, outPath }) {
   const config = JSON.parse(await readFile(path.resolve(conditionPath), "utf8"));
   const events = parseJsonl(await readFile(path.resolve(tracePath), "utf8"), tracePath);
-  const result = verifyYoppEvaluationTrace(config, events);
+  const result = verifyScceEvaluationTrace(config, events);
   if (outPath) {
     const absolute = path.resolve(outPath);
     await mkdir(path.dirname(absolute), { recursive: true });
@@ -239,8 +239,8 @@ async function main() {
   const args = argsMap(process.argv.slice(2));
   const conditionPath = args.get("condition");
   const tracePath = args.get("trace");
-  if (!conditionPath || !tracePath) throw new Error("Use: yopp-trace-verifier.mjs --condition=<condition.json> --trace=<trace.jsonl> [--out=<verification.json>]");
-  const result = await verifyYoppEvaluationTraceFiles({ conditionPath, tracePath, outPath: args.get("out") });
+  if (!conditionPath || !tracePath) throw new Error("Use: scce-trace-verifier.mjs --condition=<condition.json> --trace=<trace.jsonl> [--out=<verification.json>]");
+  const result = await verifyScceEvaluationTraceFiles({ conditionPath, tracePath, outPath: args.get("out") });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (!result.valid) process.exitCode = 1;
 }

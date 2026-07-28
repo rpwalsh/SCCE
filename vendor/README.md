@@ -51,4 +51,4 @@ Changing the archive is a dependency upgrade, not a routine refresh.
 5. Re-run the spreadsheet tests, the package build, the full validation gate, and the dependency audit.
 6. Review the parser integration and its resource/security assumptions; do not assume a compatible API or equivalent behavior from a new version.
 
-Yopp's parser process, archive preflight, limits, and fail-closed behavior are defined in [`../docs/SPREADSHEET_INGESTION_CONTRACT.md`](../docs/SPREADSHEET_INGESTION_CONTRACT.md). The child process is a killable isolation boundary with explicit V8 flags, not an operating-system sandbox or cgroup memory ceiling.
+SCCE's parser process, archive preflight, limits, and fail-closed behavior are defined in [`../docs/SPREADSHEET_INGESTION_CONTRACT.md`](../docs/SPREADSHEET_INGESTION_CONTRACT.md). The child process is a killable isolation boundary with explicit V8 flags, not an operating-system sandbox or cgroup memory ceiling.

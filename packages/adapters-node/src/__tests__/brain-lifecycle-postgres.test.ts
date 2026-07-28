@@ -17,7 +17,7 @@ interface LifecycleRow {
 
 describe("Postgres brain lifecycle invariants", () => {
   it("rejects generic transitions into or out of ACTIVE before issuing SQL", async () => {
-    const storage = createPostgresStorageAdapter({ url: "postgres://localhost/yopp-lifecycle-test", schema: "lifecycle_test" });
+    const storage = createPostgresStorageAdapter({ url: "postgres://localhost/scce-lifecycle-test", schema: "lifecycle_test" });
     const query = vi.fn();
     Object.defineProperty(storage, "query", { value: query });
     try {
@@ -40,7 +40,7 @@ describe("Postgres brain lifecycle invariants", () => {
   });
 
   it("demotes every marker and orphan ACTIVE row before activating READY", async () => {
-    const storage = createPostgresStorageAdapter({ url: "postgres://localhost/yopp-lifecycle-test", schema: "lifecycle_test" });
+    const storage = createPostgresStorageAdapter({ url: "postgres://localhost/scce-lifecycle-test", schema: "lifecycle_test" });
     const rows = new Map<string, LifecycleRow>([
       ["marker-active", lifecycleRow("marker-active", "brain-marker", "ACTIVE", 1)],
       ["orphan-active", lifecycleRow("orphan-active", "brain-orphan", "ACTIVE", 2)],

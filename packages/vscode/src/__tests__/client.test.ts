@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { type HttpResponseLike, type HttpTransport, YoppClient, YoppHttpError } from "../client.js";
+import { type HttpResponseLike, type HttpTransport, ScceClient, ScceHttpError } from "../client.js";
 import { parseReviewedPatchPlan } from "../patch-protocol.js";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -10,7 +10,7 @@ interface RecordedRequest {
   init: RequestInit;
 }
 
-describe("YoppClient HTTP boundary", () => {
+describe("ScceClient HTTP boundary", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -52,7 +52,7 @@ describe("YoppClient HTTP boundary", () => {
       if (input.endsWith("/api/workspace/sources")) return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\My Repo", updatedAt: 10 }, sources: [] });
       throw new Error(`unexpected request ${input}`);
     };
-    const client = new YoppClient(
+    const client = new ScceClient(
       { serverUrl: " http://127.42.1.9:3873/ ", token: " local-secret ", timeoutMs: 10_000 },
       transport
     );
@@ -88,7 +88,7 @@ describe("YoppClient HTTP boundary", () => {
 
   it("omits authorization when no token is configured", async () => {
     let observedHeaders: RequestInit["headers"];
-    const client = new YoppClient({ serverUrl: "http://localhost:3873", timeoutMs: 1_000 }, async (_input, init) => {
+    const client = new ScceClient({ serverUrl: "http://localhost:3873", timeoutMs: 1_000 }, async (_input, init) => {
       observedHeaders = init.headers;
       return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\repo", updatedAt: 10 }, sources: [] });
     });
@@ -100,7 +100,7 @@ describe("YoppClient HTTP boundary", () => {
 
   it("rejects empty workspace paths and questions before making a request", () => {
     const transport = vi.fn<HttpTransport>();
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
 
     expect(() => client.workspaceInitialize("  ")).toThrow("a local workspace path is required");
     expect(() => client.workspaceIngest("\t")).toThrow("a local workspace path is required");
@@ -145,7 +145,7 @@ describe("YoppClient HTTP boundary", () => {
           session: {}
         }, { status: 202 });
         return jsonResponse({
-          schemaVersion: "yopp.workspace-patch-response.v1",
+          schemaVersion: "scce.workspace-patch-response.v1",
           workspaceId: "workspace-1",
           validationPolicyId: "trusted-host-pnpm-validate.v1",
           receipt: fixtureReceipt(plan)
@@ -154,7 +154,7 @@ describe("YoppClient HTTP boundary", () => {
       if (input.endsWith("/api/session/approve")) return jsonResponse({ approved: { planId: "approval-1", capabilityId: "workspace.patch.apply" }, session: {} });
       throw new Error(`unexpected request ${input}`);
     };
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
 
     const pending = await client.workspacePatch("workspace-1", plan);
     expect("pendingApproval" in pending && pending.pendingApproval.planId).toBe("approval-1");
@@ -163,7 +163,7 @@ describe("YoppClient HTTP boundary", () => {
     expect("receipt" in applied && applied.receipt.planHash).toBe(plan.planHash);
 
     const firstBody = JSON.parse(String(requests[0]?.init.body)) as Record<string, unknown>;
-    expect(firstBody).toEqual({ schemaVersion: "yopp.workspace-patch-request.v1", workspaceId: "workspace-1", plan, validationPolicyId: "trusted-host-pnpm-validate.v1" });
+    expect(firstBody).toEqual({ schemaVersion: "scce.workspace-patch-request.v1", workspaceId: "workspace-1", plan, validationPolicyId: "trusted-host-pnpm-validate.v1" });
     expect(firstBody).not.toHaveProperty("workspaceRoot");
     expect(firstBody).not.toHaveProperty("executable");
     expect(requests.map(request => request.input)).toEqual([
@@ -176,7 +176,7 @@ describe("YoppClient HTTP boundary", () => {
   it("rejects internally valid patch receipts that are partial or do not match the reviewed operation", async () => {
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export {};\n"));
     const response = (receipt: unknown) => jsonResponse({
-      schemaVersion: "yopp.workspace-patch-response.v1",
+      schemaVersion: "scce.workspace-patch-response.v1",
       workspaceId: "workspace-1",
       validationPolicyId: "trusted-host-pnpm-validate.v1",
       receipt
@@ -195,7 +195,7 @@ describe("YoppClient HTTP boundary", () => {
       const request = JSON.parse(String(init.body)) as Record<string, unknown>;
       return jsonResponse(fixtureCodingGeneration(plan, request));
     };
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
 
     const result = await client.workspaceCodingPatchPlan({
       workspaceId: "workspace-1",
@@ -237,7 +237,7 @@ describe("YoppClient HTTP boundary", () => {
 
   it("rejects a coding plan whose request trace does not match the submitted scope", async () => {
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async (_input, init) => {
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async (_input, init) => {
       const request = JSON.parse(String(init.body)) as Record<string, unknown>;
       const generation = fixtureCodingGeneration(plan, request);
       const requestNode = generation.constraintGraph.nodes.find(node => node.kindId === "scce.task.request.v1")!;
@@ -265,7 +265,7 @@ describe("YoppClient HTTP boundary", () => {
     };
     const client = clientWithResponse(response);
 
-    await expect(client.workspaceStatus()).rejects.toThrow("Yopp response exceeded the extension size limit");
+    await expect(client.workspaceStatus()).rejects.toThrow("SCCE response exceeded the extension size limit");
     expect(text).not.toHaveBeenCalled();
   });
 
@@ -274,24 +274,24 @@ describe("YoppClient HTTP boundary", () => {
     expect(Buffer.byteLength(oversizedJson, "utf8")).toBeGreaterThan(MAX_RESPONSE_BYTES);
     const client = clientWithResponse(textResponse(oversizedJson));
 
-    await expect(client.workspaceStatus()).rejects.toThrow("Yopp response exceeded the extension size limit");
+    await expect(client.workspaceStatus()).rejects.toThrow("SCCE response exceeded the extension size limit");
   });
 
   it("rejects invalid JSON without invoking a protocol parser", async () => {
     const client = clientWithResponse(textResponse("not-json"));
 
-    await expect(client.workspaceStatus()).rejects.toThrow("Yopp server returned invalid JSON");
+    await expect(client.workspaceStatus()).rejects.toThrow("SCCE server returned invalid JSON");
   });
 
   it("raises a typed HTTP error with a bounded server message", async () => {
     const client = clientWithResponse(jsonResponse({ error: "permission denied" }, { ok: false, status: 403 }));
 
     const rejection = client.workspaceStatus();
-    await expect(rejection).rejects.toBeInstanceOf(YoppHttpError);
+    await expect(rejection).rejects.toBeInstanceOf(ScceHttpError);
     await expect(rejection).rejects.toMatchObject({
-      name: "YoppHttpError",
+      name: "ScceHttpError",
       status: 403,
-      message: "Yopp request failed (403): permission denied"
+      message: "SCCE request failed (403): permission denied"
     });
   });
 
@@ -299,9 +299,9 @@ describe("YoppClient HTTP boundary", () => {
     const client = clientWithResponse(jsonResponse({ error: { detail: "private" } }, { ok: false, status: 500 }));
 
     await expect(client.workspaceStatus()).rejects.toMatchObject({
-      name: "YoppHttpError",
+      name: "ScceHttpError",
       status: 500,
-      message: "Yopp request failed (500)"
+      message: "SCCE request failed (500)"
     });
   });
 
@@ -318,7 +318,7 @@ describe("YoppClient HTTP boundary", () => {
         }, { once: true });
       });
     };
-    const client = new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1 }, transport);
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1 }, transport);
 
     const assertion = expect(client.workspaceStatus()).rejects.toMatchObject({ name: "AbortError" });
     await vi.advanceTimersByTimeAsync(999);
@@ -329,14 +329,14 @@ describe("YoppClient HTTP boundary", () => {
   });
 });
 
-function clientWithResponse(response: HttpResponseLike): YoppClient {
-  return new YoppClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async () => response);
+function clientWithResponse(response: HttpResponseLike): ScceClient {
+  return new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async () => response);
 }
 
 function fixturePlan(path: string, content: string): unknown {
   const afterContentHash = sha256(content);
   const operations = [{ kind: "create", path, beforeContentHash: null, afterContentHash, content }];
-  return { schemaVersion: "yopp.patch-transaction-plan.v1", operations, planHash: sha256(JSON.stringify(canonical({ schemaVersion: "yopp.patch-transaction-plan.v1", operations }))) };
+  return { schemaVersion: "scce.patch-transaction-plan.v1", operations, planHash: sha256(JSON.stringify(canonical({ schemaVersion: "scce.patch-transaction-plan.v1", operations }))) };
 }
 
 function fixtureReceipt(
@@ -345,7 +345,7 @@ function fixtureReceipt(
 ): unknown {
   const operation = plan.operations[0]!;
   const mutationPayload = {
-    schemaVersion: "yopp.patch-mutation-receipt.v1",
+    schemaVersion: "scce.patch-mutation-receipt.v1",
     planHash: plan.planHash,
     operationIndex: 0,
     kind: operation.kind,
@@ -355,7 +355,7 @@ function fixtureReceipt(
   };
   const mutations = options.omitMutation ? [] : [{ ...mutationPayload, mutationHash: sha256(JSON.stringify(canonical(mutationPayload))) }];
   const payload = {
-    schemaVersion: "yopp.patch-transaction-receipt.v1",
+    schemaVersion: "scce.patch-transaction-receipt.v1",
     transactionScope: "atomic-per-file-with-verified-transaction-rollback",
     planHash: plan.planHash,
     validation: options.omitValidation

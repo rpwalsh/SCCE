@@ -6,8 +6,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PatchTransactionPlan } from "@scce/kernel";
 import type { WorkspacePatchValidationResult, WorkspacePatchValidationView } from "./workspace-patch-transaction.js";
 
-export const STRUCTURED_PATCH_VALIDATION_POLICY_SCHEMA = "yopp.patch-validation-policy.v1" as const;
-export const STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA = "yopp.patch-validation-evidence.v2" as const;
+export const STRUCTURED_PATCH_VALIDATION_POLICY_SCHEMA = "scce.patch-validation-policy.v1" as const;
+export const STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA = "scce.patch-validation-evidence.v2" as const;
 export const TRUSTED_HOST_PATCH_VALIDATION_PROVIDER_ID = "trusted-host-process.v1" as const;
 
 export interface StructuredPatchValidationCommand {
@@ -102,7 +102,7 @@ export interface RunStructuredPatchValidationOptions {
   readonly provider?: StructuredPatchValidationProvider;
 }
 
-const GLOBAL_IGNORES = [".git", ".scce", ".yopp-validation", "coverage", "dist", "node_modules"] as const;
+const GLOBAL_IGNORES = [".git", ".scce", ".scce-validation", "coverage", "dist", "node_modules"] as const;
 
 /**
  * Validates the transaction against a private staged copy of the workspace.

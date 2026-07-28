@@ -15,7 +15,7 @@ const promptPath = valueAfter("--prompts");
 const corpusAblation = args.includes("--corpus-ablation");
 
 if (!promptPath || !answerPath) {
-  process.stderr.write("yopp-blind-eval requires --prompts=<jsonl> and --answers=<jsonl>; this repository does not ship canned evaluation answers.\n");
+  process.stderr.write("scce-blind-eval requires --prompts=<jsonl> and --answers=<jsonl>; this repository does not ship canned evaluation answers.\n");
   process.exit(2);
 }
 
@@ -55,7 +55,7 @@ await writeFile(path.join(outDir, "preference_learning_report.md"), preferenceLe
 await writeFile(path.join(outDir, "proof_preservation_report.md"), proofPreservationReport(report), "utf8");
 await writeFile(path.join(outDir, "multilingual_profile_report.md"), multilingualProfileReport(report), "utf8");
 
-process.stdout.write(`Yopp eval reports written to ${path.resolve(outDir)}\n`);
+process.stdout.write(`SCCE eval reports written to ${path.resolve(outDir)}\n`);
 process.stdout.write(`prompts=${report.promptCount} judgments=${report.judgmentCount} hiddenProviderIds=${report.hiddenProviderIds}\n`);
 
 function valueAfter(flag) {

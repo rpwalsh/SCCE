@@ -1547,11 +1547,11 @@ function validateBenchmarkTask(value: unknown, label: string): NonNullable<Bench
   return out;
 }
 
-export const WORKSPACE_PATCH_PLAN_REQUEST_SCHEMA = "yopp.workspace-patch-plan-request.v1" as const;
+export const WORKSPACE_PATCH_PLAN_REQUEST_SCHEMA = "scce.workspace-patch-plan-request.v1" as const;
 export const WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA = "scce.workspace-coding-patch-plan-request.v1" as const;
 export const WORKSPACE_CODING_TURN_REQUEST_SCHEMA = "scce.workspace-coding-turn-request.v1" as const;
-export const WORKSPACE_PATCH_REQUEST_SCHEMA = "yopp.workspace-patch-request.v1" as const;
-export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "yopp.workspace-patch-response.v1" as const;
+export const WORKSPACE_PATCH_REQUEST_SCHEMA = "scce.workspace-patch-request.v1" as const;
+export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "scce.workspace-patch-response.v1" as const;
 export const DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "trusted-host-pnpm-validate.v1" as const;
 export const DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "docker-pnpm-validate.v1" as const;
 
@@ -2057,7 +2057,7 @@ export async function executeWorkspacePatchApiRequest(input: {
           ok: false,
           validatorId: input.policy.id,
           evidence: {
-            schemaVersion: "yopp.patch-validation-error.v1",
+            schemaVersion: "scce.patch-validation-error.v1",
             policyId: input.policy.id,
             planHash: input.request.plan.planHash,
             error: error instanceof Error ? error.message : String(error)
@@ -2095,7 +2095,7 @@ export function serverPatchValidationPolicy(config: LoadedConfig, policyId: stri
   if (policyId !== DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID) throw new HttpError(400, `unknown workspace patch validation policy: ${policyId}`);
   const command = serverPnpmValidationCommand(config.runtime.tools.pnpm ?? "pnpm");
   return {
-    schemaVersion: "yopp.patch-validation-policy.v1",
+    schemaVersion: "scce.patch-validation-policy.v1",
     id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
     commands: [
       { executable: command.executable, argv: [...command.argvPrefix, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], cwd: "." },
@@ -2144,7 +2144,7 @@ export function serverPatchValidationRuntime(config: LoadedConfig): ApiContext["
     resolvePolicy(policyId) {
       if (policyId !== DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) throw new HttpError(400, `unknown Docker workspace patch validation policy: ${policyId}`);
       return {
-        schemaVersion: "yopp.patch-validation-policy.v1",
+        schemaVersion: "scce.patch-validation-policy.v1",
         id: DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
         commands: [{ executable: "corepack", argv: ["pnpm", "validate"], cwd: "." }],
         timeoutMs: 15 * 60_000,

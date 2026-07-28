@@ -19,28 +19,28 @@ export const EVALUATION_CONDITION_IDS = Object.freeze([
 
 /** Parse the process environment once, before a runtime is constructed. */
 export function parseEvaluationEnvironment(environment) {
-  const conditionId = requiredEnvironment(environment, "YOPP_EVAL_CONDITION");
-  if (!EVALUATION_CONDITION_IDS.includes(conditionId)) throw new Error(`unknown YOPP_EVAL_CONDITION: ${conditionId}`);
-  const seed = requiredEnvironment(environment, "YOPP_EVAL_SEED");
-  const clockIso = requiredEnvironment(environment, "YOPP_EVAL_CLOCK");
-  if (!Number.isFinite(Date.parse(clockIso))) throw new Error("YOPP_EVAL_CLOCK must be an ISO-8601 timestamp");
-  const runId = requiredEnvironment(environment, "YOPP_EVAL_RUN_ID");
-  const corpusManifestPath = path.resolve(requiredEnvironment(environment, "YOPP_EVAL_CORPUS_MANIFEST"));
-  const requestedScope = optionalEnvironment(environment, "YOPP_EVAL_SCOPE");
-  const databaseSchema = optionalEnvironment(environment, "YOPP_EVAL_DATABASE_SCHEMA");
-  if (databaseSchema && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(databaseSchema)) throw new Error("YOPP_EVAL_DATABASE_SCHEMA must be a safe PostgreSQL schema identifier");
+  const conditionId = requiredEnvironment(environment, "SCCE_EVAL_CONDITION");
+  if (!EVALUATION_CONDITION_IDS.includes(conditionId)) throw new Error(`unknown SCCE_EVAL_CONDITION: ${conditionId}`);
+  const seed = requiredEnvironment(environment, "SCCE_EVAL_SEED");
+  const clockIso = requiredEnvironment(environment, "SCCE_EVAL_CLOCK");
+  if (!Number.isFinite(Date.parse(clockIso))) throw new Error("SCCE_EVAL_CLOCK must be an ISO-8601 timestamp");
+  const runId = requiredEnvironment(environment, "SCCE_EVAL_RUN_ID");
+  const corpusManifestPath = path.resolve(requiredEnvironment(environment, "SCCE_EVAL_CORPUS_MANIFEST"));
+  const requestedScope = optionalEnvironment(environment, "SCCE_EVAL_SCOPE");
+  const databaseSchema = optionalEnvironment(environment, "SCCE_EVAL_DATABASE_SCHEMA");
+  if (databaseSchema && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(databaseSchema)) throw new Error("SCCE_EVAL_DATABASE_SCHEMA must be a safe PostgreSQL schema identifier");
   const scope = requestedScope ?? (conditionId === "no_shard_router" ? "performance-recovery" : "answer-quality");
   if (scope !== "answer-quality" && scope !== "performance-recovery") {
-    throw new Error("YOPP_EVAL_SCOPE must be answer-quality or performance-recovery");
+    throw new Error("SCCE_EVAL_SCOPE must be answer-quality or performance-recovery");
   }
   if (conditionId === "no_shard_router" && scope !== "performance-recovery") {
-    throw new Error("no_shard_router requires YOPP_EVAL_SCOPE=performance-recovery");
+    throw new Error("no_shard_router requires SCCE_EVAL_SCOPE=performance-recovery");
   }
   return Object.freeze({
     conditionInput: Object.freeze({ conditionId, seed, clockIso, scope }),
     runId,
     corpusManifestPath,
-    configPath: path.resolve(optionalEnvironment(environment, "YOPP_EVAL_CONFIG_PATH") ?? "scce.config.json"),
+    configPath: path.resolve(optionalEnvironment(environment, "SCCE_EVAL_CONFIG_PATH") ?? "scce.config.json"),
     databaseSchema
   });
 }

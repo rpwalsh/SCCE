@@ -58,7 +58,7 @@ pnpm scce workspace plan-code \
   "Remove unused type import ExampleType from src/types.ts."
 ```
 
-The command prints an unauthorized, unexecuted `yopp.workspace-plan-generation.v1` result. The `yopp.*` prefix is retained as a versioned compatibility identifier; the product surface is SCCE. Planning does not edit workspace files, approve or apply the returned transaction, or execute compiler, typecheck, or test commands. Before planning it analyzes the selected workspace and persists the normal project/workspace report metadata. Exact-byte planning still uses the previously ingested durable source records; run `pnpm scce workspace ingest` after local edits or the stale-byte check rejects the request.
+The command prints an unauthorized, unexecuted `scce.workspace-plan-generation.v1` result. The `scce.*` prefix is retained as a versioned compatibility identifier; the product surface is SCCE. Planning does not edit workspace files, approve or apply the returned transaction, or execute compiler, typecheck, or test commands. Before planning it analyzes the selected workspace and persists the normal project/workspace report metadata. Exact-byte planning still uses the previously ingested durable source records; run `pnpm scce workspace ingest` after local edits or the stale-byte check rejects the request.
 
 The request surface is bounded:
 
@@ -103,7 +103,7 @@ pnpm scce review
 
 Reports are generated from extracted workspace evidence and persisted as workspace report records.
 
-The `patch-plan` report is explanatory Markdown. It is not a `yopp.patch-transaction-plan.v1` and cannot authorize filesystem changes.
+The `patch-plan` report is explanatory Markdown. It is not a `scce.patch-transaction-plan.v1` and cannot authorize filesystem changes.
 
 ## API
 
@@ -135,7 +135,7 @@ The project/report GET handlers currently persist workspace/report records and a
 ### Exact-byte patch planning
 
 `POST /api/workspace/patch/plan` is a non-mutating planning boundary. It accepts the
-strict `yopp.workspace-patch-plan-request.v1` schema: latest workspace ID and
+strict `scce.workspace-patch-plan-request.v1` schema: latest workspace ID and
 `expectedWorkspaceUpdatedAt`, UTF-8 full-file proposals or deletions with expected
 content hashes, requested paths, a caller-supplied proposal assessment and evidence
 IDs, and the registered validation plan. It does not accept a filesystem root,
@@ -147,7 +147,7 @@ The adapter loads the latest durable workspace record, requires every source rec
 be fully committed, reads each regular non-symlink file within the configured byte
 bound, and compares its exact current SHA-256 identity with the durable ingest record.
 It then builds a complete content-addressed revision snapshot and a deterministic
-`yopp.patch-transaction-plan.v1`. Creation requires absence; replacement and deletion
+`scce.patch-transaction-plan.v1`. Creation requires absence; replacement and deletion
 require the caller's exact durable content hash. Line endings and UTF-8 bytes are part
 of the plan identity. Any stale revision, missing or changed file, unsafe path, or test
 weakening fails planning.

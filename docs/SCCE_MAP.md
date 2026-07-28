@@ -11,7 +11,7 @@ Status: targeted current-source map; not a generated completeness or readiness c
 - `packages/ui` (`@scce/ui`): workbench models and surfaces.
 - `packages/server` (`@scce/server`): local HTTP API and workbench server.
 - `packages/cli` (`@scce/cli`): local CLI.
-- `packages/vscode` (`yopp-vscode` compatibility package ID): SCCE local-loopback VS
+- `packages/vscode` (`scce-vscode` package): SCCE local-loopback VS
   Code extension.
 
 The root `build` script compiles all six packages. PostgreSQL's `pg` client and document

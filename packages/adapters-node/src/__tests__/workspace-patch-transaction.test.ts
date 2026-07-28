@@ -55,7 +55,7 @@ describe("workspace patch transaction", () => {
       evidenceHash: shaCanonical({ stagedHash: after, check: "value-is-two" })
     };
     const mutationPayload = {
-      schemaVersion: "yopp.patch-mutation-receipt.v1",
+      schemaVersion: "scce.patch-mutation-receipt.v1",
       planHash: expectedPlanHash,
       operationIndex: 0,
       kind: "replace",
@@ -77,7 +77,7 @@ describe("workspace patch transaction", () => {
     expect(Object.isFrozen(receipt.mutations)).toBe(true);
     expect(Object.isFrozen(receipt.mutations[0])).toBe(true);
     expect(await readFile(join(root, "source.ts"), "utf8")).toBe("export const value = 2;\n");
-    expect((await readdir(root)).filter(name => name.includes(".yopp-"))).toEqual([]);
+    expect((await readdir(root)).filter(name => name.includes(".scce-"))).toEqual([]);
   });
 
   it("applies unambiguous create and delete operations", async () => {
@@ -96,7 +96,7 @@ describe("workspace patch transaction", () => {
     ]);
     expect(await readFile(join(root, "created.ts"), "utf8")).toBe("created\n");
     await expect(readFile(join(root, "obsolete.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await readdir(root)).filter(name => name.includes(".yopp-"))).toEqual([]);
+    expect((await readdir(root)).filter(name => name.includes(".scce-"))).toEqual([]);
   });
 
   it("refuses compare-and-set drift immediately before commit", async () => {
@@ -123,7 +123,7 @@ describe("workspace patch transaction", () => {
     expect((error as WorkspacePatchTransactionError).code).toBe("DRIFT_DETECTED");
     expect((error as WorkspacePatchTransactionError).rollback).toEqual({ attemptedPaths: [], restoredPaths: [], failures: [] });
     expect(await readFile(target, "utf8")).toBe("concurrent edit\n");
-    expect((await readdir(root)).filter(name => name.includes(".yopp-"))).toEqual([]);
+    expect((await readdir(root)).filter(name => name.includes(".scce-"))).toEqual([]);
   });
 
   it("refuses traversal and a symbolic-link parent escape", async () => {
@@ -168,7 +168,7 @@ describe("workspace patch transaction", () => {
     });
     expect(await readFile(join(root, "a.ts"), "utf8")).toBe("a0\n");
     expect(await readFile(join(root, "b.ts"), "utf8")).toBe("b0\n");
-    expect((await readdir(root)).filter(name => name.includes(".yopp-"))).toEqual([]);
+    expect((await readdir(root)).filter(name => name.includes(".scce-"))).toEqual([]);
   });
 
   it("preserves existing assertion files byte-for-byte and commits nothing when one is targeted", async () => {
@@ -209,7 +209,7 @@ describe("workspace patch transaction", () => {
 });
 
 async function workspace(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "yopp-patch-transaction-"));
+  const root = await mkdtemp(join(tmpdir(), "scce-patch-transaction-"));
   roots.push(root);
   return root;
 }

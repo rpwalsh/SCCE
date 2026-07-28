@@ -1,10 +1,10 @@
 {
-  "name": "yopp-vscode",
+  "name": "scce-vscode",
   "displayName": "SCCE",
   "description": "Local VS Code surface for the SCCE cognitive runtime.",
   "version": "0.1.0",
   "private": true,
-  "publisher": "yopp-local",
+  "publisher": "walsh-technical-group",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
@@ -42,55 +42,55 @@
   "contributes": {
     "commands": [
       {
-        "command": "yopp.checkReadiness",
-        "title": "Yopp: Check Readiness"
+        "command": "scce.checkReadiness",
+        "title": "SCCE: Check Readiness"
       },
       {
-        "command": "yopp.setServerToken",
-        "title": "Yopp: Set Local Server Token"
+        "command": "scce.setServerToken",
+        "title": "SCCE: Set Local Server Token"
       },
       {
-        "command": "yopp.workspace.initialize",
-        "title": "Yopp: Initialize Workspace"
+        "command": "scce.workspace.initialize",
+        "title": "SCCE: Initialize Workspace"
       },
       {
-        "command": "yopp.workspace.ingest",
-        "title": "Yopp: Ingest Workspace"
+        "command": "scce.workspace.ingest",
+        "title": "SCCE: Ingest Workspace"
       },
       {
-        "command": "yopp.project.summary",
-        "title": "Yopp: Show Project Summary"
+        "command": "scce.project.summary",
+        "title": "SCCE: Show Project Summary"
       },
       {
-        "command": "yopp.workspace.ask",
-        "title": "Yopp: Ask About Workspace"
+        "command": "scce.workspace.ask",
+        "title": "SCCE: Ask About Workspace"
       },
       {
-        "command": "yopp.workspace.status",
-        "title": "Yopp: Show Read-Only Workspace Status"
+        "command": "scce.workspace.status",
+        "title": "SCCE: Show Read-Only Workspace Status"
       },
       {
-        "command": "yopp.workspace.codingRequest",
-        "title": "Yopp: Plan and Apply Coding Request"
+        "command": "scce.workspace.codingRequest",
+        "title": "SCCE: Plan and Apply Coding Request"
       },
       {
-        "command": "yopp.workspace.applyPatchPlan",
-        "title": "Yopp: Apply Reviewed Patch Transaction"
+        "command": "scce.workspace.applyPatchPlan",
+        "title": "SCCE: Apply Reviewed Patch Transaction"
       },
       {
-        "command": "yopp.tasks.clear",
-        "title": "Yopp: Clear Task Timeline"
+        "command": "scce.tasks.clear",
+        "title": "SCCE: Clear Task Timeline"
       }
     ],
     "configuration": {
-      "title": "Yopp",
+      "title": "SCCE",
       "properties": {
-        "yopp.serverUrl": {
+        "scce.serverUrl": {
           "type": "string",
           "default": "http://127.0.0.1:3873",
           "description": "Local SCCE server origin. Only localhost, 127.0.0.0/8, and ::1 are accepted."
         },
-        "yopp.requestTimeoutMs": {
+        "scce.requestTimeoutMs": {
           "type": "number",
           "default": 120000,
           "minimum": 1000,
@@ -102,21 +102,21 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "yopp",
+          "id": "scce",
           "title": "SCCE",
-          "icon": "media/yopp.svg"
+          "icon": "media/scce.svg"
         }
       ]
     },
     "views": {
-      "yopp": [
+      "scce": [
         {
-          "id": "yopp.chat",
+          "id": "scce.chat",
           "name": "Chat",
           "type": "webview"
         },
         {
-          "id": "yopp.taskTimeline",
+          "id": "scce.taskTimeline",
           "name": "Activity",
           "visibility": "collapsed"
         }
@@ -125,13 +125,13 @@
     "menus": {
       "view/title": [
         {
-          "command": "yopp.checkReadiness",
-          "when": "view == yopp.taskTimeline",
+          "command": "scce.checkReadiness",
+          "when": "view == scce.taskTimeline",
           "group": "navigation"
         },
         {
-          "command": "yopp.tasks.clear",
-          "when": "view == yopp.taskTimeline",
+          "command": "scce.tasks.clear",
+          "when": "view == scce.taskTimeline",
           "group": "navigation"
         }
       ]

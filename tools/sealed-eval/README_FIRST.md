@@ -37,7 +37,7 @@ node --test harness/tests/*.test.mjs
 
 The kit is now installed at `tools/sealed-eval/`. The root package exposes the
 seal, run, blind, citation, score, aggregate, ablation, verification, and test
-commands. The production adapter at `integration/yopp-jsonl-adapter.mjs` (a retained
+commands. The production adapter at `integration/scce-jsonl-adapter.mjs` (a retained
 compatibility basename) enters the normal
 runtime, requires a hydrated active brain, preserves real support state, and
 checks citations against exact sealed-corpus bytes. All declared condition IDs

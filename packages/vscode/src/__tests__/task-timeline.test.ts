@@ -42,7 +42,7 @@ describe("persisted extension task metadata", () => {
 
   it("drops malformed or wrong-version persisted metadata", () => {
     const storage = new MemoryMemento();
-    storage.values.set(TASK_STORAGE_KEY, { schema: "yopp.vscode.task_timeline.v2", tasks: [{ id: "bad" }] });
+    storage.values.set(TASK_STORAGE_KEY, { schema: "scce.vscode.task_timeline.v2", tasks: [{ id: "bad" }] });
     expect(new TaskTimeline(storage).list()).toEqual([]);
   });
 });

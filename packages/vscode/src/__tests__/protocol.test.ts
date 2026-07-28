@@ -24,7 +24,7 @@ describe("VS Code protocol validation", () => {
   });
 
   it("rejects wrong versions and unknown message kinds", () => {
-    expect(() => parseExtensionMessage({ schema: "yopp.vscode.message.v2", kind: "readiness", ready: true, serverUrl: "local", observedAt: 1 })).toThrow(/schema/);
+    expect(() => parseExtensionMessage({ schema: "scce.vscode.message.v2", kind: "readiness", ready: true, serverUrl: "local", observedAt: 1 })).toThrow(/schema/);
     expect(() => parseExtensionMessage({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "secret", observedAt: 1 })).toThrow(/kind/);
   });
 

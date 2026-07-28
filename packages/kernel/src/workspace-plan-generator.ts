@@ -22,9 +22,9 @@ import {
   type ExactProgramTextChange
 } from "./program-repair-kernel.js";
 
-export const WORKSPACE_REVISION_SCHEMA = "yopp.workspace-revision.v1" as const;
-export const WORKSPACE_PLAN_GENERATION_SCHEMA = "yopp.workspace-plan-generation.v1" as const;
-export const WORKSPACE_PATCH_SCORE_SCHEMA = "yopp.workspace-patch-score.v1" as const;
+export const WORKSPACE_REVISION_SCHEMA = "scce.workspace-revision.v1" as const;
+export const WORKSPACE_PLAN_GENERATION_SCHEMA = "scce.workspace-plan-generation.v1" as const;
+export const WORKSPACE_PATCH_SCORE_SCHEMA = "scce.workspace-patch-score.v1" as const;
 export const WORKSPACE_PATCH_SCORE_OBJECTIVE = "quality.patch.provisional.v1" as const;
 export const WORKSPACE_PROGRAM_PROPOSAL_TRACE_SCHEMA = "scce.workspace-program-proposal.trace.v1" as const;
 

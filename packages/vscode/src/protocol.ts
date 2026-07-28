@@ -1,5 +1,5 @@
-export const EXTENSION_PROTOCOL_SCHEMA = "yopp.vscode.message.v1" as const;
-export const TASK_TIMELINE_SCHEMA = "yopp.vscode.task_timeline.v1" as const;
+export const EXTENSION_PROTOCOL_SCHEMA = "scce.vscode.message.v1" as const;
+export const TASK_TIMELINE_SCHEMA = "scce.vscode.task_timeline.v1" as const;
 
 export type ExtensionMessage =
   | {
@@ -20,14 +20,14 @@ export type ExtensionMessage =
       schema: typeof EXTENSION_PROTOCOL_SCHEMA;
       kind: "result";
       taskId: string;
-      endpoint: YoppEndpoint;
+      endpoint: ScceEndpoint;
       payload: unknown;
       observedAt: number;
     };
 
 export type ExtensionTaskState = "pending_approval" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
 
-export type YoppEndpoint =
+export type ScceEndpoint =
   | "ready"
   | "workspace.initialize"
   | "workspace.ingest"
@@ -151,9 +151,9 @@ export function parseProjectSummaryResponse(value: unknown): ProjectSummaryRespo
   return { schema: "scce.project.summary.v1", workspace: input.workspace, summary: input.summary };
 }
 
-function endpoint(value: unknown): YoppEndpoint {
+function endpoint(value: unknown): ScceEndpoint {
   if (value === "ready" || value === "workspace.initialize" || value === "workspace.ingest" || value === "workspace.ask" || value === "workspace.patch.plan.request" || value === "workspace.patch" || value === "project.summary" || value === "workspace.status") return value;
-  throw new Error("unsupported Yopp endpoint");
+  throw new Error("unsupported SCCE endpoint");
 }
 
 function taskState(value: unknown): ExtensionTaskState {

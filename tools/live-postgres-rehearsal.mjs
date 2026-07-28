@@ -4,10 +4,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createPostgresStorageAdapter, readScceRuntimeConfig } from "../packages/adapters-node/dist/index.js";
 
-const configPath = process.env.YOPP_REHEARSAL_CONFIG ?? "scce.config.json";
+const configPath = process.env.SCCE_REHEARSAL_CONFIG ?? "scce.config.json";
 const suffix = `${process.pid}_${Date.now()}`;
-const schema = `yopp_rehearsal_${suffix}`;
-if (!/^yopp_rehearsal_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
+const schema = `scce_rehearsal_${suffix}`;
+if (!/^scce_rehearsal_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
 
 const startedAt = new Date().toISOString();
 let storage;
@@ -70,7 +70,7 @@ try {
 } finally {
   if (storage) {
     try {
-      if (!/^yopp_rehearsal_[a-z0-9_]+$/u.test(storage.schema)) throw new Error("refusing cleanup outside rehearsal schema");
+      if (!/^scce_rehearsal_[a-z0-9_]+$/u.test(storage.schema)) throw new Error("refusing cleanup outside rehearsal schema");
       await storage.query(`DROP SCHEMA IF EXISTS "${storage.schema}" CASCADE`);
       checks.push({ id: "cleanup.drop_disposable_schema", passed: true, detail: storage.schema });
     } catch (error) {
@@ -82,7 +82,7 @@ try {
 }
 
 const report = {
-  schema: "yopp.live_postgres_rehearsal.v1",
+  schema: "scce.live_postgres_rehearsal.v1",
   startedAt,
   completedAt: new Date().toISOString(),
   configPath: path.resolve(configPath),
@@ -110,7 +110,7 @@ function lifecycle(importRunId, brainVersion, createdAt) {
       brainVersion,
       rootPath: `rehearsal://${importRunId}`,
       manifestHash,
-      sourceSchema: "yopp.live_postgres_rehearsal.v1",
+      sourceSchema: "scce.live_postgres_rehearsal.v1",
       runtimeContractVersion: 1,
       content: { graphShardCount: 1, languageShardCount: 1, ngramStateCount: 0, priorSectionCount: 1 },
       metadata: { rehearsal: true },

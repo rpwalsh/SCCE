@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "evaluationId": "yopp-sealed-example",
+  "evaluationId": "scce-sealed-example",
   "purpose": "Measure answer quality, exact support, operational cost, and component contribution on unseen corpora.",
   "categories": [
     {
@@ -29,7 +29,7 @@
     }
   ],
   "systems": [
-    "yopp.full",
+    "scce.full",
     "reference.bm25",
     "reference.ngram"
   ],

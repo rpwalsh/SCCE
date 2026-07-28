@@ -82,7 +82,7 @@ describe("workspace patch API contract", () => {
   });
 
   it("runs the server boundary against staged patched bytes and returns a matching receipt", async () => {
-    const root = await mkdtemp(join(tmpdir(), "yopp-patch-api-"));
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-api-"));
     roots.push(root);
     await writeFile(join(root, "value.txt"), "before", "utf8");
     const replacePlan = createPatchTransactionPlan({
@@ -99,7 +99,7 @@ describe("workspace patch API contract", () => {
       workspace: { id: "workspace-1", rootPath: root },
       allowedRoots: [root],
       policy: {
-        schemaVersion: "yopp.patch-validation-policy.v1",
+        schemaVersion: "scce.patch-validation-policy.v1",
         id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
         commands: [{ executable: process.execPath, argv: ["-e", "const fs=require('node:fs');if(fs.readFileSync('value.txt','utf8')!=='after')process.exit(9)"] }],
         timeoutMs: 5_000,
@@ -111,7 +111,7 @@ describe("workspace patch API contract", () => {
 
     expect(await readFile(join(root, "value.txt"), "utf8")).toBe("after");
     expect(response).toMatchObject({
-      schemaVersion: "yopp.workspace-patch-response.v1",
+      schemaVersion: "scce.workspace-patch-response.v1",
       workspaceId: "workspace-1",
       validationPolicyId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
       receipt: { planHash: replacePlan.planHash, validation: { validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID } }
@@ -179,7 +179,7 @@ describe("workspace patch API contract", () => {
       workspace: { id: "workspace-1", rootPath: root },
       allowedRoots: [root],
       policy: {
-        schemaVersion: "yopp.patch-validation-policy.v1",
+        schemaVersion: "scce.patch-validation-policy.v1",
         id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
         commands: [{ executable: "fixture", argv: [] }],
         timeoutMs: 5_000,

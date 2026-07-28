@@ -18,17 +18,17 @@
       "assistance": "none"
     },
     {
-      "systemId": "yopp",
+      "systemId": "scce",
       "conditionId": "full",
-      "displayName": "Yopp full",
+      "displayName": "SCCE full",
       "mode": "jsonl-stdio",
       "command": [
         "node",
-        "integration/yopp-jsonl-adapter.mjs"
+        "integration/scce-jsonl-adapter.mjs"
       ],
       "cwd": ".",
       "env": {
-        "YOPP_EVAL_CONDITION": "full"
+        "SCCE_EVAL_CONDITION": "full"
       },
       "timeoutMs": 120000,
       "networkPolicy": "disabled",
