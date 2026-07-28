@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
+import { ChatViewProvider } from "./chat-view.js";
 import { YoppClient } from "./client.js";
 import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from "./config.js";
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
@@ -99,6 +100,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     token: normalizeToken(await context.secrets.get(TOKEN_SECRET_KEY)),
     timeoutMs: configuredTimeout()
   });
+
+  const chatViewProvider = new ChatViewProvider(context.extensionUri, context.workspaceState, client, output);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chatViewProvider)
+  );
 
   const run = async <T>(
     endpoint: YoppEndpoint,
