@@ -760,7 +760,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:governed-action-preview")
         : undefined;
       const energySelected = selectedRow ? byCandidateId.get(selectedRow.candidate.id) : undefined;
-      const learnedCreativeCandidateAvailable = creativeRequested && scoredCandidates.some(candidate => candidate.id.startsWith("candidate:generated:creative:"));
       const learnedCreativeProposal = creativeRequested
         ? scoredCandidates.find(candidate => (
           candidate.id === "candidate:generated:creative:learned-proposal"
@@ -774,12 +773,28 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           .map(row => byCandidateId.get(row.candidate.id))
           .find((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate && !candidate.forbiddenHits.length))
         : undefined;
+      // Creative authority is an absolute bar on exact/extractive-source
+      // preemption (A=creative => SourceExactPreemption=0), not something a
+      // failed/absent learned creative candidate can waive. The prior
+      // `!learnedCreativeCandidateAvailable` escape let a creative request
+      // fall through to the extractive kernel-selected candidate whenever
+      // invention planning produced nothing usable -- exactly how a "write
+      // a story" request could still emit a verbatim, unrelated source
+      // excerpt instead of a real (or honestly incomplete) creative answer.
       const plannerSelectedCandidate = selectedKernelCandidate &&
-        (!creativeRequested || !learnedCreativeCandidateAvailable) &&
+        !creativeRequested &&
         !selectedKernelCandidate.forbiddenHits.length &&
         kernelCandidateCanPreempt(input, selectedKernelCandidate)
         ? selectedKernelCandidate
         : undefined;
+      // The generic energy-ranked fallback below scores every raw candidate
+      // (including the same kernel-selected exact-excerpt candidate blocked
+      // above) purely on fit/energy, with no requestedAuthority awareness --
+      // so it must not be allowed to re-admit exactly what plannerSelectedCandidate
+      // just excluded.
+      const energySelectedIsBlockedKernelCandidate = Boolean(
+        creativeRequested && energySelected && kernelSelectedCandidate && energySelected.id === kernelSelectedCandidate.id
+      );
       const selected = plannerSelectedCandidate ??
         semanticGraphCandidate ??
         structuredConstructCandidate ??
@@ -788,7 +803,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         workspaceDraftCandidate ??
         learnedCreativeProposal ??
         realizedCreativeCandidate ??
-        (energySelected && !energySelected.forbiddenHits.length ? energySelected : undefined);
+        (energySelected && !energySelected.forbiddenHits.length && !energySelectedIsBlockedKernelCandidate ? energySelected : undefined);
       const selectedEnergy = energyRows.find(row => row.candidate.id === selected?.id)?.result;
       markMouthPhase("candidate_selection");
       const selectedBoundSourceSurface = Boolean(
