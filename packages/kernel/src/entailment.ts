@@ -34,22 +34,28 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       const certifyingEvidenceIds = new Set(proofBoundaries.filter(item => item.certifiesFactualProof).map(item => item.evidenceId));
       const certifyingEvidence = input.evidence.filter(span => certifyingEvidenceIds.has(String(span.id)));
       const excludedProofEvidence = proofBoundaries.filter(item => !item.certifiesFactualProof);
+      // sourceExcerptProofGate/exactTextProofGate only prove text identity
+      // (SourceFidelity(e,y)=1: this exact string really is attested
+      // verbatim in evidence) -- they say nothing about whether that text
+      // answers the request (Answers(y,Oq)=1). They used to short-circuit
+      // this whole function with fabricated perfect scores (support=1,
+      // contradiction=0, structuralCoverage=1) whenever they certified, and
+      // fed the same "certified" verdict into verdictWithProofGate/
+      // proofGateSupport below, which unconditionally trust a certified
+      // gate -- overriding evaluateSemanticObligations' real, independently
+      // correct coverage/contradiction rejection with a copy-fidelity
+      // check. Only structuredProofGate (an actual claim-vs-evidence
+      // semantic proof, not a literal-text match) is allowed to carry that
+      // override authority now. Text-identity is still tracked below,
+      // purely for provenance (sourceAssessment / sourceExcerptExact) so
+      // exact quotation stays recoverable where it's actually authorized.
       const excerptGate = sourceExcerptProofGate({
         claim,
         evidence: input.evidence,
         excerpts: input.sourceExcerpts,
         hasher: options.hasher
       });
-      if (excerptGate?.verdict === "certified") {
-        const excerptEvidenceIds = new Set(excerptGate.certifiedEvidenceIds.map(String));
-        return exactSourceExcerptEntailment({
-          claim,
-          evidence: certifyingEvidence.filter(span => excerptEvidenceIds.has(String(span.id))),
-          gate: excerptGate,
-          createdAt: input.createdAt,
-          idFactory: options.idFactory
-        });
-      }
+      const textIdentityGate = excerptGate ?? exactTextProofGate({ claim, evidence: input.evidence, hasher: options.hasher });
       const result = calculus.evaluate({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field });
       const structuralResult = structural.check({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field });
       const obligations = evaluateSemanticObligations({ claim, evidence: input.evidence, nodes: input.nodes, field: input.field, hasher: options.hasher });
@@ -62,9 +68,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         proofClaims: input.proofClaims,
         proofEvidence: input.proofEvidence,
         hasher: options.hasher
-      })
-        ?? exactTextProofGate({ claim, evidence: input.evidence, hasher: options.hasher })
-        ?? sourceExcerptProofGate({ claim, evidence: input.evidence, excerpts: input.sourceExcerpts, hasher: options.hasher });
+      });
       const semanticVerdict = verdictWithProofGate(obligations.verdict, proofGate);
       const truthState = proofGate ? proofGate.truthState : truthStateFromProofVerdict("insufficient_evidence");
       const structuralSupport = structuralResult.structuralCoverage * 0.34 + structuralResult.causalMass * 0.27 + structuralResult.faithfulnessLCB * 0.21 + structuralResult.stability * 0.18;
@@ -150,171 +154,28 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
           },
           evidenceIds,
           transformIds,
-          scores: { ...result.scores, structuralEntailment: structuralResult.audit, semanticObligations: obligations.audit, semanticScores: toJsonValue(obligations.scores), mappings: toJsonValue(obligations.mappings), transforms: toJsonValue(obligations.transforms), counterexamples: toJsonValue(obligations.counterexamples), missing: toJsonValue(obligations.missing), proofBoundary: toJsonValue({ certifyingEvidence: certifyingEvidence.length, excludedProofEvidence }), semanticProofEngine: proofGate ? toJsonValue(proofGate) : null, calibration: toJsonValue({ support: supportCalibration, contradictionAvoidance: contradictionAvoidanceCalibration }) },
+          scores: { ...result.scores, structuralEntailment: structuralResult.audit, semanticObligations: obligations.audit, semanticScores: toJsonValue(obligations.scores), mappings: toJsonValue(obligations.mappings), transforms: toJsonValue(obligations.transforms), counterexamples: toJsonValue(obligations.counterexamples), missing: toJsonValue(obligations.missing), proofBoundary: toJsonValue({ certifyingEvidence: certifyingEvidence.length, excludedProofEvidence }), semanticProofEngine: proofGate ? toJsonValue(proofGate) : null, calibration: toJsonValue({ support: supportCalibration, contradictionAvoidance: contradictionAvoidanceCalibration }), ...(textIdentityGate?.verdict === "certified" ? { sourceExcerptExact: true, textIdentityProofEngine: toJsonValue(textIdentityGate) } : {}) },
           validatorVersion: VALIDATOR_VERSION,
           createdAt: input.createdAt
         },
         evidenceIds,
-        boundaries: [...new Set([...result.boundaries, ...obligations.boundaries, ...excludedProofEvidence.map(item => item.reason), ...proofGateBoundaries(proofGate), ...structuralResult.missingEdges.map(edge => `missing-structural-edge:${edge}`), ...(structuralResult.verdict === "contradicted" ? ["structural-contradiction"] : [])])]
+        boundaries: [...new Set([...result.boundaries, ...obligations.boundaries, ...excludedProofEvidence.map(item => item.reason), ...proofGateBoundaries(proofGate), ...structuralResult.missingEdges.map(edge => `missing-structural-edge:${edge}`), ...(structuralResult.verdict === "contradicted" ? ["structural-contradiction"] : []), ...(textIdentityGate?.verdict === "certified" ? ["source-excerpt-exact"] : [])])],
+        // Source fidelity is real and independent of answerhood: this exact
+        // text genuinely is attested verbatim in evidence (or it isn't) --
+        // that fact stays recoverable through provenance even though it no
+        // longer forces verdict/support/coverage to fabricated perfect
+        // values above.
+        ...(textIdentityGate?.verdict === "certified"
+          ? { sourceAssessment: {
+              sourceFidelity: 1,
+              sourceAttribution: 1,
+              externalTruth: "unknown" as const,
+              causalSupport: "not_applicable" as const,
+              independentCorroboration: { status: "not_measured" as const, independentGroupCount: null }
+            } }
+          : {})
       };
     }
-  };
-}
-
-function exactSourceExcerptEntailment(input: {
-  claim: Claim;
-  evidence: EvidenceSpan[];
-  gate: SemanticProofResult;
-  createdAt: number;
-  idFactory: IdFactory;
-}): SemanticEntailmentResult {
-  const certifiedIds = new Set(input.gate.certifiedEvidenceIds);
-  const evidence = input.evidence.filter(span => certifiedIds.has(String(span.id)));
-  const evidenceIds = evidence.map(span => span.id);
-  const sourceVersionIds = [...new Set(evidence.map(span => span.sourceVersionId))];
-  const transformIds = ["source-excerpt-exact"];
-  const proofId = input.idFactory.proofId({
-    claimId: input.claim.id,
-    evidenceIds,
-    transforms: transformIds,
-    validatorVersion: VALIDATOR_VERSION
-  });
-  const scores = {
-    structuralCoverage: 1,
-    roleCoverage: 1,
-    relationCompatibility: 1,
-    transformationSupport: 1,
-    causalMass: 0,
-    faithfulnessLCB: 1,
-    contradiction: 0,
-    stability: 0
-  };
-  const confidence = {
-    verdict: "entailed" as const,
-    support: 1,
-    contradiction: 0,
-    faithfulnessLcb: 1,
-    supportingEvidence: evidenceIds.length,
-    sourceVersions: sourceVersionIds.map(String),
-    structuralCoverage: 1,
-    roleCoverage: 1,
-    relationCompatibility: 1,
-    transformationSupport: 1,
-    causalMass: 0,
-    stability: 0,
-    satisfiedObligations: 1,
-    requiredObligations: 1
-  };
-  const obligationId = `obligation.source-excerpt:${String(input.claim.id)}`;
-  return {
-    claim: input.claim,
-    verdict: "entailed",
-    semanticVerdict: "entailed",
-    truthState: input.gate.truthState,
-    force: "observed",
-    support: 1,
-    contradiction: 0,
-    faithfulnessLcb: 1,
-    confidence,
-    sourceAssessment: {
-      sourceFidelity: 1,
-      sourceAttribution: 1,
-      externalTruth: "unknown",
-      causalSupport: "not_applicable",
-      independentCorroboration: {
-        status: "not_measured",
-        independentGroupCount: null
-      }
-    },
-    scores,
-    obligations: [{
-      id: obligationId,
-      kind: "predicate",
-      status: "satisfied",
-      claimText: input.claim.text,
-      evidenceIds,
-      sourceVersionIds,
-      support: 1,
-      contradiction: 0,
-      required: true,
-      reason: "exact source excerpt",
-      metadata: toJsonValue({ source: "entailment.source_excerpt_exact" })
-    }],
-    mappings: [{
-      id: `mapping.source-excerpt:${String(input.claim.id)}`,
-      obligationId,
-      kind: "predicate",
-      status: "satisfied",
-      claimText: input.claim.text,
-      relation: "exact",
-      evidenceIds,
-      sourceVersionIds,
-      support: 1,
-      contradiction: 0,
-      audit: toJsonValue({ source: "entailment.source_excerpt_exact" })
-    }],
-    transforms: [{
-      id: transformIds[0]!,
-      transformKind: "identity",
-      source: input.claim.text,
-      target: input.claim.text,
-      registered: true,
-      support: 1,
-      evidenceIds,
-      sourceVersionIds,
-      audit: toJsonValue({ source: "entailment.source_excerpt_exact" })
-    }],
-    counterexamples: [],
-    missing: [],
-    proof: {
-      id: proofId,
-      claimId: input.claim.id,
-      verdict: "observed",
-      confidence: toJsonValue({ ...confidence, semanticProofEngine: input.gate }),
-      proofGraph: {
-        nodes: [
-          {
-            id: String(input.claim.id),
-            kind: "claim",
-            label: "source excerpt claim",
-            metadata: toJsonValue({ normalized: input.claim.normalized })
-          },
-          ...evidence.map(span => ({
-            id: String(span.id),
-            kind: "evidence" as const,
-            label: "exact source excerpt",
-            metadata: toJsonValue({ sourceVersionId: span.sourceVersionId })
-          }))
-        ],
-        edges: evidence.map(span => ({
-          source: String(span.id),
-          target: String(input.claim.id),
-          relation: "supports" as const,
-          weight: 1,
-          evidenceIds: [span.id]
-        }))
-      },
-      evidenceIds,
-      transformIds,
-      scores: toJsonValue({
-        sourceExcerptExact: true,
-        sourceAssessment: {
-          sourceFidelity: 1,
-          sourceAttribution: 1,
-          externalTruth: "unknown",
-          causalSupport: "not_applicable",
-          independentCorroboration: {
-            status: "not_measured",
-            independentGroupCount: null
-          }
-        },
-        semanticProofEngine: input.gate
-      }),
-      validatorVersion: VALIDATOR_VERSION,
-      createdAt: input.createdAt
-    },
-    evidenceIds,
-    boundaries: [...new Set(["source-excerpt-exact", ...proofGateBoundaries(input.gate)])]
   };
 }
 

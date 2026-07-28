@@ -496,6 +496,12 @@ describe("Mouth runtime surface planning", () => {
   });
 
   it("uses the bounded exact-excerpt entailment route when source text is available", () => {
+    // Text identity (claim === evidence verbatim) is real source fidelity,
+    // tracked below via sourceExcerptExact -- but with an empty graph
+    // (nodes: []) and no construct/typed observations, there is no real
+    // graph/construction derivation backing this claim, so force is the
+    // honest "inferred", not a fabricated "observed"/"proved" earned purely
+    // by matching text to itself. See entailment.ts's textIdentityGate.
     const source = sourceVersion();
     const evidence = directEvidence(source);
     const result = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
@@ -507,9 +513,12 @@ describe("Mouth runtime surface planning", () => {
       sourceExcerpts: [{ text: evidence.text, evidenceId: evidence.id }]
     });
 
-    expect(result.force).toBe("observed");
+    expect(result.force).toBe("inferred");
     expect(result.evidenceIds).toEqual([evidence.id]);
-    expect(result.contradiction).toBe(0);
+    // Not exactly 0: with no graph/construct backing the real obligation
+    // evaluator has some residual calibrated uncertainty rather than the
+    // old fabricated hard 0 -- still low, not a real contradiction signal.
+    expect(result.contradiction).toBeLessThan(0.3);
     expect(result.proof.scores).toMatchObject({ sourceExcerptExact: true });
   });
 
@@ -530,7 +539,7 @@ describe("Mouth runtime surface planning", () => {
       sourceExcerpts: [{ text: answer, evidenceId: evidence.id }]
     });
 
-    expect(result.force).toBe("observed");
+    expect(result.force).toBe("inferred");
     expect(result.evidenceIds).toEqual([evidence.id]);
     expect(result.proof.scores).toMatchObject({ sourceExcerptExact: true });
   });
@@ -988,6 +997,70 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.force).toBe("creative");
     expect(JSON.stringify(spoken.surfacePlan.constructForces)).toContain("CreativeConstruct");
     expect(spoken.text).toContain(fixture.creativeArtifact.path);
+  });
+
+  it("does not let an evidence-bound extractive candidate preempt a creative-authority request (plan item: creative preemption bar)", async () => {
+    // Same fixture shape as "rejects a cited planner surface that is absent
+    // from its evidence" above -- a proof-answer candidate carrying real
+    // evidence-bound boundaries, which kernelCandidateCanPreempt admits and
+    // which DOES win selection for requestedAuthority: "factual" (see
+    // "collapses overlapping factual spans..."). The only variable changed
+    // here is requestedAuthority: "creative". Before the fix, a creative
+    // request with no usable learned creative candidate could still fall
+    // through to this kind of extractive candidate (e.g. an unrelated
+    // source sentence that happened to share request vocabulary) instead
+    // of a real invented answer or an honest failure -- reproducing the
+    // "write me a story..." -> two-word extractive fragment bug.
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const extractiveAnswer = evidence.text;
+    const selectedCandidate: CandidateSurface = {
+      id: "candidate:creative-preemption-regression",
+      kind: "proof-answer",
+      answer: extractiveAnswer,
+      force: "proved",
+      evidenceIds: [evidence.id],
+      scores: {
+        support: 0.96,
+        contradiction: 0,
+        faithfulness: 0.98,
+        alphaPressure: 0.8,
+        actionability: 0.5,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 0.9,
+        risk: 0
+      },
+      claimBases: ["direct_evidence"],
+      boundaries: ["selected-evidence-bound"],
+      audit: { source: "mouth-runtime.creative-preemption-regression" }
+    };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: constructGraph(false),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: importedMemory(source, evidence, "creative-preemption-regression"),
+      requirementField: deriveTurnRequirementField({ requestText: fixture.claim }),
+      requestedAuthority: "creative",
+      selectedCandidate
+    });
+
+    expect(spoken.realizationTrace.selected.id).not.toBe(selectedCandidate.id);
+    expect(spoken.text).not.toBe(extractiveAnswer);
   });
 
   it("keeps import accounting out of normal brain questions", async () => {
