@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat-view.js";
-import { YoppClient } from "./client.js";
+import { ScceClient } from "./client.js";
 import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from "./config.js";
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
-import type { YoppEndpoint } from "./protocol.js";
+import type { ScceEndpoint } from "./protocol.js";
 import {
   assertSameWorkspacePhysicalBinding,
   assertWorkspacePathAbsent,
@@ -31,10 +31,10 @@ import {
   type WorkspaceFolderIdentity
 } from "./workspace-binding.js";
 
-const TOKEN_SECRET_KEY = "yopp.serverToken.v1";
+const TOKEN_SECRET_KEY = "scce.serverToken.v1";
 const MAX_PATCH_PLAN_BYTES = 8 * 1024 * 1024;
 const MAX_PATCH_PREVIEW_BYTES = 16 * 1024 * 1024;
-const PATCH_PREVIEW_SCHEME = "yopp-patch-preview";
+const PATCH_PREVIEW_SCHEME = "scce-patch-preview";
 
 class PatchPreviewContentProvider implements vscode.TextDocumentContentProvider {
   private readonly content = new Map<string, string>();
@@ -77,10 +77,10 @@ class TaskTimelineProvider implements vscode.TreeDataProvider<ExtensionTaskRecor
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const output = vscode.window.createOutputChannel("Yopp");
+  const output = vscode.window.createOutputChannel("SCCE");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
-  status.command = "yopp.checkReadiness";
-  status.text = "$(pulse) Yopp: checking";
+  status.command = "scce.checkReadiness";
+  status.text = "$(pulse) SCCE: checking";
   status.show();
 
   const timeline = new TaskTimeline(context.globalState);
@@ -91,11 +91,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     output,
     status,
-    vscode.window.registerTreeDataProvider("yopp.taskTimeline", provider),
+    vscode.window.registerTreeDataProvider("scce.taskTimeline", provider),
     vscode.workspace.registerTextDocumentContentProvider(PATCH_PREVIEW_SCHEME, patchPreview)
   );
 
-  const client = async () => new YoppClient({
+  const client = async () => new ScceClient({
     serverUrl: configuredServerUrl(),
     token: normalizeToken(await context.secrets.get(TOKEN_SECRET_KEY)),
     timeoutMs: configuredTimeout()
@@ -107,17 +107,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   const run = async <T>(
-    endpoint: YoppEndpoint,
+    endpoint: ScceEndpoint,
     label: string,
     mutates: boolean,
-    action: (activeClient: YoppClient) => Promise<T>,
+    action: (activeClient: ScceClient) => Promise<T>,
     approvalNotice?: { message: string; detail: string }
   ): Promise<T | undefined> => {
     const task = await timeline.start(endpoint, label, mutates);
     provider.refresh();
     if (mutates) {
       const approved = await vscode.window.showWarningMessage(
-        approvalNotice?.message ?? `${label} writes to Yopp's durable local store. No workspace files will be changed by this extension command.`,
+        approvalNotice?.message ?? `${label} writes to SCCE's durable local store. No workspace files will be changed by this extension command.`,
         { modal: true, detail: approvalNotice?.detail ?? "Approve this single request? The approval is not retained for later commands." },
         "Approve once"
       );
@@ -142,45 +142,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await timeline.transition(task.id, "failed", message);
       provider.refresh();
       output.appendLine(`[${new Date().toISOString()}] ${label} failed: ${message}`);
-      void vscode.window.showErrorMessage(`Yopp: ${message}`);
+      void vscode.window.showErrorMessage(`SCCE: ${message}`);
       return undefined;
     }
   };
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("yopp.checkReadiness", async () => {
-      status.text = "$(pulse) Yopp: checking";
+    vscode.commands.registerCommand("scce.checkReadiness", async () => {
+      status.text = "$(pulse) SCCE: checking";
       const result = await run("ready", "Check readiness", false, activeClient => activeClient.ready());
       if (result && typeof result === "object" && "ok" in result && result.ok === true) {
-        status.text = "$(check) Yopp: ready";
+        status.text = "$(check) SCCE: ready";
         status.tooltip = `Ready at ${configuredServerUrl()}`;
       } else {
-        status.text = "$(error) Yopp: unavailable";
+        status.text = "$(error) SCCE: unavailable";
       }
     }),
-    vscode.commands.registerCommand("yopp.setServerToken", async () => {
-      const token = await vscode.window.showInputBox({ title: "Yopp local server token", password: true, prompt: "Leave empty to remove the stored token", ignoreFocusOut: true });
+    vscode.commands.registerCommand("scce.setServerToken", async () => {
+      const token = await vscode.window.showInputBox({ title: "SCCE local server token", password: true, prompt: "Leave empty to remove the stored token", ignoreFocusOut: true });
       if (token === undefined) return;
       const normalized = normalizeToken(token);
       if (normalized) await context.secrets.store(TOKEN_SECRET_KEY, normalized);
       else await context.secrets.delete(TOKEN_SECRET_KEY);
-      void vscode.window.showInformationMessage(normalized ? "Yopp token stored in VS Code SecretStorage." : "Yopp token removed.");
+      void vscode.window.showInformationMessage(normalized ? "SCCE token stored in VS Code SecretStorage." : "SCCE token removed.");
     }),
-    vscode.commands.registerCommand("yopp.workspace.initialize", async () => {
+    vscode.commands.registerCommand("scce.workspace.initialize", async () => {
       const workspacePath = await chooseLocalWorkspacePathForInitialization();
       if (!workspacePath) return;
       return run("workspace.initialize", "Initialize workspace", true, activeClient => activeClient.workspaceInitialize(workspacePath));
     }),
-    vscode.commands.registerCommand("yopp.workspace.ingest", () => run("workspace.ingest", "Ingest workspace", true, async activeClient => {
+    vscode.commands.registerCommand("scce.workspace.ingest", () => run("workspace.ingest", "Ingest workspace", true, async activeClient => {
       const { binding } = await serverBoundWorkspace(activeClient);
       return activeClient.workspaceIngest(binding.resolvedRoot);
     })),
-    vscode.commands.registerCommand("yopp.project.summary", () => run("project.summary", "Generate project summary", true, async activeClient => {
+    vscode.commands.registerCommand("scce.project.summary", () => run("project.summary", "Generate project summary", true, async activeClient => {
       const { binding } = await serverBoundWorkspace(activeClient);
       return activeClient.projectSummary(binding.resolvedRoot);
     })),
-    vscode.commands.registerCommand("yopp.workspace.ask", async () => {
-      const question = await vscode.window.showInputBox({ title: "Ask Yopp about this workspace", prompt: "The question and answer will be persisted by the local Yopp runtime.", ignoreFocusOut: true });
+    vscode.commands.registerCommand("scce.workspace.ask", async () => {
+      const question = await vscode.window.showInputBox({ title: "Ask SCCE about this workspace", prompt: "The question and answer will be persisted by the local SCCE runtime.", ignoreFocusOut: true });
       if (!question?.trim()) return;
       const answer = await run("workspace.ask", "Ask workspace question", true, async activeClient => {
         const { binding } = await serverBoundWorkspace(activeClient);
@@ -190,15 +190,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showInformationMessage(answer.answer.slice(0, 500));
       }
     }),
-    vscode.commands.registerCommand("yopp.workspace.status", () => run("workspace.status", "Load read-only workspace status", false, async activeClient => {
+    vscode.commands.registerCommand("scce.workspace.status", () => run("workspace.status", "Load read-only workspace status", false, async activeClient => {
       const { status: workspaceStatus } = await serverBoundWorkspace(activeClient);
       return workspaceStatus;
     })),
-    vscode.commands.registerCommand("yopp.workspace.codingRequest", async () => {
+    vscode.commands.registerCommand("scce.workspace.codingRequest", async (prefill?: string) => {
       const requestText = await vscode.window.showInputBox({
-        title: "Plan a bounded coding request with Yopp",
+        title: "Plan a bounded coding request with SCCE",
         prompt: "Describe the requested change. You will select the durable source files that bound its scope next.",
         placeHolder: "Example: Remove unused type import ExampleType from src/example.ts.",
+        value: typeof prefill === "string" ? prefill : undefined,
         ignoreFocusOut: true,
         validateInput: value => {
           const normalized = value.trim();
@@ -239,7 +240,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         codingWorkspace = scopedStatus.binding;
       }
       if (statusResult.sources.length === 0) {
-        void vscode.window.showInformationMessage("Yopp has no durable source files to scope. Initialize and ingest the workspace first.");
+        void vscode.window.showInformationMessage("SCCE has no durable source files to scope. Initialize and ingest the workspace first.");
         return;
       }
       const selected = await vscode.window.showQuickPick(
@@ -259,7 +260,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       if (selected.length > 256) {
-        void vscode.window.showErrorMessage("Yopp coding requests are limited to 256 selected source paths.");
+        void vscode.window.showErrorMessage("SCCE coding requests are limited to 256 selected source paths.");
         return;
       }
       const diagnosticCodes = await chooseTypeScriptDiagnosticCodes(codingWorkspace, selected.map(item => item.path));
@@ -281,7 +282,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (generation.kind === "unresolved") {
         const reasons = generation.reasonIds.join(", ");
         output.appendLine(`[${new Date().toISOString()}] Coding request was not resolved: ${reasons}`);
-        void vscode.window.showInformationMessage(`Yopp found no unique admissible compiler action. Reason IDs: ${reasons}`);
+        void vscode.window.showInformationMessage(`SCCE found no unique admissible compiler action. Reason IDs: ${reasons}`);
         return;
       }
       let reviewedWorkspace: BoundOpenWorkspace;
@@ -290,7 +291,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(`[${new Date().toISOString()}] Coding-request preview failed: ${message}`);
-        void vscode.window.showErrorMessage(`Yopp: ${message}`);
+        void vscode.window.showErrorMessage(`SCCE: ${message}`);
         return;
       }
       const reviewed = await vscode.window.showWarningMessage(
@@ -318,7 +319,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (applied) showAppliedReceipt(applied);
     }),
-    vscode.commands.registerCommand("yopp.workspace.applyPatchPlan", async () => {
+    vscode.commands.registerCommand("scce.workspace.applyPatchPlan", async () => {
       const boundStatus = await run("workspace.status", "Bind reviewed patch workspace", false, async activeClient => {
         const workspaceStatus = await activeClient.workspaceStatus();
         await assertServerWorkspaceMatchesOpenFolder(workspaceStatus.workspace.rootPath);
@@ -333,7 +334,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(`[${new Date().toISOString()}] Reviewed patch preview failed: ${message}`);
-        void vscode.window.showErrorMessage(`Yopp: ${message}`);
+        void vscode.window.showErrorMessage(`SCCE: ${message}`);
         return;
       }
       const reviewed = await vscode.window.showWarningMessage(
@@ -357,29 +358,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         showAppliedReceipt(applied);
       }
     }),
-    vscode.commands.registerCommand("yopp.tasks.clear", async () => {
+    vscode.commands.registerCommand("scce.tasks.clear", async () => {
       await timeline.clear();
       provider.refresh();
     })
   );
 
-  void vscode.commands.executeCommand("yopp.checkReadiness");
+  void vscode.commands.executeCommand("scce.checkReadiness");
 }
 
 export function deactivate(): void {}
 
 function configuredServerUrl(): string {
-  return normalizeLocalServerUrl(vscode.workspace.getConfiguration("yopp").get<string>("serverUrl"));
+  return normalizeLocalServerUrl(vscode.workspace.getConfiguration("scce").get<string>("serverUrl"));
 }
 
 function configuredTimeout(): number {
-  return normalizeRequestTimeout(vscode.workspace.getConfiguration("yopp").get<number>("requestTimeoutMs"));
+  return normalizeRequestTimeout(vscode.workspace.getConfiguration("scce").get<number>("requestTimeoutMs"));
 }
 
 async function chooseLocalWorkspacePathForInitialization(): Promise<string | undefined> {
   const folders = (vscode.workspace.workspaceFolders ?? []).filter(folder => folder.uri.scheme === "file");
   if (folders.length === 0) {
-    void vscode.window.showErrorMessage("Yopp initialization requires an open local file-system workspace folder.");
+    void vscode.window.showErrorMessage("SCCE initialization requires an open local file-system workspace folder.");
     return undefined;
   }
   if (folders.length === 1) return folders[0]!.uri.fsPath;
@@ -387,15 +388,15 @@ async function chooseLocalWorkspacePathForInitialization(): Promise<string | und
     folders.map(folder => ({ label: folder.name, description: folder.uri.fsPath, folder })),
     {
       title: "Select the local workspace folder to initialize",
-      placeHolder: "Yopp will initialize only the explicitly selected folder",
+      placeHolder: "SCCE will initialize only the explicitly selected folder",
       ignoreFocusOut: true
     }
   );
   return selected?.folder.uri.fsPath;
 }
 
-async function serverBoundWorkspace(activeClient: YoppClient): Promise<{
-  status: Awaited<ReturnType<YoppClient["workspaceStatus"]>>;
+async function serverBoundWorkspace(activeClient: ScceClient): Promise<{
+  status: Awaited<ReturnType<ScceClient["workspaceStatus"]>>;
   binding: BoundOpenWorkspace;
 }> {
   const status = await activeClient.workspaceStatus();
@@ -422,11 +423,11 @@ function formatOutput(value: unknown): string {
 
 async function chooseReviewedPatchPlan(): Promise<ReviewedPatchPlan | undefined> {
   const selected = await vscode.window.showOpenDialog({
-    title: "Select a reviewed Yopp patch transaction plan",
+    title: "Select a reviewed SCCE patch transaction plan",
     canSelectFiles: true,
     canSelectFolders: false,
     canSelectMany: false,
-    filters: { "Yopp patch plan": ["json"] },
+    filters: { "SCCE patch plan": ["json"] },
     openLabel: "Review plan"
   });
   const uri = selected?.[0];
@@ -524,7 +525,7 @@ async function openPatchPlanPreview(
     "vscode.diff",
     beforeUri,
     afterUri,
-    `Yopp patch preview (${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"})`,
+    `SCCE patch preview (${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"})`,
     { preview: false }
   );
   await assertWorkspacePhysicalBinding(workspace);
@@ -547,7 +548,7 @@ function combinedPatchPreview(entries: readonly PatchPreviewEntry[], side: "befo
 }
 
 async function applyReviewedWorkspacePatch(
-  activeClient: YoppClient,
+  activeClient: ScceClient,
   workspaceId: string,
   workspaceRootPath: string,
   reviewedWorkspace: BoundOpenWorkspace,
@@ -655,7 +656,7 @@ async function chooseTypeScriptDiagnosticCodes(
     return undefined;
   }
   if (codes.length > 128) {
-    void vscode.window.showErrorMessage("Yopp coding requests are limited to 128 diagnostic codes.");
+    void vscode.window.showErrorMessage("SCCE coding requests are limited to 128 diagnostic codes.");
     return undefined;
   }
   return codes;
@@ -672,5 +673,5 @@ function numericTypeScriptDiagnosticCode(diagnostic: vscode.Diagnostic): number 
 }
 
 function showAppliedReceipt(applied: AppliedWorkspacePatch): void {
-  void vscode.window.showInformationMessage(`Yopp applied ${applied.receipt.mutations.length} operation(s). Receipt ${applied.receipt.receiptHash.slice(0, 23)}...`);
+  void vscode.window.showInformationMessage(`SCCE applied ${applied.receipt.mutations.length} operation(s). Receipt ${applied.receipt.receiptHash.slice(0, 23)}...`);
 }

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { YoppClient, YoppHttpError, type TurnAnswer, type TurnStreamFrame } from "./client.js";
+import { ScceClient, ScceHttpError, type TurnAnswer, type TurnStreamFrame } from "./client.js";
 
 export interface ChatSessionRecord {
   id: string;
@@ -9,12 +9,12 @@ export interface ChatSessionRecord {
   createdAt: number;
 }
 
-const SESSION_STATE_KEY = "yopp.chat.sessionId.v1";
-const HISTORY_STATE_KEY = "yopp.chat.history.v1";
+const SESSION_STATE_KEY = "scce.chat.sessionId.v1";
+const HISTORY_STATE_KEY = "scce.chat.history.v1";
 const MAX_HISTORY = 200;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  static readonly viewId = "yopp.chat";
+  static readonly viewId = "scce.chat";
 
   private view: vscode.WebviewView | undefined;
   private activeRequest: AbortController | undefined;
@@ -22,7 +22,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly memento: vscode.Memento,
-    private readonly clientFactory: () => Promise<YoppClient>,
+    private readonly clientFactory: () => Promise<ScceClient>,
     private readonly output: vscode.OutputChannel
   ) {}
 
@@ -64,6 +64,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.activeRequest?.abort();
       return;
     }
+    if (record.type === "codingRequest") {
+      // Deliberately routes to the existing, narrow compiler-diagnostic-
+      // bounded coding-request command rather than attempting the change
+      // itself from chat -- that command's file-scope and diagnostic-code
+      // selection (real VS Code QuickPicks, not chat bubbles) is the actual
+      // safety boundary. This just removes the need to open the command
+      // palette and retype the request separately.
+      void vscode.commands.executeCommand("scce.workspace.codingRequest", typeof record.text === "string" ? record.text : undefined);
+      return;
+    }
     if (record.type !== "send" || typeof record.text !== "string") return;
     const text = record.text.trim();
     if (!text) return;
@@ -95,8 +105,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.appendHistory({ id: cryptoRandomId(), role: "assistant", text: spoken, detail: turnDetail(answer), createdAt: Date.now() });
       void webview.postMessage({ type: "answer", text: spoken, detail: turnDetail(answer) });
     } catch (error) {
-      const messageText = error instanceof YoppHttpError
-        ? `Yopp request failed (${error.status}): ${error.message}`
+      const messageText = error instanceof ScceHttpError
+        ? `SCCE request failed (${error.status}): ${error.message}`
         : error instanceof Error ? error.message : String(error);
       this.output.appendLine(`[chat] ${messageText}`);
       this.appendHistory({ id: cryptoRandomId(), role: "error", text: messageText, createdAt: Date.now() });
@@ -120,7 +130,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Yopp</title>
+<title>SCCE</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
@@ -236,6 +246,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   button:hover { background: var(--vscode-button-hoverBackground, var(--vscode-button-background)); }
   button:disabled { opacity: 0.5; cursor: default; }
   button.stop { background: var(--vscode-inputValidation-errorBackground, #5a1d1d); }
+  button.secondary { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent)); }
+  button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground, transparent)); }
   .toolbar { display: flex; justify-content: flex-end; padding: 4px 8px 0; }
   .toolbar button { background: transparent; color: var(--vscode-descriptionForeground); height: 24px; padding: 0 8px; font-size: 0.85em; }
   .toolbar button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, transparent); }
@@ -243,9 +255,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div class="toolbar"><button id="clear">Clear conversation</button></div>
-  <div class="messages" id="messages"><div class="empty" id="empty">Ask Yopp anything about this workspace.<div class="hint">It can explain code, plan and apply changes, and answer questions grounded in what it has actually read.</div></div></div>
+  <div class="messages" id="messages"><div class="empty" id="empty">Ask SCCE anything about this workspace.<div class="hint">It can explain code, plan and apply changes, and answer questions grounded in what it has actually read.</div></div></div>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="Message Yopp&hellip;"></textarea>
+    <textarea id="input" rows="1" placeholder="Message SCCE&hellip;"></textarea>
+    <button id="plan-code" class="secondary" title="Plan a bounded coding request from this text (file scope and diagnostic selection happen in VS Code dialogs, not here)">Plan code change</button>
     <button id="send">Send</button>
   </div>
 <script nonce="${nonce}">
@@ -255,6 +268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   const emptyEl = document.getElementById('empty');
   const inputEl = document.getElementById('input');
   const sendButton = document.getElementById('send');
+  const planCodeButton = document.getElementById('plan-code');
   const clearButton = document.getElementById('clear');
   let sending = false;
   let typingRow = null;
@@ -356,6 +370,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   sendButton.addEventListener('click', send);
+  planCodeButton.addEventListener('click', () => {
+    vscodeApi.postMessage({ type: 'codingRequest', text: inputEl.value.trim() });
+  });
   clearButton.addEventListener('click', () => {
     messagesEl.querySelectorAll('.row').forEach(row => row.remove());
     emptyEl.style.display = '';
@@ -395,7 +412,7 @@ function answerSurface(answer: TurnAnswer): string {
   if (typeof text === "string" && /[\p{L}\p{N}]/u.test(text)) return text;
   const errorLike = (answer as { error?: unknown; runtimeError?: unknown; message?: unknown } | undefined);
   const error = errorLike?.error ?? errorLike?.runtimeError ?? errorLike?.message;
-  return error ? `Runtime failure: ${String(error)}` : "Yopp returned no answer for this turn.";
+  return error ? `Runtime failure: ${String(error)}` : "SCCE returned no answer for this turn.";
 }
 
 function turnDetail(answer: TurnAnswer): unknown {

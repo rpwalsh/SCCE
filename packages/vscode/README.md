@@ -2,12 +2,9 @@
 
 This extension is a local client for the existing SCCE server API. It does not run a second cognitive path, invoke a model, or execute shell commands. It can modify workspace files only through the reviewed, content-addressed server patch transaction described below and only after explicit user and server authorization.
 
-The package, command, and setting identifiers retain their `yopp` prefixes as
-compatibility interfaces. The product surface is SCCE.
-
 ## Current surface
 
-- A chat view in the SCCE activity-bar container. Type a message, get a streamed answer grounded in whatever the server has actually ingested, with a per-message "Details" disclosure for proof/evidence/event data -- conversation is the primary surface, trace data is opt-in.
+- A chat view in the SCCE activity-bar container. Type a message, get a streamed answer grounded in whatever the server has actually ingested, with a per-message "Details" disclosure for proof/evidence/event data -- conversation is the primary surface, trace data is opt-in. Its "Plan code change" button hands the composer text to the coding-request command below instead of requiring the command palette and a second typed description.
 - Readiness status for a configured loopback SCCE server.
 - Workspace initialize, ingest, and question commands. Every command that persists data requires a one-time modal approval.
 - Project summaries, with a one-time approval because the current server implementation persists generated reports.
