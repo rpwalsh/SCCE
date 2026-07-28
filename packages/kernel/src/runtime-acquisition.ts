@@ -141,7 +141,7 @@ async function dispatchWebSearchThroughExecutive(input: {
  * there is no separate "task" concept apart from whether the dispatch
  * itself succeeded.
  */
-async function recordConnectorDispatchPolicyEvaluation(input: {
+export async function recordConnectorDispatchPolicyEvaluation(input: {
   deps: ScceKernelDeps;
   hasher: ReturnType<typeof createHasher>;
   disposition: CapabilityDispatchDisposition;
@@ -171,9 +171,14 @@ async function recordConnectorDispatchPolicyEvaluation(input: {
     createdAt: input.createdAt,
     informationLabel: {
       tenantId: input.deps.informationAccess?.tenantId ?? "scce.local",
-      principals: [],
+      principals: input.deps.informationAccess?.principalId ? [input.deps.informationAccess.principalId] : [],
       compartments: [],
-      exportClass: "internal",
+      // A non-public label requires at least one principal (see
+      // information-flow.ts's normalizeInformationLabel) -- without a
+      // configured principalId there is no real access boundary to scope
+      // this telemetry to, so it degrades to public rather than writing a
+      // label that fails its own validation on every later read.
+      exportClass: input.deps.informationAccess?.principalId ? "internal" : "public",
       mergePolicy: "isolated"
     }
   };

@@ -84,11 +84,15 @@ export function segmentationAggregateKeyId(key: SegmentationAggregateKey): strin
 }
 
 export function segmentationAggregateInformationLabel(key: SegmentationAggregateKey, principals: readonly string[] = []): InformationLabel {
+  // A non-public label requires at least one principal (see
+  // information-flow.ts's normalizeInformationLabel) -- degrade to public
+  // rather than construct a label that fails its own validation on every
+  // later read when no principal scope was actually supplied.
   return {
     tenantId: key.tenantId,
     principals: [...principals],
     compartments: [],
-    exportClass: "internal",
+    exportClass: principals.length ? "internal" : "public",
     mergePolicy: "same_owner"
   };
 }
