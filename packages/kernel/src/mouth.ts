@@ -5705,6 +5705,21 @@ function preserveSurfaceExtent(text: string, maxLength?: number, plan?: SurfaceP
   const ordered = eligibleUnits.filter(unit => selectedSet.has(unit));
   const candidate = tidySurface(ordered.join(" "));
   if (candidate && required.every(term => containsSurface(candidate, term) || !containsSurface(eligibleSurface, term))) return candidate;
+  // appendExtentUnit rejects a unit outright if it alone would exceed
+  // maxLength -- real encyclopedic prose regularly has individual
+  // sentences longer than a ~560-char factual extent budget, so `selected`
+  // can end up completely empty even though real, relevant content is
+  // available. Falling straight to compactAnchorSurface in that case
+  // discards every real sentence in favor of reassembling bare weighted
+  // terms, which can degenerate to a single word (verified live: a real
+  // multi-sentence biography answer collapsed to just "lovelace" this
+  // way). Truncating the best available sentence at a whole-word boundary
+  // keeps the answer real, readable prose instead of a term collage.
+  if (!selected.length && eligibleUnits.length) {
+    const best = eligibleUnits.find(unit => required.some(term => containsSurface(unit, term))) ?? eligibleUnits[0]!;
+    const truncated = compactWholeWordSurface(best, maxLength);
+    if (truncated) return truncated;
+  }
   const anchorSurface = compactAnchorSurface(required, maxLength);
   if (anchorSurface) return anchorSurface;
   return compactWholeWordSurface(eligibleSurface, maxLength);
