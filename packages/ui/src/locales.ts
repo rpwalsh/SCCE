@@ -89,7 +89,21 @@ export const UI_MESSAGES_EN_US = {
   "prompt.workspace_question": "Workspace question",
   "ui.label.evidence": "Evidence",
   "ui.label.inspect": "Inspect",
-  "ui.label.language": "Language"
+  "ui.label.language": "Language",
+  "button.send": "Send",
+  "button.stop": "Stop",
+  "button.clear_chat": "Clear conversation",
+  "composer.placeholder": "Message SCCE…",
+  "chat.empty.title": "Ask SCCE anything about this workspace.",
+  "chat.empty.hint": "It can explain code, plan and apply changes, and answer questions grounded in what it has actually ingested.",
+  "chat.working": "SCCE is working…",
+  "chat.details": "Details",
+  "app.developer_panel": "Developer",
+  "app.developer_panel.close": "Close developer panel",
+  "app.developer_panel.explorer": "Explorer",
+  "app.developer_panel.terminal": "Terminal",
+  "app.developer_panel.trace": "Trace",
+  "app.developer_panel.inspector": "Inspector"
 } as const;
 
 export function uiText(key: UiMessageKey): string {
