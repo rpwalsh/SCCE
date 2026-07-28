@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { foldSegmentationAggregate, segmentationAggregateKeyId, segmentationAggregateSpacedRatio, type SegmentationAggregateKey } from "../segmentation-aggregate.js";
+import {
+  foldSegmentationAggregate,
+  segmentationAggregateInformationLabel,
+  segmentationAggregateKeyId,
+  segmentationAggregateSpacedRatio,
+  type SegmentationAggregateKey
+} from "../segmentation-aggregate.js";
+import { normalizeInformationLabel } from "../information-flow.js";
 import { SEGMENTATION_SCHEMA_V2, segmentUnicodeSurfaceV2 } from "../unicode-segmentation-v2.js";
 
 const KEY: SegmentationAggregateKey = {
@@ -59,5 +66,24 @@ describe("segmentationAggregateKeyId", () => {
 
   it("is deterministic for the same key", () => {
     expect(segmentationAggregateKeyId(KEY)).toBe(segmentationAggregateKeyId({ ...KEY }));
+  });
+});
+
+describe("segmentationAggregateInformationLabel", () => {
+  it("degrades to public rather than producing a non-public label with no principal when called with no principals", () => {
+    // normalizeInformationLabel throws for exactly this combination (a
+    // non-public exportClass paired with an empty principals array) --
+    // this was a real bug (every persisted row using this label crashed on
+    // its next read). The default parameter must never reintroduce it.
+    const label = segmentationAggregateInformationLabel(KEY);
+    expect(() => normalizeInformationLabel(label)).not.toThrow();
+    expect(label.exportClass).toBe("public");
+  });
+
+  it("stays internal and valid when real principals are supplied", () => {
+    const label = segmentationAggregateInformationLabel(KEY, ["owner.fixture"]);
+    expect(() => normalizeInformationLabel(label)).not.toThrow();
+    expect(label.exportClass).toBe("internal");
+    expect(label.principals).toEqual(["owner.fixture"]);
   });
 });

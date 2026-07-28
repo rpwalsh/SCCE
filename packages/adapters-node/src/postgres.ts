@@ -2487,9 +2487,14 @@ function createSegmentationPopulationModelStore(
   };
 }
 
+// A non-public label requires at least one principal (see
+// packages/kernel/src/information-flow.ts's normalizeInformationLabel) --
+// "system" is the coherent self-referential principal for this tenant-less
+// executive telemetry, not an empty array that would fail validation on
+// every later read.
 const EXECUTIVE_SYSTEM_INFORMATION_LABEL = {
   tenantId: "system",
-  principals: [] as string[],
+  principals: ["system"] as string[],
   compartments: [] as string[],
   exportClass: "internal" as const,
   mergePolicy: "isolated" as const
