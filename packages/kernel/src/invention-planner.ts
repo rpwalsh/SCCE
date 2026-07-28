@@ -873,7 +873,8 @@ function graphCompositionIngredients(input: PlanInventionsInput): CompositionIng
   const ppf = new Map(input.field.ppf.map(row => [String(row.nodeId), row.mass]));
   const availableEvidenceIds = new Set(input.evidence.map(span => String(span.id)));
   const requestFeatures = featureSet(input.requestText, 512);
-  return input.graph.nodes.map(node => {
+  const nodeLinkedEvidenceIds = new Set(input.graph.nodes.flatMap(node => node.evidenceIds.map(String)));
+  const nodeRows = input.graph.nodes.map(node => {
     const text = graphNodeSurface(node, input.evidence, input.requestText);
     const requestFit = text ? weightedJaccard(requestFeatures, featureSet(text, 256)) : 0;
     return {
@@ -889,9 +890,52 @@ function graphCompositionIngredients(input: PlanInventionsInput): CompositionIng
       graphNodeId: String(node.id),
       requestFit
     };
-  }).filter(row => Boolean(row.text) && row.requestFit >= 0.04)
+  });
+  // Graph-node discovery is not guaranteed to create a node for every
+  // selected evidence span (it can come back empty on a creative-authority
+  // turn, since that path doesn't run the same field/PPF graph-building
+  // steps a factual turn does) -- without a parallel evidence-sourced
+  // ingredient, a real, request-relevant evidence span with no matching
+  // graph node could never become a factual_premise claim on the
+  // invention, even when it's exactly what grounds it. This is the
+  // mechanism behind "creative premise evidence missing": input.graph.nodes
+  // was empty for a creative request even though input.evidence held the
+  // relevant span.
+  const evidenceRows = evidenceGraphCompositionIngredients(input, requestFeatures, nodeLinkedEvidenceIds);
+  return [...nodeRows, ...evidenceRows]
+    .filter(row => Boolean(row.text) && row.requestFit >= 0.04)
     .sort((left, right) => right.requestFit - left.requestFit || right.weight - left.weight || left.id.localeCompare(right.id))
     .map(({ requestFit: _requestFit, ...row }) => row);
+}
+
+function evidenceGraphCompositionIngredients(
+  input: PlanInventionsInput,
+  requestFeatures: readonly string[],
+  excludeEvidenceIds: ReadonlySet<string>
+): Array<CompositionIngredient & { requestFit: number }> {
+  const rows: Array<CompositionIngredient & { requestFit: number }> = [];
+  for (const span of input.evidence) {
+    const evidenceId = String(span.id);
+    if (excludeEvidenceIds.has(evidenceId)) continue;
+    let best: { text: string; fit: number } | undefined;
+    for (const sentence of splitEvidenceSentences(span.text || span.textPreview)) {
+      const clean = cleanSurfacePiece(sentence);
+      if (!clean) continue;
+      const fit = weightedJaccard(requestFeatures, featureSet(clean, 256));
+      if (!best || fit > best.fit) best = { text: clean, fit };
+    }
+    if (!best) continue;
+    rows.push({
+      id: `evidence.premise.${evidenceId}`,
+      text: best.text,
+      source: "graph",
+      weight: clamp01(0.5 * span.alpha * (0.25 + 0.75 * best.fit)),
+      evidenceIds: [evidenceId],
+      graphNodeId: `evidence:${evidenceId}`,
+      requestFit: best.fit
+    });
+  }
+  return rows;
 }
 
 function languageCompositionIngredients(input: PlanInventionsInput): CompositionIngredient[] {
