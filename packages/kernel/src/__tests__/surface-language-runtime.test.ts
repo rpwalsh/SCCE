@@ -95,6 +95,35 @@ describe("surface language resident-only cache", () => {
     expect(fixture.profileQueries.at(-1)?.surfaceNgrams).toContain("fix");
   });
 
+  it("evicts the oldest entry instead of growing without bound once the request-text-keyed caches exceed their configured size", async () => {
+    // Real bug: surfaceLanguageMemoryCache and surfaceCandidateProfileCache
+    // are keyed (in part) by a hash of arbitrary request/surface text, so a
+    // long-lived process answering many distinct questions grew these Maps
+    // by one entry per distinct question forever -- confirmed as the cause
+    // of a real OOM crash on both a long-running server and a long test
+    // run. maxEntries is set to 2 here so the test can prove eviction with
+    // three calls instead of the real 500/2000-entry production default.
+    const fixture = runtimeFixture({ cacheMs: 10_000_000, surfaceLanguageMemoryCacheMaxEntries: 2, surfaceCandidateProfileCacheMaxEntries: 2 });
+
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "first request");
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "second request");
+    const callsBeforeThird = fixture.totalDurableCalls();
+    // Re-hydrating "second request" (still within the 2-entry cap) must not
+    // trigger a new durable read -- proves the cache itself still works,
+    // not just that it evicts everything.
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "second request");
+    expect(fixture.totalDurableCalls()).toBe(callsBeforeThird);
+
+    // A third distinct request text exceeds the 2-entry cap and must evict
+    // "first request" (the oldest), forcing a real durable re-read the next
+    // time it's asked for -- if the Map were unbounded, this would still be
+    // served from cache with zero new durable calls.
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "third request");
+    const callsBeforeReaskingFirst = fixture.totalDurableCalls();
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "first request");
+    expect(fixture.totalDurableCalls()).toBeGreaterThan(callsBeforeReaskingFirst);
+  });
+
   it("hydrates the learned segmentation population selected for the surface profile", async () => {
     const fixture = runtimeFixture();
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
@@ -113,7 +142,7 @@ describe("surface language resident-only cache", () => {
   });
 });
 
-function runtimeFixture() {
+function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number } = {}) {
   const calls = {
     active: 0,
     evidence: 0,
@@ -247,7 +276,8 @@ function runtimeFixture() {
     clock,
     hasher,
     cacheMs: 10,
-    profileLimit: 32
+    profileLimit: 32,
+    ...cacheOverrides
   });
 
   return {

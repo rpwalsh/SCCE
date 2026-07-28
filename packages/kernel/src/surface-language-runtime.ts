@@ -23,6 +23,33 @@ import type {
   LanguageProfile
 } from "./types.js";
 
+/**
+ * Real bug this guards against: surfaceLanguageMemoryCache and
+ * surfaceCandidateProfileCache are both keyed (in part or entirely) by a
+ * hash of the raw request/surface text, so a long-lived server answering
+ * many distinct questions grows these Maps by one entry per distinct
+ * question forever -- no TTL branch here ever deletes an entry, TTL only
+ * decides whether an existing entry gets reused or overwritten at the
+ * SAME key. Over a real session this is unbounded heap growth, not a
+ * bounded cache; confirmed as the cause of an OOM crash on both a
+ * long-running server process and a long vitest run exercising many
+ * distinct request texts. FIFO-capped rather than a full LRU: simpler,
+ * and eviction order doesn't need to be precise for a warm-recent-work
+ * cache like this one.
+ */
+function boundedCacheSet<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: number): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > maxEntries) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
+const DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES = 500;
+const DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES = 2_000;
+
 export function createSurfaceLanguageRuntime(options: {
   deps: Pick<ScceKernelDeps, "storage" | "corpusRegistry">;
   languageMemoryRuntime: ReturnType<typeof createLanguageMemoryRuntime>;
@@ -30,10 +57,15 @@ export function createSurfaceLanguageRuntime(options: {
   hasher: ReturnType<typeof createHasher>;
   cacheMs: number;
   profileLimit: number;
+  /** Test/tuning hook; production callers should rely on the defaults. */
+  surfaceLanguageMemoryCacheMaxEntries?: number;
+  surfaceCandidateProfileCacheMaxEntries?: number;
 }) {
   const { deps, languageMemoryRuntime, clock, hasher } = options;
   const surfaceLanguageMemoryCacheMs = options.cacheMs;
   const surfaceLanguageProfileLimit = options.profileLimit;
+  const surfaceLanguageMemoryCacheMaxEntries = options.surfaceLanguageMemoryCacheMaxEntries ?? DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES;
+  const surfaceCandidateProfileCacheMaxEntries = options.surfaceCandidateProfileCacheMaxEntries ?? DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES;
 
   const corpusRegistry = createCorpusRegistry(deps.corpusRegistry ?? []);
 
@@ -389,7 +421,7 @@ export function createSurfaceLanguageRuntime(options: {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
     const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
-    surfaceLanguageMemoryCache.set(cacheKey, { limit, loadedAt: now, value });
+    boundedCacheSet(surfaceLanguageMemoryCache, cacheKey, { limit, loadedAt: now, value }, surfaceLanguageMemoryCacheMaxEntries);
     return value;
   }
 
@@ -549,7 +581,7 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceNgrams: languageSurfaceTrigrams(surface)
     });
     const clusters = buildLanguageProfileClusters(profiles);
-    surfaceCandidateProfileCache.set(surfaceKey, { loadedAt: now, profiles, clusters });
+    boundedCacheSet(surfaceCandidateProfileCache, surfaceKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
     return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster;
   }
 
