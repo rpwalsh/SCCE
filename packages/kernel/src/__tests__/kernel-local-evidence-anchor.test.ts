@@ -959,7 +959,7 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.answer).not.toContain("scce.invention_construct");
   });
 
-  it("bypasses factual proof engines for creative authority but invokes them for factual authority", async () => {
+  it("invokes real evidence/proof machinery for creative authority too, not just factual authority (compositional force refactor)", async () => {
     const premise = evidenceSpan({
       id: "evidence:proof-authority-boundary",
       sourceVersionId: "source:proof-authority-boundary:v1" as SourceVersionId,
@@ -988,6 +988,12 @@ describe("kernel local evidence source anchoring", () => {
       });
     };
 
+    // A pure-invention request has no source text for entailment/semanticProof/ccr
+    // to find a match against, but the machinery must still be REACHED -- an
+    // embedded factual claim inside an otherwise-creative turn only gets a real
+    // proof verdict if this infrastructure isn't skipped wholesale just because
+    // requestedAuthority is "creative" (Valid(Y) = ∧ᵢ Valid(yᵢ | force(yᵢ)) needs
+    // the per-unit machinery to exist before it can be applied per-unit).
     const creativeFixture = storageFixture({ evidence: [] });
     const creativeKernel = kernelFor(creativeFixture.storage, 9_250);
     resetProofEngineCalls();
@@ -996,13 +1002,12 @@ describe("kernel local evidence source anchoring", () => {
       requestedAuthority: "creative"
     });
     expect(creativeResult.answer.trim()).not.toBe("");
-    expect(proofEngineCalls).toEqual({
-      ablatedSupport: 1,
-      entailment: 0,
-      semanticProof: 0,
-      ccr: 0,
-      pface: 0
-    });
+    expect(creativeResult.assistantForce).toBe("creative_answer");
+    expect(proofEngineCalls.ablatedSupport).toBe(0);
+    expect(proofEngineCalls.entailment).toBeGreaterThan(0);
+    expect(proofEngineCalls.semanticProof).toBeGreaterThan(0);
+    expect(proofEngineCalls.ccr).toBeGreaterThan(0);
+    expect(proofEngineCalls.pface).toBeGreaterThan(0);
 
     const factualFixture = storageFixture({ evidence: [premise] });
     const factualKernel = kernelFor(factualFixture.storage, 9_350);
@@ -1048,6 +1053,23 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.constructGraph.nodes.some(node => node.kind === "construct:invention")).toBe(true);
     expect(result.emissionGraph.evidenceIds).toEqual([premise.id]);
     expect(result.events.some(event => event.typeId === "InventionPlanned")).toBe(true);
+
+    // Compositional force refactor: the invention's own real embedded
+    // factual_premise claim (grounded on `premise`) must now be visible to
+    // assistantForceDecision as its own validated claim -- not collapsed
+    // into one opaque "creative" label with the premise's grounding
+    // invisible to the force machinery. Since that premise IS backed by
+    // real evidence, no claim is unsupported and the answer legitimately
+    // stays creative_answer (this is the "fiction with exact factual
+    // constraints" case: the constraint is satisfied, so nothing blocks
+    // emission).
+    const selectedEvent = result.events.find(event => event.typeId === "CandidateSelected");
+    const trace = selectedEvent?.payload as { assistantForceTrace?: { claimBasis?: Array<{ basis: string; force: string }>; unsupportedClaimIds?: string[] } } | undefined;
+    expect(trace?.assistantForceTrace?.unsupportedClaimIds).toEqual([]);
+    expect(trace?.assistantForceTrace?.claimBasis).toEqual(expect.arrayContaining([
+      expect.objectContaining({ basis: "direct_evidence", force: expect.stringMatching(/certified_fact|source_grounded_answer/) }),
+      expect.objectContaining({ basis: "invented", force: "creative_answer" })
+    ]));
   });
 
   it("uses a learned opaque frame to create an invention without an English command router", async () => {

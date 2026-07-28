@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createDialogueCognitiveMemoryV2, createHasher, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -409,7 +409,9 @@ async function dispatch(
       workspace,
       allowedRoots: context.config.runtime.allowedRoots,
       policy,
-      provider
+      provider,
+      executive: context.runtime.executive,
+      ownerId: context.config.security?.informationAccess?.principalId
     }));
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/project/")) {
@@ -1923,37 +1925,156 @@ export function parseWorkspacePatchRequest(value: unknown): WorkspacePatchApiReq
  * workspace record and server-owned validation policy, never a client root or
  * client executable. Authentication and approval happen in dispatch first.
  */
+const WORKSPACE_PATCH_CAPABILITY_ID = "workspace.patch.apply";
+
+/**
+ * Routes real workspace-patch execution through the durable executive
+ * dispatcher (plan item 45) -- the same prepare/dispatch/receipt pattern
+ * `runtime-acquisition.ts`'s `dispatchWebSearchThroughExecutive` (item 43)
+ * established for a read-only connector call, applied here to a genuine
+ * mutation. The critical difference from that read-only pattern: there is
+ * no "dispatch failed, fall back to calling it again directly" path here.
+ * A second attempt at a real file mutation is not a safe fallback the way
+ * a second search is, so presence/absence of `executive` selects exactly
+ * one execution path -- when present, the dispatcher's executor is the
+ * only thing that ever calls `runTransaction`; when absent, the caller
+ * takes the pre-existing direct path unchanged.
+ *
+ * The approval decision itself (`approved(context, "workspace.patch.apply",
+ * ...)`) already happened in the HTTP handler before this function is ever
+ * reached, so the dispatched task's own authority/approval controls are
+ * "not_required" -- this wrapper adds replay-safety attestation, it is not
+ * a second approval gate. No automated compensating action exists yet for
+ * arbitrary file-patch application, so rollback is honestly declared
+ * "unavailable", with the risk-acceptance evidence pointing at the exact
+ * plan hash the upstream approval gate already required a decision on --
+ * real, traceable evidence of a genuine approval, not fabricated.
+ */
+async function executeWorkspacePatchTransactionThroughExecutive(input: {
+  executive: DurableExecutiveEpisode;
+  planHash: string;
+  ownerId: string;
+  runTransaction: () => Promise<Awaited<ReturnType<typeof executeWorkspacePatchTransaction>>>;
+}): Promise<Awaited<ReturnType<typeof executeWorkspacePatchTransaction>>> {
+  const hasher = createHasher();
+  const idFactory = createIdFactory({ clock: createClock(), hasher, deterministicReplay: false });
+  let capturedReceipt: Awaited<ReturnType<typeof executeWorkspacePatchTransaction>> | undefined;
+  let capturedError: unknown;
+  const executor: CapabilityExecutor = {
+    descriptor: { capabilityId: WORKSPACE_PATCH_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "unavailable" },
+    execute: async () => {
+      try {
+        capturedReceipt = await input.runTransaction();
+        return {
+          status: "succeeded",
+          outputRefs: capturedReceipt.mutations.map(mutation => mutation.path),
+          evidenceRefs: [`workspace.patch.receipt.${capturedReceipt.receiptHash}`],
+          attestationRef: `workspace.patch.${input.planHash}`
+        };
+      } catch (error) {
+        capturedError = error;
+        return {
+          status: "failed",
+          outputRefs: [],
+          evidenceRefs: [],
+          attestationRef: `workspace.patch.failed.${input.planHash}`
+        };
+      }
+    }
+  };
+  const episodeId = idFactory.episodeId();
+  const policyVersionId = `policy_workspace_patch_${hasher.digestHex(input.planHash).slice(0, 32)}`;
+  const goalId = `goal_workspace_patch_${input.planHash}`;
+  const taskId = `task_workspace_patch_${input.planHash}`;
+  const dispatched = await dispatchCapabilityTask(
+    { executive: input.executive, executors: createCapabilityExecutorRegistry([executor]), hasher, now: () => Date.now() },
+    {
+      episodeId,
+      ownerId: input.ownerId,
+      policyVersionId,
+      goal: { id: goalId, goalClassId: "goal.class.workspace_patch", objectiveRef: input.planHash, requirementIds: [], ownerId: input.ownerId },
+      task: {
+        id: taskId,
+        goalId,
+        taskClassId: "task.class.workspace_patch",
+        requirementIds: [],
+        dependencyTaskIds: [],
+        capabilityId: WORKSPACE_PATCH_CAPABILITY_ID,
+        inputRef: input.planHash,
+        policyVersionId,
+        controls: {
+          authority: {
+            authorityClassId: "authority.class.workspace_patch",
+            subjectId: input.ownerId,
+            requiredScopeIds: [],
+            state: "not_required",
+            justificationRef: input.planHash
+          },
+          approval: {
+            policyId: "approval.policy.workspace_patch",
+            state: "not_required",
+            approverClassIds: [],
+            justificationRef: input.planHash
+          }
+        },
+        rollback: {
+          mode: "unavailable",
+          justificationRef: "no automated compensating action exists yet for arbitrary file-patch application",
+          riskAcceptanceId: `workspace.patch.approval.${input.planHash}`,
+          riskAcceptanceEvidenceRefs: [`workspace.patch.approval.${input.planHash}`]
+        }
+      },
+      payload: { planHash: input.planHash } as unknown as JsonValue,
+      outcomeEvidenceRefs: []
+    }
+  );
+  if (capturedError) throw capturedError;
+  if (!capturedReceipt) throw new Error(`workspace patch dispatch produced no receipt (disposition: ${dispatched.disposition})`);
+  return capturedReceipt;
+}
+
 export async function executeWorkspacePatchApiRequest(input: {
   readonly request: WorkspacePatchApiRequest;
   readonly workspace: { readonly id: string; readonly rootPath: string };
   readonly allowedRoots: readonly string[];
   readonly policy: StructuredPatchValidationPolicy;
   readonly provider?: StructuredPatchValidationProvider;
+  /** When present, routes execution through the durable executive dispatcher (plan item 45); when absent, the pre-existing direct path is unchanged. */
+  readonly executive?: DurableExecutiveEpisode;
+  readonly ownerId?: string;
 }): Promise<WorkspacePatchApiResponse> {
   if (input.workspace.id !== input.request.workspaceId) throw new HttpError(409, "workspaceId does not identify the selected workspace");
   if (input.policy.id !== input.request.validationPolicyId) throw new HttpError(400, "validationPolicyId is not registered for this request");
   const workspaceRoot = await canonicalAllowedWorkspaceRoot(input.workspace.rootPath, input.allowedRoots);
-  try {
-    const receipt = await executeWorkspacePatchTransaction({
-      workspaceRoot,
-      plan: input.request.plan,
-      validate: async view => {
-        try {
-          return await runStructuredPatchValidation({ workspaceRoot, validationView: view, policy: input.policy, provider: input.provider });
-        } catch (error) {
-          return {
-            ok: false,
-            validatorId: input.policy.id,
-            evidence: {
-              schemaVersion: "yopp.patch-validation-error.v1",
-              policyId: input.policy.id,
-              planHash: input.request.plan.planHash,
-              error: error instanceof Error ? error.message : String(error)
-            }
-          };
-        }
+  const runTransaction = () => executeWorkspacePatchTransaction({
+    workspaceRoot,
+    plan: input.request.plan,
+    validate: async view => {
+      try {
+        return await runStructuredPatchValidation({ workspaceRoot, validationView: view, policy: input.policy, provider: input.provider });
+      } catch (error) {
+        return {
+          ok: false,
+          validatorId: input.policy.id,
+          evidence: {
+            schemaVersion: "yopp.patch-validation-error.v1",
+            policyId: input.policy.id,
+            planHash: input.request.plan.planHash,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        };
       }
-    });
+    }
+  });
+  try {
+    const receipt = input.executive
+      ? await executeWorkspacePatchTransactionThroughExecutive({
+        executive: input.executive,
+        planHash: input.request.plan.planHash,
+        ownerId: input.ownerId ?? "scce-server",
+        runTransaction
+      })
+      : await runTransaction();
     return {
       schemaVersion: WORKSPACE_PATCH_RESPONSE_SCHEMA,
       workspaceId: input.request.workspaceId,

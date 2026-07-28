@@ -82,6 +82,14 @@ describe("assistant force classes", () => {
     });
     expect(certified.force).toBe("certified_fact");
 
+    // A claim explicitly marked basis: "unsupported" is the planner's own
+    // admission that this specific claim has no backing at all -- unlike
+    // "conjectured" (legitimate, labeled speculation), it must not be
+    // silently absorbed into an overall "reasoned_answer" just because
+    // other claims in the same proposal look fine. Valid(Y) = ∧i Valid(yi):
+    // one genuinely unsupported unit invalidates the composed answer, even
+    // though the reasoned/conjectural units next to it are individually
+    // fine (see assistant-force.ts's proposalForceDecision).
     const derived = assistantForceDecision({
       selectedProposal: {
         id: "proposal:derived",
@@ -92,7 +100,8 @@ describe("assistant force classes", () => {
         ]
       }
     });
-    expect(derived.force).toBe("reasoned_answer");
+    expect(derived.force).toBe("insufficient_support");
+    expect(derived.unsupportedClaimIds).toEqual(["claim:unsupported"]);
     expect(derived.audit).toMatchObject({
       claimBasis: [
         { claimId: "claim:reason", force: "reasoned_answer" },
@@ -100,6 +109,18 @@ describe("assistant force classes", () => {
         { claimId: "claim:unsupported", force: "insufficient_support" }
       ]
     });
+
+    const cleanlyDerived = assistantForceDecision({
+      selectedProposal: {
+        id: "proposal:derived-clean",
+        claims: [
+          { id: "claim:reason", basis: "reasoned_inference" },
+          { id: "claim:forecast", basis: "conjectured" }
+        ]
+      }
+    });
+    expect(cleanlyDerived.force).toBe("reasoned_answer");
+    expect(cleanlyDerived.unsupportedClaimIds).toEqual([]);
   });
 
   it("never treats an action-result reference as proof without a matching durable receipt", () => {
