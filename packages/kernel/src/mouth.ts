@@ -605,7 +605,22 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const constructAnchored = structuralCreativeBound || nonEventCreativeMouthHandoff
         ? undefined
         : constructAnchoredCandidate(plan, discoursePlan, input, priorPieces);
+      // Exact source-excerpt reproduction is only appropriate when the
+      // request itself calls for preserving the source's exact wording
+      // (explicit quotation, exact legal/contract text, code, an
+      // identifier, etc) -- not for an ordinary conversational factual
+      // question. Without this gate, kernelCandidateCarriesVerifiedSourceExcerptSurface
+      // returns true for almost any evidence-grounded "proof-answer"
+      // candidate (its answer text is, by construction, a literal
+      // substring of the source), which unconditionally suppressed
+      // generatedCandidates below and forced a raw Wikipedia excerpt as
+      // the answer to *every* well-supported factual request instead of
+      // a synthesized, conversational one (verified live: "who was Ada
+      // Lovelace..." always returned a verbatim/collapsed source excerpt
+      // even though nothing about the request asked for exact wording).
+      const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= 0.6;
       const preserveEvidenceBackedKernelCandidate = Boolean(
+        sourcePreservationRequested &&
         kernelSelectedCandidate &&
         input.requestedAuthority !== "creative" &&
         input.selectedCandidate &&
@@ -781,9 +796,29 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // invention planning produced nothing usable -- exactly how a "write
       // a story" request could still emit a verbatim, unrelated source
       // excerpt instead of a real (or honestly incomplete) creative answer.
+      //
+      // The same principle applies to ordinary factual requests: a
+      // verified source-excerpt/exact-bound kernel candidate should only
+      // preempt a real, valid generated alternative when the request
+      // actually calls for exact source wording (sourcePreservationRequested)
+      // -- otherwise it unconditionally out-competes the Mouth's own
+      // learned synthesis for *every* well-supported factual question,
+      // which is exactly the "it keeps quoting Wikipedia" behavior this
+      // gate exists to prevent. It may still win when generation produced
+      // nothing valid at all (validGeneratedCandidateAvailable is false):
+      // an honest, evidence-backed excerpt is better than silence.
+      const isVerifiedSourceExcerptKernelCandidate = Boolean(
+        input.selectedCandidate
+        && (kernelCandidateCarriesExactBoundSourceSurface(input.selectedCandidate, input)
+          || kernelCandidateCarriesVerifiedSourceExcerptSurface(input.selectedCandidate, input))
+      );
+      const validGeneratedCandidateAvailable = generatedCandidates.some(candidate => (
+        energyRows.some(row => row.candidate.id === candidate.id && row.result.valid)
+      ));
       const plannerSelectedCandidate = selectedKernelCandidate &&
         !creativeRequested &&
         !selectedKernelCandidate.forbiddenHits.length &&
+        (!isVerifiedSourceExcerptKernelCandidate || sourcePreservationRequested || !validGeneratedCandidateAvailable) &&
         kernelCandidateCanPreempt(input, selectedKernelCandidate)
         ? selectedKernelCandidate
         : undefined;

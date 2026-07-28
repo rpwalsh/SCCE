@@ -426,6 +426,16 @@ describe("Mouth runtime surface planning", () => {
   });
 
   it("preserves a planner-selected source excerpt when formal proof is unavailable", async () => {
+    // Uses its own runtime instance rather than the describe-level shared
+    // languageRuntime: with the exact-excerpt preemption gate now
+    // requirement-aware (mouth.ts's sourcePreservationRequested), Mouth
+    // legitimately attempts generation here, and the shared runtime's
+    // accumulated state from other tests in this file (e.g. Ada Lovelace
+    // fixtures) could otherwise leak in as an unrelated "generated"
+    // candidate -- this test is specifically about the no-generated-
+    // alternative fallback, so it needs a language memory with nothing in
+    // it to generate from.
+    const isolatedLanguageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
     const source = sourceVersion();
     const evidence = {
       ...directEvidence(source),
@@ -471,7 +481,7 @@ describe("Mouth runtime surface planning", () => {
       audit: { source: "planner-selected-source-excerpt" }
     };
     const spoken = await createMouth({
-      languageMemory: languageRuntime,
+      languageMemory: isolatedLanguageRuntime,
       correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
       hashText: text => hasher.digestHex(text)
     }).speak({
@@ -484,7 +494,14 @@ describe("Mouth runtime surface planning", () => {
         evidenceIds: [],
         proof: { ...entailment.proof, evidenceIds: [] }
       },
-      languageMemory: importedMemory(source, evidence, "source-excerpt-without-proof"),
+      languageMemory: isolatedLanguageRuntime.hydrateFromImportedBrain({
+        importRunId: "source-excerpt-without-proof",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: [semanticFrame(evidence)]
+      }),
       requirementField: deriveTurnRequirementField({ requestText: fixture.claim }),
       requestedAuthority: "factual",
       selectedCandidate
