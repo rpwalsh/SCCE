@@ -657,13 +657,25 @@ export function createProductionTurnRuntime(options: {
             ? graphForEvidenceIds([...metadataEvidenceIds])
             : graphForText(retrievalText, {
               allowSemanticFrameEvidence,
-              // Always required: an embedded factual claim inside an
-              // otherwise-creative-authority turn still needs its evidence
-              // anchored (Part 1, compositional force refactor). Whether
-              // the request wants that evidence USED is decided later, per
-              // claim, by assistantForceDecision -- not by discarding the
-              // anchoring here where it can never be recovered.
-              sourceAnchoringRequired: true,
+              // Reverted to conditional (was unconditionally true): this
+              // flag doesn't just tighten anchoring, it switches
+              // runtime-graph-retrieval.ts's graphForText onto an entirely
+              // different, far more expensive retrieval strategy --
+              // semantic-frame Postgres lookups and potential full uncached
+              // traversal -- instead of the fast in-memory hot-neighborhood
+              // path taken when this is false (see graphForText's
+              // `!requireDurableGraphLookup && !sourceAnchoringRequired`
+              // branch). Forcing it on for every creative turn against a
+              // real corpus (millions of graph edges) is what produced a
+              // 20-30 minute hang and repeated OOM crash on a live
+              // rehearsal. The compositional force fix does not actually
+              // need this: the pre-existing "keeps a source-inspired
+              // request creative..." test already proves the cheap
+              // hot-neighborhood path supplies real, usable evidence for a
+              // creative candidate's embedded factual premise -- it passed
+              // on main with this exact conditional before any of this
+              // session's changes.
+              sourceAnchoringRequired: requestedAuthority !== "creative",
               residentOnly: fastRuntimeBudget
             }),
           () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText)
