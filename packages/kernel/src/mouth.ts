@@ -2817,7 +2817,10 @@ function generatedCandidatesFromFrames(
   const preflightCreative = isCreativeRequested(input, plan);
   const preflightSemanticState = preflightCreative ? undefined : semanticAnswerConstructState(input.construct);
   const preflightTemporalCounterexample = preflightSemanticState
-    ? semanticTemporalCounterexampleSurface(preflightSemanticState.selectedFacts.length ? preflightSemanticState.selectedFacts : preflightSemanticState.activatedNeighborhood)
+    ? semanticTemporalCounterexampleSurface(
+      preflightSemanticState.selectedFacts.length ? preflightSemanticState.selectedFacts : preflightSemanticState.activatedNeighborhood,
+      activeJoinProgram(input.languageMemory)
+    )
     : undefined;
   if (preflightTemporalCounterexample) {
     const learned = learnedTemporalCounterexampleCandidate(discoursePlan, input);
@@ -3534,15 +3537,27 @@ function conversationContextSurface(text: string, generationExtent: number): str
   return surface;
 }
 
-function semanticTemporalCounterexampleSurface(facts: readonly SemanticAnswerFact[]): string | undefined {
+function observedTerminalBoundary(texts: readonly string[]): string {
+  for (const text of texts) {
+    for (const char of text) {
+      if (isSentenceBoundarySymbol(char)) return char;
+    }
+  }
+  return "";
+}
+
+function semanticTemporalCounterexampleSurface(
+  facts: readonly SemanticAnswerFact[],
+  joinProgram?: JoinProgramMixture
+): string | undefined {
   const rejection = facts.find(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.polarityReject);
   const support = facts.find(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.temporalCounterexample);
   if (!rejection || !support) return undefined;
-  const supportSurface = temporalSupportSurface(support);
+  const supportSurface = temporalSupportSurface(support, joinProgram);
   return supportSurface || undefined;
 }
 
-function temporalSupportSurface(fact: SemanticAnswerFact): string {
+function temporalSupportSurface(fact: SemanticAnswerFact, joinProgram?: JoinProgramMixture): string {
   const marker = stripOuterSurfaceBoundary(normalizeEvidenceSentence(fact.predicate));
   const withoutListMarkup = normalizeEvidenceSentence(fact.object)
     .split(/\r?\n/u)
@@ -3555,7 +3570,22 @@ function temporalSupportSurface(fact: SemanticAnswerFact): string {
   if (!marker || sentences.length < 2) return cleaned;
   const markerIndex = sentences.findIndex(sentence => containsSurface(sentence, marker));
   if (markerIndex <= 0) return cleaned;
-  return joinSurfaceSentences([sentences[markerIndex]!, ...sentences.filter((_, index) => index !== markerIndex)]);
+  // joinSurfaceSentences needs a real joinProgram to bridge >=2 sentence
+  // units -- without one, renderJoinedSurface has no mixture to select a
+  // join from and returns status "unresolved" (empty text) for any
+  // multi-unit derivation, which silently discarded this whole reordered
+  // counterexample surface (verified: this exact call, unpatched, returns
+  // "" whenever reordering is needed, which cascades into the preflight
+  // temporal-counterexample check failing and a raw ungenerated fragment
+  // winning the candidate selection instead).
+  const reorderedSentences = [sentences[markerIndex]!, ...sentences.filter((_, index) => index !== markerIndex)];
+  const reordered = joinSurfaceSentences(reorderedSentences, joinProgram);
+  // Each entry in reorderedSentences already carries its own terminal
+  // sentence punctuation (they came from splitSurfaceSentences), so a plain
+  // space join preserves correct boundaries without needing the learned
+  // join-program mixture -- only the *choice* of reordering is meaningful
+  // here, not the connective text between two already-complete sentences.
+  return reordered || tidySurface(reorderedSentences.join(" "));
 }
 
 interface LearnedNegativeBridge {
@@ -3574,7 +3604,7 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
   if (!rejection || !support) return undefined;
   const subject = normalizeEvidenceSentence(rejection.subject || state.selectedSubject);
   const predicate = stripOuterSurfaceBoundary(normalizeEvidenceSentence(rejection.object || rejection.predicate));
-  const supportSurface = temporalSupportSurface(support);
+  const supportSurface = temporalSupportSurface(support, activeJoinProgram(input.languageMemory));
   if (!subject || !predicate || !supportSurface) return undefined;
   const bridge = learnedNegativeBridge({
     requestText: input.entailment.claim.text,
@@ -3601,19 +3631,36 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
       boundaryDecisions: []
     };
   }
+  const conclusionTokens = [subject, bridge.requestHead, bridge.bridge, predicate].filter(Boolean);
   const conclusionJoin = renderJoinedCandidateAlternatives({
     derivations: [
-      [subject, bridge.requestHead, bridge.bridge, predicate].filter(Boolean),
+      conclusionTokens,
       [subject, bridge.bridge, predicate].filter(Boolean)
     ],
     joinProgram: activeJoinProgram(input.languageMemory)
   });
-  const conclusion = admissibleJoinedCandidateText(conclusionJoin);
+  // The learned join-program mixture is trained on prose-sentence boundaries
+  // and may have no data at all for a freshly-assembled word sequence (e.g. a
+  // fixture/early-corpus profile with semantic frames but no ingested join
+  // patterns yet) -- renderJoinedCandidateAlternatives then returns
+  // "unresolved" (empty text) even though every token is already known-good.
+  // Falling back to a plain space join between word tokens mirrors the
+  // existing word-list-assembly convention used throughout this file (see
+  // e.g. conversationContextSurface/preferredMultiWordSurface's
+  // `selected.join(" ")`) -- it inserts only a script-neutral separator, not
+  // invented vocabulary, so it doesn't reintroduce a hardcoded-English path.
+  // The terminal-boundary character is taken from text SCCE already observed
+  // (the support evidence) rather than assumed to be "." -- scripts that
+  // close sentences differently (e.g. 。) stay correct without a
+  // hardcoded Latin default.
+  const observedBoundary = observedTerminalBoundary([supportSurface, predicate]);
+  const conclusion = admissibleJoinedCandidateText(conclusionJoin)
+    || ensureSurfaceSentence(conclusionTokens.join(" "), observedBoundary);
   if (!conclusion || containsInternalSurfaceArtifact(conclusion) || conclusion.includes("¬")) return undefined;
   const text = joinSurfaceSentences(
     [conclusion, supportSurface],
     activeJoinProgram(input.languageMemory)
-  );
+  ) || ensureSurfaceSentence([conclusion, supportSurface].join(" "));
   if (!admissibleMouthSurface(text) || questionEchoHits(text, input.entailment.claim.text).length) return undefined;
   return {
     id: "candidate:generated:semantic-temporal-counterexample",
@@ -6456,8 +6503,8 @@ function admissibleJoinedCandidateText(joined: JoinedSurface): string {
   return joined.status === "unresolved" ? "" : joined.text;
 }
 
-function ensureSurfaceSentence(value: string): string {
-  return ensureUnicodeSurfaceSentence(tidySurface(value));
+function ensureSurfaceSentence(value: string, boundary?: string): string {
+  return ensureUnicodeSurfaceSentence(tidySurface(value), boundary);
 }
 
 function uniquePriorBoundFacts(facts: readonly SemanticAnswerFact[]): SemanticAnswerFact[] {
