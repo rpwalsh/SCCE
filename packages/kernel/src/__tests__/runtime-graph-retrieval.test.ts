@@ -245,7 +245,13 @@ describe("runtime hot graph retrieval", () => {
 
     expect(result.evidence).toEqual([]);
     expect(semanticFrames).toHaveBeenCalledTimes(1);
-    expect(fixture.searchEvidence).toHaveBeenCalledTimes(1);
+    // sourceAnchoredEvidenceForText now searches each candidate anchor
+    // phrase as its own query instead of blending them into one
+    // overlap-ranked search (see runtime-graph-retrieval.ts's
+    // sourceAnchorRetrievalFeatureGroups) -- "Charles Babbage" yields
+    // three specific multi-word anchor candidates here, so three
+    // independent searchEvidence calls are expected, not one.
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(3);
   });
 
   it("rejects cross-title mention evidence before hydrating a factual graph slice", async () => {
