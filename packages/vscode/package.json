@@ -39,18 +39,6 @@
       "description": "Workspace ingestion and reviewed patch transactions require a trusted local workspace."
     }
   },
-  "activationEvents": [
-    "onView:yopp.taskTimeline",
-    "onCommand:yopp.checkReadiness",
-    "onCommand:yopp.setServerToken",
-    "onCommand:yopp.workspace.initialize",
-    "onCommand:yopp.workspace.ingest",
-    "onCommand:yopp.workspace.codingRequest",
-    "onCommand:yopp.workspace.applyPatchPlan",
-    "onCommand:yopp.project.summary",
-    "onCommand:yopp.workspace.ask",
-    "onCommand:yopp.workspace.status"
-  ],
   "contributes": {
     "commands": [
       {
@@ -115,7 +103,7 @@
       "activitybar": [
         {
           "id": "yopp",
-          "title": "Yopp",
+          "title": "SCCE",
           "icon": "media/yopp.svg"
         }
       ]
@@ -123,8 +111,14 @@
     "views": {
       "yopp": [
         {
+          "id": "yopp.chat",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
           "id": "yopp.taskTimeline",
-          "name": "Task Timeline"
+          "name": "Activity",
+          "visibility": "collapsed"
         }
       ]
     },

@@ -27,6 +27,30 @@ import {
 import { verifyAppliedPatchMatchesPlan } from "./patch-integrity.js";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_STREAM_BYTES = 32 * 1024 * 1024;
+
+export interface TurnStreamFrame {
+  schema: "scce.turn_stream.v1";
+  type: "accepted" | "progress" | "result" | "error" | "cancelled";
+  taskId?: string;
+  requestId?: string;
+  phase?: string;
+  elapsedMs?: number;
+  sequence?: number;
+  streamUrl?: string;
+  status?: number;
+  error?: string;
+  value?: unknown;
+}
+
+export interface TurnAnswer {
+  answer?: string;
+  dialogue?: { conversationId?: string; turnId?: string };
+  entailment?: { proof?: unknown };
+  proofCarryingAnswer?: unknown;
+  events?: Array<{ typeId: string; id: string }>;
+  [key: string]: unknown;
+}
 
 export interface HttpResponseLike {
   ok: boolean;
@@ -107,6 +131,88 @@ export class YoppClient {
 
   approveWorkspacePatch(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {
     return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "approval plan id") }, parseSessionApproval);
+  }
+
+  /**
+   * Streams one conversational turn over NDJSON, reconnecting via the
+   * server-issued streamUrl if the connection drops mid-turn (same
+   * protocol the web workbench uses). Does not go through the injected
+   * HttpTransport: streaming needs a real fetch Response body, which
+   * HttpResponseLike deliberately doesn't expose.
+   */
+  async streamTurn(
+    input: { text: string; sessionId: string; conversationId?: string },
+    onFrame: (frame: TurnStreamFrame) => void,
+    signal?: AbortSignal
+  ): Promise<TurnAnswer> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/x-ndjson"
+    };
+    if (this.config.token) headers.Authorization = `Bearer ${this.config.token}`;
+    let response = await fetch(`${this.config.serverUrl}/api/turn?stream=1`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: input.text, sessionId: input.sessionId, conversationId: input.conversationId ?? input.sessionId }),
+      signal
+    });
+    let reconnectUrl = "";
+    let latestSequence = 0;
+    let result: TurnAnswer | undefined;
+    while (!result) {
+      if (!response.ok) throw new YoppHttpError(response.status, `Yopp turn stream failed (${response.status})`);
+      if (!response.body) throw new Error("Yopp turn stream response had no body");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = "";
+      let receivedBytes = 0;
+      let terminalFailure = false;
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.value) {
+            receivedBytes += next.value.byteLength;
+            if (receivedBytes > MAX_STREAM_BYTES) throw new Error("Yopp turn stream exceeded the extension size limit");
+          }
+          pending += decoder.decode(next.value ?? new Uint8Array(), { stream: !next.done });
+          const lines = pending.split("\n");
+          pending = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const frame = parseTurnStreamFrame(line);
+            onFrame(frame);
+            if (frame.streamUrl) reconnectUrl = frame.streamUrl;
+            if (typeof frame.sequence === "number" && Number.isFinite(frame.sequence)) latestSequence = Math.max(latestSequence, frame.sequence);
+            if (frame.type === "result") result = frame.value as TurnAnswer;
+            if (frame.type === "error" || frame.type === "cancelled") {
+              terminalFailure = true;
+              throw new Error(frame.error ?? "Yopp turn stream failed");
+            }
+          }
+          if (next.done) break;
+        }
+        if (pending.trim()) {
+          const frame = parseTurnStreamFrame(pending);
+          onFrame(frame);
+          if (frame.streamUrl) reconnectUrl = frame.streamUrl;
+          if (frame.type === "result") result = frame.value as TurnAnswer;
+          if (frame.type === "error" || frame.type === "cancelled") {
+            terminalFailure = true;
+            throw new Error(frame.error ?? "Yopp turn stream failed");
+          }
+        }
+      } catch (error) {
+        if (terminalFailure || !reconnectUrl) throw error;
+      }
+      if (result) break;
+      if (!reconnectUrl) throw new Error("Yopp turn stream ended without a reconnectable task receipt");
+      await delay(500, signal);
+      response = await fetch(`${reconnectUrl}?after=${latestSequence}`, {
+        headers: { accept: "application/x-ndjson", ...(this.config.token ? { Authorization: `Bearer ${this.config.token}` } : {}) },
+        signal
+      });
+    }
+    return result;
   }
 
   private async request<T>(method: "GET" | "POST", route: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
@@ -225,4 +331,34 @@ function errorMessage(payload: unknown, status: number): string {
 
 function identity(value: unknown): unknown {
   return value;
+}
+
+export function parseTurnStreamFrame(line: string): TurnStreamFrame {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    throw new Error("Yopp turn stream sent a non-JSON line");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Yopp turn stream frame was not an object");
+  const record = parsed as Record<string, unknown>;
+  const type = record.type;
+  if (type !== "accepted" && type !== "progress" && type !== "result" && type !== "error" && type !== "cancelled") {
+    throw new Error("Yopp turn stream frame had an unrecognized type");
+  }
+  return record as unknown as TurnStreamFrame;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (signal?.aborted) {
+      rejectPromise(new DOMException("aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolvePromise, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      rejectPromise(new DOMException("aborted", "AbortError"));
+    }, { once: true });
+  });
 }
