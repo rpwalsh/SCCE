@@ -43,12 +43,26 @@ export interface TurnStreamFrame {
   value?: unknown;
 }
 
+export interface TurnAnswerEvidenceSpan {
+  id?: string;
+  sourceId?: string;
+  textPreview?: string;
+  provenance?: unknown;
+  [key: string]: unknown;
+}
+
 export interface TurnAnswer {
   answer?: string;
   dialogue?: { conversationId?: string; turnId?: string };
   entailment?: { proof?: unknown };
   proofCarryingAnswer?: unknown;
   events?: Array<{ typeId: string; id: string }>;
+  // Real evidence used this turn, when any was found -- a citation to
+  // offer the user, never a requirement the answer had to clear. Absent or
+  // empty just means no source backs this particular answer, which is a
+  // normal, honest outcome, not an error.
+  evidence?: TurnAnswerEvidenceSpan[];
+  guardFlags?: { sourceBacked?: boolean; [key: string]: unknown };
   [key: string]: unknown;
 }
 
