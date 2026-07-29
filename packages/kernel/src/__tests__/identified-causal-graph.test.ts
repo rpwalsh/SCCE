@@ -174,6 +174,54 @@ describe("identified causal graph", () => {
     );
   });
 
+  it("rejects runtime-false backdoor assumptions even if malformed input bypasses static types", () => {
+    const design = backdoorDesign([confounder]);
+    const malformed = {
+      ...design,
+      assumptions: { ...design.assumptions, noUnmeasuredConfoundingGivenAdjustment: false }
+    } as unknown as BackdoorIdentificationDesign;
+    const result = engine().estimate({
+      observations: confoundedObservations(),
+      design: malformed,
+      targetRiskCoverage: 0.8
+    });
+
+    expect(result).toMatchObject({ status: "rejected", claim: null });
+    expect(result.audit.explicitAssumptionsValidated).toBe(false);
+    expect(result.audit.reasons).toContain(
+      "all_backdoor_identification_assumptions_must_be_explicitly_true"
+    );
+  });
+
+  it("rejects an observation missing required evidence instead of estimating from unattributed data", () => {
+    const observations = confoundedObservations();
+    observations[0] = { ...observations[0]!, evidenceIds: [] };
+    const result = engine().estimate({
+      observations,
+      design: backdoorDesign([confounder]),
+      targetRiskCoverage: 0.8
+    });
+
+    expect(result).toMatchObject({ status: "rejected", claim: null });
+    expect(result.audit.reasons).toContain(`observation_evidence_required:${observations[0]!.id}`);
+  });
+
+  it("rejects a stratum that fails empirical positivity instead of fabricating an identification", () => {
+    const result = engine().estimate({
+      observations: positivityViolatingObservations(),
+      design: backdoorDesign([confounder]),
+      targetRiskCoverage: 0.8
+    });
+
+    expect(result).toMatchObject({ status: "rejected", claim: null });
+    expect(result.audit.empiricalPositivityValidated).toBe(false);
+    expect(
+      result.audit.reasons.some(reason =>
+        reason.startsWith("empirical_positivity_requires_two_per_arm_in_stratum:")
+      )
+    ).toBe(true);
+  });
+
   it("produces deterministic claim identity and replay time", () => {
     const input = {
       observations: confoundedObservations(),
@@ -271,6 +319,18 @@ function confoundedObservations(): CausalObservation[] {
   return [
     observation("z0-c1", 0, 0, 0),
     observation("z0-c2", 0, 0, 0),
+    observation("z0-t1", 1, 2, 0),
+    observation("z0-t2", 1, 2, 0),
+    observation("z1-c1", 0, 10, 1),
+    observation("z1-c2", 0, 10, 1),
+    observation("z1-t1", 1, 12, 1),
+    observation("z1-t2", 1, 12, 1)
+  ];
+}
+
+function positivityViolatingObservations(): CausalObservation[] {
+  return [
+    observation("z0-c1", 0, 0, 0),
     observation("z0-t1", 1, 2, 0),
     observation("z0-t2", 1, 2, 0),
     observation("z1-c1", 0, 10, 1),
