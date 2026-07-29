@@ -1017,9 +1017,23 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
   const actionEntailmentMaterial = selectedActionPlan
     ? sourceOnlyActionCommand(input.promotion, selectedActionPlan)
     : "";
+  // Only "factual"/"reasoned" (queryAnswerMaterial) and "action" get a
+  // routed claim scoped to their own request here; every other authority
+  // (including "translation") fell through to "" and then to
+  // speakInput.entailment below -- the turn's original, un-routed
+  // entailment, whose claim text can be a much broader workspace-summary
+  // composite (routes/commands/symbols/contradictions concatenated) than
+  // this specific request. For translation that broad claim text leaked
+  // into requiredTerms/obligations/surface points meant only for the one
+  // sentence actually being translated, incorrectly demanding unrelated
+  // workspace facts survive the translated output. Scoping translation's
+  // entailment material to the actual source sentence fixes this at its
+  // real source instead of papering over every downstream symptom.
   const routedEntailmentMaterial = requestedAuthority === "action"
     ? actionEntailmentMaterial
-    : queryAnswerMaterial?.surface ?? "";
+    : requestedAuthority === "translation"
+      ? input.input.text
+      : queryAnswerMaterial?.surface ?? "";
   const computedRoutedEntailment = routedEntailmentMaterial
     ? createSemanticEntailmentEngine({ idFactory: input.idFactory, hasher: input.hasher }).check({
       text: routedEntailmentMaterial,
@@ -1237,11 +1251,25 @@ function sourceOnlyMouthSemanticInput(input: {
     : undefined;
   const actionCommand = input.actionPlan ? sourceOnlyActionCommand(input.promotion, input.actionPlan) : "";
   const queryFeatures = featureSet(input.requestText, 256);
-  const relevantClaims = [...input.answerGraph.claims]
-    .filter(claim => claim.surface.trim())
-    .sort((left, right) => weightedJaccard(queryFeatures, featureSet(right.surface, 256))
-      - weightedJaccard(queryFeatures, featureSet(left.surface, 256)))
-    .slice(0, input.requestedAuthority === "program" || input.requestedAuthority === "action" ? 4 : 1);
+  // Pulling in the nearest-scoring answer-graph claims/caveats as extra
+  // support/contradiction context is right for an evidence-grounded
+  // explanatory answer (factual/reasoned), for program/action (which
+  // already widen this to 4 on purpose), and for creative (whose realized
+  // answer here draws its factual-premise content from this same
+  // mechanism) -- but a translation renders one specific source sentence
+  // via its own dedicated translationPlan slot below, so a workspace claim
+  // that merely shares a token or two with the request text (e.g. another
+  // route/command mentioning the same subject) is not something this
+  // turn's answer was ever meant to carry, and demanding it survive
+  // realization is a false rejection, not a real correctness check.
+  const admitsBroaderAnswerGraphContext = input.requestedAuthority !== "translation";
+  const relevantClaims = admitsBroaderAnswerGraphContext
+    ? [...input.answerGraph.claims]
+      .filter(claim => claim.surface.trim())
+      .sort((left, right) => weightedJaccard(queryFeatures, featureSet(right.surface, 256))
+        - weightedJaccard(queryFeatures, featureSet(left.surface, 256)))
+      .slice(0, input.requestedAuthority === "program" || input.requestedAuthority === "action" ? 4 : 1)
+    : [];
   const relevantClaimIds = new Set(relevantClaims.map(claim => claim.id));
   const slots: MouthSemanticInput["slots"] = [
     ...(sourceAnswer ? [{
@@ -1286,7 +1314,7 @@ function sourceOnlyMouthSemanticInput(input: {
         .filter((id): id is EvidenceSpan["id"] => Boolean(id)),
       sourceId: claim.proofClaimId
     })),
-    ...input.answerGraph.caveats.filter(caveat => Boolean(caveat.text.trim()) && (
+    ...input.answerGraph.caveats.filter(caveat => Boolean(caveat.text.trim()) && admitsBroaderAnswerGraphContext && (
       relevantClaims.some(claim => claim.surface.trim() === caveat.text.trim())
       || weightedJaccard(queryFeatures, featureSet(caveat.text, 256)) >= 0.2
     )).map(caveat => ({
