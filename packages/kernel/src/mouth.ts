@@ -412,7 +412,6 @@ interface MouthGenerationWorkBudget {
   deniedCalls: number;
 }
 
-const MOUTH_GENERATION_CALL_LIMIT = 1;
 const MOUTH_GENERATION_EXTENT_LIMIT = 64;
 const MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT = 256;
 const MOUTH_GENERATION_WINDOW_MS = 2_500;
@@ -429,10 +428,16 @@ function createMouthGenerationWorkBudget(startedAtMs: number, input: SpeakInput)
   };
 }
 
+// There is no such thing as a "creative turn" that gets room to think and
+// a "factual turn" that doesn't -- inference, deduction, and long-form
+// explanation all deserve the same generation room a story does. Every
+// turn now gets the same (generous, long-form) call budget and extent
+// ceiling; a genuinely short answer still stops early on its own via
+// continueBoundedProse's natural "eos"/probability-floor stopping
+// conditions, so this doesn't force brevity-appropriate answers to run
+// on -- it just stops truncating a real, deep, or multilingual answer at
+// an arbitrary small limit just because the turn wasn't labeled creative.
 function mouthGenerationCallLimit(input: SpeakInput): number {
-  const creative = input.requestedAuthority === "creative"
-    || input.entailment.force === "invented";
-  if (!creative) return MOUTH_GENERATION_CALL_LIMIT;
   const hasLongFormPrior = input.languageMemory.importedPatterns.some(pattern =>
     pattern.patternKind === "discourse" || pattern.patternKind === "narrative"
   );
@@ -450,13 +455,7 @@ function mouthGenerationExtentLimit(input: SpeakInput): number {
     plannedExtent: 0,
     maxExtent: MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT
   });
-  const creative = input.requestedAuthority === "creative"
-    || input.entailment.force === "invented";
-  const requested = Math.max(
-    MOUTH_GENERATION_EXTENT_LIMIT,
-    creative ? learnedLongForm : 0,
-    creative ? explicitLearnedExtent : 0
-  );
+  const requested = Math.max(MOUTH_GENERATION_EXTENT_LIMIT, learnedLongForm, explicitLearnedExtent);
   return Math.max(
     MOUTH_GENERATION_EXTENT_LIMIT,
     Math.min(MOUTH_LONG_FORM_GENERATION_EXTENT_LIMIT, Math.ceil(requested))
@@ -1062,7 +1061,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
               phaseMs: mouthPhaseMs,
               measuredMs: Date.now() - mouthStartedAt,
               generationWorkBudget: {
-                callLimit: MOUTH_GENERATION_CALL_LIMIT,
+                // The real limit this turn was actually given, not the
+                // module-level default constant -- callLimit varies by
+                // learned long-form/creative-structure priors (see
+                // mouthGenerationCallLimit), and admittedCalls+remainingCalls
+                // always equals whatever that computed limit was.
+                callLimit: generationWorkBudget.admittedCalls + generationWorkBudget.remainingCalls,
                 extentLimit: generationWorkBudget.maxExtent,
                 windowMs: MOUTH_GENERATION_WINDOW_MS,
                 admittedCalls: generationWorkBudget.admittedCalls,
