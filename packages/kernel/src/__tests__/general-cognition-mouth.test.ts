@@ -84,14 +84,18 @@ describe("general-cognition Mouth surface objective", () => {
       hypothetical: false,
       trace: {}
     };
+    // fake_factual_authority is an evidence concern, not a surface-quality/
+    // safety one -- evidence is a citation, never a gate (plan Stage 1), so
+    // this is a soft energy penalty (already present in
+    // generalCognitionSurfaceComponents) rather than a hard rejection.
     const fakeAuthority = scoreSurfaceEnergy({
       id: "surface:general:fake-authority",
       text: unsupportedClaim.text,
       force: "observed",
       semanticPreservation: 0.96
     }, { ...context, claimBases: [unsupportedClaim], requirementField: { ...context.requirementField!, externalTruthAuthority: 0.92 } });
-    expect(fakeAuthority.valid).toBe(false);
-    expect(fakeAuthority.hardViolations.map(row => row.id)).toContain("surface.reject.fake_factual_authority");
+    expect(fakeAuthority.valid).toBe(true);
+    expect(fakeAuthority.components.find(row => row.id === "surface.general.fake_factual_authority")?.raw).toBeGreaterThan(0);
   });
 
   it("runs the final gate after formatting and rejects lost negation, uncertainty, code, or format", () => {

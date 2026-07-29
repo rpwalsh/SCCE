@@ -5053,8 +5053,14 @@ export function inferConstructForces(input: SpeakInput): ConstructForceInference
   });
   const support = clamp01(input.entailment.support);
   const contradiction = clamp01(input.entailment.contradiction);
-  if (input.requestedAuthority === "translation") add("TranslationConstruct", 1, "force.requested.translation", "signal.requested_authority.translation", "language_target", 1);
-  if (input.requestedAuthority === "creative") add("CreativeConstruct", 1, "force.requested.creative", "signal.requested_authority.creative", "construct_graph", 1);
+  // requestedAuthority alone no longer injects a maximum-weight (1.0)
+  // construct force -- there is no such thing as a "creative turn"/
+  // "translation turn" that content must conform to just because it was
+  // routed that way. Real content signals below (an actual invention
+  // construct, artifacts, a genuinely differing target language) already
+  // carry high enough weight (0.74-0.78) to dominate when the content
+  // actually is creative/translated; this stops an authority label with
+  // no corresponding content from forcing that dominance by itself.
   add("ConversationConstruct", 0.35 + Math.max(0, 0.32 - support * 0.18 - contradiction * 0.2), "force.surface.default", "signal.surface.default", "field_state");
   add("ExplanationConstruct", 0.28 + Math.min(0.45, input.entailment.obligations.length / 18), "force.semantic.obligations", "signal.semantic.obligation_count", "semantic_proof", input.entailment.obligations.length / 18);
   if (learningAllowsFactualSurface(input.learningDecision) && proofGateAllowsFactualSurface(input.entailment) && (input.entailment.force === "proved" || input.entailment.evidenceIds.length)) add("FactualConstruct", 0.32 + support * 0.58, "force.semantic.certified", "signal.semantic.certified_evidence", "semantic_proof", support);
