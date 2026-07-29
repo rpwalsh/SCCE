@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { ScceClient, ScceHttpError, type TurnAnswer, type TurnStreamFrame } from "./client.js";
+import { turnDetail } from "./turn-detail.js";
 
 export interface ChatSessionRecord {
   id: string;
@@ -206,6 +207,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     border-radius: 5px;
     margin-top: 4px;
   }
+  .sources { margin-top: 6px; font-size: 0.85em; }
+  .sources .sources-label { color: var(--vscode-descriptionForeground); margin-bottom: 3px; }
+  .sources ol { margin: 0; padding-left: 18px; }
+  .sources li { margin-bottom: 2px; }
+  .sources .source-title { font-weight: 600; }
+  .sources .source-preview { color: var(--vscode-descriptionForeground); }
   .typing { display: flex; align-items: center; gap: 4px; color: var(--vscode-descriptionForeground); font-size: 0.9em; padding: 0 2px; }
   .typing .dots span { animation: blink 1.2s infinite; opacity: 0.2; }
   .typing .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -309,6 +316,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     bubble.className = 'bubble';
     bubble.innerHTML = renderMarkdownLite(text);
     row.appendChild(bubble);
+    if (role === 'assistant' && detail && Array.isArray(detail.sources) && detail.sources.length) {
+      const sources = document.createElement('div');
+      sources.className = 'sources';
+      const label = document.createElement('div');
+      label.className = 'sources-label';
+      label.textContent = 'Sources';
+      sources.appendChild(label);
+      const list = document.createElement('ol');
+      for (const source of detail.sources) {
+        const item = document.createElement('li');
+        const title = document.createElement('span');
+        title.className = 'source-title';
+        title.textContent = source.title || 'source';
+        item.appendChild(title);
+        if (source.preview) {
+          const preview = document.createElement('div');
+          preview.className = 'source-preview';
+          preview.textContent = source.preview;
+          item.appendChild(preview);
+        }
+        list.appendChild(item);
+      }
+      sources.appendChild(list);
+      bubble.appendChild(sources);
+    }
     if (detail) {
       const details = document.createElement('details');
       details.className = 'details';
@@ -413,14 +445,6 @@ function answerSurface(answer: TurnAnswer): string {
   const errorLike = (answer as { error?: unknown; runtimeError?: unknown; message?: unknown } | undefined);
   const error = errorLike?.error ?? errorLike?.runtimeError ?? errorLike?.message;
   return error ? `Runtime failure: ${String(error)}` : "SCCE returned no answer for this turn.";
-}
-
-function turnDetail(answer: TurnAnswer): unknown {
-  return {
-    conversationId: answer?.dialogue?.conversationId ?? null,
-    proof: answer?.entailment?.proof ?? null,
-    events: (answer?.events ?? []).slice(0, 40).map(event => ({ typeId: event.typeId, id: event.id }))
-  };
 }
 
 function cryptoRandomId(): string {
