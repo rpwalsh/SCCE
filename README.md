@@ -10,7 +10,7 @@ No LLM inference. No vector-database RAG loop. No GPU cluster. No cloud dependen
 
 SCCE compiles evidence, language, reasoning, and learned skills into sparse, inspectable cognitive structures. At runtime, it activates only the structures relevant to the task.
 
-**CPU-native · Local · Persistent · Evidence-bound**
+**CPU-native · Local · Persistent**
 
 ## A third architecture for AI
 

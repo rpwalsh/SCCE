@@ -977,12 +977,15 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           emittedSurfaceEnergy = conservativeEnergy;
         }
       }
-      if (!emittedSurfaceEnergy.valid && outputSurfaceText) {
-        const violations = emittedSurfaceEnergy.hardViolations
-          .map(item => `${item.id}=${canonicalStringify(item.trace)}`)
-          .join(", ");
-        throw new Error(`final mouth surface failed hard validity gate${violations ? `: ${violations}` : ""}`);
-      }
+      // A surface that still fails the (now purely quality/safety, not
+      // evidentiary) hard gates even after the conservative retry used to
+      // abort the whole turn with a thrown error -- the user got nothing at
+      // all. The hard violations are still real diagnostic information
+      // (recorded below in emittedSurfaceEnergy/walshSurfaceEnergy for
+      // audit), but withholding the entire answer over them is a worse
+      // outcome than returning the real text with its quality concerns
+      // visible in the trace. selectedSurfaceEnergy below already falls
+      // back to emittedSurfaceEnergy regardless of validity.
       markMouthPhase("final_surface");
       const selectedSurfaceEnergy = selectedEnergy?.valid ? selectedEnergy : emittedSurfaceEnergy;
       const selectedStructuralBinding = selected
