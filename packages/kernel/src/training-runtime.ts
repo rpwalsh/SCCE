@@ -295,7 +295,12 @@ export function createTrainingRuntime(options: {
       const episodeId = idFactory.episodeId();
       const events: ScceEvent[] = [];
       let model = await deps.storage.model.readModel();
-      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000 });
+      // queryNodes (postgres.ts) returns zero rows for a filterless query
+      // unless allowLatestFallback is set -- a fresh corpus's first train()
+      // call has no seedNodeIds/evidenceIds/feature filter to give this
+      // bootstrap query, so without this flag the whole pipeline silently
+      // finds nothing to promote (plan item 15).
+      const slice = await deps.storage.graph.getSlice({ limitNodes: 2000, limitEdges: 4000, allowLatestFallback: true });
       const featureSketches = featureSketchLearner.learn(slice.nodes, 24);
       const pending = await deps.storage.quarantine.listPending({ limit: 500 });
       let profiles = await deps.storage.model.listLanguageProfiles(200);
