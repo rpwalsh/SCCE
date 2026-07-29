@@ -14,6 +14,7 @@ import {
   type PatchTransactionPlan
 } from "./patch-transaction.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { promotedSessionEvidence } from "./local-evidence-runtime.js";
 import { estimatorScore, featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import { type CalibrationModel, calibratedScoreTrace } from "./scoring/calibration.js";
 import {
@@ -607,6 +608,13 @@ function proofAnswer(input: {
   const answer = normalizeCandidateAnswer(input.proofAnswer, input);
   const proof = input.entailment.proof;
   const proofRoute = normalizedSemanticProofRoute(proof);
+  // A plain session-owner assertion ("The release codename is Aster") can
+  // win as this proof-answer candidate rather than the local-evidence-answer
+  // one -- without this, its audit had no way to record that its bound
+  // evidence is session-derived (kernel-training.test.ts's "typed
+  // dialogue-act state" case), the same sessionBound concept
+  // local-evidence-runtime.ts already tracks for its own answer plans.
+  const boundEvidence = input.evidence.filter(span => input.entailment.evidenceIds.includes(span.id));
   return {
     id: candidateId("proof", input.entailment, answer),
     kind: "proof-answer",
@@ -618,6 +626,7 @@ function proofAnswer(input: {
     audit: toJsonValue({
       source: "semantic-proof",
       proofId: proof.id,
+      sessionBound: boundEvidence.some(promotedSessionEvidence),
       semanticFrame: {
         frameId: "semantic.answer.proof.v1",
         claimId: proof.claimId,
