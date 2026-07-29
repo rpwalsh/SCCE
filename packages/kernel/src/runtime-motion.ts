@@ -1,4 +1,5 @@
 import { type CandidateField, type CandidateSurface } from "./candidate.js";
+import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
 import { jsonRecord, kernelNumber, kernelString, kernelStringArray, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
@@ -308,9 +309,17 @@ export function runtimeCandidateReplanTrigger(
   // acquisition attempt those tests depend on).
   if (field.candidates.length === 0) return "authority_family_unavailable";
   if (authority !== "factual" && authority !== "reasoned") return undefined;
-  const hasEvidenceRoute = evidence.length > 0 || field.candidates.some(candidate => candidate.evidenceIds.length > 0);
-  const hasSemanticSurface = field.candidates.some(candidate => candidate.answer.trim().length > 0);
-  const support = Math.max(0, ...field.candidates.map(candidate => candidate.scores.support));
+  // field is no longer authority-filtered (candidates of every kind
+  // compete in the judge now) -- but this heuristic is specifically
+  // asking "is there a good enough factual/reasoned candidate", so it
+  // still needs to look only at the candidates that kind of authority
+  // would actually produce, or an unrelated candidate's nonzero
+  // support/evidence (e.g. a creative one) could mask a genuine absence
+  // of real factual support.
+  const relevant = field.candidates.filter(candidate => candidateCompatibleWithAuthority(candidate, authority));
+  const hasEvidenceRoute = evidence.length > 0 || relevant.some(candidate => candidate.evidenceIds.length > 0);
+  const hasSemanticSurface = relevant.some(candidate => candidate.answer.trim().length > 0);
+  const support = Math.max(0, ...relevant.map(candidate => candidate.scores.support));
   return !hasSemanticSurface || !hasEvidenceRoute && support < 0.18
     ? "coherence_support_failure"
     : undefined;

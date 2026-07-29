@@ -105,9 +105,21 @@ export function authorityRequirementCoefficients(
 }
 
 /**
- * Keeps the judge on the candidate family licensed by the projected request
- * authority. Missing families are handed back to the runtime continuation
- * boundary; unrelated answer families are never reopened as a fallback.
+ * There is no such thing as a "creative turn" or a "factual turn" that the
+ * judge is confined to -- every candidate the turn actually generated stays
+ * eligible, regardless of kind. The projected authority is real information
+ * (which kind of answer this request most likely calls for) but it is a
+ * *signal*, not a partition: judge.ts's requirement-aware scoring path
+ * (selectForRequirementField) already judges any candidate kind uniformly
+ * on its own quality/support/coverage, keyed off the turn's real
+ * requirement dimensions -- it never branched on requestedAuthority for
+ * scoring or admission, only for its audit trace. Physically dropping
+ * incompatible candidates here meant a well-supported factual candidate
+ * could never win a turn the projector happened to call "creative" (or
+ * vice versa), and a thin/wrong-authority pool forced a full-turn replan
+ * instead of just letting the actually-best candidate answer. Kept as a
+ * real function (not deleted) so the compatibility signal stays visible in
+ * the audit trace for observability.
  */
 export function admitCandidatesForAuthority(
   field: CandidateField,
@@ -116,15 +128,6 @@ export function admitCandidatesForAuthority(
   const compatible = field.candidates.filter(candidate =>
     candidateCompatibleWithAuthority(candidate, authority)
   );
-  const admitted = compatible;
-
-  const admittedIds = new Set(admitted.map(candidate => candidate.id));
-  const admittedMass = field.surfaceMass.filter(row => admittedIds.has(row.candidateId));
-  const massTotal = admittedMass.reduce((sum, row) => sum + row.mass, 0);
-  const normalizedMass = admittedMass.map(row => ({
-    ...row,
-    mass: massTotal > 0 ? row.mass / massTotal : admitted.length > 0 ? 1 / admitted.length : 0
-  }));
   const existingAudit = field.audit !== null
     && typeof field.audit === "object"
     && !Array.isArray(field.audit)
@@ -133,19 +136,17 @@ export function admitCandidatesForAuthority(
 
   return {
     ...field,
-    candidates: admitted,
-    surfaceMass: normalizedMass,
     audit: toJsonValue({
       ...existingAudit,
       authorityAdmission: {
-        schema: "scce.requested_authority.candidate_admission.v1",
+        schema: "scce.requested_authority.candidate_admission.v2",
         source: "requested_authority_projection",
         authority,
         generatedCandidateCount: field.candidates.length,
         compatibleCandidateIds: compatible.map(candidate => candidate.id),
-        admittedCandidateIds: admitted.map(candidate => candidate.id),
-        admittedCandidateKinds: admitted.map(candidate => candidate.kind),
-        authorityUnavailable: compatible.length === 0,
+        admittedCandidateIds: field.candidates.map(candidate => candidate.id),
+        admittedCandidateKinds: field.candidates.map(candidate => candidate.kind),
+        authorityUnavailable: field.candidates.length === 0,
         fallbackToGeneratedField: false,
         lexicalRouterUsed: false
       }

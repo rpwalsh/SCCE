@@ -172,7 +172,14 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(candidate.evidenceIds).toEqual([]);
     expect(candidate.quality?.unsupportedFactRate).toBe(0);
     expect(candidate.quality?.fakeFactualAuthority).toBe(0);
-    expect(candidate.quality?.sourceFidelity).toBe(1);
+    // Not a defect (unsupportedFactRate/fakeFactualAuthority stay 0 -- this
+    // candidate never claims to be factual, so there's nothing to fail),
+    // but sourceFidelity must not claim grounding this candidate doesn't
+    // have either: zero evidence anywhere means honestly zero fidelity,
+    // not the old blanket "nothing to fail against so call it perfect"
+    // default that let fully-invented content present itself to the judge
+    // as if it were as evidence-backed as a real proof-answer.
+    expect(candidate.quality?.sourceFidelity).toBe(0);
     expect(candidate.boundaries).not.toContain("unsupported-factual-claim");
 
     const decision = createJudge().select({ field, policy: policy(), requirementField });
