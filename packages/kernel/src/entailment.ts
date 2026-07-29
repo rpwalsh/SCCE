@@ -1,4 +1,4 @@
-import type { Claim, ConstructGraph, EvidenceSpan, FieldState, GraphNode, Hasher, SemanticEntailmentResult } from "./types.js";
+import type { Claim, ConstructGraph, EvidenceSpan, FieldState, GraphNode, Hasher, SemanticEntailmentResult, TruthState } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { featureSet, sourceTextSurface, toJsonValue, symbolizeData } from "./primitives.js";
 import { createProofCalculus } from "./proof-calculus.js";
@@ -7,7 +7,6 @@ import { evaluateSemanticObligations } from "./semantic-obligations.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { constructToProofClaims, evidenceToProofRecords, type SupportedProofObservation } from "./semantic-proof-adapter.js";
 import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type ProofForceClass, type SemanticProofResult } from "./semantic-proof-engine.js";
-import { truthStateFromProofVerdict } from "./truth-contract.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
 
 const VALIDATOR_VERSION = "scce3-obligation-structural-alpha-causal-entailment-v4";
@@ -70,7 +69,15 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         hasher: options.hasher
       });
       const semanticVerdict = verdictWithProofGate(obligations.verdict, proofGate);
-      const truthState = proofGate ? proofGate.truthState : truthStateFromProofVerdict("insufficient_evidence");
+      // Evidence is a citation, not a gate: a genuinely entailed/contradicted
+      // obligation-based verdict is real signal even without the separate,
+      // stricter structured proof gate -- it must not be crushed to a
+      // pessimistic default just because that gate didn't fire. Only a truly
+      // undetermined/unknown verdict (no real signal either way) falls
+      // through to "insufficient_evidence", and even then that label is
+      // informational (surfaced as an honest caveat), never a reason to
+      // withhold the answer.
+      const truthState = proofGate ? proofGate.truthState : truthStateFromSemanticVerdict(semanticVerdict);
       const structuralSupport = structuralResult.structuralCoverage * 0.34 + structuralResult.causalMass * 0.27 + structuralResult.faithfulnessLCB * 0.21 + structuralResult.stability * 0.18;
       const rawSupport = proofGateSupport(proofGate, proofSupportFromObligations(semanticVerdict, obligations.support, structuralSupport, result.support));
       const rawContradiction = Math.max(result.contradiction, structuralResult.contradiction, obligations.contradiction, proofGate?.verdict === "contradicted" ? 0.72 : 0);
@@ -406,6 +413,17 @@ function jaccard(left: readonly string[], right: readonly string[]): number {
 function requestContainsNumber(text: string, value: number): boolean {
   const needle = String(value);
   return text.includes(needle);
+}
+
+// Real support without the stricter typed-observation proof gate is still
+// real support -- honestly labeled one tier below full certification
+// (source_bound_only, not certified) rather than forced down to
+// insufficient_evidence. Only a genuinely undetermined/unknown verdict (no
+// real signal either way) keeps the insufficient_evidence label.
+function truthStateFromSemanticVerdict(verdict: SemanticEntailmentResult["semanticVerdict"]): TruthState {
+  if (verdict === "entailed") return "truth.source_bound_only";
+  if (verdict === "contradicted") return "truth.contradicted";
+  return "truth.insufficient_evidence";
 }
 
 function verdictWithProofGate(current: SemanticEntailmentResult["semanticVerdict"], gate: SemanticProofResult | undefined): SemanticEntailmentResult["semanticVerdict"] {

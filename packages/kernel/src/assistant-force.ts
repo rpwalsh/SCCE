@@ -398,5 +398,14 @@ function truthStateFromProof(value: unknown): TruthState {
   if (value === "source_bound_only") return "truth.source_bound_only";
   if (value === "unsupported_prior_only") return "truth.unsupported_prior_only";
   if (value === "ambiguous") return "truth.ambiguous";
+  // semantic-proof-system.ts's own verdict vocabulary ("entailed"/"partial"/
+  // "underdetermined") was falling through unrecognized to the pessimistic
+  // default below -- crushing a genuinely strong ("entailed", support>=0.76
+  // & coverage>=0.72) or partial proof verdict into the same
+  // "insufficient_evidence" bucket as no evidence at all. Evidence found is
+  // real signal; only "underdetermined" (no real signal either way)
+  // legitimately falls through.
+  if (value === "entailed") return "truth.certified";
+  if (value === "partial") return "truth.source_bound_only";
   return "truth.insufficient_evidence";
 }

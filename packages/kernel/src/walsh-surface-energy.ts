@@ -196,7 +196,8 @@ const LAMBDA = {
   boundary: 0.68,
   language: 0.86,
   action: 0.36,
-  compression: 0.44
+  compression: 0.44,
+  learnedPriorCitation: 1.1
 } as const;
 
 export const GENERAL_COGNITION_SURFACE_BOOTSTRAP = Object.freeze({
@@ -347,6 +348,7 @@ function defaultSurfaceComponents(
   const language = languagePriorSupport(candidate, context, stats, hardViolations, proof.raw);
   const action = actionability(candidate, context, stats);
   const compression = compressionFit(candidate, context, stats);
+  const learnedPriorCitation = learnedPriorCitationRisk(candidate, context);
   return [
     component("surface.energy.semantic_loss", LAMBDA.semantic, semantic),
     component("surface.energy.proof_violation", LAMBDA.proof, proof),
@@ -361,7 +363,8 @@ function defaultSurfaceComponents(
     component("surface.energy.boundary_instability", LAMBDA.boundary, boundary),
     component("surface.energy.language_prior_support", LAMBDA.language, language, "support"),
     component("surface.energy.actionability", LAMBDA.action, action, "support"),
-    component("surface.energy.compression_fit", LAMBDA.compression, compression, "support")
+    component("surface.energy.compression_fit", LAMBDA.compression, compression, "support"),
+    component("surface.energy.learned_prior_citation_risk", LAMBDA.learnedPriorCitation, learnedPriorCitation)
   ];
 }
 
@@ -379,6 +382,7 @@ function generalCognitionSurfaceComponents(candidate: SurfaceEnergyCandidate, co
   const contradiction = contradictionLeak(candidate, context, stats);
   const telemetry = telemetryLeak(candidate);
   const fakeFactual = generalFakeFactualAuthority(candidate, context, stats);
+  const learnedPriorCitation = learnedPriorCitationRisk(candidate, context);
   return [
     component("surface.general.meaning_preservation", 0.22, meaning, "support"),
     component("surface.general.requirement_coverage", 0.16, requirement, "support"),
@@ -392,7 +396,8 @@ function generalCognitionSurfaceComponents(candidate: SurfaceEnergyCandidate, co
     component("surface.general.repetition", 0.24, repetition),
     component("surface.general.contradiction_leak", 0.28, contradiction),
     component("surface.general.telemetry_leak", 0.32, telemetry),
-    component("surface.general.fake_factual_authority", 0.70, fakeFactual)
+    component("surface.general.fake_factual_authority", 0.70, fakeFactual),
+    component("surface.general.learned_prior_citation_risk", 0.60, learnedPriorCitation)
   ];
 }
 
@@ -406,6 +411,7 @@ function creativeSurfaceComponents(candidate: SurfaceEnergyCandidate, context: S
   const repetition = repetitionCost(candidate, context, stats);
   const contradiction = contradictionLeak(candidate, context, stats);
   const fakeFactual = fakeFactualAuthority(candidate, context, stats);
+  const learnedPriorCitation = learnedPriorCitationRisk(candidate, context);
   return [
     component("surface.creative.meaning_preservation", 0.30, meaning, "support"),
     component("surface.creative.constraint_coverage", 0.20, constraint, "support"),
@@ -415,7 +421,8 @@ function creativeSurfaceComponents(candidate: SurfaceEnergyCandidate, context: S
     component("surface.creative.actionability", 0.08, action, "support"),
     component("surface.creative.repetition", 0.24, repetition),
     component("surface.creative.contradiction_leak", 0.30, contradiction),
-    component("surface.creative.fake_factual_authority", 0.50, fakeFactual)
+    component("surface.creative.fake_factual_authority", 0.50, fakeFactual),
+    component("surface.creative.learned_prior_citation_risk", 0.35, learnedPriorCitation)
   ];
 }
 
@@ -746,46 +753,27 @@ export function explainSurfaceEnergy(result: SurfaceEnergyResult): JsonValue {
 function hardConstraintViolations(candidate: SurfaceEnergyCandidate, context: SurfaceEnergyContext, stats: SurfaceStats): SurfaceEnergyHardViolation[] {
   const out: SurfaceEnergyHardViolation[] = [];
   const add = (id: string, trace: JsonValue = {}) => out.push({ id, severity: "reject", trace });
-  const numberSurfaces = requiredNumberSurfaces(context);
-  const missingNumbers = numberSurfaces.filter(value => !containsSurface(stats.normalized, value));
-  const requiredEntities = requiredEntitiesFor(context);
-  const missingEntities = requiredEntities.filter(value => !containsSurface(stats.normalized, value));
-  const requiredCaveats = requiredCaveatsFor(context);
-  const missingCaveats = requiredCaveats.filter(value => !containsSurface(stats.normalized, value));
   const forbidden = forbiddenSurfaceHits(candidate, context, stats);
   const cannedSpeech = detectCannedAnswerSpeech(candidate.text);
-  const proof = context.proofVerdict;
-  const assertive = isAssertiveForce(candidate.force ?? context.expectedForce);
-  const proofBoundarySurface = Boolean(proof && proof !== "certified" && !assertive);
-  const programSurface = context.surfacePlan.constructForces.some(force => force.id === "ProgramConstruct");
-  const creativeSurface = candidate.force === "creative" || context.surfacePlan.constructForces.some(force => force.id === "CreativeConstruct");
-  // A translated surface renders one specific source sentence, not every
-  // fact the wider workspace/evidence claim happens to carry -- mouth.ts's
-  // appliesFactualSurfaceControl already treats TranslationConstruct the
-  // same as ProgramConstruct/CreativeConstruct (transformational, not
-  // directly-assertive) for exactly this reason; this hard gate had never
-  // been given the matching exemption, so an unrelated number elsewhere in
-  // the same evidence/claim boundary text (e.g. a workspace contradiction
-  // finding sharing a source document with the translated sentence) could
-  // reject a correct, faithful translation of the actual source text.
-  const translationSurface = context.surfacePlan.constructForces.some(force => force.id === "TranslationConstruct");
-  if (missingNumbers.length && !proofBoundarySurface && !programSurface && !creativeSurface && !translationSurface) add("surface.reject.required_number_dropped", toJsonValue({ missingNumbers }));
-  if (missingEntities.length && !proofBoundarySurface && !programSurface && !creativeSurface && !translationSurface) add("surface.reject.required_entity_dropped", toJsonValue({ missingEntities }));
+  // Missing required numbers/entities, a learned prior cited as evidence,
+  // and a generically fake-factual-authority surface are evidentiary
+  // concerns, not surface-quality/safety ones -- evidence is a citation,
+  // never a gate. Each already has (or now has) a real soft-energy penalty
+  // instead: semanticLoss (requiredTerms already includes required
+  // numbers/entities), learnedPriorCitationRisk, and
+  // generalFakeFactualAuthority/fakeFactualAuthority's existing weighted
+  // components. Removing the hard reject here loses no signal -- it stops
+  // double-counting the same signal as an outright rejection.
   for (const quote of context.directQuoteBindings ?? []) {
     if (quote.text && !candidate.text.includes(quote.text)) add("surface.reject.direct_quote_mutated", toJsonValue({ quoteId: quote.id }));
   }
   if (forbidden.length) add("surface.reject.forbidden_surface", toJsonValue({ forbidden }));
   if (cannedSpeech.length) add(SURFACE_QUALITY_REJECTION_IDS.blockedSurface, toJsonValue({ issues: cannedSpeech.map(issue => ({ id: issue.id, kind: issue.kind, matched: issue.matched })) }));
-  const learnedEvidence = new Set(context.learnedPriorEvidenceIds ?? []);
-  const citedLearned = (candidate.evidenceIds ?? []).filter(id => learnedEvidence.has(id));
-  if (citedLearned.length && isAssertiveForce(candidate.force ?? context.expectedForce)) add("surface.reject.learned_prior_cited_as_evidence", toJsonValue({ evidenceIds: citedLearned }));
   const fragment = fragmentCost(candidate, context, stats);
   if (fragment.raw > 0.88 && stats.surfaceUnitCount > 0) add("surface.reject.phrase_salad", fragment.trace);
   if (context.requirementField) {
     const telemetry = telemetryLeak(candidate);
     if (telemetry.raw > 0) add("surface.reject.telemetry_leak", telemetry.trace);
-    const fakeFactual = generalFakeFactualAuthority(candidate, context, stats);
-    if (fakeFactual.raw > 0) add("surface.reject.fake_factual_authority", fakeFactual.trace);
     const minimumPreservation = clamp01(context.minimumSemanticPreservation ?? 0);
     if (minimumPreservation > 0 && (candidate.semanticPreservation ?? 0) < minimumPreservation) {
       add("surface.reject.semantic_meaning_loss", toJsonValue({ required: minimumPreservation, observed: candidate.semanticPreservation ?? null }));
@@ -839,6 +827,24 @@ function proofViolation(candidate: SurfaceEnergyCandidate, context: SurfaceEnerg
   else if (proof === "source_bound_only") raw = assertive ? 0.62 : caveatCovered ? 0.1 : 0.32;
   else if (proof === "ambiguous") raw = assertive ? 0.58 : caveatCovered ? 0.1 : 0.28;
   return { raw: clamp01(raw), reasonIds: [caveatCovered ? "energy.proof.caveat_preserved" : "energy.proof.caveat_missing", assertive ? "energy.proof.assertive_surface" : "energy.proof.bounded_surface"], trace: toJsonValue({ proof, assertive, caveatCovered }) };
+}
+
+// A learned/unverified prior cited as if it were external evidence is a real
+// fabrication risk, but the prior itself may still be genuinely useful --
+// soft-scored (weighted down, more so when the surface asserts it
+// confidently) rather than a hard reject, matching proofViolation's
+// treatment of weak proof generally.
+function learnedPriorCitationRisk(candidate: SurfaceEnergyCandidate, context: SurfaceEnergyContext): TermScore {
+  const learnedEvidence = new Set(context.learnedPriorEvidenceIds ?? []);
+  const citedLearned = (candidate.evidenceIds ?? []).filter(id => learnedEvidence.has(id));
+  if (!citedLearned.length) return { raw: 0, reasonIds: ["energy.learned_prior.not_cited"], trace: toJsonValue({ citedCount: 0 }) };
+  const assertive = isAssertiveForce(candidate.force ?? context.expectedForce);
+  const raw = assertive ? 0.85 : 0.25;
+  return {
+    raw,
+    reasonIds: [assertive ? "energy.learned_prior.cited_as_evidence_assertive" : "energy.learned_prior.cited_as_evidence_bounded"],
+    trace: toJsonValue({ evidenceIds: citedLearned, assertive })
+  };
 }
 
 function forceMismatch(candidate: SurfaceEnergyCandidate, context: SurfaceEnergyContext): TermScore {
@@ -1030,10 +1036,6 @@ function surfaceFormatStats(text: string): { lineCount: number; listMarkerCount:
 
 function requiredNumberSurfaces(context: SurfaceEnergyContext): string[] {
   return uniqueStrings([...(context.requiredNumbers ?? [])]);
-}
-
-function requiredEntitiesFor(context: SurfaceEnergyContext): string[] {
-  return uniqueStrings([...(context.requiredEntities ?? [])]);
 }
 
 function requiredCaveatsFor(context: SurfaceEnergyContext): string[] {

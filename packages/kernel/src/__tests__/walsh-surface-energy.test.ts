@@ -74,15 +74,18 @@ describe("Walsh surface energy", () => {
     expect(componentRaw(result, "surface.energy.contradiction_leak")).toBeGreaterThan(0);
   });
 
-  it("rejects candidates that drop required numbers", () => {
+  it("penalizes candidates that drop required numbers without hard rejection", () => {
+    // Evidence is a citation, not a gate: a dropped required number is a
+    // real quality signal (already folded into semantic_loss via
+    // requiredTerms), not a reason to withhold the whole answer.
     const result = scoreSurfaceEnergy(candidate("c:no-number", "pump pressure stabilized"), context({
       proofVerdict: "certified",
       requiredNumbers: ["42"],
       proposition: "pump pressure is 42"
     }));
 
-    expect(result.valid).toBe(false);
-    expect(rejectionIds(result)).toContain("surface.reject.required_number_dropped");
+    expect(result.valid).toBe(true);
+    expect(componentRaw(result, "surface.energy.semantic_loss")).toBeGreaterThan(0);
   });
 
   it("penalizes candidates that drop required caveats", () => {
@@ -98,7 +101,10 @@ describe("Walsh surface energy", () => {
     expect(componentRaw(result, "surface.energy.caveat_loss")).toBeGreaterThan(0);
   });
 
-  it("rejects candidates that cite learned priors as evidence", () => {
+  it("penalizes candidates that cite learned priors as evidence without hard rejection", () => {
+    // A learned/unverified prior cited as if it were external evidence is a
+    // real fabrication risk worth weighing down, but it is not a reason to
+    // withhold the answer outright -- the prior itself may still be useful.
     const result = scoreSurfaceEnergy(candidate("c:prior-evidence", "pump pressure is 42", { evidenceIds: ["prior:1"], force: "observed" }), context({
       proofVerdict: "certified",
       expectedForce: "observed",
@@ -107,8 +113,8 @@ describe("Walsh surface energy", () => {
       proposition: "pump pressure is 42"
     }));
 
-    expect(result.valid).toBe(false);
-    expect(rejectionIds(result)).toContain("surface.reject.learned_prior_cited_as_evidence");
+    expect(result.valid).toBe(true);
+    expect(componentRaw(result, "surface.energy.learned_prior_citation_risk")).toBeGreaterThan(0);
   });
 
   it("rejects canned hydrated-answer speech before final selection", () => {
