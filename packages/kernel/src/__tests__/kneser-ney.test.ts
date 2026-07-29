@@ -70,4 +70,39 @@ describe("Kneser-Ney bounded candidate generation (plan item L1)", () => {
     expect(continuation.symbols.length).toBeGreaterThan(0);
     expect(continuation.text.length).toBeGreaterThan(0);
   });
+
+  it("keeps 80-symbol generation wall-time bounded by observed candidates, not full vocabulary size (plan item L2)", () => {
+    const pattern = "the quick fox jumps over the lazy dog and the quick fox runs past the lazy cat and the quick fox sleeps under the lazy tree and ";
+    const repeatedCorpus = pattern.repeat(40);
+    const smallVocabModel = trainKneserNey(repeatedCorpus);
+
+    const filler = Array.from({ length: 15000 }, (_, i) => `fillerword${i}`).join(" ");
+    const largeVocabModel = trainKneserNey(`${repeatedCorpus} ${filler}`, { vocabularyLimit: 20000 });
+    expect(largeVocabModel.vocabularySize).toBeGreaterThan(smallVocabModel.vocabularySize * 50);
+
+    const generateOnce = (model: KneserNeyModel) => {
+      const start = performance.now();
+      continueBoundedProse(model, ["the", "quick", "fox"], {
+        generationExtent: 80,
+        deterministicChoiceSeed: "benchmark-seed",
+        minSymbolsBeforeEos: 40
+      });
+      return performance.now() - start;
+    };
+    const median = (model: KneserNeyModel) => {
+      generateOnce(model); // warm up before measuring
+      const samples = Array.from({ length: 5 }, () => generateOnce(model)).sort((a, b) => a - b);
+      return samples[2]!;
+    };
+    const smallMedian = median(smallVocabModel);
+    const largeMedian = median(largeVocabModel);
+
+    // A 50x+ larger vocabulary (all unobserved filler, never a real successor
+    // of the generated context) must not translate into a proportional
+    // slowdown -- bounded successor-index generation costs roughly the same
+    // regardless of how much unrelated filler vocabulary the model carries.
+    // The absolute floor guards against sub-millisecond timer noise on a fast
+    // machine, not a real perf assertion.
+    expect(largeMedian).toBeLessThan(Math.max(50, smallMedian * 10));
+  });
 });
