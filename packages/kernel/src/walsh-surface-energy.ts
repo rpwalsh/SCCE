@@ -759,8 +759,18 @@ function hardConstraintViolations(candidate: SurfaceEnergyCandidate, context: Su
   const proofBoundarySurface = Boolean(proof && proof !== "certified" && !assertive);
   const programSurface = context.surfacePlan.constructForces.some(force => force.id === "ProgramConstruct");
   const creativeSurface = candidate.force === "creative" || context.surfacePlan.constructForces.some(force => force.id === "CreativeConstruct");
-  if (missingNumbers.length && !proofBoundarySurface && !programSurface && !creativeSurface) add("surface.reject.required_number_dropped", toJsonValue({ missingNumbers }));
-  if (missingEntities.length && !proofBoundarySurface && !programSurface && !creativeSurface) add("surface.reject.required_entity_dropped", toJsonValue({ missingEntities }));
+  // A translated surface renders one specific source sentence, not every
+  // fact the wider workspace/evidence claim happens to carry -- mouth.ts's
+  // appliesFactualSurfaceControl already treats TranslationConstruct the
+  // same as ProgramConstruct/CreativeConstruct (transformational, not
+  // directly-assertive) for exactly this reason; this hard gate had never
+  // been given the matching exemption, so an unrelated number elsewhere in
+  // the same evidence/claim boundary text (e.g. a workspace contradiction
+  // finding sharing a source document with the translated sentence) could
+  // reject a correct, faithful translation of the actual source text.
+  const translationSurface = context.surfacePlan.constructForces.some(force => force.id === "TranslationConstruct");
+  if (missingNumbers.length && !proofBoundarySurface && !programSurface && !creativeSurface && !translationSurface) add("surface.reject.required_number_dropped", toJsonValue({ missingNumbers }));
+  if (missingEntities.length && !proofBoundarySurface && !programSurface && !creativeSurface && !translationSurface) add("surface.reject.required_entity_dropped", toJsonValue({ missingEntities }));
   for (const quote of context.directQuoteBindings ?? []) {
     if (quote.text && !candidate.text.includes(quote.text)) add("surface.reject.direct_quote_mutated", toJsonValue({ quoteId: quote.id }));
   }

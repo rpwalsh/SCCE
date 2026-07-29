@@ -4935,11 +4935,24 @@ function findForceClass(value: JsonValue | undefined): string | undefined {
 
 function semanticPreservation(input: { text: string; plan: SurfacePlan; entailment: SemanticEntailmentResult }): { score: number; missingTerms: string[]; audit: JsonValue } {
   const normalizedText = input.text.normalize("NFKC").toLocaleLowerCase();
-  const requiredTerms = input.plan.requiredTerms.filter(term => term.weight >= 0.45);
-  const missingTerms = requiredTerms.filter(term => !normalizedText.includes(term.text.normalize("NFKC").toLocaleLowerCase())).map(term => term.text);
   const force = dominantConstructForce(input.plan.constructForces);
-  const requiredNumbers = invariantSymbols(force === "CreativeConstruct"
-    ? input.plan.orderedPoints.map(point => point.proposition).join(" ")
+  // A translation renders one specific realized point, not everything
+  // entailment.claim.text happens to carry -- when claim.text is a broader
+  // composite (e.g. this turn's evidence anchoring pulled in unrelated
+  // workspace facts alongside the actual translated sentence), a
+  // "claim"-sourced required term absent from the realized points
+  // themselves isn't something this translation was ever meant to
+  // preserve. Mirrors the existing CreativeConstruct scoping below for the
+  // same reason; only "claim"-sourced terms are scoped -- construct/
+  // language-memory/correction-sourced required terms still apply in full.
+  const translationConstruct = force === "TranslationConstruct";
+  const realizedPointsText = input.plan.orderedPoints.map(point => point.proposition).join(" ");
+  const requiredTerms = input.plan.requiredTerms.filter(term =>
+    term.weight >= 0.45 && (!translationConstruct || term.source !== "claim" || containsSurface(realizedPointsText, term.text))
+  );
+  const missingTerms = requiredTerms.filter(term => !normalizedText.includes(term.text.normalize("NFKC").toLocaleLowerCase())).map(term => term.text);
+  const requiredNumbers = invariantSymbols(force === "CreativeConstruct" || translationConstruct
+    ? realizedPointsText
     : input.entailment.claim.text).filter(symbol => symbol.kind === "number").map(symbol => symbol.text);
   const missingNumbers = requiredNumbers.filter(number => !input.text.includes(number));
   const unsupportedNumbers = invariantSymbols(input.text)
