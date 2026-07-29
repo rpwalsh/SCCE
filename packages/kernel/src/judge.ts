@@ -237,8 +237,22 @@ function normalizedQuality(candidate: CandidateSurface): Record<PositiveQualityK
   const q = candidate.quality;
   const sourceFidelity = q?.sourceFidelity ?? candidate.scores.faithfulness;
   const unsupportedFactRate = q?.unsupportedFactRate ?? candidate.scores.unsupportedFactualAssertion ?? 0;
+  // truthSupport must mean the same thing for every candidate kind: how
+  // grounded in real evidence is this, not how internally well-formed is
+  // it. candidate.scores.support means the latter for an invented/
+  // conjectured candidate (e.g. creativeCandidate's construct.supportScore
+  // is a creative-merit score, unrelated to evidence) -- reusing it
+  // directly as truthSupport let a fluent invented answer present itself
+  // to the judge as if it were as evidence-backed as a real proof-answer.
+  // For a non-grounded force, truthSupport instead reflects how much of
+  // the candidate's own claimed basis is actually evidence-backed
+  // (evidenceCoverage, or a plain evidenceIds check as a floor) -- honest
+  // either way, never a reason to exclude the candidate from winning on
+  // its other merits.
+  const groundedForce = candidate.force !== "invented" && candidate.force !== "conjectured";
+  const evidenceGrounding = clamp01(candidate.scores.evidenceCoverage ?? (candidate.evidenceIds.length > 0 ? 1 : 0));
   const result: Record<PositiveQualityKey | NegativeQualityKey, number> = {
-    truthSupport: q?.truthSupport ?? candidate.scores.support,
+    truthSupport: q?.truthSupport ?? (groundedForce ? candidate.scores.support : evidenceGrounding),
     sourceFidelity,
     requirementCoverage: q?.requirementCoverage ?? candidate.scores.constraintCoverage ?? 0.5,
     novelty: q?.novelty ?? candidate.scores.novelty,

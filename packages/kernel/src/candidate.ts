@@ -1026,13 +1026,25 @@ function candidateQualityFromProposal(
   const reasoning = proposal.quality.reasoning;
   const invention = proposal.quality.invention;
   const requirementCoverage = clamp01(reasoning.requirementCoverage);
-  const sourceFidelity = factual.length ? clamp01(supportedFactual.length / factual.length) : 1;
+  // A proposal with zero externally-factual claims (pure invention/
+  // conjecture) correctly has nothing to fail unsupportedFactRate/
+  // sourceFidelity on -- but "nothing to fail" must not silently become
+  // "fully grounded" (the old `: 1` fallback). Groundedness for that
+  // content is instead how much of it actually cites real evidence as
+  // inspiration, honestly at or near 0 for fully invented content, not a
+  // free pass that let an invented answer's own quality object present
+  // truthSupport/sourceFidelity as if it were as evidence-backed as a
+  // real proof-answer.
+  const overallEvidenceGrounding = proposal.claims.length
+    ? clamp01(proposal.claims.filter(claim => claim.evidenceIds.length > 0).length / proposal.claims.length)
+    : 0;
+  const sourceFidelity = factual.length ? clamp01(supportedFactual.length / factual.length) : overallEvidenceGrounding;
   const executableCompleteness = proposal.artifacts.length
     ? clamp01(mean(proposal.artifacts.map(artifact => artifact.completion)))
     : clamp01(1 - (input.requirementField?.executableArtifactDemand ?? 0));
   return finiteCandidateQuality({
     requirementCoverage,
-    truthSupport: clamp01((1 - unsupportedFactRate) * (1 - input.entailment.contradiction)),
+    truthSupport: clamp01((factual.length ? 1 - unsupportedFactRate : overallEvidenceGrounding) * (1 - input.entailment.contradiction)),
     sourceFidelity,
     novelty: clamp01(invention?.novelty ?? 0.38),
     semanticPreservation: clamp01(1 - (proposal.missedRequirementIds.length ? 0.24 : 0)),
