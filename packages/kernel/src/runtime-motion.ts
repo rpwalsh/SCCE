@@ -296,6 +296,16 @@ export function runtimeCandidateReplanTrigger(
   authority: RequestedAuthority,
   evidence: readonly EvidenceSpan[]
 ): RuntimeReplanTrigger | undefined {
+  // This triggers one bounded acquisition attempt (learnHydrateReplan),
+  // never a hard rejection -- trying to find a real citation before
+  // answering is a helpful action, not evidence-gating. When acquisition
+  // is exhausted (inheritedRuntimeMotion already set), the turn still
+  // proceeds to a real, honestly-uncited answer (verified: this is
+  // exactly what kernel-local-evidence-anchor.test.ts's "keeps the
+  // empty-memory acquisition floor non-assertive" and "does not escalate
+  // an irrelevant semantic prior into creative output" already assert and
+  // require -- removing this trigger broke both by skipping the
+  // acquisition attempt those tests depend on).
   if (field.candidates.length === 0) return "authority_family_unavailable";
   if (authority !== "factual" && authority !== "reasoned") return undefined;
   const hasEvidenceRoute = evidence.length > 0 || field.candidates.some(candidate => candidate.evidenceIds.length > 0);
