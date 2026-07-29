@@ -619,7 +619,7 @@ function proofAnswer(input: {
     id: candidateId("proof", input.entailment, answer),
     kind: "proof-answer",
     answer,
-    force: evidenceBoundForce(input.entailment.force, input.entailment.evidenceIds, input.requestedAuthority),
+    force: evidenceBoundForce(input.entailment.force),
     evidenceIds: input.entailment.evidenceIds,
     scores: baseScores(input),
     boundaries: input.entailment.boundaries,
@@ -755,7 +755,7 @@ function ccrCandidate(input: {
     id: candidateId("ccr", input.entailment, input.ccr.l3.answer),
     kind: "ccr-extractive",
     answer: input.ccr.l3.answer,
-    force: evidenceBoundForce(input.entailment.force, input.entailment.evidenceIds, input.requestedAuthority),
+    force: evidenceBoundForce(input.entailment.force),
     evidenceIds: input.entailment.evidenceIds,
     scores: {
       ...baseScores(input),
@@ -793,7 +793,13 @@ function graphInferenceCandidate(input: {
     id: candidateId("graph", input.entailment, answer),
     kind: "graph-inference",
     answer,
-    force: input.entailment.force === "invented" && input.requestedAuthority === "creative" ? "invented" : "inferred",
+    // Same honesty rule as evidenceBoundForce: this candidate is built from
+    // real graph/causal-mass reasoning, never literary invention, so
+    // entailment.force==="invented" here means near-zero support, not
+    // fabricated content. "inferred" would overstate that confidence just
+    // as much as "invented" would understate what this candidate actually
+    // is -- "unknown" is the honest label, regardless of authority.
+    force: input.entailment.force === "invented" ? "unknown" : "inferred",
     evidenceIds: input.entailment.evidenceIds,
     scores: {
       ...baseScores(input),
@@ -1088,9 +1094,19 @@ function repeatedSurfaceRate(text: string): number {
   return clamp01(1 - new Set(units).size / units.length);
 }
 
-function evidenceBoundForce(force: EpistemicForce, evidenceIds: readonly EvidenceId[], authority?: RequestedAuthority): EpistemicForce {
-  if (force !== "invented" || authority === "creative") return force;
-  return evidenceIds.length > 0 ? "observed" : "unknown";
+// proofAnswer/ccrCandidate are built from real evidence retrieval, never
+// literary invention -- when proof-calculus.ts's forceFrom() lands on
+// "invented" for one of these, it means "support < 0.12" (its bottom
+// confidence rung), not "this is fabricated content." That label collides
+// with genuinely creative/fabricated force elsewhere in the pipeline
+// (mouth.ts branches on force === "invented" as a creative signal), so it
+// gets relabeled here -- but honestly: "unknown" (real uncertainty), never
+// upgraded to "observed" just because some evidenceIds happen to be
+// attached, and never gated on requestedAuthority. Proof must never lie
+// about how confident it is, in either direction, regardless of what kind
+// of turn this is.
+function evidenceBoundForce(force: EpistemicForce): EpistemicForce {
+  return force === "invented" ? "unknown" : force;
 }
 
 function creativeCandidate(input: {
