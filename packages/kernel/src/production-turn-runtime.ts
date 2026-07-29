@@ -2178,9 +2178,16 @@ export function createProductionTurnRuntime(options: {
         selectedCandidateAudit: judged.selected.audit
       });
       const runtimeCoherenceTrace = toJsonValue(runtimeCoherence);
+      // assistantForceAfter === "insufficient_support" alone no longer
+      // triggers this whole-turn recovery loop: thin/absent evidence is a
+      // citation concern, honestly reflected in the answer's force label,
+      // not a reason to throw the turn away and replan. emitAllowed/
+      // demotionRequired still gate on the other coherence dimensions
+      // (mouth-surface leakage, runtime readiness, counterfactual
+      // instability, etc.) -- those are real quality/safety concerns
+      // distinct from evidence strength.
       const coherenceRequiresContinuation = !runtimeCoherence.emitAllowed
-        || runtimeCoherence.demotionRequired
-        || runtimeCoherence.assistantForceAfter === "insufficient_support";
+        || runtimeCoherence.demotionRequired;
       // requestedAuthority === "creative" stays exempt from this whole-turn
       // recovery/regenerate loop, deliberately. The compositional claim
       // check (assistant-force.ts's unsupportedClaimIds) is real now and a
