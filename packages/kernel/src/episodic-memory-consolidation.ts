@@ -1,4 +1,5 @@
 import type { EpisodeId, EventId, JsonValue, ScceEvent } from "./types.js";
+import { featureSet, weightedJaccard } from "./primitives.js";
 
 /**
  * Plan items 211-212. Compresses one episode's raw event history into a
@@ -16,6 +17,8 @@ export interface ConsolidatedEpisode {
   episodeId: EpisodeId;
   /** The `OwnerAsked` event's payload, if the episode has one -- the episode's originating goal/request, not re-derived. */
   goal?: JsonValue;
+  /** Real request-text features (see primitives.ts's featureSet) -- the only thing retrieveRelevantEpisodes matches against. Empty when consolidateEpisode wasn't given the request text (OwnerAsked's own payload only stores a hash, never the text itself). */
+  requestFeatures: string[];
   contextEventIds: EventId[];
   actionEventIds: EventId[];
   outcomeEventIds: EventId[];
@@ -62,7 +65,7 @@ const OUTCOME_EVENT_TYPES = new Set([
 
 const CORRECTION_EVENT_TYPES = new Set(["UserCorrected", "CorrectionApplied"]);
 
-export function consolidateEpisode(events: readonly ScceEvent[]): ConsolidatedEpisode {
+export function consolidateEpisode(events: readonly ScceEvent[], options: { requestText?: string } = {}): ConsolidatedEpisode {
   if (!events.length) throw new Error("cannot consolidate an empty event list");
   const episodeId = events[0]!.episodeId;
   for (const event of events) {
@@ -92,6 +95,7 @@ export function consolidateEpisode(events: readonly ScceEvent[]): ConsolidatedEp
   return {
     episodeId,
     ...(goalEvent ? { goal: goalEvent.payload } : {}),
+    requestFeatures: options.requestText ? featureSet(options.requestText, 96) : [],
     contextEventIds,
     actionEventIds,
     outcomeEventIds,
@@ -102,6 +106,36 @@ export function consolidateEpisode(events: readonly ScceEvent[]): ConsolidatedEp
     firstT: ordered[0]!.t,
     lastT: ordered[ordered.length - 1]!.t
   };
+}
+
+export interface RelevantEpisode {
+  episode: ConsolidatedEpisode;
+  similarity: number;
+}
+
+/**
+ * Finds past consolidated episodes whose request genuinely overlaps the
+ * current one, ranked by real feature-overlap (weightedJaccard over
+ * featureSet, the same similarity primitive used throughout this codebase
+ * for retrieval/ranking) -- never a fabricated or keyword-guessed score.
+ * Episodes with no requestFeatures (consolidated before this field existed,
+ * or built without the request text available) can never match and are
+ * silently excluded rather than producing a misleading zero-confidence hit.
+ */
+export function retrieveRelevantEpisodes(
+  episodes: readonly ConsolidatedEpisode[],
+  currentRequestText: string,
+  options: { limit?: number; minimumSimilarity?: number; excludeEpisodeId?: EpisodeId } = {}
+): RelevantEpisode[] {
+  const limit = options.limit ?? 3;
+  const minimumSimilarity = options.minimumSimilarity ?? 0.2;
+  const currentFeatures = featureSet(currentRequestText, 96);
+  return episodes
+    .filter(episode => episode.requestFeatures.length > 0 && episode.episodeId !== options.excludeEpisodeId)
+    .map(episode => ({ episode, similarity: weightedJaccard(currentFeatures, episode.requestFeatures) }))
+    .filter(row => row.similarity >= minimumSimilarity)
+    .sort((left, right) => right.similarity - left.similarity || String(left.episode.episodeId).localeCompare(String(right.episode.episodeId)))
+    .slice(0, limit);
 }
 
 /**

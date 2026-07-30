@@ -409,7 +409,7 @@ export function createProductionTurnRuntime(options: {
       // to a real event id in sourceEventIds -- consolidateEpisode never
       // invents summary text.
       const consolidateCurrentEpisode = async (): Promise<JsonValue> => {
-        const consolidated = consolidateEpisode(events);
+        const consolidated = consolidateEpisode(events, { requestText: input.text });
         events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeConsolidated", payload: toJsonValue(consolidated) })));
         return toJsonValue(consolidated);
       };

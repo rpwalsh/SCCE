@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { consolidateEpisode, verifyConsolidatedEpisodeRecoverable } from "../episodic-memory-consolidation.js";
+import { consolidateEpisode, retrieveRelevantEpisodes, verifyConsolidatedEpisodeRecoverable } from "../episodic-memory-consolidation.js";
 import { createEventFactory } from "../events.js";
 import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
@@ -98,5 +98,49 @@ describe("episodic memory consolidation (plan items 211-212)", () => {
 
   it("rejects an empty event list", () => {
     expect(() => consolidateEpisode([])).toThrow(/empty event list/);
+  });
+
+  it("computes requestFeatures only when given the real request text, never fabricating them from events alone", () => {
+    const events = buildRealisticEpisode();
+    expect(consolidateEpisode(events).requestFeatures).toEqual([]);
+    const withText = consolidateEpisode(events, { requestText: "what is the release codename?" });
+    expect(withText.requestFeatures.length).toBeGreaterThan(0);
+  });
+});
+
+describe("retrieveRelevantEpisodes (plan Phase 3: episodic retrieval)", () => {
+  function episodeWithRequest(episodeId: string, requestText: string, lessons: string[] = []): ReturnType<typeof consolidateEpisode> {
+    const events = buildRealisticEpisode().map(event => ({ ...event, episodeId: episodeId as EpisodeId }));
+    const consolidated = consolidateEpisode(events, { requestText });
+    return { ...consolidated, lessons };
+  }
+
+  it("ranks a genuinely similar past request above an unrelated one", () => {
+    const similar = episodeWithRequest("episode.similar", "what is the release codename for the next build?");
+    const unrelated = episodeWithRequest("episode.unrelated", "how do I brew a good cup of coffee?");
+    const results = retrieveRelevantEpisodes([similar, unrelated], "what is the release codename?");
+    expect(results[0]?.episode.episodeId).toBe("episode.similar");
+    expect(results.some(row => row.episode.episodeId === "episode.unrelated")).toBe(false);
+  });
+
+  it("excludes episodes with no requestFeatures instead of guessing a similarity score", () => {
+    const events = buildRealisticEpisode();
+    const withoutText = consolidateEpisode(events);
+    expect(retrieveRelevantEpisodes([withoutText], "what is the release codename?")).toEqual([]);
+  });
+
+  it("excludes the current episode itself when asked to", () => {
+    const current = episodeWithRequest("episode.current", "what is the release codename?");
+    const results = retrieveRelevantEpisodes([current], "what is the release codename?", { excludeEpisodeId: "episode.current" as EpisodeId });
+    expect(results).toEqual([]);
+  });
+
+  it("respects the limit and returns real lessons attached to the matched episode", () => {
+    const first = episodeWithRequest("episode.a", "what is the release codename?", ["lesson-a"]);
+    const second = episodeWithRequest("episode.b", "what is the release codename for the build?", ["lesson-b"]);
+    const third = episodeWithRequest("episode.c", "what is the release codename this quarter?", ["lesson-c"]);
+    const results = retrieveRelevantEpisodes([first, second, third], "what is the release codename?", { limit: 2 });
+    expect(results.length).toBe(2);
+    expect(results.every(row => row.episode.lessons.length === 1)).toBe(true);
   });
 });
