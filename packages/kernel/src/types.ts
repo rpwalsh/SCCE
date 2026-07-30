@@ -974,6 +974,8 @@ export interface TurnResult {
   /** Candidate admitted by the judge before Mouth realization. */
   selectedCandidate?: JsonValue;
   judge?: JsonValue;
+  /** Plan items 156-157: this turn's candidate hypotheses, task-scoped working memory -- the judge's rejected candidates abandoned, the selected one promoted with its full derivation. */
+  workingMemory?: JsonValue;
   actionGraph?: JsonValue;
   selfState?: FunctionalSelfState;
   selfDistillation?: JsonValue;
