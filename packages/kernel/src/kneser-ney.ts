@@ -230,9 +230,16 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
     logProbability += Math.log(Math.max(1e-300, best.probability));
   }
   const joined = renderJoinedSurface(generated, options.joinProgram);
+  // renderJoinedSurface honestly returns "" when it has no learned join-
+  // program mixture to resolve a boundary with (join-program.ts's
+  // admissibleJoinedText applies the same "unresolved -> no fabricated
+  // joiner" policy) -- but this model's own symbols are already plain
+  // whitespace-delimited tokens (symbolizeData/normalizeSymbols), so a
+  // literal space join is not a guess here, it is what the tokens are.
+  const text = joined.status === "unresolved" && generated.length ? generated.join(" ") : joined.text;
   return {
     symbols: generated,
-    text: joined.text,
+    text,
     logProbability,
     averageLogProbability: generated.length ? logProbability / generated.length : logProbability,
     stoppedBy,
