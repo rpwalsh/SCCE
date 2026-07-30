@@ -466,13 +466,13 @@ describe("general-cognition candidate and judge contracts", () => {
     }
   });
 
-  it("samples the audited Boltzmann distribution unless deterministic replay is requested", () => {
+  it("defaults to deterministic argmax selection -- real user-facing inference never knowingly serves a worse-scored candidate", () => {
     const alpha = candidate("candidate.alpha", {});
     const beta = candidate("candidate.beta", {});
     const field = candidateField([alpha, beta]);
     const requirementField = requirements({ noveltyDemand: 0.5, uncertaintyTolerance: 0.5 });
 
-    const sampled = createJudge({ random: () => 0.75 }).select({ field, policy: policy(), requirementField });
+    const withoutExploration = createJudge({ random: () => 0.75 }).select({ field, policy: policy(), requirementField });
     const replayed = createJudge({ random: () => 0.75 }).select({
       field,
       policy: policy(),
@@ -480,12 +480,41 @@ describe("general-cognition candidate and judge contracts", () => {
       deterministicReplay: true
     });
 
-    expect(sampled.selected.id).toBe(beta.id);
-    expect(jsonRecord(sampled.audit).selection).toBe("boltzmann_sample");
-    expect(jsonRecord(sampled.audit).randomDraw).toBe(0.75);
+    expect(withoutExploration.selected.id).toBe(alpha.id);
+    expect(jsonRecord(withoutExploration.audit).selection).toBe("deterministic_max");
+    expect(jsonRecord(withoutExploration.audit).randomDraw).toBeNull();
     expect(replayed.selected.id).toBe(alpha.id);
     expect(jsonRecord(replayed.audit).selection).toBe("deterministic_max");
     expect(jsonRecord(replayed.audit).randomDraw).toBeNull();
+  });
+
+  it("samples the audited Boltzmann distribution only when a shadow-evaluation/learning run explicitly opts in", () => {
+    const alpha = candidate("candidate.alpha", {});
+    const beta = candidate("candidate.beta", {});
+    const field = candidateField([alpha, beta]);
+    const requirementField = requirements({ noveltyDemand: 0.5, uncertaintyTolerance: 0.5 });
+
+    const sampled = createJudge({ random: () => 0.75 }).select({
+      field,
+      policy: policy(),
+      requirementField,
+      explorationSamplingEnabled: true
+    });
+    const optedInButReplayed = createJudge({ random: () => 0.75 }).select({
+      field,
+      policy: policy(),
+      requirementField,
+      explorationSamplingEnabled: true,
+      deterministicReplay: true
+    });
+
+    expect(sampled.selected.id).toBe(beta.id);
+    expect(jsonRecord(sampled.audit).selection).toBe("boltzmann_sample");
+    expect(jsonRecord(sampled.audit).randomDraw).toBe(0.75);
+    // deterministicReplay still wins even when exploration is requested --
+    // replaying a recorded turn must never re-roll a different candidate.
+    expect(optedInButReplayed.selected.id).toBe(alpha.id);
+    expect(jsonRecord(optedInButReplayed.audit).selection).toBe("deterministic_max");
   });
 
   it("hard-fails unsupported externally factual claims at high truth authority without hard-failing invention", () => {

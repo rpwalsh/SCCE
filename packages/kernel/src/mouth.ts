@@ -397,6 +397,18 @@ export interface SpokenOutput {
   inspectRefs: InspectRef[];
   realizationTrace: RealizationTrace;
   surfacePlan: SurfacePlan;
+  /**
+   * False when `text` still failed a real hard quality/safety gate
+   * (forbidden surface, canned speech, phrase salad, telemetry leak,
+   * semantic meaning loss, direct-quote mutation, dropped required output,
+   * format violation) even after the conservative-retry re-render -- these
+   * are genuine structural-validity failures, distinct from thin/absent
+   * evidence, which is never a reason to withhold or flag the surface.
+   * Callers should treat this as a real reason to regenerate, not just
+   * log it.
+   */
+  surfaceValid: boolean;
+  hardSurfaceViolationIds: string[];
 }
 
 export interface Mouth {
@@ -979,12 +991,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // A surface that still fails the (now purely quality/safety, not
       // evidentiary) hard gates even after the conservative retry used to
       // abort the whole turn with a thrown error -- the user got nothing at
-      // all. The hard violations are still real diagnostic information
-      // (recorded below in emittedSurfaceEnergy/walshSurfaceEnergy for
-      // audit), but withholding the entire answer over them is a worse
-      // outcome than returning the real text with its quality concerns
-      // visible in the trace. selectedSurfaceEnergy below already falls
-      // back to emittedSurfaceEnergy regardless of validity.
+      // all. Mouth still returns this text rather than throwing (Stage 1),
+      // but it no longer ships silently: surfaceValid/hardSurfaceViolationIds
+      // below let production-turn-runtime.ts's runtime-coherence check
+      // treat this as a real reason to attempt one bounded regeneration
+      // (see decideRuntimeCoherence's mouthSurfaceValid input) rather than
+      // just logging the violation and moving on -- a garbled/forbidden/
+      // leaking/structurally-invalid surface is not the same class of
+      // problem as thin evidence, and must not be tolerated the same way.
       markMouthPhase("final_surface");
       const selectedSurfaceEnergy = selectedEnergy?.valid ? selectedEnergy : emittedSurfaceEnergy;
       const selectedStructuralBinding = selected
@@ -995,6 +1009,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         language: plan.targetLanguage,
         force: dominantForce(plan),
         evidenceRefs,
+        surfaceValid: selectedSurfaceEnergy.valid,
+        hardSurfaceViolationIds: selectedSurfaceEnergy.hardViolations.map(violation => violation.id),
         uncertainty: uncertaintyMarkers(plan, outputSurfacePreservation, input.construct),
         inspectRefs: [
           { kind: "proof", id: String(input.entailment.proof.id) },
@@ -1192,6 +1208,11 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         language: plan.targetLanguage,
         force: dominantForce(plan),
         evidenceRefs,
+        // The deterministic renderer emits a pre-structured surface plan
+        // directly, never free-form generation -- there is no forbidden-
+        // surface/canned-speech/phrase-salad risk class for it to fail.
+        surfaceValid: true,
+        hardSurfaceViolationIds: [],
         uncertainty: uncertaintyMarkers(plan, preservation, input.construct),
         inspectRefs: [
           { kind: "proof", id: String(input.entailment.proof.id) },

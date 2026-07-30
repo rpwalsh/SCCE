@@ -199,15 +199,21 @@ describe("kernel local evidence source anchoring", () => {
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":true');
     expect(JSON.stringify(result.actionGraph)).toContain("ada lovelace");
     // Plan items 156-157: the turn's candidate hypotheses are recorded in
-    // task-scoped working memory, the judge's rejected candidates abandoned
-    // (they disappear entirely, not lingering as low-confidence noise) and
-    // the winning candidate promoted with its full derivation retained.
+    // task-scoped working memory genuinely before the judge decides. The
+    // winning candidate is promoted with its full derivation; rejected
+    // candidates are NOT deleted -- they stay as provisional, unpromoted
+    // entries (available for backtracking within this task) and only ever
+    // stay out of permanent/canonical knowledge by never being promoted.
     const workingMemory = result.workingMemory as { entries: Record<string, { promotionStatus: string; derivation?: JsonValue; taskId: string }> };
     const entries = Object.values(workingMemory.entries);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.promotionStatus).toBe("promoted");
-    expect(entries[0]?.derivation).toBeTruthy();
-    expect(entries[0]?.taskId).toBe(`task.turn.${result.episodeId}.candidate_selection`);
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    const promoted = entries.filter(entry => entry.promotionStatus === "promoted");
+    const provisional = entries.filter(entry => entry.promotionStatus === "provisional");
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]?.derivation).toBeTruthy();
+    expect(promoted[0]?.taskId).toBe(`task.turn.${result.episodeId}.candidate_selection`);
+    expect(provisional.every(entry => entry.derivation === undefined)).toBe(true);
+    expect(provisional.every(entry => entry.taskId === `task.turn.${result.episodeId}.candidate_selection`)).toBe(true);
     // Plan item 211: this turn's own event history is consolidated into a
     // bounded summary, with every referenced event id actually recoverable
     // from the turn's real event list -- nothing fabricated.

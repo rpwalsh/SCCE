@@ -48,6 +48,16 @@ export interface RuntimeCoherenceInput {
   discourseObject?: JsonValue;
   mouthAudit?: JsonValue;
   selectedCandidateAudit?: JsonValue;
+  /**
+   * False when Mouth's final surface still failed a real hard quality/
+   * safety gate (forbidden surface, canned speech, phrase salad, telemetry
+   * leak, semantic meaning loss, direct-quote mutation, dropped required
+   * output, format violation) even after its own conservative-retry
+   * re-render -- see SpokenOutput.surfaceValid. This is never set for
+   * thin/absent evidence, which is not a validity failure.
+   */
+  mouthSurfaceValid?: boolean;
+  mouthHardViolationIds?: readonly string[];
 }
 
 export function decideRuntimeCoherence(input: RuntimeCoherenceInput): RuntimeCoherenceDecision {
@@ -78,7 +88,9 @@ export function decideRuntimeCoherence(input: RuntimeCoherenceInput): RuntimeCoh
     repairTargetIds.push(RUNTIME_COHERENCE_REPAIR_TARGET_IDS.proofDemotion);
     pressures.push(counterfactualPressure);
   }
-  const mouthPressure = mouthLeakagePressure(input.answerText, input.mouthAudit);
+  const mouthPressure = input.mouthSurfaceValid === false
+    ? 1
+    : mouthLeakagePressure(input.answerText, input.mouthAudit);
   if (mouthPressure > 0.01) {
     failedDimensionIds.push(RUNTIME_COHERENCE_DIMENSION_IDS.mouthSurface);
     repairTargetIds.push(RUNTIME_COHERENCE_REPAIR_TARGET_IDS.mouthRegeneration);
@@ -143,7 +155,9 @@ export function decideRuntimeCoherence(input: RuntimeCoherenceInput): RuntimeCoh
       discourseObject: input.discourseObject ?? null,
       assistantForceBefore: input.assistantForce,
       assistantForceAfter,
-      selectedCandidateAudit: input.selectedCandidateAudit ?? null
+      selectedCandidateAudit: input.selectedCandidateAudit ?? null,
+      mouthSurfaceValid: input.mouthSurfaceValid ?? null,
+      mouthHardViolationIds: input.mouthHardViolationIds ?? []
     })
   };
 }

@@ -41,6 +41,33 @@ describe("runtime coherence governor", () => {
     expect(decision.assistantForceAfter).toBe("insufficient_support");
     expect(decision.failedDimensionIds).toContain(RUNTIME_COHERENCE_DIMENSION_IDS.languagePriorLeakage);
   });
+
+  it("blocks a Mouth surface that failed a real hard quality/safety gate even when the text itself looks clean", () => {
+    // The answer text here has no leaked markup and reads fine on its own --
+    // this proves the block comes from Mouth's own reported surfaceValid
+    // (a forbidden-surface/canned-speech/phrase-salad/telemetry-leak/
+    // semantic-meaning-loss/format violation that survived its conservative
+    // retry), not from re-deriving the same regex-based leakage check.
+    const decision = decideRuntimeCoherence({
+      ...baseInput(),
+      assistantForce: "source_grounded_answer",
+      mouthSurfaceValid: false,
+      mouthHardViolationIds: ["surface.hard.forbidden_surface"]
+    });
+    expect(decision.emitAllowed).toBe(false);
+    expect(decision.assistantForceAfter).toBe("insufficient_support");
+    expect(decision.failedDimensionIds).toContain(RUNTIME_COHERENCE_DIMENSION_IDS.mouthSurface);
+  });
+
+  it("does not block on thin/absent evidence alone -- only a real surface-validity failure sets mouthSurfaceValid false", () => {
+    const decision = decideRuntimeCoherence({
+      ...baseInput({ evidence: [] }),
+      assistantForce: "reasoned_answer",
+      mouthSurfaceValid: true
+    });
+    expect(decision.emitAllowed).toBe(true);
+    expect(decision.failedDimensionIds).not.toContain(RUNTIME_COHERENCE_DIMENSION_IDS.mouthSurface);
+  });
 });
 
 function baseInput(overrides: Partial<RuntimeCoherenceInput> = {}): RuntimeCoherenceInput {
