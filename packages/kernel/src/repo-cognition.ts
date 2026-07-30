@@ -9,14 +9,25 @@
  * Returns undefined when no repo files are supplied so this never
  * fabricates repository context for a turn that isn't actually
  * code-shaped.
+ *
+ * A file may optionally carry pre-computed `syntaxNodes` (real
+ * tree-sitter output from packages/adapters-node's tree-sitter-syntax.ts).
+ * When present, those drive localization for that file instead of the
+ * regex extractor -- the regex extractor stays the honest fallback for
+ * files without a syntax parse, and it is still run for embedded SQL DDL
+ * (`extractSqlTableSymbols`) regardless, since tree-sitter's TS/JS grammar
+ * has no notion of SQL inside a template-literal string.
  */
 
-import { extractFileSymbols, localizeIssueToSymbols, type SymbolLocalizationCandidate } from "./issue-symbol-localization.js";
+import { extractFileSymbols, extractSqlTableSymbols, localizeIssueToSymbols, type SourceSymbol, type SourceSymbolKind, type SymbolLocalizationCandidate } from "./issue-symbol-localization.js";
 import { predictAffectedTests } from "./affected-test-prediction.js";
+import { resolveTreeSitterStructuralEdges } from "./repo-semantic-resolver.js";
+import type { RepositorySemanticEdge, RepositorySyntaxNode, RepositorySyntaxNodeKind } from "./repo-syntax-graph.js";
 
 export interface RepoCognitionFile {
   path: string;
   text: string;
+  syntaxNodes?: RepositorySyntaxNode[];
 }
 
 export interface RepoCognitionResult {
@@ -24,6 +35,52 @@ export interface RepoCognitionResult {
   symbolLocalization: SymbolLocalizationCandidate[];
   changedFilePaths: string[];
   affectedTests: string[];
+  /** Real cross-referenced call edges over any supplied syntaxNodes, always resolver-tagged; [] when no file supplied syntaxNodes. */
+  semanticEdges: RepositorySemanticEdge[];
+}
+
+const SYNTAX_KIND_TO_SOURCE_SYMBOL_KIND: Partial<Record<RepositorySyntaxNodeKind, SourceSymbolKind>> = {
+  class: "class",
+  interface: "interface",
+  function: "function",
+  method: "function",
+  type: "type",
+  variable: "const"
+};
+
+function lineNumberAtByteOffset(text: string, byteOffset: number): number {
+  let line = 1;
+  const bound = Math.min(byteOffset, text.length);
+  for (let index = 0; index < bound; index++) if (text[index] === "\n") line++;
+  return line;
+}
+
+/**
+ * Converts real tree-sitter declaration nodes into the same SourceSymbol
+ * shape the regex extractor produces, so both feed the identical,
+ * already-tested localizeIssueToSymbols scorer. Byte offsets are treated as
+ * JS string indices here -- exact for ASCII source (the overwhelming
+ * majority of real code); a file with non-ASCII text before a declaration
+ * will see a line-number/context drift tree-sitter's UTF-8 byte offsets
+ * don't share with JS's UTF-16 indices. Known, honest limitation, not
+ * silently assumed correct.
+ */
+function symbolsFromSyntaxNodes(path: string, text: string, syntaxNodes: readonly RepositorySyntaxNode[]): SourceSymbol[] {
+  const symbols: SourceSymbol[] = [];
+  for (const node of syntaxNodes) {
+    const kind = SYNTAX_KIND_TO_SOURCE_SYMBOL_KIND[node.kind];
+    if (!kind || !node.name) continue;
+    symbols.push({
+      id: `${path}#${node.name}`,
+      kind,
+      name: node.name,
+      path,
+      lineStart: lineNumberAtByteOffset(text, node.byteStart),
+      lineEnd: lineNumberAtByteOffset(text, node.byteEnd),
+      context: text.slice(node.byteStart, node.byteEnd)
+    });
+  }
+  return symbols;
 }
 
 const DIFF_CHANGED_PATH_PATTERNS: RegExp[] = [
@@ -56,8 +113,11 @@ export function repoCognitionForTurn(input: {
 }): RepoCognitionResult | undefined {
   if (!input.files.length) return undefined;
 
-  const symbols = input.files.flatMap(file => extractFileSymbols(file.path, file.text));
+  const symbols = input.files.flatMap(file => file.syntaxNodes
+    ? [...symbolsFromSyntaxNodes(file.path, file.text, file.syntaxNodes), ...extractSqlTableSymbols(file.path, file.text)]
+    : extractFileSymbols(file.path, file.text));
   const symbolLocalization = localizeIssueToSymbols(input.requestText, symbols, { limit: 10 });
+  const semanticEdges = resolveTreeSitterStructuralEdges(input.files.flatMap(file => file.syntaxNodes ?? []));
 
   const allFilePaths = input.files.map(file => file.path);
   const knownPaths = new Set(allFilePaths);
@@ -75,6 +135,7 @@ export function repoCognitionForTurn(input: {
     filesConsidered: input.files.length,
     symbolLocalization,
     changedFilePaths,
-    affectedTests
+    affectedTests,
+    semanticEdges
   };
 }

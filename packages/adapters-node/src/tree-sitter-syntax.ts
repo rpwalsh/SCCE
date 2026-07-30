@@ -28,12 +28,13 @@ import type {
   RepositorySyntaxParseResult
 } from "@scce/kernel";
 
-export type TreeSitterLanguageId = "typescript" | "tsx" | "javascript";
+export type TreeSitterLanguageId = "typescript" | "tsx" | "javascript" | "python";
 
 const GRAMMAR_WASM_MODULE_SPECIFIER: Record<TreeSitterLanguageId, string> = {
   typescript: "tree-sitter-wasms/out/tree-sitter-typescript.wasm",
   tsx: "tree-sitter-wasms/out/tree-sitter-tsx.wasm",
-  javascript: "tree-sitter-wasms/out/tree-sitter-javascript.wasm"
+  javascript: "tree-sitter-wasms/out/tree-sitter-javascript.wasm",
+  python: "tree-sitter-wasms/out/tree-sitter-python.wasm"
 };
 
 let parserInitPromise: Promise<void> | undefined;
@@ -80,11 +81,20 @@ const DECLARATION_KIND_BY_NODE_TYPE: Partial<Record<string, RepositorySyntaxNode
   import_statement: "import",
   export_statement: "export",
   call_expression: "call",
-  comment: "comment"
+  comment: "comment",
+  // Python (tree-sitter-python): a different grammar, same RepositorySyntaxNodeKind vocabulary.
+  class_definition: "class",
+  function_definition: "function",
+  import_from_statement: "import",
+  call: "call"
 };
 
-const PARAMETER_NODE_TYPES = new Set(["required_parameter", "optional_parameter", "rest_parameter"]);
+const PARAMETER_NODE_TYPES = new Set([
+  "required_parameter", "optional_parameter", "rest_parameter",
+  "typed_parameter", "default_parameter", "typed_default_parameter"
+]);
 const NAME_FIELD_KIND_NODE_TYPES = new Set(["variable_declarator"]);
+const ASSIGNMENT_NODE_TYPES = new Set(["assignment"]);
 
 let nodeSequence = 0;
 
@@ -94,13 +104,24 @@ function nextNodeId(fileId: string): string {
 }
 
 function declarationName(node: Parser.SyntaxNode): string | undefined {
+  if (node.type === "import_from_statement") {
+    const moduleName = node.childForFieldName("module_name");
+    return moduleName?.text;
+  }
+  if (node.type === "assignment") {
+    const left = node.childForFieldName("left");
+    return left && left.type === "identifier" ? left.text : undefined;
+  }
+  if (node.type === "typed_parameter") {
+    return node.namedChild(0)?.text;
+  }
   const named = node.childForFieldName("name");
   if (named) return named.text;
   if (node.type === "import_statement") {
     const source = node.childForFieldName("source");
     return source ? source.text.replace(/^["'`]|["'`]$/g, "") : undefined;
   }
-  if (node.type === "call_expression") {
+  if (node.type === "call_expression" || node.type === "call") {
     const callee = node.childForFieldName("function");
     return callee?.text;
   }
@@ -111,6 +132,10 @@ function classifyNode(node: Parser.SyntaxNode): RepositorySyntaxNodeKind | undef
   const declared = DECLARATION_KIND_BY_NODE_TYPE[node.type];
   if (declared) return declared;
   if (PARAMETER_NODE_TYPES.has(node.type)) return "parameter";
+  if (ASSIGNMENT_NODE_TYPES.has(node.type)) {
+    const left = node.childForFieldName("left");
+    return left && left.type === "identifier" ? "variable" : undefined;
+  }
   if (NAME_FIELD_KIND_NODE_TYPES.has(node.type)) {
     const value = node.childForFieldName("value");
     if (value && (value.type === "arrow_function" || value.type === "function" || value.type === "function_expression")) return "function";
@@ -168,7 +193,11 @@ function walk(
     ownId = id;
   }
 
-  for (const child of node.namedChildren) {
+  // Walks every child, not just namedChildren: a MISSING recovery node for
+  // an anonymous grammar token (e.g. a missing ")") is itself unnamed, so a
+  // named-only traversal would silently skip exactly the recovery data
+  // "treat syntax errors as data" depends on.
+  for (const child of node.children) {
     if (!child) continue;
     walk(child, fileId, languageId, ownId, nodes, errors);
   }
@@ -223,5 +252,6 @@ export function languageIdForFilePath(path: string): TreeSitterLanguageId | unde
   if (path.endsWith(".tsx")) return "tsx";
   if (path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts")) return "typescript";
   if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs") || path.endsWith(".jsx")) return "javascript";
+  if (path.endsWith(".py") || path.endsWith(".pyi")) return "python";
   return undefined;
 }

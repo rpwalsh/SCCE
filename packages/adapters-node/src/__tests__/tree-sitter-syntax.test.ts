@@ -83,12 +83,64 @@ describe("tree-sitter syntax substrate (Phase 15, 183-184)", () => {
     expect(languageIdForFilePath("src/foo.ts")).toBe("typescript");
     expect(languageIdForFilePath("src/foo.tsx")).toBe("tsx");
     expect(languageIdForFilePath("src/foo.js")).toBe("javascript");
-    expect(languageIdForFilePath("src/foo.py")).toBeUndefined();
+    expect(languageIdForFilePath("src/foo.rs")).toBeUndefined();
   });
 
   it("parses real JavaScript (no TypeScript-only syntax) through the javascript grammar", async () => {
     const text = "function greet(name) { return \"hi \" + name; }";
     const result = await parseRepositorySyntax({ fileId: "src/greet.js", languageId: "javascript", text });
     expect(result.nodes.find(node => node.kind === "function")?.name).toBe("greet");
+  });
+
+  it("proves language-neutrality: real Python source produces the same RepositorySyntaxNodeKind vocabulary via a different grammar", async () => {
+    const text = [
+      "import os",
+      "from typing import List",
+      "",
+      "class Widget:",
+      "    def render(self, x):",
+      "        return helper(x)",
+      "",
+      "def helper(x):",
+      "    return x",
+      "",
+      "value = helper(1)"
+    ].join("\n");
+
+    const result = await parseRepositorySyntax({ fileId: "src/widget.py", languageId: "python", text });
+
+    expect(result.errors).toEqual([]);
+    expect(result.nodes.find(node => node.kind === "import" && node.name === "os")).toBeDefined();
+    expect(result.nodes.find(node => node.kind === "import" && node.name === "typing")).toBeDefined();
+    const classNode = result.nodes.find(node => node.kind === "class");
+    expect(classNode?.name).toBe("Widget");
+    const methodNode = result.nodes.find(node => node.kind === "function" && node.name === "render");
+    expect(methodNode?.parentId).toBe(classNode?.id);
+    const topLevelFunction = result.nodes.find(node => node.kind === "function" && node.name === "helper");
+    expect(topLevelFunction).toBeDefined();
+    expect(topLevelFunction?.parentId).not.toBe(classNode?.id);
+    const callNode = result.nodes.find(node => node.kind === "call" && node.name === "helper");
+    expect(callNode).toBeDefined();
+    expect(result.nodes.find(node => node.kind === "variable" && node.name === "value")).toBeDefined();
+  });
+
+  it("recovers from malformed Python: keeps real nodes before the break and records the error as data", async () => {
+    const text = [
+      "def ok():",
+      "    return 1",
+      "",
+      "def broken(:",
+      "    pass"
+    ].join("\n");
+
+    const result = await parseRepositorySyntax({ fileId: "src/broken.py", languageId: "python", text });
+
+    expect(result.nodes.some(node => node.kind === "function" && node.name === "ok")).toBe(true);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("maps .py/.pyi extensions to the python grammar", () => {
+    expect(languageIdForFilePath("src/foo.py")).toBe("python");
+    expect(languageIdForFilePath("src/foo.pyi")).toBe("python");
   });
 });

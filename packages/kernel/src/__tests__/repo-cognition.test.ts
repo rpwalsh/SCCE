@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { changedFilePathsFromRequestText, repoCognitionForTurn } from "../repo-cognition.js";
+import type { RepositorySyntaxNode } from "../repo-syntax-graph.js";
 
 describe("repo cognition for a live turn (Phase 15 wiring)", () => {
   const sourceFile = {
@@ -36,6 +37,54 @@ describe("repo cognition for a live turn (Phase 15 wiring)", () => {
     expect(result!.filesConsidered).toBe(3);
     expect(result!.symbolLocalization[0]!.symbol.name).toBe("fitSparseRanking");
     expect(result!.symbolLocalization[0]!.symbol.path).toBe("src/sparse-ranking.ts");
+    expect(result!.semanticEdges).toEqual([]);
+  });
+
+  it("uses supplied tree-sitter syntaxNodes for localization instead of the regex extractor, and reports real semantic edges", () => {
+    const declarationText = "export function fitSparseRanking(x) { return x; }";
+    const declarationNodes: RepositorySyntaxNode[] = [{
+      id: "src/sparse-ranking.ts#syn1",
+      languageId: "typescript",
+      fileId: "src/sparse-ranking.ts",
+      kind: "function",
+      name: "fitSparseRanking",
+      byteStart: 0,
+      byteEnd: declarationText.length,
+      childIds: [],
+      parseConfidence: 1,
+      source: "tree-sitter"
+    }];
+    const callerText = "fitSparseRanking(1);";
+    const callerNodes: RepositorySyntaxNode[] = [{
+      id: "src/caller.ts#syn1",
+      languageId: "typescript",
+      fileId: "src/caller.ts",
+      kind: "call",
+      name: "fitSparseRanking",
+      byteStart: 0,
+      byteEnd: callerText.length,
+      childIds: [],
+      parseConfidence: 1,
+      source: "tree-sitter"
+    }];
+
+    const result = repoCognitionForTurn({
+      requestText: "fitSparseRanking returns the wrong value",
+      files: [
+        { path: "src/sparse-ranking.ts", text: declarationText, syntaxNodes: declarationNodes },
+        { path: "src/caller.ts", text: callerText, syntaxNodes: callerNodes }
+      ]
+    });
+
+    expect(result!.symbolLocalization[0]!.symbol.name).toBe("fitSparseRanking");
+    expect(result!.symbolLocalization[0]!.symbol.kind).toBe("function");
+    expect(result!.semanticEdges).toEqual([{
+      sourceId: "src/caller.ts#syn1",
+      targetId: "src/sparse-ranking.ts#syn1",
+      relation: "calls",
+      confidence: 0.6,
+      resolver: "tree-sitter-structural"
+    }]);
   });
 
   it("predicts the real affected test when the request embeds a diff touching the changed file", () => {

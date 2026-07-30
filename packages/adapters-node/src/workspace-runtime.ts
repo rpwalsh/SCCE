@@ -204,6 +204,8 @@ export interface WorkspaceIngestReport {
 }
 
 export interface WorkspaceRuntime {
+  /** Resolves and validates the real workspace root a caller would otherwise have to re-derive per method (explicit rootPath if given, else the most recently ingested workspace's root). */
+  resolveRoot(rootPath?: string): Promise<string>;
   init(rootPath: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceRecord>;
   ingest(rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceIngestReport>;
   project(rootPath?: string, options?: WorkspaceRuntimeOptions): Promise<WorkspaceProjectReport>;
@@ -377,6 +379,9 @@ const WORKSPACE_REPORT_TEMPLATE = "workspace_report_template";
 
 export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config: ScceRuntimeConfig }): WorkspaceRuntime {
   return {
+    async resolveRoot(rootPath) {
+      return rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
+    },
     async init(rootPath, options = {}) {
       const root = resolveAllowedRoot(rootPath, input.config);
       const now = Date.now();
