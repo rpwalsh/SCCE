@@ -614,7 +614,19 @@ function proofAnswer(input: {
   // evidence is session-derived (kernel-training.test.ts's "typed
   // dialogue-act state" case), the same sessionBound concept
   // local-evidence-runtime.ts already tracks for its own answer plans.
-  const boundEvidence = input.evidence.filter(span => input.entailment.evidenceIds.includes(span.id));
+  // entailment.evidenceIds alone can never surface a session turn here:
+  // proof-boundary.ts's certifiesFactualProof gate requires external
+  // exact-source semantics (a URI, version, byte/char range) that a
+  // conversational session turn never has by nature -- it's the owner's
+  // own words, not an externally versioned document. That gate correctly
+  // keeps session turns out of the *certified-proof* evidence set, but it
+  // must not also make them invisible to sessionBound, which only asks
+  // "did this candidate's answer come from something the owner actually
+  // said in this session" -- so a promoted session span counts as bound
+  // whether or not the stricter certifying gate admitted it, matching how
+  // local-evidence-runtime.ts already treats its own session evidence.
+  const boundEvidence = input.evidence.filter(span =>
+    input.entailment.evidenceIds.includes(span.id) || promotedSessionEvidence(span));
   return {
     id: candidateId("proof", input.entailment, answer),
     kind: "proof-answer",
