@@ -101,7 +101,7 @@ import {
   expandPowerWalkSeedAnchors
 } from "./powerwalk.js";
 import { createPredictionLayer } from "./prediction.js";
-import { createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
+import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import {
@@ -164,6 +164,12 @@ import {
   activateCognitiveOperators,
   deriveTurnRequirementField
 } from "./turn-requirements.js";
+import {
+  EMPTY_WORKING_MEMORY,
+  abandonWorkingMemoryEntry,
+  promoteWorkingMemoryEntry,
+  putWorkingMemoryEntry
+} from "./working-memory.js";
 import type {
   BuildTestResult,
   CapabilityPlan,
@@ -1721,6 +1727,41 @@ export function createProductionTurnRuntime(options: {
         contradiction: judged.selected.scores.contradiction
       });
       events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateSelected", payload: { candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force, assistantForce: selectedAssistantForce.force, assistantForceTrace: selectedAssistantForce.audit, candidateAudit: judged.selected.audit, judge: judged.audit } })));
+      // Plan item 156-157's typed working memory, task-scoped to this
+      // turn's candidate selection: every generated candidate is a real
+      // hypothesis (an explored, competing way to answer), scored and
+      // recorded before the judge decides. The judge's rejected candidates
+      // are abandoned outright -- they disappear rather than lingering as
+      // low-confidence noise -- and the winning candidate is promoted with
+      // the judge's full audit as its derivation, so a later reader can see
+      // exactly why it won, not just that it did.
+      const candidateSelectionTaskId = `task.turn.${episodeId}.candidate_selection`;
+      let candidateWorkingMemory = putWorkingMemoryEntry(EMPTY_WORKING_MEMORY, {
+        id: `wm.${episodeId}.${judged.selected.id}`,
+        taskId: candidateSelectionTaskId,
+        type: "hypothesis",
+        createdBy: judged.selected.kind,
+        confidence: clamp01(judged.selected.scores.support),
+        payload: toJsonValue({ candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force }),
+        createdAt: turnStarted
+      });
+      for (const rejected of judged.rejected) {
+        candidateWorkingMemory = putWorkingMemoryEntry(candidateWorkingMemory, {
+          id: `wm.${episodeId}.${rejected.candidate.id}`,
+          taskId: candidateSelectionTaskId,
+          type: "hypothesis",
+          createdBy: rejected.candidate.kind,
+          confidence: clamp01(rejected.candidate.scores.support),
+          payload: toJsonValue({ candidateId: rejected.candidate.id, kind: rejected.candidate.kind, force: rejected.candidate.force, rejectionReasons: rejected.reasons }),
+          createdAt: turnStarted
+        });
+        candidateWorkingMemory = abandonWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${rejected.candidate.id}`);
+      }
+      candidateWorkingMemory = promoteWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${judged.selected.id}`, {
+        derivation: toJsonValue({ judge: judged.audit, candidateAudit: judged.selected.audit }),
+        promotedAt: turnStarted
+      });
+      events.push(await append(eventFactory.create({ episodeId, typeId: "WorkingMemoryScoped", payload: toJsonValue(candidateWorkingMemory) })));
       kernelTrace({
         stage: "planner.select",
         label: "kernel.turn",
@@ -2312,6 +2353,7 @@ export function createProductionTurnRuntime(options: {
           candidateField: authorityCandidateField.audit,
           selectedCandidate: toJsonValue(judged.selected),
           judge: judged.audit,
+          workingMemory: toJsonValue(candidateWorkingMemory),
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
           pface: pfaceEstimate?.audit,
@@ -2438,6 +2480,7 @@ export function createProductionTurnRuntime(options: {
         candidateField: authorityCandidateField.audit,
         selectedCandidate: toJsonValue(judged.selected),
         judge: judged.audit,
+        workingMemory: toJsonValue(candidateWorkingMemory),
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
         selfDistillation: selfDistillation.audit,

@@ -197,6 +197,16 @@ describe("kernel local evidence source anchoring", () => {
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorRequired":true');
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":true');
     expect(JSON.stringify(result.actionGraph)).toContain("ada lovelace");
+    // Plan items 156-157: the turn's candidate hypotheses are recorded in
+    // task-scoped working memory, the judge's rejected candidates abandoned
+    // (they disappear entirely, not lingering as low-confidence noise) and
+    // the winning candidate promoted with its full derivation retained.
+    const workingMemory = result.workingMemory as { entries: Record<string, { promotionStatus: string; derivation?: JsonValue; taskId: string }> };
+    const entries = Object.values(workingMemory.entries);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.promotionStatus).toBe("promoted");
+    expect(entries[0]?.derivation).toBeTruthy();
+    expect(entries[0]?.taskId).toBe(`task.turn.${result.episodeId}.candidate_selection`);
   });
 
   it("preserves both requested answer parts from one exact-title evidence span", async () => {
