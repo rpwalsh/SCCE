@@ -55,6 +55,7 @@ import {
   mergeCorrectionRules,
   pcaForceForMouthSurface,
   registerIdFromMetadata,
+  repoFilesFromMetadata,
   requiresExplicitApproval,
   runtimeLanguageProfile,
   sourceLanguageAliasFromMetadata,
@@ -105,6 +106,7 @@ import { createPredictionLayer } from "./prediction.js";
 import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
+import { repoCognitionForTurn } from "./repo-cognition.js";
 import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
@@ -414,6 +416,8 @@ export function createProductionTurnRuntime(options: {
         return toJsonValue(consolidated);
       };
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
+      const repoFiles = repoFilesFromMetadata(input.metadata);
+      const repoCognition = repoFiles ? toJsonValue(repoCognitionForTurn({ requestText: input.text, files: repoFiles })) : undefined;
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
       const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
@@ -642,6 +646,7 @@ export function createProductionTurnRuntime(options: {
           corrections: correctionMemory.summarize(detectedCorrections),
           learningLoop: toJsonValue({ maintenanceDeferred: true, deterministicArithmetic: true }),
           episodeConsolidation,
+          repoCognition,
           timing,
           ...evaluationTraceResult(),
           ...turnContract({ entailment, evidence: [], assistantForce: emission.assistantForce, unsupportedContentBlocked: false }),
@@ -2407,6 +2412,7 @@ export function createProductionTurnRuntime(options: {
           judge: judged.audit,
           workingMemory: toJsonValue(candidateWorkingMemory),
           episodeConsolidation,
+          repoCognition,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
           pface: pfaceEstimate?.audit,
@@ -2536,6 +2542,7 @@ export function createProductionTurnRuntime(options: {
         judge: judged.audit,
         workingMemory: toJsonValue(candidateWorkingMemory),
         episodeConsolidation,
+        repoCognition,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
         selfDistillation: selfDistillation.audit,

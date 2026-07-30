@@ -228,6 +228,95 @@ describe("kernel local evidence source anchoring", () => {
     expect(verifyConsolidatedEpisodeRecoverable(episodeConsolidation, result.events)).toBe(true);
   });
 
+  it("surfaces real repo-cognition (issue localization + affected-test prediction) on TurnResult when metadata.repoFiles is supplied (plan items 183-186, 189-190)", async () => {
+    const clock = createClock({ fixedTime: 6_200, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-repo",
+      sourceVersionId: "source:ada-lovelace-repo:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const sourceFileText = [
+      "// Fits a sparse FTRL ranker over labeled candidate features.",
+      "export function fitSparseRanking(features: string[], labels: number[]): number {",
+      "  return features.length + labels.length;",
+      "}"
+    ].join("\n");
+    const testFileText = [
+      "import { fitSparseRanking } from \"../sparse-ranking.js\";",
+      "test(\"fits\", () => { fitSparseRanking([], []); });"
+    ].join("\n");
+    const diffRequest = [
+      "Who was Ada Lovelace? Separately, please review this change:",
+      "diff --git a/src/sparse-ranking.ts b/src/sparse-ranking.ts",
+      "--- a/src/sparse-ranking.ts",
+      "+++ b/src/sparse-ranking.ts",
+      "@@ -1,1 +1,1 @@",
+      "-export function fitSparseRanking(features: string[], labels: number[]): number {",
+      "+export function fitSparseRanking(features: string[], labels: number[]): number | undefined {",
+      "fitSparseRanking looks wrong for empty labels."
+    ].join("\n");
+
+    const result = await kernel.turn({
+      text: diffRequest,
+      metadata: {
+        repoFiles: [
+          { path: "src/sparse-ranking.ts", text: sourceFileText },
+          { path: "src/__tests__/sparse-ranking.test.ts", text: testFileText }
+        ]
+      }
+    });
+
+    const repoCognition = result.repoCognition as unknown as {
+      filesConsidered: number;
+      symbolLocalization: Array<{ symbol: { name: string; path: string } }>;
+      changedFilePaths: string[];
+      affectedTests: string[];
+    };
+    expect(repoCognition.filesConsidered).toBe(2);
+    expect(repoCognition.symbolLocalization[0]?.symbol.name).toBe("fitSparseRanking");
+    expect(repoCognition.changedFilePaths).toEqual(["src/sparse-ranking.ts"]);
+    expect(repoCognition.affectedTests).toEqual(["src/__tests__/sparse-ranking.test.ts"]);
+  });
+
+  it("leaves TurnResult.repoCognition absent (not fabricated) when no repo files are supplied in metadata", async () => {
+    const clock = createClock({ fixedTime: 6_300, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-no-repo",
+      sourceVersionId: "source:ada-lovelace-no-repo:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Who was Ada Lovelace?" });
+    expect(result.repoCognition).toBeUndefined();
+  });
+
   it("recognizes and records a revived hypothesis when replan metadata names a matching prior rejection", async () => {
     // Real litmus test for working memory being consumed, not just recorded:
     // run the same deterministic turn twice. The second run's metadata

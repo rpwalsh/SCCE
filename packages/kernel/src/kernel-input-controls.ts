@@ -50,6 +50,29 @@ function numericVector(value: JsonValue | undefined): number[] | undefined {
   return out;
 }
 
+/**
+ * Real repo file contents supplied by an adapter that has already read
+ * them from disk (the kernel package itself has no filesystem access).
+ * Accepts either `{ path, text }` or `{ path, content }` entries; any
+ * malformed entry is dropped rather than causing the whole turn to fail.
+ */
+export function repoFilesFromMetadata(metadata: JsonValue | undefined): Array<{ path: string; text: string }> | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const value = (metadata as Record<string, JsonValue>).repoFiles;
+  if (!Array.isArray(value)) return undefined;
+  const files: Array<{ path: string; text: string }> = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, JsonValue>;
+    const path = record.path;
+    const text = record.text ?? record.content;
+    if (typeof path === "string" && path.trim() && typeof text === "string") {
+      files.push({ path, text });
+    }
+  }
+  return files.length ? files : undefined;
+}
+
 export function styleProfileIdFromMetadata(metadata: JsonValue | undefined): string | undefined {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
   const value = (metadata as Record<string, JsonValue>).styleProfileId;

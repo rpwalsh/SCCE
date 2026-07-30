@@ -980,6 +980,8 @@ export interface TurnResult {
   workingMemory?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
   episodeConsolidation?: JsonValue;
+  /** Plan items 183-186, 189-190: issue-to-symbol localization plus affected-test prediction over repo files supplied via metadata.repoFiles. Absent (not empty) when no repo files were supplied -- never fabricated. */
+  repoCognition?: JsonValue;
   actionGraph?: JsonValue;
   selfState?: FunctionalSelfState;
   selfDistillation?: JsonValue;
