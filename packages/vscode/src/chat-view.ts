@@ -91,7 +91,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         answer = await client.streamTurn(
           { text, sessionId: this.sessionId() },
           (frame: TurnStreamFrame) => {
-            if (frame.type === "progress") void webview.postMessage({ type: "progress", phase: frame.phase ?? "" });
+            if (frame.type !== "progress") return;
+            if (typeof frame.answer === "string") {
+              // The kernel fires this once the turn's answer text is settled --
+              // safe to show now instead of waiting for the whole turn (persistence,
+              // learning-loop planning, event writes) to finish; the later "result"
+              // frame still carries the authoritative sources/detail payload.
+              void webview.postMessage({ type: "answerPreview", text: frame.answer, assistantForce: frame.assistantForce ?? null });
+              return;
+            }
+            void webview.postMessage({ type: "progress", phase: frame.phase ?? "" });
           },
           controller.signal
         );
@@ -176,6 +185,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     border: 1px solid var(--vscode-inputValidation-errorBorder, transparent);
     color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
   }
+  .row.streaming .bubble { opacity: 0.82; }
   .bubble p { margin: 0 0 8px; }
   .bubble p:last-child { margin-bottom: 0; }
   .bubble pre {
@@ -279,6 +289,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   const clearButton = document.getElementById('clear');
   let sending = false;
   let typingRow = null;
+  let streamingRow = null;
 
   function escapeHtml(value) {
     return String(value)
@@ -308,10 +319,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }).join('');
   }
 
-  function addMessage(role, text, detail) {
+  function addMessage(role, text, detail, existingRow) {
     emptyEl.style.display = 'none';
-    const row = document.createElement('div');
+    const row = existingRow || document.createElement('div');
     row.className = 'row ' + role;
+    row.innerHTML = '';
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.innerHTML = renderMarkdownLite(text);
@@ -352,9 +364,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       details.appendChild(pre);
       bubble.appendChild(details);
     }
-    messagesEl.appendChild(row);
+    if (!row.isConnected) messagesEl.appendChild(row);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return row;
+  }
+
+  function beginStreamingAnswer(text) {
+    hideTyping();
+    streamingRow = addMessage('assistant streaming', text, undefined);
+    return streamingRow;
   }
 
   function showTyping(phase) {
@@ -426,9 +444,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     if (message.type === 'progress') { showTyping(message.phase); return; }
-    if (message.type === 'answer') { hideTyping(); setSending(false); addMessage('assistant', message.text, message.detail); return; }
-    if (message.type === 'error') { hideTyping(); setSending(false); addMessage('error', message.text); return; }
-    if (message.type === 'cancelled') { hideTyping(); setSending(false); return; }
+    if (message.type === 'answerPreview') { beginStreamingAnswer(message.text); return; }
+    if (message.type === 'answer') {
+      hideTyping();
+      setSending(false);
+      addMessage('assistant', message.text, message.detail, streamingRow);
+      streamingRow = null;
+      return;
+    }
+    if (message.type === 'error') {
+      hideTyping();
+      setSending(false);
+      if (streamingRow) { streamingRow.remove(); streamingRow = null; }
+      addMessage('error', message.text);
+      return;
+    }
+    if (message.type === 'cancelled') {
+      hideTyping();
+      setSending(false);
+      if (streamingRow) { streamingRow.remove(); streamingRow = null; }
+      return;
+    }
   });
 
   inputEl.focus();

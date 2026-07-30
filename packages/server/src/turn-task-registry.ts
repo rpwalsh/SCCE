@@ -31,6 +31,9 @@ export interface TurnTaskFrame {
   value?: JsonValue;
   error?: string;
   persistence?: "pending" | "durable";
+  /** Present only on the "answer.ready" progress frame -- see production-turn-runtime.ts. */
+  answer?: string;
+  assistantForce?: string;
 }
 
 export interface TurnTaskSnapshot {

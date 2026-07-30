@@ -41,6 +41,9 @@ export interface TurnStreamFrame {
   status?: number;
   error?: string;
   value?: unknown;
+  /** Present only on the "answer.ready" progress frame -- the turn's final answer, streamed early. */
+  answer?: string;
+  assistantForce?: string;
 }
 
 export interface TurnAnswerEvidenceSpan {
