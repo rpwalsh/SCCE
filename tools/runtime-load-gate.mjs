@@ -74,14 +74,14 @@ const firstFrameTimeoutMs = boundedInteger(numberAfter("--first-frame-timeout-ms
 const durationSeconds = optionalPositive(numberAfter("--duration-seconds"), "duration-seconds");
 const requestedCount = boundedInteger(numberAfter("--requests") ?? (durationSeconds === undefined ? 100 : 100_000), 1, 1_000_000, "requests");
 const maxErrorRate = boundedNumber(numberAfter("--max-error-rate") ?? 0, 0, 1, "max-error-rate");
-// p50/p95/p99 first-visible-frame gates always have real defaults (never
-// skippable). min-throughput is mandatory on top of that (plan item
-// L15): a load run with no throughput bar to clear can silently regress
-// indefinitely without ever failing CI. A caller who genuinely wants an
-// exploratory, gateless run must say so explicitly via --allow-unbounded.
+// --max-p95-ms and --min-throughput are both mandatory (plan item L15,
+// docs/EVALUATION_PROTOCOL.md): a load run with no latency/throughput bar
+// to clear can silently regress indefinitely without ever failing CI. A
+// caller who genuinely wants an exploratory, gateless run must say so
+// explicitly via --allow-unbounded.
 const allowUnbounded = args.includes("--allow-unbounded");
-if (!allowUnbounded && valueAfter("--min-throughput") === undefined) {
-  process.stderr.write("runtime load gate requires --min-throughput <count> (see docs/EVALUATION_PROTOCOL.md); pass --allow-unbounded to explicitly opt out for an exploratory run\n");
+if (!allowUnbounded && (valueAfter("--max-p95-ms") === undefined || valueAfter("--min-throughput") === undefined)) {
+  process.stderr.write("runtime load gate requires --max-p95-ms <count> and --min-throughput <count> (see docs/EVALUATION_PROTOCOL.md); pass --allow-unbounded to explicitly opt out for an exploratory run\n");
   process.exit(2);
 }
 const maxP50Ms = optionalPositive(numberAfter("--max-p50-ms") ?? 500, "max-p50-ms");
