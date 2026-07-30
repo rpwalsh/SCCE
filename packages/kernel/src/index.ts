@@ -214,3 +214,7 @@ export * from "./canonical-replay.js";
 export * from "./patch-transaction.js";
 export * from "./workspace-plan-generator.js";
 export * from "./runtime-workspace-plan-context.js";
+export * from "./repo-syntax-graph.js";
+export * from "./issue-symbol-localization.js";
+export * from "./affected-test-prediction.js";
+export * from "./repo-cognition.js";
