@@ -3479,10 +3479,10 @@ function renderBoundary(
   joinProgram?: JoinProgramMixture
 ): string {
   const cleanBoundary = boundary.replace(/\u0000/gu, "").normalize("NFC");
-  return admissibleJoinedText(renderJoinedSurface(
+  return joinedOrSpaceFallback(
     cleanBoundary ? [left, cleanBoundary, right] : [left, right],
     joinProgram
-  ));
+  );
 }
 
 function renderLearnedSequence(
@@ -3494,7 +3494,7 @@ function renderLearnedSequence(
     .map(surface => surface.replace(/\u0000/gu, "").normalize("NFC"))
     .filter(Boolean);
   if (units.length <= 1 || !connector) {
-    return admissibleJoinedText(renderJoinedSurface(units, joinProgram));
+    return joinedOrSpaceFallback(units, joinProgram);
   }
   const connectorSurface = connector.replace(/\u0000/gu, "").normalize("NFC");
   const expanded: string[] = [];
@@ -3502,13 +3502,26 @@ function renderLearnedSequence(
     if (expanded.length) expanded.push(connectorSurface);
     expanded.push(unit);
   }
-  return admissibleJoinedText(renderJoinedSurface(expanded, joinProgram));
+  return joinedOrSpaceFallback(expanded, joinProgram);
 }
 
 function admissibleJoinedText(
   joined: ReturnType<typeof renderJoinedSurface>
 ): string {
   return joined.status === "unresolved" ? "" : joined.text;
+}
+
+// renderJoinedSurface honestly returns "" for an unresolved boundary when it
+// has no learned join-program mixture to pick a joiner with (the same
+// "unresolved -> no fabricated joiner" policy admissibleJoinedText applies
+// above). But every caller here (discourse-move boundary rendering, clause
+// segment sequencing) already deals in plain whitespace-delimited surface
+// tokens, so falling back to a literal space join when unresolved is not a
+// guess -- it's what the tokens already are. Mirrors the identical fix
+// already applied to continueBoundedProse in kneser-ney.ts.
+function joinedOrSpaceFallback(units: readonly string[], joinProgram?: JoinProgramMixture): string {
+  const joined = renderJoinedSurface(units, joinProgram);
+  return joined.status === "unresolved" ? units.filter(Boolean).join(" ") : joined.text;
 }
 
 function chooseDiscourseBoundary(state: LanguageMemoryRuntimeState, contextSymbols: readonly string[]): DiscourseBoundaryCandidate {
