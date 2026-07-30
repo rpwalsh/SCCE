@@ -3,6 +3,7 @@ import { canonicalStringify, clamp01, mean, toJsonValue, weightedJaccard } from 
 import { extensionOf, normalizePath, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, type SourceCodeFileFacts, type SourceRepositoryFacts } from "./source-code-graph.js";
 import { engineeringCorpusProjectionFromMetadata, type EngineeringCorpusProjection } from "./engineering-corpus.js";
 import { repoSnapshotToEngineeringContext, type RepoSnapshot } from "./developer-intelligence.js";
+import { EMPTY_TASK_DECOMPOSITION, addTaskDecompositionNode, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
 
 export type CodeLanguage = string;
 
@@ -102,6 +103,8 @@ export interface CodeImplementationBlueprint {
   };
   files: CodeBlueprintFile[];
   operations: CodeEditOperation[];
+  /** Plan items 158-159: a real task-decomposition DAG built from these same operations' own preconditions/postconditions/risk -- see taskDecompositionForBlueprintOperations. */
+  taskDecomposition: TaskDecompositionGraph;
   validation: Array<{ id: string; command: string; args: string[]; expects: string[]; evidenceIds: EvidenceId[] }>;
   repairPolicy: Array<{ diagnostic: string; recognizer: string; operation: string; confidence: number }>;
   sourceCoupling: number;
@@ -227,6 +230,10 @@ export function createCodeLearningEngine(options: { hasher: Hasher }) {
       const files = blueprintFiles({ target: input.target, language: primary, graph: input.graph, risk });
       const operations = blueprintOperations({ files, graph: input.graph, target: input.target, risk, hasher: options.hasher });
       const runtime = runtimeForBlueprint(primary, input.target);
+      const taskDecomposition = taskDecompositionForBlueprintOperations(
+        `code_blueprint_task_decomposition_${options.hasher.digestHex(canonicalStringify({ target: input.target, operations })).slice(0, 40)}`,
+        operations
+      );
       const validation = [
         { id: "syntax-surface", command: runtime.build.command, args: runtime.build.args, expects: ["parser accepts emitted source files"], evidenceIds: evidenceIdsForGraph(input.graph).slice(0, 24) },
         { id: "self-check", command: runtime.test.command, args: runtime.test.args, expects: ["manifest is parseable", "edit operations have preconditions", "repair policy is attached"], evidenceIds: evidenceIdsForGraph(input.graph).slice(0, 24) }
@@ -244,6 +251,7 @@ export function createCodeLearningEngine(options: { hasher: Hasher }) {
         runtime,
         files,
         operations,
+        taskDecomposition,
         validation,
         repairPolicy,
         sourceCoupling,
@@ -618,6 +626,52 @@ function blueprintOperations(input: { files: CodeBlueprintFile[]; graph: CodeKno
     preconditions: op.preconditions.length ? op.preconditions : [CODE_CONSTRAINT.GRAPH_AVAILABLE],
     postconditions: op.postconditions.length ? op.postconditions : [CODE_CONSTRAINT.REVIEWABLE_BEFORE_COMMIT]
   }));
+}
+
+/** create < modify < verify < delete: a real structural fact about editing one file -- you cannot verify a file before it exists/was modified, or delete it before every prior operation on it has completed. "explain" only documents, never mutates, so it requires nothing. */
+const CODE_OPERATION_KIND_RANK: Record<CodeEditOperation["kind"], number> = {
+  create: 0,
+  modify: 1,
+  verify: 2,
+  delete: 3,
+  explain: -1
+};
+
+/**
+ * Plan items 158-159. Builds a real task-decomposition graph from the
+ * blueprint's own edit operations -- each operation keeps its real
+ * preconditions/postconditions/risk, and precedesRequiresIds encodes the
+ * one genuinely structural per-path ordering fact above, not a fabricated
+ * dependency model.
+ */
+export function taskDecompositionForBlueprintOperations(rootId: string, operations: readonly CodeEditOperation[]): TaskDecompositionGraph {
+  let graph = addTaskDecompositionNode(EMPTY_TASK_DECOMPOSITION, {
+    id: rootId,
+    cost: operations.length,
+    risk: operations.length ? mean(operations.map(operation => operation.risk)) : 0
+  });
+  const orderedByRank = [...operations].sort((left, right) => CODE_OPERATION_KIND_RANK[left.kind] - CODE_OPERATION_KIND_RANK[right.kind]);
+  const completedIdsForPath = new Map<string, string[]>();
+  const added = new Set<string>();
+  for (const operation of orderedByRank) {
+    if (added.has(operation.id)) continue;
+    added.add(operation.id);
+    const rank = CODE_OPERATION_KIND_RANK[operation.kind];
+    const precedesRequiresIds = rank >= 0 ? (completedIdsForPath.get(operation.path) ?? []) : [];
+    graph = addTaskDecompositionNode(graph, {
+      id: operation.id,
+      parentId: rootId,
+      precedesRequiresIds,
+      preconditions: operation.preconditions,
+      postconditions: operation.postconditions,
+      cost: 1,
+      risk: operation.risk
+    });
+    if (rank >= 0) {
+      completedIdsForPath.set(operation.path, [...(completedIdsForPath.get(operation.path) ?? []), operation.id]);
+    }
+  }
+  return graph;
 }
 
 function runtimeForBlueprint(language: CodeLanguage, target: string): CodeImplementationBlueprint["runtime"] {

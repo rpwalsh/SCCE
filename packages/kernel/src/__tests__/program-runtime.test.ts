@@ -43,6 +43,17 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(program.build).toEqual({ command: "pnpm", args: ["run", "build"], cwd: "." });
     expect(program.test).toEqual({ command: "pnpm", args: ["run", "test"], cwd: "." });
 
+    // Plan items 158-159: this is the same createProgramGraphBuilder().build()
+    // call production-turn-runtime.ts uses live, so a real task-decomposition
+    // graph reaching here (not just code-learning.ts's own unit tests) proves
+    // the wiring actually reaches the runtime path, not just a library layer.
+    const taskDecomposition = required(program.taskDecomposition) as unknown as {
+      nodes: Record<string, { id: string; parentId?: string; precedesRequiresIds: string[] }>;
+    };
+    const operationNodes = Object.values(taskDecomposition.nodes).filter(node => node.parentId !== undefined);
+    expect(operationNodes.length).toBeGreaterThan(0);
+    expect(operationNodes.every(node => node.id in taskDecomposition.nodes)).toBe(true);
+
     const hydration = required(program.hydration);
     expect(validateProgramHydrationContract(hydration)).toEqual({ valid: true, diagnostics: [] });
     expect(hydration.program.entrypointPath).toBe("src/cli.ts");
