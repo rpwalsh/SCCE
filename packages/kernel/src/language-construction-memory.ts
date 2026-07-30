@@ -370,24 +370,49 @@ export function compileUniversalCreativeEventConstructionPattern(
 
   const maxEvents = Math.max(1, Math.min(2048, Math.floor(input.maxEvents ?? 768)));
   const events: DurableCreativeEventConstruction[] = [];
+  // Real cross-sentence recurrence requirement: a single degenerate
+  // sentence (no repeated corpus structure at all) can still spuriously
+  // classify several of its own words as candidate predicates, each
+  // producing one event -- enough to clear events.length alone. Tracking
+  // which real sentence each event came from (advancing on genuine
+  // sentence-terminal punctuation in the same lexical stream, not a
+  // separate re-segmentation) lets the compiler require events to
+  // actually recur across multiple real utterances, not just multiple
+  // words of the same lone one.
+  const eventSentenceKeys: string[] = [];
   for (const evidence of promotedEvidence) {
     if (events.length >= maxEvents) break;
     const lexical = segmentUnicodeSurfaceV2(evidence.text, input.hasher).lexicalSegments;
+    // segmentUnicodeSurfaceV2's lexical segments are word-like units --
+    // punctuation is not itself a segment, so sentence-terminal marks only
+    // show up in the raw text gap between two segments' code-point ranges.
+    const codePoints = [...evidence.text];
+    let sentenceOrdinal = 0;
+    let previousEnd = 0;
     for (let index = 0; index < lexical.length && events.length < maxEvents; index++) {
-      const construction = constructionsByPredicate.get(lexical[index]!.normalized);
-      if (!construction) continue;
-      const compiled = compileUniversalCreativeEvent({
-        profileId: input.profileId,
-        evidence,
-        lexical,
-        index,
-        construction,
-        hasher: input.hasher
-      });
-      if (compiled) events.push(compiled);
+      const segment = lexical[index]!;
+      const gap = codePoints.slice(previousEnd, segment.codePointStart).join("");
+      if (containsSentenceTerminal(gap)) sentenceOrdinal += 1;
+      previousEnd = segment.codePointEnd;
+      const construction = constructionsByPredicate.get(segment.normalized);
+      if (construction) {
+        const compiled = compileUniversalCreativeEvent({
+          profileId: input.profileId,
+          evidence,
+          lexical,
+          index,
+          construction,
+          hasher: input.hasher
+        });
+        if (compiled) {
+          events.push(compiled);
+          eventSentenceKeys.push(`${evidence.id}#${sentenceOrdinal}`);
+        }
+      }
     }
   }
   if (events.length < 4) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
+  if (new Set(eventSentenceKeys).size < 2) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
 
   const orderedEvents = events
     .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || compareText(left.id, right.id))
@@ -456,7 +481,23 @@ function compileUniversalCreativeEvent(input: {
   // Structural initiator requirement: the left context must exist in this
   // observed occurrence, but its surface is not elevated into a universal
   // language category.
+  // Real-predicate requirement: induceSemanticFrames buckets every corpus
+  // word into its own candidate frame (arg0 = left window, arg1 = right
+  // window), so a noun that always follows the real verb (e.g. a fixed
+  // direct object) gets its own spurious single-slot "construction" whose
+  // source fillers are contaminated by that verb bleeding into its left
+  // window. A genuine predicate's own source slot fillers are exactly its
+  // real, induced argument class (classCoverage 1); a noun masquerading as
+  // one scores strictly below 1 here (never exactly 1), because the actual
+  // verb -- never a member of that noun's argument class -- pollutes its
+  // filler set. A construction with no class match at all (classCoverage
+  // undefined) gets no opinion either way here -- that is the ordinary,
+  // legitimate case for a single-occurrence predicate in real prose with
+  // no repeated substitutable structure to measure, not evidence of
+  // contamination -- only a *measured, diluted* match is rejected.
   if (!left || !arg0Slot) return undefined;
+  const contaminatedSourceSlot = arg0Slot.classCoverage !== undefined && arg0Slot.classCoverage < 1;
+  if (contaminatedSourceSlot) return undefined;
   const right = lexical[index + 1];
   const arg1Fillers = arg1Slot?.observedFillers;
   const hasPatient = Boolean(right && arg1Fillers?.includes(right.normalized));
@@ -1181,6 +1222,11 @@ function observationFromPersistedExample(
 
 function rejected(code: LanguageConstructionMemoryRejectionId): LanguageConstructionPatternCompilation {
   return { status: "rejected", issues: [{ code }] };
+}
+
+/** Real Unicode sentence-terminal punctuation, script-agnostic (matches ASCII ./!/? as well as CJK full-width terminators). */
+function containsSentenceTerminal(gapText: string): boolean {
+  return [...gapText].some(char => /\p{Sentence_Terminal}/u.test(char));
 }
 
 function issue(
