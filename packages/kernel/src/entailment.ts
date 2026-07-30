@@ -204,7 +204,14 @@ function forceFromSemantic(semanticVerdict: string, structuralVerdict: string, p
   // itself is not independent corroboration, so it must not alone earn
   // "observed"/"proved" -- only once the separate structural entailment
   // also found something real (entailed or even just underdetermined, not
-  // "unknown") does the stronger claim become honest.
+  // "unknown") does the stronger claim become honest. This includes a
+  // verbatim whole-claim quotation from sourceExcerpts/exactTextProofGate
+  // (entailment.ts's textIdentityGate): matching text to itself is still
+  // not independent corroboration no matter how exact the match is, which
+  // is exactly why textIdentityGate is deliberately kept out of this
+  // decision entirely -- see mouth-runtime.test.ts's "uses the bounded
+  // exact-excerpt entailment route" for the explicit, intentional case
+  // this must keep resolving to "inferred", not "observed".
   // Not "underdetermined" too: verdictFrom's own underdetermined branch
   // fires from faithfulnessLCB alone, which can clear its 0.14 floor even
   // with an empty graph -- only a real "entailed" structural verdict is
