@@ -167,7 +167,6 @@ import {
 } from "./turn-requirements.js";
 import {
   EMPTY_WORKING_MEMORY,
-  abandonWorkingMemoryEntry,
   promoteWorkingMemoryEntry,
   putWorkingMemoryEntry
 } from "./working-memory.js";
@@ -1711,6 +1710,25 @@ export function createProductionTurnRuntime(options: {
           authorityAdmission: authorityCandidateField.audit
         }
       });
+      // Plan items 156-157's typed working memory, task-scoped to this
+      // turn's candidate selection: every generated candidate is recorded
+      // as a real hypothesis here, genuinely before the judge decides --
+      // not as a post-hoc receipt of a decision already made. The judge's
+      // eventual choice only changes promotionStatus afterward (see below).
+      const candidateSelectionTaskId = `task.turn.${episodeId}.candidate_selection`;
+      let candidateWorkingMemory = EMPTY_WORKING_MEMORY;
+      for (const candidate of authorityCandidateField.candidates) {
+        candidateWorkingMemory = putWorkingMemoryEntry(candidateWorkingMemory, {
+          id: `wm.${episodeId}.${candidate.id}`,
+          taskId: candidateSelectionTaskId,
+          type: "hypothesis",
+          createdBy: candidate.kind,
+          confidence: clamp01(candidate.scores.support),
+          payload: toJsonValue({ candidateId: candidate.id, kind: candidate.kind, force: candidate.force }),
+          createdAt: turnStarted,
+          expiresAt: turnStarted + 15 * 60 * 1000
+        });
+      }
       const judged = judge.select({
         field: authorityCandidateField,
         policy,
@@ -1719,6 +1737,32 @@ export function createProductionTurnRuntime(options: {
         deterministicReplay: deps.deterministicReplay,
         functionalGate
       });
+      // The judge's rejected candidates are NOT deleted from working
+      // memory: they stay as provisional, unpromoted entries (with their
+      // rejection reasons attached) so a later step within this same task
+      // can still revisit/backtrack to one of them. They only ever "stay
+      // out of canonical knowledge" by never being promoted -- not by
+      // being erased the moment they lose -- and they still expire like
+      // any other unpromoted entry (see expiresAt above). The winning
+      // candidate's existing entry is promoted with the judge's full audit
+      // as its derivation, so a later reader can see exactly why it won.
+      for (const rejected of judged.rejected) {
+        candidateWorkingMemory = putWorkingMemoryEntry(candidateWorkingMemory, {
+          id: `wm.${episodeId}.${rejected.candidate.id}`,
+          taskId: candidateSelectionTaskId,
+          type: "hypothesis",
+          createdBy: rejected.candidate.kind,
+          confidence: clamp01(rejected.candidate.scores.support),
+          payload: toJsonValue({ candidateId: rejected.candidate.id, kind: rejected.candidate.kind, force: rejected.candidate.force, rejectionReasons: rejected.reasons }),
+          createdAt: turnStarted,
+          expiresAt: turnStarted + 15 * 60 * 1000
+        });
+      }
+      candidateWorkingMemory = promoteWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${judged.selected.id}`, {
+        derivation: toJsonValue({ judge: judged.audit, candidateAudit: judged.selected.audit }),
+        promotedAt: turnStarted
+      });
+      events.push(await append(eventFactory.create({ episodeId, typeId: "WorkingMemoryScoped", payload: toJsonValue(candidateWorkingMemory) })));
       const selectedProposal = cognitiveProposalForCandidate(judged.selected, cognitiveProposals);
       // Kept separate from selectedProposal above: that variable must stay a
       // real CognitiveProposal (attachCognitiveProposal / Mouth claimBases /
@@ -1741,41 +1785,6 @@ export function createProductionTurnRuntime(options: {
         contradiction: judged.selected.scores.contradiction
       });
       events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateSelected", payload: { candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force, assistantForce: selectedAssistantForce.force, assistantForceTrace: selectedAssistantForce.audit, candidateAudit: judged.selected.audit, judge: judged.audit } })));
-      // Plan item 156-157's typed working memory, task-scoped to this
-      // turn's candidate selection: every generated candidate is a real
-      // hypothesis (an explored, competing way to answer), scored and
-      // recorded before the judge decides. The judge's rejected candidates
-      // are abandoned outright -- they disappear rather than lingering as
-      // low-confidence noise -- and the winning candidate is promoted with
-      // the judge's full audit as its derivation, so a later reader can see
-      // exactly why it won, not just that it did.
-      const candidateSelectionTaskId = `task.turn.${episodeId}.candidate_selection`;
-      let candidateWorkingMemory = putWorkingMemoryEntry(EMPTY_WORKING_MEMORY, {
-        id: `wm.${episodeId}.${judged.selected.id}`,
-        taskId: candidateSelectionTaskId,
-        type: "hypothesis",
-        createdBy: judged.selected.kind,
-        confidence: clamp01(judged.selected.scores.support),
-        payload: toJsonValue({ candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force }),
-        createdAt: turnStarted
-      });
-      for (const rejected of judged.rejected) {
-        candidateWorkingMemory = putWorkingMemoryEntry(candidateWorkingMemory, {
-          id: `wm.${episodeId}.${rejected.candidate.id}`,
-          taskId: candidateSelectionTaskId,
-          type: "hypothesis",
-          createdBy: rejected.candidate.kind,
-          confidence: clamp01(rejected.candidate.scores.support),
-          payload: toJsonValue({ candidateId: rejected.candidate.id, kind: rejected.candidate.kind, force: rejected.candidate.force, rejectionReasons: rejected.reasons }),
-          createdAt: turnStarted
-        });
-        candidateWorkingMemory = abandonWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${rejected.candidate.id}`);
-      }
-      candidateWorkingMemory = promoteWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${judged.selected.id}`, {
-        derivation: toJsonValue({ judge: judged.audit, candidateAudit: judged.selected.audit }),
-        promotedAt: turnStarted
-      });
-      events.push(await append(eventFactory.create({ episodeId, typeId: "WorkingMemoryScoped", payload: toJsonValue(candidateWorkingMemory) })));
       kernelTrace({
         stage: "planner.select",
         label: "kernel.turn",
@@ -2230,7 +2239,9 @@ export function createProductionTurnRuntime(options: {
         readiness: runtimeReadinessForEmission,
         discourseObject: discourseObjectTrace,
         mouthAudit: toJsonValue({ surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, uncertainty: spoken.uncertainty }),
-        selectedCandidateAudit: judged.selected.audit
+        selectedCandidateAudit: judged.selected.audit,
+        mouthSurfaceValid: spoken.surfaceValid,
+        mouthHardViolationIds: spoken.hardSurfaceViolationIds
       });
       const runtimeCoherenceTrace = toJsonValue(runtimeCoherence);
       // assistantForceAfter === "insufficient_support" alone no longer

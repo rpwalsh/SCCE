@@ -29,6 +29,8 @@ export function createJudge(options: JudgeOptions = {}) {
       requestedAuthority?: RequestedAuthority;
       requirementField?: TurnRequirementField;
       deterministicReplay?: boolean;
+      /** Off by default -- see selectForRequirementField's doc comment. Only an explicit shadow-evaluation/learning run should set this. */
+      explorationSamplingEnabled?: boolean;
       functionalGate?: FunctionalSelectionGate;
     }): JudgeDecision {
       if (!input.field.candidates.length) throw new Error("judge received no candidates");
@@ -100,6 +102,17 @@ function selectForRequirementField(input: {
   requestedAuthority?: RequestedAuthority;
   requirementField: TurnRequirementField;
   deterministicReplay?: boolean;
+  /**
+   * Off by default: real user-facing inference always serves the
+   * highest-scoring admissible candidate (argmax), never a knowingly
+   * worse-scored one. The Boltzmann distribution below is still computed
+   * and recorded in the audit trace (temperature, per-candidate
+   * probability) because it is real, useful diagnostic/calibration
+   * signal -- exploration sampling from it is reserved for an explicit
+   * shadow-evaluation/learning run that opts in here, not the default
+   * path every live turn takes.
+   */
+  explorationSamplingEnabled?: boolean;
   functionalGate?: FunctionalSelectionGate;
   random: () => number;
 }): JudgeDecision {
@@ -136,9 +149,15 @@ function selectForRequirementField(input: {
   }));
   const ranked = probabilityRows
     .sort((left, right) => right.score - left.score || right.probability - left.probability || left.candidate.id.localeCompare(right.candidate.id));
-  const sampled = input.deterministicReplay === true
-    ? { row: ranked[0]!, draw: null }
-    : sampleBoltzmann(probabilityRows.filter(row => row.hardFailures.length === 0), input.random);
+  // Real user-facing inference always gets the highest-scoring admissible
+  // candidate. Sampling the Boltzmann distribution instead -- knowingly
+  // serving a candidate the judge scored worse -- is exploration, and
+  // exploration belongs in an explicit shadow-evaluation/learning run that
+  // opts in, not the default every live turn takes.
+  const explorationSampling = input.explorationSamplingEnabled === true && input.deterministicReplay !== true;
+  const sampled = explorationSampling
+    ? sampleBoltzmann(probabilityRows.filter(row => row.hardFailures.length === 0), input.random)
+    : { row: ranked[0]!, draw: null };
   const selected = sampled.row;
   return {
     selected: selected.candidate,
@@ -148,7 +167,7 @@ function selectForRequirementField(input: {
       schema: "scce.requirement_aware_judge.v1",
       coefficientModel: "judge.requirement.bootstrap.2026-07-12.v1",
       equation: "Q(a|r)=softmax(Wr+b)^T q_positive(a)-rho(r)^T q_negative(a)",
-      selection: input.deterministicReplay === true ? "deterministic_max" : "boltzmann_sample",
+      selection: explorationSampling ? "boltzmann_sample" : "deterministic_max",
       randomDraw: sampled.draw,
       selected: selected.candidate.id,
       requestedAuthority: input.requestedAuthority ?? null,
