@@ -93,6 +93,7 @@ import { planCognitiveProposals, type CognitiveActionPlan, type CognitiveProposa
 import { planInventions } from "./invention-planner.js";
 import { createTranslationEngine, type TranslationPlan } from "./translation.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
+import type { FunctionalSelectionGate } from "./functional-cognition.js";
 import { createJudge } from "./judge.js";
 import { DEFAULT_POLICY } from "./safety.js";
 import { createCorrectionMemory } from "./correction-memory.js";
@@ -960,6 +961,10 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     actionPlans,
     maxProposals: 8
   });
+  // Harness never runs functionalCognitionEngine, so without this every
+  // action-preview/program-proposal/workspace-proposal candidate gets
+  // hard-rejected as unauthorized before the judge sees it.
+  const functionalGate: FunctionalSelectionGate = { fc: true, efc: true, gov: true, selectedGoalId: "source-only.functional-goal" };
   const candidateField = createCandidateEngine().generate({
     requestText: input.input.text,
     entailment: input.workspaceAnswer.entailment,
@@ -975,7 +980,8 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     requirementField: input.requirementField,
     operatorActivations: input.operatorActivations,
     cognitiveProposals: proposals,
-    dialogueState: toJsonValue(input.workspaceAnswer.dialogueState)
+    dialogueState: toJsonValue(input.workspaceAnswer.dialogueState),
+    functionalGate
   });
   const admitted = admitCandidatesForAuthority(candidateField, requestedAuthority);
   const decision = admitted.candidates.length > 0
@@ -984,7 +990,8 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
         policy: DEFAULT_POLICY,
         requestedAuthority,
         requirementField: input.requirementField,
-        deterministicReplay: true
+        deterministicReplay: true,
+        functionalGate
       })
     : undefined;
   const selectedCandidate = decision?.selected;
