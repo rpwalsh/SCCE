@@ -1,6 +1,7 @@
 import type { GraphEdge, GraphNode, GraphSnapshot, Hasher, JsonValue, NodeId } from "./types.js";
 import { clamp01, createHasher, mean, normalizeVector, toJsonValue, weightedJaccard } from "./primitives.js";
 import { isKnownGraphTemporalScope } from "./graph-temporal.js";
+import { extendCorrelatedConfidence, midpointConfidence, type UncertaintyInterval } from "./correlated-uncertainty.js";
 
 export interface CausalVariable {
   nodeId: NodeId;
@@ -47,7 +48,16 @@ export interface CounterfactualPath {
   nodes: NodeId[];
   mechanisms: string[];
   product: number;
+  /** The unbiased midpoint of alphaInterval -- kept for callers that need one scalar, no longer a naive independence-assumed product of per-hop confidences. */
   alpha: number;
+  /**
+   * The honest Frechet-Hoeffding bound on this path's chained confidence
+   * (plan items 167-168): each hop's mechanism confidence can plausibly
+   * share evidence with the accumulated chain rather than being
+   * independent of it, so the true joint confidence is this whole range,
+   * not the single point naive multiplication would report.
+   */
+  alphaInterval: UncertaintyInterval;
   lag: number;
   support: number;
 }
@@ -251,8 +261,9 @@ function explainPaths(model: CounterfactualModel, interventions: readonly Counte
   }
   const paths: CounterfactualPath[] = [];
   for (const intervention of interventions) {
-    const queue: Array<{ nodes: NodeId[]; mechanisms: CausalMechanism[]; product: number; alpha: number; lag: number }> = [
-      { nodes: [intervention.nodeId], mechanisms: [], product: intervention.confidence, alpha: intervention.confidence, lag: 0 }
+    const seedConfidence = clamp01(intervention.confidence);
+    const queue: Array<{ nodes: NodeId[]; mechanisms: CausalMechanism[]; product: number; alphaInterval: UncertaintyInterval; lag: number }> = [
+      { nodes: [intervention.nodeId], mechanisms: [], product: intervention.confidence, alphaInterval: { lower: seedConfidence, upper: seedConfidence }, lag: 0 }
     ];
     const seen = new Set<string>();
     while (queue.length && paths.length < maxPaths) {
@@ -268,30 +279,38 @@ function explainPaths(model: CounterfactualModel, interventions: readonly Counte
         if (seen.has(key)) continue;
         seen.add(key);
         const product = current.product * mechanism.weight * mechanism.sign;
-        const alpha = current.alpha * mechanism.alpha;
-        if (Math.abs(product * alpha) < 0.002) continue;
+        // Each hop's mechanism confidence can plausibly share evidence with
+        // the accumulated chain (both may derive from overlapping evidence
+        // spans) -- chaining via Frechet-Hoeffding bounds instead of naive
+        // multiplication avoids silently assuming independence (plan items
+        // 167-168).
+        const alphaInterval = extendCorrelatedConfidence(current.alphaInterval, mechanism.alpha);
+        const alphaEstimate = midpointConfidence(alphaInterval);
+        if (Math.abs(product * alphaEstimate) < 0.002) continue;
         queue.push({
           nodes: [...current.nodes, mechanism.target],
           mechanisms: [...current.mechanisms, mechanism],
           product,
-          alpha,
+          alphaInterval,
           lag: current.lag + mechanism.lag
         });
       }
-      queue.sort((a, b) => Math.abs(b.product * b.alpha) - Math.abs(a.product * a.alpha));
+      queue.sort((a, b) => Math.abs(b.product * midpointConfidence(b.alphaInterval)) - Math.abs(a.product * midpointConfidence(a.alphaInterval)));
     }
   }
   return paths.sort((a, b) => b.support - a.support || Math.abs(b.product) - Math.abs(a.product)).slice(0, maxPaths);
 }
 
-function pathFrom(input: { nodes: NodeId[]; mechanisms: CausalMechanism[]; product: number; alpha: number; lag: number }, hasher: Hasher): CounterfactualPath {
-  const support = clamp01(Math.abs(input.product) * input.alpha / Math.max(1, 1 + input.lag * 0.1));
+function pathFrom(input: { nodes: NodeId[]; mechanisms: CausalMechanism[]; product: number; alphaInterval: UncertaintyInterval; lag: number }, hasher: Hasher): CounterfactualPath {
+  const alpha = midpointConfidence(input.alphaInterval);
+  const support = clamp01(Math.abs(input.product) * alpha / Math.max(1, 1 + input.lag * 0.1));
   return {
     id: `cf_path_${hasher.digestHex(`${input.nodes.map(String).join(">")}:${input.mechanisms.map(m => m.id).join(">")}`).slice(0, 24)}`,
     nodes: input.nodes,
     mechanisms: input.mechanisms.map(m => m.id),
     product: input.product,
-    alpha: input.alpha,
+    alpha,
+    alphaInterval: input.alphaInterval,
     lag: input.lag,
     support
   };
