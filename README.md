@@ -140,7 +140,6 @@ docs                    architecture, guides, and implementation records
 - [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
 - [`docs/README.md`](docs/README.md) — complete documentation index
 - [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
-- [`AGENTS.md`](AGENTS.md) — instructions for coding agents working in this repository
 
 ## License
 

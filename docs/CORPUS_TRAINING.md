@@ -87,7 +87,7 @@ The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded 
 
 ## Corpus compilation boundary
 
-Corpus material is compiled into PostgreSQL-backed evidence and language memory. The n-gram compiler and primary language-induction engine consume the canonical surface lattice and record its identity in compilation audit data. Remaining production language consumers are being migrated; see `IMPLEMENTATION_STATUS.md`.
+Corpus material is compiled into PostgreSQL-backed evidence and language memory. The n-gram compiler and primary language-induction engine consume the canonical surface lattice and record its identity in compilation audit data. Remaining production language consumers are still being migrated onto it.
 
 The primary induction engine performs a two-pass surface compile:
 
