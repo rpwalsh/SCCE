@@ -976,6 +976,8 @@ export interface TurnResult {
   judge?: JsonValue;
   /** Plan items 156-157: this turn's candidate hypotheses, task-scoped working memory -- the judge's rejected candidates abandoned, the selected one promoted with its full derivation. */
   workingMemory?: JsonValue;
+  /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
+  episodeConsolidation?: JsonValue;
   actionGraph?: JsonValue;
   selfState?: FunctionalSelfState;
   selfDistillation?: JsonValue;

@@ -34,6 +34,7 @@ import {
   proposeSourceExactEvidenceAnswer,
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
+import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "../episodic-memory-consolidation.js";
 
 const proofEngineCalls = vi.hoisted(() => ({
   ablatedSupport: 0,
@@ -207,6 +208,16 @@ describe("kernel local evidence source anchoring", () => {
     expect(entries[0]?.promotionStatus).toBe("promoted");
     expect(entries[0]?.derivation).toBeTruthy();
     expect(entries[0]?.taskId).toBe(`task.turn.${result.episodeId}.candidate_selection`);
+    // Plan item 211: this turn's own event history is consolidated into a
+    // bounded summary, with every referenced event id actually recoverable
+    // from the turn's real event list -- nothing fabricated.
+    const episodeConsolidation = result.episodeConsolidation as unknown as ConsolidatedEpisode;
+    expect(episodeConsolidation.episodeId).toBe(result.episodeId);
+    // One less than result.events.length: the "EpisodeConsolidated" event
+    // recording this very summary is appended immediately afterward, so it
+    // cannot itself be one of the events the summary was built from.
+    expect(episodeConsolidation.eventCount).toBe(result.events.length - 1);
+    expect(verifyConsolidatedEpisodeRecoverable(episodeConsolidation, result.events)).toBe(true);
   });
 
   it("preserves both requested answer parts from one exact-title evidence span", async () => {
