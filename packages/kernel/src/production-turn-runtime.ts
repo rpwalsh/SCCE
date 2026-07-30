@@ -128,6 +128,8 @@ import {
   fastRuntimeBudgetRequested,
   metadataWithRuntimeReplanMotion,
   previousDialogueStateFromMetadata,
+  priorRejectedHypothesesFromCandidates,
+  reviveMatchingPriorRejectedHypothesis,
   runtimeCandidateReplanTrigger,
   runtimeMotionCandidateField,
   runtimeReplanMotionFromMetadata,
@@ -1758,10 +1760,32 @@ export function createProductionTurnRuntime(options: {
           expiresAt: turnStarted + 15 * 60 * 1000
         });
       }
+      // If this attempt is a replan continuation, check whether the
+      // winning candidate is a real revival of a hypothesis the *prior*
+      // attempt's judge rejected (same kind, same normalized-answer-text
+      // hash) -- proof that the carried-forward working-memory record
+      // actually informed this decision, not just that regeneration
+      // coincidentally produced similar text. This is genuinely
+      // across-attempt memory use, not telemetry: the prior rejection
+      // reasons are attached to the promotion's own derivation.
+      const revivedPriorHypothesis = inheritedRuntimeMotion
+        ? reviveMatchingPriorRejectedHypothesis(judged.selected, inheritedRuntimeMotion.priorRejectedHypotheses, hasher)
+        : undefined;
       candidateWorkingMemory = promoteWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${judged.selected.id}`, {
-        derivation: toJsonValue({ judge: judged.audit, candidateAudit: judged.selected.audit }),
+        derivation: toJsonValue({
+          judge: judged.audit,
+          candidateAudit: judged.selected.audit,
+          ...(revivedPriorHypothesis ? { revivedFromPriorAttempt: true, priorRejectionReasons: revivedPriorHypothesis.rejectionReasons } : {})
+        }),
         promotedAt: turnStarted
       });
+      if (revivedPriorHypothesis) {
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "WorkingMemoryHypothesisRevived",
+          payload: toJsonValue({ candidateId: judged.selected.id, kind: judged.selected.kind, priorRejectionReasons: revivedPriorHypothesis.rejectionReasons })
+        })));
+      }
       events.push(await append(eventFactory.create({ episodeId, typeId: "WorkingMemoryScoped", payload: toJsonValue(candidateWorkingMemory) })));
       const selectedProposal = cognitiveProposalForCandidate(judged.selected, cognitiveProposals);
       // Kept separate from selectedProposal above: that variable must stay a
@@ -2024,7 +2048,8 @@ export function createProductionTurnRuntime(options: {
             episodeId,
             requestedAuthority,
             trigger: "coherence_support_failure",
-            events
+            events,
+            priorRejectedHypotheses: priorRejectedHypothesesFromCandidates(judged.rejected, hasher)
           });
           runtimeState.lastField = undefined;
           return turn({
@@ -2280,7 +2305,8 @@ export function createProductionTurnRuntime(options: {
             episodeId,
             requestedAuthority,
             trigger: "coherence_support_failure",
-            events
+            events,
+            priorRejectedHypotheses: priorRejectedHypothesesFromCandidates(judged.rejected, hasher)
           });
           runtimeState.lastField = undefined;
           return turn({

@@ -35,6 +35,8 @@ import {
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
 import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "../episodic-memory-consolidation.js";
+import { metadataWithRuntimeReplanMotion, priorRejectedHypothesesFromCandidates, type RuntimeReplanMotion } from "../runtime-motion.js";
+import type { CandidateSurface } from "../candidate-contract.js";
 
 const proofEngineCalls = vi.hoisted(() => ({
   ablatedSupport: 0,
@@ -224,6 +226,79 @@ describe("kernel local evidence source anchoring", () => {
     // cannot itself be one of the events the summary was built from.
     expect(episodeConsolidation.eventCount).toBe(result.events.length - 1);
     expect(verifyConsolidatedEpisodeRecoverable(episodeConsolidation, result.events)).toBe(true);
+  });
+
+  it("recognizes and records a revived hypothesis when replan metadata names a matching prior rejection", async () => {
+    // Real litmus test for working memory being consumed, not just recorded:
+    // run the same deterministic turn twice. The second run's metadata
+    // claims (as a real replan's carried-forward record would) that a
+    // candidate with this exact kind+answer fingerprint was rejected by a
+    // prior attempt. Since the same evidence/clock/deterministic judge
+    // always selects the same candidate, the second run's winner genuinely
+    // matches that fingerprint -- proving the consumption path (not just
+    // the construction path already proven above) is real: a later turn
+    // that inherits this record recognizes and honestly labels the match,
+    // rather than silently ignoring the carried-forward memory.
+    const clock = createClock({ fixedTime: 9_100, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-revival",
+      sourceVersionId: "source:ada-lovelace-revival:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+    const requestText = "Who was Ada Lovelace?";
+
+    const first = await kernel.turn({ text: requestText });
+    const firstSelected = first.selectedCandidate as unknown as { kind: CandidateSurface["kind"]; answer: string };
+    expect(firstSelected.answer).toBeTruthy();
+
+    const priorRejectedHypotheses = priorRejectedHypothesesFromCandidates(
+      [{ candidate: firstSelected, reasons: ["fixture_prior_rejection"] }],
+      hasher
+    );
+    const runtimeMotion: RuntimeReplanMotion = {
+      schema: "scce.runtime_motion.learn_hydrate_replan.v1",
+      motionId: "motion.learn_hydrate_replan",
+      guardId: "guard:fixture-revival",
+      attempt: 1,
+      trigger: "coherence_support_failure",
+      requestedAuthority: "factual",
+      parentEpisodeId: "episode:fixture-revival",
+      queryHash: hasher.digestHex(requestText),
+      connectorConfigured: false,
+      status: "unavailable",
+      searchResultCount: 0,
+      fetchedSourceCount: 0,
+      ingestedSourceCount: 0,
+      ingestedEvidenceCount: 0,
+      sourceUris: [],
+      sourceSurfaces: [],
+      failures: [],
+      priorRejectedHypotheses
+    };
+
+    const second = await kernel.turn({ text: requestText, metadata: metadataWithRuntimeReplanMotion(undefined, runtimeMotion) });
+
+    expect(second.answer).toBe(first.answer);
+    const secondWorkingMemory = second.workingMemory as { entries: Record<string, { promotionStatus: string; derivation?: JsonValue }> };
+    const promotedEntry = Object.values(secondWorkingMemory.entries).find(entry => entry.promotionStatus === "promoted");
+    expect(promotedEntry).toBeTruthy();
+    const derivation = promotedEntry!.derivation as unknown as { revivedFromPriorAttempt?: boolean; priorRejectionReasons?: string[] };
+    expect(derivation.revivedFromPriorAttempt).toBe(true);
+    expect(derivation.priorRejectionReasons).toEqual(["fixture_prior_rejection"]);
+    expect(second.events.some(event => event.typeId === "WorkingMemoryHypothesisRevived")).toBe(true);
   });
 
   it("preserves both requested answer parts from one exact-title evidence span", async () => {

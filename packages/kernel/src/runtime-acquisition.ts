@@ -4,7 +4,7 @@ import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { canonicalStringify, createHasher, redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
 import { POLICY_OBJECTIVE_SCHEMA_ID, policyFingerprint, policyObjectiveVector, type PolicyEvaluation } from "./policy-evolution.js";
 import { type RuntimeDeadlineDecision } from "./runtime-deadline.js";
-import type { RuntimeReplanMotion, RuntimeReplanTrigger } from "./runtime-motion.js";
+import type { PriorRejectedHypothesis, RuntimeReplanMotion, RuntimeReplanTrigger } from "./runtime-motion.js";
 import {
   runtimeMotionFailure
 } from "./runtime-motion.js";
@@ -202,6 +202,7 @@ export function createRuntimeAcquisition(options: {
     requestedAuthority: RequestedAuthority;
     trigger: RuntimeReplanTrigger;
     events: ScceEvent[];
+    priorRejectedHypotheses?: PriorRejectedHypothesis[];
   }): Promise<RuntimeReplanMotion> {
     const queryHash = hasher.digestHex(input.ownerInput.text);
     const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}`).slice(0, 32)}`;
@@ -336,7 +337,8 @@ export function createRuntimeAcquisition(options: {
       ingestedEvidenceCount,
       sourceUris: uniqueKernelStrings(sourceUris).slice(0, 3),
       sourceSurfaces: uniqueKernelStrings(sourceSurfaces).slice(0, 6),
-      failures: motionFailures.slice(0, 6)
+      failures: motionFailures.slice(0, 6),
+      priorRejectedHypotheses: input.priorRejectedHypotheses ?? []
     };
     input.events.push(await append(eventFactory.create({
       episodeId: input.episodeId,
@@ -385,7 +387,8 @@ export function createRuntimeAcquisition(options: {
       ingestedEvidenceCount: 0,
       sourceUris: [],
       sourceSurfaces: [],
-      failures: [reason]
+      failures: [reason],
+      priorRejectedHypotheses: []
     };
   }
 
