@@ -35,6 +35,7 @@ import {
   type RelationHypothesisModel
 } from "./relation-hypothesis.js";
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
+import { induceEditProgram } from "./universal-edit-program.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -652,7 +653,99 @@ function induceMorphology(symbols: readonly string[], hasher: Hasher): Morpholog
       examples: [compound]
     });
   }
+  rules.push(...induceInfixAndReduplicationMorphology(vocabulary, symbolCounts, hasher));
   return rules.sort((a, b) => b.productivity - a.productivity || b.stemCount - a.stemCount || a.pattern.localeCompare(b.pattern));
+}
+
+/**
+ * Plan items 98-99 integration: prefix/suffix/compound above are found by
+ * literal substring bucketing alone, which can never produce "infix" or
+ * "reduplication" -- both require comparing a real (stem, derived-word)
+ * pair, not splitting one word in isolation. This buckets same-script
+ * candidate pairs by length (+1..+4 graphemes, sharing first/last
+ * grapheme as a cheap prefilter) and classifies each with the real
+ * induced edit program: a single insert/substitute anchored strictly
+ * inside the stem is an infix; a "repeat" op is reduplication.
+ */
+function induceInfixAndReduplicationMorphology(
+  vocabulary: readonly string[],
+  symbolCounts: Map<string, number>,
+  hasher: Hasher
+): MorphologicalRule[] {
+  const MAX_COMPARISONS = 20000;
+  const byLength = new Map<number, string[]>();
+  for (const word of vocabulary) {
+    const bucket = byLength.get(word.length) ?? [];
+    bucket.push(word);
+    byLength.set(word.length, bucket);
+  }
+  const infixCandidates = new Map<string, Map<string, string>>();
+  const reduplicationCandidates = new Map<string, Map<string, string>>();
+  let comparisons = 0;
+  comparisonLoop:
+  for (const [stemLength, stems] of byLength) {
+    // Full reduplication doubles the stem's length (delta === stemLength),
+    // which can exceed the small deltas that cover prefix/suffix/infix --
+    // both are tried, not just the small range.
+    const deltas = [...new Set([1, 2, 3, 4, stemLength])].filter(delta => delta > 0);
+    for (const delta of deltas) {
+      const derivedWords = byLength.get(stemLength + delta);
+      if (!derivedWords?.length) continue;
+      for (const stem of stems) {
+        for (const derived of derivedWords) {
+          if (comparisons >= MAX_COMPARISONS) break comparisonLoop;
+          if (derived[0] !== stem[0] || derived[derived.length - 1] !== stem[stem.length - 1]) continue;
+          comparisons++;
+          const changeOps = induceEditProgram(stem, derived).filter(op => op.kind !== "copy" && op.kind !== "null");
+          if (changeOps.length !== 1) continue;
+          const op = changeOps[0]!;
+          if (op.kind === "repeat" && op.text) {
+            // Keyed by shape (full vs. partial repeat of the stem), not the
+            // literal repeated text: reduplication is productive across
+            // different lexical stems that each duplicate their *own*
+            // content, unlike prefix/suffix/infix where the same fixed
+            // affix text recurs across stems.
+            const key = op.text.length >= stem.length ? "full" : "partial";
+            const bucket = reduplicationCandidates.get(key) ?? new Map<string, string>();
+            bucket.set(stem, derived);
+            reduplicationCandidates.set(key, bucket);
+          } else if ((op.kind === "insert" || op.kind === "substitute") && op.text && op.sourceAnchor > 0 && op.sourceAnchor < stem.length) {
+            const bucket = infixCandidates.get(op.text) ?? new Map<string, string>();
+            bucket.set(stem, derived);
+            infixCandidates.set(op.text, bucket);
+          }
+        }
+      }
+    }
+  }
+  const rules: MorphologicalRule[] = [];
+  for (const [infix, stemToExample] of infixCandidates) {
+    if (stemToExample.size < 3) continue;
+    const examples = [...stemToExample.values()].slice(0, 16);
+    rules.push({
+      id: `morph_${hasher.digestHex(`infix:${infix}:${examples.join("|")}`).slice(0, 24)}`,
+      kind: "infix",
+      pattern: `STEM1+${infix}+STEM2`,
+      stemCount: stemToExample.size,
+      symbolCount: examples.reduce((sum, symbol) => sum + (symbolCounts.get(symbol) ?? 0), 0),
+      productivity: clamp01(Math.log1p(stemToExample.size) / 8),
+      examples
+    });
+  }
+  for (const [shape, stemToExample] of reduplicationCandidates) {
+    if (stemToExample.size < 3) continue;
+    const examples = [...stemToExample.values()].slice(0, 16);
+    rules.push({
+      id: `morph_${hasher.digestHex(`reduplication:${shape}:${examples.join("|")}`).slice(0, 24)}`,
+      kind: "reduplication",
+      pattern: `STEM+STEM(${shape})`,
+      stemCount: stemToExample.size,
+      symbolCount: examples.reduce((sum, symbol) => sum + (symbolCounts.get(symbol) ?? 0), 0),
+      productivity: clamp01(Math.log1p(stemToExample.size) / 8),
+      examples
+    });
+  }
+  return rules;
 }
 
 const MORPHOLOGY_GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
