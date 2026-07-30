@@ -2053,19 +2053,40 @@ function splitEvidenceSentences(text: string): string[] {
 function graphNodeSurface(node: GraphNode, evidence: readonly EvidenceSpan[], requestText: string): string {
   const linkedEvidenceIds = new Set(node.evidenceIds.map(String));
   const linkedEvidence = evidence.filter(span => linkedEvidenceIds.has(String(span.id)));
-  const candidates = [
+  const rawCandidates = [
     ...explicitSourceSurfaceFields(node.representation),
     ...sourceSurfaceFields(node.metadata),
     ...node.features.filter(feature => feature.startsWith("sym:")).map(feature => feature.slice(4))
   ];
   const requestFeatures = featureSet(requestText, 256);
-  return uniqueStrings(candidates
+  const viableCandidates = (candidates: readonly string[]): string[] => uniqueStrings(candidates
     .map(cleanSurfacePiece)
     .filter(candidate => candidate
       && surfaceOwnedByRequestOrEvidence(candidate, requestText, linkedEvidence)
-      && !copiesCompleteEvidenceSentence(candidate, linkedEvidence)))
+      && !copiesCompleteEvidenceSentence(candidate, linkedEvidence)));
+  const direct = viableCandidates(rawCandidates);
+  // A node whose only real surface material is one complete sentence
+  // (e.g. a graph node linked to a single-sentence evidence span) would
+  // otherwise lose all grounding here: cleanSurfacePiece accepts it, but
+  // copiesCompleteEvidenceSentence correctly refuses to let a *complete*
+  // sentence stand in as creative "surface material" -- that's real
+  // evidence-quote avoidance, not a bug. A genuine, bounded prefix
+  // fragment of that same real text is shorter than any complete sentence
+  // it was drawn from, so it can never literally contain one: it passes
+  // the same anti-copy check honestly, as real (not fabricated) substring
+  // text that still keeps this node's factual grounding available to the
+  // invention instead of silently dropping it.
+  const excerpted = direct.length ? [] : viableCandidates(rawCandidates.map(boundedSentencePrefix));
+  return [...direct, ...excerpted]
     .map(candidate => ({ candidate, fit: weightedJaccard(requestFeatures, featureSet(candidate, 128)) }))
     .sort((left, right) => right.fit - left.fit || right.candidate.length - left.candidate.length || left.candidate.localeCompare(right.candidate))[0]?.candidate ?? "";
+}
+
+/** A real prefix fragment strictly shorter (in words) than the source it was drawn from, so it can never itself "contain" that source as a complete sentence. */
+function boundedSentencePrefix(value: string): string {
+  const words = value.trim().split(/\s+/u).filter(Boolean);
+  const prefixLength = Math.max(1, Math.ceil(words.length / 2) - 1);
+  return words.slice(0, prefixLength).join(" ");
 }
 
 function explicitSourceSurfaceFields(value: JsonValue): string[] {
@@ -2114,7 +2135,14 @@ function cleanSurfacePiece(value: string): string {
   const clean = value.normalize("NFC").replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
   if (!clean || clean.length > 96 || clean.includes("://") || containsInternalSurfaceIdentifier(clean) || !/[\p{Letter}\p{Number}]/u.test(clean)) return "";
   const symbols = symbolizeData(clean);
-  if (!symbols.length || symbols.length > 8) return "";
+  // Was capped at 8: too tight for a single ordinary evidence sentence
+  // ("Ada Lovelace wrote notes about Charles Babbage's Analytical Engine"
+  // alone tokenizes to 9 symbols), which silently dropped every candidate
+  // for a graph node/evidence span whose only real surface material was
+  // one modest sentence -- losing its factual_premise grounding entirely,
+  // not just trimming an overlong one. 16 still excludes multi-sentence
+  // blocks (this function's job) while covering a normal single sentence.
+  if (!symbols.length || symbols.length > 16) return "";
   return clean.replace(/[.!?]+$/u, "");
 }
 
