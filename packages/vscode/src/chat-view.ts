@@ -92,7 +92,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           { text, sessionId: this.sessionId() },
           (frame: TurnStreamFrame) => {
             if (frame.type !== "progress") return;
-            if (typeof frame.answer === "string") {
+            // Only worth showing early if there's real content -- an empty
+            // or non-lettered preview would flash a blank bubble before the
+            // final "result" frame's answerSurface() fallback text replaces
+            // it, which is more confusing than just staying on "Thinking".
+            if (typeof frame.answer === "string" && /[\p{L}\p{N}]/u.test(frame.answer)) {
               // The kernel fires this once the turn's answer text is settled --
               // safe to show now instead of waiting for the whole turn (persistence,
               // learning-loop planning, event writes) to finish; the later "result"
