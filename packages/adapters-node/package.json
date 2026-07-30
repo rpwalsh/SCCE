@@ -10,7 +10,9 @@
     "@scce/kernel": "workspace:*",
     "mammoth": "^1.8.0",
     "pg": "^8.13.1",
+    "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.8.3",
+    "web-tree-sitter": "^0.24.7",
     "xlsx": "file:../../vendor/xlsx-0.20.3.tgz"
   },
   "scripts": {
