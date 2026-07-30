@@ -6,7 +6,7 @@ import { resolveTraceFile, TraceContainmentError } from '../lib/tracePath.js';
 
 function makeRepoWithTraceDir(): { root: string; traceDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'scce-mcp-trace-repo-'));
-  writeFileSync(join(root, 'AGENTS.md'), '# marker');
+  writeFileSync(join(root, 'README.md'), '# marker');
   writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
   mkdirSync(join(root, 'packages', 'kernel', 'src'), { recursive: true });
   writeFileSync(join(root, 'packages', 'kernel', 'src', 'kernel.ts'), '// marker');

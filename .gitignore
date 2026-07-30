@@ -72,6 +72,49 @@ scce.*.local.json
 Thumbs.db
 Desktop.ini
 
+# Internal/AI-facing planning, status-tracking, and narrow subsystem
+# math-contract docs -- kept locally, not published to the public repo.
+# Public docs/ stays limited to broad-audience reference material (see
+# docs/README.md's index for the current public set).
+/AGENTS.md
+docs/ALIGNMENT_ALTERNATIVES.md
+docs/ALIGNMENT_CALIBRATION.md
+docs/ALIGNMENT_HELDOUT_EVALUATION.md
+docs/ALIGNMENT_PROMOTION.md
+docs/BOUNDARY_LEARNING.md
+docs/BRAIN_COMPILER_AND_STORAGE.md
+docs/BRAIN_TO_MOUTH_PIPELINE.md
+docs/CANONICAL_EVIDENCE_IDENTITY.md
+docs/COARSE_TO_FINE_ALIGNMENT.md
+docs/CROSS_DOCUMENT_ALIGNMENT.md
+docs/ENERGY_AND_PERFORMANCE.md
+docs/EVALUATION_PROTOCOL.md
+docs/FLUENT_COGNITIVE_ENGINE_PLAN.md
+docs/GRAPH_CORRELATED_VARIABILITY.md
+docs/IMPLEMENTATION_HANDOFF.md
+docs/IMPLEMENTATION_STATUS.md
+docs/MATHEMATICAL_CONTRACTS.md
+docs/MULTILINGUAL_CONTRACT.md
+docs/OPTIONAL_NULL_REALIZATION.md
+docs/PAIRED_ANTI_UNIFICATION.md
+docs/POPULATION_ORDERING.md
+docs/PRODUCTION_COMPLETION_PLAN_250.md
+docs/REPO_COMPLETION_MAP.md
+docs/REVERSIBLE_CONSTRUCTIONS.md
+docs/SCCE_DEBUGGING.md
+docs/SCCE_DEV_MCP.md
+docs/SCORING_AND_CALIBRATION.md
+docs/SEGMENTATION_FORESTS.md
+docs/SEGMENTATION_POPULATIONS.md
+docs/SEMANTIC_CANDIDATE_CHANNELS.md
+docs/SERIOUS_VERSION_MATH_APPENDIX.md
+docs/SOURCE_EXACT_JOIN_PROGRAMS.md
+docs/SPARSE_ALIGNMENT_CANDIDATES.md
+docs/SPARSE_FUSED_TRANSPORT.md
+docs/TRANSPORT_EVIDENCE_CONSERVATION.md
+docs/TYPED_NULL_ALIGNMENT.md
+docs/UNIVERSAL_LANGUAGE_INDUCTION.md
+
 # Generated reports and release packages
 /artifacts/
 *.zip

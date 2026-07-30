@@ -46,7 +46,7 @@ Both it and `kernel.turn` project request authority through the shared
 
 ## Mathematical Spine
 
-For the full serious-version optimization and calibration contract, see `docs/SERIOUS_VERSION_MATH_APPENDIX.md`.
+The full serious-version optimization and calibration contract is tracked internally.
 
 ### Cognitive Graph Compiler
 

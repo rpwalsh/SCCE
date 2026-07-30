@@ -8,7 +8,7 @@ export class InvalidRepositoryRootError extends Error {
   }
 }
 
-const MARKER_PATHS = ['AGENTS.md', 'pnpm-workspace.yaml', join('packages', 'kernel', 'src', 'kernel.ts')];
+const MARKER_PATHS = ['README.md', 'pnpm-workspace.yaml', join('packages', 'kernel', 'src', 'kernel.ts')];
 
 function candidateRoot(): { root: string; source: string } {
   const explicit = process.env.SCCE_REPO_ROOT?.trim();

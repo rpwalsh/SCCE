@@ -244,8 +244,8 @@ retriever has opened an admissible neighborhood. Term and sparse-feature posting
 direct record maps, precomputed vectors, and bounded alpha-prior candidates prevent
 the semantic and role retrieval passes from rebuilding and rescoring that entire
 neighborhood independently. This is not yet the final nation-scale storage design:
-the durable quotient router and memory-mapped detail shard compiler remain specified
-in `BRAIN_COMPILER_AND_STORAGE.md`.
+the durable quotient router and memory-mapped detail shard compiler remain a
+specified but unimplemented future design.
 
 ## Long-running turn transport
 
