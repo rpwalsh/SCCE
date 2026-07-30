@@ -231,16 +231,10 @@ function extractSemanticItems(text: string, source: "claim" | "evidence", span?:
     const kind: SemanticObligationKind = /(?:!=|≠|¬|!|⊬|⊭|∉|⊄|⊅)/u.test(match.value) ? "negation" : "predicate";
     add(kind, match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
-  for (let i = 0; i < symbols.length - 2; i++) {
-    const window = symbols.slice(i, i + 3);
-    const shape = window.map(tokenShape).join("|");
-    const hassymbolOrNumber = window.some(symbol => /[\p{Number}=<>!./:_-]/u.test(symbol));
-    if (source === "claim" && (hassymbolOrNumber || i < 10)) add("role", `${shape}:${window.join(" ")}`, window.join(" "));
-  }
   for (const symbol of symbols.slice(0, 96)) {
     if (/^[\p{Letter}\p{Number}_-]{4,}$/u.test(symbol) && !/^\d+$/u.test(symbol)) add("predicate", symbol, text);
   }
-  return dedupeItems(items.filter(item => source === "claim" || item.kind !== "role"));
+  return dedupeItems(items);
 }
 
 function matchItem(item: SemanticItem, candidates: readonly SemanticItem[], evidence: readonly EvidenceSpan[], fieldMassByEvidence: Map<string, number>, hasher: Hasher): EvidenceMatch {

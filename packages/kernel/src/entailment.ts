@@ -66,6 +66,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         typedObservations: input.typedObservations,
         proofClaims: input.proofClaims,
         proofEvidence: input.proofEvidence,
+        sourceExcerptsProvided: Boolean(input.sourceExcerpts?.length),
         hasher: options.hasher
       });
       const semanticVerdict = verdictWithProofGate(obligations.verdict, proofGate);
@@ -195,9 +196,23 @@ function proofSupportFromObligations(semanticVerdict: string, obligationSupport:
 
 function forceFromSemantic(semanticVerdict: string, structuralVerdict: string, prior: SemanticEntailmentResult["force"], support: number, contradiction: number, faithfulnessLcb: number, stability: number): SemanticEntailmentResult["force"] {
   if (semanticVerdict === "contradicted" || structuralVerdict === "contradicted" || contradiction > 0.52) return "unknown";
+  // "entailed" from evaluateSemanticObligations alone can come purely from
+  // lexical/text-level matching (predicate/transform/source_version
+  // obligations), with no real graph or construct behind it at all --
+  // structuralVerdict stays "unknown" whenever there's no graph to reason
+  // over (see semantic-graph.ts's verdictFrom). Text matching itself to
+  // itself is not independent corroboration, so it must not alone earn
+  // "observed"/"proved" -- only once the separate structural entailment
+  // also found something real (entailed or even just underdetermined, not
+  // "unknown") does the stronger claim become honest.
+  // Not "underdetermined" too: verdictFrom's own underdetermined branch
+  // fires from faithfulnessLCB alone, which can clear its 0.14 floor even
+  // with an empty graph -- only a real "entailed" structural verdict is
+  // actual corroboration independent of the lexical obligations check.
+  const structurallyCorroborated = structuralVerdict === "entailed";
   if (semanticVerdict === "entailed" && structuralVerdict === "entailed" && support >= 0.78 && faithfulnessLcb >= 0.42 && stability >= 0.55) return "proved";
-  if (semanticVerdict === "entailed" && support >= 0.56) return "observed";
-  if ((semanticVerdict === "underdetermined" || structuralVerdict === "underdetermined") && support >= 0.34) return "inferred";
+  if (semanticVerdict === "entailed" && structurallyCorroborated && support >= 0.56) return "observed";
+  if ((semanticVerdict === "underdetermined" || structuralVerdict === "underdetermined" || (semanticVerdict === "entailed" && !structurallyCorroborated)) && support >= 0.34) return "inferred";
   return prior === "invented" || prior === "conjectured" ? prior : "unknown";
 }
 
@@ -234,6 +249,19 @@ function exactTextProofGate(input: { claim: Claim; evidence: EvidenceSpan[]; has
     },
     candidateEvidence
   });
+}
+
+// structuredProofGate's own fallback for when no typedObservations/
+// construct/proofClaims exist at all: reuses exactTextProofGate's real
+// synthetic subject/relation/object proof (not a fabricated verdict) so a
+// plain, unstructured claim that is verbatim present in certifying
+// evidence still gets a genuine "certified" gate -- just tagged with a
+// distinct proofPath so callers can tell it apart from a real structured
+// semantic proof.
+function exactTextStructuredFallback(input: { requestClaim: Claim; evidence: EvidenceSpan[]; hasher: Hasher }): SemanticProofResult | undefined {
+  const result = exactTextProofGate({ claim: input.requestClaim, evidence: input.evidence, hasher: input.hasher });
+  if (!result) return undefined;
+  return { ...result, trace: { ...result.trace, proofPath: "exact_text_fallback" } };
 }
 
 function sourceExcerptProofGate(input: {
@@ -304,18 +332,30 @@ function structuredProofGate(input: {
   typedObservations?: SupportedProofObservation[];
   proofClaims?: ProofClaim[];
   proofEvidence?: ProofEvidenceRecord[];
+  /** When the caller explicitly supplied sourceExcerpts, they've opted into the separate, deliberately-weaker sourceExcerptProofGate/textIdentityGate path (provenance only, never strengthens force) -- the exact-text fallback below must not also fire and produce a second, stronger certification for the same bare text match. */
+  sourceExcerptsProvided?: boolean;
   hasher: Hasher;
 }): SemanticProofResult | undefined {
   const candidateEvidence = dedupeProofEvidence([
     ...(input.proofEvidence ?? []),
     ...evidenceToProofRecords({ evidence: input.evidence, nodes: input.nodes, observations: input.typedObservations ?? [] })
   ]);
-  if (!candidateEvidence.length) return undefined;
   const claims = dedupeProofClaims([
     ...(input.proofClaims ?? []),
     ...(input.construct ? constructToProofClaims({ construct: input.construct }) : [])
   ]);
-  if (!claims.length) return undefined;
+  // No structured observation/claim data was ever passed in (no
+  // typedObservations, no construct, no proofClaims/proofEvidence) --
+  // there's nothing for proveClaim's subject/relation/object comparison to
+  // run on. That doesn't mean there's no real proof available: if the
+  // request text is verbatim present in a certifying evidence span, that
+  // is itself a legitimate, narrow certification (identical text really is
+  // identical text) -- just one that must stay clearly distinguishable
+  // (via trace.proofPath) from an actual structured semantic proof.
+  if ((!candidateEvidence.length || !claims.length) && !input.sourceExcerptsProvided) {
+    return exactTextStructuredFallback({ requestClaim: input.requestClaim, evidence: input.evidence, hasher: input.hasher });
+  }
+  if (!candidateEvidence.length || !claims.length) return undefined;
   const results = claims.map(proofClaim => ({
     claim: proofClaim,
     result: proveClaim({ claim: proofClaim, candidateEvidence }),
