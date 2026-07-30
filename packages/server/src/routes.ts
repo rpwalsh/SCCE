@@ -2588,7 +2588,8 @@ async function streamTurnResponse(input: {
         type: "progress",
         requestId,
         phase: progress.phase,
-        elapsedMs: progress.observedAtMonotonicMs - requestTiming.startedMonotonicMs
+        elapsedMs: progress.observedAtMonotonicMs - requestTiming.startedMonotonicMs,
+        ...(progress.answer !== undefined ? { answer: progress.answer, assistantForce: progress.assistantForce } : {})
       });
     }
   };

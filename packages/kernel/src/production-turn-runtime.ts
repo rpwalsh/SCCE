@@ -2239,6 +2239,21 @@ export function createProductionTurnRuntime(options: {
         ...rawEmission,
         assistantForce: runtimeCoherence.assistantForceAfter
       };
+      // Fired exactly once per non-recursive turn, right here: this is the
+      // earliest point where emission.answer is settled -- past
+      // answer-revision (~line 2064) and past the coherence-replan check
+      // above (which would have recursed the whole turn via an early
+      // `return turn(...)` instead of reaching this line). Everything after
+      // this is bookkeeping (persistence, learning-loop planning, event
+      // writes) that no longer touches the answer text, so a streaming
+      // consumer can safely render it now instead of waiting for the full
+      // turn to finish.
+      input.runtimeControl?.onProgress?.({
+        phase: "answer.ready",
+        observedAtMonotonicMs: performance.now(),
+        answer: emission.answer,
+        assistantForce: emission.assistantForce
+      });
       await deps.storage.constructs.putEmission(emission);
       events.push(await append(eventFactory.create({ episodeId, typeId: "RuntimeCoherenceDecided", payload: runtimeCoherenceTrace })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { assistantForce: runtimeCoherence.assistantForceAfter, assistantForceBeforeCoherence: mouthAssistantForce.force, assistantForceTrace: mouthAssistantForce.audit, surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, evidenceRefs: spoken.evidenceRefs, uncertainty: spoken.uncertainty, answerRevision: answerRevisionTrace ?? null, runtimeCoherence: runtimeCoherenceTrace } })));

@@ -1193,6 +1193,16 @@ export interface OwnerInput {
     onProgress?: (progress: {
       phase: string;
       observedAtMonotonicMs: number;
+      /**
+       * Present only on the "answer.ready" phase: the turn's final answer
+       * text, fired the moment it's settled and stable for this turn (past
+       * answer-revision and the coherence-replan check, so it will never be
+       * silently discarded or replaced afterward) -- lets a streaming
+       * consumer render it well before the turn's remaining bookkeeping
+       * (persistence, learning-loop planning, event writes) finishes.
+       */
+      answer?: string;
+      assistantForce?: AssistantForceClass;
     }) => void;
   };
 }
