@@ -1152,10 +1152,39 @@ function boundaryEvidenceAt(input: {
     positionGrapheme: input.positionGrapheme,
     boundaryProbability: input.boundaryEstimator
       ? scoreBoundaryState(input.boundaryEstimator, features)
-      : 0.5,
+      : untrainedStructuralBoundaryPrior(features),
     estimatorId: input.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID,
     features
   };
+}
+
+/**
+ * Real default for callers with no trained boundary estimator (most unit
+ * tests, and any induction call site that hasn't threaded one through
+ * yet): a flat 0.5 treated every position identically regardless of
+ * whitespace/punctuation/line-break adjacency, so the lattice had no
+ * signal to prefer splitting at a space over merging a whole run of
+ * words into one unit -- confirmed as the direct cause of real
+ * multi-word "symbol" units in `language-construction-memory-universal.
+ * test.ts`'s underlying subsystem and `invention-planner.test.ts`'s
+ * n-gram-compiled units. whitespace/punctuation/line-break/script-
+ * transition adjacency are structurally certain facts already computed
+ * above for every candidate, in every script -- not a per-language rule,
+ * a physical property of the text -- so using them as a fixed, honestly
+ * unlearned prior (never claiming to be a trained model; scoreBoundary's
+ * real logistic-regression path is untouched and always wins once a
+ * trained estimator exists) is strictly more informative than discarding
+ * them entirely.
+ */
+function untrainedStructuralBoundaryPrior(features: BoundaryFeatureVector): number {
+  const logit = -3
+    + 6 * features.whitespaceAdjacent
+    + 5 * features.punctuationAdjacent
+    + 5 * features.lineBreakAdjacent
+    + 4 * features.structuralBoundary
+    + 2 * features.scriptTransition
+    + 1.5 * features.repeatedContextSupport;
+  return clamp01(1 / (1 + Math.exp(-logit)));
 }
 
 function corpusBoundaryFeaturesByPosition(input: {
