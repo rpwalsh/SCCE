@@ -25,6 +25,23 @@ import type {
 export type RuntimeReplanTrigger = "authority_family_unavailable" | "coherence_support_failure";
 
 
+/**
+ * A bounded, content-addressed fingerprint of one candidate the judge
+ * rejected in an attempt that then triggered a replan -- carried forward
+ * across the replan's recursive turn() call so the next attempt can
+ * recognize when it has regenerated the *same* hypothesis (by kind +
+ * normalized-answer-text hash) with better evidence behind it this time,
+ * rather than treating every attempt as a blank slate. This is real
+ * across-attempt memory, not a fabricated one: it only ever records what
+ * the judge actually rejected and why, and matching is exact-hash, never
+ * fuzzy/guessed.
+ */
+export interface PriorRejectedHypothesis {
+  kind: string;
+  textHash: string;
+  rejectionReasons: string[];
+}
+
 export interface RuntimeReplanMotion {
   schema: "scce.runtime_motion.learn_hydrate_replan.v1";
   motionId: "motion.learn_hydrate_replan";
@@ -43,6 +60,8 @@ export interface RuntimeReplanMotion {
   sourceUris: string[];
   sourceSurfaces: string[];
   failures: string[];
+  /** Bounded (top 8) rejected-candidate fingerprints from the attempt that triggered this replan. */
+  priorRejectedHypotheses: PriorRejectedHypothesis[];
 }
 
 
@@ -566,8 +585,58 @@ export function runtimeReplanMotionFromMetadata(metadata: JsonValue | undefined,
     ingestedEvidenceCount: kernelNumber(row.ingestedEvidenceCount),
     sourceUris: Array.isArray(row.sourceUris) ? row.sourceUris.filter((value): value is string => typeof value === "string").slice(0, 3) : [],
     sourceSurfaces: Array.isArray(row.sourceSurfaces) ? row.sourceSurfaces.filter((value): value is string => typeof value === "string").slice(0, 6) : [],
-    failures: Array.isArray(row.failures) ? row.failures.filter((value): value is string => typeof value === "string").slice(0, 6) : []
+    failures: Array.isArray(row.failures) ? row.failures.filter((value): value is string => typeof value === "string").slice(0, 6) : [],
+    priorRejectedHypotheses: priorRejectedHypothesesFromRow(row.priorRejectedHypotheses)
   };
+}
+
+function priorRejectedHypothesesFromRow(value: JsonValue | undefined): PriorRejectedHypothesis[] {
+  if (!Array.isArray(value)) return [];
+  const rows: PriorRejectedHypothesis[] = [];
+  for (const entry of value) {
+    const record = jsonRecord(entry);
+    if (typeof record.kind !== "string" || typeof record.textHash !== "string") continue;
+    rows.push({
+      kind: record.kind,
+      textHash: record.textHash,
+      rejectionReasons: Array.isArray(record.rejectionReasons)
+        ? record.rejectionReasons.filter((reason): reason is string => typeof reason === "string").slice(0, 6)
+        : []
+    });
+  }
+  return rows.slice(0, 8);
+}
+
+/**
+ * Builds the bounded, content-addressed rejected-hypothesis fingerprints
+ * carried into a replan's recursive turn() call. `answer` is normalized
+ * (collapsed whitespace) before hashing so an insignificant formatting
+ * difference between attempts doesn't spuriously break a real match.
+ */
+export function priorRejectedHypothesesFromCandidates(
+  rejected: readonly { candidate: Pick<CandidateSurface, "kind" | "answer">; reasons: readonly string[] }[],
+  hasher: { digestHex(input: string): string }
+): PriorRejectedHypothesis[] {
+  return rejected.slice(0, 8).map(row => ({
+    kind: row.candidate.kind,
+    textHash: hasher.digestHex(collapseSurfaceWhitespace(row.candidate.answer).trim().toLocaleLowerCase()),
+    rejectionReasons: [...row.reasons].slice(0, 6)
+  }));
+}
+
+/**
+ * True when `candidate` is a real revival of one of the prior attempt's
+ * rejected hypotheses -- same kind, same normalized-answer-text hash. Used
+ * to prove working memory's carried-forward record actually informed this
+ * attempt's outcome, not just that the same text coincidentally recurred.
+ */
+export function reviveMatchingPriorRejectedHypothesis(
+  candidate: Pick<CandidateSurface, "kind" | "answer">,
+  priorRejectedHypotheses: readonly PriorRejectedHypothesis[],
+  hasher: { digestHex(input: string): string }
+): PriorRejectedHypothesis | undefined {
+  const textHash = hasher.digestHex(collapseSurfaceWhitespace(candidate.answer).trim().toLocaleLowerCase());
+  return priorRejectedHypotheses.find(prior => prior.kind === candidate.kind && prior.textHash === textHash);
 }
 
 

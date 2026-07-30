@@ -48,7 +48,8 @@ describe("runtimeMotionCandidateField (plan item: kernel-training sessionBound i
       ingestedEvidenceCount: 0,
       sourceUris: [],
       sourceSurfaces: [],
-      failures: []
+      failures: [],
+      priorRejectedHypotheses: []
     };
 
     const result = runtimeMotionCandidateField({
