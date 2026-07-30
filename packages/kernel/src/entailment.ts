@@ -103,7 +103,8 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       const support = supportCalibration.value;
       const contradiction = 1 - contradictionAvoidanceCalibration.value;
       const faithfulnessLcb = Math.max(result.faithfulnessLcb, structuralResult.faithfulnessLCB, obligations.faithfulnessLcb);
-      const force = forceFromSemantic(semanticVerdict, structuralResult.verdict, result.force, support, contradiction, faithfulnessLcb, obligations.scores.stability);
+      const structuredProofCertified = proofGate?.verdict === "certified" && proofGate.trace.proofPath === "structured_runtime";
+      const force = forceFromSemantic(semanticVerdict, structuralResult.verdict, result.force, support, contradiction, faithfulnessLcb, obligations.scores.stability, structuredProofCertified);
       const structuralEvidenceIds = [...new Set(structuralResult.proofPaths.flatMap(path => path.evidenceIds))];
       const certifiedGateEvidenceIds = certifiedGateEvidenceSpanIds(proofGate);
       const gatedEvidenceIds = certifiedGateEvidenceIds ? input.evidence.filter(span => certifiedGateEvidenceIds.has(String(span.id))).map(span => span.id) : undefined;
@@ -194,7 +195,7 @@ function proofSupportFromObligations(semanticVerdict: string, obligationSupport:
   return Math.min(0.28, 0.82 * obligationSupport + 0.12 * structuralSupport + 0.06 * calculusSupport);
 }
 
-function forceFromSemantic(semanticVerdict: string, structuralVerdict: string, prior: SemanticEntailmentResult["force"], support: number, contradiction: number, faithfulnessLcb: number, stability: number): SemanticEntailmentResult["force"] {
+function forceFromSemantic(semanticVerdict: string, structuralVerdict: string, prior: SemanticEntailmentResult["force"], support: number, contradiction: number, faithfulnessLcb: number, stability: number, structuredProofCertified: boolean): SemanticEntailmentResult["force"] {
   if (semanticVerdict === "contradicted" || structuralVerdict === "contradicted" || contradiction > 0.52) return "unknown";
   // "entailed" from evaluateSemanticObligations alone can come purely from
   // lexical/text-level matching (predicate/transform/source_version
@@ -204,19 +205,22 @@ function forceFromSemantic(semanticVerdict: string, structuralVerdict: string, p
   // itself is not independent corroboration, so it must not alone earn
   // "observed"/"proved" -- only once the separate structural entailment
   // also found something real (entailed or even just underdetermined, not
-  // "unknown") does the stronger claim become honest. This includes a
-  // verbatim whole-claim quotation from sourceExcerpts/exactTextProofGate
-  // (entailment.ts's textIdentityGate): matching text to itself is still
-  // not independent corroboration no matter how exact the match is, which
-  // is exactly why textIdentityGate is deliberately kept out of this
-  // decision entirely -- see mouth-runtime.test.ts's "uses the bounded
-  // exact-excerpt entailment route" for the explicit, intentional case
-  // this must keep resolving to "inferred", not "observed".
+  // "unknown"), OR a real structuredProofGate certification fired via an
+  // actual typed construct/proofClaims proof (proofPath
+  // "structured_runtime" -- a genuine, separate proof calculus over typed
+  // claims, not just text matching itself), does the stronger claim
+  // become honest. structuredProofCertified deliberately excludes the
+  // "exact_text_fallback" proofPath (entailment.ts's textIdentityGate):
+  // a bare whole-claim text match is still not independent corroboration
+  // no matter how exact, which is why that path never sets
+  // structuredProofCertified -- see mouth-runtime.test.ts's "uses the
+  // bounded exact-excerpt entailment route" for the explicit, intentional
+  // case that must keep resolving to "inferred", not "observed".
   // Not "underdetermined" too: verdictFrom's own underdetermined branch
   // fires from faithfulnessLCB alone, which can clear its 0.14 floor even
   // with an empty graph -- only a real "entailed" structural verdict is
   // actual corroboration independent of the lexical obligations check.
-  const structurallyCorroborated = structuralVerdict === "entailed";
+  const structurallyCorroborated = structuralVerdict === "entailed" || structuredProofCertified;
   if (semanticVerdict === "entailed" && structuralVerdict === "entailed" && support >= 0.78 && faithfulnessLcb >= 0.42 && stability >= 0.55) return "proved";
   if (semanticVerdict === "entailed" && structurallyCorroborated && support >= 0.56) return "observed";
   if ((semanticVerdict === "underdetermined" || structuralVerdict === "underdetermined" || (semanticVerdict === "entailed" && !structurallyCorroborated)) && support >= 0.34) return "inferred";
