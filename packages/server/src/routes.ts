@@ -4,7 +4,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { assertHydratedRuntimeReady, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
@@ -457,7 +457,8 @@ async function dispatch(
         hydratedRuntime,
         workspaceCoding,
         learnedDialogueProfile,
-        previousDialogue
+        previousDialogue,
+        repoCognitionFiles
       ] = await Promise.all([
         assertSurfaceLanguageReady(context, turn.text),
         sessionId
@@ -471,7 +472,18 @@ async function dispatch(
           })
           : Promise.resolve(undefined),
         latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
-        latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId })
+        latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId }),
+        // Phase 15: real repo cognition (issue localization, affected-test
+        // prediction, tree-sitter-backed symbol/call cross-referencing) for
+        // the same explicit, bounded requestedPaths the client already
+        // named for coding-patch planning -- never a repo-wide scan, and
+        // any failure here silently yields no repo context rather than
+        // failing the turn.
+        workspaceCodingInput?.requestedPaths.length
+          ? createWorkspaceRuntime(context).resolveRoot()
+            .then(root => collectRepoFilesForCognition(root, workspaceCodingInput.requestedPaths))
+            .catch(() => [])
+          : Promise.resolve([])
       ]);
       traceEvent(trace, {
         stage: "turn.runtime.readiness",
@@ -527,7 +539,8 @@ async function dispatch(
           ...(discourseObject ? { discourse: { schema: "scce.discourse_runtime_state.v1", activeObject: toJsonValue(discourseObject), queryConcatenationUsed: false } } : {}),
           runtimePath: { hydratedRuntime: true, serverPath: true, sourceOnlySimulation: false },
           activeBrainVersion: active.activeBrainVersion,
-          activeImportRunIds: active.activeImportRunIds
+          activeImportRunIds: active.activeImportRunIds,
+          ...(repoCognitionFiles.length ? { repoFiles: toJsonValue(repoCognitionFiles) } : {})
         }
       };
       const result = await context.runtime.kernel.turn({

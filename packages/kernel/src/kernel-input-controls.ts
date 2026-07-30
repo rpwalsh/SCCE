@@ -1,12 +1,48 @@
 import { resolveDetailProfileId } from "./control-plane-profiles.js";
 import { jsonRecord } from "./kernel-answer-primitives.js";
 import { normalizeSourceLanguageAlias } from "./language.js";
+import type { RepositorySyntaxNode, RepositorySyntaxNodeKind } from "./repo-syntax-graph.js";
 import type {
   CapabilityPlan,
   EpistemicForce,
   JsonValue,
   LanguageProfile
 } from "./types.js";
+
+const REPOSITORY_SYNTAX_NODE_KINDS: ReadonlySet<string> = new Set<RepositorySyntaxNodeKind>([
+  "module", "namespace", "class", "interface", "function", "method", "parameter",
+  "variable", "type", "import", "export", "call", "reference", "literal", "comment", "unknown"
+]);
+
+function repositorySyntaxNodesFromJson(value: JsonValue | undefined): RepositorySyntaxNode[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const nodes: RepositorySyntaxNode[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, JsonValue>;
+    if (typeof record.id !== "string" || typeof record.languageId !== "string" || typeof record.fileId !== "string") continue;
+    if (typeof record.kind !== "string" || !REPOSITORY_SYNTAX_NODE_KINDS.has(record.kind)) continue;
+    if (typeof record.byteStart !== "number" || typeof record.byteEnd !== "number") continue;
+    if (!Array.isArray(record.childIds) || !record.childIds.every(childId => typeof childId === "string")) continue;
+    if (typeof record.parseConfidence !== "number" || record.source !== "tree-sitter") continue;
+    nodes.push({
+      id: record.id,
+      languageId: record.languageId,
+      fileId: record.fileId,
+      kind: record.kind as RepositorySyntaxNodeKind,
+      name: typeof record.name === "string" ? record.name : undefined,
+      byteStart: record.byteStart,
+      byteEnd: record.byteEnd,
+      charStart: typeof record.charStart === "number" ? record.charStart : undefined,
+      charEnd: typeof record.charEnd === "number" ? record.charEnd : undefined,
+      parentId: typeof record.parentId === "string" ? record.parentId : undefined,
+      childIds: record.childIds as string[],
+      parseConfidence: record.parseConfidence,
+      source: "tree-sitter"
+    });
+  }
+  return nodes;
+}
 
 export function translationTargetFromMetadata(metadata: JsonValue | undefined): string | undefined {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
@@ -56,18 +92,19 @@ function numericVector(value: JsonValue | undefined): number[] | undefined {
  * Accepts either `{ path, text }` or `{ path, content }` entries; any
  * malformed entry is dropped rather than causing the whole turn to fail.
  */
-export function repoFilesFromMetadata(metadata: JsonValue | undefined): Array<{ path: string; text: string }> | undefined {
+export function repoFilesFromMetadata(metadata: JsonValue | undefined): Array<{ path: string; text: string; syntaxNodes?: RepositorySyntaxNode[] }> | undefined {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
   const value = (metadata as Record<string, JsonValue>).repoFiles;
   if (!Array.isArray(value)) return undefined;
-  const files: Array<{ path: string; text: string }> = [];
+  const files: Array<{ path: string; text: string; syntaxNodes?: RepositorySyntaxNode[] }> = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const record = entry as Record<string, JsonValue>;
     const path = record.path;
     const text = record.text ?? record.content;
     if (typeof path === "string" && path.trim() && typeof text === "string") {
-      files.push({ path, text });
+      const syntaxNodes = repositorySyntaxNodesFromJson(record.syntaxNodes);
+      files.push({ path, text, ...(syntaxNodes?.length ? { syntaxNodes } : {}) });
     }
   }
   return files.length ? files : undefined;

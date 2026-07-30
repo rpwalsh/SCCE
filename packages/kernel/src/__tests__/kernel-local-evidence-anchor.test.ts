@@ -292,6 +292,90 @@ describe("kernel local evidence source anchoring", () => {
     expect(repoCognition.affectedTests).toEqual(["src/__tests__/sparse-ranking.test.ts"]);
   });
 
+  it("round-trips real tree-sitter syntaxNodes through plain JSON metadata into TurnResult.repoCognition.semanticEdges (Phase 15 live-turn wiring)", async () => {
+    // metadata travels as plain JSON over HTTP in production (server ->
+    // kernel.turn), so this deliberately passes syntaxNodes as bare object
+    // literals -- exactly what repoFilesFromMetadata's JSON validator in
+    // kernel-input-controls.ts has to parse -- not typed RepositorySyntaxNode
+    // objects constructed in-process.
+    const clock = createClock({ fixedTime: 6_250, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-syntax",
+      sourceVersionId: "source:ada-lovelace-syntax:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const declarationText = "export function fitSparseRanking(x) { return x; }";
+    const callerText = "fitSparseRanking(1);";
+
+    const result = await kernel.turn({
+      text: "fitSparseRanking returns the wrong value",
+      metadata: JSON.parse(JSON.stringify({
+        repoFiles: [
+          {
+            path: "src/sparse-ranking.ts",
+            text: declarationText,
+            syntaxNodes: [{
+              id: "src/sparse-ranking.ts#syn1",
+              languageId: "typescript",
+              fileId: "src/sparse-ranking.ts",
+              kind: "function",
+              name: "fitSparseRanking",
+              byteStart: 0,
+              byteEnd: declarationText.length,
+              childIds: [],
+              parseConfidence: 1,
+              source: "tree-sitter"
+            }]
+          },
+          {
+            path: "src/caller.ts",
+            text: callerText,
+            syntaxNodes: [{
+              id: "src/caller.ts#syn1",
+              languageId: "typescript",
+              fileId: "src/caller.ts",
+              kind: "call",
+              name: "fitSparseRanking",
+              byteStart: 0,
+              byteEnd: callerText.length,
+              childIds: [],
+              parseConfidence: 1,
+              source: "tree-sitter"
+            }]
+          }
+        ]
+      }))
+    });
+
+    const repoCognition = result.repoCognition as unknown as {
+      symbolLocalization: Array<{ symbol: { name: string; kind: string } }>;
+      semanticEdges: Array<{ sourceId: string; targetId: string; relation: string; confidence: number; resolver: string }>;
+    };
+    expect(repoCognition.symbolLocalization[0]?.symbol.name).toBe("fitSparseRanking");
+    expect(repoCognition.symbolLocalization[0]?.symbol.kind).toBe("function");
+    expect(repoCognition.semanticEdges).toEqual([{
+      sourceId: "src/caller.ts#syn1",
+      targetId: "src/sparse-ranking.ts#syn1",
+      relation: "calls",
+      confidence: 0.6,
+      resolver: "tree-sitter-structural"
+    }]);
+  });
+
   it("leaves TurnResult.repoCognition absent (not fabricated) when no repo files are supplied in metadata", async () => {
     const clock = createClock({ fixedTime: 6_300, stepMs: 1 });
     const hasher = createHasher();
