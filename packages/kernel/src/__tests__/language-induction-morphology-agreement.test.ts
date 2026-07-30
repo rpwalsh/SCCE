@@ -46,6 +46,35 @@ describe("language induction -- morphology/agreement-constraint induction (Part 
     expect(model.morphologyClassBindings).toEqual([]);
   });
 
+  it("induces real infix and reduplication rules via the edit-program classifier (plan items 98-99 integration)", () => {
+    const engine = createLanguageInductionEngine({ hasher, vocabularyLimit: 512 });
+    // Three distinct stems each gaining the same interior "q" -- a real
+    // infix, not discoverable by the prefix/suffix substring bucketing
+    // above (which only ever splits at the two edges of one word).
+    // Three more distinct stems each fully duplicating themselves -- real
+    // reduplication, likewise invisible to that bucketing.
+    const text = [
+      "abcd is here. abqcd is here.",
+      "efgh is here. efqgh is here.",
+      "ijkl is here. ijqkl is here.",
+      "walla is calm. wallawalla is calm.",
+      "tinu is calm. tinutinu is calm.",
+      "kobo is calm. kobokobo is calm."
+    ].join(" ");
+
+    const model = engine.induce({ documents: [{ id: "doc.infix-reduplication", text }] });
+
+    const infixRule = model.morphology.find(rule => rule.kind === "infix" && rule.pattern === "STEM1+q+STEM2");
+    expect(infixRule).toBeDefined();
+    expect(infixRule!.stemCount).toBeGreaterThanOrEqual(3);
+    expect(infixRule!.examples).toEqual(expect.arrayContaining(["abqcd", "efqgh", "ijqkl"]));
+
+    const reduplicationRule = model.morphology.find(rule => rule.kind === "reduplication");
+    expect(reduplicationRule).toBeDefined();
+    expect(reduplicationRule!.stemCount).toBeGreaterThanOrEqual(3);
+    expect(reduplicationRule!.examples).toEqual(expect.arrayContaining(["wallawalla", "tinutinu", "kobokobo"]));
+  });
+
   it("keeps morphology-class binding additive: it does not change morphology rules or lexical classes themselves", () => {
     const engine = createLanguageInductionEngine({ hasher, vocabularyLimit: 512 });
     const text = "the cats slept. the dogs slept. the cats ran. the dogs ran. the cats slept. the dogs ran. also birds fly.";
