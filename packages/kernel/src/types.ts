@@ -565,6 +565,8 @@ export interface ProgramGraph {
   build: { command: string; args: string[]; cwd: string };
   test: { command: string; args: string[]; cwd: string };
   hydration?: ProgramHydrationContract;
+  /** Plan items 158-159: the real task-decomposition DAG built from this program's own blueprint operations (see code-learning.ts's taskDecompositionForBlueprintOperations). */
+  taskDecomposition?: JsonValue;
 }
 
 export interface ProgramConstructIntent {

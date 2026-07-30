@@ -193,7 +193,8 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         ],
         files,
         build: plan.build,
-        test: plan.test
+        test: plan.test,
+        taskDecomposition: toJsonValue(plan.blueprint.taskDecomposition)
       };
       const hydration = createProgramHydrationContract({
         program: graphWithoutHydration,
