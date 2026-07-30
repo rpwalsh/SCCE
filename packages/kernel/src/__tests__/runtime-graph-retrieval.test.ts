@@ -14,7 +14,7 @@ import type {
 import type { EvidenceSearchResult, SemanticFrameRecord } from "../storage.js";
 
 describe("runtime hot graph retrieval", () => {
-  it("walks two resident hops and includes routed hyperedge members without exposing evidence", async () => {
+  it("walks two resident hops and includes routed hyperedge members' already-resident evidence", async () => {
     const seed = graphNode("node:clock", ["sym:clock"], ["evidence:clock"]);
     const mechanism = graphNode("node:mechanism", ["sym:mechanism"]);
     const pressure = graphNode("node:pressure", ["sym:pressure"]);
@@ -51,7 +51,15 @@ describe("runtime hot graph retrieval", () => {
     expect(result.graph.edges.map(edge => String(edge.id))).not.toContain("edge:three");
     expect(result.graph.hyperedges.map(edge => String(edge.id))).toContain("hyperedge:clock-tide");
     expect(result.graph.query.radius).toBe(2);
-    expect(result.evidence).toEqual([]);
+    // The selected nodes/hyperedge reference "evidence:clock", and that
+    // span is already resident in the hot neighborhood's own evidenceById
+    // (loaded once when the neighborhood itself was built) -- so it must
+    // surface here too, not be discarded. Losing it here previously made a
+    // real, rank-matched node's evidence invisible to every downstream
+    // consumer (source-anchor audit, invention planning), which in turn
+    // caused sourceAnchoredEvidenceForRequest to see zero evidence and
+    // filter this exact node back out of the graph.
+    expect(result.evidence.map(span => String(span.id))).toEqual(["evidence:clock"]);
     expect(fixture.searchEvidence).not.toHaveBeenCalled();
     expect(fixture.getSlice).toHaveBeenCalledTimes(1);
   });

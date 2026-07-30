@@ -1205,6 +1205,25 @@ export function createRuntimeGraphRetrieval(options: {
         || String(left.hyperedge.id).localeCompare(String(right.hyperedge.id)))
       .slice(0, HOT_QUERY_HYPEREDGE_LIMIT)
       .map(row => row.hyperedge);
+    // The walk only ever visits nodes/edges/hyperedges already resident in
+    // `hot` (built once, with its own evidence already loaded into
+    // `hot.evidenceById` -- see loadHotNeighborhood), so resolving the
+    // selected nodes' referenced evidence here is a free in-memory lookup,
+    // not a new fetch. Leaving this empty (the previous behavior) meant a
+    // real, resident, rank-matched node's evidence was invisible to every
+    // downstream consumer (source-anchor audit, invention planning, claim
+    // grounding) purely because this walk happened to be the unanchored
+    // one -- which then made sourceAnchoredEvidenceForRequest see zero
+    // evidence for a real anchor and filter the very node this walk had
+    // just found back out of the graph via graphFilteredToEvidence.
+    const selectedEvidenceIds = uniqueKernelStrings([
+      ...nodes.flatMap(node => node.evidenceIds.map(String)),
+      ...edges.flatMap(edge => edge.evidenceIds.map(String)),
+      ...hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
+    ]);
+    const evidence = selectedEvidenceIds
+      .map(id => hot.evidenceById.get(id))
+      .filter((span): span is EvidenceSpan => Boolean(span));
     return {
       graph: {
         nodes,
@@ -1219,9 +1238,7 @@ export function createRuntimeGraphRetrieval(options: {
           limitEdges: edgeLimit
         }
       },
-      // An unanchored resident walk contributes graph priors only. Evidence
-      // remains exclusive to the source-anchored retrieval path above.
-      evidence: []
+      evidence
     };
   }
 
