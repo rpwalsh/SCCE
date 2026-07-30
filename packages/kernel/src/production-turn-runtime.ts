@@ -22,6 +22,7 @@ import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
+import { consolidateEpisode } from "./episodic-memory-consolidation.js";
 import { EVALUATION_COMPONENT_IDS, type EvaluationComponentId } from "./evaluation-flags.js";
 import {
   createAblatedSupportEntailment,
@@ -400,6 +401,17 @@ export function createProductionTurnRuntime(options: {
         return { evaluationTrace: toJsonValue(evaluationTrace.events()) };
       };
       const events: ScceEvent[] = [];
+      // Plan item 211: consolidates this turn's own event history into a
+      // bounded summary (goal/context/actions/outcomes/corrections/lessons)
+      // right before each return, once `events` has accumulated everything
+      // this turn produced. Every claim in the result stays traceable back
+      // to a real event id in sourceEventIds -- consolidateEpisode never
+      // invents summary text.
+      const consolidateCurrentEpisode = async (): Promise<JsonValue> => {
+        const consolidated = consolidateEpisode(events);
+        events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeConsolidated", payload: toJsonValue(consolidated) })));
+        return toJsonValue(consolidated);
+      };
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
@@ -604,6 +616,7 @@ export function createProductionTurnRuntime(options: {
         const timing = buildTiming("deferred");
         events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, deterministicArithmetic: true, timing } })));
         runtimeState.lastTurnTiming = timing;
+        const episodeConsolidation = await consolidateCurrentEpisode();
         return {
           episodeId,
           requestedAuthority,
@@ -627,6 +640,7 @@ export function createProductionTurnRuntime(options: {
           mouth: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           corrections: correctionMemory.summarize(detectedCorrections),
           learningLoop: toJsonValue({ maintenanceDeferred: true, deterministicArithmetic: true }),
+          episodeConsolidation,
           timing,
           ...evaluationTraceResult(),
           ...turnContract({ entailment, evidence: [], assistantForce: emission.assistantForce, unsupportedContentBlocked: false }),
@@ -2323,6 +2337,7 @@ export function createProductionTurnRuntime(options: {
         const timing = buildTiming("deferred");
         events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, maintenanceDeferred: true, timing } })));
         runtimeState.lastTurnTiming = timing;
+        const episodeConsolidation = await consolidateCurrentEpisode();
         kernelTrace({
           stage: "turn.output",
           label: "kernel.turn",
@@ -2354,6 +2369,7 @@ export function createProductionTurnRuntime(options: {
           selectedCandidate: toJsonValue(judged.selected),
           judge: judged.audit,
           workingMemory: toJsonValue(candidateWorkingMemory),
+          episodeConsolidation,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
           pface: pfaceEstimate?.audit,
@@ -2450,6 +2466,7 @@ export function createProductionTurnRuntime(options: {
       const timing = buildTiming("foreground");
       events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, timing } })));
       runtimeState.lastTurnTiming = timing;
+      const episodeConsolidation = await consolidateCurrentEpisode();
       kernelTrace({
         stage: "turn.output",
         label: "kernel.turn",
@@ -2481,6 +2498,7 @@ export function createProductionTurnRuntime(options: {
         selectedCandidate: toJsonValue(judged.selected),
         judge: judged.audit,
         workingMemory: toJsonValue(candidateWorkingMemory),
+        episodeConsolidation,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
         selfDistillation: selfDistillation.audit,
