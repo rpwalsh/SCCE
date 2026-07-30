@@ -1011,7 +1011,11 @@ function candidateKindFromProposal(proposal: CognitiveProposal): CandidateSurfac
   if (bases.has("invented")) return "creative-candidate";
   if (operators.has("operator.cognition.workspace_repair.v1")) return "workspace-proposal";
   if (operators.has("operator.cognition.action_planning.v1")) return "action-preview";
-  if (operators.has("operator.cognition.program_planning.v1") || proposal.artifacts.length > 0) return "program-proposal";
+  // Incidental artifacts (e.g. a reasoning chain that happens to touch
+  // construct nodes with file metadata) must not alone relabel an ordinary
+  // reasoning proposal as a program-proposal -- only real program-planning
+  // activation does.
+  if (operators.has("operator.cognition.program_planning.v1")) return "program-proposal";
   if (operators.has("operator.cognition.transformation.v1")) return "transformation";
   return "reasoned-synthesis";
 }
