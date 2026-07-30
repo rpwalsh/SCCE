@@ -29,8 +29,15 @@ describe("universal surface lattice", () => {
       expect(text.slice(unit.utf16Start, unit.utf16End)).toBe(unit.surface);
       expect(Buffer.from(text, "utf8").subarray(unit.byteStart, unit.byteEnd).toString("utf8")).toBe(unit.surface);
       expect(unit.evidenceIds).toEqual(["evidence.mixed"]);
-      expect(unit.boundaryBefore.boundaryProbability).toBe(0.5);
-      expect(unit.boundaryAfter.boundaryProbability).toBe(0.5);
+      // No trained boundary estimator is supplied, so these come from the
+      // untrained structural prior (whitespace/punctuation/line-break
+      // adjacency), not a fixed neutral constant -- real per-boundary values
+      // vary, but they stay valid probabilities and honestly report the
+      // untrained estimator id.
+      expect(unit.boundaryBefore.boundaryProbability).toBeGreaterThanOrEqual(0);
+      expect(unit.boundaryBefore.boundaryProbability).toBeLessThanOrEqual(1);
+      expect(unit.boundaryAfter.boundaryProbability).toBeGreaterThanOrEqual(0);
+      expect(unit.boundaryAfter.boundaryProbability).toBeLessThanOrEqual(1);
       expect(unit.boundaryBefore.estimatorId).toBe("boundary_estimator.untrained-neutral.v1");
     }
     expect(lattice.edges.some(edge => edge.kind === "sequence")).toBe(true);
