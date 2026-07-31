@@ -144,7 +144,11 @@ export const EVENT_TYPES = [
   "LearningPromoted",
   "SelfModelProjected",
   "FailureObserved",
-  "EpisodeClosed"
+  "EpisodeClosed",
+  "EpisodeConsolidated",
+  "SemanticClaimsConsolidated",
+  "ProceduralSkillCompiled",
+  "ProceduralSkillExecuted"
 ] as const;
 
 export type KnownEventType = (typeof EVENT_TYPES)[number];
