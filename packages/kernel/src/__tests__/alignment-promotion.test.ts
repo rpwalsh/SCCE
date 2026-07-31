@@ -59,6 +59,37 @@ describe("independent held-out alignment promotion", () => {
     ]));
   });
 
+  // Plan item 118: proves the near-duplicate exclusion is load-bearing, not
+  // incidental. Test 1 above already includes a same-family "heldout-copy"
+  // row, but its exclusion never changes that test's outcome -- two
+  // genuinely independent families are present regardless, so the copy
+  // could be silently miscounted as independent and the test would still
+  // pass. Here there is only ONE genuinely independent family; a near-
+  // duplicate of the induction document (same sourceFamilyId, submitted as
+  // if it were separate held-out evidence) is the only thing that could
+  // push the independent-family count up to the minimum of 2. If it were
+  // wrongly counted, this would promote; because it is correctly excluded,
+  // it must not.
+  it("rejects promotion when the only second 'independent' family is a near-duplicate of the induction document", () => {
+    const model = compileAlignmentPromotionModel({
+      alternativeSets: [alternativeSet("series.adversarial", "plan.adversarial")],
+      observations: [
+        observation("series.adversarial", "plan.adversarial", "induction", "family.train", "induction"),
+        // Adversarial: claims to be independent held-out evidence, but its
+        // sourceFamilyId is literally the induction document's own family --
+        // a near-duplicate resubmission, not real independent corroboration.
+        observation("series.adversarial", "plan.adversarial", "near-duplicate-of-induction", "family.train", "heldout"),
+        observation("series.adversarial", "plan.adversarial", "heldout-only-real-family", "family.holdout.a", "heldout")
+      ]
+    });
+    const decision = model.decisions[0]!;
+
+    expect(decision.independentHeldoutSourceFamilyIds).toEqual(["family.holdout.a"]);
+    expect(decision.independentHeldoutSourceFamilyIds).toHaveLength(1);
+    expect(decision.promoted).toBe(false);
+    expect(decision.reasons).toContain("independent_heldout_families_low");
+  });
+
   function observation(
     seriesId: string,
     planId: string,
