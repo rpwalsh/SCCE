@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type {
   SparseAlignmentCandidate,
@@ -487,9 +488,40 @@ export function solveSparseFusedUnbalancedTransport(input: {
       conditionalGradientComparisons: conditionalGradientComparisonsTotal,
       conditionalGradientMassShift: quantize(conditionalGradientMassShiftTotal),
       estimatedWorkingBytes: estimatedWorkingBytes(cells.length, rowIds.length, columnIds.length),
+      outerIterations: iterations.length,
       objectiveCalibrated: false,
       globalOptimalityClaimed: false
     })
+  };
+}
+
+/** Plan item 115: real per-batch resource usage. Kept out of `SparseFusedTransportPlan.audit` because wall-clock time is inherently non-deterministic and would break replay/determinism equality on the plan itself. */
+export interface SparseTransportResourceUsage {
+  elapsedMs: number;
+  outerIterations: number;
+  cellCount: number;
+  rowCount: number;
+  columnCount: number;
+  estimatedWorkingBytes: number;
+}
+
+export function solveSparseFusedUnbalancedTransportWithResourceBudget(
+  input: Parameters<typeof solveSparseFusedUnbalancedTransport>[0]
+): { plan: SparseFusedTransportPlan; resourceUsage: SparseTransportResourceUsage } {
+  const startedAt = performance.now();
+  const plan = solveSparseFusedUnbalancedTransport(input);
+  const elapsedMs = performance.now() - startedAt;
+  const audit = plan.audit as { estimatedWorkingBytes?: number };
+  return {
+    plan,
+    resourceUsage: {
+      elapsedMs: quantize(elapsedMs),
+      outerIterations: plan.iterations.length,
+      cellCount: plan.cells.length,
+      rowCount: plan.rowMarginals.length,
+      columnCount: plan.columnMarginals.length,
+      estimatedWorkingBytes: audit.estimatedWorkingBytes ?? 0
+    }
   };
 }
 
