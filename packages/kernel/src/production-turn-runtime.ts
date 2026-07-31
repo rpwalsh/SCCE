@@ -108,6 +108,7 @@ import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphB
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
+import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
 import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
@@ -197,6 +198,38 @@ export interface ProductionTurnRuntimeState {
   lastOutput: string;
   lastTurnTiming?: TurnResult["timing"];
   lastField?: TurnResult["field"];
+}
+
+// Plan items 229-230: maps this turn's own real caveat bindings (Mouth's
+// SurfacePlan.caveatBindings -- required disclosures a candidate's own
+// force/support computed, not invented here), capability plans (their real
+// permission.allowed decisions), and dialogue-pragmatics state (the user's
+// real rejected-phrase/preferred-vocabulary corrections) into
+// applyPragmaticsGuard's typed inputs. The guard itself already proves,
+// structurally, that pragmatics preference can never suppress a required
+// disclosure or authorize a capability -- this only supplies it real turn
+// data to run that structural proof against, instead of leaving it
+// unexercised by any live call site.
+function presentationGuardInputFromTurn(input: {
+  surfacePlan: { caveatBindings: readonly { pointId: string; reason: string; severity: string }[] };
+  capabilityPlans: readonly CapabilityPlan[];
+  userStyleProfile: { rejectedPhrases: readonly string[]; preferredVocabulary: readonly string[] };
+}): PresentationPlan {
+  return {
+    requiredDisclosures: input.surfacePlan.caveatBindings.map(binding => ({ id: binding.pointId, content: binding.reason })),
+    authorizationDecisions: input.capabilityPlans.map(plan => {
+      const permission = jsonRecord(plan.permission);
+      return {
+        capabilityId: plan.capabilityId,
+        authorized: permission.allowed === true,
+        reason: kernelString(permission.reason) ?? ""
+      };
+    }),
+    pragmatics: {
+      suppressPhraseIds: input.userStyleProfile.rejectedPhrases,
+      reorderPriority: input.userStyleProfile.preferredVocabulary
+    }
+  };
 }
 
 // Plan items 213-214: reads a construct:semantic_answer node's real
@@ -2506,6 +2539,11 @@ export function createProductionTurnRuntime(options: {
           episodeConsolidation,
           semanticConsolidation,
           cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
+          presentationGuard: toJsonValue(applyPragmaticsGuard(presentationGuardInputFromTurn({
+            surfacePlan: spoken.surfacePlan,
+            capabilityPlans,
+            userStyleProfile: authorityDialogueState.userStyleProfile
+          }))),
           repoCognition,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
@@ -2639,6 +2677,11 @@ export function createProductionTurnRuntime(options: {
         episodeConsolidation,
         semanticConsolidation,
         cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
+        presentationGuard: toJsonValue(applyPragmaticsGuard(presentationGuardInputFromTurn({
+          surfacePlan: spoken.surfacePlan,
+          capabilityPlans,
+          userStyleProfile: authorityDialogueState.userStyleProfile
+        }))),
         repoCognition,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,

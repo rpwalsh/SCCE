@@ -240,6 +240,17 @@ describe("kernel local evidence source anchoring", () => {
     expect(adaSubject).toBeTruthy();
     expect(adaSubject!.claims.length).toBeGreaterThan(0);
     expect(adaSubject!.claims[0]!.evidenceIds).toEqual([String(ada.id)]);
+    // Plan items 229-230: pragmatics-authorization-guard.ts applied to this
+    // turn's real caveat bindings, capability permissions, and dialogue-
+    // pragmatics preferences. Every required disclosure this turn actually
+    // has is included unconditionally, every executable capability id is
+    // one this turn's own permission decisions actually authorized, and
+    // presentationOrder is a real reordering of exactly those disclosures
+    // -- never more, never fewer.
+    const presentationGuard = result.presentationGuard as unknown as { includedDisclosureIds: string[]; executableCapabilityIds: string[]; presentationOrder: string[] };
+    expect(presentationGuard).toBeTruthy();
+    expect([...presentationGuard.presentationOrder].sort()).toEqual([...presentationGuard.includedDisclosureIds].sort());
+    expect(presentationGuard.executableCapabilityIds).toEqual([]);
     expect(adaSubject!.claims[0]!.sourceIds).toEqual([String(ada.sourceVersionId)]);
   });
 
