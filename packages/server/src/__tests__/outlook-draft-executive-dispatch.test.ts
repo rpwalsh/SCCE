@@ -156,6 +156,40 @@ describe("outlook draft create routed through the durable executive dispatcher (
     expect(connectors.deleted).toEqual([]);
   });
 
+  // Real defect found and fixed while auditing this dispatch: a confirmed
+  // rollback (rolled_back/rollback_failed) is a terminal task status, so a
+  // pure content-hash task identity would permanently block recreating the
+  // exact same draft content again -- forcing dispatchCapabilityTask's
+  // "not_ready" disposition forever. Bucketing the identity by a bounded
+  // time window fixes this: an immediate retry still safely dedupes
+  // (stays not_ready, never double-executes), but a later, deliberate
+  // retry of the identical content gets a fresh identity and genuinely
+  // creates the draft.
+  it("a retry within the idempotency window after a rollback stays not_ready (the window is real, not instantaneous)", async () => {
+    const executive = executiveFixture();
+    const connectors = fakeConnectors({ createFails: "partial" });
+    const windowStart = 10 * 5 * 60 * 1000;
+    await expect(dispatchOutlookDraftCreateThroughExecutive({ executive, connectors, draft, ownerId: "test.owner", now: windowStart })).rejects.toThrow();
+    await dispatchOutlookDraftRollback({ executive, connectors, draft, now: windowStart });
+
+    const recovered = fakeConnectors();
+    await expect(dispatchOutlookDraftCreateThroughExecutive({ executive, connectors: recovered, draft, ownerId: "test.owner", now: windowStart + 1_000 })).rejects.toThrow(/disposition: not_ready/);
+    expect(recovered.createCalls()).toBe(0);
+  });
+
+  it("retrying the identical draft content in a later idempotency window after a rollback genuinely creates it", async () => {
+    const executive = executiveFixture();
+    const connectors = fakeConnectors({ createFails: "partial" });
+    const windowStart = 10 * 5 * 60 * 1000;
+    await expect(dispatchOutlookDraftCreateThroughExecutive({ executive, connectors, draft, ownerId: "test.owner", now: windowStart })).rejects.toThrow();
+    await dispatchOutlookDraftRollback({ executive, connectors, draft, now: windowStart });
+
+    const recovered = fakeConnectors();
+    const result = await dispatchOutlookDraftCreateThroughExecutive({ executive, connectors: recovered, draft, ownerId: "test.owner", now: windowStart + 5 * 60 * 1000 });
+    expect(result).toMatchObject({ id: "message.1" });
+    expect(recovered.createCalls()).toBe(1);
+  });
+
   it("rollback fails closed (never fabricated) when no outlookDeleteDraft executor is configured, even though a real message id is known", async () => {
     const executive = executiveFixture();
     const connectors = fakeConnectors({ createFails: "partial" });

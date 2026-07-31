@@ -311,7 +311,11 @@ async function dispatch(
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["messageId"]);
     const input = { messageId: String(body.messageId) };
     if (!approved(context, "outlook.send_mail", input)) return pendingApproval(context, "outlook.send_mail", input);
-    return json(await context.runtime.connectors.outlookSendDraft(input.messageId, true));
+    const sendOwnerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
+    const result = context.runtime.executive
+      ? await dispatchOutlookSendDraftThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, messageId: input.messageId, ownerId: sendOwnerId })
+      : await context.runtime.connectors.outlookSendDraft(input.messageId, true);
+    return json(result);
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/calendar") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["start", "end"]);
@@ -1951,6 +1955,21 @@ function outlookPartialFailureMessageId(error: unknown): string | undefined {
 
 const OUTLOOK_DRAFT_CREATE_CAPABILITY_ID = "outlook.mail.draft.create";
 const OUTLOOK_DRAFT_DELETE_CAPABILITY_ID = "outlook.mail.draft.delete";
+/**
+ * A confirmed (non-indeterminate) failure is terminal in the executive
+ * state machine: a rollback attempt concludes at "rolled_back" or
+ * "rollback_failed", neither of which is "ready", so dispatchCapabilityTask
+ * permanently returns "not_ready" for that exact task id afterward (see
+ * capability-dispatcher.ts's early-return checks). A pure content-hash
+ * task identity would therefore permanently block recreating the exact
+ * same draft content again after one genuine failure+rollback. Bucketing
+ * the identity by a bounded time window still catches the real target
+ * scenario this dispatch exists for (a client retries the exact same
+ * request seconds later after a network timeout) while letting a later,
+ * deliberate re-attempt of the identical content get a fresh identity.
+ * Shared with outlook.mail.send's identity derivation for the same reason.
+ */
+const OUTLOOK_IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * Plan items 197-206: routes the outlook draft-create connector call
@@ -2036,17 +2055,20 @@ function outlookDraftKnownMessageId(state: Awaited<ReturnType<DurableExecutiveEp
 
 /**
  * Deterministic, content-derived episode/goal/task ids (not a random
- * idFactory-issued one) -- the same real draft content always maps to the
- * same dispatch identity, which is what lets a later, separate rollback
- * call (dispatchOutlookDraftRollback below) target the exact right task
- * without the caller needing to have kept the original dispatch's
- * in-memory state around.
+ * idFactory-issued one) -- the same real draft content within the same
+ * idempotency window always maps to the same dispatch identity, which is
+ * what lets a later, separate rollback call (dispatchOutlookDraftRollback
+ * below) target the exact right task without the caller needing to have
+ * kept the original dispatch's in-memory state around, as long as it runs
+ * within the same window (a rollback is always a prompt reaction to a
+ * failed create in the same logical operation, never a delayed one).
  */
-function outlookDraftDispatchIds(contentHash: string): { episodeId: string; goalId: string; taskId: string; policyVersionId: string } {
+function outlookDraftDispatchIds(contentHash: string, now: number): { episodeId: string; goalId: string; taskId: string; policyVersionId: string } {
+  const window = Math.floor(now / OUTLOOK_IDEMPOTENCY_WINDOW_MS);
   return {
-    episodeId: `episode_outlook_draft_${contentHash}`,
-    goalId: `goal_outlook_draft_${contentHash}`,
-    taskId: `task_outlook_draft_${contentHash}`,
+    episodeId: `episode_outlook_draft_${contentHash}_${window}`,
+    goalId: `goal_outlook_draft_${contentHash}_${window}`,
+    taskId: `task_outlook_draft_${contentHash}_${window}`,
     policyVersionId: `policy_outlook_draft_${contentHash}`
   };
 }
@@ -2056,8 +2078,10 @@ export async function dispatchOutlookDraftCreateThroughExecutive(input: {
   connectors: OutlookDraftConnectors;
   draft: { to: string[]; subject: string; body: string; cc?: string[] };
   ownerId: string;
+  now?: number;
 }): Promise<JsonValue> {
   const hasher = createHasher();
+  const now = input.now ?? Date.now();
   const contentHash = outlookDraftContentHash(input.draft);
   let capturedResult: JsonValue | undefined;
   let capturedError: unknown;
@@ -2067,9 +2091,9 @@ export async function dispatchOutlookDraftCreateThroughExecutive(input: {
     onCreateResult: result => { capturedResult = result; },
     onCreateError: error => { capturedError = error; }
   });
-  const ids = outlookDraftDispatchIds(contentHash);
+  const ids = outlookDraftDispatchIds(contentHash, now);
   const dispatched = await dispatchCapabilityTask(
-    { executive: input.executive, executors, hasher, now: () => Date.now() },
+    { executive: input.executive, executors, hasher, now: () => now },
     {
       episodeId: ids.episodeId,
       ownerId: input.ownerId,
@@ -2129,10 +2153,12 @@ export async function dispatchOutlookDraftRollback(input: {
   executive: DurableExecutiveEpisode;
   connectors: OutlookDraftConnectors;
   draft: { to: string[]; subject: string; body: string; cc?: string[] };
+  now?: number;
 }): Promise<{ disposition: string }> {
   const hasher = createHasher();
+  const now = input.now ?? Date.now();
   const contentHash = outlookDraftContentHash(input.draft);
-  const ids = outlookDraftDispatchIds(contentHash);
+  const ids = outlookDraftDispatchIds(contentHash, now);
   // dispatchRollbackAttempt requires the task to already have been
   // declared (it throws, rather than returning a disposition, for a task
   // id it has never seen) -- checking real existence first lets a caller
@@ -2148,10 +2174,100 @@ export async function dispatchOutlookDraftRollback(input: {
     knownMessageId: outlookDraftKnownMessageId(existing, ids.taskId)
   });
   const result = await dispatchRollbackAttempt(
-    { executive: input.executive, executors, hasher, now: () => Date.now() },
+    { executive: input.executive, executors, hasher, now: () => now },
     { episodeId: ids.episodeId, taskId: ids.taskId, outcomeEvidenceRefs: [] }
   );
   return { disposition: result.disposition };
+}
+
+const OUTLOOK_SEND_CAPABILITY_ID = "outlook.mail.send";
+
+type OutlookSendConnectors = { outlookSendDraft(messageId: string, approved?: boolean): Promise<JsonValue> };
+
+function outlookSendExecutorRegistry(input: { connectors: OutlookSendConnectors; messageId: string; onResult: (result: JsonValue) => void; onError: (error: unknown) => void }) {
+  const executor: CapabilityExecutor = {
+    descriptor: { capabilityId: OUTLOOK_SEND_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "unavailable" },
+    execute: async () => {
+      try {
+        const result = await input.connectors.outlookSendDraft(input.messageId, true);
+        input.onResult(result);
+        return { status: "succeeded", outputRefs: [input.messageId], evidenceRefs: [`outlook.mail.sent.${input.messageId}`], attestationRef: `outlook.mail.send.${input.messageId}` };
+      } catch (error) {
+        input.onError(error);
+        return { status: "failed", outputRefs: [], evidenceRefs: [], attestationRef: `outlook.mail.send.failed.${input.messageId}` };
+      }
+    }
+  };
+  return createCapabilityExecutorRegistry([executor]);
+}
+
+function outlookSendDispatchIds(messageId: string, now: number): { episodeId: string; goalId: string; taskId: string; policyVersionId: string } {
+  const window = Math.floor(now / OUTLOOK_IDEMPOTENCY_WINDOW_MS);
+  return {
+    episodeId: `episode_outlook_send_${messageId}_${window}`,
+    goalId: `goal_outlook_send_${messageId}_${window}`,
+    taskId: `task_outlook_send_${messageId}_${window}`,
+    policyVersionId: `policy_outlook_send_${messageId}`
+  };
+}
+
+/**
+ * Plan item 207: audited the remaining mutating connector routes for the
+ * same executor-bypass pattern the draft-create dispatch fixed. Sending an
+ * email is irreversible (rollback: "not_required", same as build/test --
+ * there is no compensating action for a message a recipient has already
+ * received), but a retried dispatch (e.g. a client timeout after the
+ * server-side send actually succeeded) must never resend the same message
+ * within the idempotency window above.
+ */
+export async function dispatchOutlookSendDraftThroughExecutive(input: {
+  executive: DurableExecutiveEpisode;
+  connectors: OutlookSendConnectors;
+  messageId: string;
+  ownerId: string;
+  now?: number;
+}): Promise<JsonValue> {
+  const hasher = createHasher();
+  const now = input.now ?? Date.now();
+  let capturedResult: JsonValue | undefined;
+  let capturedError: unknown;
+  const executors = outlookSendExecutorRegistry({
+    connectors: input.connectors,
+    messageId: input.messageId,
+    onResult: result => { capturedResult = result; },
+    onError: error => { capturedError = error; }
+  });
+  const { episodeId, goalId, taskId, policyVersionId } = outlookSendDispatchIds(input.messageId, now);
+  const dispatched = await dispatchCapabilityTask(
+    { executive: input.executive, executors, hasher, now: () => now },
+    {
+      episodeId,
+      ownerId: input.ownerId,
+      policyVersionId,
+      goal: { id: goalId, goalClassId: "goal.class.outlook_send", objectiveRef: input.messageId, requirementIds: [], ownerId: input.ownerId },
+      task: {
+        id: taskId,
+        goalId,
+        taskClassId: "task.class.outlook_send",
+        requirementIds: [],
+        dependencyTaskIds: [],
+        capabilityId: OUTLOOK_SEND_CAPABILITY_ID,
+        inputRef: input.messageId,
+        policyVersionId,
+        controls: {
+          authority: { authorityClassId: "authority.class.outlook_send", subjectId: input.ownerId, requiredScopeIds: [], state: "not_required", justificationRef: input.messageId },
+          approval: { policyId: "approval.policy.outlook_send", state: "not_required", approverClassIds: [], justificationRef: input.messageId }
+        },
+        rollback: { mode: "not_required", justificationRef: "a sent message cannot be unsent -- there is no compensating action to declare" }
+      },
+      payload: { messageId: input.messageId },
+      outcomeEvidenceRefs: []
+    }
+  );
+  if (capturedError) throw capturedError;
+  if (capturedResult) return capturedResult;
+  if (dispatched.disposition === "succeeded") return { id: input.messageId, sent: true };
+  throw new Error(`outlook send dispatch produced no result (disposition: ${dispatched.disposition})`);
 }
 
 /**
