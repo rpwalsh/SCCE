@@ -4,6 +4,7 @@ import {
   compileSparseAlignmentCandidateSupports,
   createHasher,
   solveSparseFusedUnbalancedTransport,
+  solveSparseFusedUnbalancedTransportWithResourceBudget,
   type EvidenceId,
   type GraphNode,
   type Hyperedge,
@@ -82,6 +83,44 @@ describe("sparse fused unbalanced graph-surface transport", () => {
     expect(first.iterations).toHaveLength(1);
     expect(first.iterations[0]!.sinkhornIterations).toBeLessThanOrEqual(3);
     expect(first.iterations[0]!.structuralComparisons).toBeLessThanOrEqual(1_000);
+  });
+
+  // Plan item 115: real per-batch resource-budget instrumentation
+  // (CPU/RAM/iterations), kept out of the deterministic plan itself so it
+  // never breaks replay equality (see the "is deterministic" test above).
+  it("records real elapsed time, iteration count, and working-set estimate per batch", () => {
+    const compiled = fixture();
+    const { plan, resourceUsage } = solveSparseFusedUnbalancedTransportWithResourceBudget({
+      support: compiled.supports[0]!,
+      targetIndex: compiled.targetIndex,
+      budget: {
+        maxOuterIterations: 4,
+        maxSinkhornIterations: 64,
+        maxStructuralComparisons: 100_000
+      },
+      hasher
+    });
+    expect(resourceUsage.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(resourceUsage.elapsedMs)).toBe(true);
+    expect(resourceUsage.outerIterations).toBe(plan.iterations.length);
+    expect(resourceUsage.cellCount).toBe(plan.cells.length);
+    expect(resourceUsage.rowCount).toBe(plan.rowMarginals.length);
+    expect(resourceUsage.columnCount).toBe(plan.columnMarginals.length);
+    expect(resourceUsage.estimatedWorkingBytes).toBeGreaterThan(0);
+    // The wrapped plan itself must be byte-identical to calling the
+    // unwrapped solver directly -- instrumentation must never perturb the
+    // real computation.
+    const direct = solveSparseFusedUnbalancedTransport({
+      support: compiled.supports[0]!,
+      targetIndex: compiled.targetIndex,
+      budget: {
+        maxOuterIterations: 4,
+        maxSinkhornIterations: 64,
+        maxStructuralComparisons: 100_000
+      },
+      hasher
+    });
+    expect(plan).toEqual(direct);
   });
 
   function fixture() {
