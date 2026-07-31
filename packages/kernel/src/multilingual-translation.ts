@@ -430,11 +430,44 @@ function findBestAlignment(token: string, alignments: LexicalAlignmentRecord[]) 
   return best;
 }
 
+/**
+ * Order-sensitive (normalized Levenshtein) cognate similarity. A raw
+ * distinct-character-set overlap (the previous implementation) ignores
+ * character order and position entirely, so two unrelated tokens drawn
+ * from the same small alphabet cross a naive overlap threshold by chance
+ * far too often -- edit distance is the real, standard signal for surface-
+ * form cognates/loanwords/transliterations (e.g. "München" vs "Munich"),
+ * which is what this heuristic exists to catch (anchors like URLs/dates/
+ * numbers are already handled separately by looksProtectedAnchor).
+ */
 function tokenSimilarity(a: string, b: string): number {
   if (!a || !b) return 0;
-  if (a.toLowerCase() === b.toLowerCase()) return 1;
-  const common = Array.from(new Set(a.toLowerCase().split("").filter((ch) => b.toLowerCase().includes(ch))));
-  return clamp01(common.length / Math.max(a.length, b.length));
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  if (left === right) return 1;
+  const distance = levenshteinDistance(left, right);
+  return clamp01(1 - distance / Math.max(left.length, right.length));
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const previous = new Array<number>(cols);
+  const current = new Array<number>(cols);
+  for (let j = 0; j < cols; j++) previous[j] = j;
+  for (let i = 1; i < rows; i++) {
+    current[0] = i;
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + cost
+      );
+    }
+    for (let j = 0; j < cols; j++) previous[j] = current[j]!;
+  }
+  return previous[cols - 1]!;
 }
 
 function diffTokens(left: string, right: string): string[] {
