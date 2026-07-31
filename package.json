@@ -39,6 +39,7 @@
     "rehearsal:adapter": "node tools/live-adapter-rehearsal.mjs",
   "rehearsal:sparse-ranking": "node tools/live-sparse-ranking-rehearsal.mjs",
     "rehearsal:procedural-skill": "node tools/procedural-skill-live-rehearsal.mjs",
+    "rehearsal:graph-surface-alignment-batch": "node tools/graph-surface-alignment-batch-manifest.mjs",
     "maintenance:evidence-anchors": "pnpm --dir packages/adapters-node backfill:evidence-anchors",
     "validate": "pnpm mcp:verify && pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",
     "scce": "node packages/cli/dist/index.js",
