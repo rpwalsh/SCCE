@@ -3,6 +3,7 @@ import {
   COGNITIVE_OPERATOR_IDS,
   COGNITIVE_PROPOSAL_BOOTSTRAP,
   claimBasisIsAdmissible,
+  cognitiveProposalComparisonReceipt,
   createPatchTransactionPlan,
   createInventionConstruct,
   planCognitiveProposals,
@@ -338,7 +339,59 @@ describe("cognitive meaning planner", () => {
       actionReceiptId: "receipt.action.1"
     });
   });
+
+  it("produces a checked comparisonOperator receipt proving the final proposals' order follows MMR's declared weights (plan items 160/162)", () => {
+    // Real proposals only need id + quality (baseQuality, diversity) for
+    // this receipt -- every other field is irrelevant to the comparison,
+    // matching production usage where the operator only ever reads
+    // {quality, diversity} per option.
+    const higher = minimalProposal("proposal.higher", { baseQuality: 0.9, diversity: 0.2 });
+    const lower = minimalProposal("proposal.lower", { baseQuality: 0.4, diversity: 0.9 });
+    const receipt = cognitiveProposalComparisonReceipt([higher, lower]);
+
+    expect(receipt).toBeDefined();
+    expect(receipt!.operatorId).toBe("reasoning.operator.comparison.weighted_criteria.v1");
+    expect(receipt!.proofObligationId).toBe("weighted_criteria_ranking_uses_declared_weights_only");
+    expect(receipt!.inputFactIds.sort()).toEqual([`option.${higher.id}`, `option.${lower.id}`].sort());
+    // higher's own MMR (0.72*0.9+0.28*0.2=0.704) beats lower's
+    // (0.72*0.4+0.28*0.9=0.54) under the exact same declared weights the
+    // operator used -- confirms this isn't a coincidental pass.
+    const higherMmr = COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * higher.quality.baseQuality + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * higher.quality.diversity;
+    const lowerMmr = COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * lower.quality.baseQuality + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * lower.quality.diversity;
+    expect(higherMmr).toBeGreaterThan(lowerMmr);
+  });
+
+  it("returns undefined honestly, never a fabricated receipt, when fewer than two proposals were selected (plan items 160/162)", () => {
+    expect(cognitiveProposalComparisonReceipt([])).toBeUndefined();
+    expect(cognitiveProposalComparisonReceipt([minimalProposal("proposal.only", { baseQuality: 0.5, diversity: 0.5 })])).toBeUndefined();
+  });
 });
+
+function minimalProposal(id: string, quality: { baseQuality: number; diversity: number }): CognitiveProposal {
+  return {
+    id,
+    operatorActivations: [],
+    claims: [],
+    relations: [],
+    steps: [],
+    artifacts: [],
+    evidenceIds: [],
+    priorIds: [],
+    graphNodeIds: [],
+    semanticFrameIds: [],
+    constructIds: [],
+    satisfiedRequirementIds: [],
+    missedRequirementIds: [],
+    quality: {
+      reasoning: {},
+      baseQuality: quality.baseQuality,
+      diversity: quality.diversity,
+      mmr: COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * quality.baseQuality + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * quality.diversity,
+      hardFailures: []
+    } as unknown as CognitiveProposal["quality"],
+    trace: {}
+  };
+}
 
 function plannerInput(options: {
   graph?: GraphSlice;

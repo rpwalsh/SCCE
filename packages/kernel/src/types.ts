@@ -986,6 +986,8 @@ export interface TurnResult {
   episodeConsolidation?: JsonValue;
   /** Plan items 213-214: this turn's construct:semantic_answer facts (if any), consolidated by subject + canonicalized value. Distinct claimed values for the same subject are preserved as a genuine disagreement (contradictory: true), never collapsed into false consensus. Absent (not empty) when the turn's winning candidate carries no semantic_answer construct. */
   semanticConsolidation?: JsonValue;
+  /** Plan items 160/162: a checked reasoning-operators.ts comparisonOperator receipt proving the final selected cognitive proposals' relative order follows MMR's declared weights. Absent when fewer than two proposals were selected. */
+  cognitiveProposalComparison?: JsonValue;
   /** Plan items 183-186, 189-190: issue-to-symbol localization plus affected-test prediction over repo files supplied via metadata.repoFiles. Absent (not empty) when no repo files were supplied -- never fabricated. */
   repoCognition?: JsonValue;
   actionGraph?: JsonValue;
