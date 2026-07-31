@@ -118,19 +118,14 @@ describe("multilingual translation", () => {
   // Plan item 123: a synthetic constructed test language with no real
   // linguistic support anywhere in the system.
   describe("synthetic constructed test language (zero real linguistic support)", () => {
-    it("real defect surfaced by this held-out test: character-bag token similarity spuriously 'aligns' unrelated constructed-language words above the reliability threshold", () => {
-      // Two independently made-up sentences with zero real correspondence.
-      // isReliableAlignment only requires tokenSimilarity's raw distinct-
-      // character-overlap score >= 0.35 with no positional/co-occurrence
-      // evidence -- for short Latin-alphabet tokens that threshold is
-      // crossed by chance far too often, so this fabricates confident
-      // "translations" for most of the sentence instead of marking it
-      // uncertain. Documented honestly here as a real, currently-open gap
-      // (not silently fixed or hidden) -- a stronger, position-aware or
-      // corpus-frequency-aware alignment score is the real fix, out of
-      // scope for this test-only item.
-      const source = "Zolti fravendish korumbe glasti fenumbra.";
-      const target = "Xelori nafundish trovembe zasnu quorindra.";
+    it("marks every constructed-language token uncertain and never invents a plausible-looking translation", () => {
+      // Two independently made-up sentences with zero real correspondence
+      // and no accidental shared substrings. tokenSimilarity is now
+      // order-sensitive (normalized Levenshtein), not raw character-bag
+      // overlap, so unrelated tokens drawn from the same alphabet no
+      // longer cross the reliability threshold by coincidence.
+      const source = "Zolti kwerbin plazmoux ghatven ruxifel.";
+      const target = "Ombakash treludin fyorsemp quintal wrembex.";
       const sourceProfile = buildLanguageProfile(source);
       const targetProfile = buildLanguageProfile(target);
       const alignment = trainLexicalAlignment(source, target, sourceProfile, targetProfile);
@@ -138,8 +133,24 @@ describe("multilingual translation", () => {
 
       const sourceTokens = source.match(/\p{L}[\p{L}\p{N}_-]*/gu) ?? [];
       expect(sourceTokens.length).toBeGreaterThan(0);
-      expect(plan.uncertainTerms.length).toBeLessThan(sourceTokens.length);
-      expect(plan.alignmentCoverage).toBeGreaterThan(0);
+      for (const token of sourceTokens) {
+        expect(plan.uncertainTerms).toContain(token);
+        expect(plan.targetText).toContain(token);
+      }
+      expect(plan.alignmentCoverage).toBe(0);
+    });
+
+    it("still recognizes real cross-lingual cognates by order-preserving similarity, not just raw character overlap", () => {
+      const cognatePairs: Array<[string, string]> = [
+        ["telephone", "telefono"],
+        ["information", "informacion"],
+        ["chocolate", "chocolat"]
+      ];
+      for (const [source, target] of cognatePairs) {
+        const alignment = trainLexicalAlignment(source, target, buildLanguageProfile(source), buildLanguageProfile(target));
+        expect(alignment.lexicalPairs[0]).toMatchObject({ source, target });
+        expect(alignment.lexicalPairs[0]!.score).toBeGreaterThanOrEqual(0.35);
+      }
     });
 
     it("does not fabricate output for a protected numeric/date/url anchor even inside an otherwise-unrecognized constructed sentence", () => {
