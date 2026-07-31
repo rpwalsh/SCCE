@@ -11,7 +11,7 @@ import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, 
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
-import { planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
+import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
 import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
@@ -1619,6 +1619,17 @@ export function createProductionTurnRuntime(options: {
           }))
         })
       })));
+      // Plan items 160/162: a real, checked reasoning-operators.ts
+      // comparisonOperator receipt proving the final selected cognitive
+      // proposals' relative order really does follow MMR's declared
+      // weights (COGNITIVE_PROPOSAL_BOOTSTRAP.mmr), computed from the same
+      // quality/diversity values selectWithMmr's own greedy process already
+      // produced -- not a recomputation or replacement of that selection.
+      // Absent (not fabricated) whenever fewer than two proposals exist.
+      const cognitiveProposalComparison = cognitiveProposalComparisonReceipt(cognitiveProposals);
+      if (cognitiveProposalComparison) {
+        events.push(await append(eventFactory.create({ episodeId, typeId: "ReasoningOperatorApplied", payload: toJsonValue(cognitiveProposalComparison) })));
+      }
       const candidateFieldStarted = Date.now();
       const candidateField = candidates.generate({
         requestText: input.text,
@@ -2494,6 +2505,7 @@ export function createProductionTurnRuntime(options: {
           workingMemory: toJsonValue(candidateWorkingMemory),
           episodeConsolidation,
           semanticConsolidation,
+          cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
           repoCognition,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
@@ -2626,6 +2638,7 @@ export function createProductionTurnRuntime(options: {
         workingMemory: toJsonValue(candidateWorkingMemory),
         episodeConsolidation,
         semanticConsolidation,
+        cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
         repoCognition,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,

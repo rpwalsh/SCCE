@@ -4,6 +4,14 @@ import type { InventionConstruct } from "./prediction.js";
 import type { TranslationPlan } from "./translation.js";
 import { canonicalStringify, clamp01, createHasher, mean, symbolizeData, toJsonValue } from "./primitives.js";
 import { projectGraphEdgeRelationPotential } from "./relation-potential.js";
+import {
+  addReasoningFact,
+  applyReasoningOperator,
+  comparisonOperator,
+  EMPTY_REASONING_GRAPH,
+  type ReasoningFact,
+  type ReasoningOperatorReceipt
+} from "./reasoning-operators.js";
 import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 import {
   COGNITIVE_OPERATOR_IDS,
@@ -250,6 +258,40 @@ export function planCognitiveProposals(input: CognitivePlannerInput): CognitiveP
   const scored = drafts.map(draft => scoreDraft(input, draft));
   const selected = selectWithMmr(scored, input.proposalMemory ?? [], maxProposals);
   return selected.map(({ draft, diversity, mmr }, rank) => finalizeProposal(draft, diversity, mmr, rank));
+}
+
+/**
+ * Plan items 160/162 wiring. selectWithMmr's own ranking (above) is a
+ * greedy sequential process -- diversity is recomputed against whatever is
+ * already selected at each step, so it cannot be replaced wholesale by a
+ * one-shot weighted comparison without changing real selection behavior.
+ * But MMR(g)=0.72*quality(g)+0.28*diversity(g,S) (COGNITIVE_PROPOSAL_
+ * BOOTSTRAP.mmr) is itself an exact linear weighted sum over exactly the
+ * two criteria already stored on each finalized proposal
+ * (quality.baseQuality, quality.diversity) -- precisely
+ * reasoning-operators.ts's comparisonOperator's own formula, not an
+ * approximation of it. Running the real declared weights through that
+ * checked, typed operator over the final selected set produces a formal,
+ * auditable receipt proving the relative order among them really does
+ * follow the declared weights, not a different or drifted formula --
+ * without recomputing or replacing the greedy selection itself. Returns
+ * undefined honestly (not a fabricated receipt) when fewer than two
+ * proposals were selected, matching comparisonOperator's own precondition.
+ */
+export function cognitiveProposalComparisonReceipt(
+  proposals: readonly CognitiveProposal[]
+): ReasoningOperatorReceipt | undefined {
+  if (proposals.length < 2) return undefined;
+  const facts: ReasoningFact[] = proposals.map(proposal => ({
+    id: `option.${proposal.id}`,
+    kindId: "option",
+    data: { criteria: { quality: proposal.quality.baseQuality, diversity: proposal.quality.diversity } } as unknown as JsonValue
+  }));
+  const graph = facts.reduce(addReasoningFact, EMPTY_REASONING_GRAPH);
+  const operator = comparisonOperator(COGNITIVE_PROPOSAL_BOOTSTRAP.mmr);
+  const inputFactIds = facts.map(fact => fact.id);
+  if (!operator.preconditionsSatisfied(graph, inputFactIds)) return undefined;
+  return applyReasoningOperator(operator, graph, inputFactIds).receipt;
 }
 
 function translationDrafts(input: CognitivePlannerInput, operators: ActivatedOperator[]): ProposalDraft[] {
