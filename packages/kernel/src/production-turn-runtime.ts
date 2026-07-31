@@ -50,7 +50,7 @@ import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
 import { createJudge } from "./judge.js";
-import { jsonRecord, kernelNumber, kernelString, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { jsonRecord, kernelNumber, kernelString, kernelStringArray, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import {
   mergeCorrectionRules,
   pcaForceForMouthSurface,
@@ -145,6 +145,7 @@ import { createSafetyRailEngine } from "./safety-rail-engine.js";
 import { createActionPlanner, createCapabilityRegistry } from "./safety.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
+import { consolidateSemanticClaims, type SemanticClaimObservation } from "./semantic-memory-consolidation.js";
 import { createSemanticMemoryIndex } from "./semantic-memory-index.js";
 import { createSemanticProofSystem } from "./semantic-proof-system.js";
 import type { ScceKernelDeps } from "./storage.js";
@@ -195,6 +196,40 @@ export interface ProductionTurnRuntimeState {
   lastOutput: string;
   lastTurnTiming?: TurnResult["timing"];
   lastField?: TurnResult["field"];
+}
+
+// Plan items 213-214: reads a construct:semantic_answer node's real
+// selectedFacts (attachLocalEvidenceAnswerConstruct's output, subject/
+// predicate/object/sourceVersionId/evidenceIds) and maps each fact into a
+// SemanticClaimObservation. Returns [] (not fabricated placeholder claims)
+// for any turn whose winning candidate carries no such construct.
+function semanticClaimObservationsFromConstruct(
+  construct: ConstructGraph,
+  hasher: ReturnType<typeof createHasher>,
+  observedAt: number
+): SemanticClaimObservation[] {
+  const node = construct.nodes.find(candidate => candidate.kind === "construct:semantic_answer");
+  if (!node) return [];
+  const metadata = jsonRecord(node.metadata);
+  const rawFacts = Array.isArray(metadata.selectedFacts) ? metadata.selectedFacts : [];
+  const observations: SemanticClaimObservation[] = [];
+  rawFacts.forEach((rawFact, index) => {
+    const fact = jsonRecord(rawFact as JsonValue);
+    const subjectId = kernelString(fact.subject);
+    const predicate = kernelString(fact.predicate);
+    const object = kernelString(fact.object) ?? "";
+    if (!subjectId || !predicate) return;
+    const sourceId = kernelString(fact.sourceVersionId) ?? "";
+    observations.push({
+      id: `semantic_claim_observation_${hasher.digestHex(JSON.stringify({ subjectId, predicate, object, sourceId, index })).slice(0, 32)}`,
+      subjectId,
+      canonicalValue: { predicate, object },
+      sourceId,
+      observedAt,
+      evidenceIds: kernelStringArray(fact.evidenceIds)
+    });
+  });
+  return observations;
 }
 
 export function createProductionTurnRuntime(options: {
@@ -413,6 +448,21 @@ export function createProductionTurnRuntime(options: {
       const consolidateCurrentEpisode = async (): Promise<JsonValue> => {
         const consolidated = consolidateEpisode(events, { requestText: input.text });
         events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeConsolidated", payload: toJsonValue(consolidated) })));
+        return toJsonValue(consolidated);
+      };
+      // Plan items 213-214: when the winning candidate carries a real
+      // construct:semantic_answer node (attachLocalEvidenceAnswerConstruct's
+      // selectedFacts), consolidate its subject/predicate/object facts by
+      // subject + canonicalized value. Distinct claimed values for the same
+      // subject stay separate (a genuine, preserved disagreement) rather than
+      // collapsing into false consensus -- nothing here decides which claim
+      // is right. Absent (not just empty), never fabricated, when the turn's
+      // construct carries no semantic-answer facts at all.
+      const consolidateCurrentSemanticClaims = async (constructGraph: ConstructGraph): Promise<JsonValue | undefined> => {
+        const observations = semanticClaimObservationsFromConstruct(constructGraph, hasher, clock.now());
+        if (!observations.length) return undefined;
+        const consolidated = consolidateSemanticClaims(observations);
+        events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticClaimsConsolidated", payload: toJsonValue(consolidated) })));
         return toJsonValue(consolidated);
       };
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
@@ -2380,6 +2430,7 @@ export function createProductionTurnRuntime(options: {
         events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, maintenanceDeferred: true, timing } })));
         runtimeState.lastTurnTiming = timing;
         const episodeConsolidation = await consolidateCurrentEpisode();
+        const semanticConsolidation = await consolidateCurrentSemanticClaims(spokenConstructGraph);
         kernelTrace({
           stage: "turn.output",
           label: "kernel.turn",
@@ -2412,6 +2463,7 @@ export function createProductionTurnRuntime(options: {
           judge: judged.audit,
           workingMemory: toJsonValue(candidateWorkingMemory),
           episodeConsolidation,
+          semanticConsolidation,
           repoCognition,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
@@ -2510,6 +2562,7 @@ export function createProductionTurnRuntime(options: {
       events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, timing } })));
       runtimeState.lastTurnTiming = timing;
       const episodeConsolidation = await consolidateCurrentEpisode();
+      const semanticConsolidation = await consolidateCurrentSemanticClaims(spokenConstructGraph);
       kernelTrace({
         stage: "turn.output",
         label: "kernel.turn",
@@ -2542,6 +2595,7 @@ export function createProductionTurnRuntime(options: {
         judge: judged.audit,
         workingMemory: toJsonValue(candidateWorkingMemory),
         episodeConsolidation,
+        semanticConsolidation,
         repoCognition,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,

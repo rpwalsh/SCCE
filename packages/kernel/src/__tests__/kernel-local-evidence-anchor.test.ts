@@ -35,6 +35,7 @@ import {
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
 import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "../episodic-memory-consolidation.js";
+import type { SemanticConsolidationResult } from "../semantic-memory-consolidation.js";
 import { metadataWithRuntimeReplanMotion, priorRejectedHypothesesFromCandidates, type RuntimeReplanMotion } from "../runtime-motion.js";
 import type { CandidateSurface } from "../candidate-contract.js";
 
@@ -221,11 +222,25 @@ describe("kernel local evidence source anchoring", () => {
     // from the turn's real event list -- nothing fabricated.
     const episodeConsolidation = result.episodeConsolidation as unknown as ConsolidatedEpisode;
     expect(episodeConsolidation.episodeId).toBe(result.episodeId);
-    // One less than result.events.length: the "EpisodeConsolidated" event
-    // recording this very summary is appended immediately afterward, so it
-    // cannot itself be one of the events the summary was built from.
-    expect(episodeConsolidation.eventCount).toBe(result.events.length - 1);
+    // Two less than result.events.length: the "EpisodeConsolidated" and
+    // "SemanticClaimsConsolidated" events recording this summary and the
+    // semantic-consolidation below are both appended immediately afterward,
+    // so neither can itself be one of the events this summary was built from.
+    expect(episodeConsolidation.eventCount).toBe(result.events.length - 2);
     expect(verifyConsolidatedEpisodeRecoverable(episodeConsolidation, result.events)).toBe(true);
+    // Plan items 213-214: this turn's winning candidate carries a real
+    // construct:semantic_answer node (a genuine source-grounded answer about
+    // Ada Lovelace), so its selectedFacts get consolidated by subject +
+    // canonicalized value -- traceable back to the same evidence id already
+    // asserted above, not fabricated.
+    const semanticConsolidation = result.semanticConsolidation as unknown as SemanticConsolidationResult[];
+    expect(Array.isArray(semanticConsolidation)).toBe(true);
+    expect(semanticConsolidation.length).toBeGreaterThan(0);
+    const adaSubject = semanticConsolidation.find(row => row.subjectId.toLocaleLowerCase().includes("ada lovelace"));
+    expect(adaSubject).toBeTruthy();
+    expect(adaSubject!.claims.length).toBeGreaterThan(0);
+    expect(adaSubject!.claims[0]!.evidenceIds).toEqual([String(ada.id)]);
+    expect(adaSubject!.claims[0]!.sourceIds).toEqual([String(ada.sourceVersionId)]);
   });
 
   it("surfaces real repo-cognition (issue localization + affected-test prediction) on TurnResult when metadata.repoFiles is supplied (plan items 183-186, 189-190)", async () => {
