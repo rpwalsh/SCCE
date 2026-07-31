@@ -988,6 +988,8 @@ export interface TurnResult {
   semanticConsolidation?: JsonValue;
   /** Plan items 160/162: a checked reasoning-operators.ts comparisonOperator receipt proving the final selected cognitive proposals' relative order follows MMR's declared weights. Absent when fewer than two proposals were selected. */
   cognitiveProposalComparison?: JsonValue;
+  /** Plan items 229-230: pragmatics-authorization-guard.ts applied to this turn's real caveat bindings, capability permissions, and dialogue-pragmatics preferences -- structurally proves presentation preference never suppressed a required disclosure or authorized a capability. */
+  presentationGuard?: JsonValue;
   /** Plan items 183-186, 189-190: issue-to-symbol localization plus affected-test prediction over repo files supplied via metadata.repoFiles. Absent (not empty) when no repo files were supplied -- never fabricated. */
   repoCognition?: JsonValue;
   actionGraph?: JsonValue;
