@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -301,7 +301,11 @@ async function dispatch(
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["to", "subject", "body"]);
     const input = { to: stringArray(body.to), subject: String(body.subject), body: String(body.body), cc: body.cc ? stringArray(body.cc) : undefined };
     if (!approved(context, "outlook.create_draft", input)) return pendingApproval(context, "outlook.create_draft", input);
-    return json(await context.runtime.connectors.outlookCreateDraft({ ...input, approved: true }));
+    const ownerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
+    const result = context.runtime.executive
+      ? await dispatchOutlookDraftCreateThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, draft: input, ownerId })
+      : await context.runtime.connectors.outlookCreateDraft({ ...input, approved: true });
+    return json(result);
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/send") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["messageId"]);
@@ -1931,6 +1935,223 @@ export function parseWorkspacePatchRequest(value: unknown): WorkspacePatchApiReq
     throw new HttpError(400, `invalid content-addressed patch plan: ${error instanceof Error ? error.message : String(error)}`);
   }
   return { schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA, workspaceId, plan, validationPolicyId };
+}
+
+function outlookMessageIdField(value: JsonValue, key: string): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const field = (value as Record<string, JsonValue>)[key];
+  return typeof field === "string" ? field : "";
+}
+
+function outlookPartialFailureMessageId(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const messageId = (error as Record<string, unknown>).messageId;
+  return typeof messageId === "string" ? messageId : undefined;
+}
+
+const OUTLOOK_DRAFT_CREATE_CAPABILITY_ID = "outlook.mail.draft.create";
+const OUTLOOK_DRAFT_DELETE_CAPABILITY_ID = "outlook.mail.draft.delete";
+
+/**
+ * Plan items 197-206: routes the outlook draft-create connector call
+ * (Phase 3's already-approved mutating capability) through the same real,
+ * already-tested durable executive dispatcher executeWorkspacePatchTransactionThroughExecutive
+ * uses -- a real idempotency key (hash of the exact message content) so a
+ * retried identical request cannot create a duplicate draft, and a real
+ * declared rollback (mode: "capability", outlook.mail.draft.delete) wired
+ * to ConfiguredConnectorAdapter's real outlookDeleteDraft, not a fabricated
+ * "supported" claim. The approval decision itself already happened in the
+ * HTTP handler (approved(context, "outlook.create_draft", ...)) before
+ * this is reached, matching the workspace-patch wrapper's own reasoning.
+ */
+type OutlookDraftConnectors = {
+  outlookCreateDraft(input: { to: string[]; subject: string; body: string; cc?: string[]; approved?: boolean }): Promise<JsonValue>;
+  outlookDeleteDraft?(messageId: string, approved?: boolean): Promise<JsonValue>;
+};
+
+function outlookDraftContentHash(draft: { to: string[]; subject: string; body: string; cc?: string[] }): string {
+  return createHasher().digestHex(canonicalStringify({ to: draft.to, subject: draft.subject, body: draft.body, cc: draft.cc ?? [] })).slice(0, 32);
+}
+
+function outlookDraftExecutorRegistry(input: {
+  connectors: OutlookDraftConnectors;
+  contentHash: string;
+  onCreateResult: (result: JsonValue) => void;
+  onCreateError: (error: unknown) => void;
+  /**
+   * dispatchRollbackAttempt always invokes executor.rollback with an empty
+   * payload (see capability-dispatcher.ts) -- the create's own receipt
+   * (state.receipts, keyed via the "execution" attempt) is the only real
+   * source for the message id a rollback needs to delete, so the caller
+   * threads it in here rather than expecting it on the rollback request.
+   */
+  knownMessageId?: string;
+}) {
+  const createExecutor: CapabilityExecutor = {
+    descriptor: { capabilityId: OUTLOOK_DRAFT_CREATE_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "compensating-action" },
+    execute: async request => {
+      try {
+        const draft = request.payload as unknown as { to: string[]; subject: string; body: string; cc?: string[] };
+        const result = await input.connectors.outlookCreateDraft({ ...draft, approved: true });
+        input.onCreateResult(result);
+        const messageId = outlookMessageIdField(result, "id");
+        return { status: "succeeded", outputRefs: messageId ? [messageId] : [], evidenceRefs: [`outlook.draft.created.${input.contentHash}`], attestationRef: `outlook.draft.create.${input.contentHash}` };
+      } catch (error) {
+        input.onCreateError(error);
+        // Some connector failures still know a real created id (e.g. the
+        // response confirming success was lost after the draft actually
+        // existed server-side) -- preserving it here is what lets a later
+        // rollback delete the real thing instead of failing closed with
+        // nothing to clean up.
+        const partialMessageId = outlookPartialFailureMessageId(error);
+        return { status: "failed", outputRefs: partialMessageId ? [partialMessageId] : [], evidenceRefs: [], attestationRef: `outlook.draft.create.failed.${input.contentHash}` };
+      }
+    }
+  };
+  const deleteExecutor: CapabilityExecutor = {
+    descriptor: { capabilityId: OUTLOOK_DRAFT_DELETE_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "unavailable" },
+    execute: async () => ({ status: "failed" as const, outputRefs: [], evidenceRefs: [], attestationRef: `outlook.draft.delete.not_a_forward_action.${input.contentHash}` }),
+    rollback: async () => {
+      const messageId = input.knownMessageId;
+      if (!messageId || !input.connectors.outlookDeleteDraft) {
+        return { status: "failed", outputRefs: [], evidenceRefs: [], attestationRef: `outlook.draft.delete.no_message_id.${input.contentHash}` };
+      }
+      await input.connectors.outlookDeleteDraft(messageId, true);
+      return { status: "succeeded", outputRefs: [messageId], evidenceRefs: [`outlook.draft.deleted.${messageId}`], attestationRef: `outlook.draft.delete.${messageId}` };
+    }
+  };
+  return createCapabilityExecutorRegistry([createExecutor, deleteExecutor]);
+}
+
+/** The real id a prior *successful* create attempt's receipt recorded for this task, if any. */
+function outlookDraftKnownMessageId(state: Awaited<ReturnType<DurableExecutiveEpisode["load"]>>, taskId: string): string | undefined {
+  for (const attempt of Object.values(state.attempts)) {
+    if (attempt.taskId !== taskId || attempt.kind !== "execution") continue;
+    const receipt = attempt.receiptId ? state.receipts[attempt.receiptId] : undefined;
+    const messageId = receipt?.outputRefs[0];
+    if (messageId) return messageId;
+  }
+  return undefined;
+}
+
+/**
+ * Deterministic, content-derived episode/goal/task ids (not a random
+ * idFactory-issued one) -- the same real draft content always maps to the
+ * same dispatch identity, which is what lets a later, separate rollback
+ * call (dispatchOutlookDraftRollback below) target the exact right task
+ * without the caller needing to have kept the original dispatch's
+ * in-memory state around.
+ */
+function outlookDraftDispatchIds(contentHash: string): { episodeId: string; goalId: string; taskId: string; policyVersionId: string } {
+  return {
+    episodeId: `episode_outlook_draft_${contentHash}`,
+    goalId: `goal_outlook_draft_${contentHash}`,
+    taskId: `task_outlook_draft_${contentHash}`,
+    policyVersionId: `policy_outlook_draft_${contentHash}`
+  };
+}
+
+export async function dispatchOutlookDraftCreateThroughExecutive(input: {
+  executive: DurableExecutiveEpisode;
+  connectors: OutlookDraftConnectors;
+  draft: { to: string[]; subject: string; body: string; cc?: string[] };
+  ownerId: string;
+}): Promise<JsonValue> {
+  const hasher = createHasher();
+  const contentHash = outlookDraftContentHash(input.draft);
+  let capturedResult: JsonValue | undefined;
+  let capturedError: unknown;
+  const executors = outlookDraftExecutorRegistry({
+    connectors: input.connectors,
+    contentHash,
+    onCreateResult: result => { capturedResult = result; },
+    onCreateError: error => { capturedError = error; }
+  });
+  const ids = outlookDraftDispatchIds(contentHash);
+  const dispatched = await dispatchCapabilityTask(
+    { executive: input.executive, executors, hasher, now: () => Date.now() },
+    {
+      episodeId: ids.episodeId,
+      ownerId: input.ownerId,
+      policyVersionId: ids.policyVersionId,
+      goal: { id: ids.goalId, goalClassId: "goal.class.outlook_draft", objectiveRef: contentHash, requirementIds: [], ownerId: input.ownerId },
+      task: {
+        id: ids.taskId,
+        goalId: ids.goalId,
+        taskClassId: "task.class.outlook_draft",
+        requirementIds: [],
+        dependencyTaskIds: [],
+        capabilityId: OUTLOOK_DRAFT_CREATE_CAPABILITY_ID,
+        inputRef: contentHash,
+        policyVersionId: ids.policyVersionId,
+        controls: {
+          authority: { authorityClassId: "authority.class.outlook_draft", subjectId: input.ownerId, requiredScopeIds: [], state: "not_required", justificationRef: contentHash },
+          approval: { policyId: "approval.policy.outlook_draft", state: "not_required", approverClassIds: [], justificationRef: contentHash }
+        },
+        rollback: {
+          mode: "capability",
+          planId: `plan.rollback.outlook_draft.${contentHash}`,
+          capabilityId: OUTLOOK_DRAFT_DELETE_CAPABILITY_ID,
+          inputRef: contentHash,
+          justificationRef: contentHash,
+          controls: {
+            authority: { authorityClassId: "authority.class.outlook_draft_delete", subjectId: input.ownerId, requiredScopeIds: [], state: "not_required", justificationRef: contentHash },
+            approval: { policyId: "approval.policy.outlook_draft_delete", state: "not_required", approverClassIds: [], justificationRef: contentHash }
+          }
+        }
+      },
+      payload: input.draft as unknown as JsonValue,
+      outcomeEvidenceRefs: []
+    }
+  );
+  if (capturedError) throw capturedError;
+  if (capturedResult) return capturedResult;
+  // A duplicate/replayed dispatch never re-invokes the executor (that is
+  // the entire point of idempotency), so capturedResult is only ever set
+  // on the call that actually ran it. Reconstruct the honest minimum from
+  // the real, already-recorded receipt instead -- the message id it
+  // actually created, not a fabricated full response body.
+  const replayedMessageId = dispatched.receipt?.outputRefs[0];
+  if (dispatched.disposition === "succeeded" && replayedMessageId) return { id: replayedMessageId };
+  throw new Error(`outlook draft dispatch produced no result (disposition: ${dispatched.disposition})`);
+}
+
+/**
+ * Plan items 205-206: the real compensating action for a previously
+ * created draft, addressed by the exact same content the create dispatch
+ * used (not a freshly-random id) so a caller only needs the original draft
+ * fields to roll it back later. Fails closed (no_rollback_executor /
+ * no_rollback_needed, both real dispatchRollbackAttempt dispositions) --
+ * never fabricates a successful rollback when the create task never ran or
+ * when no compensating executor is registered.
+ */
+export async function dispatchOutlookDraftRollback(input: {
+  executive: DurableExecutiveEpisode;
+  connectors: OutlookDraftConnectors;
+  draft: { to: string[]; subject: string; body: string; cc?: string[] };
+}): Promise<{ disposition: string }> {
+  const hasher = createHasher();
+  const contentHash = outlookDraftContentHash(input.draft);
+  const ids = outlookDraftDispatchIds(contentHash);
+  // dispatchRollbackAttempt requires the task to already have been
+  // declared (it throws, rather than returning a disposition, for a task
+  // id it has never seen) -- checking real existence first lets a caller
+  // that never created this exact draft get an honest "no_rollback_needed"
+  // instead of an unhandled exception.
+  const existing = await input.executive.load(ids.episodeId);
+  if (!existing.tasks[ids.taskId]) return { disposition: "no_rollback_needed" };
+  const executors = outlookDraftExecutorRegistry({
+    connectors: input.connectors,
+    contentHash,
+    onCreateResult: () => {},
+    onCreateError: () => {},
+    knownMessageId: outlookDraftKnownMessageId(existing, ids.taskId)
+  });
+  const result = await dispatchRollbackAttempt(
+    { executive: input.executive, executors, hasher, now: () => Date.now() },
+    { episodeId: ids.episodeId, taskId: ids.taskId, outcomeEvidenceRefs: [] }
+  );
+  return { disposition: result.disposition };
 }
 
 /**
