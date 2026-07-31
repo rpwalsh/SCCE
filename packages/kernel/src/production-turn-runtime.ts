@@ -107,6 +107,7 @@ import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./p
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
+import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
@@ -1947,11 +1948,40 @@ export function createProductionTurnRuntime(options: {
             const executiveDispatch = deps.executive
               ? await dispatchBuildTestThroughExecutive({ deps, episodeId, construct, capabilityId: capability.id, planId: String(plan.id), hasher, clock })
               : undefined;
-            buildTest = executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct });
+            // Plan items 215-216: mine the real, durable event ledger for a
+            // proven build/test skill (the exact same real dispatch,
+            // succeeded at least minimumSuccessCount times across real past
+            // episodes). Compilation always runs here, so item 215 is a real,
+            // observable step every time this dispatch is reached, not only
+            // when it happens to be consumed. When a skill exists and no
+            // executive dispatch already produced a result, run the real
+            // capability through executeSkill's typed program instead of a
+            // bare call -- the real capability still runs exactly once
+            // either way; this only adds proven-sequence provenance
+            // (skillId, sourceEpisodeIds) to the trace.
+            const compiledBuildTestSkill = await compileBuildTestSkillFromLedger(deps.storage.events);
+            if (compiledBuildTestSkill) {
+              events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillCompiled", payload: toJsonValue(compiledBuildTestSkill) })));
+            }
+            let proceduralSkillExecution: JsonValue | undefined;
+            if (!executiveDispatch && compiledBuildTestSkill) {
+              const skillRun = await executeBuildTestSkill({ skill: compiledBuildTestSkill, episodeId, construct, executeProgram: deps.buildTest.executeProgram });
+              buildTest = skillRun.buildTest;
+              proceduralSkillExecution = toJsonValue({
+                skillId: compiledBuildTestSkill.id,
+                sourceEpisodeIds: compiledBuildTestSkill.sourceEpisodeIds,
+                ok: skillRun.execution.ok,
+                rolledBack: skillRun.execution.rolledBack
+              });
+            }
+            buildTest = buildTest ?? executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct });
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
             events.push(await append(eventFactory.create({ episodeId, typeId: "BuildExecuted", payload: { code: buildTest.build.code, durationMs: buildTest.build.durationMs, stderrHash: hasher.digestHex(buildTest.build.stderr) } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { code: buildTest.test.code, passed: buildTest.passed, repairAttempted: buildTest.repairAttempted } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: buildTest.passed ? "CapabilitySucceeded" : "CapabilityFailed", payload: { capabilityId: capability.id, planId: plan.id, passed: buildTest.passed } })));
+            if (proceduralSkillExecution) {
+              events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillExecuted", payload: proceduralSkillExecution })));
+            }
             if (executiveDispatch) {
               events.push(await append(eventFactory.create({
                 episodeId,
