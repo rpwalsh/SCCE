@@ -94,6 +94,11 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     return this.outlookJson(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(messageId)}/send`, "message-send-draft", { method: "POST", body: "", mutates: true, approved });
   }
 
+  /** Plan item 205's real compensating action: deletes an unsent draft, the exact "genuine undo" the plan itself names. Never called against a sent message -- messages that have already been sent are not draftable-deletable via this endpoint by Graph API's own semantics. */
+  async outlookDeleteDraft(messageId: string, approved = false): Promise<JsonValue> {
+    return this.outlookJson(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(messageId)}`, "message-delete-draft", { method: "DELETE", body: "", mutates: true, approved });
+  }
+
   async outlookReadCalendar(input: { start: string; end: string }): Promise<JsonValue> {
     const url = new URL("https://graph.microsoft.com/v1.0/me/calendarView");
     url.searchParams.set("startDateTime", input.start);

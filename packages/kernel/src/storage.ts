@@ -895,6 +895,7 @@ export interface ConnectorPort {
   outlookReadMessage?(messageId: string): Promise<JsonValue>;
   outlookCreateDraft?(input: { to: string[]; subject: string; body: string; cc?: string[]; approved?: boolean }): Promise<JsonValue>;
   outlookSendDraft?(messageId: string, approved?: boolean): Promise<JsonValue>;
+  outlookDeleteDraft?(messageId: string, approved?: boolean): Promise<JsonValue>;
   outlookReadCalendar?(input: { start: string; end: string }): Promise<JsonValue>;
   outlookCreateCalendarEvent?(input: { subject: string; start: string; end: string; attendees?: string[]; body?: string; approved?: boolean }): Promise<JsonValue>;
   outlookReadContacts?(query?: string): Promise<JsonValue>;
