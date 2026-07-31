@@ -980,6 +980,8 @@ export interface TurnResult {
   workingMemory?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
   episodeConsolidation?: JsonValue;
+  /** Plan items 213-214: this turn's construct:semantic_answer facts (if any), consolidated by subject + canonicalized value. Distinct claimed values for the same subject are preserved as a genuine disagreement (contradictory: true), never collapsed into false consensus. Absent (not empty) when the turn's winning candidate carries no semantic_answer construct. */
+  semanticConsolidation?: JsonValue;
   /** Plan items 183-186, 189-190: issue-to-symbol localization plus affected-test prediction over repo files supplied via metadata.repoFiles. Absent (not empty) when no repo files were supplied -- never fabricated. */
   repoCognition?: JsonValue;
   actionGraph?: JsonValue;
