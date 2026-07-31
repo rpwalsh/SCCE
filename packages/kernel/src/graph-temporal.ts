@@ -1,9 +1,11 @@
 import { clamp01, toJsonValue } from "./primitives.js";
 import type {
+  GraphEdge,
   GraphTemporalScope,
   JsonValue
 } from "./types.js";
 import type { CanonicalTemporalCoordinates } from "./canonical-temporal.js";
+import { conflictingTimelineFacts, recordTimelineFact, type TimelineFact } from "./temporal-interval-algebra.js";
 
 export interface GraphTemporalEvaluation {
   status: "valid" | "invalid" | "uncertain" | "atemporal";
@@ -92,6 +94,55 @@ export function assertProductionGraphTemporalScope(scope: GraphTemporalScope): v
     || scope.uncertainty > 1)) {
     throw new Error("unknown graph temporal uncertainty must be in [0,1]");
   }
+}
+
+/**
+ * Plan items 169-170 wiring. graph-temporal.ts's own evaluateGraphTemporalScope
+ * (above) only ever compares one interval against a single query time -- it
+ * has no multi-fact timeline or two-interval comparison at all. The real
+ * per-turn source of conflicting-subject timeline facts this needed:
+ * multiple graph edges that already share the same (source, target,
+ * relationId) -- the same "peer" grouping relation-potential.ts's own
+ * temporal-fit projection already computes -- each with its own real,
+ * bounded (validFrom and validTo both known) temporal scope. Converts each
+ * such edge into a real temporal-interval-algebra.ts TimelineFact and
+ * reports genuine Allen-algebra conflicts (overlapping, non-adjacent real-
+ * world periods) among them -- e.g. two edges both claiming the same
+ * relation held during genuinely overlapping date ranges. Edges with an
+ * open-ended (validTo undefined) or degenerate (validTo <= validFrom)
+ * scope are skipped rather than assigned a fabricated closed interval;
+ * Allen's algebra is only defined for genuine positive-length intervals.
+ */
+export function conflictingGraphEdgeIntervals(
+  edges: readonly GraphEdge[]
+): Array<[GraphEdge, GraphEdge]> {
+  const groups = new Map<string, GraphEdge[]>();
+  for (const edge of edges) {
+    const scope = edge.temporalScope;
+    if (!isKnownGraphTemporalScope(scope) || scope.status !== "known") continue;
+    if (scope.validTo === undefined || scope.validTo <= scope.validFrom) continue;
+    const key = `${String(edge.source)}${String(edge.target)}${String(edge.relationId)}`;
+    const bucket = groups.get(key) ?? [];
+    bucket.push(edge);
+    groups.set(key, bucket);
+  }
+  const conflicts: Array<[GraphEdge, GraphEdge]> = [];
+  for (const bucket of groups.values()) {
+    if (bucket.length < 2) continue;
+    let facts: TimelineFact<GraphEdge>[] = [];
+    for (const edge of bucket) {
+      const scope = edge.temporalScope as Extract<GraphTemporalScope, { status: "known" }>;
+      facts = recordTimelineFact(facts, {
+        id: String(edge.id),
+        subjectId: `${String(edge.source)}${String(edge.target)}${String(edge.relationId)}`,
+        interval: { start: scope.validFrom, end: scope.validTo! },
+        value: edge,
+        recordedAt: edge.updatedAt
+      });
+    }
+    for (const [left, right] of conflictingTimelineFacts(facts)) conflicts.push([left.value, right.value]);
+  }
+  return conflicts.sort((left, right) => String(left[0].id).localeCompare(String(right[0].id)) || String(left[1].id).localeCompare(String(right[1].id)));
 }
 
 function jsonRecord(value: JsonValue): Record<string, JsonValue> {

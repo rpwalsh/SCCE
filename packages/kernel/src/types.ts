@@ -990,6 +990,8 @@ export interface TurnResult {
   cognitiveProposalComparison?: JsonValue;
   /** Plan items 229-230: pragmatics-authorization-guard.ts applied to this turn's real caveat bindings, capability permissions, and dialogue-pragmatics preferences -- structurally proves presentation preference never suppressed a required disclosure or authorized a capability. */
   presentationGuard?: JsonValue;
+  /** Plan items 169-170: real Allen-relation conflicts among this turn's graph edges (same source/target/relationId, genuinely overlapping bounded temporal scopes). */
+  temporalConflicts?: JsonValue;
   /** Plan items 183-186, 189-190: issue-to-symbol localization plus affected-test prediction over repo files supplied via metadata.repoFiles. Absent (not empty) when no repo files were supplied -- never fabricated. */
   repoCognition?: JsonValue;
   actionGraph?: JsonValue;
