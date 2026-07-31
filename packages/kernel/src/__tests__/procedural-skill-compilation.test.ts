@@ -73,7 +73,7 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
   function recordingContext(handlers: Record<string, (input: unknown) => { ok: boolean; output?: unknown }>) {
     const received: Array<{ actionType: string; input: unknown }> = [];
     const context: SkillExecutionContext = {
-      executeStep(step) {
+      async executeStep(step) {
         received.push({ actionType: step.actionType, input: step.input });
         const handler = handlers[step.actionType];
         return handler ? (handler(step.input) as { ok: boolean; output?: import("../types.js").JsonValue }) : { ok: false };
@@ -82,7 +82,7 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
     return { context, received };
   }
 
-  it("executes every step from the typed program and never receives any conversational text", () => {
+  it("executes every step from the typed program and never receives any conversational text", async () => {
     const skill = compileSkillFromEpisodes({
       episodes: [successfulEpisode("e1"), successfulEpisode("e2"), successfulEpisode("e3")],
       minimumSuccessCount: 3,
@@ -94,7 +94,7 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
       clear_queue: () => ({ ok: true }),
       start_service: () => ({ ok: true, output: { restarted: true } })
     });
-    const result = executeSkill(skill, context);
+    const result = await executeSkill(skill, context);
     expect(result.ok).toBe(true);
     expect(result.stepResults.map(step => step.actionType)).toEqual(["stop_service", "clear_queue", "start_service"]);
     expect(result.stepResults[2]?.output).toEqual({ restarted: true });
@@ -109,7 +109,7 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
     }
   });
 
-  it("stops at the first failing step rather than continuing past it", () => {
+  it("stops at the first failing step rather than continuing past it", async () => {
     const skill = compileSkillFromEpisodes({
       episodes: [successfulEpisode("e1"), successfulEpisode("e2"), successfulEpisode("e3")],
       minimumSuccessCount: 3,
@@ -120,12 +120,12 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
       stop_service: () => ({ ok: true }),
       clear_queue: () => ({ ok: false })
     });
-    const result = executeSkill(skill, context);
+    const result = await executeSkill(skill, context);
     expect(result.ok).toBe(false);
     expect(received.map(call => call.actionType)).toEqual(["stop_service", "clear_queue"]);
   });
 
-  it("runs the declared rollback program, in reverse order, only when execution actually failed", () => {
+  it("runs the declared rollback program, in reverse order, only when execution actually failed", async () => {
     const rollbackSteps: SkillStep[] = [
       { actionType: "start_service", input: { service: "worker" } },
       { actionType: "restore_queue", input: { queue: "worker.jobs" } }
@@ -143,7 +143,7 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
       restore_queue: () => ({ ok: true }),
       start_service: () => ({ ok: true })
     });
-    const result = executeSkill(skill, context);
+    const result = await executeSkill(skill, context);
     expect(result.ok).toBe(false);
     expect(result.rolledBack).toBe(true);
     expect(received.map(call => call.actionType)).toEqual([
@@ -151,7 +151,7 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
     ]);
   });
 
-  it("never attempts a rollback when execution succeeds, or when no rollback program was ever declared", () => {
+  it("never attempts a rollback when execution succeeds, or when no rollback program was ever declared", async () => {
     const skillWithoutRollback = compileSkillFromEpisodes({
       episodes: [successfulEpisode("e1"), successfulEpisode("e2"), successfulEpisode("e3")],
       minimumSuccessCount: 3,
@@ -163,12 +163,12 @@ describe("skill execution runs purely from the typed program (plan item 216)", (
       clear_queue: () => ({ ok: true }),
       start_service: () => ({ ok: true })
     });
-    expect(executeSkill(skillWithoutRollback, succeedingContext).rolledBack).toBe(false);
+    expect((await executeSkill(skillWithoutRollback, succeedingContext)).rolledBack).toBe(false);
 
     const { context: failingContextNoRollback } = recordingContext({
       stop_service: () => ({ ok: true }),
       clear_queue: () => ({ ok: false })
     });
-    expect(executeSkill(skillWithoutRollback, failingContextNoRollback).rolledBack).toBe(false);
+    expect((await executeSkill(skillWithoutRollback, failingContextNoRollback)).rolledBack).toBe(false);
   });
 });

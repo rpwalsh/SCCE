@@ -94,8 +94,14 @@ export interface SkillExecutionResult {
 }
 
 export interface SkillExecutionContext {
-  /** Receives only a step's typed actionType/input -- never the source episodes' original text. */
-  executeStep(step: SkillStep): { ok: boolean; output?: JsonValue };
+  /**
+   * Receives only a step's typed actionType/input -- never the source
+   * episodes' original text. Async because every real capability this can
+   * plausibly dispatch to (build/test, a filesystem write, a network call)
+   * is itself asynchronous; a synchronous contract here would make this
+   * function structurally unwireable to any real executor.
+   */
+  executeStep(step: SkillStep): Promise<{ ok: boolean; output?: JsonValue }>;
 }
 
 /**
@@ -106,17 +112,17 @@ export interface SkillExecutionContext {
  * access to that text at all, by construction: `CompiledSkill` never
  * stores it).
  */
-export function executeSkill(skill: CompiledSkill, context: SkillExecutionContext): SkillExecutionResult {
+export async function executeSkill(skill: CompiledSkill, context: SkillExecutionContext): Promise<SkillExecutionResult> {
   const stepResults: SkillStepResult[] = [];
   let ok = true;
   for (const step of skill.steps) {
-    const result = context.executeStep(step);
+    const result = await context.executeStep(step);
     stepResults.push({ actionType: step.actionType, ok: result.ok, ...(result.output !== undefined ? { output: result.output } : {}) });
     if (!result.ok) { ok = false; break; }
   }
   let rolledBack = false;
   if (!ok && skill.rollbackSteps?.length) {
-    for (const step of [...skill.rollbackSteps].reverse()) context.executeStep(step);
+    for (const step of [...skill.rollbackSteps].reverse()) await context.executeStep(step);
     rolledBack = true;
   }
   return { skillId: skill.id, ok, stepResults, rolledBack };
