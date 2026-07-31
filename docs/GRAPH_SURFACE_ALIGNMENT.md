@@ -41,18 +41,20 @@ local optimum: `globalOptimalityClaimed` is `false` on every plan, and
 and ordering costs are computed against a neighbor window
 (`maxStructuralNeighbors`), not the full row/column.
 
-One real, currently-unaddressed limitation the batch run surfaces: a
-document with zero real lexical or evidentiary relation to the graph
-(`"It rained heavily yesterday afternoon."`) still receives a nonzero
-candidate count through the `surface_context` support kind (shared
-left/right context sketches, e.g. common short tokens or punctuation). The
-transport correctly assigns most of that document's mass to the
-`surfaceNullMass`/`graphImplicitMass` dustbins (high
-`graphMarginalResidual` in the manifest) rather than fabricating confident
-alignments, but the candidate set itself is not yet as tight as it could be
-for unrelated documents. This is a real property of the current
-`surface_context` heuristic, not a bug fixed by this item — tightening it
-is future work, not claimed here.
+The document with zero real lexical or evidentiary relation to the graph
+(`"It rained heavily yesterday afternoon."`) receives exactly zero
+candidates, confirmed both in the manifest and directly against
+`generateSparseAlignmentCandidates`. An earlier version of this manifest
+script had a real bug — its evidence-id assignment fell through to
+`"evidence.built"` for any document whose id didn't contain `"charles"`,
+so the unrelated document accidentally shared an evidence id with the
+Ada/engine relation and picked up 162 fabricated `shared_exact_evidence`
+candidates that had nothing to do with its actual text. Fixed by giving
+every document a genuinely distinct evidence id unless it is truly
+describing the same relation. This was a bug in the manifest fixture, not
+in `sparse-alignment-candidates.ts` itself — the real candidate generator
+correctly produced zero candidates once the fixture stopped lying to it
+about shared evidence.
 
 ## Guarantees actually held
 
@@ -72,9 +74,6 @@ is future work, not claimed here.
 
 ## Guarantees not yet held
 
-- `surface_context`-only candidates are not yet filtered by a stronger
-  relevance threshold for documents with no real graph relation (see
-  above).
 - Cross-document alignment reinforcement (item 113) and independent
   held-out promotion for alignments (item 117) are implemented as separate
   modules (`cross-document-alignment.ts`, `alignment-heldout-evaluation.ts`)
