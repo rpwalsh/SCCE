@@ -36,11 +36,26 @@ const hyperedges = [
   relationHyperedge("hyperedge.designed", "relation.designed", "node.charles", "node.machine", "evidence.designed")
 ];
 
+// The Ada documents (original + paraphrase) legitimately share
+// "evidence.built" with the built relation below -- they are real textual
+// instances of that same fact. The Charles document legitimately shares
+// "evidence.designed" with the designed relation. The no-graph-content
+// document must NOT share either: a real earlier bug in this fixture let
+// it fall through to "evidence.built" by default (its id contains neither
+// "charles" nor an explicit built/designed match), fabricating
+// shared_exact_evidence support against a graph it has zero real
+// connection to and inflating its candidate count with nothing behind it.
+function documentEvidenceId(documentId) {
+  if (documentId.includes("charles")) return "evidence.designed";
+  if (documentId.includes("ada")) return "evidence.built";
+  return `evidence.unrelated.${documentId}`;
+}
+
 const lattices = documents.map(document => buildSurfaceLattice({
   documentId: document.id,
   sourceVersionId: `source-version.${document.id}`,
   text: document.text,
-  evidenceIds: [document.id.includes("charles") ? "evidence.designed" : "evidence.built"],
+  evidenceIds: [documentEvidenceId(document.id)],
   hasher
 }));
 
