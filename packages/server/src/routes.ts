@@ -325,7 +325,11 @@ async function dispatch(
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["subject", "start", "end"]);
     const input = { subject: String(body.subject), start: String(body.start), end: String(body.end), attendees: body.attendees ? stringArray(body.attendees) : undefined, body: body.body ? String(body.body) : undefined };
     if (!approved(context, "outlook.create_calendar_event", input)) return pendingApproval(context, "outlook.create_calendar_event", input);
-    return json(await context.runtime.connectors.outlookCreateCalendarEvent({ ...input, approved: true }));
+    const calendarOwnerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
+    const result = context.runtime.executive
+      ? await dispatchOutlookCalendarEventCreateThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, event: input, ownerId: calendarOwnerId })
+      : await context.runtime.connectors.outlookCreateCalendarEvent({ ...input, approved: true });
+    return json(result);
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/contacts") {
     const body = await readBody(req, context.maxBodyBytes);
@@ -2268,6 +2272,156 @@ export async function dispatchOutlookSendDraftThroughExecutive(input: {
   if (capturedResult) return capturedResult;
   if (dispatched.disposition === "succeeded") return { id: input.messageId, sent: true };
   throw new Error(`outlook send dispatch produced no result (disposition: ${dispatched.disposition})`);
+}
+
+const OUTLOOK_CALENDAR_CREATE_CAPABILITY_ID = "outlook.calendar.event.create";
+const OUTLOOK_CALENDAR_DELETE_CAPABILITY_ID = "outlook.calendar.event.delete";
+
+type OutlookCalendarConnectors = {
+  outlookCreateCalendarEvent(input: { subject: string; start: string; end: string; attendees?: string[]; body?: string; approved?: boolean }): Promise<JsonValue>;
+  outlookDeleteCalendarEvent?(eventId: string, approved?: boolean): Promise<JsonValue>;
+};
+
+function outlookCalendarEventContentHash(event: { subject: string; start: string; end: string; attendees?: string[]; body?: string }): string {
+  return createHasher().digestHex(canonicalStringify({ subject: event.subject, start: event.start, end: event.end, attendees: event.attendees ?? [], body: event.body ?? "" })).slice(0, 32);
+}
+
+function outlookCalendarExecutorRegistry(input: { connectors: OutlookCalendarConnectors; contentHash: string; onCreateResult: (result: JsonValue) => void; onCreateError: (error: unknown) => void; knownEventId?: string }) {
+  const createExecutor: CapabilityExecutor = {
+    descriptor: { capabilityId: OUTLOOK_CALENDAR_CREATE_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "compensating-action" },
+    execute: async request => {
+      try {
+        const event = request.payload as unknown as { subject: string; start: string; end: string; attendees?: string[]; body?: string };
+        const result = await input.connectors.outlookCreateCalendarEvent({ ...event, approved: true });
+        input.onCreateResult(result);
+        const eventId = outlookMessageIdField(result, "id");
+        return { status: "succeeded", outputRefs: eventId ? [eventId] : [], evidenceRefs: [`outlook.calendar.event.created.${input.contentHash}`], attestationRef: `outlook.calendar.event.create.${input.contentHash}` };
+      } catch (error) {
+        input.onCreateError(error);
+        const partialEventId = outlookPartialFailureMessageId(error);
+        return { status: "failed", outputRefs: partialEventId ? [partialEventId] : [], evidenceRefs: [], attestationRef: `outlook.calendar.event.create.failed.${input.contentHash}` };
+      }
+    }
+  };
+  const deleteExecutor: CapabilityExecutor = {
+    descriptor: { capabilityId: OUTLOOK_CALENDAR_DELETE_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "unavailable" },
+    execute: async () => ({ status: "failed" as const, outputRefs: [], evidenceRefs: [], attestationRef: `outlook.calendar.event.delete.not_a_forward_action.${input.contentHash}` }),
+    rollback: async () => {
+      const eventId = input.knownEventId;
+      if (!eventId || !input.connectors.outlookDeleteCalendarEvent) {
+        return { status: "failed", outputRefs: [], evidenceRefs: [], attestationRef: `outlook.calendar.event.delete.no_event_id.${input.contentHash}` };
+      }
+      await input.connectors.outlookDeleteCalendarEvent(eventId, true);
+      return { status: "succeeded", outputRefs: [eventId], evidenceRefs: [`outlook.calendar.event.deleted.${eventId}`], attestationRef: `outlook.calendar.event.delete.${eventId}` };
+    }
+  };
+  return createCapabilityExecutorRegistry([createExecutor, deleteExecutor]);
+}
+
+function outlookCalendarDispatchIds(contentHash: string, now: number): { episodeId: string; goalId: string; taskId: string; policyVersionId: string } {
+  const window = Math.floor(now / OUTLOOK_IDEMPOTENCY_WINDOW_MS);
+  return {
+    episodeId: `episode_outlook_calendar_${contentHash}_${window}`,
+    goalId: `goal_outlook_calendar_${contentHash}_${window}`,
+    taskId: `task_outlook_calendar_${contentHash}_${window}`,
+    policyVersionId: `policy_outlook_calendar_${contentHash}`
+  };
+}
+
+/**
+ * Plan item 207: same real dispatch pattern as the draft-create/rollback
+ * pair -- a content-hash idempotency key (window-bucketed, see
+ * OUTLOOK_IDEMPOTENCY_WINDOW_MS) so a retried identical request cannot
+ * create a duplicate calendar event, and a real declared rollback
+ * (outlook.calendar.event.delete) for a create that reports failure but
+ * may have partially gone through server-side.
+ */
+export async function dispatchOutlookCalendarEventCreateThroughExecutive(input: {
+  executive: DurableExecutiveEpisode;
+  connectors: OutlookCalendarConnectors;
+  event: { subject: string; start: string; end: string; attendees?: string[]; body?: string };
+  ownerId: string;
+  now?: number;
+}): Promise<JsonValue> {
+  const hasher = createHasher();
+  const now = input.now ?? Date.now();
+  const contentHash = outlookCalendarEventContentHash(input.event);
+  let capturedResult: JsonValue | undefined;
+  let capturedError: unknown;
+  const executors = outlookCalendarExecutorRegistry({
+    connectors: input.connectors,
+    contentHash,
+    onCreateResult: result => { capturedResult = result; },
+    onCreateError: error => { capturedError = error; }
+  });
+  const ids = outlookCalendarDispatchIds(contentHash, now);
+  const dispatched = await dispatchCapabilityTask(
+    { executive: input.executive, executors, hasher, now: () => now },
+    {
+      episodeId: ids.episodeId,
+      ownerId: input.ownerId,
+      policyVersionId: ids.policyVersionId,
+      goal: { id: ids.goalId, goalClassId: "goal.class.outlook_calendar", objectiveRef: contentHash, requirementIds: [], ownerId: input.ownerId },
+      task: {
+        id: ids.taskId,
+        goalId: ids.goalId,
+        taskClassId: "task.class.outlook_calendar",
+        requirementIds: [],
+        dependencyTaskIds: [],
+        capabilityId: OUTLOOK_CALENDAR_CREATE_CAPABILITY_ID,
+        inputRef: contentHash,
+        policyVersionId: ids.policyVersionId,
+        controls: {
+          authority: { authorityClassId: "authority.class.outlook_calendar", subjectId: input.ownerId, requiredScopeIds: [], state: "not_required", justificationRef: contentHash },
+          approval: { policyId: "approval.policy.outlook_calendar", state: "not_required", approverClassIds: [], justificationRef: contentHash }
+        },
+        rollback: {
+          mode: "capability",
+          planId: `plan.rollback.outlook_calendar.${contentHash}`,
+          capabilityId: OUTLOOK_CALENDAR_DELETE_CAPABILITY_ID,
+          inputRef: contentHash,
+          justificationRef: contentHash,
+          controls: {
+            authority: { authorityClassId: "authority.class.outlook_calendar_delete", subjectId: input.ownerId, requiredScopeIds: [], state: "not_required", justificationRef: contentHash },
+            approval: { policyId: "approval.policy.outlook_calendar_delete", state: "not_required", approverClassIds: [], justificationRef: contentHash }
+          }
+        }
+      },
+      payload: input.event as unknown as JsonValue,
+      outcomeEvidenceRefs: []
+    }
+  );
+  if (capturedError) throw capturedError;
+  if (capturedResult) return capturedResult;
+  const replayedEventId = dispatched.receipt?.outputRefs[0];
+  if (dispatched.disposition === "succeeded" && replayedEventId) return { id: replayedEventId };
+  throw new Error(`outlook calendar event dispatch produced no result (disposition: ${dispatched.disposition})`);
+}
+
+export async function dispatchOutlookCalendarEventRollback(input: {
+  executive: DurableExecutiveEpisode;
+  connectors: OutlookCalendarConnectors;
+  event: { subject: string; start: string; end: string; attendees?: string[]; body?: string };
+  now?: number;
+}): Promise<{ disposition: string }> {
+  const hasher = createHasher();
+  const now = input.now ?? Date.now();
+  const contentHash = outlookCalendarEventContentHash(input.event);
+  const ids = outlookCalendarDispatchIds(contentHash, now);
+  const existing = await input.executive.load(ids.episodeId);
+  if (!existing.tasks[ids.taskId]) return { disposition: "no_rollback_needed" };
+  const executors = outlookCalendarExecutorRegistry({
+    connectors: input.connectors,
+    contentHash,
+    onCreateResult: () => {},
+    onCreateError: () => {},
+    knownEventId: outlookDraftKnownMessageId(existing, ids.taskId)
+  });
+  const result = await dispatchRollbackAttempt(
+    { executive: input.executive, executors, hasher, now: () => now },
+    { episodeId: ids.episodeId, taskId: ids.taskId, outcomeEvidenceRefs: [] }
+  );
+  return { disposition: result.disposition };
 }
 
 /**
