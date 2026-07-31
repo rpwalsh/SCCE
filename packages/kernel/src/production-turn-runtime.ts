@@ -109,6 +109,7 @@ import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
+import { conflictingGraphEdgeIntervals } from "./graph-temporal.js";
 import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
@@ -1663,6 +1664,11 @@ export function createProductionTurnRuntime(options: {
       if (cognitiveProposalComparison) {
         events.push(await append(eventFactory.create({ episodeId, typeId: "ReasoningOperatorApplied", payload: toJsonValue(cognitiveProposalComparison) })));
       }
+      // Plan items 169-170: real Allen-relation conflicts among peer edges.
+      const temporalConflicts = conflictingGraphEdgeIntervals(graph.edges);
+      if (temporalConflicts.length) {
+        events.push(await append(eventFactory.create({ episodeId, typeId: "TemporalConflictDetected", payload: toJsonValue(temporalConflicts.map(([left, right]) => ({ leftEdgeId: String(left.id), rightEdgeId: String(right.id) }))) })));
+      }
       const candidateFieldStarted = Date.now();
       const candidateField = candidates.generate({
         requestText: input.text,
@@ -2544,6 +2550,7 @@ export function createProductionTurnRuntime(options: {
             capabilityPlans,
             userStyleProfile: authorityDialogueState.userStyleProfile
           }))),
+          temporalConflicts: toJsonValue(temporalConflicts.map(([left, right]) => ({ leftEdgeId: String(left.id), rightEdgeId: String(right.id) }))),
           repoCognition,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
@@ -2682,6 +2689,7 @@ export function createProductionTurnRuntime(options: {
           capabilityPlans,
           userStyleProfile: authorityDialogueState.userStyleProfile
         }))),
+        temporalConflicts: toJsonValue(temporalConflicts.map(([left, right]) => ({ leftEdgeId: String(left.id), rightEdgeId: String(right.id) }))),
         repoCognition,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
