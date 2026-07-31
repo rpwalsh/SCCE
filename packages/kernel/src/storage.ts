@@ -898,6 +898,7 @@ export interface ConnectorPort {
   outlookDeleteDraft?(messageId: string, approved?: boolean): Promise<JsonValue>;
   outlookReadCalendar?(input: { start: string; end: string }): Promise<JsonValue>;
   outlookCreateCalendarEvent?(input: { subject: string; start: string; end: string; attendees?: string[]; body?: string; approved?: boolean }): Promise<JsonValue>;
+  outlookDeleteCalendarEvent?(eventId: string, approved?: boolean): Promise<JsonValue>;
   outlookReadContacts?(query?: string): Promise<JsonValue>;
   youtubeSearch?(query: string, limit?: number): Promise<JsonValue>;
   youtubeVideo?(videoId: string): Promise<JsonValue>;

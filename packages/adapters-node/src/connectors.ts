@@ -124,6 +124,11 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     });
   }
 
+  /** The real compensating action for a calendar event whose create dispatch is reported as failed but may have partially gone through server-side -- same pattern as outlookDeleteDraft. */
+  async outlookDeleteCalendarEvent(eventId: string, approved = false): Promise<JsonValue> {
+    return this.outlookJson(`https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(eventId)}`, "calendar-delete-event", { method: "DELETE", body: "", mutates: true, approved });
+  }
+
   async outlookReadContacts(query?: string): Promise<JsonValue> {
     const url = new URL("https://graph.microsoft.com/v1.0/me/contacts");
     url.searchParams.set("$top", "50");
