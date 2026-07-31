@@ -389,6 +389,7 @@ function translationRuntime(options: MultilingualTranslationRuntimeOptions): {
 function getScriptCategory(char: string): string {
   const code = char.codePointAt(0) ?? 0;
   if ((code >= 0x0600 && code <= 0x06FF) || (code >= 0x0750 && code <= 0x077F)) return "arabic";
+  if (code >= 0x0590 && code <= 0x05FF) return "hebrew";
   if ((code >= 0x0400 && code <= 0x04FF) || (code >= 0x0500 && code <= 0x052F)) return "cyrillic";
   if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF)) return "han";
   if ((code >= 0x3040 && code <= 0x309F)) return "hiragana";
