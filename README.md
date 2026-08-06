@@ -12,6 +12,10 @@ SCCE compiles evidence, language, reasoning, and learned skills into sparse, ins
 
 **CPU-native · Local · Persistent**
 
+**Implemented · Benchmarked · Operational**
+
+SCCE is an implemented cognitive runtime, not a proposal, model wrapper, or retrieval layer. This repository contains its evidence-preserving ingestion, persistent cognitive graph, reasoning, planning, learned language, durable memory, application surfaces, and sealed evaluation harness.
+
 ## A third architecture for AI
 
 Closed-weight AI rents intelligence from somebody else's data center.
