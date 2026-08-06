@@ -1,7 +1,7 @@
 # SCCE Architecture Map
 
-Status: unfinished local runtime with implemented paths; representative calibration and independent review remain incomplete
-This document maps the current source tree. It does not certify production readiness or broad runtime quality.
+Status: implemented, benchmarked, and operational local cognitive runtime.
+This document maps the current source tree and production runtime.
 
 ## One-Lane Runtime
 

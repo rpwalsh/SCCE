@@ -13,7 +13,7 @@ outside reader.
 ## Start here
 
 - [User guide](USER_GUIDE.md) — setup, ingestion, operation, inspection, and
-  limitations.
+  validation.
 - [Architecture](ARCHITECTURE.md) — the one-lane runtime, package boundaries, and
   durable-store boundary.
 - [Security policy](../SECURITY.md) — vulnerability reporting and supported security

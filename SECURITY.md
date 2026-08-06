@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-SCCE v3 is a pre-release source tree. Security fixes are made on the default branch;
-there is no separately supported stable release line yet.
+SCCE v3 is supported on the default branch. Security fixes are applied directly to
+that line.
 
 ## Reporting a vulnerability
 

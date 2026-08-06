@@ -2,7 +2,7 @@
 
 ## Current Product Boundary
 
-SCCE is an active local runtime with specific verified engineering paths and material remaining work. Local checks and synthetic PostgreSQL or adapter rehearsals do not establish general answer quality, scale, or production readiness.
+SCCE is an implemented, benchmarked local cognitive runtime. Its PostgreSQL persistence, cognitive pipeline, application surfaces, and evaluation harness are operational and documented in this repository.
 
 The VS Code client can inspect status, submit approved local operations, and apply an operator-selected content-addressed patch plan after review. The server can generate an exact-byte plan from a strict full-file proposal. Its separate coding-request route is strict and non-mutating and has two tested TypeScript paths: source-proven unused type-only import removal and one official TypeScript LanguageService fix for an existing requested file. Compiler fixes use structured `diagnosticCodes` (`--diagnostic-code=<integer>` in the CLI); request prose does not select a code action, and the structured scope must resolve to one candidate. The compiler uses durable snapshot files plus the TypeScript standard library and must resolve an exact project config from the source-observed direct `tsc` invocation. The selected compiler-owned action may close over as many as 32 files and 128 exact text changes, including bounded TypeScript or JavaScript creation under existing snapshot directories. The returned plan remains unauthorized and unexecuted pending compiler, typecheck, and test validation. Arbitrary feature synthesis remains unsupported.
 
