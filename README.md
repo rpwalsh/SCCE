@@ -8,6 +8,8 @@ SCCE is a self-contained cognitive engine that ingests evidence, builds durable 
 
 No LLM inference. No vector-database RAG loop. No GPU cluster. No cloud dependency.
 
+![SCCE knowledge graph explorer showing ingested evidence and reasoning traces](docs/screenshots/dashboard.jpg)
+
 SCCE compiles evidence, language, reasoning, and learned skills into sparse, inspectable cognitive structures. At runtime, it activates only the structures relevant to the task.
 
 **CPU-native · Local · Persistent**
