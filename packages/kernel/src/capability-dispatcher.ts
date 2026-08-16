@@ -1,6 +1,7 @@
 import { canonicalStringify } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import type { DurableExecutiveEpisode } from "./executive-journal.js";
+import { verifyExecutionAuthorized, type PlanSimulationRecord } from "./plan-simulation.js";
 import type {
   CapabilityInvocationEnvelope,
   ExecutiveApprovalDecision,
@@ -115,6 +116,22 @@ export interface CapabilityDispatchInput {
   payload: JsonValue;
   /** Evidence refs backing the eventual outcome record (e.g. build/test artifact refs). */
   outcomeEvidenceRefs: string[];
+  /**
+   * Plan items 177-179: a real gate requiring a stored, approved
+   * `plan-simulation.ts` record before an irreversible or high-risk task
+   * may execute. Optional and additive -- callers that don't yet compute a
+   * real `expectedUtility`/`expectedRisk` (most don't today; see
+   * tool-cognition.ts's `CapabilityScore` for where a real one would come
+   * from) keep their exact current behavior. A caller that does supply
+   * this is held to it for real: an irreversible task with no matching
+   * approved simulation in `simulations` is refused, never silently
+   * waved through.
+   */
+  planSimulation?: {
+    expectedUtility: number;
+    expectedRisk: number;
+    simulations: readonly PlanSimulationRecord[];
+  };
 }
 
 export type CapabilityDispatchDisposition =
@@ -122,7 +139,8 @@ export type CapabilityDispatchDisposition =
   | "failed"
   | "indeterminate"
   | "unsupported_capability"
-  | "not_ready";
+  | "not_ready"
+  | "simulation_required";
 
 export interface CapabilityDispatchResult {
   disposition: CapabilityDispatchDisposition;
@@ -132,6 +150,8 @@ export interface CapabilityDispatchResult {
   outcome?: ExecutiveOutcome;
   /** Present only for "not_ready" -- the task status blocking dispatch. */
   blockedStatus?: ExecutiveTask["status"];
+  /** Present only for "simulation_required" -- why plan-simulation.ts's gate refused execution. */
+  simulationReason?: string;
 }
 
 export interface CapabilityDispatcherDeps {
@@ -242,6 +262,23 @@ export async function dispatchCapabilityTask(
 
   if (task.status !== "ready") {
     return { disposition: "not_ready", state, blockedStatus: task.status };
+  }
+
+  if (input.planSimulation) {
+    // A real compensating action (executor's own rollback contract, not
+    // the caller's unverified claim) is the honest reversibility signal:
+    // "unavailable" means genuinely no way to undo this specific
+    // capability's effect.
+    const reversible = executor.descriptor.rollback !== "unavailable";
+    const authorization = verifyExecutionAuthorized({
+      capabilityPlanId: task.id,
+      reversible,
+      expectedRisk: input.planSimulation.expectedRisk,
+      simulations: input.planSimulation.simulations
+    });
+    if (!authorization.authorized) {
+      return { disposition: "simulation_required", state, simulationReason: authorization.reason };
+    }
   }
 
   state = await deps.executive.dispatch({
