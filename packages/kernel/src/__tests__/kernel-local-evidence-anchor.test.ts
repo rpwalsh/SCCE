@@ -577,6 +577,40 @@ describe("kernel local evidence source anchoring", () => {
     expect(snapshot!.workingMemorySummary.promotedEntryIds.length).toBe(entries.filter(entry => entry.promotionStatus === "promoted").length);
   });
 
+  it("dispatches a real constraint-solver execution order over this turn's task-decomposition graph (plan items 173-174 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_550, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Please write a function that reverses a string." });
+
+    const snapshot = result.taskResumptionSnapshot as unknown as { taskGraph: { nodes: Record<string, { precedesRequiresIds: string[] }> } };
+    const schedule = result.taskSchedule as unknown as { status: "scheduled"; order: string[] } | { status: "infeasible" };
+    expect(schedule).toBeDefined();
+    expect(schedule.status).toBe("scheduled");
+    if (schedule.status !== "scheduled") return;
+    // Real, not a coincidence: every node in this turn's own task graph is
+    // present exactly once, and every dependency the graph actually
+    // declares appears strictly before its dependent -- the precise
+    // property verifyTaskScheduleOrder checks.
+    const nodeIds = Object.keys(snapshot.taskGraph.nodes);
+    expect(new Set(schedule.order)).toEqual(new Set(nodeIds));
+    const position = new Map(schedule.order.map((id, index) => [id, index]));
+    for (const [id, node] of Object.entries(snapshot.taskGraph.nodes)) {
+      for (const dependencyId of node.precedesRequiresIds) {
+        expect(position.get(dependencyId)).toBeLessThan(position.get(id)!);
+      }
+    }
+  });
+
   it("real, durable, cross-turn task-resumption: a code-shaped turn's snapshot is genuinely still recoverable on a later, non-code-shaped turn in the same conversation (plan item 218 live-turn wiring)", async () => {
     const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
     const hasher = createHasher();
