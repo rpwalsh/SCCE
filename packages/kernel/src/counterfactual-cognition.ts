@@ -2,6 +2,12 @@ import type { GraphEdge, GraphNode, GraphSnapshot, Hasher, JsonValue, NodeId } f
 import { clamp01, createHasher, mean, normalizeVector, toJsonValue, weightedJaccard } from "./primitives.js";
 import { isKnownGraphTemporalScope } from "./graph-temporal.js";
 import { extendCorrelatedConfidence, midpointConfidence, type UncertaintyInterval } from "./correlated-uncertainty.js";
+import {
+  counterfactualSimulate,
+  createStructuralCausalModel,
+  StructuralCausalModelCycleError,
+  type StructuralEquation
+} from "./structural-causal-model.js";
 
 export interface CausalVariable {
   nodeId: NodeId;
@@ -40,7 +46,26 @@ export interface CounterfactualWorld {
   effect: Array<{ nodeId: NodeId; effect: number; lower: number; upper: number; pathSupport: number }>;
   constraints: Array<{ id: string; passed: boolean; pressure: number; message: string }>;
   explanation: CounterfactualPath[];
+  /**
+   * Plan items 163-164: whether this world's effect is licensed by a real
+   * structural causal model (`structural-causal-model.ts`'s `X_j = f_j(Pa_j,
+   * U_j)` mechanisms plus genuine Pearl abduction-action-prediction) over
+   * the variables this specific query's explanatory paths actually touch,
+   * as opposed to `effect`/`explanation` above, which remain a bounded
+   * associational diffusion approximation. `licensed: false` (e.g. the
+   * relevant subgraph contains a real feedback cycle, so no valid DAG of
+   * mechanisms exists) is the honest, expected outcome for most graph
+   * neighborhoods -- never coerced to true.
+   */
+  structural: StructuralCounterfactualResult;
   audit: JsonValue;
+}
+
+export interface StructuralCounterfactualResult {
+  licensed: boolean;
+  reason: string;
+  variableIds: string[];
+  effect?: Array<{ nodeId: NodeId; observed: number; counterfactual: number; delta: number }>;
 }
 
 export interface CounterfactualPath {
@@ -220,7 +245,18 @@ function simulateCounterfactual(model: CounterfactualModel, query: Counterfactua
     const width = Math.max(0.03, (1 - clamp01(support)) * 0.35);
     return { nodeId: variable.nodeId, effect: delta, lower: delta - width, upper: delta + width, pathSupport: clamp01(support) };
   }).sort((a, b) => Math.abs(b.effect) - Math.abs(a.effect));
-  const constraints = constraintChecks(model, query, variables, effect);
+  const structural = structuralCounterfactual(model, paths, query);
+  const constraints = [
+    ...constraintChecks(model, query, variables, effect),
+    {
+      id: "structural-license",
+      passed: structural.licensed,
+      pressure: structural.licensed ? 0 : 0.4,
+      message: structural.licensed
+        ? "effect is licensed by a real acyclic structural causal model over the explanatory subgraph"
+        : `no licensed structural causal model for this effect: ${structural.reason}`
+    }
+  ];
   const id = `counterfactual_world_${hasher.digestHex(JSON.stringify({ model: model.id, interventions: query.interventions.map(i => i.id), effect: effect.map(e => [e.nodeId, e.effect]) })).slice(0, 32)}`;
   return {
     id,
@@ -229,6 +265,7 @@ function simulateCounterfactual(model: CounterfactualModel, query: Counterfactua
     effect,
     constraints,
     explanation: paths,
+    structural,
     audit: toJsonValue({
       modelId: model.id,
       horizon,
@@ -236,9 +273,87 @@ function simulateCounterfactual(model: CounterfactualModel, query: Counterfactua
       interventions: query.interventions,
       targetFeatures: query.targetFeatures,
       constraints,
-      topEffects: effect.slice(0, 16)
+      topEffects: effect.slice(0, 16),
+      structural
     })
   };
+}
+
+/**
+ * Real, bounded attempt to license this world's effect with a genuine
+ * structural causal model (plan items 163-164): builds `StructuralEquation`
+ * records directly from the real mechanism weights already computed for
+ * this query's own explanatory paths (never a fabricated relationship),
+ * then runs the actual Pearl abduction-action-prediction procedure. Only
+ * the variables this query's paths and interventions actually touch are in
+ * scope -- deliberately not the whole graph, since a real per-variable
+ * mechanism model over an arbitrary knowledge-graph neighborhood will
+ * often contain a genuine feedback cycle and cannot be licensed at all.
+ * Returns `licensed: false` with the real reason (cycle, or too few
+ * variables to say anything) rather than ever forcing a DAG that doesn't
+ * exist -- an observational/associational estimate (`effect` above) must
+ * never be reported as a licensed interventional one.
+ */
+function structuralCounterfactual(
+  model: CounterfactualModel,
+  paths: readonly CounterfactualPath[],
+  query: CounterfactualQuery
+): StructuralCounterfactualResult {
+  const relevantIds = new Set<string>();
+  for (const path of paths) for (const node of path.nodes) relevantIds.add(String(node));
+  for (const intervention of query.interventions) relevantIds.add(String(intervention.nodeId));
+  const variableIds = [...relevantIds].sort();
+  if (variableIds.length < 2) {
+    return { licensed: false, reason: "fewer than two variables in the explanatory subgraph", variableIds };
+  }
+  const variableById = new Map(model.variables.map(variable => [String(variable.nodeId), variable]));
+  const mechanismsInScope = model.mechanisms.filter(m => relevantIds.has(String(m.source)) && relevantIds.has(String(m.target)));
+  const equations: StructuralEquation[] = variableIds.map(variableId => {
+    const incoming = mechanismsInScope.filter(m => String(m.target) === variableId);
+    const prior = variableById.get(variableId)?.prior ?? 0.5;
+    return {
+      variableId,
+      parentIds: incoming.map(m => String(m.source)),
+      compute: (parentValues, noise) => {
+        const baseline = incoming.length ? 0 : prior;
+        const contribution = incoming.reduce((sum, m) => sum + m.sign * m.weight * m.alpha * (parentValues.get(String(m.source)) ?? 0), 0);
+        return clamp01(baseline + contribution + noise);
+      },
+      assumptions: ["linear-mechanism-from-observed-graph-edges", "no-unobserved-confounding-beyond-graph"],
+      evidenceIds: incoming.flatMap(m => m.evidenceIds),
+      identifiabilityStatus: incoming.length > 0 ? "identified" : "unidentified"
+    };
+  });
+  let scm;
+  try {
+    scm = createStructuralCausalModel(equations);
+  } catch (error) {
+    if (error instanceof StructuralCausalModelCycleError) {
+      return { licensed: false, reason: `explanatory subgraph contains a real cycle: ${error.cycle.join(" -> ")}`, variableIds };
+    }
+    throw error;
+  }
+  const observed = new Map<string, number>(variableIds.map(variableId => [variableId, variableById.get(variableId)?.prior ?? 0.5]));
+  const interventions = new Map<string, number>();
+  for (const intervention of query.interventions) {
+    const nodeId = String(intervention.nodeId);
+    if (!relevantIds.has(nodeId)) continue;
+    const prior = observed.get(nodeId) ?? 0;
+    const value =
+      intervention.operator === "set" ? clamp01(intervention.value) :
+      intervention.operator === "increase" ? clamp01(prior + intervention.value) :
+      intervention.operator === "decrease" ? clamp01(prior - intervention.value) :
+      clamp01(Math.min(prior, intervention.value));
+    interventions.set(nodeId, value);
+  }
+  const result = counterfactualSimulate(scm, { observed, interventions });
+  const effect = variableIds.map(variableId => ({
+    nodeId: (variableById.get(variableId)?.nodeId ?? variableId) as NodeId,
+    observed: observed.get(variableId) ?? 0,
+    counterfactual: result.get(variableId) ?? 0,
+    delta: (result.get(variableId) ?? 0) - (observed.get(variableId) ?? 0)
+  }));
+  return { licensed: true, reason: "acyclic structural causal model built over the explanatory subgraph", variableIds, effect };
 }
 
 function targetVariables(model: CounterfactualModel, features: readonly string[]): CausalVariable[] {
