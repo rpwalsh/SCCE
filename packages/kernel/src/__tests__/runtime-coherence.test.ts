@@ -146,6 +146,7 @@ function counterfactualWorld(input: { failedPressure: number }): CounterfactualW
     effect: [{ nodeId: "node_test" as CounterfactualWorld["effect"][number]["nodeId"], effect: 0.2, lower: -0.1, upper: 0.4, pathSupport: 0.01 }],
     constraints: [{ id: "effect-path-support", passed: false, pressure: input.failedPressure, message: "fixture" }],
     explanation: [],
+    structural: { licensed: false, reason: "fixture", variableIds: [] },
     audit: {}
   };
 }

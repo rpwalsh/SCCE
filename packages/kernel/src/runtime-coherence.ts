@@ -210,7 +210,7 @@ function proofPressureFrom(entailment: SemanticEntailmentResult): number {
 function counterfactualInstability(counterfactual: CounterfactualWorld | undefined): number {
   if (!counterfactual) return 0;
   const failedConstraintPressure = counterfactual.constraints
-    .filter(item => item.id === "bounded-unit-interval" || item.id === "effect-path-support")
+    .filter(item => item.id === "bounded-unit-interval" || item.id === "effect-path-support" || item.id === "structural-license")
     .filter(item => !item.passed)
     .reduce((max, item) => Math.max(max, clamp01(item.pressure)), 0);
   const unsupportedEffects = counterfactual.effect

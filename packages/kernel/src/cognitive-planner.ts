@@ -522,7 +522,9 @@ function counterfactualWorldDrafts(
           effect: effect.effect,
           lower: effect.lower,
           upper: effect.upper,
-          pathSupport: effect.pathSupport
+          pathSupport: effect.pathSupport,
+          structurallyLicensed: world.structural.licensed,
+          structuralReason: world.structural.reason
         }
       })];
     });
