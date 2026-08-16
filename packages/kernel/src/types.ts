@@ -986,6 +986,8 @@ export interface TurnResult {
   taskResumptionSnapshot?: JsonValue;
   /** Plan items 173-174: a real constraint-solver (Kahn's-algorithm topological sort) dispatch over this turn's own task-decomposition graph, whenever one exists -- a genuine valid execution order, or an honest "infeasible" report naming the real cycle, never a silently-wrong or arbitrary ordering. Absent for any turn with no real task decomposition. */
   taskSchedule?: JsonValue;
+  /** Plan items 180-181: real replanning triggered by this turn's own build/test failure (a genuine meaningful observation), reusing every completed task-decomposition node whose own claims that failure doesn't touch rather than restarting the plan. Absent when this turn had no task decomposition or its build/test passed (or never ran). */
+  taskReplanning?: JsonValue;
   /** Plan items 219-220: the real, provenance-aware user-model store (metadata.userModelStore in, updated store out), with every real correction detected this turn recorded as a real explicit_instruction claim -- always present (an empty claim list when nothing was supplied or detected), never fabricated. */
   userModelStore?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */

@@ -611,6 +611,71 @@ describe("kernel local evidence source anchoring", () => {
     }
   });
 
+  it("replans a real task-decomposition graph when this turn's own build/test fails (plan items 180-181 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_560, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: {
+        executeProgram: async (): Promise<BuildTestResult> => ({
+          build: emptyCommandResult(),
+          test: { code: 1, stdout: "", stderr: "assertion failed", durationMs: 1 },
+          repairAttempted: false,
+          repairApplied: false,
+          passed: false,
+          artifacts: []
+        })
+      },
+      approvals: { isApproved: () => true, observePending: () => {}, policyPatch: () => ({ dryRunByDefault: false }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Please write a function that reverses a string." });
+
+    const replanning = result.taskReplanning as unknown as {
+      graph: { nodes: Record<string, { id: string; completed: boolean }> };
+      reusedNodeIds: string[];
+      invalidatedNodeIds: string[];
+      blockedNodeIds: string[];
+    } | undefined;
+    expect(replanning).toBeDefined();
+    // Real invariant of replan() itself: every node that was completed
+    // before this observation is accounted for exactly once, as either
+    // reused (untouched) or invalidated (reset) -- never both, never
+    // dropped.
+    const snapshot = result.taskResumptionSnapshot as unknown as { taskGraph: { nodes: Record<string, { completed: boolean }> } };
+    const completedBefore = Object.values(snapshot.taskGraph.nodes).filter(node => node.completed).length;
+    expect(replanning!.reusedNodeIds.length + replanning!.invalidatedNodeIds.length).toBe(completedBefore);
+    // The replanned graph itself is real output, not just a report: every
+    // node this function marked invalidated is genuinely reset to
+    // incomplete in replanning.graph.
+    for (const nodeId of replanning!.invalidatedNodeIds) {
+      expect(replanning!.graph.nodes[nodeId]?.completed).toBe(false);
+    }
+  });
+
+  it("leaves TurnResult.taskReplanning absent when this turn's build/test passes", async () => {
+    const clock = createClock({ fixedTime: 6_570, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      approvals: { isApproved: () => true, observePending: () => {}, policyPatch: () => ({ dryRunByDefault: false }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Please write a function that reverses a string." });
+    expect(result.taskReplanning).toBeUndefined();
+  });
+
   it("real, durable, cross-turn task-resumption: a code-shaped turn's snapshot is genuinely still recoverable on a later, non-code-shaped turn in the same conversation (plan item 218 live-turn wiring)", async () => {
     const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
     const hasher = createHasher();
