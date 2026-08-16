@@ -16,15 +16,15 @@ export default defineConfig({
     poolOptions: {
       forks: {
         singleFork: true,
-        // Confirmed live: 4096 was still too tight for the heaviest shards
-        // (tools/test-unit-sharded.mjs's sharded full run OOM'd on a shard
-        // combining graph-surface-alignment-training.test.ts and
-        // workspace-runtime-compiler-planning.test.ts). Shards run strictly
-        // sequentially (one forked process alive at a time, never
-        // concurrent) on a 16GB machine, so there is real headroom to raise
-        // this -- 6144MB leaves the OS/other processes ~10GB and has been
-        // verified to clear the previously-OOMing shard combination.
-        execArgv: ["--max-old-space-size=6144"]
+        // Confirmed live: even 6144 still OOM'd on some shard compositions
+        // (--logHeapUsage showed each individual file's live heap staying
+        // under ~200MB, so this is allocation-rate/GC-pause pressure from
+        // real heavy computation -- e.g. genuine TypeScript compiler
+        // Program/LanguageService construction -- not a slow cross-file
+        // leak). Shards run strictly sequentially (one forked process
+        // alive at a time, never concurrent) on a 16GB machine, so there
+        // is real headroom to raise this further.
+        execArgv: ["--max-old-space-size=8192"]
       }
     }
   }
