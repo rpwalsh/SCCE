@@ -85,6 +85,12 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     informationAccess,
     sourceInformationLabel,
     namespace: "scce-v3-runtime",
+    // Real, long-lived adapter-backed runtime (server or CLI) -- safe and
+    // worth it to isolate the deferred functional-cognition self-projection
+    // in its own heap-capped child process. See storage.ts's
+    // ScceKernelDeps.functionalCognitionOffloadProcess for why this must
+    // stay opt-in rather than the default.
+    functionalCognitionOffloadProcess: true,
     corpusRegistry: corpusRegistryEntriesFromConfig(config),
     evaluationCondition: options.evaluationCondition,
     evaluationRunId: options.evaluationRunId,

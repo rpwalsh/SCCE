@@ -8,6 +8,9 @@ import type {
   ScceEvent,
   ScceStorage
 } from "../index.js";
+import type { EventRangeQuery } from "../storage.js";
+import type { EpisodeId } from "../types.js";
+import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 
 // Extracted from kernel-training.test.ts's storageFixture() so
 // evidence-promotion-evaluation.test.ts can build the same kind of
@@ -25,8 +28,8 @@ export function storageFixtureForEvaluation(input: { evidence: EvidenceSpan[]; c
     events: {
       append: async (event: ScceEvent) => { events.push(event); },
       appendBatch: async (rows: ScceEvent[]) => { events.push(...rows); },
-      readEpisode: async () => events,
-      readRange: async () => events,
+      readEpisode: async (episodeId: EpisodeId) => filterEpisodeEvents(events, episodeId),
+      readRange: async (query: EventRangeQuery) => filterEventRange(events, query),
       latestLedgerHash: async () => events.at(-1)?.hash ?? ""
     },
     conversation: {

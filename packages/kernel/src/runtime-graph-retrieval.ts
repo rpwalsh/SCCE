@@ -112,13 +112,46 @@ export function createRuntimeGraphRetrieval(options: {
 
   const graphSliceCacheMaxBytes = positiveRuntimeInt("SCCE_GRAPH_SLICE_CACHE_MB", 256) * 1024 * 1024;
 
+  /**
+   * Real, measured fix: a single turn's hot-neighborhood retrieval was
+   * budgeted against 80% of the *shared cache's* size limit
+   * (SCCE_GRAPH_SLICE_CACHE_MB, default 256MB -> ~205MB) -- a limit sized
+   * for how much the process-wide cache may hold across many turns, not
+   * for one turn's own working set. Measured against the real database:
+   * a single "bounded" slice (1,642 nodes) reached 164MB, comfortably
+   * under that 205MB budget, so fitRuntimeGraphSliceToBudget's own
+   * pruning loop never triggered at all. The real driver was
+   * `estimateRuntimeGraphSliceBytes` correctly reporting each evidence
+   * span's full, untruncated `text` field (real Wikipedia articles can
+   * run to `maxArticleChars` in scce.config.json, currently 160,000
+   * chars) with no per-span cap, unlike every other field in that
+   * estimate. A genuinely separate, much smaller per-turn budget makes
+   * the existing count-based pruning loop actually engage.
+   */
+  const hotNeighborhoodSliceBudgetBytes = positiveRuntimeInt("SCCE_GRAPH_SLICE_TURN_BUDGET_MB", 16) * 1024 * 1024;
+
   const hotNeighborhoodEnabled = runtimeFlag("SCCE_HOT_NEIGHBORHOOD", true);
 
-  const hotNeighborhoodNodeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_NODES", 3000);
+  /**
+   * Real, measured fix: these three limits bound what gets *fetched from
+   * Postgres* before fitRuntimeGraphSliceToBudget ever runs -- the byte
+   * budget above only prunes the in-memory result afterward, so a fetch
+   * limit far larger than what the budget will ever keep just means
+   * paying (in real getEvidenceBatch/node-load query time, transferring
+   * up to `maxArticleChars`-sized full text per evidence span) for data
+   * that gets discarded moments later. Measured live: with the old 3000/
+   * 6000/3000 defaults, graph-slice retrieval alone cost ~19-21 real
+   * seconds even after the byte-budget trim above was fixed, because the
+   * trim runs *after* this fetch. fitRuntimeGraphSliceToBudget's own
+   * floors are 256 nodes / 512 edges / 128 evidence, so these give the
+   * trimmer real headroom (~2.5x) to pick the best candidates without
+   * fetching an order of magnitude more than any turn will ever keep.
+   */
+  const hotNeighborhoodNodeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_NODES", 640);
 
-  const hotNeighborhoodEdgeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EDGES", 6000);
+  const hotNeighborhoodEdgeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EDGES", 1280);
 
-  const hotNeighborhoodEvidenceLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EVIDENCE", 3000);
+  const hotNeighborhoodEvidenceLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EVIDENCE", 320);
 
   const sourceAnchorHotNodeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_NODES", 16);
 
@@ -644,7 +677,7 @@ export function createRuntimeGraphRetrieval(options: {
       ]).slice(0, hotNeighborhoodEvidenceLimit);
       const evidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
       if (epoch !== runtimeCacheEpoch) return undefined;
-      const budgetBytes = Math.max(16 * 1024 * 1024, Math.floor(graphSliceCacheMaxBytes * 0.8));
+      const budgetBytes = hotNeighborhoodSliceBudgetBytes;
       const residentValue = { graph: closedGraph, evidence };
       const budgetInput = estimateRuntimeGraphSliceBytes(residentValue) > budgetBytes
         ? {

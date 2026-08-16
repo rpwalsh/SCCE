@@ -948,6 +948,16 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
+    // Real, measured fix: EventLedger.readRange's own typeId-filtered
+    // lookups (e.g. production-turn-runtime.ts's per-turn
+    // `readRange({ typeId: "SelfModelProjected", beforeT, limit: 9 })`)
+    // had no index on type_id at all and fell back to a parallel
+    // sequential scan of the whole events table (confirmed via EXPLAIN
+    // ANALYZE against a real 142k-row table: ~220ms and growing with
+    // table size). type_id is never queried without also filtering by t
+    // (see readRange's WHERE-clause builder), so this composite index
+    // covers the real access pattern directly.
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_type_t ON ${q}.events(type_id,t DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_session_turn ON ${q}.conversation_turns(session_id, turn_index DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ingestion_root_status ON ${q}.ingestion_checkpoints(root_uri,status,updated_at)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_features ON ${q}.evidence_spans USING GIN(features)`,

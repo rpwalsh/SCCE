@@ -37,6 +37,9 @@ import {
   proposeSourceExactEvidenceAnswer,
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
+import type { EventRangeQuery } from "../storage.js";
+import type { EpisodeId } from "../types.js";
+import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "../episodic-memory-consolidation.js";
 import type { SemanticConsolidationResult } from "../semantic-memory-consolidation.js";
 import { metadataWithRuntimeReplanMotion, priorRejectedHypothesesFromCandidates, type RuntimeReplanMotion } from "../runtime-motion.js";
@@ -703,6 +706,122 @@ describe("kernel local evidence source anchoring", () => {
     });
     const tenantBClaims = tenantB.userModelStore as unknown as UserModelClaimRecord[] | undefined;
     expect((tenantBClaims ?? []).some(claim => tenantAClaims.some(tenantAClaim => tenantAClaim.id === claim.id))).toBe(false);
+  });
+
+  it("real, durable, cross-turn episodic read-back: a later turn whose request genuinely overlaps a past one retrieves it (plan item 212 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-readback",
+      sourceVersionId: "source:ada-lovelace-readback:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const first = await kernel.turn({ text: "Who was Ada Lovelace and what did she write notes about?" });
+    expect(first.relevantPastEpisodes).toBeUndefined();
+
+    // Genuinely overlapping request (same subject/feature terms) in a later,
+    // real turn -- must retrieve the first episode's own consolidated
+    // record, not a fabricated or zero-confidence match.
+    const second = await kernel.turn({ text: "Tell me about Ada Lovelace and the notes she wrote." });
+    const relevant = second.relevantPastEpisodes as unknown as Array<{ episode: { episodeId: string }; similarity: number }> | undefined;
+    expect(relevant).toBeDefined();
+    expect(relevant!.length).toBeGreaterThanOrEqual(1);
+    expect(relevant![0]!.episode.episodeId).toBe(first.episodeId);
+    expect(relevant![0]!.similarity).toBeGreaterThan(0);
+    expect(relevant![0]!.similarity).toBeLessThanOrEqual(1);
+
+    // A genuinely unrelated request must not retrieve either prior episode.
+    const third = await kernel.turn({ text: "What is the weather forecast for tomorrow?" });
+    const thirdRelevant = third.relevantPastEpisodes as unknown as Array<{ episode: { episodeId: string } }> | undefined;
+    expect((thirdRelevant ?? []).some(row => row.episode.episodeId === first.episodeId || row.episode.episodeId === second.episodeId)).toBe(false);
+  });
+
+  it("real live-turn wiring: a genuinely promoted reasoning operator, induced from real ledger history, is durably recorded after a turn (plan item 161 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_900, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+
+    // Seed real EpisodeConsolidated + outcome history directly into the
+    // same ledger array kernel.turn() reads from: many episodes sharing a
+    // real repeated action-type pattern that succeeds, and many distractor
+    // episodes with a different pattern that fails -- enough of each on
+    // both sides of the deterministic hash-based fit/held-out split for
+    // induceOperatorFromLedger's default thresholds (minimumSupport 3,
+    // minimumTotalEpisodes 6) to genuinely promote the pattern.
+    let nextId = 0;
+    const seedEpisode = (id: string, t: number, actionTypes: string[], succeeded: boolean) => {
+      const episodeId = id as unknown as ScceEvent["episodeId"];
+      const mk = (typeId: string, payload: unknown): ScceEvent => ({
+        id: `seed.evt.${nextId++}` as unknown as ScceEvent["id"],
+        episodeId,
+        typeId: typeId as unknown as ScceEvent["typeId"],
+        t,
+        payload: payload as ScceEvent["payload"],
+        parents: [],
+        hash: `seed.hash.${nextId}`
+      });
+      const actionEvents = actionTypes.map(typeId => mk(typeId, {}));
+      fixture.events.push(...actionEvents);
+      const consolidated = {
+        episodeId: id, requestFeatures: [], contextEventIds: [],
+        actionEventIds: actionEvents.map(event => event.id),
+        outcomeEventIds: [], correctionEventIds: [], lessons: [],
+        sourceEventIds: actionEvents.map(event => event.id),
+        eventCount: actionEvents.length, firstT: t, lastT: t
+      };
+      fixture.events.push(mk("EpisodeConsolidated", consolidated));
+      fixture.events.push(mk(succeeded ? "CapabilitySucceeded" : "CapabilityFailed", {}));
+    };
+    // Asymmetric counts, not 15/15: induceOperatorCandidate picks whichever
+    // pattern has the greatest MDL savings first, *then* checks whether
+    // that specific candidate correlates with success -- a 50/50 split
+    // risks the hash-based fit/held-out partition handing the higher
+    // fit-set count to the distractor purely by chance, which correctly
+    // yields promoted:false (the distractor has a *negative* held-out
+    // gain) but would make this test flaky rather than proving the
+    // positive-promotion wiring path.
+    for (let i = 0; i < 25; i++) seedEpisode(`seed.pattern.${i}`, 100 + i, ["Inspected", "Patched"], true);
+    for (let i = 0; i < 5; i++) seedEpisode(`seed.distractor.${i}`, 200 + i, ["Searched", "Fetched"], false);
+
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    await kernel.turn({ text: "Who was Ada Lovelace?" });
+
+    // The induction is deferred (fire-and-forget, non-blocking) -- poll
+    // briefly for the real durable event rather than assuming it lands
+    // synchronously with the turn's own response.
+    const deadline = Date.now() + 2000;
+    let induced: ScceEvent | undefined;
+    while (Date.now() < deadline) {
+      induced = fixture.events.find(event => event.typeId === "ReasoningOperatorInduced");
+      if (induced) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(induced).toBeDefined();
+    const payload = induced!.payload as unknown as { actionTypeSequence: string[]; promotion: { promoted: boolean; heldOutGain: number } };
+    expect(payload.actionTypeSequence).toEqual(["Inspected", "Patched"]);
+    expect(payload.promotion.promoted).toBe(true);
+    expect(payload.promotion.heldOutGain).toBeGreaterThan(0);
   });
 
   it("recognizes and records a revived hypothesis when replan metadata names a matching prior rejection", async () => {
@@ -1925,8 +2044,8 @@ function storageFixture(input: {
     events: {
       append: async (event: ScceEvent) => { events.push(event); },
       appendBatch: async (rows: ScceEvent[]) => { events.push(...rows); },
-      readEpisode: async () => events,
-      readRange: async () => events,
+      readEpisode: async (episodeId: EpisodeId) => filterEpisodeEvents(events, episodeId),
+      readRange: async (query: EventRangeQuery) => filterEventRange(events, query),
       latestLedgerHash: async () => events.at(-1)?.hash ?? ""
     },
     conversation: {

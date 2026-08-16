@@ -23,6 +23,9 @@ import {
   type TaskResumptionSnapshotRecord,
   type UserModelClaimRecord
 } from "../index.js";
+import type { EventRangeQuery } from "../storage.js";
+import type { EpisodeId } from "../types.js";
+import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 import { sessionOwnerObservationSurface } from "../kernel.js";
 
 describe("kernel training", () => {
@@ -421,8 +424,8 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
     events: {
       append: async (event: ScceEvent) => { events.push(event); },
       appendBatch: async (rows: ScceEvent[]) => { events.push(...rows); },
-      readEpisode: async () => events,
-      readRange: async () => events,
+      readEpisode: async (episodeId: EpisodeId) => filterEpisodeEvents(events, episodeId),
+      readRange: async (query: EventRangeQuery) => filterEventRange(events, query),
       latestLedgerHash: async () => events.at(-1)?.hash ?? ""
     },
     conversation: {

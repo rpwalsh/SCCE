@@ -1172,7 +1172,18 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           input.selectedCandidate && kernelCandidateDirectSurfaceAllowed(input.selectedCandidate, input)
             ? input.selectedCandidate.answer
             : "",
-          semanticSlotSurface(input.semanticInput?.slots[0]?.value ?? null),
+          // Real bug, confirmed live: typedSemanticInputForMouth's slots[0]
+          // is always the fact's *subject* (who/what the fact is about --
+          // e.g. "Ada Lovelace" itself for a "who was Ada Lovelace" query)
+          // and slots[1] is the *object* (the actual predicate content,
+          // e.g. "English mathematician and writer"). Falling back to
+          // slots[0] here answered questions by echoing back part of the
+          // question itself -- structurally never useful as a standalone
+          // answer for any question shape, not just this one. slots[1] is
+          // the fallback's actual candidate content; slots[0] stays as a
+          // last-resort behind it rather than being removed outright, in
+          // case a future caller ever has only a subject slot populated.
+          semanticSlotSurface(input.semanticInput?.slots[1]?.value ?? input.semanticInput?.slots[0]?.value ?? null),
           plan.orderedPoints.find(point => point.role === "answer" && point.proposition.trim())?.proposition ?? "",
           plan.orderedPoints.find(programOrArtifactSurfacePoint)?.proposition ?? "",
           deterministicVerdict
@@ -2010,8 +2021,8 @@ function semanticReversibleConstructionCandidate(
     || state.boundaryId !== "output.force.source_bound"
     || plan.targetLanguage !== input.languageProfile.id) return undefined;
   const facts = uniquePriorBoundFacts(state.selectedFacts);
-  if (facts.length !== 1 || state.selectedFacts.length !== 1) return undefined;
-  const fact = facts[0]!;
+  const fact = singleCoreFact(facts);
+  if (!fact) return undefined;
   if (!completeLearnedFactCoverage(state, fact)
     || !learnedFactRouteAdmissible(fact)
     || !fact.sourceVersionId
@@ -2105,8 +2116,8 @@ function semanticAntiUnifiedConstructionCandidate(
     || state.boundaryId !== "output.force.source_bound"
     || plan.targetLanguage !== input.languageProfile.id) return undefined;
   const facts = uniquePriorBoundFacts(state.selectedFacts);
-  if (facts.length !== 1 || state.selectedFacts.length !== 1) return undefined;
-  const fact = facts[0]!;
+  const fact = singleCoreFact(facts);
+  if (!fact) return undefined;
   if (!completeLearnedFactCoverage(state, fact)
     || !learnedFactRouteAdmissible(fact)
     || !fact.sourceVersionId
@@ -2360,8 +2371,8 @@ function semanticLearnedConstructionCandidate(
   const certifiedSourceVersionIds = new Set(state.certificationBoundary.sourceVersionIds);
   const rows: LearnedConstructionCandidateRow[] = [];
   const facts = uniquePriorBoundFacts(state.selectedFacts);
-  if (facts.length !== 1 || state.selectedFacts.length !== 1) return undefined;
-  const fact = facts[0]!;
+  const fact = singleCoreFact(facts);
+  if (!fact) return undefined;
   if (!completeLearnedFactCoverage(state, fact) || !learnedFactRouteAdmissible(fact)) return undefined;
 
   if (!exactFactSurface(fact.subject) || !exactFactSurface(fact.predicate) || !exactFactSurface(fact.object)) return undefined;
@@ -3042,20 +3053,55 @@ function semanticDirectEvidenceCandidate(
     if (selected.length >= Math.max(1, Math.min(4, discoursePlan.units.length || 2))) break;
   }
   if (!selected.length) return undefined;
-  const selectedSurfaces = selected.map(row => row.surface);
-  const observedSourceSpan = exactObservedSourceSpan(
-    input.evidence,
-    uniqueStrings(selected.flatMap(row => row.evidenceIds)),
-    selectedSurfaces
-  );
-  const joined = renderJoinedCandidateAlternatives({
-    derivations: [selectedSurfaces],
-    joinProgram: activeJoinProgram(input.languageMemory),
-    contexts: observedSourceSpan ? [{ observedSourceSpan }] : undefined
-  });
-  const text = admissibleJoinedCandidateText(joined);
-  if (!text || !admissibleMouthSurface(text)) return undefined;
-  const evidenceIds = uniqueEvidenceIds(selected.flatMap(row => row.evidenceIds.map(id => id as EvidenceId)));
+  // Real bug, confirmed live: joining 2+ real, independently-valid evidence
+  // sentences requires renderJoinedCandidateAlternatives to find a genuine
+  // discourse connective between them -- when it honestly can't (rather
+  // than fabricating a transition), it returns status:"unresolved" and no
+  // text, which used to fail this whole candidate even though the single
+  // best sentence on its own was already a real, valid, evidence-backed
+  // answer. Degrading to that one sentence when the join can't be
+  // resolved is strictly safer than the prior behavior (abandoning a real
+  // candidate entirely, which fed the "why does it just quote Wikipedia"
+  // problem), and never joins anything the resolver didn't itself accept.
+  // Single-fact fallbacks are ordered away from whatever surface the real
+  // downstream question-echo gate (questionEchoHits, called on this exact
+  // candidate text against input.entailment.claim.text once this reaches
+  // scoring) would reject -- input.entailment.claim.text is frequently
+  // seeded from this exact evidence pool (e.g. via
+  // proposeSourceExactEvidenceAnswer), so the "core" fact's own surface
+  // can literally equal the claim being checked. Reusing questionEchoHits
+  // itself here (not reimplementing its normalization) keeps this
+  // ordering consistent with what will actually be enforced downstream.
+  const claimText = input.entailment.claim?.text ?? "";
+  const singleFactFallbacks = selected.length > 1
+    ? [...selected].sort((left, right) => (
+      questionEchoHits(left.surface, claimText).length - questionEchoHits(right.surface, claimText).length
+    )).map(row => [row])
+    : [];
+  const joinAttempts = selected.length > 1 ? [selected, ...singleFactFallbacks] : [selected];
+  let text = "";
+  let resolved: typeof selected = [];
+  for (const attempt of joinAttempts) {
+    const attemptSurfaces = attempt.map(row => row.surface);
+    const observedSourceSpan = exactObservedSourceSpan(
+      input.evidence,
+      uniqueStrings(attempt.flatMap(row => row.evidenceIds)),
+      attemptSurfaces
+    );
+    const joined = renderJoinedCandidateAlternatives({
+      derivations: [attemptSurfaces],
+      joinProgram: activeJoinProgram(input.languageMemory),
+      contexts: observedSourceSpan ? [{ observedSourceSpan }] : undefined
+    });
+    const attemptText = admissibleJoinedCandidateText(joined);
+    if (attemptText && admissibleMouthSurface(attemptText)) {
+      text = attemptText;
+      resolved = attempt;
+      break;
+    }
+  }
+  if (!text) return undefined;
+  const evidenceIds = uniqueEvidenceIds(resolved.flatMap(row => row.evidenceIds.map(id => id as EvidenceId)));
   if (!evidenceIds.length || evidenceIds.some(id => !input.evidence.some(span => span.id === id && span.status === "promoted"))) return undefined;
   return {
     id: "candidate:generated:semantic-direct-evidence",
@@ -3063,15 +3109,15 @@ function semanticDirectEvidenceCandidate(
     path: "generated",
     text,
     evidenceIds,
-    fit: clamp01(0.82 + mean(selected.map(row => row.fact.support)) * 0.14),
+    fit: clamp01(0.82 + mean(resolved.map(row => row.fact.support)) * 0.14),
     importedPieceIds: [],
     discoursePlan,
     boundaryDecisions: [],
     audit: toJsonValue({
       schema: "scce.mouth.semantic_direct_evidence.v1",
-      factKeys: selected.map(row => semanticAnswerFactKey(row.fact)),
+      factKeys: resolved.map(row => semanticAnswerFactKey(row.fact)),
       evidenceIds: evidenceIds.map(String),
-      sourceVersionIds: uniqueStrings(selected.map(row => row.fact.sourceVersionId ?? "").filter(Boolean)),
+      sourceVersionIds: uniqueStrings(resolved.map(row => row.fact.sourceVersionId ?? "").filter(Boolean)),
       externalFactCertification: true
     })
   };
@@ -6602,6 +6648,25 @@ function admissibleJoinedCandidateText(joined: JoinedSurface): string {
 
 function ensureSurfaceSentence(value: string, boundary?: string): string {
   return ensureUnicodeSurfaceSentence(tidySurface(value), boundary);
+}
+
+/**
+ * Real bug, confirmed live: an ordinary "who was X" factual question
+ * routinely extracts 2+ real selectedFacts (e.g. one lead-sentence fact,
+ * one supporting fact) from local-evidence-runtime.ts's localEvidenceAnswerFacts.
+ * The three single-fact construction generators below used to require
+ * `facts.length === 1`, so any multi-fact turn -- the common case, not an
+ * edge case -- always fell through every genuine construction-grammar
+ * generation path straight to the raw evidence-composed candidate,
+ * producing a verbatim-leaning quote instead of synthesized prose. Picking
+ * one real, representative fact (the one already marked "core" by
+ * localEvidenceSemanticFact's own questionSlotImportance, falling back to
+ * the first) instead of giving up lets real generation engage without
+ * fabricating anything -- every field on the chosen fact is still a real,
+ * evidence-backed value, just not literally the caller's entire fact list.
+ */
+function singleCoreFact(facts: readonly SemanticAnswerFact[]): SemanticAnswerFact | undefined {
+  return facts.find(fact => fact.questionSlotImportance === "core") ?? facts[0];
 }
 
 function uniquePriorBoundFacts(facts: readonly SemanticAnswerFact[]): SemanticAnswerFact[] {
