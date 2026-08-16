@@ -136,7 +136,7 @@ const CODE_PURPOSE = {
   DEP_SOURCE_IMPORT: "scce.code.dep.999"
 } as const;
 
-const CODE_CONSTRAINT = {
+export const CODE_CONSTRAINT = {
   IMPORT_DECLARED: "scce.code.constraint.001",
   MIGRATION_BACKED: "scce.code.constraint.002",
   TEST_BEHAVIOR: "scce.code.constraint.003",

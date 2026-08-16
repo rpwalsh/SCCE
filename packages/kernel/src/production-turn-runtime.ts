@@ -117,6 +117,8 @@ import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestFor
 import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
+import { replan } from "./task-replanning.js";
+import { CODE_CONSTRAINT } from "./code-learning.js";
 import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -2301,6 +2303,7 @@ export function createProductionTurnRuntime(options: {
         events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityPlanned", payload: plan })));
       }
       let buildTest: BuildTestResult | undefined;
+      let taskReplanning: ReturnType<typeof replan> | undefined;
       if (construct.program) {
         const registry = createCapabilityRegistry({ process: true, network: Boolean(deps.connectors) });
         const capability = registry.get("process.build_test");
@@ -2353,6 +2356,22 @@ export function createProductionTurnRuntime(options: {
             events.push(await append(eventFactory.create({ episodeId, typeId: "BuildExecuted", payload: { code: buildTest.build.code, durationMs: buildTest.build.durationMs, stderrHash: hasher.digestHex(buildTest.build.stderr) } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { code: buildTest.test.code, passed: buildTest.passed, repairAttempted: buildTest.repairAttempted } })));
             events.push(await append(eventFactory.create({ episodeId, typeId: buildTest.passed ? "CapabilitySucceeded" : "CapabilityFailed", payload: { capabilityId: capability.id, planId: plan.id, passed: buildTest.passed } })));
+            // Plan items 180-181: a failing build/test is a real, concrete
+            // "meaningful observation" -- direct evidence that whatever
+            // this construct's own task-decomposition plan claimed about
+            // TEST_BEHAVIOR/BUILD_NOT_PRECLAIMED (code-learning.ts's own
+            // named condition ids for exactly this) no longer holds. Only
+            // those two specific conditions are invalidated, never the
+            // unrelated ones (path containment, secret material, etc.) a
+            // failing build has no real bearing on. taskResumptionSnapshot
+            // (computed earlier this same turn) already has this turn's
+            // real graph; replanning reuses every node whose own claims
+            // this failure doesn't touch, rather than restarting the plan.
+            if (!buildTest.passed && taskResumptionSnapshot) {
+              taskReplanning = replan(taskResumptionSnapshot.taskGraph, {
+                invalidatedConditionIds: [CODE_CONSTRAINT.TEST_BEHAVIOR, CODE_CONSTRAINT.BUILD_NOT_PRECLAIMED]
+              });
+            }
             if (proceduralSkillExecution) {
               events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillExecuted", payload: proceduralSkillExecution })));
             }
@@ -2903,6 +2922,7 @@ export function createProductionTurnRuntime(options: {
           workingMemory: toJsonValue(candidateWorkingMemory),
           taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
           taskSchedule: taskSchedule ? toJsonValue(taskSchedule) : undefined,
+          taskReplanning: taskReplanning ? toJsonValue(taskReplanning) : undefined,
           episodeConsolidation,
           relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
           semanticConsolidation,
@@ -3047,6 +3067,7 @@ export function createProductionTurnRuntime(options: {
         workingMemory: toJsonValue(candidateWorkingMemory),
         taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
         taskSchedule: taskSchedule ? toJsonValue(taskSchedule) : undefined,
+        taskReplanning: taskReplanning ? toJsonValue(taskReplanning) : undefined,
         episodeConsolidation,
         relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
         semanticConsolidation,
