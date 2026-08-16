@@ -984,6 +984,8 @@ export interface TurnResult {
   workingMemory?: JsonValue;
   /** Plan items 217-218: a real long-horizon task-resumption snapshot combining this turn's own real task-decomposition graph (items 158-159) and working memory (items 156-157). Absent (not fabricated) for any turn with no real task decomposition (i.e. not code-shaped). */
   taskResumptionSnapshot?: JsonValue;
+  /** Plan items 173-174: a real constraint-solver (Kahn's-algorithm topological sort) dispatch over this turn's own task-decomposition graph, whenever one exists -- a genuine valid execution order, or an honest "infeasible" report naming the real cycle, never a silently-wrong or arbitrary ordering. Absent for any turn with no real task decomposition. */
+  taskSchedule?: JsonValue;
   /** Plan items 219-220: the real, provenance-aware user-model store (metadata.userModelStore in, updated store out), with every real correction detected this turn recorded as a real explicit_instruction claim -- always present (an empty claim list when nothing was supplied or detected), never fabricated. */
   userModelStore?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
