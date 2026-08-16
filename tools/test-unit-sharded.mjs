@@ -20,13 +20,18 @@ import { spawn } from "node:child_process";
  * vitest.config.ts's own singleFork choice, applied one level up.
  */
 
-// Confirmed live: 6 shards still OOM'd on a shard that happened to combine
-// several of the repo's heaviest test files (graph-surface-alignment-
-// training + workspace-runtime-compiler-planning). More, smaller shards
-// lowers the odds any one shard's sequential heap accumulation lands two
-// or more heavy files together; combined with vitest.config.ts's raised
-// 6144MB cap, this cleared the previously-OOMing combination.
-const SHARD_COUNT = Number.parseInt(process.env.SCCE_TEST_SHARDS ?? "10", 10);
+// Confirmed live across three separate full-suite attempts (6, then 10
+// shards; 6144MB, then 8192MB heap cap): shards 1-9 of a 10-way split now
+// consistently pass clean, but shard 10 still reliably stalls/OOMs on a
+// cluster of real-TypeScript-compiler-invoking test files (Program/
+// LanguageService construction is genuinely heavy, not a leak -- see
+// vitest.config.ts's own note). Neither a larger heap cap nor 10-way
+// sharding alone resolved it; more, smaller shards further reduces the
+// odds that several of those specific heavy files land together in one
+// process's sequential lifetime. This has NOT been re-verified end to end
+// at 20 shards -- a real residual risk on this specific file cluster,
+// not silently declared fixed.
+const SHARD_COUNT = Number.parseInt(process.env.SCCE_TEST_SHARDS ?? "20", 10);
 const extraArgs = process.argv.slice(2);
 
 // A filtered/targeted run (e.g. `pnpm test:unit some-file-pattern`, the
