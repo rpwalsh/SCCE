@@ -25,6 +25,8 @@
  * (`km` / `km` genuinely becomes dimensionless, not silently dropped).
  */
 
+import type { JsonValue } from "./types.js";
+
 export type UnitVector = Readonly<Record<string, number>>;
 
 export interface ExactQuantity {
@@ -135,4 +137,197 @@ export function exactQuantitiesEqual(left: ExactQuantity, right: ExactQuantity):
 export function verifyExactResultMatchesClaim(quantity: ExactQuantity, claimedText: string): { matches: boolean; expected: string } {
   const expected = formatExactQuantity(quantity);
   return { matches: claimedText.trim() === expected, expected };
+}
+
+export interface ExactComputationEvaluation {
+  expression: string;
+  result: ExactQuantity;
+  resultText: string;
+  answer: string;
+  audit: JsonValue;
+}
+
+/**
+ * Plan item 171's real text-recognition + dispatch half: finds a genuine
+ * unit-bearing arithmetic expression in request text and evaluates it
+ * exactly. Deliberately distinct from local-evidence-runtime.ts's
+ * arithmeticAnswerForText (see this file's header): only fires when a
+ * real unit token is present on at least one operand -- plain unitless
+ * arithmetic stays on the existing float path unchanged, so this never
+ * competes with or shadows that already-wired production route. A
+ * mismatched-unit addition/subtraction (`5 km + 3 kg`) is refused
+ * outright (returns undefined), never silently coerced or dropped.
+ */
+export function exactComputationForText(text: string): ExactComputationEvaluation | undefined {
+  for (const candidate of exactExpressionCandidates(text)) {
+    const parsed = parseExactExpression(candidate);
+    if (!parsed || !parsed.hasUnit) continue;
+    const resultText = formatExactQuantity(parsed.value);
+    return {
+      expression: candidate,
+      result: parsed.value,
+      resultText,
+      answer: `${candidate} = ${resultText}.`,
+      audit: {
+        source: "kernel.turn.deterministic_exact_computation",
+        expression: candidate,
+        resultText,
+        unit: { ...parsed.value.unit }
+      }
+    };
+  }
+  return undefined;
+}
+
+// Matches a "term" (an optionally-signed number with an optional unit
+// suffix, e.g. "5kg", "-3.5m", optionally in a single non-nested paren
+// pair) followed by one or more (operator, term) groups. A real regex
+// scan, not char-class segmentation: this is what lets a genuine
+// expression be found and cleanly isolated wherever it appears inside
+// ordinary prose ("...holds 5kg+3kg of material...") without swallowing
+// surrounding words into a bogus "unit" token the way naive segmentation
+// on letter/digit/operator characters would (a stray word like "holds" or
+// "of" sitting between two numbers is not part of the match at all, since
+// it does not fit the term/operator grammar).
+const EXACT_TERM = "\\(?[+-]?\\d+(?:\\.\\d+)?[a-zA-Z]*\\)?";
+const EXACT_EXPRESSION_PATTERN = new RegExp(`${EXACT_TERM}(?:\\s*[+\\-*/^]\\s*${EXACT_TERM})+`, "gu");
+
+function exactExpressionCandidates(text: string): string[] {
+  const matches = text.match(EXACT_EXPRESSION_PATTERN) ?? [];
+  return matches
+    .map(match => match.trim().slice(0, 160))
+    .filter(candidate => /\d[a-zA-Z]+/u.test(candidate.replace(/\s+/gu, "")))
+    .sort((left, right) => right.length - left.length);
+}
+
+interface ExactToken {
+  kind: "number" | "unit" | "operator" | "left" | "right";
+  value: string;
+}
+
+function tokenizeExactExpression(expression: string): ExactToken[] | undefined {
+  const tokens: ExactToken[] = [];
+  const compact = expression.replace(/\s+/gu, "");
+  for (let index = 0; index < compact.length;) {
+    const char = compact[index];
+    if (char === undefined) return undefined;
+    if ((char >= "0" && char <= "9") || char === ".") {
+      let end = index + 1;
+      while (end < compact.length) {
+        const next = compact[end];
+        if (next === undefined || !((next >= "0" && next <= "9") || next === ".")) break;
+        end++;
+      }
+      const raw = compact.slice(index, end);
+      if (!/^\d+(?:\.\d+)?$|^\.\d+$/u.test(raw)) return undefined;
+      tokens.push({ kind: "number", value: raw });
+      index = end;
+      continue;
+    }
+    if ((char >= "a" && char <= "z") || (char >= "A" && char <= "Z")) {
+      let end = index + 1;
+      while (end < compact.length) {
+        const next = compact[end];
+        if (next === undefined || !((next >= "a" && next <= "z") || (next >= "A" && next <= "Z"))) break;
+        end++;
+      }
+      tokens.push({ kind: "unit", value: compact.slice(index, end) });
+      index = end;
+      continue;
+    }
+    if ("+-*/^".includes(char)) {
+      tokens.push({ kind: "operator", value: char });
+      index++;
+      continue;
+    }
+    if (char === "(") { tokens.push({ kind: "left", value: char }); index++; continue; }
+    if (char === ")") { tokens.push({ kind: "right", value: char }); index++; continue; }
+    return undefined;
+  }
+  return tokens;
+}
+
+/** Real decimal-string-to-exact-rational parse: `1.25` becomes exactly `125/100` (reduced to `5/4`), never an approximated float. */
+function exactQuantityFromDecimalLiteral(literal: string, unit: UnitVector): ExactQuantity {
+  const [wholePart, fractionPart = ""] = literal.split(".");
+  const denominator = 10n ** BigInt(fractionPart.length);
+  const numerator = BigInt(`${wholePart || "0"}${fractionPart}`);
+  return exactQuantity(numerator, denominator, unit);
+}
+
+function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boolean } | undefined {
+  const tokens = tokenizeExactExpression(raw);
+  if (!tokens?.length) return undefined;
+  let position = 0;
+  let operatorCount = 0;
+  let numberCount = 0;
+  let sawUnit = false;
+  const peek = (): ExactToken | undefined => tokens[position];
+  const fail = (): never => { throw new Error("invalid exact expression"); };
+  const consume = (): ExactToken => {
+    const token = tokens[position];
+    if (!token) return fail();
+    position++;
+    return token;
+  };
+  const parseExpression = (): ExactQuantity => parseAdditive();
+  const parseAdditive = (): ExactQuantity => {
+    let left = parseMultiplicative();
+    while (peek()?.kind === "operator" && (peek()?.value === "+" || peek()?.value === "-")) {
+      const operator = consume().value;
+      const right = parseMultiplicative();
+      operatorCount++;
+      try {
+        left = operator === "+" ? addExact(left, right) : subtractExact(left, right);
+      } catch {
+        fail();
+      }
+    }
+    return left;
+  };
+  const parseMultiplicative = (): ExactQuantity => {
+    let left = parseUnary();
+    while (peek()?.kind === "operator" && (peek()?.value === "*" || peek()?.value === "/")) {
+      const operator = consume().value;
+      const right = parseUnary();
+      operatorCount++;
+      left = operator === "*" ? multiplyExact(left, right) : divideExact(left, right);
+    }
+    return left;
+  };
+  const parseUnary = (): ExactQuantity => {
+    if (peek()?.kind === "operator" && (peek()?.value === "+" || peek()?.value === "-")) {
+      const operator = consume().value;
+      const value = parseUnary();
+      return operator === "-" ? exactQuantity(-value.numerator, value.denominator, value.unit) : value;
+    }
+    return parsePrimary();
+  };
+  const parsePrimary = (): ExactQuantity => {
+    const token = consume();
+    if (!token) return fail();
+    if (token.kind === "number") {
+      numberCount++;
+      let unit: UnitVector = {};
+      if (peek()?.kind === "unit") {
+        sawUnit = true;
+        unit = { [consume().value]: 1 };
+      }
+      return exactQuantityFromDecimalLiteral(token.value, unit);
+    }
+    if (token.kind === "left") {
+      const value = parseExpression();
+      if (peek()?.kind !== "right") return fail();
+      consume();
+      return value;
+    }
+    return fail();
+  };
+  try {
+    const value = parseExpression();
+    if (position !== tokens.length || operatorCount < 1 || numberCount < 2) return undefined;
+    return { value, hasUnit: sawUnit };
+  } catch {
+    return undefined;
+  }
 }
