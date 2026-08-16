@@ -1633,6 +1633,29 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.events.some(event => event.typeId === "ComputationEvaluated")).toBe(true);
   });
 
+  it("answers a real unit-bearing expression with the exact rational engine, not the plain float calculator (plan items 171-172 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 8_050, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids,
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "A tank holds 5kg+3kg of material. How much is that?" });
+
+    expect(result.answer).toBe("5kg+3kg = 8 kg.");
+    expect(result.assistantForce).toBe("reasoned_answer");
+    expect(result.entailment.force).toBe("proved");
+    expect(JSON.stringify(result.actionGraph)).toContain("deterministic_exact_computation");
+    expect(result.events.some(event => event.typeId === "ComputationEvaluated")).toBe(true);
+  });
+
   it("preserves source entities when an exact promoted target span licenses translation", async () => {
     const clock = createClock({ fixedTime: 8_500, stepMs: 1 });
     const hasher = createHasher();

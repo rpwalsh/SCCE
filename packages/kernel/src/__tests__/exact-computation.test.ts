@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addExact,
   divideExact,
+  exactComputationForText,
   exactQuantitiesEqual,
   exactQuantity,
   formatExactQuantity,
@@ -107,5 +108,45 @@ describe("verifyExactResultMatchesClaim (plan item 172)", () => {
     const check = verifyExactResultMatchesClaim(five, "6 kg");
     expect(check.matches).toBe(false);
     expect(check.expected).toBe("5 kg");
+  });
+});
+
+describe("exactComputationForText (plan item 171 -- real text recognition + dispatch)", () => {
+  it("recognizes and exactly evaluates a unit-bearing addition embedded in ordinary prose", () => {
+    // A real regex scan for the expression's own grammar, not char-class
+    // segmentation -- "holds"/"of material" surrounding the real
+    // expression are not swallowed into a bogus unit token the way naive
+    // letter-inclusive segmentation would.
+    const evaluation = exactComputationForText("The tank holds 5kg+3kg of material.");
+    expect(evaluation).toBeDefined();
+    expect(evaluation!.resultText).toBe("8 kg");
+    expect(evaluation!.answer).toBe("5kg+3kg = 8 kg.");
+  });
+
+  it("derives a real compound unit from division, never fabricated", () => {
+    const evaluation = exactComputationForText("If a car travels 10km in 2h, how fast is it going? 10km/2h");
+    expect(evaluation).toBeDefined();
+    expect(evaluation!.result.unit).toEqual({ km: 1, h: -1 });
+  });
+
+  it("never fires for plain unitless arithmetic -- that stays on the existing float calculator path", () => {
+    expect(exactComputationForText("What is 12 + 30?")).toBeUndefined();
+  });
+
+  it("keeps a fractional result exact, never rounded to a lossy decimal", () => {
+    const evaluation = exactComputationForText("1kg / 3s");
+    expect(evaluation).toBeDefined();
+    expect(evaluation!.resultText).toBe("1/3 kg*s^-1");
+  });
+
+  it("refuses (never fires, never silently coerces) a mismatched-unit addition", () => {
+    expect(exactComputationForText("Add 5kg+3m together.")).toBeUndefined();
+  });
+
+  it("finds the real expression even when it appears after unrelated descriptive numbers in the same sentence", () => {
+    const evaluation = exactComputationForText("The beam is 5m long and 2m of it broke off, so 5m-2m remains.");
+    expect(evaluation).toBeDefined();
+    expect(evaluation!.expression).toBe("5m-2m");
+    expect(evaluation!.resultText).toBe("3 m");
   });
 });
