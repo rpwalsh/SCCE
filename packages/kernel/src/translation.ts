@@ -11,6 +11,7 @@ import {
 } from "./language.js";
 import { createLanguageInductionEngine, type TranslationSeed } from "./language-induction.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
+import { surfaceEntityRuns } from "./kernel-answer-primitives.js";
 
 /**
  * Bounds how much real bilingual evidence text feeds the per-request seed
@@ -225,6 +226,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         preservation: clamp01(1 - mean(Object.values(lossVector)))
       };
       const rawConstruct = buildTranslationConstruct({
+        sourceText: input.text,
         sourceLanguage,
         targetLanguage,
         force,
@@ -726,6 +728,7 @@ function renderEmission(units: readonly { text: string }[], force: TranslationFo
 }
 
 function buildTranslationConstruct(input: {
+  sourceText: string;
   sourceLanguage: string;
   targetLanguage: string;
   force: TranslationForce;
@@ -734,9 +737,22 @@ function buildTranslationConstruct(input: {
   emission: TranslationPlan["emission"];
   targetEvidence: EvidenceSpan[];
 }): TranslationConstruct {
-  const sourceText = input.sourceFrames.map(frame => frame.text).join(" ");
+  // The real, original request text -- not `sourceFrames.map(f =>
+  // f.text).join(" ")`. Real bug, confirmed live: `semanticWindows` splits
+  // a new frame at every standalone punctuation symbol (any comma, period,
+  // or slash), so a code symbol or path straddling a window boundary
+  // ("deploy.rb" tokenizes as "deploy" | "." | "rb") gets its punctuation
+  // silently dropped once frames are rejoined with a single space --
+  // "deploy.rb" would never even appear in the reconstructed text for
+  // `validatePreservation` to find, regardless of how correct its own
+  // pattern is. Numbers/dates mostly survived this before because they're
+  // rarely split by internal punctuation; code symbols and paths almost
+  // always are. The rendered translation side (`emission.text` below)
+  // still legitimately comes from the frame-based renderer -- that really
+  // is what gets produced -- only the "what must be preserved" source side
+  // needs the undamaged original.
   const translatedText = input.force === "unknown" ? "" : input.emission.text;
-  const preservationValidation = validatePreservation(sourceText, translatedText);
+  const preservationValidation = validatePreservation(input.sourceText, translatedText);
   const objective = translationObjective(input.alignments, preservationValidation);
   const missingAlignments = input.alignments
     .filter(alignment => !alignment.targetFrameId || alignment.force === "unknown")
@@ -778,11 +794,6 @@ function buildTranslationConstruct(input: {
     evidenceRefs: input.targetEvidence.slice(0, 16).map(span => ({ evidenceId: String(span.id), sourceVersionId: String(span.sourceVersionId), alpha: span.alpha })),
     semanticPreservationScore: clamp01(0.55 * input.emission.preservation + 0.45 * (1 - objective.energy))
   };
-}
-
-function preservedTerms(text: string): string[] {
-  const terms = text.match(/(?:[A-Z][\p{Letter}\p{Number}_-]{1,}(?:\s+[A-Z][\p{Letter}\p{Number}_-]{1,}){0,4}|\p{Sc}?\d+(?:[.,:/_-]\d+)*(?:[%‰])?|[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$.]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+)/gu) ?? [];
-  return [...new Set(terms)].slice(0, 80);
 }
 
 function validatePreservation(sourceText: string, translatedText: string): TranslationPreservationValidation {
@@ -845,8 +856,32 @@ function translationObjective(alignments: readonly TranslationFrameAlignment[], 
 function protectedTermClasses(text: string): { entities: string[]; numbers: string[]; dates: string[]; codesymbols: string[] } {
   const numbers = text.match(/\p{Sc}?[+-]?\d+(?:[.,:/_-]\d+)*(?:[%‰])?/gu) ?? [];
   const dates = text.match(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?/gu) ?? [];
-  const codesymbols = text.match(/[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$.]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+|[A-Za-z0-9_-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|sql|py|rs|cs|java|go|cpp|h|hpp|yml|yaml)/gu) ?? [];
-  const entities = text.match(/[A-Z][\p{Letter}\p{Number}_-]{1,}(?:\s+[A-Z][\p{Letter}\p{Number}_-]{1,}){0,4}|[A-Z]{2,}[\p{Letter}\p{Number}_-]*/gu) ?? [];
+  // The leading identifier segment requires >= 2 characters specifically to
+  // exclude single-letter-per-segment Latin abbreviations ("e.g.", "i.e.",
+  // "U.S.") from matching as code symbols -- those are ordinary prose, not
+  // identifiers, and would otherwise wrongly trip the plan-125 preservation
+  // gate on any sentence that happens to contain one. Each dotted segment
+  // is matched individually (rather than one greedy trailing run) so a
+  // sentence-final period never gets absorbed into the match. No hardcoded
+  // file-extension allowlist -- real code/config/path extensions number in
+  // the hundreds and grow constantly (a fixed list is permanently stale by
+  // construction); this shape alone (identifier, dot, identifier, ...)
+  // already covers any real extension without needing to name it. Unicode
+  // letter/number classes (not `[A-Za-z]`) so a genuine non-Latin code
+  // identifier or path segment is still caught, matching the same
+  // script-inclusive standard as the entity detector above. Leading
+  // alternative catches dotfiles (".bashrc", ".gitignore", ".env") --
+  // real, common code symbols with no identifier before the dot at all.
+  const codesymbols = text.match(/\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}|[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}(?:\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]*)+|[\p{Letter}\p{Number}_.-]+\/[\p{Letter}\p{Number}_.\/-]+/gu) ?? [];
+  // Script-aware named-entity detection (surfaceEntityRuns, already the
+  // production standard used by answer-emitter.ts/local-evidence-runtime.ts/
+  // runtime-graph-retrieval.ts): capitalization is only a signal for scripts
+  // that actually have case (Latin, Cyrillic, Greek...). Uncased scripts
+  // (Hangul, Han, Arabic, Thai, Devanagari...) are flagged via real script
+  // membership instead (hasUncasedNonLatinLetter), never via a Latin-only
+  // `[A-Z]` regex that would silently exempt every non-Latin entity name
+  // from the preservation gate.
+  const entities = surfaceEntityRuns(text);
   const numberSet = new Set<string>(numbers as string[]);
   const dateSet = new Set<string>(dates as string[]);
   const codesymbolSet = new Set<string>(codesymbols as string[]);

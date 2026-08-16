@@ -327,6 +327,101 @@ describe("translation target evidence admission", () => {
     expect(plan.construct.translatedText).toBe("");
     expect(plan.construct.force).toBe("unknown");
   });
+
+  it("detects a required entity in an uncased non-Latin script the same way it would a capitalized Latin one", () => {
+    const koreanEvidence = span("evidence.korean-entity", "세종대왕은 한글을 창제했다.", { language: "lang.korean-entity" }, { script: "Hangul" });
+    const koreanTarget = profile("lang.korean-entity", "Hangul");
+    koreanEvidence.sourceVersionId = koreanTarget.sourceVersionId;
+    const koreanPlan = engine().plan({
+      text: "세종대왕은 한글을 창제했다.",
+      targetLanguage: koreanTarget.id,
+      evidence: [koreanEvidence],
+      profiles: [koreanTarget],
+      createdAt: 1
+    });
+    // A Latin-only `[A-Z]` regex would find zero entities in an all-Hangul
+    // source -- the real, production script-aware detector (the same
+    // hasUncasedNonLatinLetter signal answer-emitter.ts/local-evidence-
+    // runtime.ts already use live) must still flag the real named subject.
+    expect(koreanPlan.construct.preservationValidation.requiredEntities.length).toBeGreaterThan(0);
+    expect(koreanPlan.construct.preservationValidation.requiredEntities.some(term => term.includes("세종대왕"))).toBe(true);
+  });
+
+  it("does not treat an ordinary abbreviation like a required code symbol, so it never blocks an otherwise faithful translation", () => {
+    const evidence = span(
+      "evidence.abbreviation",
+      "The pump alpha unit continues to operate normally today within spec and remains fully stable during the routine test cycle.",
+      { language: "lang.abbreviation" },
+      { script: "Latin" }
+    );
+    const target = profile("lang.abbreviation", "Latin");
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      // Contains "e.g." -- structurally identical in shape to a dotted code
+      // identifier, but it is ordinary prose, not something the rendered
+      // translation is obligated to reproduce verbatim.
+      text: "The pump alpha unit continues to operate normally today, e.g. within spec, and remains fully stable during the routine test cycle.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    expect(plan.construct.preservationValidation.requiredCodesymbols).not.toContain("e.g.");
+    expect(plan.construct.preservationValidation.blockingMissing).toEqual([]);
+    expect(plan.construct.preservationValidation.valid).toBe(true);
+    expect(plan.force).not.toBe("unknown");
+    expect(plan.emission.text.length).toBeGreaterThan(0);
+  });
+
+  it("protects a code symbol regardless of its file extension, without relying on a hardcoded extension list", () => {
+    const evidence = span(
+      "evidence.arbitrary-extension",
+      "The pump alpha unit continues to operate normally today and remains fully stable during the routine test cycle.",
+      { language: "lang.arbitrary-extension" },
+      { script: "Latin" }
+    );
+    const target = profile("lang.arbitrary-extension", "Latin");
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      // ".rb" (Ruby) was never in the old fixed extension allowlist, yet
+      // this is exactly as real a code symbol as "config.ts" was.
+      text: "The pump alpha unit continues to operate normally today, per deploy.rb, and remains fully stable during the routine test cycle.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    expect(plan.construct.preservationValidation.requiredCodesymbols).toContain("deploy.rb");
+    expect(plan.construct.preservationValidation.missingCodesymbols).toContain("deploy.rb");
+    expect(plan.construct.preservationValidation.blockingMissing).toContain("deploy.rb");
+    expect(plan.force).toBe("unknown");
+    expect(plan.emission.text).toBe("");
+  });
+
+  it("protects a leading-dot dotfile (no identifier before the dot at all) the same as an extensioned filename", () => {
+    const evidence = span(
+      "evidence.dotfile",
+      "The pump alpha unit continues to operate normally today and remains fully stable during the routine test cycle.",
+      { language: "lang.dotfile" },
+      { script: "Latin" }
+    );
+    const target = profile("lang.dotfile", "Latin");
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      text: "The pump alpha unit continues to operate normally today, per .bashrc, and remains fully stable during the routine test cycle.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    expect(plan.construct.preservationValidation.requiredCodesymbols).toContain(".bashrc");
+    expect(plan.construct.preservationValidation.blockingMissing).toContain(".bashrc");
+    expect(plan.force).toBe("unknown");
+    expect(plan.emission.text).toBe("");
+  });
 });
 
 function engine(): ReturnType<typeof createTranslationEngine> {

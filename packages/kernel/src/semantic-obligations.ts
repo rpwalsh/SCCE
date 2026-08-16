@@ -22,6 +22,7 @@ import type {
 import { clamp01, featureSet, mean, stableVector, toJsonValue, symbolizeData, weightedJaccard } from "./primitives.js";
 import { hoeffdingLcb } from "./causal-math.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
+import { hasCasedLetter } from "./surface-linguistics.js";
 
 export interface SemanticObligationEvaluation {
   verdict: SemanticEntailmentVerdict;
@@ -218,6 +219,22 @@ function extractSemanticItems(text: string, source: "claim" | "evidence", span?:
   for (const match of matchAll(text, /(?:\b|^)(?:[A-Z][\p{Letter}\p{Mark}\p{Number}_-]{1,}(?:\s+[A-Z][\p{Letter}\p{Mark}\p{Number}_-]{1,}){0,5}|[A-Z]{2,}[\p{Letter}\p{Number}_-]*)(?:\b|$)/gu)) {
     add("entity", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
+  // Real gap, same class as the capitalization-only pattern above: entity
+  // names in uncased scripts (Hangul, Han, Arabic, Thai, Devanagari...)
+  // carry no capital-letter signal at all, so the pattern above never
+  // extracted them -- every obligation-verification call on non-Latin
+  // evidence/claims silently treated their real named entities as
+  // unextractable. `\p{Letter}` here deliberately over-matches (it also
+  // matches ordinary cased words), then `!hasCasedLetter` rejects any
+  // candidate containing so much as one cased letter -- the same
+  // uncased-vs-cased distinction `hasUncasedNonLatinLetter` already uses
+  // live elsewhere (answer-emitter.ts, local-evidence-runtime.ts), just
+  // expressed as a broad-match-then-filter pair instead of a per-character
+  // scan, since this call site needs real match indices for byteRange.
+  for (const match of matchAll(text, /\p{Letter}{2,}(?:[ \t]+\p{Letter}{2,}){0,5}/gu)) {
+    if (hasCasedLetter(match.value)) continue;
+    add("entity", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
+  }
   for (const match of matchAll(text, /(?:^|[^\p{Letter}\p{Number}_])(\p{Sc}?[+-]?\d+(?:[.,:/_-]\d+)*(?:[%‰])?)(?=$|[^\p{Letter}\p{Number}_])/gu, 1)) {
     add("quantity", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
@@ -239,7 +256,17 @@ function extractSemanticItems(text: string, source: "claim" | "evidence", span?:
   )) {
     add("temporal", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
-  for (const match of matchAll(text, /(?:[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$.]*|[A-Za-z_$][A-Za-z0-9_$]*\([^)]{0,80}\)|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+|[A-Za-z0-9_-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|sql|py|rs|cs|java|go|cpp|h|hpp|yml|yaml))/gu)) {
+  // Same >= 2 character leading-segment requirement as translation.ts's
+  // protectedTermClasses and this file's protectedTerms (see their
+  // comments): without it, ordinary abbreviations like "e.g."/"i.e."
+  // become spurious "symbol" claim obligations that a real answer would
+  // then fail to satisfy for having no reason to reproduce them verbatim.
+  // No hardcoded file-extension allowlist -- per-segment matching already
+  // covers any real extension, and never absorbs a sentence-final period.
+  // Unicode letter/number classes so a genuine non-Latin code identifier
+  // or path is still caught. Leading alternative catches dotfiles
+  // (".bashrc", ".gitignore", ".env").
+  for (const match of matchAll(text, /(?:\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}|[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}(?:\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]*)+|[\p{Letter}_$][\p{Letter}\p{Number}_$]{1,}\([^)]{0,80}\)|[\p{Letter}\p{Number}_.-]+\/[\p{Letter}\p{Number}_.\/-]+)/gu)) {
     add("symbol", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
   for (const match of matchAll(text, /(?:!=|≠|¬|!|⊬|⊭|∉|⊄|⊅|<=|>=|=>|->|::|=|<|>)/gu)) {
@@ -848,7 +875,18 @@ function protectedTerms(text: string): string[] {
   const terms = [
     ...(text.match(/\p{Sc}?[+-]?\d+(?:[.,:/_-]\d+)*(?:[%‰])?/gu) ?? []),
     ...(text.match(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?/gu) ?? []),
-    ...(text.match(/[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$.]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+|[A-Za-z0-9_-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|sql|py|rs|cs|java|go|cpp|h|hpp|yml|yaml)/gu) ?? []),
+    // See translation.ts's protectedTermClasses for the same fix and the
+    // reasoning: a >= 2 character leading segment excludes single-letter
+    // Latin abbreviations ("e.g.", "i.e.", "U.S.") from being wrongly
+    // treated as code symbols -- consequential here since this list
+    // directly feeds materialPreservation's blockingMissing, which gates
+    // whether a transform obligation is considered "satisfied". No
+    // hardcoded file-extension allowlist: matching per-segment (identifier,
+    // dot, identifier, ...) already covers any real extension without ever
+    // falling behind a fixed list, and never absorbs a sentence-final
+    // period the way a single greedy trailing group would. Leading
+    // alternative catches dotfiles (".bashrc", ".gitignore", ".env").
+    ...(text.match(/\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}|[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}(?:\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]*)+|[\p{Letter}\p{Number}_.-]+\/[\p{Letter}\p{Number}_.\/-]+/gu) ?? []),
     ...(text.match(/[A-Z]{2,}[\p{Letter}\p{Number}_-]*/gu) ?? [])
   ];
   return [...new Set(terms.map(term => term.trim()).filter(Boolean))].slice(0, 96);
