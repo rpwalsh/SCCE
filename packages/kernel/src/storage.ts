@@ -1058,7 +1058,10 @@ export const POSTGRES_REQUIRED_TABLES = [
   "sparse_ranking_comparisons",
   "segmentation_aggregates",
   "induced_language_models",
-  "segmentation_population_models"
+  "segmentation_population_models",
+  "user_model_claims",
+  "task_resumption_snapshots",
+  "document_generation_sessions"
 ] as const;
 
 export interface ScceKernelDeps {
@@ -1099,6 +1102,25 @@ export interface ScceKernelDeps {
    * execution).
    */
   functionalCognitionAuthorizeCapabilities?: boolean;
+  /**
+   * When true, the deferred (unauthorized) functional-cognition self-
+   * projection runs in a short-lived child process with its own hard
+   * `--max-old-space-size` heap cap (functional-cognition-offload.ts)
+   * instead of this process's own heap -- real isolation against a slow
+   * turn's `graph` growing the caller's memory unbounded. Real OS process
+   * spawn cost, worth it for a long-lived server absorbing continuous real
+   * traffic; not worth it (and actively harmful) for short-lived kernels
+   * created rapid-fire, e.g. one per unit test -- hundreds of real child
+   * process spawns within a single long-lived test-runner worker process
+   * reproduced a genuine "JavaScript heap out of memory" crash across the
+   * full suite. Defaults to false (the safe, cheap in-process computation,
+   * same as before this flag existed) precisely so anything that builds
+   * ScceKernelDeps by hand -- every test fixture -- gets that safe default
+   * automatically; only the real adapter-backed runtime composition root
+   * (adapters-node's runtime.ts, used by both the live server and the CLI)
+   * opts in explicitly.
+   */
+  functionalCognitionOffloadProcess?: boolean;
   /**
    * Durable executive coordinator. When present, capability execution that
    * has a bounded dispatcher executor (currently: local build/test) is

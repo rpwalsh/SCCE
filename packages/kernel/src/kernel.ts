@@ -140,7 +140,16 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const mouth = createMouth({ languageMemory: languageMemoryRuntime, correctionMemory, hashText: text => hasher.digestHex(text), hasher });
   const deterministicMouth = createDeterministicMouth({ hashText: text => hasher.digestHex(text) });
   const policy: PolicyProfile = { ...DEFAULT_POLICY, ...(deps.policy ?? {}) };
-  const turnState: ProductionTurnRuntimeState = { lastOutput: "" };
+  const turnState: ProductionTurnRuntimeState = {
+    lastOutput: "",
+    deferredFunctionalCognitionInFlight: 0,
+    reasoningOperatorInductionInFlight: false,
+    // Never (not "attempted at time zero") -- clock.now() is caller-
+    // supplied (test clocks can start anywhere, including near zero), so
+    // comparing against a real 0 would wrongly throttle the very first
+    // attempt whenever the clock's epoch happens to start small.
+    lastReasoningOperatorInductionAttemptAt: Number.NEGATIVE_INFINITY
+  };
   const failures: string[] = [];
   let bufferedEvents: ScceEvent[] | undefined;
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);

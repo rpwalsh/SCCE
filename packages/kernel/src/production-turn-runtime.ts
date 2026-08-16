@@ -36,15 +36,20 @@ import {
 } from "./evaluation-runtime-bypass.js";
 import { createEvaluationTrace, executeEvaluationComponent } from "./evaluation-trace.js";
 import { createEventFactory } from "./events.js";
+import { type ConsolidatedEpisode, retrieveRelevantEpisodes } from "./episodic-memory-consolidation.js";
+import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js";
+import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
 import {
   createFunctionalCognitionEngine,
   functionalCapabilityAuthorizationGate,
   functionalSelectionGate,
   personaHistoryFromEvents,
-  personaSnapshotFromSelf
+  personaSnapshotFromSelf,
+  type FunctionalSelectionGate
 } from "./functional-cognition.js";
 import { counterfactualTracesFromCapabilityPreview } from "./functional-cognition-adapters.js";
+import { runFunctionalCognitionOffProcess } from "./functional-cognition-offload.js";
 import { POLICY_OBJECTIVE_SCHEMA_ID, policyGenomeFromDurable } from "./policy-evolution.js";
 import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { createIdFactory } from "./ids.js";
@@ -203,6 +208,31 @@ export interface ProductionTurnRuntimeState {
   lastOutput: string;
   lastTurnTiming?: TurnResult["timing"];
   lastField?: TurnResult["field"];
+  /**
+   * CRITICAL fix: the deferred functional-cognition task each turn can
+   * spawn (see "functional-cognition.project" below) holds a real,
+   * potentially large `graph` object in closure for its whole real
+   * 30-45s runtime. With no concurrency bound, firing turns faster than
+   * these drain piles them up -- reproduced live: a real OOM crash
+   * ("JavaScript heap out of memory") after ~112s of real, ordinary
+   * traffic. Bounded the same way dialoguePersistenceTails is bounded in
+   * routes.ts: a hard cap on concurrent in-flight deferred tasks: beyond
+   * it, a turn simply skips deferring (the audit trail catches up once
+   * concurrency drops, it is never silently corrupted, only delayed).
+   */
+  deferredFunctionalCognitionInFlight: number;
+  /**
+   * Plan item 161 live wiring: induceOperatorFromLedger mines up to 256
+   * EpisodeConsolidated rows plus a full readEpisode per matched episode --
+   * real, repeated Postgres round-trips, not free. Firing it after every
+   * single turn would add load for no new information between consecutive
+   * turns on the same conversation. Throttled by both a concurrency guard
+   * (never two attempts overlapping) and a minimum real-time gap since the
+   * last attempt, mirroring deferredFunctionalCognitionInFlight's
+   * philosophy: skip rather than queue when not safe to run.
+   */
+  reasoningOperatorInductionInFlight: boolean;
+  lastReasoningOperatorInductionAttemptAt: number;
 }
 
 // Plan items 229-230: maps this turn's own real caveat bindings (Mouth's
@@ -768,6 +798,7 @@ export function createProductionTurnRuntime(options: {
           userModelStore: userModelStoreToJson(userModelStore),
           learningLoop: toJsonValue({ maintenanceDeferred: true, deterministicArithmetic: true }),
           episodeConsolidation,
+          relevantPastEpisodes: undefined,
           repoCognition,
           documentGeneration,
           timing,
@@ -1183,6 +1214,21 @@ export function createProductionTurnRuntime(options: {
       const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, selectedEvidence.map(span => span.id))
         ?? selectedTemporalCandidateEvidence;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
+      // Plan item 212 (read-back): consolidation (211) was write-only until
+      // now -- nothing retrieved a past consolidated episode to influence a
+      // *new* turn's proposal generation. This closes that gap using the
+      // already-real, already-tested retrieveRelevantEpisodes (feature-
+      // overlap similarity, never a fabricated match): past episodes whose
+      // request genuinely overlaps this one have their verbatim lessons
+      // merged into earlyLearningNeeds, which already feeds both
+      // candidates.generate and functionalCognitionEngine.project -- real
+      // influence on this turn's candidates, not just a receipt.
+      const pastConsolidatedEpisodeEvents = await deps.storage.events.readRange({ typeId: "EpisodeConsolidated", beforeT: clock.now(), limit: 32 });
+      const pastConsolidatedEpisodes = pastConsolidatedEpisodeEvents.map(event => event.payload as unknown as ConsolidatedEpisode);
+      const relevantPastEpisodes = retrieveRelevantEpisodes(pastConsolidatedEpisodes, input.text, { excludeEpisodeId: episodeId, limit: 3 });
+      if (relevantPastEpisodes.length) {
+        earlyLearningNeeds = uniqueKernelStrings([...earlyLearningNeeds, ...relevantPastEpisodes.flatMap(row => row.episode.lessons)]);
+      }
       markTiming("proofMs");
       deadlineCheckpoint("runtime.proof.complete", 0);
       const semanticProofContradiction = typeof semanticProof.contradiction === "number"
@@ -1476,87 +1522,271 @@ export function createProductionTurnRuntime(options: {
       });
       const projectionStarted = Date.now();
       const projectionNow = clock.now();
-      const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: projectionNow });
       const [runtimeModel, priorStates, persistedPersonaEvents, durablePolicyGenomes] = await Promise.all([
         deps.storage.model.readModel(),
         deps.storage.forecasts.getSeries({ limit: 64 }),
         deps.storage.events.readRange({ typeId: "SelfModelProjected", beforeT: projectionNow, limit: 9 }),
         deps.storage.policyEvolution?.listGenomes({ objectiveSchemaId: POLICY_OBJECTIVE_SCHEMA_ID, limit: 64 }) ?? Promise.resolve([])
       ]);
-      const policyPopulation = durablePolicyGenomes.map(policyGenomeFromDurable);
-      const forecast = prediction.forecast({ states: priorStates, source: state, horizon: 2, createdAt: projectionNow });
       const selfState = await createFunctionalSelfModel({ storage: deps.storage, model: runtimeModel, policy, recentFailures: failures });
-      const selfDistillation = ssd.distill({ model: runtimeModel, graph, state, forecast, self: selfState });
-      const functionalConsciousness = fcs.score({ self: selfState, ssd: selfDistillation });
-      const personaHistory = personaHistoryFromEvents(
-        persistedPersonaEvents,
-        personaSnapshotFromSelf({ sessionId: String(episodeId), self: selfState, t: projectionNow })
-      );
-      const governance = deps.governance
-        ? await deps.governance.observe({ policy, now: projectionNow }).catch(error =>
-          unavailableGovernanceObservation(
-            projectionNow,
-            `governance_probe_error:${error instanceof Error ? error.message : String(error)}`
-          ))
-        : unavailableGovernanceObservation(projectionNow);
-      const functionalCognition = functionalCognitionEngine.project({
-        now: projectionNow,
-        self: selfState,
-        model: runtimeModel,
-        graph,
-        policy,
-        ssdAudit: selfDistillation.audit,
-        learningNeeds: earlyLearningNeeds,
-        personaHistory,
-        governance,
-        traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview),
-        policyPopulation
-      });
-      const computedFunctionalGate = functionalSelectionGate(functionalCognition);
-      const functionalGate = functionalCapabilityAuthorizationGate(
-        computedFunctionalGate,
-        deps.functionalCognitionAuthorizeCapabilities === true
-      );
-      events.push(await append(eventFactory.create({
-        episodeId,
-        typeId: "SelfModelProjected",
-        payload: {
-          phase: "preselection",
+      // Always computed (cheap, pure) -- used unconditionally below for
+      // real forecast persistence (deps.storage.forecasts.putState/
+      // putForecast, TurnResult.forecast), independent of whether the
+      // functional-cognition projection below is live or deferred.
+      const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: projectionNow });
+      const forecast = prediction.forecast({ states: priorStates, source: state, horizon: 2, createdAt: projectionNow });
+      /**
+       * Real, measured fix: this whole block (self-distillation, functional
+       * consciousness scoring, counterfactual/persona/policy-population
+       * projection) cost ~30-45 real seconds on every single turn --
+       * measured live via SCCE_TRACE against the real database -- yet
+       * `functionalCapabilityAuthorizationGate` unconditionally forces
+       * `fc`/`efc` to `false` whenever `deps.functionalCognitionAuthorizeCapabilities`
+       * isn't `true`, which is the common case. When that's true, this
+       * turn's real answer was blocked on self-reflection audit data that
+       * provably cannot authorize anything this turn -- audit/introspection
+       * work with no business being on the critical path to a chat answer.
+       * It is real, genuinely useful work (persisted for real, read back by
+       * later turns) -- just not work this turn's response should wait on.
+       * When capabilities genuinely need live authorization, the full
+       * synchronous computation still runs exactly as before; only the
+       * common, unauthorized case is deferred.
+       */
+      const requiresLiveFunctionalCognition = deps.functionalCognitionAuthorizeCapabilities === true;
+      const lastPersistedSelfModel = jsonRecord(persistedPersonaEvents[0]?.payload);
+      let functionalGate: FunctionalSelectionGate;
+      let selfDistillationAudit: JsonValue;
+      let functionalConsciousnessAudit: JsonValue;
+      let functionalCognitionAudit: JsonValue;
+      if (requiresLiveFunctionalCognition) {
+        const policyPopulation = durablePolicyGenomes.map(policyGenomeFromDurable);
+        const selfDistillation = ssd.distill({ model: runtimeModel, graph, state, forecast, self: selfState });
+        const functionalConsciousness = fcs.score({ self: selfState, ssd: selfDistillation });
+        const personaHistory = personaHistoryFromEvents(
+          persistedPersonaEvents,
+          personaSnapshotFromSelf({ sessionId: String(episodeId), self: selfState, t: projectionNow })
+        );
+        const governance = deps.governance
+          ? await deps.governance.observe({ policy, now: projectionNow }).catch(error =>
+            unavailableGovernanceObservation(
+              projectionNow,
+              `governance_probe_error:${error instanceof Error ? error.message : String(error)}`
+            ))
+          : unavailableGovernanceObservation(projectionNow);
+        const functionalCognition = functionalCognitionEngine.project({
+          now: projectionNow,
           self: selfState,
-          selfDistillation: selfDistillation.audit,
-          fcs: functionalConsciousness.audit,
-          functionalCognition: functionalCognition.audit,
-          capabilityPlanPreview: toJsonValue({
-            objectives: capabilityPlanPreview.objectives.map(objective => ({ id: objective.id, kind: objective.kind })),
-            scoredCount: capabilityPlanPreview.scored.length
-          }),
-          authorizeCapabilities: deps.functionalCognitionAuthorizeCapabilities === true
+          model: runtimeModel,
+          graph,
+          policy,
+          ssdAudit: selfDistillation.audit,
+          learningNeeds: earlyLearningNeeds,
+          personaHistory,
+          governance,
+          traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview),
+          policyPopulation
+        });
+        functionalGate = functionalCapabilityAuthorizationGate(functionalSelectionGate(functionalCognition), true);
+        selfDistillationAudit = selfDistillation.audit;
+        functionalConsciousnessAudit = functionalConsciousness.audit;
+        functionalCognitionAudit = functionalCognition.audit;
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "SelfModelProjected",
+          payload: {
+            phase: "preselection",
+            self: selfState,
+            selfDistillation: selfDistillation.audit,
+            fcs: functionalConsciousness.audit,
+            functionalCognition: functionalCognition.audit,
+            capabilityPlanPreview: toJsonValue({
+              objectives: capabilityPlanPreview.objectives.map(objective => ({ id: objective.id, kind: objective.kind })),
+              scoredCount: capabilityPlanPreview.scored.length
+            }),
+            authorizeCapabilities: true
+          }
+        })));
+        kernelTrace({
+          stage: "functional-cognition.project",
+          label: "kernel.turn.preselection",
+          durationMs: Date.now() - projectionStarted,
+          counts: {
+            personaSnapshots: personaHistory.length,
+            counterfactualTraces: functionalCognition.cmps.length,
+            policyPopulation: functionalCognition.pareto.front.length,
+            durablePolicyGenomes: durablePolicyGenomes.length
+          },
+          support: {
+            fc: functionalCognition.fc,
+            efc: functionalCognition.efc,
+            gov: functionalCognition.gov,
+            authorizeCapabilities: true,
+            authorizedFc: functionalGate.fc,
+            authorizedEfc: functionalGate.efc,
+            governanceReady: governance.ready,
+            governanceFailures: governance.failures,
+            selectedGoalId: functionalCognition.selectedGoal?.goal.id ?? null,
+            dciAvailable: functionalCognition.dci.available,
+            paretoAvailable: functionalCognition.pareto.available,
+            deferred: false
+          }
+        });
+      } else {
+        // fc/efc are provably false regardless of what a live computation
+        // would report -- functionalCapabilityAuthorizationGate forces them
+        // whenever capabilities aren't authorized. gov is irrelevant here:
+        // every real usage of functionalGate below ANDs it with fc, which
+        // is already false.
+        functionalGate = { fc: false, efc: false, gov: false };
+        selfDistillationAudit = lastPersistedSelfModel.selfDistillation ?? null;
+        functionalConsciousnessAudit = lastPersistedSelfModel.fcs ?? null;
+        functionalCognitionAudit = lastPersistedSelfModel.functionalCognition ?? null;
+        kernelTrace({
+          stage: "functional-cognition.project",
+          label: "kernel.turn.preselection",
+          durationMs: Date.now() - projectionStarted,
+          counts: { personaSnapshots: 0, counterfactualTraces: 0, policyPopulation: 0, durablePolicyGenomes: durablePolicyGenomes.length },
+          support: { fc: false, efc: false, gov: false, authorizeCapabilities: false, authorizedFc: false, authorizedEfc: false, deferred: true }
+        });
+        // The real computation still runs -- for real, on the real graph,
+        // real storage, real durable event -- just after this turn's
+        // response, not blocking it. A later turn's persistedPersonaEvents
+        // read genuinely sees it, same as if it had run synchronously here.
+        // CRITICAL fix, v2: an in-process concurrency counter alone only
+        // bounds *how many* of these run at once -- it does not stop any
+        // single one from holding a real, potentially large `graph` in the
+        // *main process's own heap* for its whole real 30-45s runtime, on a
+        // machine that is also running the editor and Postgres on the same
+        // 16GB of RAM (reproduced live: a real "JavaScript heap out of
+        // memory" crash even with a small cap). The real fix mirrors how
+        // the wikipedia ingestor already avoids this: on a long-lived
+        // server absorbing continuous real traffic, the heavy work runs in
+        // a separate, short-lived child process with its own hard
+        // `--max-old-space-size` heap ceiling (functional-cognition-offload.ts),
+        // so it can never grow the caller's own heap no matter how large
+        // `graph` is or how long it runs. That real OS process spawn is
+        // NOT free, though: firing it from hundreds of short-lived kernels
+        // created rapid-fire (every unit test creates its own) reproduced
+        // the exact same "JavaScript heap out of memory" crash, just in the
+        // test runner's worker process instead of the server's. Gated
+        // behind deps.functionalCognitionOffloadProcess (see storage.ts) so
+        // only a real, long-lived adapter-backed runtime opts in; anything
+        // that builds ScceKernelDeps by hand (every test fixture) safely
+        // falls back to the cheap, real in-process computation instead.
+        // Concurrency is capped at 1 (serial, like the ingestor's
+        // one-child-at-a-time-then-respawn model) either way: each in-flight
+        // task, process-isolated or not, is real work stacked on top of
+        // whatever the live turn path and Postgres are already holding.
+        // Past the cap, a turn simply skips deferring this audit-only work
+        // rather than queuing -- the next turn under the cap catches up the
+        // real audit trail; nothing is ever fabricated, only delayed.
+        const DEFERRED_FUNCTIONAL_COGNITION_MAX_CONCURRENT = 1;
+        if (runtimeState.deferredFunctionalCognitionInFlight < DEFERRED_FUNCTIONAL_COGNITION_MAX_CONCURRENT) {
+          runtimeState.deferredFunctionalCognitionInFlight++;
+          void (async () => {
+          try {
+            const policyPopulation = durablePolicyGenomes.map(policyGenomeFromDurable);
+            const personaHistory = personaHistoryFromEvents(
+              persistedPersonaEvents,
+              personaSnapshotFromSelf({ sessionId: String(episodeId), self: selfState, t: projectionNow })
+            );
+            const governance = deps.governance
+              ? await deps.governance.observe({ policy, now: projectionNow }).catch(error =>
+                unavailableGovernanceObservation(
+                  projectionNow,
+                  `governance_probe_error:${error instanceof Error ? error.message : String(error)}`
+                ))
+              : unavailableGovernanceObservation(projectionNow);
+            const offloadInput = {
+              now: projectionNow,
+              self: selfState,
+              model: runtimeModel,
+              graph,
+              policy,
+              state,
+              forecast,
+              learningNeeds: earlyLearningNeeds,
+              personaHistory,
+              governance,
+              traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview),
+              policyPopulation
+            };
+            const offloaded = deps.functionalCognitionOffloadProcess === true
+              ? await runFunctionalCognitionOffProcess(offloadInput)
+              : (() => {
+                const selfDistillation = ssd.distill(offloadInput);
+                const functionalConsciousness = fcs.score({ self: offloadInput.self, ssd: selfDistillation });
+                const functionalCognition = functionalCognitionEngine.project({ ...offloadInput, ssdAudit: selfDistillation.audit });
+                return {
+                  selfDistillationAudit: selfDistillation.audit,
+                  functionalConsciousnessAudit: functionalConsciousness.audit,
+                  functionalCognitionAudit: functionalCognition.audit
+                };
+              })();
+            await append(eventFactory.create({
+              episodeId,
+              typeId: "SelfModelProjected",
+              payload: {
+                phase: "preselection",
+                self: selfState,
+                selfDistillation: offloaded.selfDistillationAudit as JsonValue,
+                fcs: offloaded.functionalConsciousnessAudit as JsonValue,
+                functionalCognition: offloaded.functionalCognitionAudit as JsonValue,
+                capabilityPlanPreview: toJsonValue({
+                  objectives: capabilityPlanPreview.objectives.map(objective => ({ id: objective.id, kind: objective.kind })),
+                  scoredCount: capabilityPlanPreview.scored.length
+                }),
+                authorizeCapabilities: false
+              }
+            }));
+          } catch {
+            // A failed deferred self-projection must never surface as a
+            // turn error -- it already finished responding to the caller.
+          } finally {
+            runtimeState.deferredFunctionalCognitionInFlight--;
+          }
+          })();
         }
-      })));
-      kernelTrace({
-        stage: "functional-cognition.project",
-        label: "kernel.turn.preselection",
-        durationMs: Date.now() - projectionStarted,
-        counts: {
-          personaSnapshots: personaHistory.length,
-          counterfactualTraces: functionalCognition.cmps.length,
-          policyPopulation: functionalCognition.pareto.front.length,
-          durablePolicyGenomes: durablePolicyGenomes.length
-        },
-        support: {
-          fc: functionalCognition.fc,
-          efc: functionalCognition.efc,
-          gov: functionalCognition.gov,
-          authorizeCapabilities: deps.functionalCognitionAuthorizeCapabilities === true,
-          authorizedFc: functionalGate.fc,
-          authorizedEfc: functionalGate.efc,
-          governanceReady: governance.ready,
-          governanceFailures: governance.failures,
-          selectedGoalId: functionalCognition.selectedGoal?.goal.id ?? null,
-          dciAvailable: functionalCognition.dci.available,
-          paretoAvailable: functionalCognition.pareto.available
-        }
-      });
+      }
+      // Plan item 161 live wiring: this real, already-tested induction pass
+      // (episodic-memory-consolidation.ts's now-live 211-212 output is its
+      // real input) was never called from a live turn. Deferred and
+      // throttled for the same reason as the functional-cognition audit
+      // above -- real, repeated Postgres round-trips per attempt, not free
+      // -- but no child-process isolation is needed here: this is I/O-bound
+      // ledger scanning, not a large in-memory/CPU computation.
+      const REASONING_OPERATOR_INDUCTION_MIN_INTERVAL_MS = 5 * 60 * 1000;
+      if (
+        !runtimeState.reasoningOperatorInductionInFlight
+        && clock.now() - runtimeState.lastReasoningOperatorInductionAttemptAt >= REASONING_OPERATOR_INDUCTION_MIN_INTERVAL_MS
+      ) {
+        runtimeState.reasoningOperatorInductionInFlight = true;
+        runtimeState.lastReasoningOperatorInductionAttemptAt = clock.now();
+        void (async () => {
+          try {
+            const induced = await induceOperatorFromLedger(deps.storage.events);
+            if (induced?.promotion.promoted) {
+              await append(eventFactory.create({
+                episodeId,
+                typeId: "ReasoningOperatorInduced",
+                payload: toJsonValue({
+                  actionTypeSequence: induced.promotion.candidate.actionTypeSequence,
+                  supportCount: induced.promotion.candidate.supportCount,
+                  descriptionLengthSavedUnits: induced.promotion.candidate.descriptionLengthSavedUnits,
+                  promotion: induced.promotion,
+                  fitCount: induced.fitCount,
+                  heldOutCount: induced.heldOutCount
+                })
+              }));
+            }
+          } catch {
+            // A failed deferred induction attempt must never surface as a
+            // turn error -- it already finished responding to the caller.
+          } finally {
+            runtimeState.reasoningOperatorInductionInFlight = false;
+          }
+        })();
+      }
       const candidateApprovalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
       const candidateActionPlans = candidateConstructSeed.program || candidateConstructSeed.artifacts.length
         ? toolCognition.plan({
@@ -2227,7 +2457,23 @@ export function createProductionTurnRuntime(options: {
         () => deterministicMouth.speak(speakInput)
       );
       deadlineCheckpoint("runtime.mouth.primary.complete", 0);
-      const emptyAuthoritySurface = !spoken.text.trim()
+      // CRITICAL fix: the empty-mouth recovery path below is real and
+      // works (confirmed live: a genuinely empty realization reliably
+      // recovers a full, real, evidence-grounded answer on retry) -- but
+      // it only ever fired on a literally empty `spoken.text`. Measured
+      // live against the real corpus, a broken (non-empty) 1-2 word stub
+      // ("It", "The", "story", "In January") happens too, for a factual/
+      // reasoned request, and slipped past this exact check untouched,
+      // becoming the final answer instead of triggering the same real
+      // recovery. Arithmetic and other genuinely short-but-complete
+      // answers never reach this point at all (arithmeticAnswerForText
+      // returns earlier in this same function), so anything landing here
+      // is real prose realization output -- a healthy prose answer is
+      // never one or two bare words, so a low word-count floor is a safe,
+      // low-false-positive signal of the same broken-realization failure
+      // mode as literal emptiness, not a new invented threshold.
+      const spokenWordCount = spoken.text.trim().length ? spoken.text.trim().split(/\s+/).length : 0;
+      const emptyAuthoritySurface = (spokenWordCount === 0 || spokenWordCount < 4)
         && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         && !runtimeDiagnosticRequested;
       if (emptyAuthoritySurface && !inheritedRuntimeMotion) {
@@ -2267,8 +2513,27 @@ export function createProductionTurnRuntime(options: {
       if (!spoken.text.trim() && candidateIsSafeNonExecutingPlan(judged.selected)) {
         spoken = await deterministicMouth.speak(speakInput);
       }
+      // Real citation, not a stylistic flourish: an evidence-grounded
+      // factual/reasoned answer -- quoted or synthesized, doesn't matter
+      // which -- must carry a real source name and, when one is
+      // derivable, a real clickable link, not just structured provenance
+      // a caller might never render. evidenceCitation never fabricates a
+      // URL: it only reconstructs one from fields the ingestor itself
+      // recorded (corpus language code, provenance.uri), and falls back
+      // to a bare title when no real link can be derived. Applied via a
+      // shared closure (not inlined once) because the answer-revision
+      // pass below can replace `answer`/`spoken` with a revised version,
+      // which needs the exact same treatment, not a citation left over
+      // from the pre-revision text.
+      const withCitation = (rawAnswer: string, spokenSurface: typeof spoken): string => {
+        if (!rawAnswer || !spokenSurface.evidenceRefs.length || (requestedAuthority !== "factual" && requestedAuthority !== "reasoned")) return rawAnswer;
+        const citedSpans = selectedEvidence.filter(span => spokenSurface.evidenceRefs.includes(span.id));
+        const citationSuffix = formatCitationSuffix(evidenceCitations(citedSpans));
+        return citationSuffix ? `${rawAnswer}${citationSuffix}` : rawAnswer;
+      };
       answer = spoken.text;
       if (!answer.trim()) answer = "";
+      answer = withCitation(answer, spoken);
       const mouthAssistantForce = assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,
@@ -2411,7 +2676,7 @@ export function createProductionTurnRuntime(options: {
         const selectedRevision = revisionResult.selected ? revisionArtifacts.get(revisionResult.selected.id) : undefined;
         if (selectedRevision && revisionResult.selected?.id !== baselineVersion.id) {
           spoken = selectedRevision.spoken;
-          answer = spoken.text;
+          answer = withCitation(spoken.text, spoken);
           pcaReport = {
             ...selectedRevision.pca,
             releaseAnswer: answer
@@ -2599,6 +2864,7 @@ export function createProductionTurnRuntime(options: {
           workingMemory: toJsonValue(candidateWorkingMemory),
           taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
           episodeConsolidation,
+          relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
           semanticConsolidation,
           cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
           presentationGuard: toJsonValue(applyPragmaticsGuard(presentationGuardInputFromTurn({
@@ -2621,10 +2887,10 @@ export function createProductionTurnRuntime(options: {
           userModelStore: userModelStoreToJson(userModelStore),
           brain,
           selfState,
-          selfDistillation: selfDistillation.audit,
-          functionalConsciousness: functionalConsciousness.audit,
+          selfDistillation: selfDistillationAudit,
+          functionalConsciousness: functionalConsciousnessAudit,
           functionalCognition: toJsonValue({
-            ...(functionalCognition.audit as Record<string, JsonValue>),
+            ...(jsonRecord(functionalCognitionAudit)),
             phase: "preselection",
             runtimeReadiness: runtimeReadinessForEmission.audit,
             runtimeCoherence: runtimeCoherenceTrace
@@ -2741,6 +3007,7 @@ export function createProductionTurnRuntime(options: {
         workingMemory: toJsonValue(candidateWorkingMemory),
         taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
         episodeConsolidation,
+        relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
         semanticConsolidation,
         cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
         presentationGuard: toJsonValue(applyPragmaticsGuard(presentationGuardInputFromTurn({
@@ -2753,10 +3020,10 @@ export function createProductionTurnRuntime(options: {
         documentGeneration,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
-        selfDistillation: selfDistillation.audit,
-        functionalConsciousness: functionalConsciousness.audit,
+        selfDistillation: selfDistillationAudit,
+        functionalConsciousness: functionalConsciousnessAudit,
         functionalCognition: toJsonValue({
-          ...(functionalCognition.audit as Record<string, JsonValue>),
+          ...(jsonRecord(functionalCognitionAudit)),
           phase: "preselection",
           runtimeReadiness: runtimeReadinessForEmission.audit,
           runtimeCoherence: runtimeCoherenceTrace
