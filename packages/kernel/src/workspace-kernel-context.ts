@@ -525,6 +525,7 @@ export function workspaceCoreRecordsToMouthInput(
   return {
     schema: "scce.workspace_kernel.mouth_input.v1",
     speakInput: {
+      requestText,
       construct: finalConstruct,
       field,
       languageProfile: languageProfileFor(source, deps.clock.now()),
