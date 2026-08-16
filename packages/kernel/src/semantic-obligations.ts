@@ -224,6 +224,21 @@ function extractSemanticItems(text: string, source: "claim" | "evidence", span?:
   for (const match of matchAll(text, /(?:^|[^\p{Letter}\p{Number}_])(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?|[+-]?\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})(?=$|[^\p{Letter}\p{Number}_])/gu, 1)) {
     add("temporal", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
+  // Real gap, confirmed live: the numeric-only pattern above never matches
+  // how dates are actually written in real prose ("10 December 1815"),
+  // only machine formats ("1815-12-10"). Source text (Wikipedia and
+  // virtually everything else this system ingests) states dates this way
+  // almost exclusively, so no temporal obligation was ever extractable
+  // from real evidence at all -- not a matching failure, an extraction
+  // failure. Both common orders (day-month-year, month-day[,]-year).
+  const MONTH_NAMES = "January|February|March|April|May|June|July|August|September|October|November|December";
+  for (const match of matchAll(
+    text,
+    new RegExp(`(?:^|[^\\p{Letter}\\p{Number}_])(\\d{1,2}\\s+(?:${MONTH_NAMES})\\s+\\d{4}|(?:${MONTH_NAMES})\\s+\\d{1,2},?\\s+\\d{4})(?=$|[^\\p{Letter}\\p{Number}_])`, "gu"),
+    1
+  )) {
+    add("temporal", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
+  }
   for (const match of matchAll(text, /(?:[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$.]*|[A-Za-z_$][A-Za-z0-9_$]*\([^)]{0,80}\)|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+|[A-Za-z0-9_-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|sql|py|rs|cs|java|go|cpp|h|hpp|yml|yaml))/gu)) {
     add("symbol", match.value, contextWindow(text, match.index, match.value.length), [match.index, match.index + match.value.length]);
   }
@@ -235,6 +250,44 @@ function extractSemanticItems(text: string, source: "claim" | "evidence", span?:
     if (/^[\p{Letter}\p{Number}_-]{4,}$/u.test(symbol) && !/^\d+$/u.test(symbol)) add("predicate", symbol, text);
   }
   return dedupeItems(items);
+}
+
+const TEMPORAL_QUESTION_PATTERN = /\b(?:when|what\s+(?:year|date)|which\s+(?:year|date))\b/iu;
+const BIRTH_QUESTION_PATTERN = /\bborn\b|\bbirth\b/iu;
+const DEATH_QUESTION_PATTERN = /\bdied\b|\bdeath\b|\bdeceased\b/iu;
+
+/**
+ * Real, bounded, never-fabricated answer to a temporal wh-question
+ * ("when was X born?") that the exact-match obligation machinery above
+ * structurally can't answer: that machinery only *verifies* a date
+ * literal already present in the claim against evidence, but an open
+ * "when" question has no date of its own to match -- it's asking for
+ * one. This extracts real temporal items already found in the evidence
+ * (via extractSemanticItems, same extraction used everywhere else) and
+ * returns one, honestly, as an evidence-derived value, not a verified
+ * claim. Callers are expected to cite the evidence this came from (see
+ * evidence-citation.ts), same as any other evidence-grounded answer.
+ * Only engages for recognizably temporal questions; returns undefined
+ * for everything else, including when no temporal item exists at all --
+ * never invents a date.
+ */
+export function extractTemporalAnswerFromEvidence(claimText: string, evidence: readonly EvidenceSpan[]): string | undefined {
+  if (!TEMPORAL_QUESTION_PATTERN.test(claimText)) return undefined;
+  const wantsDeath = DEATH_QUESTION_PATTERN.test(claimText) && !BIRTH_QUESTION_PATTERN.test(claimText);
+  for (const span of evidence) {
+    const text = span.textPreview || span.text || "";
+    if (!text) continue;
+    const items = extractSemanticItems(text, "evidence", span).filter(item => item.kind === "temporal");
+    if (!items.length) continue;
+    // Common biographical-lead-sentence convention this corpus actually
+    // uses: "Name (BIRTH_DATE - DEATH_DATE) was ...". When exactly two
+    // temporal items are found and the question distinguishes birth vs
+    // death, honor that order; otherwise take the first real date found
+    // rather than guess further.
+    if (items.length >= 2 && (wantsDeath || BIRTH_QUESTION_PATTERN.test(claimText))) return wantsDeath ? items[1]!.value : items[0]!.value;
+    return items[0]!.value;
+  }
+  return undefined;
 }
 
 function matchItem(item: SemanticItem, candidates: readonly SemanticItem[], evidence: readonly EvidenceSpan[], fieldMassByEvidence: Map<string, number>, hasher: Hasher): EvidenceMatch {
