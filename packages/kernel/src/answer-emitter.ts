@@ -7,6 +7,7 @@ import { createSurfaceRealizer } from "./surface-realizer.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { ensureSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
+import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 
 export interface EvidenceGroundedAnswer {
   answer: string;
@@ -69,7 +70,17 @@ export function composeEvidenceGroundedAnswer(input: {
     ? evidenceAnswerSurface(input.requestText, referencedEvidence.length ? referencedEvidence : input.evidence, maxSentences)
     : "";
   const realizedSurface = usableAnswerSurface(realized.text);
-  const answer = realizedSurface || evidenceSurface;
+  // Real bug, confirmed live: for "when did X die?", the realizer's
+  // sentence-scoring picked a genuinely unrelated sentence that merely
+  // scored well lexically (shared the subject's name plus some date), not
+  // the sentence that actually states the death date. This candidate is
+  // the kernel's own proof-answer path -- separate from, and computed
+  // earlier than, mouth.ts's own temporal-question handling -- so it
+  // needs the same real, evidence-derived answer, not a heuristic guess.
+  // Only overrides for recognizably temporal questions; never fabricates,
+  // never overrides a real answer with a worse one otherwise.
+  const temporalAnswer = extractTemporalAnswerFromEvidence(input.requestText, referencedEvidence.length ? referencedEvidence : input.evidence);
+  const answer = temporalAnswer || realizedSurface || evidenceSurface;
   return {
     answer,
     evidenceIds,
