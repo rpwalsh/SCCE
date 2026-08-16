@@ -510,4 +510,94 @@ describe("capability dispatcher", () => {
     const result = await dispatchRollbackAttempt(deps, { episodeId: "episode.dispatch", taskId: "task.build", outcomeEvidenceRefs: [] });
     expect(result.disposition).toBe("no_rollback_needed");
   });
+
+  describe("plan-simulation gate (plan items 177-179)", () => {
+    it("dispatches normally when no caller supplies planSimulation, unchanged from before this gate existed", async () => {
+      const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+      const deps = dispatcherFixture([executor]);
+      const result = await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));
+      expect(result.disposition).toBe("succeeded");
+    });
+
+    it("refuses to execute an irreversible task when the supplied expected risk clears the threshold and no simulation was ever stored", async () => {
+      // fakeExecutor's descriptor.rollback defaults to "unavailable" --
+      // genuinely irreversible, the same real signal the gate uses.
+      const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+      const deps = dispatcherFixture([executor]);
+      const input = {
+        ...baseInput({ controls: ungovernedControls() }),
+        planSimulation: { expectedUtility: 0.9, expectedRisk: 0.8, simulations: [] }
+      };
+      const result = await dispatchCapabilityTask(deps, input);
+      expect(result.disposition).toBe("simulation_required");
+      expect(result.simulationReason).toContain("no stored simulation");
+      expect(result.state.tasks["task.build"]?.status).toBe("ready");
+    });
+
+    it("refuses to execute when a stored simulation exists for this plan but did not approve it", async () => {
+      const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+      const deps = dispatcherFixture([executor]);
+      const input = {
+        ...baseInput({ controls: ungovernedControls() }),
+        planSimulation: {
+          expectedUtility: 0.3,
+          expectedRisk: 0.8,
+          simulations: [{
+            schema: "scce.plan_simulation.v1" as const,
+            id: "plan_simulation.rejected",
+            capabilityPlanId: "task.build",
+            simulatedAt: 1_000,
+            expectedUtility: 0.3,
+            expectedRisk: 0.8,
+            reversible: false,
+            approved: false,
+            reasons: ["expected utility (0.3) does not exceed expected risk (0.8)"]
+          }]
+        }
+      };
+      const result = await dispatchCapabilityTask(deps, input);
+      expect(result.disposition).toBe("simulation_required");
+      expect(result.simulationReason).toContain("did not approve");
+    });
+
+    it("executes once a real, matching, approved simulation record is supplied", async () => {
+      const executor = fakeExecutor("process.build_test", () => ({ status: "succeeded", outputRefs: ["artifact.alpha"], evidenceRefs: [], attestationRef: "executor.signature.build" }));
+      const deps = dispatcherFixture([executor]);
+      const input = {
+        ...baseInput({ controls: ungovernedControls() }),
+        planSimulation: {
+          expectedUtility: 0.9,
+          expectedRisk: 0.8,
+          simulations: [{
+            schema: "scce.plan_simulation.v1" as const,
+            id: "plan_simulation.approved",
+            capabilityPlanId: "task.build",
+            simulatedAt: 1_000,
+            expectedUtility: 0.9,
+            expectedRisk: 0.8,
+            reversible: false,
+            approved: true,
+            reasons: ["expected utility exceeds expected risk"]
+          }]
+        }
+      };
+      const result = await dispatchCapabilityTask(deps, input);
+      expect(result.disposition).toBe("succeeded");
+      expect(result.receipt?.outputRefs).toEqual(["artifact.alpha"]);
+    });
+
+    it("does not require a stored simulation for a reversible, low-risk task even when planSimulation is supplied", async () => {
+      const executor: CapabilityExecutor = {
+        descriptor: { capabilityId: "process.build_test", idempotency: "non-repeatable", rollback: "supported" },
+        execute: async () => ({ status: "succeeded", outputRefs: [], evidenceRefs: [], attestationRef: "executor.signature.build" })
+      };
+      const deps = dispatcherFixture([executor]);
+      const input = {
+        ...baseInput({ controls: ungovernedControls() }),
+        planSimulation: { expectedUtility: 0.9, expectedRisk: 0.1, simulations: [] }
+      };
+      const result = await dispatchCapabilityTask(deps, input);
+      expect(result.disposition).toBe("succeeded");
+    });
+  });
 });
