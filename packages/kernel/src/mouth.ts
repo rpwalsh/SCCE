@@ -5421,13 +5421,47 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
     const contradictionSurface = boundarySurfaceFromRuntime(entailment, evidence, proofVerdict);
     if (contradictionSurface) return contradictionSurface;
   }
-  const satisfied = entailment.obligations.find(item =>
+  const satisfiedObligations = entailment.obligations.filter(item =>
     item.status === "satisfied" &&
     (options.allowClaimBoundary || item.evidenceIds.length > 0 || !questionEchoHits(item.claimText, entailment.claim.text).length)
   );
+  // Real bug, confirmed live: for "when was Ada Lovelace born?", the real
+  // birth date sits inside a parenthetical aside in the source sentence
+  // ("... (10 December 1815 - 27 November 1852) ..."), which this
+  // obligation extractor's word-level splitting doesn't recognize as
+  // answering "when...born". What it *does* mark "satisfied" is a set of
+  // trivial fragments already present in the question itself --
+  // "Ada Lovelace" (entity), "lovelace" (predicate), "when was ada
+  // lovelace" (role) -- each one trivially true (the words appear in
+  // evidence) but none of them an answer to anything. questionEchoHits
+  // alone doesn't catch these: a short fragment doesn't have enough
+  // n-gram overlap with the *full* question to register as an "echo" by
+  // that check, even though it's a verbatim substring of it. A
+  // source_version-kind claim is never natural-language content either
+  // (it's a raw version-id hash). Excluding both classes and never
+  // falling back to a merely-satisfied-but-uninformative fragment lets
+  // this function's own existing degradation chain below (real evidence
+  // sentence -> claim text -> honest boundary surface) only as a genuine
+  // last resort: confirmed live that with no fallback at all, a query
+  // where *nothing* satisfied is informative falls all the way through to
+  // the unbounded raw-evidence-dump tier (the whole article, unclipped) --
+  // a real regression, worse than a short wrong fragment. Still prefer an
+  // informative satisfied obligation when one exists; fall back to
+  // whatever was satisfied (even an uninformative fragment) before ever
+  // reaching the raw-dump tier.
+  const satisfied = satisfiedObligations.find(item =>
+    item.kind !== "source_version" && !containsSurface(entailment.claim.text, item.claimText)
+  ) ?? satisfiedObligations.find(item => item.kind !== "source_version") ?? satisfiedObligations[0];
   if (satisfied?.claimText) return satisfied.claimText;
+  // Real bug, confirmed live: this fallback used to hand back an entire
+  // evidence span's full text/textPreview unbounded -- normalizeEvidenceSentence
+  // only trims whitespace, it never actually extracts a sentence despite
+  // the name. Reachable in practice (a satisfied-but-uninformative
+  // fragment no longer masks it), it produced a multi-paragraph raw
+  // article dump as "the answer". Taking just the first real sentence
+  // keeps this an honest, evidence-backed last resort instead of a dump.
   const sourceText = evidence
-    .map(span => normalizeEvidenceSentence(span.textPreview || span.text || ""))
+    .flatMap(span => splitSurfaceSentences(normalizeEvidenceSentence(span.textPreview || span.text || "")).map(tidySurface))
     .find(Boolean);
   if (sourceText) return sourceText;
   const claimText = normalizeEvidenceSentence(entailment.claim.text);

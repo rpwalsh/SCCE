@@ -20,7 +20,7 @@
   "scripts": {
     "build": "tsc -b packages/kernel packages/adapters-node packages/ui packages/server packages/cli packages/vscode",
     "test": "pnpm build && pnpm test:unit && pnpm eval:validate && node tools/no-hidden-model-check.mjs && node tools/test-inventory.mjs",
-    "test:unit": "vitest run",
+    "test:unit": "node tools/test-unit-sharded.mjs",
     "test:structural": "vitest run packages/kernel/src/__tests__/runtime-coherence.test.ts packages/kernel/src/__tests__/discourse-state.test.ts packages/kernel/src/__tests__/postgres-contract.test.ts",
     "launch:ready": "node tools/launch-ready.mjs",
     "scce:eval": "node tools/scce-blind-eval/index.mjs",
