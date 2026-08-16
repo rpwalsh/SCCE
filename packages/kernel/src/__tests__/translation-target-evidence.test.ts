@@ -286,6 +286,47 @@ describe("translation target evidence admission", () => {
       expect(unit.text).toContain("48291");
     }
   });
+
+  it("rejects a translation that drops a real source number, downgrading force to unknown instead of shipping lossy output", () => {
+    const evidence = span(
+      "evidence.number-drop",
+      "The pump alpha unit continues to operate normally today and remains fully stable during the routine test cycle.",
+      { language: "lang.number-drop" },
+      { script: "Latin" }
+    );
+    const target = profile("lang.number-drop", "Latin");
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      text: "The pump alpha unit continues to operate normally today at 47 units and remains fully stable during the routine test cycle.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    // The per-frame alignments genuinely resolve with real "direct"/
+    // "approximate" force and high preservation (0.76 / 0.68) against real
+    // target evidence -- proving this is not the pre-existing "no alignment
+    // found" unknown-force path. The target evidence text is a faithful
+    // match for everything except the number, which it genuinely lacks.
+    expect(plan.alignments.length).toBeGreaterThan(0);
+    for (const alignment of plan.alignments) {
+      expect(["direct", "approximate"]).toContain(alignment.force);
+    }
+
+    // Item 125's gate: a real required number ("47") is missing from the
+    // rendered translation, so preservationValidation.valid is false and
+    // blockingMissing names it -- and that must actually reject the output
+    // (force downgraded to "unknown", emission text emptied) rather than
+    // silently shipping the lossy translation.
+    expect(plan.construct.preservationValidation.valid).toBe(false);
+    expect(plan.construct.preservationValidation.missingNumbers).toContain("47");
+    expect(plan.construct.preservationValidation.blockingMissing).toContain("47");
+    expect(plan.force).toBe("unknown");
+    expect(plan.emission.text).toBe("");
+    expect(plan.construct.translatedText).toBe("");
+    expect(plan.construct.force).toBe("unknown");
+  });
 });
 
 function engine(): ReturnType<typeof createTranslationEngine> {
