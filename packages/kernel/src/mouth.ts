@@ -356,6 +356,23 @@ export interface MouthSemanticInput {
 }
 
 export interface SpeakInput {
+  /**
+   * Real bug, confirmed live: every questionEchoHits(text, "question") call
+   * in this file passed input.entailment.claim.text as "the question" --
+   * true for most turns (claim.text is built directly from the raw request
+   * text) but false for the graph-inference/longPathBasisAnswer path, where
+   * claim.text gets reseeded to an evidence-derived proof claim (frequently
+   * the single best, most complete answer sentence itself). Comparing a
+   * candidate answer against its own source claim for "echo" there rejects
+   * or deprioritizes the correct complete sentence for merely restating
+   * what it was proven from, pushing selection toward a worse fragment --
+   * confirmed live for "What is Star Trek?" (a real, complete, coherent
+   * evidence sentence lost this exact ordering to "would be produced,").
+   * requestText is the actual, unambiguous target for anti-echo comparison
+   * regardless of path. Optional (falls back to entailment.claim.text, the
+   * old behavior) so existing callers that don't supply it are unaffected.
+   */
+  requestText?: string;
   construct: ConstructGraph;
   field: FieldState;
   requirementField?: TurnRequirementField;
@@ -731,12 +748,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           : conversationMemoryCandidate
             ? uniqueStrings([
               ...forbiddenSurfaceHits(bounded, plan),
-              ...(conversationContextCandidate ? [] : questionEchoHits(bounded, input.entailment.claim.text))
+              ...(conversationContextCandidate ? [] : questionEchoHits(bounded, mouthEchoQuestionText(input)))
             ])
           : uniqueStrings([
             ...forbiddenSurfaceHits(bounded, plan),
             ...semanticAnswerDriftHits(bounded, input, priorPieces),
-            ...questionEchoHits(bounded, input.entailment.claim.text),
+            ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
             ...languagePriorLeakageHits(bounded, input, priorPieces),
             ...unanchoredImportedPriorHits(candidate, input)
           ]);
@@ -2724,6 +2741,18 @@ function kernelCandidateDirectSurfaceAllowed(candidate: CandidateSurface, input:
   if ((candidate.kind === "proof-answer" || candidate.kind === "ccr-extractive") && candidate.evidenceIds.length > 0) {
     return candidate.boundaries.some(boundary => boundary === "selected-evidence-bound" || boundary === "local-evidence-certification-boundary" || boundary === "source-bound");
   }
+  // Real bug, confirmed live: graphInferenceCandidate's own answer
+  // (cleanGraphInferenceSurface) is a real, evidence/claim-derived
+  // sentence, never fabricated -- but this function never recognized
+  // "graph-inference" as a kind allowed to use it directly, so the
+  // deterministic mouth always fell through to plan.orderedPoints
+  // instead, which for "What is Star Trek?" held a broken fragment
+  // ("would be produced,") instead of the real, complete evidence
+  // sentence graphInferenceCandidate had already built correctly.
+  // "graph-inference-not-direct-proof" (its own boundary marker) is
+  // exactly the honest signal that it is real but weaker-confidence
+  // reasoning, not a reason to discard a real, evidence-backed answer.
+  if (candidate.kind === "graph-inference" && candidate.evidenceIds.length > 0) return true;
   return false;
 }
 
@@ -2752,7 +2781,7 @@ function kernelCandidateSurfaceAdmissible(candidate: CandidateSurface, input: Sp
   if (containsStructuredCandidateTelemetry(answer)) return false;
   if (!admissibleMouthSurface(answer)) return false;
   if (looksLikeInternalDiagnosticCode(answer.toLocaleLowerCase())) return false;
-  if (candidate.kind !== "creative-candidate" && input.requestedAuthority !== "creative" && questionEchoHits(answer, input.entailment.claim.text).length && !evidenceBoundQuestionOverlapAllowed(candidate, input)) return false;
+  if (candidate.kind !== "creative-candidate" && input.requestedAuthority !== "creative" && questionEchoHits(answer, mouthEchoQuestionText(input)).length && !evidenceBoundQuestionOverlapAllowed(candidate, input)) return false;
   return true;
 }
 
@@ -3065,15 +3094,21 @@ function semanticDirectEvidenceCandidate(
   // candidate entirely, which fed the "why does it just quote Wikipedia"
   // problem), and never joins anything the resolver didn't itself accept.
   // Single-fact fallbacks are ordered away from whatever surface the real
-  // downstream question-echo gate (questionEchoHits, called on this exact
-  // candidate text against input.entailment.claim.text once this reaches
-  // scoring) would reject -- input.entailment.claim.text is frequently
-  // seeded from this exact evidence pool (e.g. via
-  // proposeSourceExactEvidenceAnswer), so the "core" fact's own surface
-  // can literally equal the claim being checked. Reusing questionEchoHits
-  // itself here (not reimplementing its normalization) keeps this
-  // ordering consistent with what will actually be enforced downstream.
-  const claimText = input.entailment.claim?.text ?? "";
+  // downstream question-echo gate (questionEchoHits, called against
+  // input.requestText once this reaches scoring) would reject. Real bug,
+  // confirmed live: this used to compare against input.entailment.claim.text
+  // instead -- correct for most turns (claim.text is built from the raw
+  // request there) but wrong for the graph-inference/longPathBasisAnswer
+  // path, where claim.text gets reseeded to an evidence-derived proof claim
+  // that is frequently this exact "core" fact's own surface. Comparing the
+  // best, most complete fact against its own source claim scored it as
+  // maximally "echoing," deprioritizing it below a worse, more fragmentary
+  // fact with less overlap -- confirmed live for "What is Star Trek?"
+  // ("It was the first time in 18 years... would be produced, the
+  // beginning of a hiatus..." lost this ordering to "would be produced,").
+  // input.requestText (the real question) is what this check is actually
+  // supposed to guard against replaying, regardless of path.
+  const claimText = mouthEchoQuestionText(input);
   const singleFactFallbacks = selected.length > 1
     ? [...selected].sort((left, right) => (
       questionEchoHits(left.surface, claimText).length - questionEchoHits(right.surface, claimText).length
@@ -3599,11 +3634,11 @@ function conversationMemoryCandidate(
     registerVector: discoursePlan.registerVector,
     detailProfileId: discoursePlan.targetDetailProfileId
   });
-  const generatedText = usableConversationMemoryText(generation.text, input.entailment.claim.text);
+  const generatedText = usableConversationMemoryText(generation.text, mouthEchoQuestionText(input));
   const text = generatedText && admissibleLearnedSurface(generatedText, generation) ? generatedText : undefined;
   if (!text) return undefined;
   if (isBoundaryGlyph(text) || ![...text].some(char => isLetterChar(char) || isDigitChar(char)) || looksLikeOrphanLanguageFragment(text)) return undefined;
-  if (generatedText && questionEchoHits(text, input.entailment.claim.text).length) return undefined;
+  if (generatedText && questionEchoHits(text, mouthEchoQuestionText(input)).length) return undefined;
   return {
     id: "candidate:generated:conversation-memory",
     style: "surface.path.generated.conversation_memory",
@@ -3728,7 +3763,7 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
     ...state.certificationBoundary.evidenceSpanIds.map(id => id as EvidenceId)
   ]);
   if (!bridge) {
-    if (!admissibleMouthSurface(supportSurface) || questionEchoHits(supportSurface, input.entailment.claim.text).length) return undefined;
+    if (!admissibleMouthSurface(supportSurface) || questionEchoHits(supportSurface, mouthEchoQuestionText(input)).length) return undefined;
     return {
       id: "candidate:generated:semantic-temporal-counterexample",
       style: "surface.path.generated.semantic_temporal_counterexample.source",
@@ -3771,7 +3806,7 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
     [conclusion, supportSurface],
     activeJoinProgram(input.languageMemory)
   ) || ensureSurfaceSentence([conclusion, supportSurface].join(" "));
-  if (!admissibleMouthSurface(text) || questionEchoHits(text, input.entailment.claim.text).length) return undefined;
+  if (!admissibleMouthSurface(text) || questionEchoHits(text, mouthEchoQuestionText(input)).length) return undefined;
   return {
     id: "candidate:generated:semantic-temporal-counterexample",
     style: "surface.path.generated.semantic_temporal_counterexample",
@@ -5194,7 +5229,7 @@ function answerFromConstruct(input: SpeakInput, force: ConstructOutputForce): st
   if (insufficientSupportConstructState(input.construct)) return "";
   if (force === "ProgramConstruct" && input.construct.program) return "";
   if (force === "CreativeConstruct" || input.entailment.force === "invented") return "";
-  return answerFromObligations(input.entailment, input.evidence, { allowClaimBoundary: claimSurfaceBoundaryAllowed(input, force) });
+  return answerFromObligations(input.entailment, input.evidence, mouthEchoQuestionText(input), { allowClaimBoundary: claimSurfaceBoundaryAllowed(input, force) });
 }
 
 function answerPolicyFor(input: SpeakInput): ForceAwareAnswerPolicy {
@@ -5416,7 +5451,7 @@ function brainImportSummary(markerValue: JsonValue | undefined): {
   };
 }
 
-function answerFromObligations(entailment: SemanticEntailmentResult, evidence: readonly EvidenceSpan[], options: { allowClaimBoundary?: boolean } = {}): string {
+function answerFromObligations(entailment: SemanticEntailmentResult, evidence: readonly EvidenceSpan[], requestText: string, options: { allowClaimBoundary?: boolean } = {}): string {
   const proofVerdict = proofGateVerdict(entailment);
   if (proofVerdict === "contradicted") {
     const contradictionSurface = boundarySurfaceFromRuntime(entailment, evidence, proofVerdict);
@@ -5424,7 +5459,7 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   }
   const satisfiedObligations = entailment.obligations.filter(item =>
     item.status === "satisfied" &&
-    (options.allowClaimBoundary || item.evidenceIds.length > 0 || !questionEchoHits(item.claimText, entailment.claim.text).length)
+    (options.allowClaimBoundary || item.evidenceIds.length > 0 || !questionEchoHits(item.claimText, requestText).length)
   );
   // Real bug, confirmed live: for "when was Ada Lovelace born?", the real
   // birth date sits inside a parenthetical aside in the source sentence
@@ -5449,7 +5484,7 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   // a real regression, worse than a short wrong fragment. Still prefer an
   // informative satisfied obligation when one exists.
   const informative = satisfiedObligations.find(item =>
-    item.kind !== "source_version" && !containsSurface(entailment.claim.text, item.claimText)
+    item.kind !== "source_version" && !containsSurface(requestText, item.claimText)
   );
   if (informative?.claimText) return informative.claimText;
   // Real answer, not a fallback fragment: the obligation machinery above
@@ -5459,8 +5494,16 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   // evidence is. extractTemporalAnswerFromEvidence pulls a real date
   // straight from evidence for recognizably temporal questions; returns
   // undefined (never a guess) for anything else.
-  const temporalAnswer = extractTemporalAnswerFromEvidence(entailment.claim.text, evidence);
+  const temporalAnswer = extractTemporalAnswerFromEvidence(requestText, evidence);
   if (temporalAnswer) return temporalAnswer;
+  // entailment.claim.text is usually just the raw question restated (an
+  // echo risk, hence gated behind allowClaimBoundary below) -- but on the
+  // graph-inference path it's reseeded to a real, complete, evidence-
+  // derived sentence. When it genuinely diverges from the question and
+  // doesn't echo it, that reseeded sentence is a better answer than an
+  // arbitrary single-word satisfied obligation like "It".
+  const reseededClaim = tidySurface(entailment.claim.text);
+  if (reseededClaim && reseededClaim.length > requestText.length && !questionEchoHits(reseededClaim, requestText).length) return reseededClaim;
   const satisfied = satisfiedObligations.find(item => item.kind !== "source_version") ?? satisfiedObligations[0];
   if (satisfied?.claimText) return satisfied.claimText;
   // Real bug, confirmed live: this fallback used to hand back an entire
@@ -6053,6 +6096,10 @@ function semanticAnswerDriftHits(text: string, input: SpeakInput, priorPieces: r
   }
   if (surfaceDashCount(text) > 2) hits.push("semantic-answer-boundary-drift");
   return hits;
+}
+
+function mouthEchoQuestionText(input: SpeakInput): string {
+  return input.requestText ?? input.entailment.claim?.text ?? "";
 }
 
 function questionEchoHits(text: string, question: string): string[] {
