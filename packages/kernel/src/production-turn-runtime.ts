@@ -2487,6 +2487,7 @@ export function createProductionTurnRuntime(options: {
       deadlineCheckpoint("runtime.planning.complete", 0);
       const mouthStarted = Date.now();
       const speakInput = {
+        requestText: input.text,
         construct: spokenConstructGraph,
         field,
         languageProfile: translationTarget
