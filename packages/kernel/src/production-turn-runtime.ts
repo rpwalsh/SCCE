@@ -38,6 +38,7 @@ import { createEvaluationTrace, executeEvaluationComponent } from "./evaluation-
 import { createEventFactory } from "./events.js";
 import { type ConsolidatedEpisode, retrieveRelevantEpisodes } from "./episodic-memory-consolidation.js";
 import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js";
+import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
 import {
@@ -1494,7 +1495,21 @@ export function createProductionTurnRuntime(options: {
           })
         }
         : composeEvidenceGroundedAnswer({ requestText: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, field, ccr: ccrResult, languageModels: surfaceLanguageModels, languageMemory: surfaceLanguageMemory, locale });
-      const proofAnswer = answerSurface.answer;
+      // Real bug, confirmed live: for "when did Ada Lovelace die?", the
+      // longPathBasisAnswer branch above (bypasses composeEvidenceGroundedAnswer
+      // entirely) picked a sentence that merely scored well lexically --
+      // shared the subject's name and *a* date -- not the sentence that
+      // actually states the death date. This is the same class of defect
+      // already fixed in answer-emitter.ts, but that fix only covers
+      // callers that reach composeEvidenceGroundedAnswer; longPathBasisAnswer
+      // is a separate branch with its own sentence-scoring
+      // (local-evidence-runtime.ts's bestEvidenceSentences). Applying the
+      // override here, once, after both branches converge, covers every
+      // path uniformly instead of patching each sentence-scorer
+      // separately. Never fabricates: returns undefined (falls through to
+      // whichever branch's real answer) for anything that isn't a
+      // recognizable temporal question.
+      const proofAnswer = extractTemporalAnswerFromEvidence(input.text, selectedEvidence) || answerSurface.answer;
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
       const counterfactualWorld = counterfactual.simulate({
         graph,
