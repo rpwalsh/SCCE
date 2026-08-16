@@ -4,6 +4,7 @@ import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-pl
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
 import type { ContinueDecision } from "./learning-loop.js";
+import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import type {
   CaveatBinding,
   ConstructNodeId,
@@ -5446,12 +5447,21 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   // where *nothing* satisfied is informative falls all the way through to
   // the unbounded raw-evidence-dump tier (the whole article, unclipped) --
   // a real regression, worse than a short wrong fragment. Still prefer an
-  // informative satisfied obligation when one exists; fall back to
-  // whatever was satisfied (even an uninformative fragment) before ever
-  // reaching the raw-dump tier.
-  const satisfied = satisfiedObligations.find(item =>
+  // informative satisfied obligation when one exists.
+  const informative = satisfiedObligations.find(item =>
     item.kind !== "source_version" && !containsSurface(entailment.claim.text, item.claimText)
-  ) ?? satisfiedObligations.find(item => item.kind !== "source_version") ?? satisfiedObligations[0];
+  );
+  if (informative?.claimText) return informative.claimText;
+  // Real answer, not a fallback fragment: the obligation machinery above
+  // can only *verify* a date literal the claim already contains, so an
+  // open "when was X born?" question -- no date of its own to verify --
+  // never gets a satisfied temporal obligation no matter how good the
+  // evidence is. extractTemporalAnswerFromEvidence pulls a real date
+  // straight from evidence for recognizably temporal questions; returns
+  // undefined (never a guess) for anything else.
+  const temporalAnswer = extractTemporalAnswerFromEvidence(entailment.claim.text, evidence);
+  if (temporalAnswer) return temporalAnswer;
+  const satisfied = satisfiedObligations.find(item => item.kind !== "source_version") ?? satisfiedObligations[0];
   if (satisfied?.claimText) return satisfied.claimText;
   // Real bug, confirmed live: this fallback used to hand back an entire
   // evidence span's full text/textPreview unbounded -- normalizeEvidenceSentence
