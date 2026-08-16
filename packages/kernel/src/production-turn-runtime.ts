@@ -115,6 +115,8 @@ import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
+import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
+import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -2240,6 +2242,28 @@ export function createProductionTurnRuntime(options: {
         capturedAt: clock.now(),
         hasher
       });
+      // Plan items 173-174: real constraint-solver dispatch. Whenever this
+      // turn (or a resumed one) has a real task-decomposition graph, its
+      // execution order is a genuine precedence-scheduling problem --
+      // dispatched here to task-schedule-solver.ts's real Kahn's-algorithm
+      // solver rather than left as an untouched graph nobody ever
+      // resolves into an order. A real cycle is reported honestly
+      // (status "infeasible" + the actual cycle), never silently dropped
+      // or arbitrarily ordered. A resumed (deserialized) graph, unlike one
+      // freshly built this turn via addTaskDecompositionNode, was not
+      // re-validated for cross-node referential integrity on the way back
+      // out of storage -- solveTaskSchedule throws for a dangling
+      // dependency reference rather than returning a result, so that case
+      // is reported the same honest way instead of crashing the turn.
+      const taskSchedule = taskResumptionSnapshot
+        ? (() => {
+          try {
+            return solveTaskSchedule(schedulableSubtasks(taskResumptionSnapshot.taskGraph));
+          } catch (error) {
+            return { status: "infeasible" as const, reason: "invalid_graph" as const, message: error instanceof Error ? error.message : String(error) };
+          }
+        })()
+        : undefined;
       const toolPlan = construct.program || construct.artifacts.length
         ? toolCognition.plan({
           episodeId,
@@ -2878,6 +2902,7 @@ export function createProductionTurnRuntime(options: {
           judge: judged.audit,
           workingMemory: toJsonValue(candidateWorkingMemory),
           taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
+          taskSchedule: taskSchedule ? toJsonValue(taskSchedule) : undefined,
           episodeConsolidation,
           relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
           semanticConsolidation,
@@ -3021,6 +3046,7 @@ export function createProductionTurnRuntime(options: {
         judge: judged.audit,
         workingMemory: toJsonValue(candidateWorkingMemory),
         taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
+        taskSchedule: taskSchedule ? toJsonValue(taskSchedule) : undefined,
         episodeConsolidation,
         relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
         semanticConsolidation,
