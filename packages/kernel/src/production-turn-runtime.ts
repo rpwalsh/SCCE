@@ -119,6 +119,7 @@ import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
+import { exactComputationForText } from "./exact-computation.js";
 import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -747,7 +748,29 @@ export function createProductionTurnRuntime(options: {
       const safetyDecision = safetyRails.evaluate({ text: input.text, plans: [], policy });
       events.push(await append(eventFactory.create({ episodeId, typeId: "ActionPrepared", payload: { runtimeDag: runtimeDag.audit, safety: safetyDecision.audit } })));
       markTiming("seedMs");
-      const arithmetic = arithmeticAnswerForText(input.text);
+      // Plan items 171-172: a real unit-bearing or arbitrary-precision
+      // expression is dispatched to exact-computation.ts's exact rational
+      // engine, checked first since it's the strictly more precise route
+      // when it applies (it only ever fires when a genuine unit token is
+      // present -- see exactComputationForText's own contract) and never
+      // competes with the plain float calculator below. `.value` is a
+      // best-effort float used only by this shared entailment builder's
+      // internal bookkeeping, never by the actually-displayed
+      // answer/audit text (`.answer`/`.audit` below), which stay the
+      // real, exact rational rendering throughout -- so no precision is
+      // lost in what the user is ever shown, even for a value this float
+      // conversion itself could not represent exactly.
+      const exactComputation = exactComputationForText(input.text);
+      const arithmetic = exactComputation
+        ? {
+          expression: exactComputation.expression,
+          normalizedExpression: exactComputation.expression,
+          value: Number(exactComputation.result.numerator) / Number(exactComputation.result.denominator),
+          valueText: exactComputation.resultText,
+          answer: exactComputation.answer,
+          audit: exactComputation.audit
+        }
+        : arithmeticAnswerForText(input.text);
       if (arithmetic && requestedAuthority !== "creative" && requestedAuthority !== "translation") {
         markTiming("graphSliceMs");
         const graph: GraphSlice = { nodes: [], edges: [], hyperedges: [], bounded: true, query: {} };
