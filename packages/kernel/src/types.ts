@@ -988,6 +988,8 @@ export interface TurnResult {
   userModelStore?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
   episodeConsolidation?: JsonValue;
+  /** Plan item 212 (read-back): past consolidated episodes (episodic-memory-consolidation.ts's retrieveRelevantEpisodes) whose request genuinely overlaps this turn's, ranked by real feature-overlap similarity -- never a fabricated match. Their lessons feed this turn's learningNeeds, genuinely influencing candidate generation and functional-cognition goal signals, not just reported here for show. Absent (not empty) when no past episode clears the similarity floor. */
+  relevantPastEpisodes?: JsonValue;
   /** Plan items 213-214: this turn's construct:semantic_answer facts (if any), consolidated by subject + canonicalized value. Distinct claimed values for the same subject are preserved as a genuine disagreement (contradictory: true), never collapsed into false consensus. Absent (not empty) when the turn's winning candidate carries no semantic_answer construct. */
   semanticConsolidation?: JsonValue;
   /** Plan items 160/162: a checked reasoning-operators.ts comparisonOperator receipt proving the final selected cognitive proposals' relative order follows MMR's declared weights. Absent when fewer than two proposals were selected. */

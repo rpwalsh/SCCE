@@ -9,6 +9,9 @@ import {
   type ScceStorage,
   type LanguageProfile
 } from "../index.js";
+import type { EventRangeQuery } from "../storage.js";
+import type { EpisodeId } from "../types.js";
+import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 
 describe("corpus registry", () => {
   it("selects enabled language-memory corpora with bounded hydration limits", () => {
@@ -108,8 +111,8 @@ function corpusQueryStorage(
     events: {
       append: async (event: ScceEvent) => { events.push(event); },
       appendBatch: async (rows: ScceEvent[]) => { events.push(...rows); },
-      readEpisode: async () => events,
-      readRange: async () => events,
+      readEpisode: async (episodeId: EpisodeId) => filterEpisodeEvents(events, episodeId),
+      readRange: async (query: EventRangeQuery) => filterEventRange(events, query),
       latestLedgerHash: async () => events.at(-1)?.hash ?? ""
     },
     languageMemory: {
