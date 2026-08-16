@@ -44,6 +44,11 @@ const hydratedRuntimeReadyByStorage = new WeakMap<object, { marker: HydratedRunt
 const hydratedRuntimeEpochByStorage = new WeakMap<object, number>();
 const dialoguePersistenceTails = new Map<string, Promise<void>>();
 
+/** Test-only accessor -- exposes the real map's current size without exposing the map itself. */
+export function dialoguePersistenceTailsSizeForTest(): number {
+  return dialoguePersistenceTails.size;
+}
+
 interface RequestTiming {
   readonly startedMonotonicMs: number;
   firstVisibleFrameMonotonicMs?: number;
@@ -356,7 +361,11 @@ async function dispatch(
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["to", "twiml"]);
     const input = { to: String(body.to), twiml: String(body.twiml) };
     if (!approved(context, "telephone.call", input)) return pendingApproval(context, "telephone.call", input);
-    return json(await context.runtime.connectors.telephoneCall(input.to, input.twiml, true));
+    const callOwnerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
+    const result = context.runtime.executive
+      ? await dispatchTelephoneCallThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, call: input, ownerId: callOwnerId })
+      : await context.runtime.connectors.telephoneCall(input.to, input.twiml, true);
+    return json(result);
   }
   if (req.method === "GET" && url.pathname === "/api/config/public") return json(publicConfig(context.config));
   if (req.method === "POST" && url.pathname === "/api/ingest") return json(await context.runtime.kernel.ingest(validateIngest(await readBody(req, context.maxBodyBytes))));
@@ -545,6 +554,7 @@ async function dispatch(
           runtimeEvidenceIds,
           dialogue: {
             ...originalDialogue,
+            conversationId,
             ...(previousDialogue ? { previousState: toJsonValue(previousDialogue.result.state) } : {})
           },
           ...(sessionId ? { session: { sessionId, recentTurns: recentTurnsForMetadata } } : {}),
@@ -1294,10 +1304,28 @@ function productionTurnDeadlineStatus(
   };
 }
 
-function enqueueDialoguePersistence<T>(
+/**
+ * CRITICAL fix: `dialoguePersistenceTails` self-cleans each entry once its
+ * chain resolves, so it is bounded by concurrent in-flight conversations,
+ * not total historical ones -- but a burst of many distinct, attacker- or
+ * client-influenceable `conversationId` values arriving faster than real
+ * Postgres writes can drain could still grow it without an explicit
+ * ceiling. Once the map is at this cap, a genuinely new conversationId
+ * (nothing to order against yet, since it has no existing entry) is
+ * persisted directly instead of being added to the ordering map -- the
+ * real write always still happens, only the cross-turn ordering
+ * bookkeeping for a brand-new key is skipped, and the map itself can
+ * never grow past this size.
+ */
+const DIALOGUE_PERSISTENCE_TAILS_MAX_ENTRIES = 5000;
+
+export function enqueueDialoguePersistence<T>(
   conversationId: string,
   persist: () => Promise<T>
 ): Promise<T> {
+  if (!dialoguePersistenceTails.has(conversationId) && dialoguePersistenceTails.size >= DIALOGUE_PERSISTENCE_TAILS_MAX_ENTRIES) {
+    return persist();
+  }
   const previous = dialoguePersistenceTails.get(conversationId) ?? Promise.resolve();
   const ready = previous
     .catch(() => undefined)
@@ -2422,6 +2450,140 @@ export async function dispatchOutlookCalendarEventRollback(input: {
     { episodeId: ids.episodeId, taskId: ids.taskId, outcomeEvidenceRefs: [] }
   );
   return { disposition: result.disposition };
+}
+
+const TELEPHONE_CALL_CAPABILITY_ID = "telephone.call";
+
+type TelephoneCallConnectors = { telephoneCall(to: string, twiml: string, approved?: boolean): Promise<JsonValue> };
+
+function telephoneCallContentHash(call: { to: string; twiml: string }): string {
+  return createHasher().digestHex(canonicalStringify({ to: call.to, twiml: call.twiml })).slice(0, 32);
+}
+
+/** The durable executive episode only ever persists `ExecutiveCapabilityReceipt.outputRefs` (`string[]`) for a completed task -- there is no separate JSON-blob field. Serializing the connector's own real result (never `input.call.twiml`, which is never included) into a single ref string is what makes it recoverable on a later idempotent replay, matching `outlookDraftDispatchIds`'s own real receipt-based replay pattern instead of losing the provider identifier/status to a synthesized placeholder. */
+const MAX_TELEPHONE_RESULT_SERIALIZED_BYTES = 8192;
+
+function serializedTelephoneResultRef(result: JsonValue): string {
+  const serialized = JSON.stringify(result);
+  if (serialized.length > MAX_TELEPHONE_RESULT_SERIALIZED_BYTES) {
+    throw new Error(`telephone connector result is too large to durably record (${serialized.length} bytes)`);
+  }
+  return serialized;
+}
+
+function telephoneCallExecutorRegistry(input: {
+  connectors: TelephoneCallConnectors;
+  call: { to: string; twiml: string };
+  contentHash: string;
+  onResult: (result: JsonValue) => void;
+  onError: (error: unknown) => void;
+}) {
+  const executor: CapabilityExecutor = {
+    descriptor: { capabilityId: TELEPHONE_CALL_CAPABILITY_ID, idempotency: "non-repeatable", rollback: "unavailable" },
+    execute: async () => {
+      try {
+        const result = await input.connectors.telephoneCall(input.call.to, input.call.twiml, true);
+        input.onResult(result);
+        return { status: "succeeded", outputRefs: [serializedTelephoneResultRef(result)], evidenceRefs: [`telephone.call.placed.${input.contentHash}`], attestationRef: `telephone.call.${input.contentHash}` };
+      } catch (error) {
+        input.onError(error);
+        return { status: "failed", outputRefs: [], evidenceRefs: [], attestationRef: `telephone.call.failed.${input.contentHash}` };
+      }
+    }
+  };
+  return createCapabilityExecutorRegistry([executor]);
+}
+
+function telephoneCallDispatchIds(contentHash: string, now: number): { episodeId: string; goalId: string; taskId: string; policyVersionId: string } {
+  const window = Math.floor(now / OUTLOOK_IDEMPOTENCY_WINDOW_MS);
+  return {
+    episodeId: `episode_telephone_call_${contentHash}_${window}`,
+    goalId: `goal_telephone_call_${contentHash}_${window}`,
+    taskId: `task_telephone_call_${contentHash}_${window}`,
+    policyVersionId: `policy_telephone_call_${contentHash}`
+  };
+}
+
+/**
+ * Plan items 49-50 (originally deferred pending a kernel-level dispatch
+ * entry point) / Phase 16's remaining connector gap: telephone was the
+ * last mutating connector route still calling the connector adapter
+ * directly with no dispatcher involvement, after the Outlook routes were
+ * wired (items 197-208). Same pattern as
+ * dispatchOutlookSendDraftThroughExecutive -- placing a call is
+ * irreversible (rollback: "not_required", there is no compensating action
+ * for a call that has already been placed), but a retried dispatch (e.g.
+ * a client timeout after the call actually connected) must never place the
+ * same call twice within the idempotency window.
+ */
+export async function dispatchTelephoneCallThroughExecutive(input: {
+  executive: DurableExecutiveEpisode;
+  connectors: TelephoneCallConnectors;
+  call: { to: string; twiml: string };
+  ownerId: string;
+  now?: number;
+}): Promise<JsonValue> {
+  const hasher = createHasher();
+  const now = input.now ?? Date.now();
+  const contentHash = telephoneCallContentHash(input.call);
+  let capturedResult: JsonValue | undefined;
+  let capturedError: unknown;
+  const executors = telephoneCallExecutorRegistry({
+    connectors: input.connectors,
+    call: input.call,
+    contentHash,
+    onResult: result => { capturedResult = result; },
+    onError: error => { capturedError = error; }
+  });
+  const { episodeId, goalId, taskId, policyVersionId } = telephoneCallDispatchIds(contentHash, now);
+  const dispatched = await dispatchCapabilityTask(
+    { executive: input.executive, executors, hasher, now: () => now },
+    {
+      episodeId,
+      ownerId: input.ownerId,
+      policyVersionId,
+      goal: { id: goalId, goalClassId: "goal.class.telephone_call", objectiveRef: contentHash, requirementIds: [], ownerId: input.ownerId },
+      task: {
+        id: taskId,
+        goalId,
+        taskClassId: "task.class.telephone_call",
+        requirementIds: [],
+        dependencyTaskIds: [],
+        capabilityId: TELEPHONE_CALL_CAPABILITY_ID,
+        inputRef: contentHash,
+        policyVersionId,
+        controls: {
+          authority: { authorityClassId: "authority.class.telephone_call", subjectId: input.ownerId, requiredScopeIds: [], state: "not_required", justificationRef: contentHash },
+          approval: { policyId: "approval.policy.telephone_call", state: "not_required", approverClassIds: [], justificationRef: contentHash }
+        },
+        rollback: { mode: "not_required", justificationRef: "a placed call cannot be unplaced -- there is no compensating action to declare" }
+      },
+      payload: { to: input.call.to, twiml: input.call.twiml },
+      outcomeEvidenceRefs: []
+    }
+  );
+  if (capturedError) throw capturedError;
+  if (capturedResult) return capturedResult;
+  // A duplicate/replayed dispatch never re-invokes the executor, so
+  // capturedResult is only ever set on the call that actually placed the
+  // call. CRITICAL fix: recover the real, original connector result (e.g.
+  // the provider's call SID/status) from the durable receipt instead of
+  // returning a synthesized placeholder that loses it -- a client
+  // retrying after a timeout can then still recover the call identifier
+  // it needs, matching outlookDraftDispatchIds's own real receipt-replay
+  // pattern.
+  const replayedResultRef = dispatched.receipt?.outputRefs[0];
+  if (dispatched.disposition === "succeeded" && replayedResultRef) {
+    try {
+      return JSON.parse(replayedResultRef) as JsonValue;
+    } catch {
+      // A receipt written before this fix (or by some other producer)
+      // may not carry a JSON-serialized result -- fall through to the
+      // honest, still-accurate minimum below rather than crashing.
+    }
+  }
+  if (dispatched.disposition === "succeeded") return { to: input.call.to, dispatched: true };
+  throw new Error(`telephone call dispatch produced no result (disposition: ${dispatched.disposition})`);
 }
 
 /**

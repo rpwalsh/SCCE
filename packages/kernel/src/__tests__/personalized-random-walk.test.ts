@@ -8,7 +8,8 @@ import {
   personalizedRandomWalkWithRestartDetailed,
   type RelationTransitionPolicy
 } from "../index.js";
-import type { GraphEdge, GraphNode, NodeId, RelationId } from "../types.js";
+import { decomposedEffectiveEdgeWeight } from "../edge-weight-decomposition.js";
+import type { EvidenceId, GraphEdge, GraphNode, NodeId, RelationId } from "../types.js";
 
 describe("personalized random walk with restart", () => {
   it("matches the closed-form solution for a directed edge with a dangling target", () => {
@@ -132,6 +133,88 @@ describe("personalized random walk with restart", () => {
       damping: 0.8
     });
     expect(byNode(rank).get(graph.nodes[0]!.id)).toBeCloseTo(5 / 9, 9);
+  });
+
+  it("plan item 146: an injected edgeWeightFn (the real beta^T f_e decomposition) changes activation when a real gate closes, and matches the default exactly when every gate is fully open", () => {
+    // Two equal-weight outgoing edges from node 0 so that asymmetric
+    // gating between them is actually observable in the row-normalized
+    // transition probabilities (a single outgoing edge would row-
+    // normalize to probability 1 regardless of its raw weight).
+    const graph = graphFixture(3, [[0, 1, 2], [0, 2, 2]]);
+    const base = {
+      ...graph,
+      personalization: [{ nodeId: graph.nodes[0]!.id, weight: 1 }],
+      relationPolicies: directedPolicies(graph.relations),
+      continuationProbability: 0.8,
+      tolerance: 1e-13,
+      maxIterations: 500
+    };
+    const defaultResult = personalizedRandomWalkWithRestartDetailed(base);
+    expect(byNode(defaultResult.rank).get(graph.nodes[1]!.id)).toBeCloseTo(byNode(defaultResult.rank).get(graph.nodes[2]!.id)!, 10);
+
+    // Only the 0->1 edge carries real evidence -- the real provenance gate
+    // closes for 0->2, genuinely skewing the split away from 50/50.
+    const asymmetricEdges = graph.edges.map((edge, index) => ({
+      ...edge,
+      temporalScope: { status: "atemporal" as const },
+      evidenceIds: index === 0 ? ["evidence.1" as EvidenceId] : []
+    }));
+    const decomposedAsymmetric = personalizedRandomWalkWithRestartDetailed({
+      ...base,
+      edges: asymmetricEdges,
+      edgeWeightFn: (edge: GraphEdge) => decomposedEffectiveEdgeWeight(edge, { now: 0 })
+    });
+    expect(byNode(decomposedAsymmetric.rank).get(graph.nodes[1]!.id)!)
+      .toBeGreaterThan(byNode(decomposedAsymmetric.rank).get(graph.nodes[2]!.id)!);
+
+    // With every real gate fully open on both edges (evidenced, atemporal,
+    // no access restriction), the decomposition reduces to exactly the
+    // default weight*alpha behavior.
+    const evidencedEdges = graph.edges.map(edge => ({ ...edge, evidenceIds: ["evidence.1" as EvidenceId], temporalScope: { status: "atemporal" as const } }));
+    const decomposedOpen = personalizedRandomWalkWithRestartDetailed({
+      ...base,
+      edges: evidencedEdges,
+      edgeWeightFn: (edge: GraphEdge) => decomposedEffectiveEdgeWeight(edge, { now: 0 })
+    });
+    const defaultOpen = personalizedRandomWalkWithRestartDetailed({ ...base, edges: evidencedEdges });
+    expect(byNode(decomposedOpen.rank).get(graph.nodes[1]!.id)).toBeCloseTo(byNode(defaultOpen.rank).get(graph.nodes[1]!.id)!, 12);
+    expect(byNode(decomposedOpen.rank).get(graph.nodes[2]!.id)).toBeCloseTo(byNode(defaultOpen.rank).get(graph.nodes[2]!.id)!, 12);
+  });
+
+  it("CRITICAL fix: validates a custom edgeWeightFn's result at a single shared boundary -- negative, NaN, and Infinite results are all rejected before either solver sees them", () => {
+    const graph = graphFixture(2, [[0, 1, 1]]);
+    const base = {
+      ...graph,
+      personalization: [{ nodeId: graph.nodes[0]!.id, weight: 1 }],
+      relationPolicies: directedPolicies(graph.relations)
+    };
+    expect(() => personalizedRandomWalkWithRestartDetailed({ ...base, edgeWeightFn: () => -1 })).toThrow(/invalid weight/);
+    expect(() => personalizedRandomWalkWithRestartDetailed({ ...base, edgeWeightFn: () => Number.NaN })).toThrow(/invalid weight/);
+    expect(() => personalizedRandomWalkWithRestartDetailed({ ...base, edgeWeightFn: () => Number.POSITIVE_INFINITY })).toThrow(/invalid weight/);
+    // The dense reference oracle must reject the exact same invalid
+    // results -- if it didn't, an invalid custom weight could make the
+    // two solvers silently disagree instead of both refusing to run.
+    expect(() => personalizedRandomWalkWithRestartDenseReference({ ...base, edgeWeightFn: () => -1 })).toThrow(/invalid weight/);
+    expect(() => personalizedRandomWalkWithRestartDenseReference({ ...base, edgeWeightFn: () => Number.NaN })).toThrow(/invalid weight/);
+  });
+
+  it("CRITICAL fix: sparse and dense solvers agree exactly for a valid custom edgeWeightFn, not just the default weight function", () => {
+    const graph = graphFixture(4, [[0, 1, 1], [1, 2, 1], [2, 0, 1], [2, 3, 0.2]]);
+    const input = {
+      ...graph,
+      personalization: [{ nodeId: graph.nodes[0]!.id, weight: 1 }],
+      relationPolicies: directedPolicies(graph.relations),
+      continuationProbability: 0.85,
+      tolerance: 1e-13,
+      maxIterations: 2_000,
+      // A real, deterministic, non-default weight function -- not just
+      // relabeling edge.weight*edge.alpha.
+      edgeWeightFn: (edge: GraphEdge) => edge.weight * 2 + 0.1
+    };
+    const sparse = personalizedRandomWalkWithRestartDetailed(input);
+    const dense = personalizedRandomWalkWithRestartDenseReference(input);
+    const sparseMass = byNode(sparse.rank);
+    for (const item of dense.rank) expect(sparseMass.get(item.nodeId)).toBeCloseTo(item.mass, 10);
   });
 });
 

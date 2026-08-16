@@ -115,7 +115,13 @@ import {
   type TemporalGraph,
   type TemporalGraphQuery,
   type TranslationAlignmentRecord,
-  type UserCorrectionRecord
+  type UserCorrectionRecord,
+  type UserModelClaimRecord,
+  type UserModelClaimStore,
+  type TaskResumptionSnapshotRecord,
+  type TaskResumptionSnapshotStore,
+  type DocumentGenerationSessionRecord,
+  type DocumentGenerationSessionStore
 } from "@scce/kernel";
 import { createHash } from "node:crypto";
 
@@ -148,6 +154,9 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly languageMemory: LanguageMemoryStore;
   readonly brainImports: BrainImportStore;
   readonly corrections: CorrectionMemoryStore;
+  readonly userModelClaims: UserModelClaimStore;
+  readonly taskResumption: TaskResumptionSnapshotStore;
+  readonly documentGeneration: DocumentGenerationSessionStore;
   readonly localization: LocalizationStore;
   readonly flowCache: FlowCacheStore;
   readonly selfRewrite: SelfRewriteStore;
@@ -185,6 +194,9 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.languageMemory = createLanguageMemoryStore(this);
     this.brainImports = createBrainImportStore(this);
     this.corrections = createCorrectionMemoryStore(this);
+    this.userModelClaims = createUserModelClaimStore(this);
+    this.taskResumption = createTaskResumptionSnapshotStore(this);
+    this.documentGeneration = createDocumentGenerationSessionStore(this);
     this.localization = createLocalizationStore(this);
     this.flowCache = createFlowCacheStore(this);
     this.selfRewrite = createSelfRewriteStore(this);
@@ -888,6 +900,15 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
      WHERE NOT EXISTS (SELECT 1 FROM ${q}.brain_import_lifecycle)
      ON CONFLICT(import_run_id) DO NOTHING`,
     `CREATE TABLE IF NOT EXISTS ${q}.correction_rules (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, rule_kind TEXT NOT NULL, scope TEXT NOT NULL, pattern TEXT NOT NULL, replacement TEXT, weight DOUBLE PRECISION NOT NULL, context_json JSONB NOT NULL, provenance_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+    // Real tenant isolation: keyed on (conversation_id, id), not id alone.
+    // Claim ids are content-derived (`ruleFromStructuredCorrection`'s
+    // `idFactory.semanticId`), so two unrelated conversations recording
+    // the identical correction content would otherwise collide on a
+    // global id and one would silently fail to ever persist.
+    `CREATE TABLE IF NOT EXISTS ${q}.user_model_claims (id TEXT NOT NULL, conversation_id TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL, scope TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, evidence_ids TEXT[] NOT NULL, supersedes_claim_id TEXT, PRIMARY KEY (conversation_id, id))`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_user_model_claims_conversation ON ${q}.user_model_claims(conversation_id, observed_at ASC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.task_resumption_snapshots (id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, snapshot_json JSONB NOT NULL, captured_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.document_generation_sessions (id TEXT NOT NULL, conversation_id TEXT NOT NULL, session_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (conversation_id, id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.locale_bundles (id TEXT PRIMARY KEY, source_locale TEXT NOT NULL, target_language_id TEXT NOT NULL, target_script_id TEXT, status TEXT NOT NULL, force TEXT NOT NULL, messages_json JSONB NOT NULL, missing_terms_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, translation_alignment_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ppf_cache (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, beta DOUBLE PRECISION NOT NULL, personalization_json JSONB NOT NULL, mass_json JSONB NOT NULL, diagnostics_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.alpha_traces (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, trace_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
@@ -1013,6 +1034,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_scce2_import_hash ON ${q}.scce2_import_ledger(section_kind,file_hash,shard_hash)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_correction_scope_kind ON ${q}.correction_rules(scope,rule_kind,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_correction_weight ON ${q}.correction_rules(weight DESC,updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_user_model_claims_subject_scope ON ${q}.user_model_claims(subject,scope,observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_task_resumption_goal ON ${q}.task_resumption_snapshots(goal_id,captured_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_document_generation_updated ON ${q}.document_generation_sessions(updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_locale_bundles_target ON ${q}.locale_bundles(target_language_id,status,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ppf_graph_hash ON ${q}.ppf_cache(graph_hash,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_alpha_graph_hash ON ${q}.alpha_traces(graph_hash,created_at DESC)`,
@@ -1067,6 +1091,9 @@ function requiredHydrationColumns(): Record<string, string[]> {
     scce2_import_ledger: ["id", "import_run_id", "brain_version", "root_path", "section_id", "section_kind", "force_class", "row_counts_json", "warnings", "metadata_json"],
     brain_import_lifecycle: ["import_run_id", "brain_version", "root_path", "state", "manifest_json", "revision", "created_at", "updated_at"],
     correction_rules: ["id", "episode_id", "rule_kind", "scope", "pattern", "weight", "context_json", "provenance_json"],
+    user_model_claims: ["id", "conversation_id", "kind", "subject", "value", "source", "scope", "confidence", "observed_at", "evidence_ids"],
+    task_resumption_snapshots: ["id", "goal_id", "snapshot_json", "captured_at"],
+    document_generation_sessions: ["id", "conversation_id", "session_json", "updated_at"],
     model_state: ["id", "model_json", "updated_at"],
     ppf_cache: ["id", "graph_hash", "personalization_json", "mass_json", "diagnostics_json"],
     alpha_traces: ["id", "graph_hash", "alpha", "trace_json"],
@@ -3550,6 +3577,130 @@ function createCorrectionMemoryStore(storage: PostgresStorageAdapter): Correctio
   };
 }
 
+function createUserModelClaimStore(storage: PostgresStorageAdapter): UserModelClaimStore {
+  return {
+    async putClaim(claim) {
+      await storage.query(
+        `INSERT INTO ${storage.table("user_model_claims")} (id,conversation_id,kind,subject,value,source,scope,confidence,observed_at,evidence_ids,supersedes_claim_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,TO_TIMESTAMP($9/1000.0),$10,$11)
+         ON CONFLICT(conversation_id,id) DO NOTHING`,
+        [
+          claim.id,
+          claim.conversationId,
+          claim.kind,
+          claim.subject,
+          claim.value,
+          claim.source,
+          claim.scope,
+          claim.confidence,
+          claim.observedAt,
+          claim.evidenceIds,
+          claim.supersedesClaimId ?? null
+        ]
+      );
+    },
+    async listClaims(query) {
+      // conversation_id is always in the WHERE clause -- real tenant
+      // isolation, not an optional filter a caller could forget to pass.
+      const params: unknown[] = [query.conversationId];
+      const where: string[] = [`conversation_id=$1`];
+      if (query.subject) {
+        params.push(query.subject);
+        where.push(`subject=$${params.length}`);
+      }
+      if (query.scope) {
+        params.push(query.scope);
+        where.push(`scope=$${params.length}`);
+      }
+      params.push(query.limit ?? 200);
+      // DESC + LIMIT so a conversation with more claims than the limit
+      // keeps its most recent claims, not its oldest -- `claimHistory`/
+      // `activeClaim` (user-model-store.ts) re-sort by `observedAt`
+      // themselves, so returning newest-first here is safe regardless of
+      // caller order expectations.
+      const rows = await storage.query<UserModelClaimRow>(
+        `SELECT * FROM ${storage.table("user_model_claims")} WHERE ${where.join(" AND ")} ORDER BY observed_at DESC LIMIT $${params.length}`,
+        params
+      );
+      return rows.map(rowToUserModelClaim);
+    }
+  };
+}
+
+function createTaskResumptionSnapshotStore(storage: PostgresStorageAdapter): TaskResumptionSnapshotStore {
+  return {
+    async putSnapshot(record) {
+      await storage.query(
+        `INSERT INTO ${storage.table("task_resumption_snapshots")} (id,goal_id,snapshot_json,captured_at)
+         VALUES($1,$2,$3::jsonb,TO_TIMESTAMP($4/1000.0))
+         ON CONFLICT(id) DO UPDATE SET captured_at = GREATEST(${storage.table("task_resumption_snapshots")}.captured_at, EXCLUDED.captured_at)`,
+        [record.id, record.goalId, JSON.stringify(record.snapshotJson), record.capturedAt]
+      );
+    },
+    async getLatestSnapshot(goalId) {
+      const rows = await storage.query<TaskResumptionSnapshotRow>(
+        `SELECT * FROM ${storage.table("task_resumption_snapshots")} WHERE goal_id=$1 ORDER BY captured_at DESC LIMIT 1`,
+        [goalId]
+      );
+      const row = rows[0];
+      return row ? rowToTaskResumptionSnapshot(row) : null;
+    }
+  };
+}
+
+function createDocumentGenerationSessionStore(storage: PostgresStorageAdapter): DocumentGenerationSessionStore {
+  return {
+    async putSession(record) {
+      // Real tenant isolation: the table's primary key is (conversation_id,
+      // id), not id alone, so a caller-chosen sessionId in one conversation
+      // can never collide with, be read by, or be overwritten by a
+      // different conversation reusing or guessing the same id.
+      await storage.query(
+        `INSERT INTO ${storage.table("document_generation_sessions")} AS dgs(id,conversation_id,session_json,updated_at)
+         VALUES($1,$2,$3::jsonb,TO_TIMESTAMP($4/1000.0))
+         ON CONFLICT(conversation_id,id) DO UPDATE SET session_json=EXCLUDED.session_json, updated_at=EXCLUDED.updated_at`,
+        [record.id, record.conversationId, JSON.stringify(record.sessionJson), record.updatedAt]
+      );
+    },
+    async getSession(id, conversationId) {
+      const rows = await storage.query<DocumentGenerationSessionRow>(
+        `SELECT * FROM ${storage.table("document_generation_sessions")} WHERE id=$1 AND conversation_id=$2`,
+        [id, conversationId]
+      );
+      const row = rows[0];
+      return row ? rowToDocumentGenerationSession(row) : null;
+    },
+    async compareAndPutSession(record, expectedUpdatedAt) {
+      return storage.tx(async client => {
+        // Session-scoped advisory lock, same real pattern already used by
+        // compareAndPutInteractionState -- serializes concurrent writers
+        // against this exact (conversation, session) pair for the
+        // duration of this transaction, so the read-then-conditional-write
+        // below is not itself racy.
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+          [`${storage.schema}${record.conversationId}${record.id}`]
+        );
+        const currentRows = await client.query<{ updated_at: Date }>(
+          `SELECT updated_at FROM ${storage.table("document_generation_sessions")} WHERE conversation_id=$1 AND id=$2`,
+          [record.conversationId, record.id]
+        );
+        const currentUpdatedAt = currentRows.rows[0] ? currentRows.rows[0].updated_at.getTime() : null;
+        if (currentUpdatedAt !== expectedUpdatedAt) {
+          return { stored: false, currentUpdatedAt };
+        }
+        await client.query(
+          `INSERT INTO ${storage.table("document_generation_sessions")} AS dgs(id,conversation_id,session_json,updated_at)
+           VALUES($1,$2,$3::jsonb,TO_TIMESTAMP($4/1000.0))
+           ON CONFLICT(conversation_id,id) DO UPDATE SET session_json=EXCLUDED.session_json, updated_at=EXCLUDED.updated_at`,
+          [record.id, record.conversationId, JSON.stringify(record.sessionJson), record.updatedAt]
+        );
+        return { stored: true, currentUpdatedAt: record.updatedAt };
+      });
+    }
+  };
+}
+
 function createLocalizationStore(storage: PostgresStorageAdapter): LocalizationStore {
   return {
     async putBundle(bundle) {
@@ -4404,6 +4555,15 @@ function graphPriorRows(value: Record<string, number>): number {
 
 interface CorrectionRuleRow { id: string; episode_id: string; rule_kind: CorrectionRuleRecord["ruleKind"]; scope: string; pattern: string; replacement: string | null; weight: string; context_json: JsonValue; provenance_json: JsonValue; created_at: Date; updated_at: Date }
 function rowToCorrectionRule(row: CorrectionRuleRow): CorrectionRuleRecord { return { id: row.id, episodeId: row.episode_id as EpisodeId, ruleKind: row.rule_kind, scope: row.scope, pattern: row.pattern, replacement: row.replacement ?? undefined, weight: Number(row.weight), contextJson: row.context_json, provenanceJson: row.provenance_json, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime() }; }
+
+interface UserModelClaimRow { id: string; conversation_id: string; kind: UserModelClaimRecord["kind"]; subject: string; value: string; source: UserModelClaimRecord["source"]; scope: string; confidence: string; observed_at: Date; evidence_ids: string[]; supersedes_claim_id: string | null }
+function rowToUserModelClaim(row: UserModelClaimRow): UserModelClaimRecord { return { id: row.id, conversationId: row.conversation_id, kind: row.kind, subject: row.subject, value: row.value, source: row.source, scope: row.scope, confidence: Number(row.confidence), observedAt: row.observed_at.getTime(), evidenceIds: row.evidence_ids as EvidenceId[], ...(row.supersedes_claim_id ? { supersedesClaimId: row.supersedes_claim_id } : {}) }; }
+
+interface TaskResumptionSnapshotRow { id: string; goal_id: string; snapshot_json: JsonValue; captured_at: Date }
+function rowToTaskResumptionSnapshot(row: TaskResumptionSnapshotRow): TaskResumptionSnapshotRecord { return { id: row.id, goalId: row.goal_id, snapshotJson: row.snapshot_json, capturedAt: row.captured_at.getTime() }; }
+
+interface DocumentGenerationSessionRow { id: string; conversation_id: string; session_json: JsonValue; updated_at: Date }
+function rowToDocumentGenerationSession(row: DocumentGenerationSessionRow): DocumentGenerationSessionRecord { return { id: row.id, conversationId: row.conversation_id, sessionJson: row.session_json, updatedAt: row.updated_at.getTime() }; }
 
 interface LocaleBundleRow { id: string; source_locale: string; target_language_id: string; target_script_id: string | null; status: LocaleBundleRecord["status"]; force: LocaleBundleRecord["force"]; messages_json: JsonValue; missing_terms_json: JsonValue; evidence_ids: string[]; translation_alignment_ids: string[]; created_at: Date; updated_at: Date }
 function rowToLocaleBundle(row: LocaleBundleRow): LocaleBundleRecord { return { id: row.id, sourceLocale: row.source_locale, targetLanguageId: row.target_language_id, targetScriptId: row.target_script_id ?? undefined, status: row.status, force: row.force, messagesJson: row.messages_json, missingTermsJson: row.missing_terms_json, evidenceIds: row.evidence_ids as EvidenceId[], translationAlignmentIds: row.translation_alignment_ids, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime() }; }

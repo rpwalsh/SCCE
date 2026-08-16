@@ -27,6 +27,12 @@ import {
   type ConstructStore,
   type ContentHash,
   type CorrectionMemoryStore,
+  type UserModelClaimStore,
+  type UserModelClaimRecord,
+  type TaskResumptionSnapshotStore,
+  type TaskResumptionSnapshotRecord,
+  type DocumentGenerationSessionStore,
+  type DocumentGenerationSessionRecord,
   type EventLedger,
   type EventRangeQuery,
   type EvidenceQuery,
@@ -713,6 +719,47 @@ class MemoryScceStorage implements ScceStorage {
   corrections: CorrectionMemoryStore = {
     putRule: async rule => { void rule; },
     listRules: async () => []
+  };
+
+  // Real, working in-memory implementations, matching this class's own
+  // "Memory..." intent -- not no-op stubs that would silently hide a
+  // real persistence bug even though this particular test doesn't
+  // exercise these paths.
+  private readonly userModelClaimRecords = new Map<string, UserModelClaimRecord>();
+  userModelClaims: UserModelClaimStore = {
+    putClaim: async claim => {
+      const key = `${claim.conversationId} ${claim.id}`;
+      if (!this.userModelClaimRecords.has(key)) this.userModelClaimRecords.set(key, claim);
+    },
+    listClaims: async query => {
+      let rows = [...this.userModelClaimRecords.values()].filter(row => row.conversationId === query.conversationId);
+      if (query.subject) rows = rows.filter(row => row.subject === query.subject);
+      if (query.scope) rows = rows.filter(row => row.scope === query.scope);
+      rows = rows.slice().sort((left, right) => right.observedAt - left.observedAt);
+      return rows.slice(0, query.limit ?? 200);
+    }
+  };
+
+  private readonly taskResumptionRecords: TaskResumptionSnapshotRecord[] = [];
+  taskResumption: TaskResumptionSnapshotStore = {
+    putSnapshot: async record => { this.taskResumptionRecords.push(record); },
+    getLatestSnapshot: async goalId => {
+      const matching = this.taskResumptionRecords.filter(record => record.goalId === goalId);
+      return matching.length ? matching.reduce((latest, record) => record.capturedAt > latest.capturedAt ? record : latest) : null;
+    }
+  };
+
+  private readonly documentGenerationRecords = new Map<string, DocumentGenerationSessionRecord>();
+  private documentGenerationKey(id: string, conversationId: string): string { return `${conversationId} ${id}`; }
+  documentGeneration: DocumentGenerationSessionStore = {
+    putSession: async record => { this.documentGenerationRecords.set(this.documentGenerationKey(record.id, record.conversationId), record); },
+    getSession: async (id, conversationId) => this.documentGenerationRecords.get(this.documentGenerationKey(id, conversationId)) ?? null,
+    compareAndPutSession: async (record, expectedUpdatedAt) => {
+      const current = this.documentGenerationRecords.get(this.documentGenerationKey(record.id, record.conversationId)) ?? null;
+      if ((current?.updatedAt ?? null) !== expectedUpdatedAt) return { stored: false, currentUpdatedAt: current?.updatedAt ?? null };
+      this.documentGenerationRecords.set(this.documentGenerationKey(record.id, record.conversationId), record);
+      return { stored: true, currentUpdatedAt: record.updatedAt };
+    }
   };
 
   localization: LocalizationStore = {

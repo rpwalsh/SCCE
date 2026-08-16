@@ -196,6 +196,23 @@ export function fastRuntimeBudgetRequested(metadata: JsonValue | undefined): boo
 }
 
 
+/**
+ * The real, explicitly requested conversation id for this turn, as
+ * resolved server-side (`routes.ts`'s `dialogueConversationId`) and
+ * threaded through `metadata.dialogue.conversationId`. Distinct from
+ * `previousDialogueStateFromMetadata`'s `conversationId`: that one only
+ * exists once a conversation already has a persisted prior turn, so a
+ * conversation's very first turn has no `previousState` to carry it and
+ * previously fell back to the shared `"conversation.default"` id instead
+ * of the caller's real requested one -- this is the fix for that gap.
+ */
+export function requestedConversationIdFromMetadata(metadata: JsonValue | undefined): string | undefined {
+  const record = jsonRecord(metadata);
+  const dialogue = jsonRecord(record.dialogue);
+  const conversationId = typeof dialogue.conversationId === "string" ? dialogue.conversationId.trim() : undefined;
+  return conversationId || undefined;
+}
+
 export function previousDialogueStateFromMetadata(metadata: JsonValue | undefined): DialogueState | undefined {
   const record = jsonRecord(metadata);
   const dialogue = jsonRecord(record.dialogue);

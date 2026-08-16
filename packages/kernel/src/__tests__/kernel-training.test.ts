@@ -8,6 +8,7 @@ import {
   type AlphaTrace,
   type BuildTestResult,
   type ContentHash,
+  type DocumentGenerationSessionRecord,
   type EvidenceId,
   type EvidenceSpan,
   type GraphSlice,
@@ -18,7 +19,9 @@ import {
   type ScceEvent,
   type ScceStorage,
   type SourceId,
-  type SourceVersionId
+  type SourceVersionId,
+  type TaskResumptionSnapshotRecord,
+  type UserModelClaimRecord
 } from "../index.js";
 import { sessionOwnerObservationSurface } from "../kernel.js";
 
@@ -516,6 +519,51 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       putRule: async () => undefined,
       listRules: async () => []
     },
+    // Real, working in-memory implementations, not no-op stubs -- this
+    // suite's turns can exercise correction detection and document-
+    // generation actions, and a silent no-op here would hide whether the
+    // real conversation-scoped isolation wiring (items 219-220, 221-228)
+    // actually persists and reads back correctly.
+    userModelClaims: (() => {
+      const records = new Map<string, UserModelClaimRecord>();
+      return {
+        putClaim: async (claim: UserModelClaimRecord) => {
+          const key = `${claim.conversationId} ${claim.id}`;
+          if (!records.has(key)) records.set(key, claim);
+        },
+        listClaims: async (query: { conversationId: string; subject?: string; scope?: string; limit?: number }) => {
+          let rows = [...records.values()].filter(row => row.conversationId === query.conversationId);
+          if (query.subject) rows = rows.filter(row => row.subject === query.subject);
+          if (query.scope) rows = rows.filter(row => row.scope === query.scope);
+          rows = rows.slice().sort((left, right) => right.observedAt - left.observedAt);
+          return rows.slice(0, query.limit ?? 200);
+        }
+      };
+    })(),
+    taskResumption: (() => {
+      const records: TaskResumptionSnapshotRecord[] = [];
+      return {
+        putSnapshot: async (record: TaskResumptionSnapshotRecord) => { records.push(record); },
+        getLatestSnapshot: async (goalId: string) => {
+          const matching = records.filter(record => record.goalId === goalId);
+          return matching.length ? matching.reduce((latest, record) => record.capturedAt > latest.capturedAt ? record : latest) : null;
+        }
+      };
+    })(),
+    documentGeneration: (() => {
+      const records = new Map<string, DocumentGenerationSessionRecord>();
+      const key = (id: string, conversationId: string) => `${conversationId} ${id}`;
+      return {
+        putSession: async (record: DocumentGenerationSessionRecord) => { records.set(key(record.id, record.conversationId), record); },
+        getSession: async (id: string, conversationId: string) => records.get(key(id, conversationId)) ?? null,
+        compareAndPutSession: async (record: DocumentGenerationSessionRecord, expectedUpdatedAt: number | null) => {
+          const current = records.get(key(record.id, record.conversationId)) ?? null;
+          if ((current?.updatedAt ?? null) !== expectedUpdatedAt) return { stored: false, currentUpdatedAt: current?.updatedAt ?? null };
+          records.set(key(record.id, record.conversationId), record);
+          return { stored: true, currentUpdatedAt: record.updatedAt };
+        }
+      };
+    })(),
     localization: unusedStore(),
     flowCache: unusedStore(),
     selfRewrite: unusedStore(),

@@ -735,6 +735,75 @@ export interface CorrectionMemoryStore {
   listRules(query?: { ruleKind?: CorrectionRuleKind; scope?: string; limit?: number }): Promise<CorrectionRuleRecord[]>;
 }
 
+/** Plan items 219-220. Storage-schema shape for a real, durable, provenance-aware user-model claim -- kept flat and JSON-safe, matching `CorrectionRuleRecord`'s own convention (the business-logic type lives in `user-model-store.ts`; this file never imports it, matching this module's existing dependency direction). */
+export type UserModelClaimKind = "preference" | "expertise" | "terminology" | "boundary";
+export type UserModelClaimSource = "explicit_instruction" | "demonstrated_behavior" | "inferred";
+
+export interface UserModelClaimRecord {
+  id: string;
+  /** Real tenant/conversation isolation boundary -- every claim belongs to exactly one conversation and `listClaims` requires it, so one conversation's corrections/preferences can never leak into an unrelated one's `TurnResult.userModelStore`. */
+  conversationId: string;
+  kind: UserModelClaimKind;
+  subject: string;
+  value: string;
+  source: UserModelClaimSource;
+  scope: string;
+  confidence: number;
+  observedAt: number;
+  evidenceIds: EvidenceId[];
+  supersedesClaimId?: string;
+}
+
+export interface UserModelClaimStore {
+  putClaim(claim: UserModelClaimRecord): Promise<void>;
+  /** `conversationId` is required (not optional) so a caller can never accidentally issue an unscoped, cross-conversation query. */
+  listClaims(query: { conversationId: string; subject?: string; scope?: string; limit?: number }): Promise<UserModelClaimRecord[]>;
+}
+
+/** Plan items 217-218. Storage-schema shape for a real, durable task-resumption snapshot. `snapshotJson` carries the full real snapshot (`task-resumption-snapshot.ts`'s `TaskResumptionSnapshot` -- already fully JSON-safe); `id`/`goalId`/`capturedAt` are pulled out as real indexed columns for real querying, the same split `ppf_cache`/`alpha_traces` already use for their own JSON-payload-plus-indexed-columns records. */
+export interface TaskResumptionSnapshotRecord {
+  id: string;
+  goalId: string;
+  snapshotJson: JsonValue;
+  capturedAt: number;
+}
+
+export interface TaskResumptionSnapshotStore {
+  putSnapshot(record: TaskResumptionSnapshotRecord): Promise<void>;
+  getLatestSnapshot(goalId: string): Promise<TaskResumptionSnapshotRecord | null>;
+}
+
+/** Plan items 221-228. Storage-schema shape for a real, durable document-generation session -- `sessionJson` carries the full real `DocumentGenerationSession` (already fully JSON-safe), keyed by a real, caller-chosen, stable `id` so a multi-turn document-writing project never requires the caller to resend the whole plan on every turn. */
+export interface DocumentGenerationSessionRecord {
+  id: string;
+  /** Real tenant/conversation isolation boundary -- storage keys on `(conversationId, id)`, not `id` alone, so a caller-chosen `sessionId` in one conversation can never collide with, be read by, or be overwritten by a different conversation guessing or reusing the same id. */
+  conversationId: string;
+  sessionJson: JsonValue;
+  updatedAt: number;
+}
+
+export interface DocumentGenerationSessionCompareAndSetResult {
+  stored: boolean;
+  /** The real `updatedAt` currently on the stored row, or `null` if no row exists for this (conversationId, id) at all -- lets the caller distinguish "someone else's concurrent write already landed" from "this session was deleted/never started." */
+  currentUpdatedAt: number | null;
+}
+
+export interface DocumentGenerationSessionStore {
+  putSession(record: DocumentGenerationSessionRecord): Promise<void>;
+  /** `conversationId` is required and part of the lookup key -- a session belonging to a different conversation is indistinguishable from one that never existed, never leaked via a different error/result shape. */
+  getSession(id: string, conversationId: string): Promise<DocumentGenerationSessionRecord | null>;
+  /**
+   * Real optimistic-concurrency write: succeeds only if the row's current
+   * `updatedAt` still equals `expectedUpdatedAt` (or the row does not yet
+   * exist, when `expectedUpdatedAt` is `null`). Prevents the real
+   * lost-update race in `complete_section`: read session -> mutate in
+   * memory -> write, where two concurrent completions against the same
+   * session would otherwise let whichever write lands last silently
+   * discard the other's real completion.
+   */
+  compareAndPutSession(record: DocumentGenerationSessionRecord, expectedUpdatedAt: number | null): Promise<DocumentGenerationSessionCompareAndSetResult>;
+}
+
 export interface LocalizationStore {
   putBundle(bundle: LocaleBundleRecord): Promise<void>;
   listBundles(query?: { targetLanguageId?: string; status?: LocaleBundleRecord["status"]; limit?: number }): Promise<LocaleBundleRecord[]>;
@@ -816,6 +885,9 @@ export interface ScceStorage extends StorageAdmin {
   languageMemory: LanguageMemoryStore;
   brainImports: BrainImportStore;
   corrections: CorrectionMemoryStore;
+  userModelClaims: UserModelClaimStore;
+  taskResumption: TaskResumptionSnapshotStore;
+  documentGeneration: DocumentGenerationSessionStore;
   localization: LocalizationStore;
   flowCache: FlowCacheStore;
   selfRewrite: SelfRewriteStore;
