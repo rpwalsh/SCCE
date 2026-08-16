@@ -224,7 +224,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         units,
         preservation: clamp01(1 - mean(Object.values(lossVector)))
       };
-      const construct = buildTranslationConstruct({
+      const rawConstruct = buildTranslationConstruct({
         sourceLanguage,
         targetLanguage,
         force,
@@ -233,6 +233,29 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         emission,
         targetEvidence: targetEvidence.map(row => row.span)
       });
+      // Plan item 125, closed 2026-08-16: preservationValidation.blockingMissing
+      // (a real number/date/code-symbol genuinely dropped from the
+      // translation, the opposite failure mode from hallucination) was
+      // computed and threaded into uncertainTerms/objective scoring, but
+      // nothing ever consumed preservationValidation.valid to actually
+      // reject the output -- a translation could genuinely drop a real
+      // number or date and still ship as a confident result. Downgrading
+      // to the same "unknown" force renderEmission already treats as "no
+      // confident translation" (empty text) reuses the existing honest-
+      // degradation path rather than inventing a new one. Applied to both
+      // real consumers of the rendered text -- `construct.translatedText`
+      // (translation.ts's own field) and `emission.text` (what
+      // cognitive-planner.ts's/scce-runtime.ts's candidate-surface builders
+      // actually read) -- so the gate can't be silently bypassed by
+      // whichever field a given caller happens to read. The full
+      // preservationValidation record (which terms, which classes) is
+      // still returned unchanged either way for the caller to inspect.
+      const preservationValid = rawConstruct.preservationValidation.valid;
+      const construct = preservationValid
+        ? rawConstruct
+        : { ...rawConstruct, force: "unknown" as TranslationForce, translatedText: "" };
+      const effectiveForce: TranslationForce = preservationValid ? force : "unknown";
+      const effectiveEmission = preservationValid ? emission : { ...emission, text: "" };
       const semanticFrames = [...sourceFrames, ...targetFrames].map(frame => ({
         id: frame.id,
         frameJson: frame.frameJson,
@@ -269,10 +292,10 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         sourceFrames,
         targetFrames,
         alignments,
-        force,
+        force: effectiveForce,
         lossVector,
         targetConstruct,
-        emission,
+        emission: effectiveEmission,
         construct,
         records: { semanticFrames, translationAlignments },
         audit: toJsonValue({
