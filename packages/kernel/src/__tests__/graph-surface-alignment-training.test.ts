@@ -28,7 +28,22 @@ describe("graph-surface alignment -> real corpus-training constructionSets wirin
     });
 
     expect(sets.length).toBeGreaterThan(0);
-    const set = sets[0]!;
+    // Unsupervised graph-bound construction discovery over this tiny,
+    // maximally-repetitive fixture (only 5 distinct words total) finds
+    // several candidate "predicates" -- not just the real verb "chased",
+    // but also "cat"/"dog"/"ball"/"mouse" themselves, since from pure
+    // corpus statistics any frequent content word is a plausible anchor.
+    // That ambiguity is real and expected; language-training-batch.ts's
+    // real production caller resolves it downstream via
+    // evaluateConstructionPromotion, never by blindly taking the first
+    // candidate. This test is specifically about the transitive "X
+    // chased Y" construction, so it selects the set the true predicate
+    // must produce: by this fixture's own construction, "chased" appears
+    // in every one of the 8 sentences while every noun appears in only
+    // half, so the real relational construction is the one with the most
+    // observations -- not whichever bindingId happened to be discovered
+    // first.
+    const set = sets.reduce((best, candidate) => candidate.observations.length > best.observations.length ? candidate : best);
     expect(set.observations.length).toBeGreaterThanOrEqual(2);
     expect(JSON.stringify(set.alignmentSummary)).toContain("scce.graph_surface_alignment.summary.v1");
     expect(JSON.stringify(set.alignmentSummary)).toContain("sparse_anchor_transport_v1");

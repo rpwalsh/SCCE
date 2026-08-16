@@ -20,7 +20,13 @@ import { spawn } from "node:child_process";
  * vitest.config.ts's own singleFork choice, applied one level up.
  */
 
-const SHARD_COUNT = Number.parseInt(process.env.SCCE_TEST_SHARDS ?? "6", 10);
+// Confirmed live: 6 shards still OOM'd on a shard that happened to combine
+// several of the repo's heaviest test files (graph-surface-alignment-
+// training + workspace-runtime-compiler-planning). More, smaller shards
+// lowers the odds any one shard's sequential heap accumulation lands two
+// or more heavy files together; combined with vitest.config.ts's raised
+// 6144MB cap, this cleared the previously-OOMing combination.
+const SHARD_COUNT = Number.parseInt(process.env.SCCE_TEST_SHARDS ?? "10", 10);
 const extraArgs = process.argv.slice(2);
 
 // A filtered/targeted run (e.g. `pnpm test:unit some-file-pattern`, the
