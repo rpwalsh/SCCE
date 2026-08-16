@@ -254,7 +254,7 @@ function extractSemanticItems(text: string, source: "claim" | "evidence", span?:
 
 const TEMPORAL_QUESTION_PATTERN = /\b(?:when|what\s+(?:year|date)|which\s+(?:year|date))\b/iu;
 const BIRTH_QUESTION_PATTERN = /\bborn\b|\bbirth\b/iu;
-const DEATH_QUESTION_PATTERN = /\bdied\b|\bdeath\b|\bdeceased\b/iu;
+const DEATH_QUESTION_PATTERN = /\bdied?\b|\bdeath\b|\bdeceased\b|\bdying\b|\bpassed\s+away\b/iu;
 
 /**
  * Real, bounded, never-fabricated answer to a temporal wh-question
