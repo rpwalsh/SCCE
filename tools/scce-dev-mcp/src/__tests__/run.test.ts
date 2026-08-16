@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runChecked, runProcess, ProcessCheckError } from '../lib/run.js';
+import { runChecked, runProcess, ProcessCheckError, findPnpmEntrypoint, childEnv } from '../lib/run.js';
+import { delimiter, dirname } from 'node:path';
 
 const fixturesDir = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures');
 
@@ -15,6 +16,55 @@ function isAlive(pid: number): boolean {
     return false;
   }
 }
+
+describe('findPnpmEntrypoint', () => {
+  it('still resolves a pnpm entrypoint when PATH omits the running node.exe\'s own directory', () => {
+    // Reproduces the real bug: an MCP client host (e.g. an editor's extension
+    // process) can spawn this server with a PATH that doesn't include the
+    // directory holding node.exe's pnpm/corepack shims, even though that
+    // directory is always knowable from process.execPath itself.
+    const originalPath = process.env.PATH;
+    try {
+      const nodeDir = dirname(process.execPath);
+      const filtered = (originalPath ?? '')
+        .split(delimiter)
+        .filter((dir) => dir && dir !== nodeDir)
+        .join(delimiter);
+      process.env.PATH = filtered;
+      expect(findPnpmEntrypoint()).toBeDefined();
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});
+
+describe('childEnv', () => {
+  it('prepends the running node.exe\'s own directory to PATH when the inherited PATH omits it', () => {
+    const originalPath = process.env.PATH;
+    try {
+      const nodeDir = dirname(process.execPath);
+      process.env.PATH = (originalPath ?? '')
+        .split(delimiter)
+        .filter((dir) => dir && dir !== nodeDir)
+        .join(delimiter);
+      const env = childEnv();
+      expect(env.PATH?.split(delimiter)).toContain(nodeDir);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it('leaves PATH untouched when the node directory is already present', () => {
+    const originalPath = process.env.PATH;
+    try {
+      const nodeDir = dirname(process.execPath);
+      process.env.PATH = [nodeDir, originalPath].filter(Boolean).join(delimiter);
+      expect(childEnv()).toBe(process.env);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});
 
 describe('runProcess', () => {
   it('never throws and reports a nonzero exit in the returned status', async () => {

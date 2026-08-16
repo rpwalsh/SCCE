@@ -14,9 +14,11 @@ import { handleRepoDeps } from './tools/repo.js';
 import { handleRepoDeadCode } from './tools/repo.js';
 import { handleGitChanged } from './tools/git.js';
 import { handleGitDiffSummary } from './tools/git.js';
+import { handleGitLog } from './tools/git.js';
 import { handleTestRun } from './tools/tests.js';
 import { handleTestFailures } from './tools/tests.js';
 import { handlePgSchema } from './tools/postgres.js';
+import { handlePgQuery } from './tools/postgres.js';
 import { handlePgExplain } from './tools/postgres.js';
 import { handleTraceList, handleTraceRead, handleAnswerTrace } from './tools/scceTrace.js';
 import { resolveRepositoryRoot, InvalidRepositoryRootError } from './lib/repoRoot.js';
@@ -41,7 +43,7 @@ const server = new Server(
     version: '0.1.0',
   },
   {
-    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, repo_search, and git_diff_summary before opening source files. repo_symbol/repo_callsites are ripgrep-based text search, not compiler-level TypeScript resolution. test_run/test_failures accept a fixed commandId (see repo_shape's scripts, or the tool descriptions) against a closed command registry, not an arbitrary shell string. Keep every result bounded. PostgreSQL tools are read-only and default to the configured SCCE schema. Trace tools report only events that exist and are containment-checked against the configured trace directory. This server exposes no arbitrary shell execution and no repository write, git-write, or package-install operation.",
+    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, repo_search, and git_diff_summary before opening source files. repo_symbol/repo_callsites are ripgrep-based text search, not compiler-level TypeScript resolution. test_run/test_failures accept a fixed commandId (see repo_shape's scripts, or the tool descriptions) against a closed command registry, not an arbitrary shell string. Keep every result bounded. PostgreSQL tools run every statement in a session-level read-only transaction with a restricted search_path and statement/lock timeouts, plus a keyword/function blocklist -- real defense-in-depth, not a parsed-AST security boundary; genuine safety additionally requires the configured database credential to be a real least-privileged role scoped to the SCCE schema with no write grants, which this tool cannot verify. Trace tools report only events that exist and are containment-checked against the configured trace directory. This server exposes no arbitrary shell execution and no repository write, git-write, or package-install operation.",
     capabilities: {
       tools: {},
     },
@@ -84,7 +86,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_symbol',
-      description: 'Ripgrep-based text search for likely TypeScript symbol definitions/references. Not a compiler-level resolver — overloads, re-exports, and destructuring can be misclassified.',
+      description: 'Ripgrep-based text search for likely symbol definitions/references. Not compiler-level: overloads, re-exports, and destructuring may be misclassified.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -96,7 +98,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_callsites',
-      description: 'Ripgrep-based text search for call sites/references of a symbol. Not a compiler-level resolver.',
+      description: 'Ripgrep-based text search for call sites of a symbol; same non-compiler-level caveats as repo_symbol.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -138,6 +140,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'git_log',
+      description: 'Bounded recent commit history (hash, date, author, subject) for the repo or one path.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          maxCount: { type: 'number', default: 20 },
+        },
+      },
+    },
+    {
       name: 'test_run',
       description: `Run one command from a closed registry (commandId, not a shell string). Available: ${commandIds}. Do not call commandId "validate" from within this server's own test suite — it transitively runs mcp:verify and would recurse.`,
       inputSchema: {
@@ -151,7 +164,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'test_failures',
-      description: `Run one registry commandId and extract only failing test names and errors. Available: ${commandIds}.`,
+      description: 'Run one registry commandId (same set as test_run) and extract only failing test names and errors.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -162,12 +175,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'pg_schema',
-      description: 'Read-only Postgres schema inspection, defaulting to the schema configured in scce.config.json (SCCE_DATABASE_URL overrides the connection target, matching the runtime\'s own override rule).',
+      description: 'Read-only Postgres schema inspection for the configured schema (SCCE_DATABASE_URL overrides the connection target).',
       inputSchema: {
         type: 'object',
         properties: {
           schema: { type: 'string' },
         },
+      },
+    },
+    {
+      name: 'pg_query',
+      description: 'Bounded SELECT preview run in a session-level read-only transaction (restricted search_path, statement/lock timeouts): capped rows and per-cell length. Single SELECT only — no EXPLAIN, no comments, no CTEs, no multiple statements, no known-dangerous function calls; use pg_explain for query plans. This is defense-in-depth, not a parsed-SQL security boundary — real safety depends on the configured credential being a least-privileged, schema-scoped role.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string' },
+          maxRows: { type: 'number', default: 20 },
+        },
+        required: ['sql'],
       },
     },
     {
@@ -246,12 +271,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: await handleGitChanged() }] };
       case 'git_diff_summary':
         return { content: [{ type: 'text', text: await handleGitDiffSummary(validated as any) }] };
+      case 'git_log':
+        return { content: [{ type: 'text', text: await handleGitLog(validated as any) }] };
       case 'test_run':
         return { content: [{ type: 'text', text: await handleTestRun(validated as any) }] };
       case 'test_failures':
         return { content: [{ type: 'text', text: await handleTestFailures(validated as any) }] };
       case 'pg_schema':
         return { content: [{ type: 'text', text: await handlePgSchema(validated as any) }] };
+      case 'pg_query':
+        return { content: [{ type: 'text', text: await handlePgQuery(validated as any) }] };
       case 'pg_explain':
         return { content: [{ type: 'text', text: await handlePgExplain(validated as any) }] };
       case 'scce_trace_list':

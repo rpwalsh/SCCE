@@ -18,6 +18,16 @@ export interface PersonalizedRandomWalkWithRestartInput {
   edges: readonly GraphEdge[];
   personalization: readonly { nodeId: NodeId; weight: number }[];
   relationPolicies: readonly RelationTransitionPolicy[];
+  /**
+   * Plan item 146: an optional proof-constrained edge-weight function.
+   * Defaults to the existing scalar `weight*alpha` when omitted, so every
+   * existing caller's behavior is unchanged. Pass
+   * `edge => decomposedEffectiveEdgeWeight(edge, context, beta)` (see
+   * edge-weight-decomposition.ts) to activate the real `beta^T f_e`
+   * decomposition (temporal decay, provenance strength, profile/access
+   * gating, and an optional externally-supplied truth/proof gate).
+   */
+  edgeWeightFn?: (edge: GraphEdge) => number;
   /** Probability of following an edge. Must be in [0, 1). Defaults to 0.85. */
   continuationProbability?: number;
   /** Probability of restarting from the personalization vector. Must be in (0, 1]. */
@@ -83,6 +93,7 @@ interface PreparedInput {
   maxIterations: number;
   tolerance: number;
   relationPolicyCounts: PersonalizedRandomWalkDiagnostics["relationPolicyCounts"];
+  weightFn: (edge: GraphEdge) => number;
 }
 
 export function createPersonalizedRandomWalkWithRestart() {
@@ -120,7 +131,7 @@ export function personalizedRandomWalkWithRestartDetailed(
   for (const edge of input.edges) {
     const source = index.get(edge.source)!;
     const target = index.get(edge.target)!;
-    const weight = effectiveEdgeWeight(edge);
+    const weight = prepared.weightFn(edge);
     if (weight === 0) continue;
     entries.push({ row: source, col: target, value: weight });
     const policy = prepared.policies.get(String(edge.relationId))!;
@@ -209,7 +220,7 @@ export function personalizedRandomWalkWithRestartDenseReference(
   for (const edge of input.edges) {
     const source = index.get(edge.source)!;
     const target = index.get(edge.target)!;
-    const weight = effectiveEdgeWeight(edge);
+    const weight = prepared.weightFn(edge);
     adjacency[source]![target] = (adjacency[source]![target] ?? 0) + weight;
     const policy = prepared.policies.get(String(edge.relationId))!;
     if (policy.direction === "reversible" && source !== target) {
@@ -325,6 +336,23 @@ function prepareInput(input: PersonalizedRandomWalkWithRestartInput): PreparedIn
     index.set(id, i);
   }
 
+  // Real validation boundary, shared by every caller of `prepared.weightFn`
+  // (both the sparse power-iteration path and the dense reference oracle):
+  // a caller-supplied `edgeWeightFn` (e.g. `decomposedEffectiveEdgeWeight`)
+  // is untrusted arithmetic. Without this, the sparse path (`sparse.ts`'s
+  // `stochasticNormalizeRows`) silently clamps a negative result to 0 while
+  // the dense path consumes it raw -- the two solvers would then disagree
+  // for the exact same invalid input, breaking the dense reference's whole
+  // purpose as an independent oracle. Validating once here, rather than in
+  // each solver separately, makes that divergence structurally impossible.
+  const rawWeightFn = input.edgeWeightFn ?? effectiveEdgeWeight;
+  const weightFn = (edge: GraphEdge): number => {
+    const weight = rawWeightFn(edge);
+    if (!Number.isFinite(weight) || weight < 0) {
+      throw new RangeError(`edgeWeightFn returned an invalid weight (${weight}) for edge ${String(edge.id)}; must be finite and nonnegative`);
+    }
+    return weight;
+  };
   const policies = new Map<string, RelationTransitionPolicy>();
   const relationPolicyCounts = { directed: 0, reversible: 0, learnedInverse: 0 };
   for (const policy of input.relationPolicies) {
@@ -352,7 +380,7 @@ function prepareInput(input: PersonalizedRandomWalkWithRestartInput): PreparedIn
     validateNonnegativeFinite(edge.weight, `edge ${String(edge.id)} weight`);
     validateNonnegativeFinite(edge.alpha, `edge ${String(edge.id)} alpha`);
     if (!policies.has(String(edge.relationId))) throw new Error(`missing direction policy for relation ${String(edge.relationId)}`);
-    effectiveEdgeWeight(edge);
+    weightFn(edge);
   }
 
   const personalization = new Array<number>(ids.length).fill(0);
@@ -377,7 +405,8 @@ function prepareInput(input: PersonalizedRandomWalkWithRestartInput): PreparedIn
     restartProbability,
     maxIterations,
     tolerance,
-    relationPolicyCounts
+    relationPolicyCounts,
+    weightFn
   };
 }
 

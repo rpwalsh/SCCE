@@ -107,6 +107,9 @@ import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./p
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
+import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
+import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
+import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
 import { conflictingGraphEdgeIntervals } from "./graph-temporal.js";
@@ -134,6 +137,7 @@ import {
   metadataWithRuntimeReplanMotion,
   previousDialogueStateFromMetadata,
   priorRejectedHypothesesFromCandidates,
+  requestedConversationIdFromMetadata,
   reviveMatchingPriorRejectedHypothesis,
   runtimeCandidateReplanTrigger,
   runtimeMotionCandidateField,
@@ -503,6 +507,7 @@ export function createProductionTurnRuntime(options: {
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
       const repoFiles = repoFilesFromMetadata(input.metadata);
       const repoCognition = repoFiles ? toJsonValue(repoCognitionForTurn({ requestText: input.text, files: repoFiles })) : undefined;
+      const documentGenerationRequest = documentGenerationRequestFromMetadata(input.metadata);
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
       const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
@@ -610,12 +615,31 @@ export function createProductionTurnRuntime(options: {
         }
         : baseAuthorityLanguage;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
+      const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
       const authorityDialogueState = updateDialogueState({
         requestText: input.text,
         targetLanguage: translationTarget ?? locale,
         previousState: previousDialogueState,
-        conversationId: previousDialogueState?.conversationId
+        conversationId: requestedConversationId ?? previousDialogueState?.conversationId
       });
+      // Plan items 221-228: real, durable, cross-turn document-generation
+      // sessions (deps.storage.documentGeneration, a genuine Postgres-
+      // backed store -- see storage.ts/postgres.ts), keyed by the
+      // caller's own chosen sessionId via metadata.documentGeneration. An
+      // absent request simply leaves this field absent, never fails the
+      // turn -- same contract as repoCognition above. A *malformed* one
+      // (the key is present but doesn't parse) is a real, distinguishable
+      // caller error -- surfaced as a real rejection, not silently
+      // dropped as if nothing was asked. `authorityDialogueState.conversationId`
+      // is the real tenant-isolation boundary -- a session is scoped to
+      // this exact conversation and never visible to, or overwritable by,
+      // another.
+      const documentGenerationResult = documentGenerationRequest.status === "ok"
+        ? await syncDocumentGenerationRequestForTurn(deps.storage.documentGeneration, documentGenerationRequest.request, clock.now(), authorityDialogueState.conversationId)
+        : documentGenerationRequest.status === "malformed"
+          ? { accepted: false as const, reason: "malformed request" as const }
+          : undefined;
+      const documentGeneration = documentGenerationResult ? toJsonValue(documentGenerationResult) : undefined;
       const runtimeDiagnosticRequested = explicitRuntimeDiagnosticRequest(input.metadata);
       const inheritedRuntimeMotion = runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
@@ -672,6 +696,18 @@ export function createProductionTurnRuntime(options: {
         await deps.storage.corrections.putRule(rule);
         events.push(await append(eventFactory.create({ episodeId, typeId: "UserCorrected", payload: { ruleId: rule.id, kind: rule.ruleKind, scope: rule.scope, patternHash: hasher.digestHex(rule.pattern), replacementHash: rule.replacement ? hasher.digestHex(rule.replacement) : null, provenance: rule.provenanceJson } })));
       }
+      // Plan items 219-220: real, durable, provenance-aware user-model
+      // claims (deps.storage.userModelClaims, a genuine Postgres-backed
+      // store -- see storage.ts/postgres.ts), not a caller-side metadata
+      // round trip. Every real correction detected above -- always
+      // explicit_instruction, since it only ever arrives via explicit
+      // owner-supplied metadata -- is recorded as a real claim.
+      // Idempotent: a persistent correction repeated across turns is
+      // never recorded twice. `authorityDialogueState.conversationId` is
+      // the real tenant-isolation boundary -- claims are scoped to this
+      // exact conversation and never leak into an unrelated one's
+      // `TurnResult.userModelStore`.
+      const userModelStore = await syncUserModelStoreForTurn(deps.storage.userModelClaims, detectedCorrections, authorityDialogueState.conversationId);
       const runtimeDag = runtimeOrchestrator.dag({ episodeId, mode: "turn", mutating: true, requestedTools: Boolean(deps.connectors) });
       const safetyDecision = safetyRails.evaluate({ text: input.text, plans: [], policy });
       events.push(await append(eventFactory.create({ episodeId, typeId: "ActionPrepared", payload: { runtimeDag: runtimeDag.audit, safety: safetyDecision.audit } })));
@@ -729,9 +765,11 @@ export function createProductionTurnRuntime(options: {
           languageAcquisition: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           mouth: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           corrections: correctionMemory.summarize(detectedCorrections),
+          userModelStore: userModelStoreToJson(userModelStore),
           learningLoop: toJsonValue({ maintenanceDeferred: true, deterministicArithmetic: true }),
           episodeConsolidation,
           repoCognition,
+          documentGeneration,
           timing,
           ...evaluationTraceResult(),
           ...turnContract({ entailment, evidence: [], assistantForce: emission.assistantForce, unsupportedContentBlocked: false }),
@@ -1940,6 +1978,23 @@ export function createProductionTurnRuntime(options: {
       const capabilityPlans: CapabilityPlan[] = [];
       const approvalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
       const construct = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailment, evidence: selectedEvidence, createdAt: clock.now() });
+      // Plan items 217-218: a real, durably-persisted long-horizon task-
+      // resumption snapshot (deps.storage.taskResumption, real Postgres-
+      // backed store), built from this turn's own already-real task
+      // decomposition (items 158-159, present only for code-shaped turns)
+      // and working memory (items 156-157, already finalized above) --
+      // keyed by the real, stable conversationId (not the per-turn
+      // episodeId) so a later turn with no fresh task decomposition of
+      // its own still recovers the conversation's real last snapshot.
+      const taskResumptionSnapshot = await syncTaskResumptionSnapshotForTurn(deps.storage.taskResumption, {
+        goalId: authorityDialogueState.conversationId,
+        taskDecomposition: construct.program?.taskDecomposition,
+        workingMemory: candidateWorkingMemory,
+        artifactIds: construct.artifacts.map(artifact => String(artifact.artifactId)),
+        receiptIds: [],
+        capturedAt: clock.now(),
+        hasher
+      });
       const toolPlan = construct.program || construct.artifacts.length
         ? toolCognition.plan({
           episodeId,
@@ -2542,6 +2597,7 @@ export function createProductionTurnRuntime(options: {
           selectedCandidate: toJsonValue(judged.selected),
           judge: judged.audit,
           workingMemory: toJsonValue(candidateWorkingMemory),
+          taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
           episodeConsolidation,
           semanticConsolidation,
           cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
@@ -2552,6 +2608,7 @@ export function createProductionTurnRuntime(options: {
           }))),
           temporalConflicts: toJsonValue(temporalConflicts.map(([left, right]) => ({ leftEdgeId: String(left.id), rightEdgeId: String(right.id) }))),
           repoCognition,
+          documentGeneration,
           actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           proofCarryingAnswer: pcaReport.audit,
           pface: pfaceEstimate?.audit,
@@ -2561,6 +2618,7 @@ export function createProductionTurnRuntime(options: {
           ...(inheritedRuntimeMotion ? { runtimeMotion: toJsonValue(inheritedRuntimeMotion) } : {}),
           discourseObject: discourseObjectTrace,
           corrections: correctionMemory.summarize(correctionRules),
+          userModelStore: userModelStoreToJson(userModelStore),
           brain,
           selfState,
           selfDistillation: selfDistillation.audit,
@@ -2681,6 +2739,7 @@ export function createProductionTurnRuntime(options: {
         selectedCandidate: toJsonValue(judged.selected),
         judge: judged.audit,
         workingMemory: toJsonValue(candidateWorkingMemory),
+        taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
         episodeConsolidation,
         semanticConsolidation,
         cognitiveProposalComparison: cognitiveProposalComparison ? toJsonValue(cognitiveProposalComparison) : undefined,
@@ -2691,6 +2750,7 @@ export function createProductionTurnRuntime(options: {
         }))),
         temporalConflicts: toJsonValue(temporalConflicts.map(([left, right]) => ({ leftEdgeId: String(left.id), rightEdgeId: String(right.id) }))),
         repoCognition,
+        documentGeneration,
         actionGraph: toJsonValue({ actionGraph: actionGraph.audit, toolPlan: toolPlan.policyAudit, safety: safetyWithPlans.audit, runtime: runtimeDag.audit, runtimeReadiness: runtimeReadinessForEmission.audit, runtimeCoherence: runtimeCoherenceTrace, discourseObject: discourseObjectTrace ?? null, counterfactual: counterfactualWorld.audit, constructSubstrate: assembly.audit, sourceAnchor: { sourceAnchorRequired: sourceAnchorAudit.required, sourceAnchorMatched: sourceAnchorAudit.evidence.length > 0, sourceAnchors: sourceAnchorAudit.anchors }, maintenance: afterTurnMaintenance.audit }),
         selfState,
         selfDistillation: selfDistillation.audit,
@@ -2710,6 +2770,7 @@ export function createProductionTurnRuntime(options: {
         translation: translationPlan,
         mouth: toJsonValue({ surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, uncertainty: spoken.uncertainty }),
         corrections: correctionMemory.summarize(correctionRules),
+        userModelStore: userModelStoreToJson(userModelStore),
         brain,
         learningLoop: toJsonValue({ loop: learningLoopPlan.audit, acquisitionPlans: learningCapabilityPlans, training: mvpTrainingPlan.audit, trainingStatus: mvpTrainingPlan.statusHistory }),
         timing,

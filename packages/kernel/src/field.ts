@@ -1,7 +1,8 @@
-import type { Clock, FieldState, GraphEdge, GraphNode, Hyperedge } from "./types.js";
+import type { Clock, FieldState, GraphEdge, GraphNode, Hyperedge, InformationAccessContext } from "./types.js";
 import { clamp01, createClock, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createAlphaLayer } from "./alpha.js";
 import { personalizedRandomWalkWithRestartDetailed, type RelationTransitionPolicy } from "./ppf.js";
+import { decomposedEffectiveEdgeWeight } from "./edge-weight-decomposition.js";
 import { createCausalDiscoveryEngine } from "./causal.js";
 import { graphEdgePriorClass, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import { scoreGraphEdgeQuality } from "./graph-edge-quality.js";
@@ -35,12 +36,13 @@ export interface AlphaFieldEngineOptions {
 }
 
 export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
-  const causal = createCausalDiscoveryEngine(options.clock ?? createClock());
+  const clock = options.clock ?? createClock();
+  const causal = createCausalDiscoveryEngine(clock);
   const relationPotentialModel = options.relationPotentialModel === undefined
     ? undefined
     : freezeRelationPotentialModel(options.relationPotentialModel);
   return {
-    activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; hyperedges?: Hyperedge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext }): FieldState {
+    activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; hyperedges?: Hyperedge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext; accessContext?: InformationAccessContext }): FieldState {
       const incidenceProjection = projectTypedIncidencesForActivation({
         nodes: input.nodes,
         edges: input.edges,
@@ -87,6 +89,15 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
           evaluation: input.evaluation,
           component: "query-diffusion",
           boundary: "field.query-diffusion",
+          // Plan item 146: the real beta^T f_e decomposition (temporal
+          // decay + provenance strength, grounded purely in fields every
+          // GraphEdge already carries; profile gating too, once a caller
+          // supplies a real accessContext -- never fabricated when absent)
+          // now genuinely governs production activation, not just tests.
+          // Default beta reduces to exactly the prior weight*alpha
+          // behavior whenever every gate is open, so this is a strict
+          // superset of the previous scoring, not a behavior change for
+          // edges with no temporal/provenance/access signal to react to.
           execute: () => personalizedRandomWalkWithRestartDetailed({
             nodes,
             edges: diffusionEdges,
@@ -94,7 +105,8 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
             relationPolicies,
             restartProbability: 0.15,
             maxIterations: 120,
-            tolerance: 1e-10
+            tolerance: 1e-10,
+            edgeWeightFn: edge => decomposedEffectiveEdgeWeight(edge, { now: clock.now(), accessContext: input.accessContext })
           }),
           // Query seeds are retained, but no mass is propagated across edges.
           bypass: () => seedOnlyDiffusion(seeds)

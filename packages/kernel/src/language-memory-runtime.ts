@@ -229,6 +229,27 @@ export function languageGenerationSurfaceAdequate(
   return discourseSurfaceAdequate(generation.discourse, extent);
 }
 
+/**
+ * Plan items 140-141. Whether a discourse trace's own real coverage
+ * (`requiredTermIdsCovered`/`propositionAtomIdsCovered`, already computed
+ * from the trace's real text against the caller's real requiredTerms/
+ * frameAtoms) clears the same bar the primary evidence-grounded beam-
+ * search discourse path holds itself to. `generateFromLanguageMemory`
+ * requires this (in addition to `languageGenerationSurfaceAdequate`'s
+ * pure fluency check) before ever accepting the Kneser-Ney-driven
+ * fallback continuation (`learnedContinuationDiscourse`) in place of the
+ * real evidence-grounded discourse -- fluency alone used to be enough,
+ * which let a fluent but factually empty continuation replace a real one
+ * whenever the real one merely fell short on fluency.
+ */
+export function languageGenerationDiscourseCoversRequiredContent(
+  discourse: LanguageDiscourseTrace,
+  requiredTerms: readonly LanguageGenerationTerm[],
+  frameAtoms: readonly LanguageGenerationAtom[]
+): boolean {
+  return discourseTraceHasCoverage(discourse, requiredTerms, frameAtoms);
+}
+
 export const RHETORICAL_MOVE_IDS = {
   lead: "rmove.94c0e1b7",
   support: "rmove.27f59d04",
@@ -895,10 +916,22 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
   const continuationDiscourse = firstDiscourseAdequate
     ? undefined
     : learnedContinuationDiscourse({ state: input.state, contextSymbols, contextText, requiredTerms, frameAtoms, generationExtent, pieces: candidatePieces });
+  // Plan items 140-141: fluency alone (discourseSurfaceAdequate) is never
+  // enough to accept the Kneser-Ney-driven fallback continuation in place
+  // of the real evidence-grounded discourse -- it must also meet the same
+  // required-term/frame-atom coverage bar the primary beam-search path
+  // already holds itself to (discourseBeamHasCoverage), or the fallback is
+  // refused and the less-fluent-but-grounded firstDiscourse is kept
+  // instead. A fluent but factually empty continuation is worse than a
+  // less fluent but grounded one for anything the caller supplied real
+  // requiredTerms/frameAtoms for.
+  const continuationAcceptable = continuationDiscourse
+    && discourseSurfaceAdequate(continuationDiscourse, generationExtent)
+    && discourseTraceHasCoverage(continuationDiscourse, requiredTerms, frameAtoms);
   const discourse = firstDiscourseAdequate
     ? firstDiscourse
-    : continuationDiscourse && discourseSurfaceAdequate(continuationDiscourse, generationExtent)
-      ? continuationDiscourse
+    : continuationAcceptable
+      ? continuationDiscourse!
       : firstDiscourse;
   const selectedMovePieceIds = new Set(discourse.moves.flatMap(move => move.sourcePieceIds));
   const selected = candidatePieces.filter(piece => {
@@ -2366,11 +2399,45 @@ function scoreDiscourseBeamState(state: DiscourseBeamState, requiredTerms: reado
 }
 
 function discourseBeamHasCoverage(state: DiscourseBeamState, requiredTerms: readonly LanguageGenerationTerm[], atoms: readonly LanguageGenerationAtom[]): boolean {
+  return coverageMeetsThreshold(state.coveredRequiredTermIds.length, state.coveredAtomIds.length, requiredTerms, atoms);
+}
+
+/**
+ * Plan items 140-141. Same real coverage threshold `discourseBeamHasCoverage`
+ * already applies to the primary evidence-grounded beam-search discourse
+ * path, applied to a `LanguageDiscourseTrace` (the shape
+ * `learnedContinuationDiscourse`'s Kneser-Ney-driven fallback returns).
+ * Before this, `generateFromLanguageMemory`'s fallback-acceptance decision
+ * (below) only ever checked `discourseSurfaceAdequate` -- a pure fluency/
+ * quality gate (length, lexical diversity, repetition, fragment-heaviness)
+ * with zero awareness of `requiredTerms`/`frameAtoms` -- meaning a fluent
+ * but factually empty Kneser-Ney continuation could replace the real
+ * evidence-grounded discourse whenever the latter merely fell short on
+ * fluency. That let Kneser-Ney's own statistical seed selection
+ * (language-memory-runtime.ts's `learnedContinuationDiscourse`, ~line
+ * 3080) actually determine generated content, not just rank among already-
+ * licensed derivations -- exactly item 140's violation, and exactly the
+ * gap item 141's test needs to close.
+ */
+function coverageMeetsThreshold(
+  requiredCoveredCount: number,
+  atomCoveredCount: number,
+  requiredTerms: readonly LanguageGenerationTerm[],
+  atoms: readonly LanguageGenerationAtom[]
+): boolean {
   const requiredDenominator = requiredCoverageDenominator(requiredTerms);
   const atomDenominator = atomCoverageDenominator(atoms);
-  const requiredOk = requiredDenominator === 0 || state.coveredRequiredTermIds.length >= requiredDenominator;
-  const atomOk = atomDenominator === 0 || state.coveredAtomIds.length >= Math.max(1, Math.ceil(atomDenominator * 0.5));
+  const requiredOk = requiredDenominator === 0 || requiredCoveredCount >= requiredDenominator;
+  const atomOk = atomDenominator === 0 || atomCoveredCount >= Math.max(1, Math.ceil(atomDenominator * 0.5));
   return requiredOk && atomOk;
+}
+
+function discourseTraceHasCoverage(
+  discourse: LanguageDiscourseTrace,
+  requiredTerms: readonly LanguageGenerationTerm[],
+  atoms: readonly LanguageGenerationAtom[]
+): boolean {
+  return coverageMeetsThreshold(discourse.requiredTermIdsCovered.length, discourse.propositionAtomIdsCovered.length, requiredTerms, atoms);
 }
 
 function requiredCoverageDenominator(requiredTerms: readonly LanguageGenerationTerm[]): number {

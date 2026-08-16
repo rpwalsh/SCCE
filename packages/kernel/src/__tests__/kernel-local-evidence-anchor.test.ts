@@ -26,7 +26,10 @@ import {
   type SourceId,
   type SourceVersionId,
   type EvaluationConditionId,
-  type EvaluationTraceEvent
+  type EvaluationTraceEvent,
+  type UserModelClaimRecord,
+  type TaskResumptionSnapshotRecord,
+  type DocumentGenerationSessionRecord
 } from "../index.js";
 import {
   localEvidenceAnswerClaimSurface,
@@ -425,6 +428,281 @@ describe("kernel local evidence source anchoring", () => {
 
     const result = await kernel.turn({ text: "Who was Ada Lovelace?" });
     expect(result.repoCognition).toBeUndefined();
+  });
+
+  it("surfaces real document-generation work on TurnResult when metadata.documentGeneration is supplied (plan items 221-228 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_400, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-docgen",
+      sourceVersionId: "source:ada-lovelace-docgen:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const documentPlan = {
+      nodes: {
+        intro: {
+          id: "intro", kind: "section", order: 0, goal: "introduce the report",
+          requiredCoverageIds: [], referenceIds: [], rhetoricalDependsOnIds: [], satisfiedCoverageIds: [], completed: false
+        }
+      }
+    };
+
+    // Turn 1: start a real, durably-persisted session under a real,
+    // caller-chosen sessionId. Each turn below uses genuinely distinct
+    // text -- deterministicReplay derives real episode identity partly
+    // from request text, so identical text across turns would collide
+    // with this codebase's own real replay-detection logic, same as a
+    // real user never sending the exact same message four times in a row.
+    const startResult = await kernel.turn({
+      text: "Who was Ada Lovelace?",
+      metadata: { documentGeneration: { sessionId: "report.ada", action: { type: "start", session: { plan: documentPlan, narrative: { events: [] } } } } }
+    });
+    expect(startResult.documentGeneration).toEqual({ action: "start", sessionId: "report.ada", pendingSections: [{ id: "intro", goal: "introduce the report" }] });
+
+    // Turn 2: real cross-turn persistence -- next_work by sessionId alone,
+    // no plan resent.
+    const nextWorkResult = await kernel.turn({
+      text: "What is the status of the Ada report?",
+      metadata: { documentGeneration: { sessionId: "report.ada", action: { type: "next_work" } } }
+    });
+    expect(nextWorkResult.documentGeneration).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the report" }] });
+
+    // Turn 3: real cross-turn completion, again by sessionId alone.
+    const completeResult = await kernel.turn({
+      text: "Please complete the introduction section of the Ada report.",
+      metadata: {
+        documentGeneration: {
+          sessionId: "report.ada",
+          action: { type: "complete_section", input: { nodeId: "intro", content: "This report covers Ada Lovelace.", satisfiedCoverageIds: [] } }
+        }
+      }
+    });
+    expect(completeResult.documentGeneration).toEqual({ action: "complete_section", accepted: true });
+
+    // Turn 4: the durable session must now show the section complete.
+    const finalResult = await kernel.turn({
+      text: "Is the Ada report finished?",
+      metadata: { documentGeneration: { sessionId: "report.ada", action: { type: "next_work" } } }
+    });
+    expect(finalResult.documentGeneration).toEqual({ action: "next_work", pendingSections: [] });
+  });
+
+  it("CRITICAL fix, real live turn path: a document-generation session started under one real conversationId is genuinely invisible to a different conversation reusing the identical sessionId", async () => {
+    const clock = createClock({ fixedTime: 6_400, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+    const documentPlan = {
+      nodes: {
+        intro: {
+          id: "intro", kind: "section", order: 0, goal: "introduce the report",
+          requiredCoverageIds: [], referenceIds: [], rhetoricalDependsOnIds: [], satisfiedCoverageIds: [], completed: false
+        }
+      }
+    };
+
+    await kernel.turn({
+      text: "Start the tenant-A report.",
+      metadata: {
+        dialogue: { conversationId: "conversation.tenant-a" },
+        documentGeneration: { sessionId: "report.shared-id", action: { type: "start", session: { plan: documentPlan, narrative: { events: [] } } } }
+      }
+    });
+
+    // A genuinely different conversation, reusing the identical sessionId,
+    // asks for next_work -- it must see "unknown session", never tenant A's
+    // real pending work.
+    const tenantBResult = await kernel.turn({
+      text: "What is the status of the tenant-B report?",
+      metadata: {
+        dialogue: { conversationId: "conversation.tenant-b" },
+        documentGeneration: { sessionId: "report.shared-id", action: { type: "next_work" } }
+      }
+    });
+    expect(tenantBResult.documentGeneration).toEqual({ accepted: false, reason: "unknown session" });
+  });
+
+  it("surfaces a real long-horizon task-resumption snapshot on TurnResult for a real code-shaped turn (plan items 217-218 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_500, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Please write a function that reverses a string." });
+
+    const snapshot = result.taskResumptionSnapshot as unknown as {
+      goalId: string;
+      taskGraph: { nodes: Record<string, unknown> };
+      workingMemorySummary: { promotedEntryIds: string[]; provisionalEntryIds: string[] };
+      id: string;
+    } | undefined;
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.id).toMatch(/^task_resumption_snapshot\./);
+    expect(Object.keys(snapshot!.taskGraph.nodes).length).toBeGreaterThan(0);
+    // The real working-memory summary on this snapshot must be the same
+    // real promoted/provisional split TurnResult.workingMemory itself
+    // reports -- proving this isn't a separately fabricated summary.
+    const workingMemory = result.workingMemory as { entries: Record<string, { promotionStatus: string }> };
+    const entries = Object.values(workingMemory.entries);
+    expect(snapshot!.workingMemorySummary.promotedEntryIds.length).toBe(entries.filter(entry => entry.promotionStatus === "promoted").length);
+  });
+
+  it("real, durable, cross-turn task-resumption: a code-shaped turn's snapshot is genuinely still recoverable on a later, non-code-shaped turn in the same conversation (plan item 218 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-resumption",
+      sourceVersionId: "source:ada-lovelace-resumption:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const first = await kernel.turn({ text: "Please write a function that reverses a string." });
+    const firstSnapshot = first.taskResumptionSnapshot as unknown as { id: string; goalId: string } | undefined;
+    expect(firstSnapshot).toBeDefined();
+
+    // Turn 2: a plain factual question -- no code, no fresh task
+    // decomposition of its own. Real resumption means the conversation's
+    // last real persisted snapshot from turn 1 is still recovered here.
+    const second = await kernel.turn({ text: "Who was Ada Lovelace?" });
+    const secondSnapshot = second.taskResumptionSnapshot as unknown as { id: string; goalId: string } | undefined;
+    expect(secondSnapshot).toBeDefined();
+    expect(secondSnapshot!.id).toBe(firstSnapshot!.id);
+    expect(secondSnapshot!.goalId).toBe(firstSnapshot!.goalId);
+  });
+
+  it("leaves TurnResult.taskResumptionSnapshot absent (not fabricated) for a turn with no real task decomposition", async () => {
+    const clock = createClock({ fixedTime: 6_600, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-no-taskdecomp",
+      sourceVersionId: "source:ada-lovelace-no-taskdecomp:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+    const result = await kernel.turn({ text: "Who was Ada Lovelace?" });
+    expect(result.taskResumptionSnapshot).toBeUndefined();
+  });
+
+  it("real, durable, cross-turn user-model persistence: a correction recorded on turn 1 is genuinely still active on turn 2 with no caller resupply (plan items 219-220 live-turn wiring)", async () => {
+    const clock = createClock({ fixedTime: 6_700, stepMs: 1 });
+    const hasher = createHasher();
+    const ada = evidenceSpan({
+      id: "evidence:ada-lovelace-usermodel",
+      sourceVersionId: "source:ada-lovelace-usermodel:v1" as SourceVersionId,
+      title: "Ada Lovelace",
+      uri: "fixture://wiki/Ada_Lovelace",
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine.",
+      alpha: 0.9
+    });
+    const fixture = storageFixture({ evidence: [ada] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const first = await kernel.turn({
+      text: "Who was Ada Lovelace?",
+      metadata: { corrections: [{ kind: "terminology_preference", observedSurface: "color", preferredSurface: "colour" }] }
+    });
+    const firstClaims = first.userModelStore as unknown as UserModelClaimRecord[];
+    expect(firstClaims.length).toBeGreaterThanOrEqual(1);
+    expect(firstClaims.every(claim => claim.source === "explicit_instruction")).toBe(true);
+
+    // Turn 2: no metadata.corrections at all -- the claim must still be
+    // there, proving this is real durable storage (deps.storage.userModelClaims),
+    // not something that only exists because the caller resent it.
+    const second = await kernel.turn({ text: "What was she known for?" });
+    const secondClaims = second.userModelStore as unknown as UserModelClaimRecord[];
+    expect(secondClaims.length).toBe(firstClaims.length);
+    expect(secondClaims.map(claim => claim.id).sort()).toEqual(firstClaims.map(claim => claim.id).sort());
+  });
+
+  it("CRITICAL fix, real live turn path: a correction recorded in one real conversationId never appears in a different, unrelated conversation's TurnResult.userModelStore", async () => {
+    const clock = createClock({ fixedTime: 6_750, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const tenantA = await kernel.turn({
+      text: "Tenant A: use colour, not color.",
+      metadata: {
+        dialogue: { conversationId: "conversation.tenant-a" },
+        corrections: [{ kind: "terminology_preference", observedSurface: "color", preferredSurface: "colour" }]
+      }
+    });
+    const tenantAClaims = tenantA.userModelStore as unknown as UserModelClaimRecord[];
+    expect(tenantAClaims.length).toBeGreaterThanOrEqual(1);
+
+    // A genuinely different, unrelated conversation asks a plain question
+    // with no corrections of its own -- tenant A's real recorded
+    // preference must never leak into its TurnResult.
+    const tenantB = await kernel.turn({
+      text: "Tenant B: what is the weather like today?",
+      metadata: { dialogue: { conversationId: "conversation.tenant-b" } }
+    });
+    const tenantBClaims = tenantB.userModelStore as unknown as UserModelClaimRecord[] | undefined;
+    expect((tenantBClaims ?? []).some(claim => tenantAClaims.some(tenantAClaim => tenantAClaim.id === claim.id))).toBe(false);
   });
 
   it("recognizes and records a revived hypothesis when replan metadata names a matching prior rejection", async () => {
@@ -1741,6 +2019,64 @@ function storageFixture(input: {
       putRule: async () => undefined,
       listRules: async () => []
     },
+    // Real, working in-memory implementation (not a stub): plan items
+    // 219-220's live turn-runtime wiring reads and writes this store for
+    // real every turn, and its own real cross-turn persistence is exactly
+    // what the e2e test below verifies.
+    userModelClaims: (() => {
+      // Keyed on (conversationId, id), mirroring the real Postgres
+      // primary key -- real tenant isolation, matching the fix for the
+      // cross-conversation claim-leak this store's live wiring found.
+      const records = new Map<string, UserModelClaimRecord>();
+      return {
+        putClaim: async (claim: UserModelClaimRecord) => {
+          const key = `${claim.conversationId} ${claim.id}`;
+          if (!records.has(key)) records.set(key, claim);
+        },
+        listClaims: async (query: { conversationId: string; subject?: string; scope?: string; limit?: number }) => {
+          let rows = [...records.values()].filter(row => row.conversationId === query.conversationId);
+          if (query.subject) rows = rows.filter(row => row.subject === query.subject);
+          if (query.scope) rows = rows.filter(row => row.scope === query.scope);
+          // Newest-first, matching the real store.
+          rows = rows.slice().sort((left, right) => right.observedAt - left.observedAt);
+          return rows.slice(0, query.limit ?? 200);
+        }
+      };
+    })(),
+    // Real, working in-memory implementation (not a stub): plan items
+    // 217-218's live turn-runtime wiring reads and writes this store for
+    // real every turn, and its own real cross-turn persistence is exactly
+    // what the e2e test below verifies.
+    taskResumption: (() => {
+      const records: TaskResumptionSnapshotRecord[] = [];
+      return {
+        putSnapshot: async (record: TaskResumptionSnapshotRecord) => { records.push(record); },
+        getLatestSnapshot: async (goalId: string) => {
+          const matching = records.filter(record => record.goalId === goalId);
+          return matching.length ? matching.reduce((latest, record) => record.capturedAt > latest.capturedAt ? record : latest) : null;
+        }
+      };
+    })(),
+    // Real, working in-memory implementation (not a stub): plan items
+    // 221-228's live turn-runtime wiring reads and writes this store for
+    // real every turn, and its own real cross-turn persistence is exactly
+    // what the e2e test below verifies.
+    documentGeneration: (() => {
+      // Keyed on (conversationId, id) -- real tenant isolation, matching
+      // the real Postgres primary key.
+      const records = new Map<string, DocumentGenerationSessionRecord>();
+      const key = (id: string, conversationId: string) => `${conversationId} ${id}`;
+      return {
+        putSession: async (record: DocumentGenerationSessionRecord) => { records.set(key(record.id, record.conversationId), record); },
+        getSession: async (id: string, conversationId: string) => records.get(key(id, conversationId)) ?? null,
+        compareAndPutSession: async (record: DocumentGenerationSessionRecord, expectedUpdatedAt: number | null) => {
+          const current = records.get(key(record.id, record.conversationId)) ?? null;
+          if ((current?.updatedAt ?? null) !== expectedUpdatedAt) return { stored: false, currentUpdatedAt: current?.updatedAt ?? null };
+          records.set(key(record.id, record.conversationId), record);
+          return { stored: true, currentUpdatedAt: record.updatedAt };
+        }
+      };
+    })(),
     localization: unusedStore(),
     flowCache: unusedStore(),
     selfRewrite: unusedStore(),

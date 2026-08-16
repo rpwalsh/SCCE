@@ -11,6 +11,33 @@ export async function handleGitChanged(): Promise<string> {
   return JSON.stringify({ changed: out });
 }
 
+const GIT_LOG_SEP = '\x1f';
+
+export async function handleGitLog(args: { path?: string; maxCount?: number }): Promise<string> {
+  const root = resolveRepositoryRoot();
+  const maxCount = args.maxCount ?? 20;
+  const pathArgs = args.path ? ['--', args.path] : [];
+  const format = `%h${GIT_LOG_SEP}%ad${GIT_LOG_SEP}%an${GIT_LOG_SEP}%s`;
+
+  const status = await runProcess({
+    commandId: 'git.log',
+    command: 'git',
+    args: ['log', `-n${maxCount + 1}`, '--date=short', `--format=${format}`, ...pathArgs],
+    cwd: root,
+    timeoutMs: 15_000
+  });
+  if (status.spawnError) return JSON.stringify({ error: 'git not available', message: status.spawnError });
+  if (status.exitCode !== 0) return JSON.stringify({ error: 'git log failed', message: truncate(status.stderr, 20) });
+
+  const lines = (status.stdout || '').split(/\r?\n/).filter(Boolean);
+  const truncated = lines.length > maxCount;
+  const commits = lines.slice(0, maxCount).map((line) => {
+    const [hash, date, author, subject] = line.split(GIT_LOG_SEP);
+    return { hash: hash ?? '', date: date ?? '', author: author ?? '', subject: subject ?? '' };
+  });
+  return JSON.stringify({ commits, truncated });
+}
+
 export async function handleGitDiffSummary(args: { path?: string; maxLines?: number }): Promise<string> {
   const root = resolveRepositoryRoot();
   const max = args.maxLines ?? 200;

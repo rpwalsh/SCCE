@@ -1,4 +1,4 @@
-# SCCE
+# SCCE — Self-Contained Cognitive Engine
 
 **GO WEIGHTLESS.**
 

@@ -6,9 +6,8 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "baseUrl": ".",
     "paths": {
-      "@modelcontextprotocol/sdk": ["node_modules/@modelcontextprotocol/sdk/dist/index.d.ts"]
+      "@modelcontextprotocol/sdk": ["./node_modules/@modelcontextprotocol/sdk/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*"],
