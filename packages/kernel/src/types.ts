@@ -982,6 +982,10 @@ export interface TurnResult {
   judge?: JsonValue;
   /** Plan items 156-157: this turn's candidate hypotheses, task-scoped working memory -- the judge's rejected candidates abandoned, the selected one promoted with its full derivation. */
   workingMemory?: JsonValue;
+  /** Plan items 217-218: a real long-horizon task-resumption snapshot combining this turn's own real task-decomposition graph (items 158-159) and working memory (items 156-157). Absent (not fabricated) for any turn with no real task decomposition (i.e. not code-shaped). */
+  taskResumptionSnapshot?: JsonValue;
+  /** Plan items 219-220: the real, provenance-aware user-model store (metadata.userModelStore in, updated store out), with every real correction detected this turn recorded as a real explicit_instruction claim -- always present (an empty claim list when nothing was supplied or detected), never fabricated. */
+  userModelStore?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
   episodeConsolidation?: JsonValue;
   /** Plan items 213-214: this turn's construct:semantic_answer facts (if any), consolidated by subject + canonicalized value. Distinct claimed values for the same subject are preserved as a genuine disagreement (contradictory: true), never collapsed into false consensus. Absent (not empty) when the turn's winning candidate carries no semantic_answer construct. */
@@ -994,6 +998,8 @@ export interface TurnResult {
   temporalConflicts?: JsonValue;
   /** Plan items 183-186, 189-190: issue-to-symbol localization plus affected-test prediction over repo files supplied via metadata.repoFiles. Absent (not empty) when no repo files were supplied -- never fabricated. */
   repoCognition?: JsonValue;
+  /** Plan items 221-228: document-generation-session.ts's real combined completion gate (anti-copy + narrative consistency), run against a session supplied via metadata.documentGeneration. Absent when no document-generation request was supplied this turn -- never fabricated. */
+  documentGeneration?: JsonValue;
   actionGraph?: JsonValue;
   selfState?: FunctionalSelfState;
   selfDistillation?: JsonValue;

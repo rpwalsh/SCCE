@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 
 export interface RunStatus {
@@ -88,7 +88,8 @@ export async function runProcess(input: {
       cwd: input.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
-      detached: process.platform !== 'win32'
+      detached: process.platform !== 'win32',
+      env: childEnv()
     });
   } catch (error) {
     return {
@@ -211,6 +212,21 @@ export async function run(cmd: string, args: string[], cwd = process.cwd(), time
   return runProcess({ commandId: cmd, command: cmd, args, cwd, timeoutMs });
 }
 
+/**
+ * The spawning host (e.g. an editor's extension process) is not guaranteed to
+ * have the running node.exe's own directory on PATH, even though that
+ * directory is always knowable from process.execPath. Without it, a resolved
+ * command like pnpm can itself fail to spawn further node-based tooling
+ * (vitest, tsc, ...) it needs internally. Every child process gets that
+ * directory prepended to whatever PATH it would otherwise inherit.
+ */
+export function childEnv(): NodeJS.ProcessEnv {
+  const nodeDir = dirname(process.execPath);
+  const currentPath = process.env.PATH ?? '';
+  if (currentPath.split(delimiter).includes(nodeDir)) return process.env;
+  return { ...process.env, PATH: [nodeDir, currentPath].filter(Boolean).join(delimiter) };
+}
+
 function resolveExecutable(cmd: string, args: string[]): { command: string; args: string[] } {
   if (process.platform !== 'win32' || cmd !== 'pnpm') return { command: cmd, args };
   const pnpmEntry = findPnpmEntrypoint();
@@ -218,8 +234,13 @@ function resolveExecutable(cmd: string, args: string[]): { command: string; args
   return { command: process.execPath, args: [pnpmEntry, ...args] };
 }
 
-function findPnpmEntrypoint(): string | undefined {
-  const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+export function findPnpmEntrypoint(): string | undefined {
+  // Check the directory of the node.exe actually running this process first --
+  // that's correct regardless of what PATH the host process (e.g. an editor's
+  // extension host) happened to launch us with, which is not guaranteed to
+  // include a version-manager shim directory even when a login shell's PATH
+  // does. PATH-scanned directories remain a fallback for other layouts.
+  const pathDirs = [dirname(process.execPath), ...(process.env.PATH ?? '').split(delimiter).filter(Boolean)];
   for (const dir of pathDirs) {
     for (const candidate of [
       join(dir, 'node_modules', 'corepack', 'dist', 'pnpm.js'),

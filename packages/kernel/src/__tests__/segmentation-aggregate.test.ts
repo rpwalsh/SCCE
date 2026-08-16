@@ -67,6 +67,71 @@ describe("segmentationAggregateKeyId", () => {
   it("is deterministic for the same key", () => {
     expect(segmentationAggregateKeyId(KEY)).toBe(segmentationAggregateKeyId({ ...KEY }));
   });
+
+  // Plan item 89. This codebase has never formally shipped a distinct "v1"
+  // schema constant (SEGMENTATION_SCHEMA_V2 is the only versioned id
+  // defined anywhere) -- so this proves the *general* guarantee item 89
+  // actually needs, not a fixed v1-vs-v2 pair that happens to exist today:
+  // any two different segmentationVersion strings must produce completely
+  // non-colliding keys, and folding real evidence under each must never
+  // let one version's mass leak into the other's aggregate, for every
+  // other key field held identical. A real future v1->v2 (or v2->v3)
+  // migration is exactly this shape.
+  it("never collides two different segmentation schema versions with every other key field identical", () => {
+    const versionA: SegmentationAggregateKey = { ...KEY, segmentationVersion: SEGMENTATION_SCHEMA_V2 };
+    const versionB: SegmentationAggregateKey = { ...KEY, segmentationVersion: "scce.segmentation.v3" };
+    expect(segmentationAggregateKeyId(versionA)).not.toBe(segmentationAggregateKeyId(versionB));
+  });
+});
+
+describe("segmentation-version isolation across a hydration path (plan item 89)", () => {
+  it("folding real evidence under two different segmentation versions, into a real keyed store, never mixes their aggregates -- a version-isolated hydration path, not just a key-string difference", () => {
+    // A minimal but real Map-keyed store, standing in for the durable
+    // Postgres-backed SegmentationAggregateStore -- the same
+    // segmentationAggregateKeyId this test also checks directly is what a
+    // real store implementation keys its rows by, so this exercises the
+    // identical isolation mechanism a real hydration path relies on.
+    const store = new Map<string, ReturnType<typeof foldSegmentationAggregate>>();
+    function observe(key: SegmentationAggregateKey, text: string, observedAt: number): void {
+      const id = segmentationAggregateKeyId(key);
+      const previous = store.get(id);
+      store.set(id, foldSegmentationAggregate(previous, key, segmentUnicodeSurfaceV2(text), observedAt));
+    }
+
+    const versionA: SegmentationAggregateKey = { ...KEY, segmentationVersion: SEGMENTATION_SCHEMA_V2 };
+    const versionB: SegmentationAggregateKey = { ...KEY, segmentationVersion: "scce.segmentation.v3" };
+
+    // Two real documents observed under version A, one under version B --
+    // interleaved, not grouped, so an accidental shared-key bug would show
+    // up as cross-contamination regardless of call order.
+    observe(versionA, "我爱北京天安门广场太阳升", 1_000);
+    observe(versionB, "我们一起去公园散步吧朋友", 2_000);
+    observe(versionA, "他每天早上都喝一杯咖啡今天", 3_000);
+
+    const aggregateA = store.get(segmentationAggregateKeyId(versionA))!;
+    const aggregateB = store.get(segmentationAggregateKeyId(versionB))!;
+
+    expect(aggregateA.documentsObserved).toBe(2);
+    expect(aggregateB.documentsObserved).toBe(1);
+    // Real, distinct evidence: version A's total must be exactly the sum of
+    // its own two real documents' boundary observations, never inflated by
+    // version B's document, and vice versa.
+    const soloA1 = foldSegmentationAggregate(undefined, versionA, segmentUnicodeSurfaceV2("我爱北京天安门广场太阳升"), 1_000);
+    const soloA2 = foldSegmentationAggregate(soloA1, versionA, segmentUnicodeSurfaceV2("他每天早上都喝一杯咖啡今天"), 3_000);
+    expect(aggregateA.totalBoundaryObservations).toBe(soloA2.totalBoundaryObservations);
+    expect(aggregateA.lexicalSegmentsObserved).toBe(soloA2.lexicalSegmentsObserved);
+
+    const soloB = foldSegmentationAggregate(undefined, versionB, segmentUnicodeSurfaceV2("我们一起去公园散步吧朋友"), 2_000);
+    expect(aggregateB.totalBoundaryObservations).toBe(soloB.totalBoundaryObservations);
+    expect(aggregateB.lexicalSegmentsObserved).toBe(soloB.lexicalSegmentsObserved);
+
+    // firstObservedAt/lastObservedAt are also per-version, not globally
+    // shared -- version B's single document must own both timestamps.
+    expect(aggregateB.firstObservedAt).toBe(2_000);
+    expect(aggregateB.lastObservedAt).toBe(2_000);
+    expect(aggregateA.firstObservedAt).toBe(1_000);
+    expect(aggregateA.lastObservedAt).toBe(3_000);
+  });
 });
 
 describe("segmentationAggregateInformationLabel", () => {

@@ -55,6 +55,10 @@ export const toolSchemas = {
     path: repoRelativePath.optional(),
     maxLines: boundedInt(1, 5000, 200)
   }).strict(),
+  git_log: z.object({
+    path: repoRelativePath.optional(),
+    maxCount: boundedInt(1, 200, 20)
+  }).strict(),
   test_run: z.object({
     commandId: boundedString(64),
     filter: boundedString(300).optional(),
@@ -66,6 +70,10 @@ export const toolSchemas = {
   }).strict(),
   pg_schema: z.object({
     schema: sqlIdentifier.optional()
+  }).strict(),
+  pg_query: z.object({
+    sql: boundedString(20_000),
+    maxRows: boundedInt(1, 200, 20)
   }).strict(),
   pg_explain: z.object({
     sql: boundedString(20_000)
