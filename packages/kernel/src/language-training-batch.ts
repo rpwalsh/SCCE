@@ -122,6 +122,24 @@ export interface LanguageTrainingBatch {
   additionalPatterns?: readonly LanguagePatternRecord[];
   graphSnapshot?: GraphSnapshot;
   maxAlignmentCandidateDegree?: number;
+  /**
+   * Peak-memory bound on surface<->graph alignment (confirmed V8 heap OOM,
+   * 3398MB against a 3072MB cap, on a real 21k-source corpus). Alignment
+   * builds a full surface lattice per evidence span and cross-products it
+   * against every graph target at `maxAlignmentCandidateDegree`, so its
+   * cost scales with total lattice mass -- but the only cap upstream was
+   * the *storage* chunk size (`maxChunkBytes`, 128KB here), which is far
+   * too coarse a unit for alignment. These bound the aggregate rather than
+   * the individual dimensions.
+   *
+   * Windowing is also more correct, not merely cheaper: surface<->graph
+   * alignment is local, so a unit at the far end of a 128KB article is not
+   * a legitimate candidate for a target at the other end. A prefix window
+   * keeps every `sourceUtf16Start/End` offset valid, so construction
+   * provenance is unaffected.
+   */
+  maxAlignmentTextBytes?: number;
+  maxAlignmentLattices?: number;
   alignmentAlternativePredecessorSets?: readonly AlignmentAlternativeSet[];
   alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
   alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
@@ -223,11 +241,15 @@ export function compileLanguageTrainingBatch(input: {
     profileId: batch.profile.id,
     hasher: input.hasher
   });
+  const maxAlignmentTextBytes = Math.max(512, Math.min(65536, Math.floor(batch.maxAlignmentTextBytes ?? 8192)));
+  const maxAlignmentLattices = Math.max(1, Math.min(64, Math.floor(batch.maxAlignmentLattices ?? 8)));
   const alignmentLattices = batch.graphSnapshot?.hyperedges.length
-    ? batch.evidence.map(span => buildSurfaceLattice({
+    ? batch.evidence.slice(0, maxAlignmentLattices).map(span => buildSurfaceLattice({
       documentId: String(span.id),
       sourceFamilyId: evidenceSourceFamilyId(span),
-      text: span.text,
+      // Prefix window: offsets stay anchored at 0 so every construction's
+      // recorded source coordinates remain exact.
+      text: alignmentWindowText(span.text, maxAlignmentTextBytes),
       sourceVersionId: span.sourceVersionId,
       evidenceIds: [span.id],
       hasher: input.hasher
@@ -899,4 +921,13 @@ function jsonObject(value: JsonValue): Record<string, JsonValue> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, JsonValue>
     : {};
+}
+
+/** Bounded prefix of a span's text for alignment only, cut on a UTF-8 boundary so the window never splits a character. Never used for evidence identity, n-gram training, or persistence -- only to bound lattice mass. */
+function alignmentWindowText(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const buffer = Buffer.from(text, "utf8").subarray(0, maxBytes);
+  let end = buffer.length;
+  while (end > 0 && (buffer[end] !== undefined) && ((buffer[end]! & 0xc0) === 0x80)) end--;
+  return buffer.subarray(0, end).toString("utf8");
 }
