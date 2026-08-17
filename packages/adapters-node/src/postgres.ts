@@ -494,10 +494,27 @@ async function joinDurableRecordLabels(
     labelsById.set(record.id, [...(labelsById.get(record.id) ?? []), label]);
   }
   const ids = [...labelsById.keys()].sort();
+  // Advisory xact locks serialize concurrent label-joins on the same record
+  // id until COMMIT (a concurrent transaction's read of existing labels must
+  // wait for this one's write to land, or its merge silently drops labels).
+  // One lock PER RECORD held to commit is the same guarantee with unbounded
+  // shared-lock-table use: a single whole-novel training transaction takes
+  // tens of thousands of them and dies with Postgres "out of shared memory"
+  // (max_locks_per_transaction) -- verified live against a real book.
+  // Hashing ids into 256 fixed buckets keeps the exact cross-transaction
+  // contention property (two transactions touching the same id always meet
+  // on its bucket) while bounding this transaction's lock-table use to at
+  // most 256 entries regardless of batch size; unrelated ids sharing a
+  // bucket only ever cost a short wait, never a correctness change.
+  // DISTINCT + ORDER BY keeps a deterministic lock order across concurrent
+  // writers so bucket acquisition cannot deadlock.
   await storage.query(
-    `SELECT pg_advisory_xact_lock(hashtextextended(record_id, 0))
-     FROM unnest($1::text[]) AS record(record_id)
-     ORDER BY record_id`,
+    `SELECT pg_advisory_xact_lock(bucket)
+     FROM (
+       SELECT DISTINCT (hashtextextended(record_id, 0) & 255) AS bucket
+       FROM unnest($1::text[]) AS record(record_id)
+     ) buckets
+     ORDER BY bucket`,
     [ids]
   );
   const existing = await storage.query<{ id: string; information_label: InformationLabel }>(
