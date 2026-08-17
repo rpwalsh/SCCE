@@ -7,9 +7,11 @@ import { toJsonValue } from "./primitives.js";
 import {
   completeDocumentSection,
   createDocumentGenerationSession,
+  narrativeConditioningForSession,
   nextDocumentGenerationWork,
   type CompleteDocumentSectionInput,
-  type DocumentGenerationSession
+  type DocumentGenerationSession,
+  type NarrativeConditioning
 } from "./document-generation-session.js";
 
 /**
@@ -220,8 +222,8 @@ export function documentGenerationRequestFromMetadata(metadata: JsonValue | unde
 }
 
 export type DocumentGenerationTurnResult =
-  | { action: "start"; sessionId: string; pendingSections: Array<{ id: string; goal: string }> }
-  | { action: "next_work"; pendingSections: Array<{ id: string; goal: string }> }
+  | { action: "start"; sessionId: string; pendingSections: Array<{ id: string; goal: string }>; narrativeConditioning: NarrativeConditioning }
+  | { action: "next_work"; pendingSections: Array<{ id: string; goal: string }>; narrativeConditioning: NarrativeConditioning }
   | { action: "complete_section"; accepted: true }
   | { action: "complete_section"; accepted: false; reason: string }
   | { accepted: false; reason: "unknown session" }
@@ -273,7 +275,16 @@ export async function syncDocumentGenerationRequestForTurn(
     const sessionJson = toJsonValue(session);
     const startResult = (): DocumentGenerationTurnResult => {
       const pending = nextDocumentGenerationWork(session);
-      return { action: "start", sessionId: request.sessionId, pendingSections: pending.map(node => ({ id: node.id, goal: node.goal })) };
+      // Lever 4 (filter -> conditioning): the section-commissioning result
+      // carries the narrative's established world-state and open setups so
+      // the generator writes UNDER them, instead of first meeting them as a
+      // rejection from completeDocumentSection's after-the-fact gate.
+      return {
+        action: "start",
+        sessionId: request.sessionId,
+        pendingSections: pending.map(node => ({ id: node.id, goal: node.goal })),
+        narrativeConditioning: narrativeConditioningForSession(session)
+      };
     };
     const isIdempotentReplayOf = (row: { sessionJson: JsonValue } | null): boolean =>
       row !== null && JSON.stringify(row.sessionJson) === JSON.stringify(sessionJson);
@@ -304,7 +315,11 @@ export async function syncDocumentGenerationRequestForTurn(
 
   if (request.action.type === "next_work") {
     const pending = nextDocumentGenerationWork(session);
-    return { action: "next_work", pendingSections: pending.map(node => ({ id: node.id, goal: node.goal })) };
+    return {
+      action: "next_work",
+      pendingSections: pending.map(node => ({ id: node.id, goal: node.goal })),
+      narrativeConditioning: narrativeConditioningForSession(session)
+    };
   }
 
   // Real idempotency guard: production-turn-runtime.ts has a genuine,

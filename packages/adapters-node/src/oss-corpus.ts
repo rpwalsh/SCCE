@@ -15,6 +15,15 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
+  /**
+   * Heap-safety checkpoint in MiB, same contract as
+   * `wikipedia-v3-ingestor.ts`'s `heapCheckpointMb` and
+   * `gutenberg-corpus.ts`'s option of the same name: checked before each
+   * file; reaching the bound stops the run gracefully with
+   * `stoppedByHeapSafetyBound` instead of risking a process OOM that
+   * loses the whole in-process run.
+   */
+  heapCheckpointMb?: number;
 }
 
 export interface OssCorpusTrainReport {
@@ -28,6 +37,8 @@ export interface OssCorpusTrainReport {
     oss_code: OssCorpusTrainingTotals;
   };
   reports: LanguageCorpusTrainingReport[];
+  stoppedByHeapSafetyBound: boolean;
+  heapMiBAtExit: number;
 }
 
 export interface OssCorpusTrainingTotals {
@@ -57,7 +68,19 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const skipped: OssCorpusTrainReport["filesSkipped"] = [...inspection.skipped];
   const includeDocs = input.includeDocs !== false;
   const includeSource = input.includeSource !== false;
+  // Same contract as wikipedia-v3-ingestor.ts: the caller-supplied bound is
+  // honored as given (no floor) -- an explicitly tiny bound is an explicit
+  // request to stop immediately with a resumable report, which is honest
+  // and testable, never a crash.
+  const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
+    ? Math.floor(input.heapCheckpointMb)
+    : undefined;
+  let stoppedByHeapSafetyBound = false;
   for (const file of inspection.files.filter(file => file.importable)) {
+    if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
+      stoppedByHeapSafetyBound = true;
+      break;
+    }
     const sourceSystem = sourceSystemForPath(file.path);
     if (!sourceSystem) {
       skipped.push({ path: file.path, reason: "not_language_training_material", byteLength: file.byteLength });
@@ -71,26 +94,37 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
       continue;
     }
-    reports.push(await trainLanguageCorpusText({
-      storage: input.storage,
-      sourceSystem,
-      streamUri: `${sourceSystem}:${normalizeRelative(file.path)}`,
-      sourceUri: pathToFileURL(file.absolutePath).href,
-      text,
-      mediaType: file.mediaType,
-      namespace: `corpus:${sourceSystem}`,
-      maxEvidenceChunkBytes: 64 * 1024,
-      ngramMaxOrder: input.ngramMaxOrder,
-      ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
-      ngramVocabularyLimit: input.ngramVocabularyLimit,
-      informationLabel: OSS_CORPUS_INFORMATION_LABEL,
-      corpusMetadata: {
-        relativePath: normalizeRelative(file.path),
-        sourceHash: file.contentHash ?? sha256(raw),
-        extractor: file.extractor,
-        supportedSections: file.supportedSections
-      }
-    }));
+    // Same failure-containment contract as gutenberg-corpus.ts: one
+    // pathological file records an explicit skip with the real reason;
+    // it never costs the rest of the in-process run.
+    try {
+      reports.push(await trainLanguageCorpusText({
+        storage: input.storage,
+        sourceSystem,
+        streamUri: `${sourceSystem}:${normalizeRelative(file.path)}`,
+        sourceUri: pathToFileURL(file.absolutePath).href,
+        text,
+        mediaType: file.mediaType,
+        namespace: `corpus:${sourceSystem}`,
+        maxEvidenceChunkBytes: 64 * 1024,
+        ngramMaxOrder: input.ngramMaxOrder,
+        ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
+        ngramVocabularyLimit: input.ngramVocabularyLimit,
+        informationLabel: OSS_CORPUS_INFORMATION_LABEL,
+        corpusMetadata: {
+          relativePath: normalizeRelative(file.path),
+          sourceHash: file.contentHash ?? sha256(raw),
+          extractor: file.extractor,
+          supportedSections: file.supportedSections
+        }
+      }));
+    } catch (error) {
+      skipped.push({
+        path: file.path,
+        reason: `training_failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`,
+        byteLength: file.byteLength
+      });
+    }
   }
   return {
     schema: "scce.ossCorpusTrainReport.v1",
@@ -102,7 +136,9 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       oss_docs: sumReports(reports.filter(report => report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs)),
       oss_code: sumReports(reports.filter(report => report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode))
     },
-    reports
+    reports,
+    stoppedByHeapSafetyBound,
+    heapMiBAtExit: heapMiB()
   };
 }
 
@@ -171,4 +207,8 @@ function sha256(text: string): string {
 
 function normalizeRelative(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+function heapMiB(): number {
+  return Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
 }
