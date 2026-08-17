@@ -110,6 +110,7 @@ export function evidenceForRequest(
 ): EvidenceSpan[] {
   const requestFeatures = featureSet(text, 256);
   const anchors = sourceEvidenceAnchorsForRequest(text);
+  const initialismTokens = requestInitialismCandidates(text, anchors);
   const orderedRequestUnits = requestUnitsFromText(text);
   const contentUnits = requestContentEvidenceUnits(text);
   const promoted = evidence.filter(span => span.status === "promoted");
@@ -127,6 +128,7 @@ export function evidenceForRequest(
         evidenceSourceMatchesAnchors(span, anchors) ||
         contentAnchorAligned
       );
+      const initialismAligned = evidenceTitleInitialismMatches(span, initialismTokens);
       const explicitContextAligned = explicitContextEvidenceIds.has(String(span.id));
       const semanticFrameBoundAligned = semanticFrameBoundEvidenceIds.has(String(span.id));
       const priorityAligned = priorityIds.has(String(span.id)) && (
@@ -137,12 +139,13 @@ export function evidenceForRequest(
         evidenceRequestAdjacentUnitPairOverlap(span, orderedRequestUnits) >= 2
       );
       const priorityBoost = explicitContextAligned ? 0.48 : (semanticFrameBoundAligned || priorityAligned) ? 0.36 : anchorAligned ? 0.22 : 0;
-      const alphaBoost = lexical >= 0.025 || semanticFrameBoundAligned || priorityAligned || anchorAligned ? span.alpha * 0.18 : 0;
+      const initialismBoost = initialismAligned ? 0.6 : 0;
+      const alphaBoost = lexical >= 0.025 || semanticFrameBoundAligned || priorityAligned || anchorAligned || initialismAligned ? span.alpha * 0.18 : 0;
       const sessionBoost = sessionSpan && (lexical >= 0.045 || priorityAligned) ? 0.08 : 0;
-      return { span, score: lexical + alphaBoost + sessionBoost + priorityBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, sessionSpan, contentOverlap };
+      return { span, score: lexical + alphaBoost + sessionBoost + priorityBoost + initialismBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, initialismAligned, sessionSpan, contentOverlap };
     })
     .filter(row => {
-      if (row.explicitContextAligned || row.semanticFrameBoundAligned || row.priorityAligned || row.anchorAligned) return true;
+      if (row.explicitContextAligned || row.semanticFrameBoundAligned || row.priorityAligned || row.anchorAligned || row.initialismAligned) return true;
       if (!contentUnits.length || row.contentOverlap <= 0) return false;
       return row.lexical >= (row.sessionSpan ? 0.045 : 0.025);
     })
@@ -152,6 +155,59 @@ export function evidenceForRequest(
     (evidenceExactSourceAnchorMatches(row.span, anchors) || evidenceTitleDistinctAnchorMatches(row.span, anchors))
   ));
   return uniqueEvidenceById([...pinned.map(row => row.span), ...rows.map(row => row.span)]).slice(0, 16);
+}
+
+
+ function requestOrderedUnits(text: string): string[] {
+  return splitPriorUnits(normalizePriorKey(text.replace(/[?!.]+$/u, "")))
+    .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(Boolean);
+}
+
+
+export function trailingInitialismTokensForAnchor(text: string, anchor: string): string[] {
+  // Language-neutral by construction: a candidate is any short token
+  // trailing a full, already-recognized multi-word subject anchor -- e.g.
+  // "star trek tos" or "スタートレック tos" -- rather than a fixed
+  // English stopword list, which would silently fail for every other
+  // language this kernel is required to support. Requiring the anchor's
+  // complete unit sequence (not just its last word) and trailing-only
+  // (not leading) keeps ordinary surrounding words ("...known for?") from
+  // being mistaken for a disambiguator: real initialisms are short and
+  // follow the full subject phrase, they don't precede or partially
+  // overlap it.
+  const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
+  if (anchorUnits.length < 2) return [];
+  const units = requestOrderedUnits(text);
+  const out: string[] = [];
+  for (let index = 0; index + anchorUnits.length < units.length; index++) {
+    const matches = anchorUnits.every((anchorUnit, offset) => units[index + offset] === anchorUnit);
+    if (!matches) continue;
+    const next = units[index + anchorUnits.length] ?? "";
+    if (next.length >= 2 && next.length <= 4) out.push(next);
+  }
+  return uniqueKernelStrings(out);
+}
+
+
+export function requestInitialismCandidates(text: string, anchors: readonly string[]): string[] {
+  return uniqueKernelStrings(anchors.flatMap(anchor => trailingInitialismTokensForAnchor(text, anchor)));
+}
+
+
+export function evidenceTitleInitialismMatches(span: EvidenceSpan, initialismTokens: readonly string[]): boolean {
+  if (!initialismTokens.length) return false;
+  const title = evidenceTitle(span);
+  if (!title) return false;
+  const words = title.match(/\p{L}[\p{L}\p{N}]*/gu) ?? [];
+  if (words.length < 2) return false;
+  const initials = words.map(word => (word[0] ?? "").toLocaleLowerCase());
+  for (const token of initialismTokens) {
+    if (token.length < 2 || token.length > initials.length) continue;
+    const suffix = initials.slice(initials.length - token.length).join("");
+    if (suffix === token) return true;
+  }
+  return false;
 }
 
 
@@ -381,10 +437,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
       .map((sentence, index) => {
         const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? 0.54 : 0;
+        // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units), or a
+        // deep-article sentence that merely repeats the topic name several
+        // times outranks the article's own opening definition.
         const titleLeadBoost = anchored.anchors.length
           && index <= 1
           && evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
-          ? 0.32
+          ? 4
           : 0;
         return {
           span,
@@ -1383,6 +1442,13 @@ export function sourceAnchoredEvidenceForRequest(
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>
 ): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
+  const initialismTokens = requestInitialismCandidates(requestText, anchors);
+  const initialismEvidence = initialismTokens.length
+    ? evidence.filter(span => evidenceTitleInitialismMatches(span, initialismTokens))
+    : [];
+  if (initialismEvidence.length) {
+    return { required: true, anchors: uniqueKernelStrings(anchors), evidence: initialismEvidence };
+  }
   if (!anchors.length) return { required: false, anchors, evidence: [...evidence] };
   const durableEvidencePresent = evidence.some(span => !String(span.id).startsWith("evidence_session_"));
   if (!durableEvidencePresent) {
@@ -2437,7 +2503,11 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         const clean = anchorFocusedAnswerSurface(cleanSourceAnswerSurface(sentence), anchors, evidenceTitle(span));
         const unitOverlap = requestUnitOverlapForSurface(clean, requestUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(clean, anchors) ? 0.54 : 0;
-        const titleLeadBoost = anchors.length && index <= 1 && evidenceTitleDistinctAnchorMatches(span, anchors) && evidenceTitleAppearsInSurface(span, clean) ? 0.32 : 0;
+        // See proposeSourceExactEvidenceAnswer's identical boost: must
+        // outweigh unitOverlap*0.92's realistic ceiling so the article's own
+        // opening definition beats a deep sentence that merely repeats the
+        // topic name.
+        const titleLeadBoost = anchors.length && index <= 1 && evidenceTitleDistinctAnchorMatches(span, anchors) && evidenceTitleAppearsInSurface(span, clean) ? 4 : 0;
         return {
           span,
           sentence: clean,
