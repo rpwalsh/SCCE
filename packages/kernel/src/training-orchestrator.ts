@@ -519,7 +519,7 @@ function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> {
  * complete -- induction is never handed a truncated document, which would
  * corrupt boundary and morphology statistics.
  */
-function inductionCharBudget(): number {
+export function inductionCharBudget(): number {
   const raw = Number(process.env.SCCE_INDUCTION_CHAR_BUDGET);
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
   return 16_000;
@@ -532,13 +532,13 @@ function inductionCharBudget(): number {
  * A lattice is a full unit/boundary graph over the text, so its cost is
  * superlinear in document length, not in document count.
  */
-function inductionDocumentCharCap(): number {
+export function inductionDocumentCharCap(): number {
   const raw = Number(process.env.SCCE_INDUCTION_DOC_CHAR_CAP);
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
   return 2_000;
 }
 
-function boundedInductionDocuments<T extends { text?: string }>(documents: readonly T[]): T[] {
+export function boundedInductionDocuments<T extends { text?: string }>(documents: readonly T[]): T[] {
   const budget = inductionCharBudget();
   const perDocument = inductionDocumentCharCap();
   const out: T[] = [];

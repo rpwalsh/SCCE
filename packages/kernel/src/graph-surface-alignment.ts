@@ -3,6 +3,7 @@ import type { SourceBoundLanguageConstructionTrainingSet } from "./language-cons
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
 import { buildSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
+import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { clamp01, toJsonValue } from "./primitives.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
@@ -185,7 +186,19 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     evidenceIds: [span.id],
     sourceVersionId: span.sourceVersionId
   }));
-  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents });
+  // Corpus ingestors (Gutenberg, OSS docs/code) call this with evidence
+  // covering an entire source file's worth of spans -- unlike the live turn
+  // path, nothing upstream caps total evidence text size here. induce()'s
+  // peak scales with total document text (and superlinearly with any single
+  // document's length), not document count, so an unbounded `documents`
+  // array here reintroduces the same class of OOM already fixed inside
+  // induce() and buildSurfaceLattice for a single large input -- just via
+  // many spans instead of one. Reuses the same bound already proven for
+  // training-orchestrator.ts's own induce() call site rather than adding a
+  // second budgeting scheme.
+  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({
+    documents: boundedInductionDocuments(documents)
+  });
   if (!model.graphBoundConstructions.length) return [];
 
   const maxObservations = boundedConstructionObservationLimit(input.maxObservationsPerConstruction);
@@ -269,11 +282,16 @@ export function evaluateHeldOutConstructionCoverage(input: {
   profileId: string;
   hasher: Hasher;
 }): HeldOutConstructionCoverageReport[] {
-  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: [...input.trainDocuments] });
+  // Same unbounded-corpus risk as induceSourceBoundConstructionTrainingSets
+  // above, reached via the same production compileLanguageTrainingBatch call
+  // (evaluateConstructionPromotion, on every batch with held-out evidence) --
+  // bounded the same way rather than adding a second scheme.
+  const boundedTrainDocuments = boundedInductionDocuments(input.trainDocuments);
+  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: [...boundedTrainDocuments] });
   if (!model.graphBoundConstructions.length) return [];
 
   const alignments = induceGraphSurfaceAlignments({
-    documents: input.trainDocuments,
+    documents: boundedTrainDocuments,
     constructions: model.graphBoundConstructions,
     profileId: input.profileId,
     hasher: input.hasher
