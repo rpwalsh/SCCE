@@ -206,6 +206,15 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const coordinates = buildSurfaceCoordinateIndex(text);
   const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
+  // Built once and reused for every candidate's boundary evidence below.
+  // boundaryEvidenceAt only ever reads the one or two codepoints adjacent to
+  // a position; it used to re-spread the *entire* document text into a
+  // fresh array on every call (twice per candidate unit), which is O(text
+  // length) work and garbage per call against O(text length) candidates --
+  // quadratic in document length. Measured directly: a single
+  // buildSurfaceLattice call on 16KB of real corpus text exceeded a 1.5GB
+  // heap and 32KB OOM'd a 4GB heap outright, entirely from this one spread.
+  const codePoints = [...text];
   const normalizedCounts = new Map<string, number>();
 
   const rawBaseCandidates = graphemeCandidates(text, coordinates);
@@ -262,11 +271,11 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     const normalized = normalizeSurface(candidate.surface, normalizationContract);
     const recurrenceCount = normalizedCounts.get(recurrenceKey(candidate, normalizationContract)) ?? 1;
     const before = boundaryEvidenceAt({
-      text,
+      codePoints,
       positionCodePoint: candidate.codePointStart,
       positionByte: coordinates.utf16ToByte[candidate.utf16Start] ?? 0,
       positionGrapheme: coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0,
-      structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
+      structuralBoundary: structuralBoundaryAt(candidate.utf16Start, candidate.utf16End, text),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount,
       learnedFeatures: corpusFeaturesByPosition.get(
@@ -275,11 +284,11 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       boundaryEstimator: options.boundaryEstimator
     });
     const after = boundaryEvidenceAt({
-      text,
+      codePoints,
       positionCodePoint: candidate.codePointEnd,
       positionByte: coordinates.utf16ToByte[candidate.utf16End] ?? Buffer.byteLength(text, "utf8"),
       positionGrapheme: coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length,
-      structuralBoundary: structuralBoundaryAt(candidate.codePointStart, candidate.codePointEnd, text, codePointIndexByUtf16),
+      structuralBoundary: structuralBoundaryAt(candidate.utf16Start, candidate.utf16End, text),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount,
       learnedFeatures: corpusFeaturesByPosition.get(
@@ -826,17 +835,6 @@ function codePointAtUtf16(indexByUtf16: readonly number[], utf16: number): numbe
   return indexByUtf16[bounded] ?? 0;
 }
 
-function utf16AtCodePoint(text: string, codePoint: number): number {
-  let utf16 = 0;
-  let current = 0;
-  for (const char of text) {
-    if (current >= codePoint) return utf16;
-    utf16 += char.length;
-    current += 1;
-  }
-  return text.length;
-}
-
 function graphemeCandidates(text: string, coordinates: SurfaceCoordinateIndex): CandidateUnit[] {
   const out: CandidateUnit[] = [];
   for (const row of GRAPHEME_SEGMENTER.segment(text)) {
@@ -1101,19 +1099,50 @@ function repeatedSequenceCandidates(text: string, segments: ReturnType<typeof se
   return out;
 }
 
+// lexical is a left-to-right, non-overlapping segmentation of the document,
+// so both codePointStart and codePointEnd are strictly increasing across the
+// array -- binary search finds the same 3-segment window the old
+// `.filter(...).slice(-3)` did, without rescanning every lexical segment in
+// the document. This function is called twice per candidate unit inside
+// buildSurfaceLattice's main unit loop; with the old linear filter that was
+// O(candidates) x O(document lexical segments) per lattice build, i.e.
+// quadratic in document length -- the dominant remaining cost after fixing
+// boundaryEvidenceAt's per-call text spread and structuralBoundaryAt's
+// linear codepoint scan (real corpus text still exceeded a 4GB heap at 32KB
+// with only those two fixed).
 function contextSketch(
   lexical: ReturnType<typeof segmentUnicodeSurfaceV2>["lexicalSegments"],
   codePointPosition: number,
   direction: "left" | "right"
 ): string[] {
-  const nearby = direction === "left"
-    ? lexical.filter(segment => segment.codePointEnd <= codePointPosition).slice(-3)
-    : lexical.filter(segment => segment.codePointStart >= codePointPosition).slice(0, 3);
-  return nearby.map(segment => segment.normalized);
+  const out: string[] = [];
+  if (direction === "left") {
+    // First index whose segment ends after codePointPosition -- everything
+    // before it already ended at or before codePointPosition.
+    let lo = 0;
+    let hi = lexical.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (lexical[mid]!.codePointEnd <= codePointPosition) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = Math.max(0, lo - 3); i < lo; i++) out.push(lexical[i]!.normalized);
+    return out;
+  }
+  // First index whose segment starts at or after codePointPosition.
+  let lo = 0;
+  let hi = lexical.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (lexical[mid]!.codePointStart < codePointPosition) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < Math.min(lexical.length, lo + 3); i++) out.push(lexical[i]!.normalized);
+  return out;
 }
 
 function boundaryEvidenceAt(input: {
-  text: string;
+  codePoints: readonly string[];
   positionByte: number;
   positionCodePoint: number;
   positionGrapheme: number;
@@ -1123,9 +1152,8 @@ function boundaryEvidenceAt(input: {
   learnedFeatures?: Partial<BoundaryFeatureVector>;
   boundaryEstimator?: BoundaryEstimatorState;
 }): SurfaceBoundaryEvidence {
-  const chars = [...input.text];
-  const left = chars[input.positionCodePoint - 1] ?? "";
-  const right = chars[input.positionCodePoint] ?? "";
+  const left = input.codePoints[input.positionCodePoint - 1] ?? "";
+  const right = input.codePoints[input.positionCodePoint] ?? "";
   const whitespaceAdjacent = left && right ? Number(/\s/u.test(left) || /\s/u.test(right)) : 1;
   const punctuationAdjacent = Number(isPunctuation(left) || isPunctuation(right));
   const lineBreakAdjacent = Number(left === "\n" || right === "\n" || left === "\r" || right === "\r");
@@ -1243,12 +1271,9 @@ function corpusBoundaryFeaturesByPosition(input: {
   return out;
 }
 
-function structuralBoundaryAt(startCodePoint: number, endCodePoint: number, text: string, indexByUtf16: readonly number[]): number {
-  const startUtf16 = utf16AtCodePoint(text, startCodePoint);
-  const endUtf16 = utf16AtCodePoint(text, endCodePoint);
+function structuralBoundaryAt(startUtf16: number, endUtf16: number, text: string): number {
   const before = text.slice(Math.max(0, startUtf16 - 2), startUtf16);
   const after = text.slice(endUtf16, Math.min(text.length, endUtf16 + 2));
-  void indexByUtf16;
   return Number(/\n\s*$/u.test(before) || /^\s*\n/u.test(after));
 }
 

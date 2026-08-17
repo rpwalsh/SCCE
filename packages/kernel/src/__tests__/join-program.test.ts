@@ -4,6 +4,7 @@ import {
   compileJoinProgram,
   compileJoinProgramMixture,
   createHasher,
+  derivationShape,
   renderJoinedSurface,
   renderJoinedSurfaceAlternatives
 } from "../index.js";
@@ -125,8 +126,7 @@ describe("learned join programs", () => {
     const units = lattice.segmentationForest.paths[0]!.unitIds
       .map(id => byId.get(id)!)
       .filter(unit => unit.surface.length > 0 && !/^\s+$/u.test(unit.surface));
-    const derivationShapeId = units.map(unit =>
-      `${unit.kind}:${Math.max(1, unit.graphemeEnd - unit.graphemeStart)}`).join("\u001f");
+    const derivationShapeId = derivationShape(units);
     const rendered = renderJoinedSurface(
       units.map(unit => unit.surface),
       mixture,
