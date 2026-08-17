@@ -1208,13 +1208,23 @@ function generationPieces(
   const allowRawNgramSurfacePieces = requiredTerms.length === 0 && frameAtoms.length === 0;
   const contextFeatures = contextText ? featureSet(contextText, 256) : [];
   const contextAnchors = new Set(symbolizeData(contextText).map(symbol => symbol.toLocaleLowerCase()).filter(isAnchorSymbol));
+  // Plan item L11: the cheap categorical/anchor rejection gates run BEFORE
+  // the expensive per-piece scoring (featureSet + weightedJaccard + n-gram
+  // lookup). This routine is fed up to ~10K candidate surfaces per generate()
+  // call (1024 units, 512x8 pattern surfaces, 512x8 frame surfaces, 2048
+  // observations) of which selectGenerationPieces ultimately keeps ~8-12;
+  // in the common evidence-grounded path (requiredTerms/frameAtoms present)
+  // the anchor gates reject the large majority, so scoring first meant
+  // paying full featurization for pieces that were then discarded unread.
+  // Gate order is the only change -- every piece that survives produces the
+  // exact same score as before.
   const add = (text: string, source: GenerationPiece["source"], id: string | undefined, support: number, metadata: Partial<GenerationPiece> = {}) => {
     const clean = tidyInline(text);
     if (!clean) return;
-    const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
     if ((source === "observation" || source === "suggestion") && !allowRawNgramSurfacePieces) return;
     if ((source === "observation" || source === "suggestion") && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
     if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
+    const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
     const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
     const score = clamp01(0.34 * clamp01(support) + 0.24 * fit + 0.22 * ngram.probability + 0.2 * sourcePreference(source));
     rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score });
@@ -1235,15 +1245,22 @@ function generationPieces(
     if (semanticFrameIds.size && !semanticFrameIds.has(frame.id)) continue;
     for (const surface of semanticFrameSurfaces(frame).slice(0, 8)) add(surface, "semantic_frame", frame.id, frame.alpha);
   }
-  for (const observation of input.state.importedObservations.slice(0, 2048)) {
-    const text = renderLearnedSequence(
-      [...observation.history.slice(-5), observation.symbol],
-      activeJoinProgram(input.state, input.segmentationPopulationPosterior)
-    );
-    const support = Math.max(0.001, Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 12);
-    add(text, "observation", observation.id, support);
+  // Also L11: when requiredTerms/frameAtoms exist, every observation and
+  // suggestion piece is categorically rejected by the first gate in add()
+  // above -- so skip the 2048-observation join-program rendering loop and
+  // the model-scanning suggestFromModels call entirely in that case rather
+  // than paying their cost to produce pieces that cannot survive.
+  if (allowRawNgramSurfacePieces) {
+    for (const observation of input.state.importedObservations.slice(0, 2048)) {
+      const text = renderLearnedSequence(
+        [...observation.history.slice(-5), observation.symbol],
+        activeJoinProgram(input.state, input.segmentationPopulationPosterior)
+      );
+      const support = Math.max(0.001, Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 12);
+      add(text, "observation", observation.id, support);
+    }
+    for (const suggestion of suggestFromModels(input.state, contextSymbols, 24)) add(suggestion.symbol, "suggestion", undefined, suggestion.support);
   }
-  for (const suggestion of suggestFromModels(input.state, contextSymbols, 24)) add(suggestion.symbol, "suggestion", undefined, suggestion.support);
   const seen = new Map<string, GenerationPiece>();
   for (const row of rows) {
     const key = row.text.normalize("NFKC").toLocaleLowerCase();
