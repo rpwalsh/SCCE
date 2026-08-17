@@ -431,19 +431,23 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (!evidence.length) return undefined;
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
+  // Same sealed-eval fix as bestEvidenceSentences: overlap counts what the
+  // request asks *about* the source (units beyond the anchors); the
+  // opening-definition boost only dominates for a genuinely definitional
+  // request with no remaining content units.
+  const contentRequestUnits = requestUnitsBeyondAnchors(requestUnits, input.requestText);
+  const scoringUnits = contentRequestUnits.size ? contentRequestUnits : requestUnits;
+  const definitionalRequest = contentRequestUnits.size === 0;
   const rows = evidence.flatMap(span =>
     fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 12000))
       .slice(0, 80)
       .map((sentence, index) => {
-        const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
+        const unitOverlap = requestUnitOverlapForSurface(sentence, scoringUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? 0.54 : 0;
-        // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units), or a
-        // deep-article sentence that merely repeats the topic name several
-        // times outranks the article's own opening definition.
         const titleLeadBoost = anchored.anchors.length
           && index <= 1
           && evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
-          ? 4
+          ? (definitionalRequest ? 4 : 0.32)
           : 0;
         return {
           span,
@@ -1255,6 +1259,23 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 
  function requestUnitSet(text: string): Set<string> {
   return new Set(requestUnitsFromText(text));
+}
+
+
+/** Request units not already covered by a subject anchor -- what the request asks *about* the anchored source. Empty means the request is purely definitional ("What is X?"). */
+ function requestUnitsBeyondAnchors(requestUnits: ReadonlySet<string>, requestText: string): Set<string> {
+  // Only *named subject* anchors are subtracted, never the full
+  // sourceEvidenceAnchorsForRequest list: that list also contains derived
+  // adjacent-word phrases ("played benjamin sisko"), which would absorb the
+  // very verb the question is asking about and leave nothing behind.
+  const named = namedSubjectAnchors(requestText);
+  if (!named.length) return new Set(requestUnits);
+  const anchorUnits = named.flatMap(anchor => splitPriorUnits(anchor).filter(Boolean));
+  const out = new Set<string>();
+  for (const unit of requestUnits) {
+    if (!anchorUnits.some(anchorUnit => requestUnitMatchesSurface(unit, anchorUnit))) out.add(unit);
+  }
+  return out;
 }
 
 
@@ -2498,16 +2519,28 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
     const requestFeatures = featureSet(requestText, 256);
     const requestUnits = requestUnitSet(requestText);
     const anchors = sourceEvidenceAnchorsForRequest(requestText);
+    // Sealed-eval finding (rehearsal-20260816, q-direct-005): scoring
+    // overlap on ALL request units let a request's own subject/title words
+    // ("star trek deep space nine") hand the article's opening sentence a
+    // huge overlap for *any* question about that source, drowning the
+    // sentence that answers the actual asked-about detail ("who played
+    // Benjamin Sisko"). The anchor words are already satisfied by source
+    // selection itself -- overlap should measure what the request asks
+    // *about* the source, so anchor-covered units are excluded whenever
+    // anything else remains. An empty remainder means the request is
+    // genuinely definitional ("What is X?") and only then should the
+    // opening-definition boost dominate.
+    const contentRequestUnits = requestUnitsBeyondAnchors(requestUnits, requestText);
+    const scoringUnits = contentRequestUnits.size ? contentRequestUnits : requestUnits;
+    const definitionalRequest = contentRequestUnits.size === 0;
     const focused = sentences
       .map((sentence, index): EvidenceSentenceRow => {
         const clean = anchorFocusedAnswerSurface(cleanSourceAnswerSurface(sentence), anchors, evidenceTitle(span));
-        const unitOverlap = requestUnitOverlapForSurface(clean, requestUnits);
+        const unitOverlap = requestUnitOverlapForSurface(clean, scoringUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(clean, anchors) ? 0.54 : 0;
-        // See proposeSourceExactEvidenceAnswer's identical boost: must
-        // outweigh unitOverlap*0.92's realistic ceiling so the article's own
-        // opening definition beats a deep sentence that merely repeats the
-        // topic name.
-        const titleLeadBoost = anchors.length && index <= 1 && evidenceTitleDistinctAnchorMatches(span, anchors) && evidenceTitleAppearsInSurface(span, clean) ? 4 : 0;
+        const titleLeadBoost = anchors.length && index <= 1 && evidenceTitleDistinctAnchorMatches(span, anchors) && evidenceTitleAppearsInSurface(span, clean)
+          ? (definitionalRequest ? 4 : 0.32)
+          : 0;
         return {
           span,
           sentence: clean,
