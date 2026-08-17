@@ -1437,6 +1437,12 @@ export function createProductionTurnRuntime(options: {
         const durableSeeds = deps.storage.translationSeeds
           ? await deps.storage.translationSeeds.listSeeds(canonicalTranslationTarget)
           : [];
+        // Plan item 127: durable multi-symbol constructions from prior
+        // requests, reusable against a new sentence binding the same
+        // symbols in a different context.
+        const durableConstructions = deps.storage.translationConstructions
+          ? await deps.storage.translationConstructions.listConstructions(canonicalTranslationTarget)
+          : [];
         productionTranslationPlan = translationEngine.plan({
           text: input.text,
           targetLanguage: translationTarget,
@@ -1444,6 +1450,7 @@ export function createProductionTurnRuntime(options: {
           profiles: productionTranslationProfiles,
           priorAlignments,
           durableSeeds,
+          durableConstructions,
           calibrationModels,
           createdAt: clock.now()
         });
@@ -1452,6 +1459,13 @@ export function createProductionTurnRuntime(options: {
             sourceLanguage: productionTranslationPlan.sourceLanguage,
             targetLanguage: canonicalTranslationTarget,
             seeds: productionTranslationPlan.inducedSeeds,
+            observedAt: clock.now()
+          });
+        }
+        if (deps.storage.translationConstructions && productionTranslationPlan.inducedConstructions.length) {
+          await deps.storage.translationConstructions.putConstructions({
+            targetLanguage: canonicalTranslationTarget,
+            constructions: productionTranslationPlan.inducedConstructions,
             observedAt: clock.now()
           });
         }
