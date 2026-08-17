@@ -203,6 +203,7 @@ export interface InducedLanguageModel {
   audit: JsonValue;
 }
 
+
 export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabularyLimit?: number } = {}) {
   const hasher = options.hasher ?? createHasher();
   const vocabularyLimit = Math.max(512, Math.floor(options.vocabularyLimit ?? 50000));
@@ -210,7 +211,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
     induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
       const corpusText = documents.map(doc => doc.text).join("\n");
-      const initialLattices = documents.map(doc => ({
+      let initialLattices = documents.map(doc => ({
         doc,
         lattice: buildSurfaceLattice({
           documentId: doc.id,
@@ -243,6 +244,14 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           hasher
         })
       }));
+      // Release the bootstrap lattices the moment they are dead. They exist
+      // only to derive boundary observations, the feature context, and
+      // per-document statistics above; induce() then builds a SECOND,
+      // estimator-fitted lattice set below. Holding both alive doubled the
+      // peak for no benefit -- measured at ~650MB for 92KB of input, so
+      // this is the single largest reclaim available here. Everything
+      // downstream reads the fitted set, never this one.
+      initialLattices = [];
       const boundaryStatistics = mergeBoundaryStatistics(
         documentBoundaryStatistics.map(document => document.statistics),
         hasher,
@@ -430,6 +439,31 @@ interface NgramCounts {
   vocabulary: Set<string>;
 }
 
+/**
+ * Distinct counters tracked per order, and distinct continuation contexts
+ * per gram. Both are hard memory bounds, not tuning knobs.
+ *
+ * Confirmed V8 heap OOM on a real corpus (peak >3.4GB against a 3072MB
+ * cap, `node::OnFatalError`): at `order: 6` almost every 6-gram over a
+ * large corpus is unique, and each distinct key allocated an orderCounts
+ * entry, a contextCounts entry, AND two `Set` objects for its left/right
+ * continuations. Millions of keys x four structures (two of them Sets,
+ * with per-object overhead far exceeding the string they hold) is
+ * gigabytes. `maxNgrams` bounded only `inducedNgrams`' output, never this
+ * intermediate counting, so nothing upstream could prevent it.
+ *
+ * The bound matches `ngram-memory.ts`, which already counts n-grams under
+ * a real bounded-memory discipline -- this function simply never adopted
+ * it. Once an order is at capacity, existing counters keep incrementing
+ * (so genuinely frequent grams stay exact) and new keys are skipped
+ * rather than growing the map without limit. Continuation sets saturate
+ * the same way: `continuationDiversity` is a ratio that is already
+ * saturated well before the cap, so capping changes nothing for any gram
+ * whose diversity is meaningful.
+ */
+const MAX_NGRAM_COUNTERS_PER_ORDER = 50000;
+const MAX_CONTINUATION_CONTEXTS_PER_GRAM = 64;
+
 function countNgrams(symbols: readonly string[], maxOrder: NgramOrder, vocabularyLimit: number): NgramCounts {
   const vocabulary = topVocabulary(symbols, vocabularyLimit);
   const normalized = symbols.map(symbol => vocabulary.has(symbol) ? symbol : "<unk>");
@@ -438,21 +472,27 @@ function countNgrams(symbols: readonly string[], maxOrder: NgramOrder, vocabular
   const leftContexts = new Map<string, Set<string>>();
   const rightContexts = new Map<string, Set<string>>();
   for (let order = 1 as NgramOrder; order <= maxOrder; order = (order + 1) as NgramOrder) {
+    const orderMap = orderCounts[order]!;
+    const contextMap = contextCounts[order]!;
     for (let i = 0; i <= normalized.length - order; i++) {
       const gram = normalized.slice(i, i + order);
       const key = gramKey(gram);
-      const orderMap = orderCounts[order]!;
-      orderMap.set(key, (orderMap.get(key) ?? 0) + 1);
+      const existing = orderMap.get(key);
+      if (existing === undefined && orderMap.size >= MAX_NGRAM_COUNTERS_PER_ORDER) continue;
+      orderMap.set(key, (existing ?? 0) + 1);
       const left = normalized[i - 1] ?? "<s>";
       const right = normalized[i + order] ?? "</s>";
-      if (!leftContexts.has(key)) leftContexts.set(key, new Set());
-      if (!rightContexts.has(key)) rightContexts.set(key, new Set());
-      leftContexts.get(key)!.add(left);
-      rightContexts.get(key)!.add(right);
+      let leftSet = leftContexts.get(key);
+      if (!leftSet) { leftSet = new Set(); leftContexts.set(key, leftSet); }
+      if (leftSet.size < MAX_CONTINUATION_CONTEXTS_PER_GRAM) leftSet.add(left);
+      let rightSet = rightContexts.get(key);
+      if (!rightSet) { rightSet = new Set(); rightContexts.set(key, rightSet); }
+      if (rightSet.size < MAX_CONTINUATION_CONTEXTS_PER_GRAM) rightSet.add(right);
       if (order > 1) {
         const context = gramKey(gram.slice(0, -1));
-        const contextMap = contextCounts[order]!;
-        contextMap.set(context, (contextMap.get(context) ?? 0) + 1);
+        const existingContext = contextMap.get(context);
+        if (existingContext === undefined && contextMap.size >= MAX_NGRAM_COUNTERS_PER_ORDER) continue;
+        contextMap.set(context, (existingContext ?? 0) + 1);
       }
     }
   }

@@ -128,6 +128,7 @@ export interface TrainingPlan {
   audit: JsonValue;
 }
 
+
 export function createTrainingOrchestrator(options: { hasher?: Hasher; clock?: Clock; now?: () => number } = {}) {
   const hasher = options.hasher ?? createHasher();
   const clock = options.clock ?? createClock();
@@ -145,7 +146,7 @@ export function createTrainingOrchestrator(options: { hasher?: Hasher; clock?: C
       const t = now();
       const promotion = promoteEvidence(input.evidence, input.train, input.modelState, input.recentEntailments ?? []);
       const promoted = input.evidence.filter(span => promotion.some(decision => decision.promote && decision.evidenceId === String(span.id)));
-      const languageDocuments = promoted.map(span => evidenceToLanguageDocument(span));
+      const languageDocuments = boundedInductionDocuments(promoted.map(span => evidenceToLanguageDocument(span)));
       const languageModel = languageDocuments.length
         ? language.induce({ documents: languageDocuments, order: 6, maxNgrams: 4096, maxFrames: 2048 })
         : undefined;
@@ -486,4 +487,78 @@ function languageHint(span: EvidenceSpan): string | undefined {
 
 function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
+}
+
+/**
+ * Total characters a single induction pass may consume.
+ *
+ * Calibrated against measured peak, not guessed: surface-lattice
+ * construction cost ran ~1600x input size on this corpus. Measured end to end:
+ * 92KB of input drove induce() to ~1.6GB of live intermediates by
+ * mid-pipeline (~17,000x), because each stage -- lattices (built twice),
+ * boundary feature context, per-document boundary statistics, calibration
+ * split, estimator fit, segmentation populations, join-program mixture --
+ * retains its own structures for the whole call. The budget below is set
+ * from that measured ratio with headroom, not guessed.
+ *
+ * This is a bound, not a cure: induce()'s own peak-per-input-byte is the
+ * real defect and reducing it would let this budget rise substantially.
+ *
+ * Confirmed V8 heap OOM on a real corpus: `language.induce()` was handed
+ * 200 promoted spans totalling 8,069,241 characters in one call, and
+ * aborted the process (heap 682MB immediately before, fatal shortly
+ * after). Induction is not a cheap linear scan -- it builds a surface
+ * lattice per document plus segmentation forests, boundary statistics,
+ * morphology, syntax templates, lexical classes, semantic frames and a
+ * relation-hypothesis model over all of them simultaneously -- so its
+ * peak scales with total text, not document count.
+ *
+ * The caller already bounded the document *count* (200). This bounds the
+ * dimension that actually drives memory. Whole documents are taken in
+ * order until the budget is spent, so every document fed to induction is
+ * complete -- induction is never handed a truncated document, which would
+ * corrupt boundary and morphology statistics.
+ */
+function inductionCharBudget(): number {
+  const raw = Number(process.env.SCCE_INDUCTION_CHAR_BUDGET);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return 16_000;
+}
+
+/**
+ * Per-document ceiling. Measured: `buildSurfaceLattice` over a single
+ * ~116KB document drove heap from 718MB past a 1536MB cap on its own, so
+ * a total-only budget is insufficient -- one oversized document is enough.
+ * A lattice is a full unit/boundary graph over the text, so its cost is
+ * superlinear in document length, not in document count.
+ */
+function inductionDocumentCharCap(): number {
+  const raw = Number(process.env.SCCE_INDUCTION_DOC_CHAR_CAP);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return 2_000;
+}
+
+function boundedInductionDocuments<T extends { text?: string }>(documents: readonly T[]): T[] {
+  const budget = inductionCharBudget();
+  const perDocument = inductionDocumentCharCap();
+  const out: T[] = [];
+  let used = 0;
+  for (const document of documents) {
+    const full = document.text ?? "";
+    // Truncated on a sentence-ish boundary where one exists, so induction
+    // still sees whole utterances rather than a severed clause.
+    const clipped = full.length <= perDocument ? full : clipToBoundary(full, perDocument);
+    if (!clipped) continue;
+    if (out.length && used + clipped.length > budget) break;
+    out.push(clipped === full ? document : { ...document, text: clipped });
+    used += clipped.length;
+    if (used >= budget) break;
+  }
+  return out;
+}
+
+function clipToBoundary(text: string, limit: number): string {
+  const head = text.slice(0, limit);
+  const lastStop = Math.max(head.lastIndexOf(". "), head.lastIndexOf("\n"));
+  return lastStop > limit / 2 ? head.slice(0, lastStop + 1) : head;
 }
