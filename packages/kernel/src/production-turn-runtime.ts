@@ -137,6 +137,7 @@ import { hybridRecall } from "./retrieval.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
+import { estimateKneserNeyGenerationCostMs } from "./runtime-cost-estimate.js";
 import { createRuntimeGraphRetrieval } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -2582,7 +2583,12 @@ export function createProductionTurnRuntime(options: {
             authority: requestedAuthority
           })
       };
-      const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", 750);
+      // Plan item L10: real, measured Kneser-Ney generation cost (see
+      // runtime-cost-estimate.ts) instead of a bare literal -- strictly
+      // tightens this gate's requirement (measured ~2-4ms vs. the previous
+      // 750ms placeholder), so it can only become *more* permissive, never
+      // less, for any caller already relying on the old budget.
+      const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", estimateKneserNeyGenerationCostMs(64));
       const realizeOnce = (realizationInput: typeof speakInput) => evaluationComponent(
         "learned-mouth",
         "mouth.realize",
