@@ -463,6 +463,58 @@ describe("translation target evidence admission", () => {
     expect(plan.inducedSeeds.some(seed => seed.sourceSymbol === "48291")).toBe(true);
   });
 
+  it("plan item 127: extracts a real multi-symbol construction only when both seed-mapped symbols are corroborated in the same resolved target frame", () => {
+    const target = profile("lang.construction-extract", "Latin");
+    const evidence = span("evidence.construction-extract", "48291 y 3755 aparecen en el informe de ayer.", { language: target.id }, { script: "Latin" });
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      text: "Invoices 48291 and 3755 both need review today.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    const pair = plan.inducedConstructions.find(construction =>
+      construction.sourceSymbols.includes("48291") && construction.sourceSymbols.includes("3755"));
+    expect(pair).toBeDefined();
+    expect(pair!.score).toBeGreaterThanOrEqual(0.55);
+    expect(pair!.targetSymbols).toEqual(expect.arrayContaining(["48291", "3755"]));
+  });
+
+  it("plan item 127: a durable construction generalizes to an unseen sentence binding the same symbols, raising real alignment preservation", () => {
+    const target = profile("lang.construction-reuse", "Latin");
+    const evidence = span("evidence.construction-reuse", "48291 y 3755 figuran en el registro.", { language: target.id }, { script: "Latin" });
+    evidence.sourceVersionId = target.sourceVersionId;
+    // A different sentence than any prior "training" text -- new surrounding
+    // words, same two bound symbols.
+    const planInput = {
+      text: "Records 48291 plus 3755 were archived yesterday evening.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    };
+
+    const without = engine().plan(planInput);
+    const withConstruction = engine().plan({
+      ...planInput,
+      durableConstructions: [{
+        sourceSymbols: ["48291", "3755"],
+        targetSymbols: ["48291", "3755"],
+        score: 0.9,
+        evidenceIds: []
+      }]
+    });
+
+    const resolvedWithout = without.alignments.filter(alignment => alignment.targetFrameId);
+    const resolvedWith = withConstruction.alignments.filter(alignment => alignment.targetFrameId);
+    expect(resolvedWith.length).toBeGreaterThan(0);
+    const maxWithout = Math.max(...resolvedWithout.map(alignment => alignment.preservation), 0);
+    const maxWith = Math.max(...resolvedWith.map(alignment => alignment.preservation), 0);
+    expect(maxWith).toBeGreaterThan(maxWithout);
+  });
+
   it("plan item 129: translation confidence is a real calibrated score, not a bespoke raw one, once a fitted model exists", () => {
     const target = profile("lang.calibration", "Latin");
     const evidence = span("evidence.calibration", "Pump alpha está estable.", { language: target.id }, { script: "Latin" });

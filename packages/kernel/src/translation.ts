@@ -26,6 +26,26 @@ const MIN_SEED_SUBSTITUTION_SCORE = 0.55;
 
 export type TranslationForce = "direct" | "approximate" | "gloss" | "unknown";
 
+/**
+ * Plan item 127: a real, durable, reusable multi-symbol correspondence --
+ * two source symbols that co-occur in the same source frame, each with its
+ * own confident seed (see MIN_SEED_SUBSTITUTION_SCORE), and whose seed-
+ * mapped targets also co-occur together in a resolved target frame. A
+ * single shared word matching by coincidence (e.g. a generic "the") is not
+ * enough; genuine phrasal/idiomatic correspondence is. Reusing a stored
+ * construction against a *different* sentence that binds the same two
+ * source symbols in a new context (different surrounding words, same
+ * underlying phrase) is exactly the "generalizes to unseen compatible
+ * bindings" item 127 asks for -- it does not require the new sentence's
+ * own target evidence to re-derive that correspondence from scratch.
+ */
+export interface TranslationConstruction {
+  sourceSymbols: [string, string];
+  targetSymbols: [string, string];
+  score: number;
+  evidenceIds: string[];
+}
+
 export interface TranslationSemanticFrame {
   id: string;
   languageHint: string;
@@ -96,6 +116,8 @@ export interface TranslationPlan {
    * never re-derives what a prior request already found.
    */
   inducedSeeds: TranslationSeed[];
+  /** Plan item 127: real multi-symbol correspondences extracted from this call's own resolved alignments, for the caller to persist durably alongside inducedSeeds. */
+  inducedConstructions: TranslationConstruction[];
   /**
    * Plan item 129: `emission.preservation` calibrated against real
    * preservation-gate pass/fail outcomes (item 125) via the existing
@@ -177,6 +199,8 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       priorAlignments?: TranslationAlignmentRecord[];
       /** Plan item 121: real seeds a prior call already induced and the caller persisted, for this same target language, regardless of this request's own evidence. Merged with this call's freshly-induced seeds; the higher-scoring seed for a given source symbol wins. */
       durableSeeds?: readonly TranslationSeed[];
+      /** Plan item 127: real multi-symbol correspondences a prior call already extracted and the caller persisted, for this same target language. Boosts alignment confidence when a *new* source frame binds the same two symbols in a different context, without needing this request's own target evidence to re-derive the correspondence. */
+      durableConstructions?: readonly TranslationConstruction[];
       /** Plan item 129: the shared, subsystem-agnostic fitted calibration model set (see calibration-spine.ts), already loaded once per turn by the caller. Absent (cold start / no fit yet) falls back honestly to the raw score. */
       calibrationModels?: CalibrationModelSet;
       createdAt: number;
@@ -231,7 +255,9 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         ? createLanguageInductionEngine({ hasher: options.hasher }).induce({ documents: seedDocuments }).translationSeeds
         : [];
       const seedLookup = buildSeedLookup([...(input.durableSeeds ?? []), ...inducedSeeds]);
-      const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile, seedLookup));
+      const constructionLookup = buildConstructionLookup(input.durableConstructions ?? []);
+      const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile, seedLookup, constructionLookup));
+      const inducedConstructions = extractTranslationConstructions(sourceFrames, targetFrames, alignments, seedLookup);
       const force = aggregateForce(alignments);
       const lossVector = aggregateLoss(alignments);
       const units = alignments.map(alignment => {
@@ -334,6 +360,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         construct,
         records: { semanticFrames, translationAlignments },
         inducedSeeds,
+        inducedConstructions,
         calibratedConfidence,
         audit: toJsonValue({
           sourceLanguage,
@@ -443,7 +470,7 @@ function sourceSurfaceSlice(text: string, surfaceSymbols: readonly SourceSurface
   return safe.slice(start ?? 0, end ?? safe.length).trim();
 }
 
-function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], targetProfile: LanguageProfile | undefined, seedLookup: ReadonlyMap<string, TranslationSeed>): TranslationFrameAlignment {
+function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], targetProfile: LanguageProfile | undefined, seedLookup: ReadonlyMap<string, TranslationSeed>, constructionLookup: ReadonlyMap<string, TranslationConstruction>): TranslationFrameAlignment {
   let best: TranslationFrameAlignment | undefined;
   for (const target of targets) {
     const semantic = clamp01((cosine01(source.embedding, target.embedding) + weightedJaccard(source.features, target.features)) / 2);
@@ -458,7 +485,13 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
     // outscore an unrelated one that merely shares generic shape features --
     // 0 when no source symbol has a confident seed, never inflated.
     const seedOverlap = seedOverlapScore(source.symbols, target.symbols, seedLookup);
-    const preservation = clamp01(0.30 * semantic + 0.22 * topology + 0.20 * scriptFit + 0.12 * evidenceMass + 0.06 * priorBoost + 0.10 * seedOverlap);
+    // Plan item 127: a genuine multi-symbol construction (two source
+    // symbols durably observed co-occurring together, not one coincidental
+    // shared word) binding into this source frame is stronger evidence
+    // than an isolated single-seed overlap -- 0 when no known construction
+    // applies, never inflated.
+    const constructionOverlap = constructionOverlapScore(source.symbols, constructionLookup);
+    const preservation = clamp01(0.26 * semantic + 0.22 * topology + 0.19 * scriptFit + 0.11 * evidenceMass + 0.06 * priorBoost + 0.10 * seedOverlap + 0.06 * constructionOverlap);
     const force = forceFromPreservation(preservation, target.evidenceIds.length, priorBoost);
     const loss = {
       semantic: clamp01(1 - semantic),
@@ -526,6 +559,79 @@ function seedOverlapScore(sourceSymbols: readonly string[], targetSymbols: reado
   const targetSet = new Set(targetSymbols.map(normalizeSeedSymbol));
   const matched = mapped.filter(seed => targetSet.has(normalizeSeedSymbol(seed.targetSymbol))).length;
   return clamp01(matched / mapped.length);
+}
+
+function constructionPairKey(a: string, b: string): string {
+  const left = normalizeSeedSymbol(a);
+  const right = normalizeSeedSymbol(b);
+  return left <= right ? `${left}${right}` : `${right}${left}`;
+}
+
+function buildConstructionLookup(constructions: readonly TranslationConstruction[]): Map<string, TranslationConstruction> {
+  const lookup = new Map<string, TranslationConstruction>();
+  for (const construction of constructions) {
+    if (construction.score < MIN_SEED_SUBSTITUTION_SCORE) continue;
+    const key = constructionPairKey(construction.sourceSymbols[0], construction.sourceSymbols[1]);
+    const existing = lookup.get(key);
+    if (!existing || construction.score > existing.score) lookup.set(key, construction);
+  }
+  return lookup;
+}
+
+/** Fraction of known constructions whose *both* source symbols are present in this source frame. 0 when no known construction binds into this frame -- never inflated by an isolated single-symbol match, which is what seedOverlapScore already covers. */
+function constructionOverlapScore(sourceSymbols: readonly string[], constructionLookup: ReadonlyMap<string, TranslationConstruction>): number {
+  if (!constructionLookup.size) return 0;
+  const normalized = new Set(sourceSymbols.map(normalizeSeedSymbol));
+  let matched = 0;
+  let total = 0;
+  for (const construction of constructionLookup.values()) {
+    total++;
+    if (normalized.has(normalizeSeedSymbol(construction.sourceSymbols[0])) && normalized.has(normalizeSeedSymbol(construction.sourceSymbols[1]))) matched++;
+  }
+  return total ? clamp01(matched / total) : 0;
+}
+
+/**
+ * Real extraction, not a heuristic guess: for each resolved alignment
+ * (force !== "unknown", a real target frame), find pairs of source symbols
+ * that each independently clear MIN_SEED_SUBSTITUTION_SCORE via seedLookup
+ * *and* whose seed-mapped targets both actually appear in this specific
+ * resolved target frame -- i.e. this exact multi-symbol correspondence is
+ * corroborated by real target-language evidence in this call, not merely
+ * two coincidentally-confident seeds from unrelated parts of the source
+ * text.
+ */
+function extractTranslationConstructions(
+  sourceFrames: readonly TranslationSemanticFrame[],
+  targetFrames: readonly TranslationSemanticFrame[],
+  alignments: readonly TranslationFrameAlignment[],
+  seedLookup: ReadonlyMap<string, TranslationSeed>
+): TranslationConstruction[] {
+  const constructions = new Map<string, TranslationConstruction>();
+  for (const alignment of alignments) {
+    if (alignment.force === "unknown" || !alignment.targetFrameId) continue;
+    const source = sourceFrames.find(frame => frame.id === alignment.sourceFrameId);
+    const target = targetFrames.find(frame => frame.id === alignment.targetFrameId);
+    if (!source || !target) continue;
+    const targetSet = new Set(target.symbols.map(normalizeSeedSymbol));
+    const boundSymbols = [...new Set(source.symbols.map(normalizeSeedSymbol))]
+      .map(symbol => seedLookup.get(symbol))
+      .filter((seed): seed is TranslationSeed => Boolean(seed) && targetSet.has(normalizeSeedSymbol(seed!.targetSymbol)));
+    for (let i = 0; i < boundSymbols.length; i++) {
+      for (let j = i + 1; j < boundSymbols.length; j++) {
+        const left = boundSymbols[i]!;
+        const right = boundSymbols[j]!;
+        const key = constructionPairKey(left.sourceSymbol, right.sourceSymbol);
+        const score = clamp01((left.score + right.score) / 2);
+        const evidenceIds = [...new Set([...left.evidenceIds, ...right.evidenceIds])];
+        const existing = constructions.get(key);
+        if (!existing || score > existing.score) {
+          constructions.set(key, { sourceSymbols: [left.sourceSymbol, right.sourceSymbol], targetSymbols: [left.targetSymbol, right.targetSymbol], score, evidenceIds });
+        }
+      }
+    }
+  }
+  return [...constructions.values()];
 }
 
 /**

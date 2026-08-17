@@ -123,7 +123,9 @@ import {
   type DocumentGenerationSessionRecord,
   type DocumentGenerationSessionStore,
   type TranslationSeed,
-  type TranslationSeedStore
+  type TranslationSeedStore,
+  type TranslationConstruction,
+  type TranslationConstructionStore
 } from "@scce/kernel";
 import { createHash } from "node:crypto";
 
@@ -160,6 +162,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly taskResumption: TaskResumptionSnapshotStore;
   readonly documentGeneration: DocumentGenerationSessionStore;
   readonly translationSeeds: TranslationSeedStore;
+  readonly translationConstructions: TranslationConstructionStore;
   readonly localization: LocalizationStore;
   readonly flowCache: FlowCacheStore;
   readonly selfRewrite: SelfRewriteStore;
@@ -201,6 +204,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.taskResumption = createTaskResumptionSnapshotStore(this);
     this.documentGeneration = createDocumentGenerationSessionStore(this);
     this.translationSeeds = createTranslationSeedStore(this);
+    this.translationConstructions = createTranslationConstructionStore(this);
     this.localization = createLocalizationStore(this);
     this.flowCache = createFlowCacheStore(this);
     this.selfRewrite = createSelfRewriteStore(this);
@@ -914,6 +918,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.task_resumption_snapshots (id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, snapshot_json JSONB NOT NULL, captured_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.document_generation_sessions (id TEXT NOT NULL, conversation_id TEXT NOT NULL, session_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (conversation_id, id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.translation_seeds (target_language TEXT NOT NULL, source_symbol TEXT NOT NULL, source_language TEXT NOT NULL, target_symbol TEXT NOT NULL, score DOUBLE PRECISION NOT NULL, basis TEXT NOT NULL, evidence_ids TEXT[] NOT NULL, observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (target_language, source_symbol))`,
+    `CREATE TABLE IF NOT EXISTS ${q}.translation_constructions (target_language TEXT NOT NULL, source_symbol_a TEXT NOT NULL, source_symbol_b TEXT NOT NULL, target_symbol_a TEXT NOT NULL, target_symbol_b TEXT NOT NULL, score DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (target_language, source_symbol_a, source_symbol_b))`,
     `CREATE TABLE IF NOT EXISTS ${q}.locale_bundles (id TEXT PRIMARY KEY, source_locale TEXT NOT NULL, target_language_id TEXT NOT NULL, target_script_id TEXT, status TEXT NOT NULL, force TEXT NOT NULL, messages_json JSONB NOT NULL, missing_terms_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, translation_alignment_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ppf_cache (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, beta DOUBLE PRECISION NOT NULL, personalization_json JSONB NOT NULL, mass_json JSONB NOT NULL, diagnostics_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.alpha_traces (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, trace_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
@@ -1053,6 +1058,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_task_resumption_goal ON ${q}.task_resumption_snapshots(goal_id,captured_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_document_generation_updated ON ${q}.document_generation_sessions(updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_seeds_target_score ON ${q}.translation_seeds(target_language,score DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_constructions_target_score ON ${q}.translation_constructions(target_language,score DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_locale_bundles_target ON ${q}.locale_bundles(target_language_id,status,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ppf_graph_hash ON ${q}.ppf_cache(graph_hash,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_alpha_graph_hash ON ${q}.alpha_traces(graph_hash,created_at DESC)`,
@@ -1111,6 +1117,7 @@ function requiredHydrationColumns(): Record<string, string[]> {
     task_resumption_snapshots: ["id", "goal_id", "snapshot_json", "captured_at"],
     document_generation_sessions: ["id", "conversation_id", "session_json", "updated_at"],
     translation_seeds: ["target_language", "source_symbol", "source_language", "target_symbol", "score", "basis", "evidence_ids", "observed_at"],
+    translation_constructions: ["target_language", "source_symbol_a", "source_symbol_b", "target_symbol_a", "target_symbol_b", "score", "evidence_ids", "observed_at"],
     model_state: ["id", "model_json", "updated_at"],
     ppf_cache: ["id", "graph_hash", "personalization_json", "mass_json", "diagnostics_json"],
     alpha_traces: ["id", "graph_hash", "alpha", "trace_json"],
@@ -3715,6 +3722,65 @@ function createTranslationSeedStore(storage: PostgresStorageAdapter): Translatio
         [targetLanguage, limit]
       );
       return rows.map(rowToTranslationSeed);
+    }
+  };
+}
+
+interface TranslationConstructionRow {
+  target_language: string;
+  source_symbol_a: string;
+  source_symbol_b: string;
+  target_symbol_a: string;
+  target_symbol_b: string;
+  score: number;
+  evidence_ids: string[];
+  observed_at: string | Date;
+}
+
+function rowToTranslationConstruction(row: TranslationConstructionRow): TranslationConstruction {
+  return {
+    sourceSymbols: [row.source_symbol_a, row.source_symbol_b],
+    targetSymbols: [row.target_symbol_a, row.target_symbol_b],
+    score: Number(row.score),
+    evidenceIds: row.evidence_ids
+  };
+}
+
+function createTranslationConstructionStore(storage: PostgresStorageAdapter): TranslationConstructionStore {
+  return {
+    async putConstructions(input) {
+      if (!input.constructions.length) return;
+      for (const construction of input.constructions) {
+        // Canonical symbol order in the key so (a,b) and (b,a) are the
+        // same construction; same raise-only upsert discipline as
+        // translation_seeds.
+        const ordered = construction.sourceSymbols[0] <= construction.sourceSymbols[1]
+          ? construction
+          : {
+            ...construction,
+            sourceSymbols: [construction.sourceSymbols[1], construction.sourceSymbols[0]] as [string, string],
+            targetSymbols: [construction.targetSymbols[1], construction.targetSymbols[0]] as [string, string]
+          };
+        await storage.query(
+          `INSERT INTO ${storage.table("translation_constructions")} (target_language,source_symbol_a,source_symbol_b,target_symbol_a,target_symbol_b,score,evidence_ids,observed_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,TO_TIMESTAMP($8/1000.0))
+           ON CONFLICT(target_language,source_symbol_a,source_symbol_b) DO UPDATE SET
+             target_symbol_a=EXCLUDED.target_symbol_a,
+             target_symbol_b=EXCLUDED.target_symbol_b,
+             score=EXCLUDED.score,
+             evidence_ids=EXCLUDED.evidence_ids,
+             observed_at=EXCLUDED.observed_at
+           WHERE EXCLUDED.score > ${storage.table("translation_constructions")}.score`,
+          [input.targetLanguage, ordered.sourceSymbols[0], ordered.sourceSymbols[1], ordered.targetSymbols[0], ordered.targetSymbols[1], ordered.score, ordered.evidenceIds, input.observedAt]
+        );
+      }
+    },
+    async listConstructions(targetLanguage, limit = 500) {
+      const rows = await storage.query<TranslationConstructionRow>(
+        `SELECT * FROM ${storage.table("translation_constructions")} WHERE target_language=$1 ORDER BY score DESC LIMIT $2`,
+        [targetLanguage, limit]
+      );
+      return rows.map(rowToTranslationConstruction);
     }
   };
 }

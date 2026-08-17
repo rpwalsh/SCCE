@@ -42,6 +42,7 @@ import type { CalibrationObservationRecord } from "./calibration-spine.js";
 import type { RelationPotentialModel } from "./relation-potential.js";
 import type { DurableExecutiveEpisode } from "./executive-journal.js";
 import type { TranslationSeed } from "./language-induction.js";
+import type { TranslationConstruction } from "./translation.js";
 
 export interface EventRangeQuery {
   episodeId?: EpisodeId;
@@ -792,6 +793,19 @@ export interface TranslationSeedStore {
   listSeeds(targetLanguage: string, limit?: number): Promise<TranslationSeed[]>;
 }
 
+/**
+ * Plan item 127: durable corpus-wide translation-construction store --
+ * real multi-symbol correspondences (see `TranslationConstruction`) that
+ * generalize to a *different* sentence binding the same two source
+ * symbols in a new context, without needing that later request's own
+ * target evidence to re-derive the correspondence from scratch. Same
+ * keying/upsert discipline as `TranslationSeedStore`.
+ */
+export interface TranslationConstructionStore {
+  putConstructions(input: { targetLanguage: string; constructions: readonly TranslationConstruction[]; observedAt: number }): Promise<void>;
+  listConstructions(targetLanguage: string, limit?: number): Promise<TranslationConstruction[]>;
+}
+
 /** Plan items 221-228. Storage-schema shape for a real, durable document-generation session -- `sessionJson` carries the full real `DocumentGenerationSession` (already fully JSON-safe), keyed by a real, caller-chosen, stable `id` so a multi-turn document-writing project never requires the caller to resend the whole plan on every turn. */
 export interface DocumentGenerationSessionRecord {
   id: string;
@@ -944,6 +958,13 @@ export interface ScceStorage extends StorageAdmin {
    * induction, never a silent fabricated seed.
    */
   translationSeeds?: TranslationSeedStore;
+  /**
+   * Optional: durable corpus-wide translation-construction store (plan
+   * item 127). Optional for the same reason as `translationSeeds`; absent
+   * means `translation.ts` falls back to per-request-only construction
+   * extraction, never a silent fabricated construction.
+   */
+  translationConstructions?: TranslationConstructionStore;
   /**
    * Optional: durable per-language-cluster segmentation v2 boundary-signal
    * aggregate store (Part B step 2). Optional for the same reason as the
