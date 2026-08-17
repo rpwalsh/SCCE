@@ -14,6 +14,8 @@ import {
   type ProofLicenseSemiring
 } from "./proof-license-semiring.js";
 import type { ReversibleConstruction } from "./reversible-construction.js";
+import { renderJoinedSurface, type JoinProgramMixture } from "./join-program.js";
+import type { GraphSlice, Hyperedge } from "./types.js";
 import { toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
 
@@ -152,27 +154,49 @@ export function buildConstructionAlgebra(input: {
     for (const parent of operators.values()) {
       if (!parent.argumentTypes.length) continue;
       if (composed.length + admittedThisDepth.length >= maxComposites) break;
-      const ports = parent.argumentTypes.flatMap(argument => {
-        const fillerId = (byResultType.get(argument.type) ?? []).find(candidate => candidate !== parent.constructionId);
-        return fillerId ? [{ portId: argument.portId, childConstructionId: fillerId }] : [];
-      });
-      if (ports.length !== parent.argumentTypes.length) continue;
-      const id = `composed.${parent.constructionId}.d${depth}`;
-      if (registry.depths[id] !== undefined) continue;
-      try {
-        registry = registerComposedConstruction(registry, {
-          id,
-          baseConstructionId: parent.constructionId,
-          ports,
-          maxRecursionDepth: input.maxRecursionDepth
-        });
-      } catch {
-        // Cycle or depth-bound refusal from the real registry -- skip this
-        // composite, never force it.
-        continue;
+      // FULL ENUMERATION. The previous version took `.find(...)` -- the
+      // first type-compatible filler -- which admitted at most one
+      // composite per parent per depth and left the weighted search with
+      // essentially nothing to choose between. Every combination of
+      // type-compatible fillers is now offered to the forest, and the
+      // search decides. Bounded by maxComposites, never by arbitrary
+      // truncation of the candidate set for a single argument.
+      const fillerChoices = parent.argumentTypes.map(argument => ({
+        portId: argument.portId,
+        fillers: (byResultType.get(argument.type) ?? []).filter(candidate => candidate !== parent.constructionId)
+      }));
+      if (fillerChoices.some(choice => !choice.fillers.length)) continue;
+      let combinations: Array<Array<{ portId: string; childConstructionId: string }>> = [[]];
+      for (const choice of fillerChoices) {
+        const next: typeof combinations = [];
+        for (const partial of combinations) {
+          for (const fillerId of choice.fillers) {
+            if (next.length + combinations.length > maxComposites * 4) break;
+            next.push([...partial, { portId: choice.portId, childConstructionId: fillerId }]);
+          }
+        }
+        combinations = next;
       }
-      const record = registry.composed[id];
-      if (record) admittedThisDepth.push(record);
+      let variant = 0;
+      for (const ports of combinations) {
+        if (composed.length + admittedThisDepth.length >= maxComposites) break;
+        const id = `composed.${parent.constructionId}.d${depth}.v${variant++}`;
+        if (registry.depths[id] !== undefined) continue;
+        try {
+          registry = registerComposedConstruction(registry, {
+            id,
+            baseConstructionId: parent.constructionId,
+            ports,
+            maxRecursionDepth: input.maxRecursionDepth
+          });
+        } catch {
+          // Cycle or depth-bound refusal from the real registry -- skip
+          // this composite, never force it.
+          continue;
+        }
+        const record = registry.composed[id];
+        if (record) admittedThisDepth.push(record);
+      }
     }
     if (!admittedThisDepth.length) break;
     composed.push(...admittedThisDepth);
@@ -237,6 +261,78 @@ export function realizeDerivation(input: {
   }
   out += operator.surface.text.slice(cursor);
   return out.replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * TARGET CONDITIONING (the correction that makes the search real).
+ *
+ * A semantic target part is one typed relational structure the turn is
+ * actually trying to express -- read directly from the turn's own graph
+ * slice, where a `Hyperedge` already *is* a typed relation instance with
+ * typed role ports. Derivations then compete to COVER these parts, which
+ * is what the derivation chart was designed for: `ChartKey.coverage` is a
+ * coverage set over target parts, and `combineCells`' own
+ * coverage-disjointness check regains its real meaning (a target part can
+ * never be covered twice within one derivation).
+ *
+ * Without this the search was unconditional -- argmax over the whole
+ * algebra, coverage was a meaningless bag of construction ids, and the
+ * packed forest had nothing meaningful to pack.
+ */
+export interface SemanticTargetPart {
+  id: string;
+  relationId: string;
+  roles: Array<{ roleId: string; valueKind: string }>;
+  evidenceIds: string[];
+}
+
+export interface SemanticTarget {
+  parts: SemanticTargetPart[];
+  audit: JsonValue;
+}
+
+/** The turn's semantic target, taken from its own graph slice. Observed participant ports only -- an omitted port is not something the turn is asserting. */
+export function semanticTargetFromGraph(input: {
+  graph: Pick<GraphSlice, "hyperedges">;
+  maxParts?: number;
+}): SemanticTarget {
+  const maxParts = input.maxParts ?? 16;
+  const parts: SemanticTargetPart[] = [];
+  for (const hyperedge of input.graph.hyperedges as readonly Hyperedge[]) {
+    if (parts.length >= maxParts) break;
+    const observed = hyperedge.participantPorts.filter(port => port.realization === "observed");
+    if (!observed.length) continue;
+    parts.push({
+      id: String(hyperedge.id),
+      relationId: String(hyperedge.relationId),
+      roles: observed.map(port => ({ roleId: port.roleId, valueKind: port.valueKind })),
+      evidenceIds: hyperedge.evidenceIds.map(String)
+    });
+  }
+  return {
+    parts,
+    audit: toJsonValue({
+      source: "scce.generative_derivation.target.v1",
+      hyperedges: (input.graph.hyperedges as readonly Hyperedge[]).length,
+      parts: parts.length,
+      relationIds: [...new Set(parts.map(part => part.relationId))].slice(0, 12)
+    })
+  };
+}
+
+/** Every operator that can legitimately express a given target part: its result type must be the part's relation, and it must not require a role the part does not have. */
+export function operatorsForTargetPart(
+  part: SemanticTargetPart,
+  operators: ReadonlyMap<string, ConstructionOperator>
+): ConstructionOperator[] {
+  const partRoles = new Set(part.roles.map(role => role.roleId));
+  return [...operators.values()].filter(operator => {
+    if (operator.resultType !== part.relationId) return false;
+    // An operator whose open arguments name roles this part does not carry
+    // cannot be expressing this part. Arguments naming roles the part does
+    // carry are legitimate -- they are filled by sub-derivations.
+    return operator.argumentTypes.every(argument => partRoles.has(argument.type) || !argument.type.startsWith("role."));
+  });
 }
 
 /** Proof-license state for a derivation: the evidence that licenses it. Two derivations carrying the same evidence set are the same license. */
@@ -357,6 +453,126 @@ export function searchBestDerivation(input: {
       bestScore: Number.isFinite(bestScore) ? bestScore : null,
       semiring: "viterbi.log",
       chartKeyIds: [...decoded.chart.cells.keys()].slice(0, 8).map(key => key.slice(0, 48))
+    })
+  };
+}
+
+/**
+ * TARGET-CONDITIONED DERIVATION SEARCH.
+ *
+ * `argmax_{D |= T} score(D | T, G, E)` rather than `argmax_D score(D)`.
+ * Atoms are (operator, target part) pairs -- an operator admitted only
+ * because it can genuinely express that part -- so `ChartKey.coverage` is
+ * a real coverage set over the target, and a derivation's quality is how
+ * much of the requested structure it covers and how well.
+ */
+export function searchTargetConditionedDerivation(input: {
+  target: SemanticTarget;
+  algebra: ConstructionAlgebra;
+  joinMixture?: JoinProgramMixture;
+  treewidthBudget?: number;
+}): DerivationSearchResult & { coveredPartIds: string[] } {
+  const semiring = createProofLicenseSemiring<DerivationLicense>({
+    base: viterbiLogSemiring,
+    stateKey: state => [...state.evidenceIds].sort().join(","),
+    emptyState: { evidenceIds: [] },
+    unionStates: (left, right) => ({ evidenceIds: [...new Set([...left.evidenceIds, ...right.evidenceIds])] }),
+    isSupported: () => true
+  });
+
+  const atoms: Array<BoundedDecodingAtom<DerivationLicense>> = [];
+  const atomOperator = new Map<string, string>();
+  for (const part of input.target.parts) {
+    for (const operator of operatorsForTargetPart(part, input.algebra.operators)) {
+      const atomId = `${part.id}::${operator.constructionId}`;
+      atomOperator.set(atomId, operator.constructionId);
+      // Evidence shared between the target part and the operator is what
+      // licenses using this operator for this part.
+      const shared = operator.evidenceIds.filter(id => part.evidenceIds.includes(id));
+      const state: DerivationLicense = { evidenceIds: [...new Set(shared.length ? shared : operator.evidenceIds)].sort() };
+      const support = Math.max(1, shared.length || operator.evidenceIds.length);
+      atoms.push({
+        id: atomId,
+        key: { coverage: part.id, discourseStateId: "discourse.target", populationId: "population.target" },
+        carrier: new Map([[state.evidenceIds.join(","), { state, value: Math.log(support) }]])
+      });
+    }
+  }
+
+  // Edges join derivations covering DIFFERENT target parts; coverage
+  // disjointness is then enforced by combineCells itself.
+  const edges: BoundedDecodingEdge[] = [];
+  for (const left of atoms) {
+    for (const right of atoms) {
+      if (left.key.coverage >= right.key.coverage) continue;
+      edges.push({
+        leftAtomId: left.id,
+        rightAtomId: right.id,
+        ruleId: `cover.${left.id}+${right.id}`,
+        resultKey: (leftKey, rightKey) => ({
+          coverage: [...new Set([...leftKey.coverage.split(","), ...rightKey.coverage.split(",")])].sort().join(","),
+          discourseStateId: leftKey.discourseStateId,
+          populationId: leftKey.populationId
+        })
+      });
+    }
+  }
+
+  const decoded = decodeBounded<DerivationLicense>({
+    atoms,
+    edges,
+    semiring,
+    treewidthBudget: input.treewidthBudget ?? 4
+  });
+
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestCoverage: string[] = [];
+  let bestEvidence: string[] = [];
+  for (const [, cell] of decoded.chart.cells) {
+    const covered = cell.key.coverage.split(",").filter(Boolean);
+    for (const [, entry] of cell.carrier) {
+      // Coverage of the requested target dominates: a derivation expressing
+      // more of what was asked for beats a cheaper one expressing less.
+      const score = covered.length * 10 + entry.value;
+      if (score <= bestScore) continue;
+      bestScore = score;
+      bestCoverage = covered;
+      bestEvidence = entry.state.evidenceIds;
+    }
+  }
+
+  // Realize each covered part through its best operator, then join the
+  // realized units with the learned join program rather than concatenating.
+  const units: string[] = [];
+  for (const partId of bestCoverage) {
+    const atom = atoms.find(row => row.key.coverage === partId);
+    const operatorId = atom ? atomOperator.get(atom.id) : undefined;
+    if (!operatorId) continue;
+    const realized = realizeDerivation({ constructionId: operatorId, algebra: input.algebra });
+    if (realized) units.push(realized);
+  }
+  const joined = renderJoinedSurface(units, input.joinMixture);
+
+  return {
+    bestScore,
+    text: joined.text,
+    evidenceIds: bestEvidence,
+    chart: decoded.chart,
+    treewidth: decoded.treewidth,
+    coveredPartIds: bestCoverage,
+    audit: toJsonValue({
+      source: "scce.generative_derivation.target_search.v1",
+      targetParts: input.target.parts.length,
+      atoms: atoms.length,
+      coverageEdges: edges.length,
+      chartCells: decoded.chart.cells.size,
+      coveredParts: bestCoverage.length,
+      coverageRatio: input.target.parts.length ? bestCoverage.length / input.target.parts.length : 0,
+      treewidth: decoded.treewidth,
+      joinStatus: joined.status,
+      unresolvedBoundaries: joined.unresolvedBoundaries,
+      realizationPath: "join-program",
+      bestScore: Number.isFinite(bestScore) ? bestScore : null
     })
   };
 }

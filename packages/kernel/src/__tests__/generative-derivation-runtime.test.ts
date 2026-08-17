@@ -3,7 +3,10 @@ import {
   buildConstructionAlgebra,
   constructionOperator,
   deriveGenerativeStructure,
-  realizeDerivation
+  operatorsForTargetPart,
+  realizeDerivation,
+  searchTargetConditionedDerivation,
+  semanticTargetFromGraph
 } from "../generative-derivation-runtime.js";
 import { REVERSIBLE_CONSTRUCTION_SCHEMA, type ReversibleConstruction } from "../reversible-construction.js";
 
@@ -166,5 +169,81 @@ describe("recursive generative derivation (ceiling break)", () => {
     const result = deriveGenerativeStructure({ constructions: [], maxRecursionDepth: 3 });
     expect(result.text).toBe("");
     expect(result.bestConstructionId).toBeUndefined();
+  });
+
+  it("reads a real semantic target from the turn's own graph hyperedges", () => {
+    const target = semanticTargetFromGraph({
+      graph: {
+        hyperedges: [{
+          schema: "scce.hyperedge.v2",
+          id: "hyperedge.cause.1",
+          relationId: "relation.cause",
+          participantPorts: [
+            { portId: "p1", roleId: "relation.event", nodeId: "node.a", valueKind: "observable.string", realization: "observed", evidenceIds: ["evidence.cause.1"] },
+            { portId: "p2", roleId: "role.omitted", nodeId: null, valueKind: "observable.string", realization: "omitted", evidenceIds: [] }
+          ],
+          memberNodeIds: ["node.a"],
+          qualifiers: {}, modality: {},
+          evidenceIds: ["evidence.cause.1"],
+          weightVector: {}, temporalScope: {}, provenanceRefs: [], createdAt: 1, updatedAt: 1
+        }]
+      } as never
+    });
+    expect(target.parts).toHaveLength(1);
+    expect(target.parts[0]!.relationId).toBe("relation.cause");
+    // An omitted port is not something the turn asserts.
+    expect(target.parts[0]!.roles).toEqual([{ roleId: "relation.event", valueKind: "observable.string" }]);
+  });
+
+  it("admits only operators that can genuinely express a target part", () => {
+    const algebra = buildConstructionAlgebra({
+      constructions: [causeConstruction, discoverConstruction],
+      maxRecursionDepth: 2
+    });
+    const causePart = { id: "part.1", relationId: "relation.cause", roles: [{ roleId: "relation.event", valueKind: "observable.string" }], evidenceIds: ["evidence.cause.1"] };
+    const eligible = operatorsForTargetPart(causePart, algebra.operators);
+    expect(eligible.length).toBeGreaterThan(0);
+    expect(eligible.every(operator => operator.resultType === "relation.cause")).toBe(true);
+    // Nothing producing a different relation may express this part.
+    expect(eligible.some(operator => operator.resultType === "relation.event")).toBe(false);
+  });
+
+  it("target-conditioned search covers the requested parts and realizes through the join program", () => {
+    const algebra = buildConstructionAlgebra({
+      constructions: [causeConstruction, discoverConstruction],
+      maxRecursionDepth: 2
+    });
+    const target = {
+      parts: [
+        { id: "part.cause", relationId: "relation.cause", roles: [{ roleId: "relation.event", valueKind: "observable.string" }], evidenceIds: ["evidence.cause.1"] },
+        { id: "part.event", relationId: "relation.event", roles: [], evidenceIds: ["evidence.discover.1"] }
+      ],
+      audit: {}
+    };
+    const result = searchTargetConditionedDerivation({ target, algebra });
+    // It expressed the requested structure, not merely something cheap.
+    expect(result.coveredPartIds.length).toBeGreaterThan(0);
+    expect(result.text.length).toBeGreaterThan(0);
+    expect(JSON.stringify(result.audit)).toContain("join-program");
+  });
+
+  it("enumerates every type-compatible composition rather than the first one found", () => {
+    // Two distinct constructions both produce relation.event, so the single
+    // open argument of `cause` has two legitimate fillers. A greedy `.find`
+    // admits one composite; full enumeration must offer both.
+    const secondEvent = construction({
+      id: "observe",
+      relationId: "relation.event",
+      surface: "the engineer observed the crack",
+      evidenceIds: ["evidence.observe.1"]
+    });
+    const algebra = buildConstructionAlgebra({
+      constructions: [causeConstruction, discoverConstruction, secondEvent],
+      maxRecursionDepth: 1
+    });
+    const depthOne = algebra.composed.filter(record => record.depth === 1 && record.baseConstructionId === "cause");
+    expect(depthOne.length).toBe(2);
+    const children = depthOne.map(record => record.ports[0]!.childConstructionId).sort();
+    expect(children).toEqual(["discover", "observe"]);
   });
 });
