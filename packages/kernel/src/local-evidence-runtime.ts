@@ -438,33 +438,69 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (!evidence.length) return undefined;
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
-  const rows = evidence.flatMap(span =>
-    fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 12000))
-      .slice(0, 80)
-      .map((sentence, index) => {
-        const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
-        const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? 0.54 : 0;
-        // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units), or a
-        // deep-article sentence that merely repeats the topic name several
-        // times outranks the article's own opening definition.
-        const titleLeadBoost = anchored.anchors.length
-          && index <= 1
-          && evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
-          ? 4
-          : 0;
-        return {
-          span,
-          sentence,
-          index,
-          score: unitOverlap * 0.92
-            + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * 0.35
-            + anchorBoost
-            + titleLeadBoost
-            + Math.max(0, 0.16 - index * 0.018)
-            - fastAnswerLongSentencePenalty(sentence)
-        };
-      })
-  )
+  // The lead boost below exists so a deep-article sentence that merely
+  // repeats the topic name several times can't outrank the article's own
+  // opening definition -- but as an unconditional flat boost it also made
+  // the opener unbeatable when a deeper sentence covered strictly more of
+  // the request's actual content terms (verified live in the sealed eval:
+  // "Who played Benjamin Sisko" always got DS9's opening definition, never
+  // the sentence naming Avery Brooks; three sentence-ranking-side fix
+  // attempts each broke definitional questions and were reverted, because
+  // they attacked overlap scoring instead of the boost's blindness). The
+  // discriminating signal is the request's units NET OF the span's own
+  // title units: choosing this titled source already satisfied the title
+  // terms, so only the remaining content terms ("played", "created",
+  // "sisko", ...) say which sentence actually answers. (Request ANCHORS are
+  // deliberately not the exclusion set -- anchor extraction emits request
+  // n-grams that can swallow real content terms like "played".) The boost
+  // stays with the lead when the lead covers those content terms at least
+  // as well as any other sentence (definitional questions: the opener
+  // contains "created", ties keep the lead); it transfers -- once, to the
+  // best-covering sentence -- only when a deeper sentence strictly beats
+  // every lead sentence on them.
+  const rows = evidence.flatMap(span => {
+    const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 12000)).slice(0, 80);
+    const titleMatches = anchored.anchors.length > 0
+      && evidenceTitleDistinctAnchorMatches(span, anchored.anchors);
+    const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
+    const contentRequestUnits = new Set([...requestUnits].filter(unit =>
+      ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))));
+    let contentBoostIndex = -1;
+    if (titleMatches && contentRequestUnits.size) {
+      const coverage = sentences.map((sentence, index) => ({
+        index,
+        contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits),
+        fullOverlap: requestUnitOverlapForSurface(sentence, requestUnits)
+      }));
+      const leadContent = Math.max(0, ...coverage.slice(0, 2).map(row => row.contentOverlap));
+      const best = [...coverage].sort((left, right) =>
+        right.contentOverlap - left.contentOverlap
+        || right.fullOverlap - left.fullOverlap
+        || left.index - right.index)[0];
+      if (best && best.contentOverlap > leadContent) contentBoostIndex = best.index;
+    }
+    return sentences.map((sentence, index) => {
+      const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
+      const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? 0.54 : 0;
+      // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units); see
+      // the coverage-transfer note above for when it moves off the lead.
+      const titleLeadBoost = titleMatches
+        && (contentBoostIndex >= 0 ? index === contentBoostIndex : index <= 1)
+        ? 4
+        : 0;
+      return {
+        span,
+        sentence,
+        index,
+        score: unitOverlap * 0.92
+          + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * 0.35
+          + anchorBoost
+          + titleLeadBoost
+          + Math.max(0, 0.16 - index * 0.018)
+          - fastAnswerLongSentencePenalty(sentence)
+      };
+    });
+  })
     .filter(row => row.sentence.length >= 24)
     .sort((left, right) => right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = rows[0];

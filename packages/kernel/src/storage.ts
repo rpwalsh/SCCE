@@ -1109,7 +1109,9 @@ export const POSTGRES_REQUIRED_TABLES = [
   "segmentation_population_models",
   "user_model_claims",
   "task_resumption_snapshots",
-  "document_generation_sessions"
+  "document_generation_sessions",
+  "translation_seeds",
+  "translation_constructions"
 ] as const;
 
 export interface ScceKernelDeps {

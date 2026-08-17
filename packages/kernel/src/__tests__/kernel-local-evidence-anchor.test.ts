@@ -1310,6 +1310,42 @@ describe("kernel local evidence source anchoring", () => {
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":false');
   });
 
+  it("transfers the title-lead boost to a deeper sentence that strictly better covers the request's non-anchor content terms (sealed-eval q5 shape)", () => {
+    // Reproduces the sealed-eval failure verbatim in miniature: the DS9
+    // article's opening definition answered every question about the
+    // article -- including "who played Benjamin Sisko", whose real answer
+    // lives in a deeper sentence. Anchor/title terms are satisfied by
+    // source selection already; the remaining content term ("played") is
+    // what discriminates, and only the deeper sentence carries it.
+    const opener = "'Star Trek: Deep Space Nine' is an American science-fiction television series created by Rick Berman and Michael Piller.";
+    const deepAnswer = "'Deep Space Nine' was the first series to have an African American as its central character: Starfleet Commander Benjamin Sisko, played by Avery Brooks.";
+    const source = evidenceSpan({
+      id: "evidence:ds9-sisko-content-term",
+      sourceVersionId: "source:ds9-sisko-content-term:v1" as SourceVersionId,
+      title: "Star Trek: Deep Space Nine",
+      uri: "fixture://wiki/Star_Trek_Deep_Space_Nine",
+      text: `${opener} The series ran for seven seasons and was set on a space station. ${deepAnswer} The station guarded the Bajoran wormhole.`,
+      alpha: 0.97
+    });
+
+    const proposal = proposeSourceExactEvidenceAnswer({
+      requestText: "Who played Benjamin Sisko in Star Trek: Deep Space Nine?",
+      selectedEvidence: [source]
+    });
+    expect(proposal).toBeDefined();
+    expect(proposal?.plan?.proofExcerpts?.[0]?.text).toContain("Avery Brooks");
+
+    // Control: a definitional request whose content term ("created") the
+    // opener itself covers must keep the lead boost -- exactly the case the
+    // three reverted sentence-ranking fix attempts kept breaking.
+    const definitional = proposeSourceExactEvidenceAnswer({
+      requestText: "Who created Star Trek: Deep Space Nine?",
+      selectedEvidence: [source]
+    });
+    expect(definitional).toBeDefined();
+    expect(definitional?.plan?.proofExcerpts?.[0]?.text).toContain("Rick Berman and Michael Piller");
+  });
+
   it("keeps an exact-source sentence complete when its subject anchor occurs late", () => {
     const completeSentence = "The calculating apparatus was a proposed mechanical system designed and refined by the pioneering mathematician Armand Vega.";
     const source = evidenceSpan({
