@@ -20,8 +20,8 @@ describe("extended generation routing (plan items 221-228 live routing)", () => 
   const detailedField = () => deriveTurnRequirementField({
     requestText: "Write a five page story about Einstein fighting a dragon.",
     explicitRequirements: [
-      { dimension: "brevityDetailBalance", value: 0.95, status: "explicit" },
-      { dimension: "noveltyDemand", value: 0.9, status: "explicit" }
+      { dimension: "brevityDetailBalance", value: 0.95, status: "explicit", semanticRoleId: "role.test.detail", learnedFrameOrPatternId: "pattern.test.detail" },
+      { dimension: "noveltyDemand", value: 0.9, status: "explicit", semanticRoleId: "role.test.novelty", learnedFrameOrPatternId: "pattern.test.novelty" }
     ]
   });
 
