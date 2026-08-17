@@ -41,6 +41,7 @@ import type { CorpusRegistryEntry } from "./corpus-registry.js";
 import type { CalibrationObservationRecord } from "./calibration-spine.js";
 import type { RelationPotentialModel } from "./relation-potential.js";
 import type { DurableExecutiveEpisode } from "./executive-journal.js";
+import type { TranslationSeed } from "./language-induction.js";
 
 export interface EventRangeQuery {
   episodeId?: EpisodeId;
@@ -773,6 +774,24 @@ export interface TaskResumptionSnapshotStore {
   getLatestSnapshot(goalId: string): Promise<TaskResumptionSnapshotRecord | null>;
 }
 
+/**
+ * Plan item 121: durable corpus-wide translation-seed store, so a request
+ * whose own admitted evidence is sparse can still benefit from real
+ * bilingual correspondence previously induced (and never re-derives from
+ * scratch on every call). Keyed by (targetLanguage, sourceSymbol) --
+ * `sourceLanguage` on `putSeeds` is recorded per row for inspectability but
+ * is not part of the lookup key, since the caller's own request text is
+ * this corpus's dominant source language in practice and requiring it
+ * up front would need inferring it before `translation.ts`'s `plan()` (the
+ * one place that already resolves it) has run. `putSeeds` only ever raises
+ * the durably-held score for a key, never lowers it with a weaker
+ * request-scoped induction.
+ */
+export interface TranslationSeedStore {
+  putSeeds(input: { sourceLanguage: string; targetLanguage: string; seeds: readonly TranslationSeed[]; observedAt: number }): Promise<void>;
+  listSeeds(targetLanguage: string, limit?: number): Promise<TranslationSeed[]>;
+}
+
 /** Plan items 221-228. Storage-schema shape for a real, durable document-generation session -- `sessionJson` carries the full real `DocumentGenerationSession` (already fully JSON-safe), keyed by a real, caller-chosen, stable `id` so a multi-turn document-writing project never requires the caller to resend the whole plan on every turn. */
 export interface DocumentGenerationSessionRecord {
   id: string;
@@ -917,6 +936,14 @@ export interface ScceStorage extends StorageAdmin {
    * is separate on `ScceKernelDeps` -- see that field's doc comment.
    */
   sparseRankingComparisons?: import("./sparse-ranking-comparison-log.js").SparseRankingComparisonLogStore;
+  /**
+   * Optional: durable corpus-wide translation-seed store (plan item 121).
+   * Optional for the same reason as `policyEvolution` -- existing
+   * fixture-built storage doubles need no changes; absent means
+   * `translation.ts` falls back to its existing per-request-only seed
+   * induction, never a silent fabricated seed.
+   */
+  translationSeeds?: TranslationSeedStore;
   /**
    * Optional: durable per-language-cluster segmentation v2 boundary-signal
    * aggregate store (Part B step 2). Optional for the same reason as the

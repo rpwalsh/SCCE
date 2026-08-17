@@ -1427,15 +1427,32 @@ export function createProductionTurnRuntime(options: {
         : [];
       let productionTranslationPlan: TranslationPlan | undefined;
       if (translationTarget) {
-        const priorAlignments = await deps.storage.languageMemory.listTranslationAlignments({ targetLanguage: canonicalTranslationTargetKey(translationTarget), limit: 500 });
+        const canonicalTranslationTarget = canonicalTranslationTargetKey(translationTarget);
+        const priorAlignments = await deps.storage.languageMemory.listTranslationAlignments({ targetLanguage: canonicalTranslationTarget, limit: 500 });
+        // Plan item 121: real bilingual correspondence a prior call already
+        // induced and persisted for this target language, so this request's
+        // own (possibly sparse) admitted evidence is not the only source of
+        // seed substitution.
+        const durableSeeds = deps.storage.translationSeeds
+          ? await deps.storage.translationSeeds.listSeeds(canonicalTranslationTarget)
+          : [];
         productionTranslationPlan = translationEngine.plan({
           text: input.text,
           targetLanguage: translationTarget,
           evidence: selectedEvidence,
           profiles: productionTranslationProfiles,
           priorAlignments,
+          durableSeeds,
           createdAt: clock.now()
         });
+        if (deps.storage.translationSeeds && productionTranslationPlan.inducedSeeds.length) {
+          await deps.storage.translationSeeds.putSeeds({
+            sourceLanguage: productionTranslationPlan.sourceLanguage,
+            targetLanguage: canonicalTranslationTarget,
+            seeds: productionTranslationPlan.inducedSeeds,
+            observedAt: clock.now()
+          });
+        }
         if (deps.evaluationCondition?.flags.disableLanguageMemory !== true) {
           surfaceLanguage = productionTranslationPlan.targetCluster
             ? await hydrateSurfaceLanguageMemoryCached(
