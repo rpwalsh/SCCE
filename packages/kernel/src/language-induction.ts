@@ -1,5 +1,6 @@
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 import { clamp01, createHasher, entropy, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import {
   compileBoundaryStatistics,
   fitBoundaryEstimator,
@@ -1363,8 +1364,35 @@ function lexicalSurfaceSequence(lattice: SurfaceLattice): string[] {
   return lexicalUnits(lattice).map(unit => unit.normalized);
 }
 
-function lexicalSurfaceSymbols(text: string, documentId: string, hasher: Hasher): string[] {
-  return lexicalSurfaceSequence(buildSurfaceLattice({ documentId, text, hasher }));
+// Every call site (sentence-level syntax-template shapes, relation-hypothesis
+// symbol streams, semantic-frame left/right context bags, and per-document
+// translation-seed frequency profiles) only consumes a flat sequence of
+// word-shaped surface tokens -- none of them read lattice-fitted boundary
+// probabilities or multi-hypothesis segmentation. This used to rebuild a
+// full boundary-estimator-driven SurfaceLattice (buildSurfaceLattice) on
+// every call, and it is invoked once per sentence in three separate
+// induction stages plus once per whole document in a fourth, on top of the
+// two full-corpus lattice builds induce() already performs correctly.
+// Measured directly: for a single 16KB real-corpus document this made
+// induce() alone exceed a 4GB heap; the identical redundant-lattice-per-
+// sentence pattern was already found and fixed for compileLanguagePatterns
+// in ngram-memory.ts's surfaceSymbols.
+//
+// A plain script-agnostic symbolizer (symbolizeData) is NOT an equivalent
+// substitute here, unlike in ngram-memory.ts: buildSurfaceLattice's "lexical"
+// proposal source comes directly from segmentUnicodeSurfaceV2's word-level
+// segmentation, which resolves multi-character CJK words (e.g. "北京") that
+// symbolizeData's simpler per-symbol segmenter shatters into single Han
+// characters -- confirmed live via
+// language-induction-lexical-classes.test.ts's Chinese word-clustering case.
+// segmentUnicodeSurfaceV2 is the exact same segmentation model
+// buildSurfaceLattice itself calls first, before any of its expensive
+// candidate-generation/boundary-evidence/segmentation-forest machinery runs,
+// so it reproduces the same lexical sequence at a fraction of the cost
+// (measured: ~45ms for 103KB of real corpus text, vs. buildSurfaceLattice
+// OOMing past 16KB before the quadratic-cost fixes above).
+function lexicalSurfaceSymbols(text: string, _documentId: string, hasher: Hasher): string[] {
+  return segmentUnicodeSurfaceV2(text, hasher).lexicalSegments.map(segment => segment.normalized);
 }
 
 function symbolShape(symbol: string): string {

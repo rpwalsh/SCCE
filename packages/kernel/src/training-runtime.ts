@@ -33,6 +33,13 @@ import type {
   TrainResult
 } from "./types.js";
 
+function groupProbe(phase: string, extra: Record<string, unknown> = {}): void {
+  if (!process.env.SCCE_TRAIN_PROBE) return;
+  const m = process.memoryUsage();
+  process.stderr.write(`GRP ${phase} heap=${Math.round(m.heapUsed / 1048576)} rss=${Math.round(m.rss / 1048576)} ${JSON.stringify(extra)}
+`);
+}
+
 export function createTrainingRuntime(options: {
   deps: ScceKernelDeps;
   clock: ReturnType<typeof createClock>;
@@ -149,6 +156,7 @@ export function createTrainingRuntime(options: {
         break;
       }
       groupsProcessed++;
+      groupProbe("begin", { g: groupsProcessed, of: groups.size, spans: spans.length, chars: spans.reduce((n, sp) => n + sp.text.length, 0) });
       const sourceVersionId = first.sourceVersionId;
       if (spans.some(span => !span.informationLabel)) {
         throw new Error(`training evidence for ${sourceVersionId} is missing an information label`);
@@ -171,6 +179,26 @@ export function createTrainingRuntime(options: {
         profilesCreated++;
       }
       const trainedAt = clock.now();
+      groupProbe("acquired", { g: groupsProcessed });
+      // Alignment must be LOCAL: pair this group's surface with the graph
+      // derived from this group's own evidence, exactly as the ingestion
+      // path does. Passing the same global corpus slice to every group made
+      // each group align 126KB of text against ~700 unrelated hyperedges --
+      // measured at >8 minutes and >1GB for ONE group of two hundred, i.e.
+      // O(groups x corpus) work for pairings that are semantically wrong
+      // anyway (a surface has no business aligning to another source's
+      // relations). An empty local graph legitimately skips alignment.
+      const groupSpanIds = new Set(spans.map(span => String(span.id)));
+      const groupHyperedges = graphSnapshot.hyperedges.filter(edge =>
+        edge.evidenceIds.some(id => groupSpanIds.has(String(id))));
+      const groupNodeIds = new Set(groupHyperedges.flatMap(edge => edge.memberNodeIds.map(String)));
+      const groupSnapshot = groupHyperedges.length
+        ? {
+          nodes: graphSnapshot.nodes.filter(node => groupNodeIds.has(String(node.id))),
+          edges: graphSnapshot.edges.filter(edge => groupNodeIds.has(String(edge.source)) && groupNodeIds.has(String(edge.target))),
+          hyperedges: groupHyperedges
+        }
+        : undefined;
       const memory = compileLanguageTrainingBatch({
         runtime: languageMemoryRuntime,
         hasher,
@@ -184,9 +212,10 @@ export function createTrainingRuntime(options: {
           maxOrder: 6,
           maxCountersPerOrder: 12000,
           vocabularyLimit: 24000,
-          graphSnapshot
+          ...(groupSnapshot ? { graphSnapshot: groupSnapshot } : {})
         }
       });
+      groupProbe("compiled", { g: groupsProcessed });
       await observeLanguageTrainingSegmentation({
         storage: deps.storage,
         batch: { text, createdAt: trainedAt },
