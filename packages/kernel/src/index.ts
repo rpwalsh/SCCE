@@ -181,6 +181,7 @@ export * from "./safety-rail-engine.js";
 export * from "./runtime-orchestrator.js";
 export * from "./runtime-coherence.js";
 export * from "./runtime-deadline.js";
+export * from "./runtime-cost-estimate.js";
 export * from "./discourse-state.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./dialogue-cognitive-shadow.js";
