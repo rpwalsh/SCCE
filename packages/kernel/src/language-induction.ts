@@ -1193,7 +1193,19 @@ function induceTranslationSeeds(documents: readonly LanguageInductionDocument[],
       for (const [sourceSymbol, sourceCount] of topEntries(left.symbols, 64)) {
         for (const [targetSymbol, targetCount] of topEntries(right.symbols, 64)) {
           const basis = translationBasis(sourceSymbol, targetSymbol, frames);
-          const shapeScore = symbolShape(sourceSymbol) === symbolShape(targetSymbol) ? 0.35 : 0;
+          // Plan item 128: shapeScore only means "both symbols happen to be
+          // e.g. ordinary lowercase Latin words" -- true of nearly every
+          // content-word pair across any two same-script documents,
+          // regardless of real correspondence. At its old weight (0.35) it
+          // combined with countScore's near-constant near-1 value (most
+          // words in a short document appear once) to clear
+          // MIN_SEED_SUBSTITUTION_SCORE on its own for genuinely unrelated
+          // documents -- confirmed live: every lowercase word in an
+          // unrelated-topic same-script pair scored ~0.61 regardless of
+          // actual meaning. Kept as a weak supplementary signal only; real
+          // correspondence now has to come from contextScore (genuine
+          // topical overlap) or an actual frame/number/symbol match.
+          const shapeScore = symbolShape(sourceSymbol) === symbolShape(targetSymbol) ? 0.06 : 0;
           const countScore = 1 - Math.min(1, Math.abs(Math.log1p(sourceCount) - Math.log1p(targetCount)) / 8);
           const frameScore = basis === "frame" ? 0.45 : 0;
           const numberScore = basis === "number" ? 0.6 : 0;
@@ -1224,9 +1236,19 @@ function translationBasis(sourceSymbol: string, targetSymbol: string, frames: re
   if (/^[+-]?(?:\d+\.?\d*|\.\d+)%?$/.test(sourceSymbol) && sourceSymbol === targetSymbol) return "number";
   if (/^[^A-Za-z0-9]+$/.test(sourceSymbol) && sourceSymbol === targetSymbol) return "symbol";
   if (symbolShape(sourceSymbol) === symbolShape(targetSymbol)) return "shape";
-  const sourceInFrame = frames.some(frame => frame.predicate === sourceSymbol || frame.roles.some(role => role.filler === sourceSymbol));
-  const targetInFrame = frames.some(frame => frame.predicate === targetSymbol || frame.roles.some(role => role.filler === targetSymbol));
-  if (sourceInFrame && targetInFrame) return "frame";
+  // Plan item 128: each symbol appearing *somewhere* in the pooled,
+  // multi-document frame set is nearly meaningless -- frames are extracted
+  // per-sentence, so any two documents each containing ordinary predicate/
+  // role-filler words would satisfy this independently regardless of any
+  // real cross-lingual correspondence (confirmed live: an unrelated-topic
+  // different-script pair spuriously scored "frame" basis this way).
+  // Requiring both symbols in the *same* frame candidate is real evidence
+  // of a shared semantic structure, not two unrelated coincidences.
+  const sharedFrame = frames.some(frame =>
+    (frame.predicate === sourceSymbol || frame.roles.some(role => role.filler === sourceSymbol)) &&
+    (frame.predicate === targetSymbol || frame.roles.some(role => role.filler === targetSymbol))
+  );
+  if (sharedFrame) return "frame";
   return "shared_context";
 }
 
