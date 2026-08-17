@@ -70,7 +70,7 @@ import {
   translationTargetFromMetadata
 } from "./kernel-input-controls.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
+import { activeJoinProgram, createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
   selectLanguageProfileClusterForSourceVersions
 } from "./language.js";
@@ -115,6 +115,7 @@ import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
+import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
@@ -2598,6 +2599,48 @@ export function createProductionTurnRuntime(options: {
       // and a real assembly. Decided by requirement projection only -- no
       // request-text branch -- so it stays language-neutral and routes
       // through the same abstraction that already decides authority.
+      // Recursive generative derivation, on the live path. The turn's own
+      // learned constructions are read as typed operators, closed under
+      // composition, and searched against a semantic target taken from this
+      // turn's own graph slice -- so a creative turn can emit a structure
+      // no single learned construction described. Additive: it contributes
+      // a candidate surface and never replaces the existing realization,
+      // and it yields nothing when the corpus supplies no composable
+      // constructions.
+      const learnedConstructions = surfaceLanguageMemory.importedReversibleConstructions ?? [];
+      let generativeDerivation: ReturnType<typeof searchTargetConditionedDerivation> | undefined;
+      if (requestedAuthority === "creative" && learnedConstructions.length > 1) {
+        try {
+          const algebra = buildConstructionAlgebra({
+            constructions: learnedConstructions.slice(0, 48),
+            maxRecursionDepth: 3
+          });
+          if (algebra.composed.length) {
+            const semanticTarget = semanticTargetFromGraph({ graph });
+            if (semanticTarget.parts.length) {
+              generativeDerivation = searchTargetConditionedDerivation({
+                target: semanticTarget,
+                algebra,
+                joinMixture: activeJoinProgram(surfaceLanguageMemory)
+              });
+              kernelTrace({
+                stage: "candidate.field.generate",
+                label: "kernel.turn.generative_derivation",
+                counts: {
+                  learnedConstructions: learnedConstructions.length,
+                  composites: algebra.composed.length,
+                  targetParts: semanticTarget.parts.length,
+                  coveredParts: generativeDerivation.coveredPartIds.length,
+                  derivedChars: generativeDerivation.text.length
+                },
+                support: { algebra: algebra.audit, target: semanticTarget.audit, search: generativeDerivation.audit }
+              });
+            }
+          }
+        } catch (error) {
+          failures.push(`generative derivation failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       const extendedGeneration = extendedGenerationDecision({ requirementField, requestedAuthority });
       let extendedGenerationRun: Awaited<ReturnType<typeof runExtendedGeneration>> | undefined;
       if (extendedGeneration.required) {
