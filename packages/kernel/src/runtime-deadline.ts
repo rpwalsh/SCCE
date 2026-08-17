@@ -3,6 +3,27 @@ import type { JsonValue } from "./types.js";
 export const RUNTIME_DEADLINE_SCHEMA = "scce.runtime_deadline.v1" as const;
 export const RUNTIME_DEADLINE_DECISION_SCHEMA = "scce.runtime_deadline_decision.v1" as const;
 export const DEFAULT_RUNTIME_RESPONSE_RESERVE_MS = 1_000;
+/**
+ * The production server (`packages/server/src/routes.ts`'s
+ * `productionTurnDeadlineMetadata`) authors the real per-request deadline
+ * under `metadata.runtime.initialResponseDeadline` with this schema, not
+ * under `runtime.deadline`/`RUNTIME_DEADLINE_SCHEMA` -- confirmed the only
+ * production writer of this metadata, and `runtime.deadline` is deliberately
+ * treated as untrusted client input and stripped
+ * (`turn-session-projection.test.ts` asserts `runtime` never carries a
+ * `deadline` property after server processing). Plan item L7 found every
+ * real `/api/turn` request was silently running with no deadline object at
+ * all -- `executableRuntimeDeadlineFromMetadata` only ever recognized the
+ * `runtime.deadline` shape, so it returned `undefined` for every production
+ * request and all 16 `deadlineCheckpoint` call sites in
+ * `production-turn-runtime.ts` were unconditionally admitted. Recognizing
+ * this shape too (kept as a plain literal, not a cross-package import, since
+ * `runtime-deadline.ts` is kernel-side and must not depend on the server
+ * package) is what actually makes those checkpoints load-bearing in
+ * production; `runtime.deadline` stays supported for direct kernel callers
+ * (already covered by `runtime-deadline.test.ts`).
+ */
+export const PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA = "scce.initial_visible_response.v1" as const;
 
 export interface RuntimeDeadlineMetadata {
   readonly schema: typeof RUNTIME_DEADLINE_SCHEMA;
@@ -83,9 +104,14 @@ export function runtimeDeadlineMetadataFromJson(
 ): RuntimeDeadlineMetadata | undefined {
   const root = jsonRecord(metadata);
   const runtime = jsonRecord(root.runtime);
-  const row = jsonRecord(runtime.deadline);
+  const directRow = jsonRecord(runtime.deadline);
+  const productionRow = jsonRecord(runtime.initialResponseDeadline);
+  const row = directRow.schema === RUNTIME_DEADLINE_SCHEMA ? directRow : productionRow;
+  const validSchema = row === directRow
+    ? row.schema === RUNTIME_DEADLINE_SCHEMA
+    : row.schema === PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA;
   if (
-    row.schema !== RUNTIME_DEADLINE_SCHEMA
+    !validSchema
     || row.clock !== "node.performance.v1"
   ) return undefined;
   const budgetMs = positiveFinite(row.budgetMs);
