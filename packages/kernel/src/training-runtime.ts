@@ -131,9 +131,24 @@ export function createTrainingRuntime(options: {
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
+    // Heap-safety bound, mirroring the wikipedia ingestor's own proven
+    // stopDecision(): sample real heap between groups and stop cleanly
+    // rather than letting V8 abort the process. A confirmed OOM here
+    // (3398MB peak against a 3072MB cap) took the whole server down with
+    // zero recoverable output; a graceful stop keeps everything already
+    // persisted and reports honestly that the pass was truncated.
+    const heapBoundMb = trainingHeapBoundMb();
+    let stoppedByHeapSafetyBound = false;
+    let groupsProcessed = 0;
     for (const spans of groups.values()) {
       const first = spans[0];
       if (!first) continue;
+      if (heapBoundMb > 0 && trainingHeapMb() >= heapBoundMb) {
+        stoppedByHeapSafetyBound = true;
+        failures.push(`training language memory stopped by heap safety bound (${trainingHeapMb()} MiB >= ${heapBoundMb} MiB) after ${groupsProcessed} of ${groups.size} source groups`);
+        break;
+      }
+      groupsProcessed++;
       const sourceVersionId = first.sourceVersionId;
       if (spans.some(span => !span.informationLabel)) {
         throw new Error(`training evidence for ${sourceVersionId} is missing an information label`);
@@ -251,6 +266,11 @@ export function createTrainingRuntime(options: {
       profiles,
       audit: toJsonValue({
         source: "kernel.train.language_memory",
+        stoppedByHeapSafetyBound,
+        sourceGroupsProcessed: groupsProcessed,
+        sourceGroupsTotal: groups.size,
+        heapBoundMb: heapBoundMb,
+        heapMbAtExit: trainingHeapMb(),
         evidenceSpans: evidence.length,
         sourceVersions: groups.size,
         profilesCreated,
@@ -406,4 +426,15 @@ export function createTrainingRuntime(options: {
     
     }
   };
+}
+
+/** Heap ceiling for a training pass, in MiB. `SCCE_TRAINING_HEAP_BOUND_MB` overrides; 0 disables. Default leaves real headroom under a typical dev machine's cap so the stop fires before V8 aborts. */
+function trainingHeapBoundMb(): number {
+  const raw = Number(process.env.SCCE_TRAINING_HEAP_BOUND_MB);
+  if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+  return 2048;
+}
+
+function trainingHeapMb(): number {
+  return Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
 }

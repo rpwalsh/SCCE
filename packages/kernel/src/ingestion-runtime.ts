@@ -426,6 +426,32 @@ export function createIngestionRuntime(options: {
             maxOrder: 6,
             maxCountersPerOrder: 12000,
             vocabularyLimit: 24000,
+            // THE ZERO-PRODUCING GATE. compileLanguageTrainingBatch gates
+            // its entire alignment -> reversible-construction branch on
+            // `batch.graphSnapshot?.hyperedges.length`. This call site
+            // never supplied one, so alignmentLattices was the first thing
+            // to become zero and every downstream stage (sparse candidates,
+            // retained alternatives, promotion decisions, construction
+            // promotion) was starved by a branch that never executed --
+            // which is why a corpus with 21,552 promoted spans and 21,555
+            // persisted hyperedges still produced 0 reversible
+            // constructions.
+            //
+            // The graph handed over is this file's own typed projection,
+            // already built and persisted immediately above, so the
+            // hyperedges are genuinely aligned to the exact evidence spans
+            // being compiled -- not a corpus-wide slice that would pair
+            // surfaces with unrelated relations. Gated on the same
+            // activeInfluence.graph decision that governs persisting it.
+            ...(decision.activeInfluence.graph && typedProjection.graphHyperedges.length
+              ? {
+                graphSnapshot: {
+                  nodes: typedProjection.graphNodes,
+                  edges: typedProjection.graphEdges,
+                  hyperedges: typedProjection.graphHyperedges
+                }
+              }
+              : {}),
             additionalPatterns: [
               ...(requestRequirementLearning?.patterns ?? []),
               ...(creativeEventCompatibilityLearning?.patterns ?? [])

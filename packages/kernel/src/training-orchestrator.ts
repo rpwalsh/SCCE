@@ -194,7 +194,21 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
   const namespaces = new Set(train.config.promotion?.namespaces ?? []);
   const minTrust = clamp01(train.config.promotion?.minTrust ?? 0.45);
   const goalFeatures = featureSet(goals.join("\n"), 2048);
-  const knownFeatures = new Set(modelState.languageProfiles.flatMap(profile => profile.symbolShapes.map(shape => `shape:${shape.shape}`).concat(profile.charNgrams.map(ng => `char:${ng.ngram}`))));
+  // Built incrementally rather than as
+  // `new Set(profiles.flatMap(p => p.map(...).concat(p.map(...))))`.
+  // That expression is semantically identical but materializes, per
+  // profile, a mapped array and a concatenated array, then flattens every
+  // one of them into a single array before deduping -- so peak memory
+  // scaled with *total feature occurrences across the whole corpus*, not
+  // with the (much smaller, naturally bounded) set of distinct features.
+  // Measured: a real 22,416-profile corpus spiked from a steady ~680MB to
+  // >3GB inside this one expression and aborted V8. The set contents are
+  // unchanged; only the intermediates are gone.
+  const knownFeatures = new Set<string>();
+  for (const profile of modelState.languageProfiles) {
+    for (const shape of profile.symbolShapes) knownFeatures.add(`shape:${shape.shape}`);
+    for (const ngram of profile.charNgrams) knownFeatures.add(`char:${ngram.ngram}`);
+  }
   const entailmentEvidence = new Set(entailments.flatMap(result => result.evidenceIds.map(String)));
   // novelty is scored per-span against knownFeatures (prior model
   // state) only. Within a single training call that alone lets every
