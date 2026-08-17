@@ -1128,9 +1128,21 @@ function inferredJoinUnitContext(surface: string): JoinUnitContext {
   };
 }
 
-function derivationShape(units: readonly SurfaceLatticeUnit[]): string {
-  return units.map(unit =>
-    `${unit.kind}:${Math.max(1, unit.graphemeEnd - unit.graphemeStart)}`).join("\u001f");
+// A stable, opaque grouping key for a derivation's unit-kind/width shape --
+// used only as a JSON.stringify'd component of conditionedJoinKey and
+// structuralJoinKey, never read for its literal content. It used to be the
+// raw joined "kind:width" string, which is O(path length): for a single
+// fragmented path of ~13.5K units that is a ~150KB string, and every one of
+// the ~13.5K join events on that path re-serialized it whole into two
+// separate keys -- ~400KB of new string allocation per event, which is what
+// actually OOM'd a 4GB heap on 16KB of real corpus text (buildSurfaceLattice
+// itself was already fixed and fast by that point). Hashing once here makes
+// every event's key construction O(1) instead of O(path length) while
+// keeping the same uniqueness/stability guarantee real callers depend on.
+export function derivationShape(units: readonly SurfaceLatticeUnit[]): string {
+  const raw = units.map(unit =>
+    `${unit.kind}:${Math.max(1, unit.graphemeEnd - unit.graphemeStart)}`).join("");
+  return `derivation_shape.${createHasher().digestHex(raw).slice(0, 32)}`;
 }
 
 function conditionedJoinKey(input: {

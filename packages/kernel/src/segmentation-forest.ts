@@ -103,6 +103,29 @@ interface PathState {
   energyTrace: SegmentationEnergyComponents;
 }
 
+/**
+ * Backpointer-based DP state for compileKBest, replacing a materialized
+ * `unitIds` array per state. The old version copied the *entire* prefix
+ * array (`[...path.unitIds, arc.unit.id]`) on every extension and rejoined
+ * it (`.join("")`) for every dedup/sort comparison, at every one of
+ * graphemeCount positions -- O(path length) work per extension against
+ * O(document length) positions is quadratic in document length, and every
+ * DP cell along the way retained a full-length copy simultaneously, which
+ * is quadratic in *memory* too. Measured directly: buildSegmentationForest
+ * alone exceeded a 4GB heap on 32KB of real corpus text with every other
+ * stage of buildSurfaceLattice fixed and fast. parent/depth/pathKey make
+ * every extension O(1); unitIds is reconstructed by walking backpointers,
+ * but only once, only for the <= pathLimit winning paths actually returned.
+ */
+interface DpNode {
+  parent: DpNode | null;
+  unitId: string | null;
+  energy: number;
+  energyTrace: SegmentationEnergyComponents;
+  depth: number;
+  pathKey: string;
+}
+
 interface WeightedArc {
   unit: SegmentationForestUnit;
   energy: number;
@@ -182,7 +205,7 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
     Math.floor((limits.maxTotalStates - 1) / Math.max(1, graphemeCount))
   ));
   const pathLimit = Math.max(1, Math.min(requestedPathLimit, statePathLimit));
-  const kBest = compileKBest(arcsByStart, graphemeCount, pathLimit);
+  const kBest = compileKBest(arcsByStart, graphemeCount, pathLimit, hasher);
   const normalizedFullLogZ = finiteOrZero(fullPartitionLogZ);
   const paths = kBest.map(path => {
     const canonical = {
@@ -476,16 +499,20 @@ function compileBoundaryMarginals(input: {
 function compileKBest(
   arcsByStart: ReadonlyMap<number, readonly WeightedArc[]>,
   graphemeCount: number,
-  pathLimit: number
+  pathLimit: number,
+  hasher: Hasher
 ): PathState[] {
-  const kBest: PathState[][] = Array.from(
+  const kBest: DpNode[][] = Array.from(
     { length: graphemeCount + 1 },
-    () => [] as PathState[]
+    () => [] as DpNode[]
   );
   kBest[0] = [{
-    unitIds: [],
+    parent: null,
+    unitId: null,
     energy: 0,
-    energyTrace: zeroEnergy()
+    energyTrace: zeroEnergy(),
+    depth: 0,
+    pathKey: ""
   }];
   for (let position = 0; position <= graphemeCount; position += 1) {
     if (!kBest[position]!.length) continue;
@@ -493,17 +520,29 @@ function compileKBest(
       const next = arc.unit.graphemeEnd;
       const candidates = [
         ...kBest[next]!,
-        ...kBest[position]!.map(path => ({
-          unitIds: [...path.unitIds, arc.unit.id],
-          energy: quantize(path.energy + arc.energy),
-          energyTrace: addEnergy(path.energyTrace, arc.energyTrace)
+        ...kBest[position]!.map((node): DpNode => ({
+          parent: node,
+          unitId: arc.unit.id,
+          energy: quantize(node.energy + arc.energy),
+          energyTrace: addEnergy(node.energyTrace, arc.energyTrace),
+          depth: node.depth + 1,
+          pathKey: hasher.digestHex(`${node.pathKey}${arc.unit.id}`).slice(0, 24)
         }))
       ];
-      candidates.sort(comparePathStates);
-      kBest[next] = uniquePaths(candidates).slice(0, pathLimit);
+      candidates.sort(compareDpNodes);
+      kBest[next] = uniqueNodes(candidates).slice(0, pathLimit);
     }
   }
-  return kBest[graphemeCount]!;
+  return kBest[graphemeCount]!.map(materializePath);
+}
+
+function materializePath(node: DpNode): PathState {
+  const unitIds: string[] = [];
+  for (let cursor: DpNode | null = node; cursor && cursor.unitId !== null; cursor = cursor.parent) {
+    unitIds.push(cursor.unitId);
+  }
+  unitIds.reverse();
+  return { unitIds, energy: node.energy, energyTrace: node.energyTrace };
 }
 
 function boundaryProbabilityByPosition(
@@ -601,14 +640,13 @@ function quantizeEnergy(energy: SegmentationEnergyComponents): SegmentationEnerg
   };
 }
 
-function uniquePaths(paths: readonly PathState[]): PathState[] {
+function uniqueNodes(nodes: readonly DpNode[]): DpNode[] {
   const seen = new Set<string>();
-  const out: PathState[] = [];
-  for (const path of paths) {
-    const key = path.unitIds.join("\u001f");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(path);
+  const out: DpNode[] = [];
+  for (const node of nodes) {
+    if (seen.has(node.pathKey)) continue;
+    seen.add(node.pathKey);
+    out.push(node);
   }
   return out;
 }
@@ -628,10 +666,10 @@ function compareArcs(left: WeightedArc, right: WeightedArc): number {
     || left.unit.id.localeCompare(right.unit.id);
 }
 
-function comparePathStates(left: PathState, right: PathState): number {
+function compareDpNodes(left: DpNode, right: DpNode): number {
   return left.energy - right.energy
-    || left.unitIds.length - right.unitIds.length
-    || left.unitIds.join("\u001f").localeCompare(right.unitIds.join("\u001f"));
+    || left.depth - right.depth
+    || left.pathKey.localeCompare(right.pathKey);
 }
 
 function logAddExp(left: number, right: number): number {

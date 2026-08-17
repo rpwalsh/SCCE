@@ -15,7 +15,7 @@ import type {
 } from "./storage.js";
 import { learnedScriptIdForCharacter } from "./language.js";
 import { compactKneserNeyForProfile, trainKneserNey } from "./kneser-ney.js";
-import { clamp01, entropy, featureSet, stableVector, toJsonValue } from "./primitives.js";
+import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
 import { buildSurfaceLattice, canonicalSurfaceSequence } from "./surface-lattice.js";
 
 export interface NgramMemoryCompilation {
@@ -391,12 +391,28 @@ function paragraphShape(paragraph: string, hasher: Hasher, documentId: string): 
   return `${dialogue}:${length}:${Math.min(8, sentences)}`;
 }
 
-function surfaceSymbols(text: string, documentId: string, hasher: Hasher): string[] {
-  return canonicalSurfaceSequence(buildSurfaceLattice({
-    documentId,
-    text,
-    hasher
-  })).map(unit => unit.surface);
+/**
+ * Lightweight tokenization for the descriptive pattern helpers below
+ * (opening-phrase previews, paragraph-shape buckets, per-sentence/
+ * paragraph length stats, semantic-frame symbol slices) -- never the
+ * corpus's actual induced language model, which already has its own real
+ * lattice built once in `compile()` above and reads from that directly.
+ *
+ * Measured root cause of a confirmed pathological cost (a single 8KB
+ * document taking ~14s inside compileLanguagePatterns, against ~2.5s for
+ * everything else in the whole compile pass combined): this function
+ * previously called `buildSurfaceLattice` -- real boundary-estimator-
+ * driven segmentation -- and callers invoke it once PER SENTENCE and once
+ * PER PARAGRAPH. For ordinary prose that is dozens to hundreds of full
+ * lattice constructions per document, each paying real fixed overhead, to
+ * extract a handful of leading tokens or a length count. `symbolizeData`
+ * is the same real, tested, script-agnostic Unicode segmenter already
+ * used at this exact scale elsewhere (`featureSet`, `primitives.ts`) --
+ * no boundary-estimator statistics, no grapheme-candidate machinery,
+ * because none of these callers need that precision.
+ */
+function surfaceSymbols(text: string, _documentId: string, _hasher: Hasher): string[] {
+  return symbolizeData(text);
 }
 
 function isSentenceBoundarySurface(value: string): boolean {
