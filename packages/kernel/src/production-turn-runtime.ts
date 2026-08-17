@@ -114,6 +114,7 @@ import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphB
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
+import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
@@ -2581,14 +2582,51 @@ export function createProductionTurnRuntime(options: {
           })
       };
       const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", 750);
-      let spoken = await evaluationComponent(
+      const realizeOnce = (realizationInput: typeof speakInput) => evaluationComponent(
         "learned-mouth",
         "mouth.realize",
         () => learnedMouthDecision?.allowed === false
-          ? deterministicMouth.speak(speakInput)
-          : mouth.speak(speakInput),
-        () => deterministicMouth.speak(speakInput)
+          ? deterministicMouth.speak(realizationInput)
+          : mouth.speak(realizationInput),
+        () => deterministicMouth.speak(realizationInput)
       );
+      // Plan items 221-228, live routing: a turn whose own learned
+      // requirement field demands extended generation must not collapse
+      // into one realization call. It produces a real multi-section plan,
+      // real persistent session state, per-section realization through
+      // this same Mouth, the real anti-copy + narrative-consistency gate,
+      // and a real assembly. Decided by requirement projection only -- no
+      // request-text branch -- so it stays language-neutral and routes
+      // through the same abstraction that already decides authority.
+      const extendedGeneration = extendedGenerationDecision({ requirementField, requestedAuthority });
+      let extendedGenerationRun: Awaited<ReturnType<typeof runExtendedGeneration>> | undefined;
+      if (extendedGeneration.required) {
+        const extendedSession = extendedGenerationSessionForTurn({
+          requestText: input.text,
+          sectionTarget: extendedGeneration.sectionTarget,
+          protectedPassages: selectedEvidence.slice(0, 8).map(span => ({ sourceId: String(span.id), text: span.text }))
+        });
+        extendedGenerationRun = await runExtendedGeneration({
+          session: extendedSession,
+          realizeSection: async section => {
+            const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal });
+            return { text: String(sectionSpoken.text ?? "") };
+          }
+        });
+        kernelTrace({
+          stage: "mouth.generate",
+          label: "kernel.turn.extended_generation",
+          counts: {
+            sectionsAttempted: extendedGenerationRun.sections.length,
+            sectionsAccepted: extendedGenerationRun.sections.filter(row => row.accepted).length,
+            answerChars: extendedGenerationRun.answer.length
+          },
+          support: { decision: extendedGeneration.audit, run: extendedGenerationRun.audit }
+        });
+      }
+      let spoken = extendedGenerationRun?.answer
+        ? { ...(await realizeOnce(speakInput)), text: extendedGenerationRun.answer }
+        : await realizeOnce(speakInput);
       deadlineCheckpoint("runtime.mouth.primary.complete", 0);
       // CRITICAL fix: the empty-mouth recovery path below is real and
       // works (confirmed live: a genuinely empty realization reliably
