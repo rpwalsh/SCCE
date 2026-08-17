@@ -12,6 +12,7 @@ import {
 import { createLanguageInductionEngine, type TranslationSeed } from "./language-induction.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { surfaceEntityRuns } from "./kernel-answer-primitives.js";
+import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibratedRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
 
 /**
  * Bounds how much real bilingual evidence text feeds the per-request seed
@@ -95,6 +96,16 @@ export interface TranslationPlan {
    * never re-derives what a prior request already found.
    */
   inducedSeeds: TranslationSeed[];
+  /**
+   * Plan item 129: `emission.preservation` calibrated against real
+   * preservation-gate pass/fail outcomes (item 125) via the existing
+   * subsystem-agnostic calibration framework (`calibration-spine.ts`),
+   * instead of shipped as a bespoke ad hoc score with no accuracy
+   * guarantee. `calibrated: false` (falls back to the raw score
+   * unmodified) until a real fitted model exists for
+   * `task.translation` -- never a fabricated calibration.
+   */
+  calibratedConfidence: CalibratedRuntimeScore;
   audit: JsonValue;
 }
 
@@ -166,6 +177,8 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       priorAlignments?: TranslationAlignmentRecord[];
       /** Plan item 121: real seeds a prior call already induced and the caller persisted, for this same target language, regardless of this request's own evidence. Merged with this call's freshly-induced seeds; the higher-scoring seed for a given source symbol wins. */
       durableSeeds?: readonly TranslationSeed[];
+      /** Plan item 129: the shared, subsystem-agnostic fitted calibration model set (see calibration-spine.ts), already loaded once per turn by the caller. Absent (cold start / no fit yet) falls back honestly to the raw score. */
+      calibrationModels?: CalibrationModelSet;
       createdAt: number;
     }): TranslationPlan {
       const clusters = buildLanguageProfileClusters(input.profiles);
@@ -295,6 +308,15 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         lossVector,
         frameCount: sourceFrames.length
       });
+      const calibratedConfidence = calibrateRuntimeScore({
+        raw: emission.preservation,
+        calibrationId: CALIBRATION_IDS.translationPreservation,
+        taskClass: CALIBRATION_TASK_CLASS_IDS.translation,
+        modelSet: input.calibrationModels,
+        meaning: "calibrated translation preservation confidence",
+        provenance: ["translation.ts:plan"],
+        inputs: ["emission.preservation", "lossVector"]
+      });
       return {
         id: options.idFactory.semanticId("translation_plan", { sourceLanguage, targetLanguage, sourceHash: options.hasher.digestHex(input.text), force, lossVector }),
         sourceLanguage,
@@ -312,6 +334,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         construct,
         records: { semanticFrames, translationAlignments },
         inducedSeeds,
+        calibratedConfidence,
         audit: toJsonValue({
           sourceLanguage,
           targetLanguage,

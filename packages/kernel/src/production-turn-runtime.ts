@@ -171,6 +171,7 @@ import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
+import { CALIBRATION_IDS, CALIBRATION_SUBSYSTEM_IDS, CALIBRATION_TASK_CLASS_IDS, calibrationObservationRecord } from "./calibration-spine.js";
 import {
   afterTurnMaintenanceDecision,
   previewTraceText
@@ -1443,6 +1444,7 @@ export function createProductionTurnRuntime(options: {
           profiles: productionTranslationProfiles,
           priorAlignments,
           durableSeeds,
+          calibrationModels,
           createdAt: clock.now()
         });
         if (deps.storage.translationSeeds && productionTranslationPlan.inducedSeeds.length) {
@@ -1453,6 +1455,24 @@ export function createProductionTurnRuntime(options: {
             observedAt: clock.now()
           });
         }
+        // Plan item 129: a real calibration observation for this turn's
+        // translation -- rawScore is the pre-calibration preservation
+        // figure `calibratedConfidence` was derived from, outcome is the
+        // real, deterministic item-125 preservation-gate verdict (did this
+        // translation actually keep every required number/date/code
+        // symbol), not user feedback that may never arrive. Feeds the same
+        // fit pipeline (buildCalibrationModelsById) already used for every
+        // other calibrated subsystem.
+        await deps.storage.dialogueMemory.putCalibrationObservation(calibrationObservationRecord({
+          calibrationId: CALIBRATION_IDS.translationPreservation,
+          subsystemId: CALIBRATION_SUBSYSTEM_IDS.translation,
+          taskClass: CALIBRATION_TASK_CLASS_IDS.translation,
+          rawScore: productionTranslationPlan.calibratedConfidence.raw,
+          outcome: productionTranslationPlan.construct.preservationValidation.valid && productionTranslationPlan.force !== "unknown",
+          sourceRecordId: productionTranslationPlan.id,
+          metadata: toJsonValue({ targetLanguage: canonicalTranslationTarget, sourceLanguage: productionTranslationPlan.sourceLanguage, force: productionTranslationPlan.force }),
+          createdAt: clock.now()
+        }));
         if (deps.evaluationCondition?.flags.disableLanguageMemory !== true) {
           surfaceLanguage = productionTranslationPlan.targetCluster
             ? await hydrateSurfaceLanguageMemoryCached(
