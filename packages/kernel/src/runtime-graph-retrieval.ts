@@ -6,14 +6,17 @@ import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelSt
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import {
   evidenceForRequest,
+  evidenceTitleInitialismMatches,
   promotedSessionEvidence,
+  requestInitialismCandidates,
   requestNeedsSourceAnchoredEvidence,
   sessionOwnerObservationSurface,
   sourceAnchorPhraseContains,
   sourceAnchoredEvidenceForRequest,
   sourceEvidenceAnchorsForRequest,
   sourceIdentityAdmissibleEvidenceForRequest,
-  temporalCounterexampleExpected
+  temporalCounterexampleExpected,
+  trailingInitialismTokensForAnchor
 } from "./local-evidence-runtime.js";
 import { anchorFeatureSet, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import type { RuntimeGraphSliceValue } from "./runtime-graph-cache.js";
@@ -302,7 +305,11 @@ export function createRuntimeGraphRetrieval(options: {
         const semanticIds = new Set(semanticSelection.semanticFrameBoundEvidenceIds
           .filter(id => certifyingSemanticEvidence.some(span => String(span.id) === id)));
         const anchored = sourceIdentityAdmissibleEvidenceForRequest(text, certifyingSemanticEvidence, semanticIds);
-        const evidence = anchored.evidence.slice(0, 24);
+        const semanticInitialismTokens = requestInitialismCandidates(text, sourceEvidenceAnchorsForRequest(text));
+        const evidence = semanticInitialismTokens.length
+          && !anchored.evidence.some(span => evidenceTitleInitialismMatches(span, semanticInitialismTokens))
+          ? []
+          : anchored.evidence.slice(0, 24);
         if (evidence.length) {
           const admittedIds = new Set(evidence.map(span => String(span.id)));
           return cacheGraphSlice(cacheKey, emptyRuntimeGraphSlice(
@@ -596,6 +603,13 @@ export function createRuntimeGraphRetrieval(options: {
     const candidateAnchors = uniqueKernelStrings(specificAnchors.length ? specificAnchors : anchors).slice(0, 4);
     const groups: string[][] = [];
     for (const anchor of candidateAnchors) {
+      // A short token trailing this exact anchor phrase (e.g. "tos" after
+      // "star trek") disambiguates among same-topic sources the plain
+      // anchor bigrams below can't tell apart -- searched alongside this
+      // anchor's own features rather than as a separate group, so it
+      // doesn't change how many independent anchor searches a request
+      // produces.
+      const trailingFeatures = trailingInitialismTokensForAnchor(text, anchor).map(token => `anchor:sym:${token}`);
       const ordered = anchorFeatureSet(anchor, 64);
       const phraseFeatures = ordered
         .filter(feature => feature.startsWith("anchor:bi:"))
@@ -604,7 +618,7 @@ export function createRuntimeGraphRetrieval(options: {
           return units.length >= 2 && units.reduce((sum, unit) => sum + [...normalizePriorKey(unit)].length, 0) >= 6;
         });
       if (phraseFeatures.length) {
-        groups.push(phraseFeatures.slice(0, 4));
+        groups.push(uniqueKernelStrings([...phraseFeatures.slice(0, 4), ...trailingFeatures]));
         continue;
       }
       const symFeatures = ordered
@@ -614,7 +628,8 @@ export function createRuntimeGraphRetrieval(options: {
           return !genericQuestionSignal(unit) && [...unit].length >= 3;
         })
         .slice(0, 4);
-      if (symFeatures.length) groups.push(symFeatures);
+      const mergedSymFeatures = uniqueKernelStrings([...symFeatures, ...trailingFeatures]);
+      if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
     }
     return groups;
   }
@@ -1046,8 +1061,17 @@ export function createRuntimeGraphRetrieval(options: {
     const indexedAnchored = candidates.length
       ? sourceIdentityAdmissibleEvidenceForRequest(text, candidates)
       : { evidence: [] };
-    if (indexedAnchored.evidence.length) return evidenceForRequest(text, indexedAnchored.evidence).slice(0, 24);
-    return [];
+    if (!indexedAnchored.evidence.length) return [];
+    // A real disambiguating token (e.g. "tos") may name a source outside
+    // this bounded, memory-resident subset even though a same-franchise
+    // sibling (e.g. "Deep Space Nine") is resident and would otherwise
+    // satisfy the generic anchor match -- returning that sibling here
+    // would short-circuit graphForText before the full DB-backed search
+    // (which does see the real source) ever runs. Only trust this bounded
+    // result for such a request if it actually contains the named source.
+    const initialismTokens = requestInitialismCandidates(text, sourceEvidenceAnchorsForRequest(text));
+    if (initialismTokens.length && !indexedAnchored.evidence.some(span => evidenceTitleInitialismMatches(span, initialismTokens))) return [];
+    return evidenceForRequest(text, indexedAnchored.evidence).slice(0, 24);
   }
 
 
