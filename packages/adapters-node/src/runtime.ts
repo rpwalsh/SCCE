@@ -91,6 +91,8 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     // ScceKernelDeps.functionalCognitionOffloadProcess for why this must
     // stay opt-in rather than the default.
     functionalCognitionOffloadProcess: true,
+    // Explicit config opt-in only -- see ScceRuntimeConfig.runtime.
+    allowSyntheticRequestRequirementBootstrap: config.runtime.allowSyntheticRequestRequirementBootstrap === true,
     corpusRegistry: corpusRegistryEntriesFromConfig(config),
     evaluationCondition: options.evaluationCondition,
     evaluationRunId: options.evaluationRunId,

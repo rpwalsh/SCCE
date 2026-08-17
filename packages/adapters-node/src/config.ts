@@ -113,6 +113,14 @@ export interface ScceRuntimeConfig {
       oss?: OssCorpusConfig;
       registry?: Record<string, CorpusRegistryRuntimeConfig>;
     };
+    /**
+     * Explicit operator opt-in for ingesting hand-authored
+     * `scce.request_requirement_corpus.v1` intent-routing bootstrap files
+     * (see `request-requirement-learning.ts`). Deliberately off by default:
+     * without this, pointing ingestion at such a file trains it as ordinary
+     * text and never as production authority/response-form routing patterns.
+     */
+    allowSyntheticRequestRequirementBootstrap?: boolean;
   };
   connectors: {
     web?: {

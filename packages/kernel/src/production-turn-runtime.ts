@@ -1403,6 +1403,14 @@ export function createProductionTurnRuntime(options: {
           { residentOnly: fastRuntimeBudget }
         )
         : undefined;
+      // Deliberately NOT residentOnly even under the fast runtime budget: a
+      // creative long-form request cannot meet the fast-first-response
+      // contract anyway (generation itself dominates), so failing the whole
+      // turn because the prose-role cluster wasn't already warm turned every
+      // first creative request on a fresh server into a 500 ("resident
+      // language-memory:creative-output-language-unresolved was not
+      // warmed") -- verified live. The first creative turn pays the durable
+      // hydration once; the cache holds it for every later one.
       const creativeOutputLanguage = preferredSurfaceCorpusRole
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
@@ -1410,7 +1418,7 @@ export function createProductionTurnRuntime(options: {
           "creative-output-language-unresolved",
           preferredSurfaceCorpusRole,
           input.text,
-          { residentOnly: fastRuntimeBudget }
+          { residentOnly: false }
         )
         : undefined;
       let surfaceLanguage = preferredSurfaceCorpusRole

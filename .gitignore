@@ -8,7 +8,10 @@ out/
 # Runtime state, temporary workspaces, and local corpus stores
 .tmp/
 .scce/
-/corpus/
+/corpus/*
+# The hand-authored request-requirement intent-routing bootstrap is a
+# product artifact, not local corpus data -- ship it.
+!/corpus/request-requirements/
 /data/
 tmp/
 temp/

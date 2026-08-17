@@ -31,8 +31,15 @@
       "maxParseMs": 30000,
       "maxHeapMb": 384
     },
-    "allowedRoots": ["."],
-    "excludedPaths": ["node_modules", "dist", ".git", ".tmp"],
+    "allowedRoots": [
+      "."
+    ],
+    "excludedPaths": [
+      "node_modules",
+      "dist",
+      ".git",
+      ".tmp"
+    ],
     "tools": {
       "pdftotext": "pdftotext",
       "tesseract": "tesseract",
@@ -50,7 +57,10 @@
         "namespace": "wikipedia-enwiki",
         "python": "python",
         "decompressor": "bzip2",
-        "decompressorArgs": ["-dc", "{dumpPath}"],
+        "decompressorArgs": [
+          "-dc",
+          "{dumpPath}"
+        ],
         "maxPagesPerRun": 2500,
         "maxBlocksPerRun": 0,
         "maxArticleChars": 160000,
@@ -60,20 +70,43 @@
         "ngramMaxCountersPerOrder": 12000,
         "ngramVocabularyLimit": 24000,
         "skipRedirects": true,
-        "allowedNamespaces": [0]
+        "allowedNamespaces": [
+          0
+        ]
       }
-    }
+    },
+    "allowSyntheticRequestRequirementBootstrap": true
   },
   "connectors": {
     "web": {
       "enabled": false,
-      "allowedHosts": ["html.duckduckgo.com"],
+      "allowedHosts": [
+        "html.duckduckgo.com"
+      ],
       "maxBytes": 2000000,
-      "search": { "provider": "duckduckgo", "apiKey": "", "endpoint": "" }
+      "search": {
+        "provider": "duckduckgo",
+        "apiKey": "",
+        "endpoint": ""
+      }
     },
-    "outlook": { "enabled": false, "tenantId": "", "clientId": "", "accessToken": "" },
-    "youtube": { "enabled": false, "apiKey": "" },
-    "telephone": { "enabled": false, "provider": "twilio", "accountSid": "", "authToken": "", "fromNumber": "" }
+    "outlook": {
+      "enabled": false,
+      "tenantId": "",
+      "clientId": "",
+      "accessToken": ""
+    },
+    "youtube": {
+      "enabled": false,
+      "apiKey": ""
+    },
+    "telephone": {
+      "enabled": false,
+      "provider": "twilio",
+      "accountSid": "",
+      "authToken": "",
+      "fromNumber": ""
+    }
   },
   "security": {
     "localMasterKey": "",
@@ -82,14 +115,20 @@
     "informationAccess": {
       "tenantId": "scce.local",
       "principalId": "scce.local.owner",
-      "compartments": ["scce.cognitive"],
+      "compartments": [
+        "scce.cognitive"
+      ],
       "maximumExportClass": "restricted",
       "explicitMergeAuthority": true
     },
     "defaultSourceInformationLabel": {
       "tenantId": "scce.local",
-      "principals": ["scce.local.owner"],
-      "compartments": ["scce.cognitive"],
+      "principals": [
+        "scce.local.owner"
+      ],
+      "compartments": [
+        "scce.cognitive"
+      ],
       "exportClass": "confidential",
       "mergePolicy": "same_owner"
     }
