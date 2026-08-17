@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { evaluateNarrativeConsistency, type InitialFact, type NarrativeEvent } from "../narrative-state.js";
+import {
+  establishedNarrativeFacts,
+  evaluateNarrativeConsistency,
+  openNarrativeSetupIds,
+  type InitialFact,
+  type NarrativeEvent
+} from "../narrative-state.js";
 
 describe("narrative-state consistency evaluation (plan items 223-224)", () => {
   it("detects an unexplained state change and an undischarged required setup in a synthetic story", () => {
@@ -128,5 +134,69 @@ describe("narrative-state consistency evaluation (plan items 223-224)", () => {
     ];
     const report = evaluateNarrativeConsistency({ events }, []);
     expect(report.undischargedSetupIds).toEqual([]);
+  });
+
+  it("exposes the threaded world-state and open setups as forward conditioning (lever 4: filter -> conditioning)", () => {
+    const initialFacts: InitialFact[] = [
+      { subjectId: "hero", factId: "location", value: "village" },
+      { subjectId: "world", factId: "season", value: "winter" }
+    ];
+    const events: NarrativeEvent[] = [
+      {
+        id: "event.journey",
+        order: 1,
+        description: "The hero leaves for the mountain and notices a gun on the wall.",
+        causedByEventIds: [],
+        stateChanges: [{ subjectId: "hero", factId: "location", fromValue: "village", toValue: "mountain" }],
+        setupIds: ["setup.gun-on-wall"],
+        payoffForSetupIds: []
+      },
+      {
+        id: "event.arrival",
+        order: 2,
+        description: "The hero arrives at the summit shrine.",
+        causedByEventIds: ["event.journey"],
+        stateChanges: [{ subjectId: "hero", factId: "location", fromValue: "mountain", toValue: "summit" }],
+        setupIds: ["setup.shrine-riddle"],
+        payoffForSetupIds: []
+      }
+    ];
+
+    const facts = establishedNarrativeFacts({ events }, initialFacts);
+    // Later events override earlier ones for the same (subject, fact);
+    // untouched initial facts survive; ordering is deterministic.
+    expect(facts).toEqual([
+      { subjectId: "hero", factId: "location", value: "summit" },
+      { subjectId: "world", factId: "season", value: "winter" }
+    ]);
+
+    // Both setups are open until a committed event pays them off.
+    expect(openNarrativeSetupIds({ events })).toEqual(["setup.gun-on-wall", "setup.shrine-riddle"]);
+    const paidOff: NarrativeEvent[] = [...events, {
+      id: "event.payoff",
+      order: 3,
+      description: "The gun is fired to shatter the shrine's seal.",
+      causedByEventIds: ["event.arrival"],
+      stateChanges: [],
+      setupIds: [],
+      payoffForSetupIds: ["setup.gun-on-wall"]
+    }];
+    expect(openNarrativeSetupIds({ events: paidOff })).toEqual(["setup.shrine-riddle"]);
+
+    // The conditioning is exactly the state the consistency gate checks
+    // against: an event written honoring the conditioned fromValue passes.
+    const conditioned = evaluateNarrativeConsistency({
+      events: [...events, {
+        id: "event.descend",
+        order: 3,
+        description: "The hero descends from the summit.",
+        causedByEventIds: ["event.arrival"],
+        stateChanges: [{ subjectId: "hero", factId: "location", fromValue: "summit", toValue: "village" }],
+        setupIds: [],
+        payoffForSetupIds: ["setup.gun-on-wall", "setup.shrine-riddle"]
+      }]
+    }, initialFacts);
+    expect(conditioned.unexplainedStateChanges).toEqual([]);
+    expect(conditioned.consistent).toBe(true);
   });
 });

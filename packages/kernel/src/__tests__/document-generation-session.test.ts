@@ -116,6 +116,55 @@ describe("completeDocumentSection (plan items 221-228: the real combined gate)",
       expect(result.session.narrative.events).toHaveLength(1);
     }
   });
+
+  it("carries a mid-document open setup as an obligation, and only blocks it at the document's final section (lever 4)", () => {
+    const session = createDocumentGenerationSession({
+      plan: twoSectionPlan(),
+      initialFacts: [{ subjectId: "door", factId: "state", value: "locked" }]
+    });
+
+    // Section 1 plants a setup with no payoff yet: a legitimate carried
+    // obligation, not an inconsistency -- must be accepted.
+    const first = completeDocumentSection(session, {
+      nodeId: "intro",
+      content: "A gun hangs on the wall as the hero unlocks the door.",
+      narrativeEvent: {
+        id: "event.1", order: 1, description: "gun planted; door unlocked",
+        causedByEventIds: [], setupIds: ["setup.gun"], payoffForSetupIds: [],
+        stateChanges: [{ subjectId: "door", factId: "state", fromValue: "locked", toValue: "unlocked" }]
+      }
+    });
+    expect(first.accepted).toBe(true);
+    if (!first.accepted) return;
+
+    // The FINAL section leaving the setup undischarged is a real defect --
+    // no pending work remains to pay it off -- and must block.
+    const finalWithoutPayoff = completeDocumentSection(first.session, {
+      nodeId: "body",
+      content: "The story ends without the gun ever firing.",
+      narrativeEvent: {
+        id: "event.2", order: 2, description: "ending",
+        causedByEventIds: ["event.1"], setupIds: [], payoffForSetupIds: [],
+        stateChanges: []
+      }
+    });
+    expect(finalWithoutPayoff.accepted).toBe(false);
+    if (!finalWithoutPayoff.accepted) {
+      expect(finalWithoutPayoff.narrativeReport?.undischargedSetupIds).toEqual(["setup.gun"]);
+    }
+
+    // The same final section paying the setup off completes cleanly.
+    const finalWithPayoff = completeDocumentSection(first.session, {
+      nodeId: "body",
+      content: "The gun fires at last, shattering the lock forever.",
+      narrativeEvent: {
+        id: "event.2", order: 2, description: "gun pays off",
+        causedByEventIds: ["event.1"], setupIds: [], payoffForSetupIds: ["setup.gun"],
+        stateChanges: []
+      }
+    });
+    expect(finalWithPayoff.accepted).toBe(true);
+  });
 });
 
 describe("reviseDocumentSession (session-level passthrough to document-revision.ts)", () => {

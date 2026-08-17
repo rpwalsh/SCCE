@@ -180,6 +180,71 @@ describe("multi-corpus training", () => {
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["oss_docs", "oss_code"]));
     expect(JSON.stringify(result).toLowerCase()).not.toContain("provider");
   });
+
+  it("stops the Gutenberg run gracefully at the heap-safety checkpoint with a resumable report", async () => {
+    const root = await tempDir("gutenberg-heap-fixture-");
+    await writeFile(path.join(root, "book.txt"), [
+      "*** START OF THE PROJECT GUTENBERG EBOOK FIXTURE ***",
+      "",
+      "This text should never be trained because the heap bound trips first.",
+      "",
+      "*** END OF THE PROJECT GUTENBERG EBOOK FIXTURE ***"
+    ].join("\n"), "utf8");
+    const fixture = memoryStorage();
+
+    // The option floor is 256 MiB; any live Node process running this test
+    // suite is far above that, so the checkpoint deterministically trips
+    // before the first file -- proving the bound stops the run instead of
+    // letting in-process training continue toward a real OOM.
+    const result = await trainGutenbergCorpus({
+      storage: fixture.storage,
+      rootPath: root,
+      maxFilesPerRun: 5,
+      maxFileBytes: 100_000,
+      heapCheckpointMb: 1
+    });
+
+    expect(result.stoppedByHeapSafetyBound).toBe(true);
+    expect(result.filesTrained).toBe(0);
+    expect(result.heapMiBAtExit).toBeGreaterThan(0);
+    expect(fixture.state.sourceVersions.length).toBe(0);
+  });
+
+  it("records one file's training failure as an explicit skip and keeps training the rest", async () => {
+    const root = await tempDir("oss-failure-fixture-");
+    await writeFile(path.join(root, "README.md"), "Readable docs explain the pump API and the maintenance flow.", "utf8");
+    await writeFile(path.join(root, "SECURITY.md"), "Report vulnerabilities through the responsible disclosure flow.", "utf8");
+    const fixture = memoryStorage();
+    // A storage whose language-memory writes fail exactly once poisons the
+    // first file's training transaction; the second file must still train.
+    let failures = 0;
+    const poisoned = {
+      ...fixture.storage,
+      languageMemory: {
+        ...fixture.storage.languageMemory,
+        putNgramObservationsBatch: async (rows: unknown[]) => {
+          if (failures === 0) {
+            failures += 1;
+            throw new Error("synthetic language-memory write failure");
+          }
+          return fixture.storage.languageMemory.putNgramObservationsBatch(rows as never);
+        }
+      }
+    } as typeof fixture.storage;
+
+    const result = await trainOssCorpus({
+      storage: poisoned,
+      rootPath: root,
+      maxFiles: 10,
+      maxFileBytes: 100_000,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64
+    });
+
+    expect(result.stoppedByHeapSafetyBound).toBe(false);
+    expect(result.docsTrained).toBe(1);
+    expect(result.filesSkipped.some(row => row.reason.startsWith("training_failed: synthetic language-memory write failure"))).toBe(true);
+  });
 });
 
 function configFixture(corpora: ScceRuntimeConfig["runtime"]["corpora"]): ScceRuntimeConfig {

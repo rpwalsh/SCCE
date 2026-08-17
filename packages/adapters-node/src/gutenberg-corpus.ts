@@ -21,6 +21,17 @@ export interface GutenbergCorpusTrainOptions {
   ngramVocabularyLimit?: number;
   languageAliases?: readonly string[];
   creativeEventCompiler?: CreativeEventConstructionCompiler;
+  /**
+   * Heap-safety checkpoint in MiB, same contract as
+   * `wikipedia-v3-ingestor.ts`'s `heapCheckpointMb`: checked before each
+   * file, and when current heap usage reaches the bound the run stops
+   * gracefully with `stoppedByHeapSafetyBound` set instead of risking a
+   * process OOM that loses the whole run. This trainer runs file training
+   * fully in-process (unlike the wikipedia lane's child-process
+   * decompression boundary), so without a bound one pathological file's
+   * training could take down the entire multi-file run.
+   */
+  heapCheckpointMb?: number;
 }
 
 export interface GutenbergCorpusTrainReport {
@@ -32,6 +43,14 @@ export interface GutenbergCorpusTrainReport {
   filesSkipped: Array<{ path: string; reason: string; byteLength?: number }>;
   totals: GutenbergCorpusTrainingTotals;
   reports: LanguageCorpusTrainingReport[];
+  /**
+   * True when the run stopped early at the heap-safety checkpoint. The
+   * report's startFileIndex + filesTrained + filesSkipped tell the caller
+   * exactly where to resume (`startFileIndex` of the next run =
+   * this run's startFileIndex + filesTrained + filesSkipped.length).
+   */
+  stoppedByHeapSafetyBound: boolean;
+  heapMiBAtExit: number;
 }
 
 export interface GutenbergCorpusTrainingTotals {
@@ -68,7 +87,19 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
   ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
   const skipped: GutenbergCorpusTrainReport["filesSkipped"] = [];
+  // Same contract as wikipedia-v3-ingestor.ts: the caller-supplied bound is
+  // honored as given (no floor) -- an explicitly tiny bound is an explicit
+  // request to stop immediately with a resumable report, which is honest
+  // and testable, never a crash.
+  const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
+    ? Math.floor(input.heapCheckpointMb)
+    : undefined;
+  let stoppedByHeapSafetyBound = false;
   for (const file of files) {
+    if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
+      stoppedByHeapSafetyBound = true;
+      break;
+    }
     if (file.byteLength > maxFileBytes) {
       skipped.push({ path: file.relativePath, reason: "file_exceeds_maxFileBytes", byteLength: file.byteLength });
       continue;
@@ -80,27 +111,41 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       continue;
     }
     const languageAliases = sourceLanguageAliases(raw, input.languageAliases);
-    reports.push(await trainLanguageCorpusText({
-      storage: input.storage,
-      sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
-      streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${normalizeRelative(file.relativePath)}`,
-      sourceUri: pathToFileURL(file.absolutePath).href,
-      text,
-      mediaType: "text/plain",
-      namespace: `corpus:${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}`,
-      maxEvidenceChunkBytes: 64 * 1024,
-      ngramMaxOrder: input.ngramMaxOrder,
-      ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
-      ngramVocabularyLimit: input.ngramVocabularyLimit,
-      languageAliases,
-      creativeEventCompiler: input.creativeEventCompiler,
-      corpusMetadata: {
-        relativePath: normalizeRelative(file.relativePath),
-        sourceHash: sha256(raw),
-        boilerplateStripped: text.length !== raw.trim().length,
-        languageAliases
-      }
-    }));
+    // One pathological file must cost that file, never the whole
+    // multi-file run: training runs fully in-process here (no child-process
+    // boundary like the wikipedia lane's decompressor), so a per-file
+    // failure is recorded as an explicit skip with the real reason and the
+    // loop continues. A process-level OOM cannot be caught this way --
+    // that is what the heap checkpoint above is for.
+    try {
+      reports.push(await trainLanguageCorpusText({
+        storage: input.storage,
+        sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
+        streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${normalizeRelative(file.relativePath)}`,
+        sourceUri: pathToFileURL(file.absolutePath).href,
+        text,
+        mediaType: "text/plain",
+        namespace: `corpus:${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}`,
+        maxEvidenceChunkBytes: 64 * 1024,
+        ngramMaxOrder: input.ngramMaxOrder,
+        ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
+        ngramVocabularyLimit: input.ngramVocabularyLimit,
+        languageAliases,
+        creativeEventCompiler: input.creativeEventCompiler,
+        corpusMetadata: {
+          relativePath: normalizeRelative(file.relativePath),
+          sourceHash: sha256(raw),
+          boilerplateStripped: text.length !== raw.trim().length,
+          languageAliases
+        }
+      }));
+    } catch (error) {
+      skipped.push({
+        path: file.relativePath,
+        reason: `training_failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`,
+        byteLength: file.byteLength
+      });
+    }
   }
   return {
     schema: "scce.gutenbergCorpusTrainReport.v1",
@@ -110,8 +155,14 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     filesTrained: reports.length,
     filesSkipped: skipped,
     totals: sumReports(reports),
-    reports
+    reports,
+    stoppedByHeapSafetyBound,
+    heapMiBAtExit: heapMiB()
   };
+}
+
+function heapMiB(): number {
+  return Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
 }
 
 function sourceLanguageAliases(raw: string, supplied: readonly string[] | undefined): string[] {

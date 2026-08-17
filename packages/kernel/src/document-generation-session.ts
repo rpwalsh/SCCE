@@ -1,7 +1,7 @@
 import type { AddDocumentPlanNodeInput, DocumentPlan, DocumentPlanNode } from "./document-plan.js";
 import { EMPTY_DOCUMENT_PLAN, pendingDocumentPlanNodes, completeDocumentPlanNode } from "./document-plan.js";
 import type { InitialFact, NarrativeConsistencyReport, NarrativeEvent, NarrativeState } from "./narrative-state.js";
-import { evaluateNarrativeConsistency } from "./narrative-state.js";
+import { establishedNarrativeFacts, evaluateNarrativeConsistency, openNarrativeSetupIds } from "./narrative-state.js";
 import type { AntiCopyGuardResult, VoiceProfile, VoiceSample } from "./voice-profile.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
 import {
@@ -73,6 +73,29 @@ export function nextDocumentGenerationWork(session: DocumentGenerationSession): 
   return pendingDocumentPlanNodes(session.plan);
 }
 
+export interface NarrativeConditioning {
+  /** Every (subject, fact) -> value binding the committed narrative has established -- the binding world-state the next section must be written under. */
+  establishedFacts: InitialFact[];
+  /** Setups planted but not yet paid off -- the pending narrative obligations the next sections carry. */
+  openSetupIds: string[];
+}
+
+/**
+ * Lever 4, filter -> conditioning: the narrative constraints handed to the
+ * generator BEFORE a section is written, derived from exactly the same
+ * committed state `completeDocumentSection`'s consistency gate will later
+ * check against. The gate stays (defense in depth against a generator that
+ * ignores its conditioning), but consistency is no longer discoverable
+ * only after the fact -- callers commissioning the next section receive
+ * the established world-state and open setups as an input.
+ */
+export function narrativeConditioningForSession(session: DocumentGenerationSession): NarrativeConditioning {
+  return {
+    establishedFacts: establishedNarrativeFacts(session.narrative, session.initialFacts),
+    openSetupIds: openNarrativeSetupIds(session.narrative)
+  };
+}
+
 export interface CompleteDocumentSectionInput {
   nodeId: string;
   content: string;
@@ -119,7 +142,26 @@ export function completeDocumentSection(
   if (input.narrativeEvent) {
     const candidateNarrative: NarrativeState = { events: [...narrative.events, input.narrativeEvent] };
     const narrativeReport = evaluateNarrativeConsistency(candidateNarrative, session.initialFacts);
-    if (!narrativeReport.consistent) {
+    // Lever 4 refinement (surfaced by the conditioning work's own test): a
+    // mid-document open setup is a legitimate carried obligation -- a gun
+    // planted in section 1 that pays off in section 5 must not be rejected
+    // at section 1's completion. Only an unexplained state change blocks a
+    // mid-document section; undischarged setups block only the DOCUMENT's
+    // final section, when no pending work remains to pay them off. Until
+    // then they are exactly what `narrativeConditioningForSession` hands
+    // forward to the next section's generator as `openSetupIds`.
+    // All incomplete LEAF sections other than this one -- deliberately NOT
+    // just the currently-ready (pending) ones: a section that rhetorically
+    // depends on this one is still remaining work that can pay a setup off.
+    // Container nodes (parents of other nodes) are structure, not writable
+    // work, and are never themselves completed.
+    const parentIds = new Set(Object.values(session.plan.nodes)
+      .flatMap(node => node.parentId ? [node.parentId] : []));
+    const remainingAfterThis = Object.values(session.plan.nodes)
+      .filter(node => !node.completed && node.id !== input.nodeId && !parentIds.has(node.id)).length;
+    const blocking = narrativeReport.unexplainedStateChanges.length > 0
+      || (remainingAfterThis === 0 && narrativeReport.undischargedSetupIds.length > 0);
+    if (blocking) {
       return {
         accepted: false,
         reason: `completing ${input.nodeId} would introduce a narrative inconsistency`,

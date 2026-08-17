@@ -93,7 +93,7 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
   it("start persists a genuinely new real session and returns its real pending work", async () => {
     const store = new MemoryDocumentGenerationSessionStore();
     const result = await syncDocumentGenerationRequestForTurn(store, parseOk(startMetadata()), 1000, CONVERSATION_A);
-    expect(result).toEqual({ action: "start", sessionId: "doc.1", pendingSections: [{ id: "intro", goal: "introduce the topic" }] });
+    expect(result).toEqual({ action: "start", sessionId: "doc.1", pendingSections: [{ id: "intro", goal: "introduce the topic" }], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
     expect(store.putCalls).toHaveLength(1);
     expect(store.putCalls[0]!.conversationId).toBe(CONVERSATION_A);
   });
@@ -107,7 +107,7 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
       2000,
       CONVERSATION_A
     );
-    expect(second).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the topic" }] });
+    expect(second).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the topic" }], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
   });
 
   it("real cross-turn completion: complete_section on turn 2 genuinely mutates the durably-persisted session from turn 1", async () => {
@@ -127,7 +127,7 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
       3000,
       CONVERSATION_A
     );
-    expect(third).toEqual({ action: "next_work", pendingSections: [] });
+    expect(third).toEqual({ action: "next_work", pendingSections: [], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
   });
 
   it("returns a real 'unknown session' result for a sessionId that was never started", async () => {
@@ -203,14 +203,14 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
       2500,
       CONVERSATION_A
     );
-    expect(conversationANextWork).toEqual({ action: "next_work", pendingSections: [] });
+    expect(conversationANextWork).toEqual({ action: "next_work", pendingSections: [], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
     const conversationBNextWork = await syncDocumentGenerationRequestForTurn(
       store,
       parseOk({ documentGeneration: { sessionId: "doc.1", action: { type: "next_work" } } }),
       2500,
       CONVERSATION_B
     );
-    expect(conversationBNextWork).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the topic" }] });
+    expect(conversationBNextWork).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the topic" }], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
   });
 
   it("CRITICAL fix: start against an existing sessionId with genuinely different content is a real conflict, never a silent overwrite", async () => {
@@ -235,7 +235,7 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
       2500,
       CONVERSATION_A
     );
-    expect(stillOriginal).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the topic" }] });
+    expect(stillOriginal).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the topic" }], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
   });
 
   it("start replayed with byte-identical content is accepted idempotently, not treated as a conflict", async () => {
@@ -271,5 +271,74 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
     // A genuinely fresh read-then-write still succeeds normally.
     const result = await syncDocumentGenerationRequestForTurn(store, completeRequest, 10000, CONVERSATION_A);
     expect(result).toEqual({ action: "complete_section", accepted: true });
+  });
+
+  it("next_work carries the committed narrative's world-state and open setups as forward conditioning (lever 4)", async () => {
+    const store = new MemoryDocumentGenerationSessionStore();
+    const plan: JsonValue = {
+      nodes: {
+        intro: {
+          id: "intro", kind: "section", order: 0, goal: "introduce the topic",
+          requiredCoverageIds: [], referenceIds: [], rhetoricalDependsOnIds: [], satisfiedCoverageIds: [], completed: false
+        },
+        middle: {
+          id: "middle", kind: "section", order: 1, goal: "develop the journey",
+          requiredCoverageIds: [], referenceIds: [], rhetoricalDependsOnIds: [], satisfiedCoverageIds: [], completed: false
+        }
+      }
+    };
+    await syncDocumentGenerationRequestForTurn(store, parseOk({
+      documentGeneration: {
+        sessionId: "doc.cond", action: {
+          type: "start",
+          session: {
+            plan,
+            narrative: { events: [] },
+            initialFacts: [{ subjectId: "hero", factId: "location", value: "village" }]
+          }
+        }
+      }
+    }), 1000, CONVERSATION_A);
+
+    // Complete the first section WITH a narrative event that changes the
+    // hero's location and plants an unpaid setup.
+    const completion = await syncDocumentGenerationRequestForTurn(store, parseOk({
+      documentGeneration: {
+        sessionId: "doc.cond", action: {
+          type: "complete_section",
+          input: {
+            nodeId: "intro",
+            content: "The hero departs the village, glancing at the gun on the wall.",
+            satisfiedCoverageIds: [],
+            narrativeEvent: {
+              id: "event.depart",
+              order: 1,
+              description: "The hero departs for the mountain.",
+              causedByEventIds: [],
+              stateChanges: [{ subjectId: "hero", factId: "location", fromValue: "village", toValue: "mountain" }],
+              setupIds: ["setup.gun-on-wall"],
+              payoffForSetupIds: []
+            }
+          }
+        }
+      }
+    }), 2000, CONVERSATION_A);
+    expect(completion).toEqual({ action: "complete_section", accepted: true });
+
+    // The NEXT commissioning of work must hand the generator the updated
+    // world-state (hero now at the mountain) and the open setup -- the
+    // constraints the next section is written UNDER, not discovered at its
+    // completion gate.
+    const next = await syncDocumentGenerationRequestForTurn(store, parseOk({
+      documentGeneration: { sessionId: "doc.cond", action: { type: "next_work" } }
+    }), 3000, CONVERSATION_A);
+    expect(next).toEqual({
+      action: "next_work",
+      pendingSections: [{ id: "middle", goal: "develop the journey" }],
+      narrativeConditioning: {
+        establishedFacts: [{ subjectId: "hero", factId: "location", value: "mountain" }],
+        openSetupIds: ["setup.gun-on-wall"]
+      }
+    });
   });
 });

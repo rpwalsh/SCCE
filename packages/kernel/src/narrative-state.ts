@@ -56,6 +56,52 @@ function factKey(subjectId: string, factId: string): string {
   return `${subjectId}${factId}`;
 }
 
+/**
+ * Lever 4, filter -> conditioning: the same state-threading
+ * `evaluateNarrativeConsistency` uses to *reject* an inconsistent event
+ * after the fact, exposed as a forward input so the next section is
+ * generated UNDER the established world-state instead of being checked
+ * against it only at completion. Returns every (subject, fact) -> value
+ * binding established by the committed events (in story order, later
+ * events overriding earlier ones) on top of the initial facts, in a
+ * deterministic order.
+ */
+export function establishedNarrativeFacts(
+  narrative: NarrativeState,
+  initialFacts: readonly InitialFact[] = []
+): InitialFact[] {
+  const ordered = [...narrative.events].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  const established = new Map<string, InitialFact>();
+  for (const fact of initialFacts) established.set(factKey(fact.subjectId, fact.factId), { ...fact });
+  for (const event of ordered) {
+    for (const change of event.stateChanges) {
+      established.set(factKey(change.subjectId, change.factId), {
+        subjectId: change.subjectId,
+        factId: change.factId,
+        value: change.toValue
+      });
+    }
+  }
+  return [...established.values()].sort((left, right) =>
+    left.subjectId.localeCompare(right.subjectId) || left.factId.localeCompare(right.factId));
+}
+
+/**
+ * The other half of the forward-conditioning contract: setups already
+ * planted by committed events that no committed event has paid off yet --
+ * the pending narrative obligations the next sections are being written
+ * under, rather than a defect discovered at the end.
+ */
+export function openNarrativeSetupIds(narrative: NarrativeState): string[] {
+  const open = new Set<string>();
+  const paidOff = new Set<string>();
+  for (const event of narrative.events) {
+    for (const setupId of event.setupIds) open.add(setupId);
+    for (const setupId of event.payoffForSetupIds) paidOff.add(setupId);
+  }
+  return [...open].filter(setupId => !paidOff.has(setupId)).sort();
+}
+
 function deepEqual(left: JsonValue | undefined, right: JsonValue | undefined): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
