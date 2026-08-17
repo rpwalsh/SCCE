@@ -1779,6 +1779,71 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.answer).not.toContain("scce.invention_construct");
   });
 
+  it("routes an extended-generation creative request through the real multi-section document machinery, via the public turn path (plan items 221-228 live routing)", async () => {
+    const clock = createClock({ fixedTime: 11_000, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const source = evidenceSpan({
+      id: "evidence:extended-generation",
+      sourceVersionId: "source:extended-generation:v1" as SourceVersionId,
+      title: "Extended generation source",
+      uri: "fixture://extended-generation-source",
+      text: "He considered the impossible bargain. She attributed the signal to a damaged instrument. I searched through the ruined laboratory. He carried the heavy lantern. They opened the narrow gate. We crossed the silent valley.",
+      alpha: 0.9
+    });
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({
+      sourceVersionId: source.sourceVersionId,
+      text: source.text,
+      createdAt: clock.now()
+    });
+    const compiled = createUniversalCreativeEventConstructionCompiler().compile({
+      profileId: profile.id,
+      evidence: [source],
+      hasher,
+      updatedAt: clock.now()
+    });
+    if (compiled.status !== "compiled") throw new Error("extended generation fixture did not compile");
+    const fixture = storageFixture({
+      evidence: [source],
+      languageProfiles: [profile],
+      languagePatterns: [compiled.pattern]
+    });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids,
+      clock,
+      deterministicReplay: true
+    });
+
+    // The public chat path only. No direct call into document-plan /
+    // narrative-state / document-generation-session anywhere in this test.
+    const extended = await kernel.turn({
+      text: "Write a long, detailed story about Einstein fighting a dragon.",
+      requestedAuthority: "creative",
+      metadata: {
+        turnRequirements: [
+          { dimension: "brevityDetailBalance", value: 0.95, status: "explicit" },
+          { dimension: "noveltyDemand", value: 0.9, status: "explicit" }
+        ]
+      }
+    });
+
+    // Same request, same corpus, without the extended-generation demand.
+    const single = await kernel.turn({
+      text: "Write a long, detailed story about Einstein fighting a dragon.",
+      requestedAuthority: "creative"
+    });
+
+    expect(extended.requestedAuthority).toBe("creative");
+    // A real multi-section document, assembled from separately realized and
+    // separately validated sections -- not one realization call.
+    const sections = extended.answer.split(/\n{2,}/u).filter(part => part.trim().length > 0);
+    expect(sections.length, extended.answer).toBeGreaterThan(1);
+    expect(extended.answer.trim().length).toBeGreaterThan(single.answer.trim().length);
+  });
+
   it("invokes real evidence/proof machinery for creative authority too, not just factual authority (compositional force refactor)", async () => {
     const premise = evidenceSpan({
       id: "evidence:proof-authority-boundary",
