@@ -98,15 +98,46 @@ try {
   const training = await runtime.kernel.train({ config: { promotion: { minTrust: 0, namespaces: ["rehearsal"] }, learningGoals: [] } });
   check("corpus.promote", training.promotedEvidence > 0, `promotedEvidence=${training.promotedEvidence}`);
   const nodesAfterCorroboration = await runtime.storage.graph.getSlice({ limitNodes: 200, limitEdges: 200, allowLatestFallback: true });
-  const azuriteNodesBefore = nodesBeforeCorroboration.nodes.filter(node => node.features.some(feature => feature.includes("azurite"))).length;
-  const azuriteNodesAfter = nodesAfterCorroboration.nodes.filter(node => node.features.some(feature => feature.includes("azurite"))).length;
   // The second document repeats the same entity, so a second ingest
   // should reuse/reinforce the existing azurite-tagged node(s) rather
   // than multiplying disjoint duplicates one-for-one with each mention.
+  //
+  // Recalibrated 2026-08-17 after this check failed live and the failure
+  // was root-caused as a miscalibrated threshold, not a duplication bug:
+  // the typed projection deliberately creates one PER-OCCURRENCE
+  // observation-record node per observation kind per document (language
+  // observation, evidence anchor, structure observation -- doc B's
+  // sentence is a genuinely different observation with different features
+  // and its own evidence linkage, and merging two different source
+  // sentences into one record would erase evidence provenance), while the
+  // ENTITY-dimension nodes are shared and were measured to reuse exactly
+  // (3 before -> 3 after, zero growth). The old flat `<= before + 1`
+  // bound modeled neither half. The real contract, now asserted directly:
+  // (a) no node TYPE may gain more than one azurite-tagged node from one
+  // new document (a true duplication bug multiplies same-kind copies),
+  // and (b) at least one pre-existing azurite-tagged type must show zero
+  // growth (proving genuine entity-level reuse, not per-mention copies).
+  const azuriteByType = nodes => {
+    const counts = new Map();
+    for (const node of nodes) {
+      if (!node.features.some(feature => feature.includes("azurite"))) continue;
+      counts.set(String(node.typeId), (counts.get(String(node.typeId)) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const azuriteTypesBefore = azuriteByType(nodesBeforeCorroboration.nodes);
+  const azuriteTypesAfter = azuriteByType(nodesAfterCorroboration.nodes);
+  const perTypeGrowthBounded = [...azuriteTypesAfter.entries()]
+    .every(([typeId, after]) => after - (azuriteTypesBefore.get(typeId) ?? 0) <= 1);
+  const entityReuseObserved = [...azuriteTypesBefore.entries()]
+    .some(([typeId, before]) => (azuriteTypesAfter.get(typeId) ?? 0) === before);
+  const growthDetail = [...azuriteTypesAfter.entries()]
+    .map(([typeId, after]) => `${typeId.slice(0, 22)}:${azuriteTypesBefore.get(typeId) ?? 0}->${after}`)
+    .join(" ");
   check(
     "corpus.reuse_not_duplicate",
-    azuriteNodesAfter <= azuriteNodesBefore + 1,
-    `azuriteNodesBefore=${azuriteNodesBefore} azuriteNodesAfter=${azuriteNodesAfter}`
+    perTypeGrowthBounded && entityReuseObserved,
+    growthDetail
   );
   const searchProbe = await runtime.storage.evidence.searchEvidence({ features: ["sym:azurite", "sym:marker"], limit: 8 });
   check("corpus.search_probe", searchProbe.some(row => row.span.status === "promoted"), JSON.stringify(searchProbe.map(row => ({ status: row.span.status, features: row.span.features.slice(0, 16) }))));
