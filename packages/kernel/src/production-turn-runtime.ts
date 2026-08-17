@@ -1477,7 +1477,7 @@ export function createProductionTurnRuntime(options: {
         // symbol), not user feedback that may never arrive. Feeds the same
         // fit pipeline (buildCalibrationModelsById) already used for every
         // other calibrated subsystem.
-        await deps.storage.dialogueMemory.putCalibrationObservation(calibrationObservationRecord({
+        await deps.storage.dialogueMemory?.putCalibrationObservation?.(calibrationObservationRecord({
           calibrationId: CALIBRATION_IDS.translationPreservation,
           subsystemId: CALIBRATION_SUBSYSTEM_IDS.translation,
           taskClass: CALIBRATION_TASK_CLASS_IDS.translation,

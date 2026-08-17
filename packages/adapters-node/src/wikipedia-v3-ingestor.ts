@@ -666,13 +666,7 @@ export class WikipediaV3Ingestor {
 
   private async resumeOffset(rootUri: string): Promise<number> {
     const checkpoints = await this.storage.ingestion.list({ rootUri, status: "complete", limit: 2000 });
-    let offset = 0;
-    for (const checkpoint of checkpoints) {
-      if (!checkpoint.itemUri.includes("/block/")) continue;
-      if (checkpoint.phase !== "stored") continue;
-      offset = Math.max(offset, checkpoint.offsetBytes);
-    }
-    return offset;
+    return verifiedResumeOffset(checkpoints);
   }
 
   private async ingestPage(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
@@ -1356,6 +1350,28 @@ export class WikipediaV3Ingestor {
       warnings: trained.warnings
     };
   }
+}
+
+/**
+ * Plan item 245: the resume contract, as a pure function over real
+ * checkpoint records so it is directly testable without a multi-gigabyte
+ * dump. A run resumes only from *verified* offsets: a checkpoint counts
+ * only if the caller already filtered it to `status: "complete"` AND it
+ * reached `phase: "stored"` (bytes durably written, not merely extracted)
+ * AND it is a block checkpoint. Anything else -- a half-written block, a
+ * failed block, a page-level checkpoint -- contributes nothing, so an
+ * interrupted run re-reads from the last fully-durable block boundary
+ * rather than skipping past partially-ingested bytes.
+ */
+export function verifiedResumeOffset(checkpoints: readonly IngestionCheckpoint[]): number {
+  let offset = 0;
+  for (const checkpoint of checkpoints) {
+    if (checkpoint.status !== "complete") continue;
+    if (!checkpoint.itemUri.includes("/block/")) continue;
+    if (checkpoint.phase !== "stored") continue;
+    offset = Math.max(offset, checkpoint.offsetBytes);
+  }
+  return offset;
 }
 
 function zeroPage(input: { warnings: string[] }): WikipediaPageImport {
