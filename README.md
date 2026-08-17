@@ -129,7 +129,6 @@ PostgreSQL brain — nothing staged, no mock responses.
 - ![Workbench chat with source-cited answers](docs/screenshots/workbench-chat.png)
 - ![Evidence trace details expanded on an answer](docs/screenshots/workbench-evidence-details.png)
 - ![CLI: cited answer, workspace symbol resolution, and code review](docs/screenshots/cli.png)
-  (real command output, terminal-styled rendering)
 - ![VS Code extension: SCCE chat sidebar beside workspace code](docs/screenshots/vscode.png)
 
 ## Run SCCE
