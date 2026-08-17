@@ -18,6 +18,26 @@ SCCE compiles evidence, language, reasoning, and learned skills into sparse, ins
 
 SCCE is an implemented cognitive runtime, not a proposal, model wrapper, or retrieval layer. This repository contains its evidence-preserving ingestion, persistent cognitive graph, reasoning, planning, learned language, durable memory, application surfaces, and sealed evaluation harness.
 
+## Current verified status
+
+Measured against this repository's own gates, on a live PostgreSQL-backed
+runtime with a real ingested Wikipedia corpus (2026-08-17):
+
+- **Test suite**: 298 test files / 1,989 tests passing across the kernel,
+  server, and adapter packages, including the live-database test files run
+  against a real PostgreSQL instance.
+- **Sealed evaluation rehearsal**: 6/6 exact answers on the sealed
+  4-document, 6-question harness (including a correct abstention on the
+  deliberately unanswerable probe), versus 4/6 for the independent BM25
+  reference baseline. Answers carry byte-`sha256`-verified citations
+  checked against the sealed corpus bytes. Single-operator rehearsal
+  scope; the independent public-review protocol in
+  [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
+  not yet been executed.
+- **Live rehearsals**: the PostgreSQL schema/activation rehearsal and the
+  end-to-end adapter rehearsal (ingest → promote → live turn → exact
+  byte-verified citation) both pass against a real database.
+
 ## A third architecture for AI
 
 Closed-weight AI rents intelligence from somebody else's data center.
@@ -98,6 +118,20 @@ SCCE is exposed through:
 
 The interfaces do not contain separate intelligence. They operate against the same local cognitive engine.
 
+### See it running
+
+All captures below are the real runtime answering against its live
+PostgreSQL brain — nothing staged, no mock responses.
+
+- [30-second demo video](docs/media/scce-demo-30s.mp4) — the workbench
+  answering questions with source-cited answers and expanding the live
+  evidence trace (recorded in real time, played back at 6.4×).
+- ![Workbench chat with source-cited answers](docs/screenshots/workbench-chat.png)
+- ![Evidence trace details expanded on an answer](docs/screenshots/workbench-evidence-details.png)
+- ![CLI: cited answer, workspace symbol resolution, and code review](docs/screenshots/cli.png)
+  (real command output, terminal-styled rendering)
+- ![VS Code extension: SCCE chat sidebar beside workspace code](docs/screenshots/vscode.png)
+
 ## Run SCCE
 
 Requirements: Node.js 24.18+ (24.x), pnpm 10, and PostgreSQL.
@@ -136,7 +170,7 @@ packages/cli            command-line interface
 packages/ui             workbench-facing models and surfaces
 packages/vscode         loopback-only VS Code integration
 tools/scce-dev-mcp      repository and trace inspection
-docs                    architecture, guides, and implementation records
+docs                    architecture, guides, and normative contracts
 ```
 
 ## Documentation

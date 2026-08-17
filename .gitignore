@@ -114,6 +114,10 @@ docs/SPARSE_FUSED_TRANSPORT.md
 docs/TRANSPORT_EVIDENCE_CONSERVATION.md
 docs/TYPED_NULL_ALIGNMENT.md
 docs/UNIVERSAL_LANGUAGE_INDUCTION.md
+docs/PLAN_VERIFICATION_OPEN_ITEMS.md
+docs/PROOF_CONSTRAINED_DECODING.md
+docs/GRAPH_SURFACE_ALIGNMENT.md
+docs/TRANSLATION.md
 
 # Generated reports and release packages
 /artifacts/
@@ -125,3 +129,4 @@ docs/UNIVERSAL_LANGUAGE_INDUCTION.md
 *.rar
 /*.tgz
 *.vsix
+demo-workspace/
