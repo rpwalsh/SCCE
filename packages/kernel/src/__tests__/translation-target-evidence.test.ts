@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createIdFactory } from "../ids.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
 import { createTranslationEngine } from "../translation.js";
+import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, buildCalibrationModelSet, type CalibrationObservationRecord } from "../calibration-spine.js";
 import type { EvidenceSpan, JsonValue, LanguageProfile } from "../types.js";
 
 describe("translation target evidence admission", () => {
@@ -460,6 +461,45 @@ describe("translation target evidence admission", () => {
 
     expect(plan.inducedSeeds.length).toBeGreaterThan(0);
     expect(plan.inducedSeeds.some(seed => seed.sourceSymbol === "48291")).toBe(true);
+  });
+
+  it("plan item 129: translation confidence is a real calibrated score, not a bespoke raw one, once a fitted model exists", () => {
+    const target = profile("lang.calibration", "Latin");
+    const evidence = span("evidence.calibration", "Pump alpha está estable.", { language: target.id }, { script: "Latin" });
+    evidence.sourceVersionId = target.sourceVersionId;
+    const planInput = {
+      text: "Pump alpha is stable.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    };
+
+    const uncalibrated = engine().plan(planInput);
+    expect(uncalibrated.calibratedConfidence.calibrated).toBe(false);
+    expect(uncalibrated.calibratedConfidence.value).toBe(uncalibrated.calibratedConfidence.raw);
+
+    // A real, honestly-low-confidence outcome history for this exact raw
+    // score neighborhood -- if calibration is genuinely applied (not just
+    // plumbed through unused), the calibrated value must move away from
+    // the untouched raw score toward what these real observations show.
+    const observations: CalibrationObservationRecord[] = Array.from({ length: 12 }, (_, index) => ({
+      schema: "scce.calibration.observation.v1",
+      id: `calibration.observation.translation-test.${index}`,
+      calibrationId: CALIBRATION_IDS.translationPreservation,
+      subsystemId: "subsystem.translation",
+      taskClass: CALIBRATION_TASK_CLASS_IDS.translation,
+      rawScore: uncalibrated.calibratedConfidence.raw,
+      outcome: false,
+      finalOutcome: "outcome.rejected",
+      metadata: {},
+      createdAt: index
+    }));
+    const calibrationModels = buildCalibrationModelSet({ observations, minPoints: 2 });
+
+    const calibrated = engine().plan({ ...planInput, calibrationModels });
+    expect(calibrated.calibratedConfidence.calibrated).toBe(true);
+    expect(calibrated.calibratedConfidence.value).toBeLessThan(calibrated.calibratedConfidence.raw);
   });
 });
 
