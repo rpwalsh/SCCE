@@ -473,7 +473,7 @@ describe("kernel local evidence source anchoring", () => {
       text: "Who was Ada Lovelace?",
       metadata: { documentGeneration: { sessionId: "report.ada", action: { type: "start", session: { plan: documentPlan, narrative: { events: [] } } } } }
     });
-    expect(startResult.documentGeneration).toEqual({ action: "start", sessionId: "report.ada", pendingSections: [{ id: "intro", goal: "introduce the report" }] });
+    expect(startResult.documentGeneration).toEqual({ action: "start", sessionId: "report.ada", pendingSections: [{ id: "intro", goal: "introduce the report" }], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
 
     // Turn 2: real cross-turn persistence -- next_work by sessionId alone,
     // no plan resent.
@@ -481,7 +481,7 @@ describe("kernel local evidence source anchoring", () => {
       text: "What is the status of the Ada report?",
       metadata: { documentGeneration: { sessionId: "report.ada", action: { type: "next_work" } } }
     });
-    expect(nextWorkResult.documentGeneration).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the report" }] });
+    expect(nextWorkResult.documentGeneration).toEqual({ action: "next_work", pendingSections: [{ id: "intro", goal: "introduce the report" }], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
 
     // Turn 3: real cross-turn completion, again by sessionId alone.
     const completeResult = await kernel.turn({
@@ -500,7 +500,7 @@ describe("kernel local evidence source anchoring", () => {
       text: "Is the Ada report finished?",
       metadata: { documentGeneration: { sessionId: "report.ada", action: { type: "next_work" } } }
     });
-    expect(finalResult.documentGeneration).toEqual({ action: "next_work", pendingSections: [] });
+    expect(finalResult.documentGeneration).toEqual({ action: "next_work", pendingSections: [], narrativeConditioning: { establishedFacts: [], openSetupIds: [] } });
   });
 
   it("CRITICAL fix, real live turn path: a document-generation session started under one real conversationId is genuinely invisible to a different conversation reusing the identical sessionId", async () => {
