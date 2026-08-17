@@ -1,7 +1,7 @@
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
-import { evidenceRetrievalSurface } from "./evidence-retrieval-surface.js";
+import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
 import type {
@@ -232,7 +232,7 @@ export function evidenceWithGraphPreviewWindows(text: string, evidence: readonly
     if (preserveIds.has(String(span.id))) return span;
     const previews = previewsByEvidenceId.get(String(span.id)) ?? [];
     if (!previews.length) return span;
-    const currentFull = sourceTextSurface(span.text || span.textPreview, 24000);
+    const currentFull = sourceTextSurface(evidenceWindowText(span), 24000);
     const current = sourceTextSurface(currentFull, 2400);
     const currentScore = weightedJaccard(requestFeatures, featureSet(current, 128));
     const selected = previews
@@ -240,7 +240,11 @@ export function evidenceWithGraphPreviewWindows(text: string, evidence: readonly
       .sort((a, b) => b.score - a.score || a.preview.length - b.preview.length)[0];
     if (selected && currentFull.length > Math.max(2400, selected.preview.length * 2)) return span;
     if (!selected || selected.score < Math.max(0.015, currentScore * 0.7)) return span;
-    return { ...span, text: selected.preview, textPreview: selected.preview };
+    // Identity invariant: narrow into retrievalWindow only. Overwriting
+    // text/textPreview here left byteStart/byteEnd/contentHash describing
+    // the original span while text described a different, re-joined
+    // string -- which made every span uncitable downstream.
+    return { ...span, retrievalWindow: selected.preview };
   });
 }
 
@@ -250,7 +254,7 @@ export function runtimeEvidenceWindowsForRequest(text: string, evidence: readonl
   const requestUnits = requestUnitSet(text);
   const definitionAnchor = definitionRequestAnchor(text);
   return evidence.slice(0, 8).map(span => {
-    const source = sourceTextSurface(span.text || span.textPreview, 12000);
+    const source = sourceTextSurface(evidenceWindowText(span), 12000);
     if (source.length <= 6000) return span;
     const sentences = source
       .split(/(?<=[.!?。！？])\s+|\n+/u)
@@ -300,7 +304,10 @@ export function runtimeEvidenceWindowsForRequest(text: string, evidence: readonl
       .join(" ")
       .slice(0, 6000)
       .trim();
-    return selected ? { ...span, text: selected, textPreview: selected } : span;
+    // Identity invariant: see evidenceWithGraphPreviewWindows. This window
+    // re-joins non-adjacent sentences, so it has no single byte range and
+    // must never masquerade as the span's own bytes.
+    return selected ? { ...span, retrievalWindow: selected } : span;
   });
 }
 
@@ -432,7 +439,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
   const rows = evidence.flatMap(span =>
-    fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 12000))
+    fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 12000))
       .slice(0, 80)
       .map((sentence, index) => {
         const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
@@ -685,7 +692,7 @@ export function localEvidenceAnswerProofExcerpts(
     ...sourceSectionRows,
     ...candidateEvidence
     .filter(span => span.status === "promoted" || promotedSessionEvidence(span))
-    .flatMap(span => fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000)).slice(0, 80).map((sentence, index) => {
+    .flatMap(span => fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000)).slice(0, 80).map((sentence, index) => {
       const names = collectionNamesFromSurface(sentence, requestText, span);
       const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
       const lexical = weightedJaccard(requestFeatures, featureSet(sentence, 128));
@@ -765,7 +772,7 @@ export function localEvidenceAnswerProofExcerpts(
 ): CollectionAnswerRow[] {
   const out: CollectionAnswerRow[] = [];
   for (const span of evidence.filter(item => item.status === "promoted" || promotedSessionEvidence(item))) {
-    const source = sourceTextSurface(span.text || span.textPreview, 24000);
+    const source = sourceTextSurface(evidenceWindowText(span), 24000);
     const excludedHeadingUnits = sourceTitleUnitSet(span);
     for (const section of sourceSections(source)) {
       const sectionAffinity = sourceHeadingOverlap(section.heading, requestUnits, excludedHeadingUnits);
@@ -953,7 +960,7 @@ export function assistantForceFromLocalEvidenceAudit(audit: JsonValue, defaultFo
   const counter = evidence
     .filter(span => String(span.id) !== String(subject.span.id))
     .map(span => {
-      const sourceSurface = sourceTextSurface(span.text || span.textPreview, 24000);
+      const sourceSurface = sourceTextSurface(evidenceWindowText(span), 24000);
       const markerCandidate = bestTemporalMarkerSentence(span, conceptUnits, orderedConceptUnits, lifespan.birthYear);
       const marker = markerCandidate?.marker;
       const markerSentence = markerCandidate?.sentence ?? "";
@@ -1142,7 +1149,7 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 
 
  function lifespanYears(span: EvidenceSpan): { birthYear: number; deathYear: number } | undefined {
-  const years = [...sourceTextSurface(span.text || span.textPreview, 900).matchAll(/\b(1[0-9]{3}|20[0-9]{2})\b/gu)]
+  const years = [...sourceTextSurface(evidenceWindowText(span), 900).matchAll(/\b(1[0-9]{3}|20[0-9]{2})\b/gu)]
     .map(match => Number(match[1]))
     .filter(year => Number.isSafeInteger(year));
   if (years.length < 2) return undefined;
@@ -1182,7 +1189,7 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
   orderedConceptUnits: readonly string[],
   subjectBirthYear: number
 ): TemporalMarkerSentence | undefined {
-  const sentences = fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000));
+  const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000));
   const candidates: TemporalMarkerSentence[] = [];
   for (const sentence of sentences) {
     const complete = completeTemporalEvidenceSentence(sentence, 560);
@@ -1347,7 +1354,7 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 
  function temporalDevelopmentContextSentence(span: EvidenceSpan, requestUnits: ReadonlySet<string>, counterSentence: string): string {
   if (!requestUnits.size) return "";
-  const sentences = fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000));
+  const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000));
   const counterKey = normalizePriorKey(counterSentence);
   const counterIndex = sentences.findIndex(sentence => normalizePriorKey(sentence) === counterKey);
   const counterFeatures = featureSet(counterSentence, 256);
@@ -1426,7 +1433,7 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 
 
  function firstUsefulSentence(span: EvidenceSpan): string {
-  return fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000)).find(sentence => sentence.length >= 24) ?? "";
+  return fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000)).find(sentence => sentence.length >= 24) ?? "";
 }
 
 
@@ -1494,10 +1501,45 @@ export function sourceAnchoredEvidenceForRequest(
   return {
     required: true,
     anchors: uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
-    evidence: exact.length
-      ? uniqueEvidenceById([...primaryEvidence, ...exact, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence])
-      : uniqueEvidenceById([...primaryEvidence, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence])
+    evidence: preferExactTitleSources(
+      exact.length
+        ? uniqueEvidenceById([...primaryEvidence, ...exact, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence])
+        : uniqueEvidenceById([...primaryEvidence, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence]),
+      uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
+      semanticFrameBoundEvidenceIds
+    )
   };
+}
+
+
+/**
+ * Source-identity admission (sealed-eval finding, rehearsal-20260816): a
+ * title that merely *contains* a request anchor satisfies the same
+ * distinct-anchor match as the article the request actually names -- "List
+ * of Star Trek: The Original Series episodes" competed on equal footing
+ * with "Star Trek: The Original Series" and could win, after which no
+ * amount of downstream sentence ranking could recover the right answer.
+ *
+ * A title that exactly names the requested subject is strictly stronger
+ * source identity than one embedding it in a longer, different subject.
+ * So when any admitted source matches a request anchor exactly, the
+ * merely-containing ones stop competing. Applied only when a real exact
+ * match exists, so requests with no exactly-titled source are unaffected;
+ * explicitly semantic-frame-bound evidence is always retained, since that
+ * binding is a stronger, deliberate signal than title shape.
+ */
+ function preferExactTitleSources(
+  evidence: readonly EvidenceSpan[],
+  anchors: readonly string[],
+  semanticFrameBoundEvidenceIds?: ReadonlySet<string>
+): EvidenceSpan[] {
+  if (evidence.length < 2 || !anchors.length) return [...evidence];
+  const exactTitled = evidence.filter(span => anchors.some(anchor => evidenceTitleExactlyMatchesAnchor(span, anchor)));
+  if (!exactTitled.length || exactTitled.length === evidence.length) return [...evidence];
+  const frameBound = semanticFrameBoundEvidenceIds?.size
+    ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
+    : [];
+  return uniqueEvidenceById([...exactTitled, ...frameBound]);
 }
 
 export function sourceIdentityAdmissibleEvidenceForRequest(
@@ -1527,7 +1569,7 @@ function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, re
   const relationUnits = requestAnchorFitUnits(requestText)
     .filter(unit => !anchorUnits.some(anchorUnit => requestUnitMatchesSurface(unit, anchorUnit)));
   if (!relationUnits.length) return false;
-  return fastAnswerSentences((span.textPreview || span.text).slice(0, 4000)).some(sentence => {
+  return fastAnswerSentences(evidenceWindowText(span).slice(0, 4000)).some(sentence => {
     const sentenceUnits = splitPriorUnits(normalizePriorKey(sentence)).filter(Boolean);
     if (!sourceAnchorPhraseContains(sentenceUnits, anchorUnits)) return false;
     return relationUnits.some(unit => sentenceUnits.some(sentenceUnit => requestUnitMatchesSurface(unit, sentenceUnit)));
@@ -1537,7 +1579,7 @@ function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, re
 function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): boolean {
   const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
   if (anchorUnits.length < 2) return false;
-  const previewUnits = splitPriorUnits(normalizePriorKey((span.textPreview || span.text).slice(0, 4000))).filter(Boolean);
+  const previewUnits = splitPriorUnits(normalizePriorKey(evidenceWindowText(span).slice(0, 4000))).filter(Boolean);
   return sourceAnchorPhraseContains(previewUnits, anchorUnits);
 }
 
@@ -1567,7 +1609,7 @@ function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): bool
   if (!matchedTitleUnits.length) return false;
   if (matchedTitleUnits.length >= 2 && firstTitlePosition <= 2) return true;
   const nonTitleUnits = requestUnits.filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)));
-  const sourceSurface = sourceTextSurface(span.text || span.textPreview, 3200);
+  const sourceSurface = sourceTextSurface(evidenceWindowText(span), 3200);
   const nonTitleOverlap = requestUnitOverlapForSurface(sourceSurface, new Set(nonTitleUnits));
   const singleLateTitleOverlapFloor = titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1;
   if (matchedTitleUnits.length >= 1 && nonTitleOverlap >= singleLateTitleOverlapFloor) return true;
@@ -1895,7 +1937,7 @@ export function evidenceSourceAnchorSurface(span: EvidenceSpan): string {
  function localEvidenceAnswerScore(requestText: string, evidence: readonly EvidenceSpan[]): number {
   const requestFeatures = featureSet(requestText, 256);
   return evidence.reduce((best, span) => {
-    const surface = sourceTextSurface(span.text || span.textPreview, 24000);
+    const surface = sourceTextSurface(evidenceWindowText(span), 24000);
     const score = Math.max(
       weightedJaccard(requestFeatures, span.features),
       weightedJaccard(requestFeatures, featureSet(surface, 256))
@@ -2494,7 +2536,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   if (evidence.length === 1) {
     const span = evidence[0];
     if (!span) return [];
-    const sentences = fastAnswerSentences(sourceTextSurface(span.text || span.textPreview || "", 24000));
+    const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000));
     const requestFeatures = featureSet(requestText, 256);
     const requestUnits = requestUnitSet(requestText);
     const anchors = sourceEvidenceAnchorsForRequest(requestText);
@@ -2537,7 +2579,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const orderedRequestUnits = requestUnitsFromText(requestText);
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   const candidates = evidence
-    .flatMap(span => fastAnswerSentences(sourceTextSurface(span.text || span.textPreview, 24000)).slice(0, 80).map((surface, index) => {
+    .flatMap(span => fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000)).slice(0, 80).map((surface, index) => {
       const clean = anchorFocusedAnswerSurface(cleanSourceAnswerSurface(surface), anchors, evidenceTitle(span));
       const features = featureSet(clean, 256);
       const lexical = weightedJaccard(requestFeatures, features) + weightedJaccard(requestFeatures, span.features) * 0.35;

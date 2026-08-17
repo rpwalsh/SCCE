@@ -213,8 +213,27 @@ export interface EvidenceSpan {
   byteEnd: number;
   charStart: number;
   charEnd: number;
+  /**
+   * The exact source bytes this span identifies, decoded as UTF-8.
+   * IDENTITY INVARIANT: `text` MUST always be the source's own bytes over
+   * [byteStart, byteEnd), and `contentHash` MUST be the hash of exactly
+   * those bytes. Nothing may narrow, re-join, reorder, or truncate `text`
+   * without recomputing every one of those fields -- a span whose `text`
+   * no longer reconstructs from its own byte range is unciteable, and
+   * silently breaks every provenance consumer downstream. Retrieval-time
+   * narrowing goes in `retrievalWindow` instead.
+   */
   text: string;
   textPreview: string;
+  /**
+   * Optional, non-identity-bearing: a bounded, possibly re-joined and
+   * non-contiguous view of `text` selected for relevance during retrieval
+   * and answer-sentence scoring. Deliberately NOT a citable surface --
+   * it carries no byte range and is never hashed. Read it through
+   * `evidenceRetrievalSurface`/`evidenceWindowText`, never in place of
+   * `text` when provenance matters.
+   */
+  retrievalWindow?: string;
   languageHints: JsonValue;
   scriptHints: JsonValue;
   trustVector: JsonValue;
