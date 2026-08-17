@@ -86,6 +86,15 @@ export interface TranslationPlan {
     semanticFrames: SemanticFrameRecord[];
     translationAlignments: TranslationAlignmentRecord[];
   };
+  /**
+   * Plan item 121: real bilingual correspondence induced from this call's
+   * own request text + admitted target evidence, scored high enough to
+   * clear `MIN_SEED_SUBSTITUTION_SCORE`. The caller persists these into a
+   * durable corpus-wide store so a later, evidence-sparse request for the
+   * same target language benefits from them via `durableSeeds` below --
+   * never re-derives what a prior request already found.
+   */
+  inducedSeeds: TranslationSeed[];
   audit: JsonValue;
 }
 
@@ -155,6 +164,8 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       evidence: EvidenceSpan[];
       profiles: LanguageProfile[];
       priorAlignments?: TranslationAlignmentRecord[];
+      /** Plan item 121: real seeds a prior call already induced and the caller persisted, for this same target language, regardless of this request's own evidence. Merged with this call's freshly-induced seeds; the higher-scoring seed for a given source symbol wins. */
+      durableSeeds?: readonly TranslationSeed[];
       createdAt: number;
     }): TranslationPlan {
       const clusters = buildLanguageProfileClusters(input.profiles);
@@ -203,10 +214,10 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
           evidenceIds: [span.id]
         }))
       ] : [];
-      const translationSeeds = seedDocuments.length
+      const inducedSeeds = seedDocuments.length
         ? createLanguageInductionEngine({ hasher: options.hasher }).induce({ documents: seedDocuments }).translationSeeds
         : [];
-      const seedLookup = buildSeedLookup(translationSeeds);
+      const seedLookup = buildSeedLookup([...(input.durableSeeds ?? []), ...inducedSeeds]);
       const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile, seedLookup));
       const force = aggregateForce(alignments);
       const lossVector = aggregateLoss(alignments);
@@ -300,6 +311,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         emission: effectiveEmission,
         construct,
         records: { semanticFrames, translationAlignments },
+        inducedSeeds,
         audit: toJsonValue({
           sourceLanguage,
           targetLanguage,

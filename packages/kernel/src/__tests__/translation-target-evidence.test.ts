@@ -422,6 +422,45 @@ describe("translation target evidence admission", () => {
     expect(plan.force).toBe("unknown");
     expect(plan.emission.text).toBe("");
   });
+
+  it("plan item 121: a durable corpus-wide seed substitutes into the gloss even with zero of this request's own target evidence", () => {
+    const plan = engine().plan({
+      text: "Invoice number 48291 needs review today.",
+      targetLanguage: "lang.durable-seed",
+      evidence: [],
+      profiles: [],
+      durableSeeds: [{
+        sourceSymbol: "invoice",
+        targetSymbol: "factura",
+        score: 0.9,
+        basis: "shape",
+        evidenceIds: []
+      }],
+      createdAt: 1
+    });
+
+    expect(plan.targetFrames.length).toBe(0);
+    expect(plan.inducedSeeds.length).toBe(0);
+    const glossUnit = plan.emission.units.find(unit => unit.force === "gloss");
+    expect(glossUnit).toBeDefined();
+    expect(glossUnit!.text.toLowerCase()).toContain("factura");
+  });
+
+  it("plan item 121: this request's own freshly-induced seeds are exposed for the caller to persist durably", () => {
+    const target = profile("lang.gloss-seed-induced", "Latin");
+    const evidence = span("evidence.gloss-seed-induced", "48291 aparece en el informe meteorológico de ayer.", { language: target.id }, { script: "Latin" });
+    evidence.sourceVersionId = target.sourceVersionId;
+    const plan = engine().plan({
+      text: "Invoice number 48291 needs review today.",
+      targetLanguage: target.id,
+      evidence: [evidence],
+      profiles: [target],
+      createdAt: 1
+    });
+
+    expect(plan.inducedSeeds.length).toBeGreaterThan(0);
+    expect(plan.inducedSeeds.some(seed => seed.sourceSymbol === "48291")).toBe(true);
+  });
 });
 
 function engine(): ReturnType<typeof createTranslationEngine> {
