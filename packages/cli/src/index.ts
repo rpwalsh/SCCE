@@ -8,7 +8,7 @@ import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationP
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
-import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent } from "@scce/kernel";
 import {
   createFtrlProximalRanker,
   evaluateFtrlHeldOut,
@@ -379,7 +379,13 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
         ngramMaxOrder: options.ngramMaxOrder,
         ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
         ngramVocabularyLimit: options.ngramVocabularyLimit,
-        languageAliases: options.languageAliases
+        languageAliases: options.languageAliases,
+        heapCheckpointMb: options.heapCheckpointMb,
+        // The universal creative-event construction compiler was built and
+        // tested but never wired into any production trainer -- without it,
+        // prose training can never yield the creative-event constructions
+        // the Mouth's creative realization draws from.
+        creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
       }));
       return;
     }
@@ -1287,6 +1293,7 @@ function parseCorpusTrainOptions(args: string[]): {
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
   languageAliases?: string[];
+  heapCheckpointMb?: number;
 } {
   const out: {
     maxFiles?: number;
@@ -1299,6 +1306,7 @@ function parseCorpusTrainOptions(args: string[]): {
     ngramMaxCountersPerOrder?: number;
     ngramVocabularyLimit?: number;
     languageAliases?: string[];
+    heapCheckpointMb?: number;
   } = {};
   for (const arg of args) {
     const [flag, raw] = arg.split("=", 2);
@@ -1310,6 +1318,7 @@ function parseCorpusTrainOptions(args: string[]): {
     else if (flag === "--ngram-max-order" && Number.isFinite(num)) out.ngramMaxOrder = Math.max(1, Math.min(6, Math.floor(num)));
     else if (flag === "--ngram-max-counters" && Number.isFinite(num)) out.ngramMaxCountersPerOrder = Math.max(32, Math.floor(num));
     else if (flag === "--ngram-vocabulary-limit" && Number.isFinite(num)) out.ngramVocabularyLimit = Math.max(128, Math.floor(num));
+    else if (flag === "--heap-checkpoint-mb" && Number.isFinite(num)) out.heapCheckpointMb = Math.max(1, Math.floor(num));
     else if (flag === "--language" && raw?.trim()) {
       out.languageAliases = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
     }
