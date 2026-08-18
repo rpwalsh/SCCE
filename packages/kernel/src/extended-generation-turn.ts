@@ -2,8 +2,10 @@ import { addDocumentPlanNode, EMPTY_DOCUMENT_PLAN, type DocumentPlan, type Docum
 import {
   completeDocumentSection,
   createDocumentGenerationSession,
+  narrativeConditioningForSession,
   nextDocumentGenerationWork,
-  type DocumentGenerationSession
+  type DocumentGenerationSession,
+  type NarrativeConditioning
 } from "./document-generation-session.js";
 import type { NarrativeEvent } from "./narrative-state.js";
 import type { VoiceSample } from "./voice-profile.js";
@@ -178,7 +180,12 @@ export interface ExtendedGenerationRunResult {
  */
 export async function runExtendedGeneration(input: {
   session: DocumentGenerationSession;
-  realizeSection: (section: DocumentPlanNode, index: number, priorSectionTexts: readonly string[]) => Promise<ExtendedGenerationSectionRealization>;
+  realizeSection: (
+    section: DocumentPlanNode,
+    index: number,
+    priorSectionTexts: readonly string[],
+    conditioning: NarrativeConditioning
+  ) => Promise<ExtendedGenerationSectionRealization>;
   maxSections?: number;
 }): Promise<ExtendedGenerationRunResult> {
   let session = input.session;
@@ -188,7 +195,16 @@ export async function runExtendedGeneration(input: {
     const pending = nextDocumentGenerationWork(session);
     const section = pending[0];
     if (!section) break;
-    const realized = await input.realizeSection(section, index, sections.filter(row => row.accepted).map(row => row.text));
+    // The real established-facts/open-setups conditioning
+    // document-generation-session.ts computes from the COMMITTED
+    // narrative so far -- not a re-derivation, the same state
+    // completeDocumentSection's own consistency gate will check against.
+    const realized = await input.realizeSection(
+      section,
+      index,
+      sections.filter(row => row.accepted).map(row => row.text),
+      narrativeConditioningForSession(session)
+    );
     const text = realized.text.trim();
     if (!text) {
       // An empty realization is a real failure, not an empty section: stop
@@ -237,10 +253,13 @@ export function extendedGenerationSessionForTurn(input: {
   requestText: string;
   sectionTarget: number;
   protectedPassages?: readonly VoiceSample[];
+  /** The document's persistent cast -- each starts "not yet introduced" so establishedNarrativeFacts can tell later sections whether this is the first mention or a continuation. */
+  castSubjectIds?: readonly string[];
 }): DocumentGenerationSession {
   return createDocumentGenerationSession({
     plan: buildExtendedGenerationPlan({ requestText: input.requestText, sectionTarget: input.sectionTarget }),
-    protectedPassages: input.protectedPassages ?? []
+    protectedPassages: input.protectedPassages ?? [],
+    initialFacts: (input.castSubjectIds ?? []).map(subjectId => ({ subjectId, factId: "introduced", value: false }))
   });
 }
 

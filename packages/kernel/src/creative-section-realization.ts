@@ -41,11 +41,18 @@ export interface CreativeSectionRealization {
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.narrativeConditioning ?? []).filter(Boolean).slice(0, 6);
   const goalUnits = contentUnits(input.sectionGoal).slice(0, 3);
-  // One rotated unit per section: the section owns one topical obligation
-  // (mirroring the document plan's per-section coverage), and its opener
-  // varies instead of chanting every unit every time.
+  // One rotated unit per section owns the hard required-coverage
+  // obligation (its opener varies instead of chanting every unit every
+  // time) -- but the whole document's core entities (protagonist,
+  // antagonist, and any other topical nouns from the ORIGINAL request,
+  // not the per-section goal) are boosted in EVERY section. Rotating them
+  // away entirely was the reason "Einstein" was absent from sections
+  // whose rotated unit happened to land on a different word -- a
+  // multi-section document has exactly one cast, present throughout.
   const rotation = goalUnits.length ? stableRotation(input.sectionGoal) % goalUnits.length : 0;
   const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
+  const persistentEntities = contentUnits(input.requestText).slice(0, 3);
+  const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
   const properNounCasing = properNounCasingHints([input.requestText, input.sectionGoal, ...conditioning]);
   const generation = input.languageMemory.generate({
     state: input.state,
@@ -66,14 +73,17 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       // which the echo gate forbids. Unit atoms and terms make coverage
       // mean "on topic", and the required-term seed steers the
       // continuation toward them.
-      propositionAtoms: sectionUnit.map((unit, index) => ({
+      propositionAtoms: castTerms.map((unit, index) => ({
         id: `atom:creative-section:goal:${index}`,
         text: unit,
         kind: "surface",
         weight: 0.9,
         source: "section-plan"
       })),
-      requiredTerms: sectionUnit.map((unit, index) => ({
+      // The document's whole cast is a hard requirement of every section,
+      // not just the section's own rotated emphasis -- a story keeps its
+      // characters, it does not lose them section to section.
+      requiredTerms: castTerms.map((unit, index) => ({
         id: `term:creative-section:goal:${index}`,
         text: unit,
         weight: 0.9,

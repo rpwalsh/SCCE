@@ -122,6 +122,7 @@ import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
+import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
@@ -2687,48 +2688,90 @@ export function createProductionTurnRuntime(options: {
         const creativeTopicVocabulary = [...new Set(
           selectedEvidence.slice(0, 12).flatMap(span => surfaceUnits(collapseSurfaceWhitespace(span.text).toLocaleLowerCase()))
         )].filter(unit => unit.length >= 4).slice(0, 96);
+        // The document's persistent cast, derived once from the whole
+        // request (not the per-section goal): this is what
+        // narrative-state.ts's real consistency tracking follows across
+        // sections, not a per-call heuristic.
+        const creativeCastSubjectIds = [...new Set(
+          surfaceUnits(collapseSurfaceWhitespace(input.text).toLocaleLowerCase())
+        )].filter(unit => unit.length >= 4).slice(0, 3);
         const extendedSession = extendedGenerationSessionForTurn({
           requestText: input.text,
           sectionTarget: extendedGeneration.sectionTarget,
-          protectedPassages: selectedEvidence.slice(0, 8).map(span => ({ sourceId: String(span.id), text: span.text }))
+          protectedPassages: selectedEvidence.slice(0, 8).map(span => ({ sourceId: String(span.id), text: span.text })),
+          castSubjectIds: creativeCastSubjectIds
         });
         extendedGenerationRun = await runExtendedGeneration({
           session: extendedSession,
-          realizeSection: async (section, _index, priorSectionTexts) => {
+          realizeSection: async (section, _index, priorSectionTexts, conditioning) => {
+            // The real established-facts conditioning (narrative-state.ts)
+            // tells this section which cast members already appeared --
+            // still-unintroduced members are boosted harder so the whole
+            // cast appears at least once, not just whichever the rotation
+            // happens to favor this section.
+            const notYetIntroduced = conditioning.establishedFacts
+              .filter(fact => fact.factId === "introduced" && fact.value !== true)
+              .map(fact => fact.subjectId);
+            const sectionTopicVocabulary = [...creativeTopicVocabulary, ...notYetIntroduced.flatMap(id => [id, id, id])];
+            // A short local-context model can converge on the same
+            // highest-probability sentence for two structurally similar
+            // section goals -- reusing the real anti-copy guard
+            // (voice-profile.ts, already wired to check generated text
+            // against protected passages) against the DOCUMENT'S OWN prior
+            // sections catches a section that duplicates an earlier one,
+            // the same way it catches plagiarizing a source.
+            const priorSectionPassages = priorSectionTexts.map((text, passageIndex) => ({ sourceId: `section:${passageIndex}`, text }));
             // Fast direct engine call first; full Mouth only when that is
-            // inadequate. Both fail empty, never echo. One unlucky sample
-            // must not end a twelve-section document, so a declined
-            // attempt retries once with a distinct sampling seed.
-            let direct = realizeCreativeSection({
-              languageMemory: languageMemoryRuntime,
-              state: speakInput.languageMemory,
-              targetLanguageProfile: speakInput.languageProfile,
-              requestText: input.text,
-              sectionGoal: section.goal,
-              narrativeConditioning: priorSectionTexts.slice(-2),
-              topicVocabulary: creativeTopicVocabulary,
-              generationExtent: 180
-            });
-            if (!direct.accepted) {
-              kernelTrace({
-                stage: "mouth.generate",
-                label: "kernel.turn.creative_section_direct",
-                counts: { chars: direct.text.length },
-                support: { goal: section.goal, reason: direct.reason, generation: toJsonValue(direct.generationAudit ?? null) }
-              });
-              direct = realizeCreativeSection({
+            // inadequate. Both fail empty, never echo. One unlucky or
+            // self-duplicating sample must not end a document, so a
+            // declined attempt retries with a distinct sampling seed.
+            let direct: ReturnType<typeof realizeCreativeSection> | undefined;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              const candidate = realizeCreativeSection({
                 languageMemory: languageMemoryRuntime,
                 state: speakInput.languageMemory,
                 targetLanguageProfile: speakInput.languageProfile,
                 requestText: input.text,
                 sectionGoal: section.goal,
                 narrativeConditioning: priorSectionTexts.slice(-2),
-                topicVocabulary: creativeTopicVocabulary,
-                attempt: 2,
+                topicVocabulary: sectionTopicVocabulary,
+                attempt,
                 generationExtent: 180
               });
+              const duplicatesPriorSection = candidate.accepted
+                && checkAntiCopyGuard(candidate.text, priorSectionPassages, 8).violatesProtectedSpan;
+              if (candidate.accepted && !duplicatesPriorSection) {
+                direct = candidate;
+                break;
+              }
+              kernelTrace({
+                stage: "mouth.generate",
+                label: "kernel.turn.creative_section_direct",
+                counts: { chars: candidate.text.length },
+                support: {
+                  goal: section.goal,
+                  reason: duplicatesPriorSection ? "duplicates-prior-section" : candidate.reason,
+                  generation: toJsonValue(candidate.generationAudit ?? null)
+                }
+              });
             }
-            if (direct.accepted) return { text: direct.text };
+            if (direct?.accepted) {
+              // A cast member's own "introduced" fact only ever flips
+              // false -> true, once, the first section that actually
+              // mentions it -- a state change with no risk of ever
+              // contradicting what came before, and real substrate for
+              // establishedNarrativeFacts to hand the next section.
+              const lowerText = direct.text.toLocaleLowerCase();
+              const stateChanges = notYetIntroduced
+                .filter(subjectId => lowerText.includes(subjectId))
+                .map(subjectId => ({ subjectId, factId: "introduced", fromValue: false, toValue: true }));
+              return {
+                text: direct.text,
+                ...(stateChanges.length
+                  ? { narrativeEvent: { id: `event:${section.id}`, order: _index, description: section.goal, causedByEventIds: [], stateChanges, setupIds: [], payoffForSetupIds: [] } }
+                  : {})
+              };
+            }
             const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal });
             return { text: String(sectionSpoken.text ?? "") };
           }
