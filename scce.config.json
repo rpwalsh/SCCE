@@ -80,9 +80,11 @@
   },
   "connectors": {
     "web": {
-      "enabled": false,
+      "enabled": true,
       "allowedHosts": [
-        "html.duckduckgo.com"
+        "html.duckduckgo.com",
+        "duckduckgo.com",
+        "en.wikipedia.org"
       ],
       "maxBytes": 2000000,
       "search": {
