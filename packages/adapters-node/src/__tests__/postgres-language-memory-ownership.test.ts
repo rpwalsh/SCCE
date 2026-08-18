@@ -112,9 +112,16 @@ describe("Postgres language-memory ownership queries", () => {
     const sql = calls[0]!.sql;
     expect(sql).toContain("EXISTS");
     expect(sql).toContain("profile_id=lp.id");
-    expect(sql.match(/OFFSET 0/g)).toHaveLength(5);
+    // Four correlated index-backed probes stay EXISTS; the ngram_observations
+    // probe is a recursive skip scan over the (metadata_json->>'profileId')
+    // expression index -- a correlated EXISTS there seq-scanned the multi-GB
+    // observations table once per candidate profile without observations.
+    expect(sql.match(/OFFSET 0/g)).toHaveLength(4);
+    expect(sql).toContain("WITH RECURSIVE obs_profiles");
+    expect(sql).toContain("o.metadata_json->>'profileId' > op.pid");
+    expect(sql).not.toContain("EXISTS (SELECT 1 FROM \"fixture\".ngram_observations");
     expect(sql).toContain("LIMIT $1");
-    expect(sql).not.toMatch(/artifact_refs|GROUP BY|WITH\s/i);
+    expect(sql).not.toMatch(/artifact_refs|GROUP BY/i);
     expect(calls[0]?.params[0]).toBe(17);
   });
 

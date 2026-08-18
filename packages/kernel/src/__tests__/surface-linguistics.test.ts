@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitSurfaceSentences } from "../surface-linguistics.js";
+import { splitSurfaceSentences, tidySurfaceText } from "../surface-linguistics.js";
 
 describe("surface sentence boundaries", () => {
   it("does not split after a single-letter personal initial", () => {
@@ -30,5 +30,31 @@ describe("surface sentence boundaries", () => {
       "المقطع الأول؟",
       "المقطع الثاني!"
     ]);
+  });
+});
+
+describe("tidySurfaceText", () => {
+  // This is the canonical space mouth.ts's source-excerpt verification
+  // compares answers to evidence text in; answer plans build windows in the
+  // same space so verification holds by construction. These tests pin the
+  // exact semantics both sides depend on.
+  it("collapses ASCII whitespace runs and trims", () => {
+    expect(tidySurfaceText("  The  series\n aired\ton \r\nNBC.  ")).toBe("The series aired on NBC.");
+  });
+
+  it("collapses consecutive boundary and inline-only glyphs", () => {
+    expect(tidySurfaceText("It ended.. Then,, it began!! Again:: yes")).toBe("It ended. Then, it began! Again: yes");
+  });
+
+  it("is idempotent, so a window sliced from tidy text re-tidies to itself", () => {
+    const tidy = tidySurfaceText("A first  sentence. A second,, one!  ");
+    expect(tidySurfaceText(tidy)).toBe(tidy);
+  });
+
+  it("splitSurfaceSentences of tidy ASCII text rejoins to a verbatim substring", () => {
+    const tidy = tidySurfaceText("The crew includes Kirk. Spock serves as science officer. McCoy is the doctor. The ship is the Enterprise.");
+    const sentences = splitSurfaceSentences(tidy);
+    expect(sentences.length).toBe(4);
+    expect(tidy.includes(sentences.slice(0, 3).join(" "))).toBe(true);
   });
 });
