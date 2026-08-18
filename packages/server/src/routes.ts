@@ -3169,20 +3169,26 @@ function warmupSatisfied(warmup: RuntimeStartupReadinessSnapshot): boolean {
 // counts stay exact -- this only avoids recomputing them on every poll
 // within a short window.
 const POSTGRES_STATUS_CACHE_MS = 15_000;
-// Keyed by context identity, not a single global slot: each ApiContext is
-// its own server/runtime instance (a fresh one per test, a fresh one per
-// server process in production), so this cannot serve one context's
-// status to another and naturally holds nothing once a context is gone.
-const postgresStatusCacheByContext = new WeakMap<ApiContext, { loadedAt: number; value: JsonValue }>();
+// Keyed by context.runtime, not the ApiContext object itself: index.ts's
+// http.createServer callback builds a FRESH ApiContext object literal on
+// every single request (runtime/config/startupReadiness are captured
+// once by closure and reused, but the wrapping object is not) -- keying
+// on ApiContext meant the cache could never hit in production at all,
+// live-verified (every /api/ready call still took ~10s after this fix
+// first landed). context.runtime is the one thing actually constructed
+// once per server process and reused for every request; it is also
+// constructed once per test fixture, so cache isolation across tests
+// that build their own runtime still holds.
+const postgresStatusCacheByRuntime = new WeakMap<ApiContext["runtime"], { loadedAt: number; value: JsonValue }>();
 
 async function cachedPostgresStatus(context: ApiContext): Promise<JsonValue> {
   const now = Date.now();
-  const cached = postgresStatusCacheByContext.get(context);
+  const cached = postgresStatusCacheByRuntime.get(context.runtime);
   if (cached && now - cached.loadedAt < POSTGRES_STATUS_CACHE_MS) return cached.value;
   const value = context.runtime.storage.status
     ? await context.runtime.storage.status()
     : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
-  postgresStatusCacheByContext.set(context, { loadedAt: now, value });
+  postgresStatusCacheByRuntime.set(context.runtime, { loadedAt: now, value });
   return value;
 }
 
