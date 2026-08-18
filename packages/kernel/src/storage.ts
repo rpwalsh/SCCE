@@ -627,6 +627,27 @@ export interface EvidenceStore {
    * fixture-backed stores that never seal remain valid.
    */
   sourceVersionsByContentHashes?(hashes: readonly ContentHash[]): Promise<SourceVersion[]>;
+  /**
+   * Enumerate source versions that promoted evidence actually draws on,
+   * ordered by evidence alpha (the sources the runtime leans on first).
+   * Powers stored-corpus construction training: re-running the language
+   * lane over text already in the blob store, so the generation inventory
+   * can be built from the same corpus retrieval already trusts, without
+   * re-ingesting anything.
+   */
+  listEvidenceBackedSourceVersions?(query?: {
+    excludeUriPrefixes?: readonly string[];
+    minByteLength?: number;
+    maxByteLength?: number;
+    limit?: number;
+  }): Promise<Array<{
+    sourceVersionId: SourceVersionId;
+    contentHash: ContentHash;
+    canonicalUri: string;
+    byteLength: number;
+    maxAlpha: number;
+    promotedSpanCount: number;
+  }>>;
 }
 
 export interface ConversationStore {

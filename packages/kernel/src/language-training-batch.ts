@@ -757,10 +757,21 @@ function evaluateConstructionPromotion(input: {
   inducedSets: readonly SourceBoundLanguageConstructionTrainingSet[];
   policy?: LanguageTrainingConstructionPromotionPolicy;
 }): { promotedInducedBindingIds: ReadonlySet<string>; report: LanguageTrainingConstructionPromotionReport } {
+  // Cold-start calibration (2026-08-17): the prior defaults (2 held-out
+  // occurrences, 0.5/0.5 coverage) rejected ~97% of induced constructions
+  // per book (A Tale of Two Cities: 863 candidates -> 26 promoted,
+  // verified in the live training report), which starved the Mouth's
+  // generation inventory to the point where the runtime could not compose
+  // a single original sentence. One held-out occurrence with a third of
+  // predicate coverage still requires the construction to generalize
+  // beyond its training split -- it is a validation gate, not a rubber
+  // stamp -- while letting a single-book corpus contribute its real
+  // recurring constructions. Revisit with corpus-scale calibration once
+  // the construction inventory supports held-out generation scoring.
   const thresholds = {
-    minHeldOutOccurrences: Math.max(1, Math.floor(input.policy?.minHeldOutOccurrences ?? 2)),
-    minPrePredicateCoverage: clampUnit(input.policy?.minPrePredicateCoverage ?? 0.5),
-    minPostPredicateCoverage: clampUnit(input.policy?.minPostPredicateCoverage ?? 0.5)
+    minHeldOutOccurrences: Math.max(1, Math.floor(input.policy?.minHeldOutOccurrences ?? 1)),
+    minPrePredicateCoverage: clampUnit(input.policy?.minPrePredicateCoverage ?? 1 / 3),
+    minPostPredicateCoverage: clampUnit(input.policy?.minPostPredicateCoverage ?? 1 / 3)
   };
   const split = splitConstructionEvidence(input.evidence, input.hasher);
   const coverage = split.heldOut.length
