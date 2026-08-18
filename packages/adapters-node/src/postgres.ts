@@ -1466,6 +1466,46 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         [[...hashes], ...versionAccess.params]
       );
       return rows.map(rowToSourceVersion);
+    },
+    async listEvidenceBackedSourceVersions(query = {}) {
+      const params: unknown[] = [];
+      const where: string[] = ["e.status='promoted'"];
+      for (const prefix of query.excludeUriPrefixes ?? []) {
+        params.push(`${prefix}%`);
+        where.push(`s.canonical_uri NOT LIKE $${params.length}`);
+      }
+      if (query.minByteLength !== undefined) { params.push(Math.floor(query.minByteLength)); where.push(`sv.byte_length >= $${params.length}`); }
+      if (query.maxByteLength !== undefined) { params.push(Math.floor(query.maxByteLength)); where.push(`sv.byte_length <= $${params.length}`); }
+      const versionAccess = storage.informationAccessPredicate("sv", params.length + 1);
+      params.push(...versionAccess.params);
+      params.push(Math.max(1, Math.min(100000, Math.floor(query.limit ?? 10000))));
+      const rows = await storage.query<{
+        id: string;
+        content_hash: string;
+        canonical_uri: string;
+        byte_length: string | number;
+        max_alpha: number;
+        promoted_span_count: string | number;
+      }>(
+        `SELECT sv.id, sv.content_hash, s.canonical_uri, sv.byte_length,
+                MAX(e.alpha) AS max_alpha, COUNT(e.id) AS promoted_span_count
+         FROM ${storage.table("source_versions")} sv
+         JOIN ${storage.table("sources")} s ON s.id=sv.source_id
+         JOIN ${storage.table("evidence_spans")} e ON e.source_version_id=sv.id
+         WHERE ${where.join(" AND ")} AND ${versionAccess.sql}
+         GROUP BY sv.id, sv.content_hash, s.canonical_uri, sv.byte_length
+         ORDER BY MAX(e.alpha) DESC, COUNT(e.id) DESC, sv.id ASC
+         LIMIT $${params.length}`,
+        params
+      );
+      return rows.map(row => ({
+        sourceVersionId: row.id as SourceVersionId,
+        contentHash: row.content_hash as ContentHash,
+        canonicalUri: row.canonical_uri,
+        byteLength: Number(row.byte_length),
+        maxAlpha: Number(row.max_alpha),
+        promotedSpanCount: Number(row.promoted_span_count)
+      }));
     }
   };
 }
