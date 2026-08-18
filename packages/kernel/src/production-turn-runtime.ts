@@ -2698,6 +2698,12 @@ export function createProductionTurnRuntime(options: {
               generationExtent: 180
             });
             if (direct.accepted) return { text: direct.text };
+            kernelTrace({
+              stage: "mouth.generate",
+              label: "kernel.turn.creative_section_direct",
+              counts: { chars: direct.text.length },
+              support: { goal: section.goal, reason: direct.reason, generation: toJsonValue(direct.generationAudit ?? null) }
+            });
             const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal });
             return { text: String(sectionSpoken.text ?? "") };
           }
