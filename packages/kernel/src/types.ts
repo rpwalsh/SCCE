@@ -1241,6 +1241,17 @@ export interface OwnerInput {
    */
   runtimeControl?: {
     signal?: AbortSignal;
+    /**
+     * Sealed-corpus evidence allowlist. When present, the turn may select,
+     * prove from, cite, and realize ONLY evidence whose sourceVersionId is
+     * in this list; everything else is filtered out immediately after
+     * retrieval, before any proposal or realization sees it. Trusted
+     * in-process control only (like signal): never parsed from JSON
+     * request metadata, so callers outside the process cannot widen or
+     * narrow another caller's evidence scope. An empty list seals the turn
+     * completely (every factual answer becomes insufficient_support).
+     */
+    evidenceSourceAllowlist?: readonly SourceVersionId[];
     onProgress?: (progress: {
       phase: string;
       observedAtMonotonicMs: number;

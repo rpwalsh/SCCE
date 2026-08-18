@@ -961,7 +961,22 @@ export function attachLearnedGraphPriorConstruct(input: {
 
 
 export function cognitiveTopicForRequest(text: string): string {
-  const named = namedSubjectAnchors(text);
+  // A single-unit anchor that is the request's FIRST word carries no name
+  // signal when its only capitalization is positional: every language
+  // that capitalizes sentence starts capitalizes its question operators
+  // there too, so "What is the boiling point of tungsten?" was yielding
+  // topic "What" (verified live: the sealed-eval abstention surfaced the
+  // literal answer "What"). The anchor survives only if the same word
+  // recurs capitalized elsewhere in the request, where capitalization is
+  // a genuine choice. Structural, language-agnostic, no word lists.
+  const words = splitPriorSurfaceRunsForTopic(text);
+  const firstWord = normalizePriorKey(words[0] ?? "");
+  const named = namedSubjectAnchors(text).filter(anchor => {
+    const units = splitPriorUnits(anchor);
+    if (units.length !== 1) return true;
+    if (units[0] !== firstWord) return true;
+    return words.slice(1).some(word => normalizePriorKey(word) === firstWord && hasPriorAnchorSignal(word));
+  });
   if (named.length) return named[0] ?? "";
   const focuses = relevanceRequestFocuses(text).filter(unit => !genericQuestionSignal(unit)).slice(0, 6);
   for (let length = Math.min(3, focuses.length); length >= 2; length--) {
@@ -971,6 +986,21 @@ export function cognitiveTopicForRequest(text: string): string {
     }
   }
   return focuses[0] ?? "";
+}
+
+function splitPriorSurfaceRunsForTopic(text: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  for (const char of text.normalize("NFC")) {
+    if (isPriorSeparator(char) || char === " " || char === "\t" || char === "\n" || char === "\r") {
+      if (current) out.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current) out.push(current);
+  return out;
 }
 
 
