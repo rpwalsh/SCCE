@@ -41,6 +41,7 @@ import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js"
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
+import { realizeCreativeSection } from "./creative-section-realization.js";
 import {
   counterfactualTraceFromRejectedCandidate,
   createFunctionalCognitionEngine,
@@ -2686,6 +2687,27 @@ export function createProductionTurnRuntime(options: {
         extendedGenerationRun = await runExtendedGeneration({
           session: extendedSession,
           realizeSection: async section => {
+            // Two-tier section realization. Tier 1: a direct,
+            // section-scoped call into the same generation engine the
+            // Mouth uses -- milliseconds, fails closed with an explicit
+            // reason, prompts never become content. Tier 2 (only when
+            // tier 1 is inadequate): the full Mouth, whose richer
+            // plan-built frames can succeed where a single bare frame
+            // cannot -- but whose creative fallback ECHOES the request
+            // when learned realization fails (verified live: 12 sections
+            // x ~42s of full-turn machinery = 509s producing the request
+            // echoed twelve times). runExtendedGeneration's prompt-echo
+            // guard rejects that echo, so tier-2 failure now costs one
+            // honest rejected section, never a 12-echo "document".
+            const direct = realizeCreativeSection({
+              languageMemory: languageMemoryRuntime,
+              state: speakInput.languageMemory,
+              targetLanguageProfile: speakInput.languageProfile,
+              requestText: input.text,
+              sectionGoal: section.goal,
+              generationExtent: 180
+            });
+            if (direct.accepted) return { text: direct.text };
             const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal });
             return { text: String(sectionSpoken.text ?? "") };
           }
