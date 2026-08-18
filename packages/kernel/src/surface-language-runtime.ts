@@ -49,29 +49,89 @@ function boundedCacheSet<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: num
 
 /**
  * Real bug this guards against: surfaceLanguageMemoryCache's entry-count
- * bound (above) treats every resident language cluster as the same
- * size, but a hydration is itself byte-budgeted up to ~88MB
- * (ngramModelJsonBytes + languageUnitJsonBytes in
- * hydrateSurfaceLanguageMemory) -- 500 entries at that size is tens of
- * GB, not a bounded cache. Confirmed live: an ordinary question about a
- * never-warmed topic ("tell me about mmorpgs") triggered the resident-
- * only durable fallback, hydrated one more cluster on top of the
- * startup-warmed set, and OOM'd a 7GB heap. This tracks each entry's
- * actual measured size (JSON size of the two large fields the byte
- * budget already bounds) and evicts oldest-first until the AGGREGATE
- * fits a global budget, not just the entry count.
+ * bound (above) treats every resident language cluster as the same size,
+ * but one cluster hydration is hundreds of MB of live heap -- 500
+ * entries is tens of GB, not a bounded cache. Confirmed live: an
+ * ordinary question about a never-warmed topic ("tell me about
+ * mmorpgs") took the resident-only durable fallback, hydrated one more
+ * cluster on top of the startup-warmed set, and OOM'd a 7GB heap. Each
+ * entry's size is tracked so eviction is oldest-first until the
+ * AGGREGATE fits, not just the entry count.
+ *
+ * The budget is denominated in this file's OWN estimator units, not in
+ * heap bytes and not in exact JSON bytes, and it is calibrated by
+ * measurement rather than derivation: against real hydrated production
+ * state, one full cluster hydration measures ~933MB by
+ * approximateHydrationEstimatedBytes and costs ~365MB of actual V8 heap. The
+ * estimator deliberately runs on a bounded sample (see below), so it
+ * over-counts arrays whose leading records are larger than their tail --
+ * that is acceptable in the conservative direction, but it means any
+ * "bytes-to-heap multiplier" would be fiction. Two earlier attempts got
+ * this wrong in exactly that way: the first budgeted 1.5GB of JSON bytes
+ * (permitting ~13GB of real heap), the second multiplied the estimate by
+ * a 9x figure measured on a narrower set of arrays (over-evicting by
+ * ~23x). Budgeting ~3 full clusters keeps real resident heap near 1.1GB,
+ * low enough that warmup's own oldest entries get evicted -- they
+ * re-hydrate on demand, which is strictly better than an OOM that takes
+ * every in-flight request with it.
  */
-const SURFACE_LANGUAGE_MEMORY_CACHE_MAX_BYTES = 1_500 * 1024 * 1024;
+const SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES = 3 * 1024 * 1024 * 1024;
 
-function approximateHydrationBytes(value: { models: readonly unknown[]; units: readonly unknown[] }): number {
-  try {
-    return JSON.stringify(value.models).length + JSON.stringify(value.units).length;
-  } catch {
-    return 0;
+/**
+ * Measured PER RECORD, never over the whole array, and failing toward
+ * "huge" rather than "free". A single hydration's models array is
+ * hundreds of MB; JSON.stringify over the whole thing throws RangeError
+ * ("Invalid string length") above V8's ~512MB string cap -- the first
+ * version of this function caught that and returned 0, so every entry
+ * measured as weightless, the aggregate budget never tripped, nothing
+ * was ever evicted, and the server OOM'd exactly as before (verified
+ * live, twice). Any record that cannot be measured is therefore counted
+ * as UNMEASURED_RECORD_BYTES, which pushes toward eviction instead of
+ * silently disabling the bound. Only a bounded prefix is measured and
+ * then extrapolated, so measuring never itself allocates much.
+ */
+const UNMEASURED_RECORD_BYTES = 16 * 1024 * 1024;
+const MEASURED_RECORD_SAMPLE = 4;
+
+function approximateRecordBytes(records: readonly unknown[]): number {
+  if (!records.length) return 0;
+  const sampleSize = Math.min(MEASURED_RECORD_SAMPLE, records.length);
+  let sampledBytes = 0;
+  for (let index = 0; index < sampleSize; index++) {
+    try {
+      sampledBytes += JSON.stringify(records[index])?.length ?? UNMEASURED_RECORD_BYTES;
+    } catch {
+      sampledBytes += UNMEASURED_RECORD_BYTES;
+    }
   }
+  return Math.round((sampledBytes / sampleSize) * records.length);
 }
 
-function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxBytes: number }>(
+/**
+ * Every large array a hydration holds, not just the two that carry an
+ * explicit byte budget: an entry whose weight sits in observations or
+ * construction evidence would otherwise measure as weightless and be
+ * exempt from the bound entirely -- the same zero-measurement failure
+ * that made the first version of this budget useless.
+ */
+function approximateHydrationEstimatedBytes(value: {
+  models?: readonly unknown[];
+  units?: readonly unknown[];
+  observations?: readonly unknown[];
+  patterns?: readonly unknown[];
+  semanticFrames?: readonly unknown[];
+  constructionEvidence?: readonly unknown[];
+}): number {
+  const jsonBytes = approximateRecordBytes(value.models ?? [])
+    + approximateRecordBytes(value.units ?? [])
+    + approximateRecordBytes(value.observations ?? [])
+    + approximateRecordBytes(value.patterns ?? [])
+    + approximateRecordBytes(value.semanticFrames ?? [])
+    + approximateRecordBytes(value.constructionEvidence ?? []);
+  return jsonBytes;
+}
+
+function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxEstimatedBytes: number }>(
   map: Map<K, V>,
   key: K,
   value: V,
@@ -81,13 +141,13 @@ function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxBytes: number
   map.delete(key);
   map.set(key, value);
   let totalBytes = 0;
-  for (const entry of map.values()) totalBytes += entry.approxBytes;
+  for (const entry of map.values()) totalBytes += entry.approxEstimatedBytes;
   while ((map.size > maxEntries || totalBytes > maxBytes) && map.size > 1) {
     const oldestKey = map.keys().next().value;
     if (oldestKey === undefined) break;
     const oldest = map.get(oldestKey);
     map.delete(oldestKey);
-    if (oldest) totalBytes -= oldest.approxBytes;
+    if (oldest) totalBytes -= oldest.approxEstimatedBytes;
   }
 }
 
@@ -104,16 +164,18 @@ export function createSurfaceLanguageRuntime(options: {
   /** Test/tuning hook; production callers should rely on the defaults. */
   surfaceLanguageMemoryCacheMaxEntries?: number;
   surfaceCandidateProfileCacheMaxEntries?: number;
+  surfaceLanguageMemoryCacheMaxEstimatedBytes?: number;
 }) {
   const { deps, languageMemoryRuntime, clock, hasher } = options;
   const surfaceLanguageMemoryCacheMs = options.cacheMs;
   const surfaceLanguageProfileLimit = options.profileLimit;
   const surfaceLanguageMemoryCacheMaxEntries = options.surfaceLanguageMemoryCacheMaxEntries ?? DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES;
   const surfaceCandidateProfileCacheMaxEntries = options.surfaceCandidateProfileCacheMaxEntries ?? DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES;
+  const surfaceLanguageMemoryCacheMaxEstimatedBytes = options.surfaceLanguageMemoryCacheMaxEstimatedBytes ?? SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES;
 
   const corpusRegistry = createCorpusRegistry(deps.corpusRegistry ?? []);
 
-  const surfaceLanguageMemoryCache = new Map<string, { limit: number; loadedAt: number; value: Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>; approxBytes: number }>();
+  const surfaceLanguageMemoryCache = new Map<string, { limit: number; loadedAt: number; value: Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>; approxEstimatedBytes: number }>();
 
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
 
@@ -479,9 +541,9 @@ export function createSurfaceLanguageRuntime(options: {
     boundedSurfaceLanguageMemoryCacheSet(
       surfaceLanguageMemoryCache,
       cacheKey,
-      { limit, loadedAt: now, value, approxBytes: approximateHydrationBytes(value) },
+      { limit, loadedAt: now, value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
       surfaceLanguageMemoryCacheMaxEntries,
-      SURFACE_LANGUAGE_MEMORY_CACHE_MAX_BYTES
+      surfaceLanguageMemoryCacheMaxEstimatedBytes
     );
     return value;
   }
