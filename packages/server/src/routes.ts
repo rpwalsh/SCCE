@@ -266,9 +266,7 @@ async function dispatch(
       invalidateHydratedRuntimeReadiness(context);
       return json({ ok: false, warmup, postgres: undefined, exactCounts: false, serverUrl: context.config.server.url, manifest: ROUTES.length }, 503);
     }
-    const postgres = context.runtime.storage.status
-      ? await context.runtime.storage.status()
-      : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
+    const postgres = await cachedPostgresStatus(context);
     const exactCounts = hasExactPostgresCounts(postgres);
     const ok = healthOk(postgres) && exactCounts;
     if (ok) rememberHydratedRuntimeMarker(context, postgres);
@@ -3160,6 +3158,32 @@ function uniqueServerStrings(values: readonly string[]): string[] {
  */
 function warmupSatisfied(warmup: RuntimeStartupReadinessSnapshot): boolean {
   return warmup.phase === "ready" || warmup.phase === "disabled";
+}
+
+// storage.status() runs an exact COUNT(*) per required table -- a real
+// Postgres scan with no index shortcut, live-measured at ~11s once the
+// ngram tables hold a real corpus. Readiness is meant to answer "is it
+// up" quickly and gets polled in bursts (a status bar, a health check
+// loop); every call re-running that scan is what made the endpoint whose
+// whole job is answering fast look like it "always fails". The exact
+// counts stay exact -- this only avoids recomputing them on every poll
+// within a short window.
+const POSTGRES_STATUS_CACHE_MS = 15_000;
+// Keyed by context identity, not a single global slot: each ApiContext is
+// its own server/runtime instance (a fresh one per test, a fresh one per
+// server process in production), so this cannot serve one context's
+// status to another and naturally holds nothing once a context is gone.
+const postgresStatusCacheByContext = new WeakMap<ApiContext, { loadedAt: number; value: JsonValue }>();
+
+async function cachedPostgresStatus(context: ApiContext): Promise<JsonValue> {
+  const now = Date.now();
+  const cached = postgresStatusCacheByContext.get(context);
+  if (cached && now - cached.loadedAt < POSTGRES_STATUS_CACHE_MS) return cached.value;
+  const value = context.runtime.storage.status
+    ? await context.runtime.storage.status()
+    : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
+  postgresStatusCacheByContext.set(context, { loadedAt: now, value });
+  return value;
 }
 
 function healthOk(value: unknown): boolean {
