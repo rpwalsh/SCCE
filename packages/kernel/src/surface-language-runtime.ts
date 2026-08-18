@@ -131,6 +131,17 @@ export function createSurfaceLanguageRuntime(options: {
       languagePatterns: Math.max(256, boundedLimit * 64),
       semanticFrames: Math.max(512, boundedLimit * 96)
     };
+    // Byte budgets, not just record counts: whole-novel training grew a
+    // single n-gram model to tens of MB and language units to ~660KB
+    // average, so count limits alone OOMed a 4GB server heap at warmup
+    // (verified live). Enforced adapter-side in relevance order -- the
+    // best records still load, the oversized tail is skipped
+    // deterministically. Sized so several concurrently-cached clusters
+    // fit a default 4GB heap with parsed-object overhead.
+    const hydrationByteBudgets = {
+      ngramModelJsonBytes: 64 * 1024 * 1024,
+      languageUnitJsonBytes: 24 * 1024 * 1024
+    };
     const exactProfileOwnerCount = Math.max(1, profileIds?.length ?? 0);
     const exactProfileHydrationLimits = {
       ngramModels: Math.max(12, exactProfileOwnerCount * 4),
@@ -198,9 +209,9 @@ export function createSurfaceLanguageRuntime(options: {
       persistedProfiles,
       segmentationPopulationModels
     ] = await Promise.all([
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels) }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationByteBudgets.ngramModelJsonBytes }))),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationByteBudgets.languageUnitJsonBytes }))),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))),
       preferredCorpusRoleId

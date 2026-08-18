@@ -3141,7 +3141,29 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model.model_json->>'sourceSystem'=$${params.length}`); }
       appendInformationAccess(storage, "model", params, where);
       params.push(query.limit ?? 100);
-      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToNgramModel);
+      const limitParam = params.length;
+      // Cumulative byte budget in the same relevance order as the count
+      // limit: whole-novel training grew single model_json blobs to tens
+      // of MB, so a count limit alone stopped bounding memory (a 4GB
+      // server heap OOMed at warmup, verified live). The window sum
+      // admits records until the budget is exhausted; the first record
+      // always loads so a budget smaller than the best model degrades to
+      // exactly one record instead of zero.
+      if (query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0) {
+        params.push(Math.floor(query.maxTotalJsonBytes));
+        return (await storage.query<NgramModelRow>(
+          `SELECT ranked.* FROM (
+             SELECT model.*,
+               SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               ROW_NUMBER() OVER (ORDER BY model.updated_at DESC, model.id ASC) AS relevance_rank
+             FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")}
+           ) ranked
+           WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
+           ORDER BY ranked.updated_at DESC, ranked.id ASC LIMIT $${limitParam}`,
+          params
+        )).map(rowToNgramModel);
+      }
+      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel);
     },
     async listNgramObservations(query = {}) {
       const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
@@ -3207,7 +3229,25 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`unit.metadata_json->>'sourceSystem'=$${params.length}`); }
       appendInformationAccess(storage, "unit", params, where);
       params.push(query.limit ?? 1000);
-      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${params.length}`, params)).map(rowToLanguageUnit);
+      const unitLimitParam = params.length;
+      // Same cumulative byte budget as listNgramModels (see the note
+      // there): language_units grew to ~660KB average per row after
+      // whole-novel training, so count limits stopped bounding memory.
+      if (query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0) {
+        params.push(Math.floor(query.maxTotalJsonBytes));
+        return (await storage.query<LanguageUnitRow>(
+          `SELECT ranked.* FROM (
+             SELECT unit.*,
+               SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               ROW_NUMBER() OVER (ORDER BY unit.alpha DESC, unit.id ASC) AS relevance_rank
+             FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")}
+           ) ranked
+           WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
+           ORDER BY ranked.alpha DESC, ranked.id ASC LIMIT $${unitLimitParam}`,
+          params
+        )).map(rowToLanguageUnit);
+      }
+      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${unitLimitParam}`, params)).map(rowToLanguageUnit);
     },
     async listLanguagePatterns(query = {}) {
       const params: unknown[] = [];
