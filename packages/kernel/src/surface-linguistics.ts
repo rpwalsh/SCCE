@@ -128,6 +128,40 @@ export function isDegenerateBareSurface(text: string): boolean {
   return [...unit].filter(char => !isSentenceBoundarySymbol(char)).length <= 2;
 }
 
+/**
+ * Structural completeness of a prose surface, with zero language-specific
+ * word lists: every sentence opens with something a sentence can open
+ * with in a cased script (uppercase, digit, opening punctuation; uncased
+ * scripts are exempt by construction), quotes and parentheses balance,
+ * and the surface ends at a sentence boundary. These are exactly the
+ * shapes stitching failures take (verified live: `Leonard Nimoy as Mr.
+ * "Where No Man."` fails on quote balance, an image-caption tail fails on
+ * its lowercase opener) -- while a well-formed COMPOSED sentence passes,
+ * which is the point: this gates surface quality, never wording freedom.
+ */
+export function structurallyCompleteSurface(text: string): boolean {
+  const clean = collapseSurfaceWhitespace(text);
+  if (!clean) return false;
+  const chars = [...clean];
+  const last = chars.at(-1) ?? "";
+  if (!isSentenceBoundarySymbol(last) && last !== "\"" && last !== "'" && last !== "”" && last !== "’") return false;
+  let parens = 0;
+  let quotes = 0;
+  for (const char of chars) {
+    if (char === "(") parens++;
+    else if (char === ")") parens = parens - 1;
+    else if (char === "\"") quotes++;
+    if (parens < 0) return false;
+  }
+  if (parens !== 0 || quotes % 2 === 1) return false;
+  for (const sentence of splitSurfaceSentences(clean)) {
+    const first = [...sentence][0] ?? "";
+    const cased = first.toLocaleLowerCase() !== first.toLocaleUpperCase();
+    if (cased && first !== first.toLocaleUpperCase()) return false;
+  }
+  return true;
+}
+
 export function collapseSurfaceWhitespace(text: string): string {
   let out = "";
   let pendingSpace = false;

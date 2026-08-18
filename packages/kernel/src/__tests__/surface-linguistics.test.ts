@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitSurfaceSentences, tidySurfaceText } from "../surface-linguistics.js";
+import { splitSurfaceSentences, structurallyCompleteSurface, tidySurfaceText } from "../surface-linguistics.js";
 
 describe("surface sentence boundaries", () => {
   it("does not split after a single-letter personal initial", () => {
@@ -56,5 +56,26 @@ describe("tidySurfaceText", () => {
     const sentences = splitSurfaceSentences(tidy);
     expect(sentences.length).toBe(4);
     expect(tidy.includes(sentences.slice(0, 3).join(" "))).toBe(true);
+  });
+});
+
+describe("structurallyCompleteSurface", () => {
+  // The boundary between composed prose and stitching salad, with no
+  // language-specific word lists: these shapes gate surface QUALITY for
+  // generated candidates while leaving wording free.
+  it("passes well-formed composed prose", () => {
+    expect(structurallyCompleteSurface("The series was created by Gene Roddenberry and stars William Shatner as Captain Kirk.")).toBe(true);
+    expect(structurallyCompleteSurface("Rick Berman and Michael Piller created 'Deep Space Nine'. It aired from 1993 to 1999.")).toBe(true);
+  });
+
+  it("fails the live stitching shapes", () => {
+    expect(structurallyCompleteSurface('Leonard Nimoy as Mr. "Where No Man., which aired later.')).toBe(false);
+    expect(structurallyCompleteSurface("as Captain James T. Kirk in action, from the episode.")).toBe(false);
+    expect(structurallyCompleteSurface("The engine was designed by (a careful team.")).toBe(false);
+    expect(structurallyCompleteSurface("An unterminated stub")).toBe(false);
+  });
+
+  it("exempts uncased scripts from the capital-initial rule", () => {
+    expect(structurallyCompleteSurface("첫째 문장이다. 둘째 문장이다。")).toBe(true);
   });
 });

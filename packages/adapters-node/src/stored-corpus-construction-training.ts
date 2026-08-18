@@ -10,7 +10,12 @@ export interface StoredCorpusConstructionTrainingOptions {
   storage: ScceStorage;
   /** Cumulative text budget across this run. Default 64MB. */
   maxTotalBytes?: number;
-  /** Target concatenated-batch size. Default 3MB (novel-sized units). */
+  /**
+   * Target concatenated-batch size. Default 1MB: the compile pipeline's
+   * peak heap scales with batch text (a ~1MB novel peaks ~3GB on a 4GB
+   * heap; a 3MB batch OOMed it, verified live), and the heap checkpoint
+   * can only stop BETWEEN batches, so the batch itself must fit.
+   */
   batchBytes?: number;
   /** Resume point: skip this many batches' worth of articles first. */
   startBatchIndex?: number;
@@ -58,7 +63,7 @@ export async function trainStoredCorpusConstructions(
   const list = input.storage.evidence.listEvidenceBackedSourceVersions;
   if (!list) throw new Error("storage adapter does not support listEvidenceBackedSourceVersions");
   const maxTotalBytes = Math.max(1024, Math.floor(input.maxTotalBytes ?? 64 * 1024 * 1024));
-  const batchBytes = Math.max(1024, Math.floor(input.batchBytes ?? 3 * 1024 * 1024));
+  const batchBytes = Math.max(1024, Math.floor(input.batchBytes ?? 1024 * 1024));
   const startBatchIndex = Math.max(0, Math.floor(input.startBatchIndex ?? 0));
   const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
     ? Math.floor(input.heapCheckpointMb)
@@ -101,6 +106,14 @@ export async function trainStoredCorpusConstructions(
         mediaType: "text/plain",
         namespace: `corpus:${sourceSystem}`,
         maxEvidenceChunkBytes: 64 * 1024,
+        // These articles' n-gram mass is already in the store from the
+        // original ingestion: re-inserting it would double-count the
+        // corpus and dominate wall time (~700K observation rows per MB).
+        // This lane exists for the construction inventory only.
+        skipNgramPersistence: true,
+        ngramMaxOrder: 2,
+        ngramMaxCountersPerOrder: 64,
+        ngramVocabularyLimit: 4096,
         creativeEventCompiler: compiler,
         corpusMetadata: {
           lane: "stored-corpus-construction-training",

@@ -70,7 +70,7 @@ import {
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
-import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, tidySurfaceText } from "./surface-linguistics.js";
+import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, structurallyCompleteSurface, tidySurfaceText } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   realizeLearnedSurface,
@@ -2843,37 +2843,25 @@ function kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate: Candidate
 }
 
 /**
- * A candidate whose style CLAIMS direct evidence must read like direct
- * evidence. Verified live against the sealed-eval rehearsal answers: the
- * multi-fact join produced stitches like `Leonard Nimoy as Mr. "Where No
- * Man."` (a fact fragment truncated mid-title and spliced into an episode
- * clause) and non-adjacent pairs like `Lovelace is often considered the
- * first computer programmer. These described a method...` ("These" has no
- * antecedent in the answer -- the source sentences are paragraphs apart).
- * Both are structurally detectable with zero language-specific word
- * lists: a single-sentence surface must be a COMPLETE verbatim evidence
- * sentence (fragment prefixes are substrings, so substring checking alone
- * cannot catch truncation), and a multi-sentence surface must be a
- * CONTIGUOUS excerpt of one span -- the same tidy-space window semantics
- * the source-exact answer plan already guarantees by construction. When
- * the join fails this, the builder degrades to its best single verifiable
- * fact instead of shipping the stitch.
+ * Argument integrity for a composed factual surface: every fact the join
+ * asserts must have its subject and object present INTACT in the final
+ * text (tidy space, case-insensitive). This is the language-agnostic
+ * boundary between composition and salad -- composed wording around the
+ * arguments is free, but a truncated argument (`Mr.` where the fact's
+ * object is `Mr. Spock`) means the surface no longer says what the
+ * licensed claim says. Arguments the fact does not carry are not
+ * required.
  */
-function directEvidenceSurfaceVerified(text: string, evidence: readonly EvidenceSpan[]): boolean {
-  const spanSurfaces = evidence
-    .filter(span => span.status === "promoted")
-    .flatMap(span => [span.text, span.textPreview])
-    .filter((surface): surface is string => typeof surface === "string")
-    .map(surface => tidySurface(surface));
-  if (!spanSurfaces.length) return false;
-  const tidyText = tidySurface(text);
-  const sentences = splitUnicodeSurfaceSentences(tidyText);
-  if (!sentences.length) return false;
-  if (sentences.length === 1) {
-    const sentence = sentences[0] ?? "";
-    return spanSurfaces.some(surface => splitUnicodeSurfaceSentences(surface).includes(sentence));
-  }
-  return spanSurfaces.some(surface => surface.includes(tidyText));
+function factArgumentsIntactInSurface(
+  text: string,
+  facts: ReadonlyArray<{ subject: string; object: string }>
+): boolean {
+  const surface = tidySurface(text).toLocaleLowerCase();
+  if (!surface) return false;
+  return facts.every(fact => [fact.subject, fact.object]
+    .map(argument => tidySurface(argument ?? "").toLocaleLowerCase())
+    .filter(argument => argument.length >= 2)
+    .every(argument => surface.includes(argument)));
 }
 
 function kernelCandidateParticipatingEvidenceIds(candidate: CandidateSurface, input: SpeakInput): Set<string> {
@@ -3164,7 +3152,22 @@ function semanticDirectEvidenceCandidate(
       contexts: observedSourceSpan ? [{ observedSourceSpan }] : undefined
     });
     const attemptText = admissibleJoinedCandidateText(joined);
-    if (attemptText && admissibleMouthSurface(attemptText) && directEvidenceSurfaceVerified(attemptText, input.evidence)) {
+    // Claim authority and surface quality are separate judgments (the
+    // architecture's own doctrine). The CLAIMS here are already licensed:
+    // every fact came from the graph with its own evidenceIds and
+    // support. What must be checked is the SURFACE: structural
+    // completeness (balanced quoting, no fragment-initial sentences,
+    // terminal boundary) and argument integrity -- each fact's subject
+    // and object must survive INTACT in the composed text, which is
+    // exactly what the live stitching failures broke (`Leonard Nimoy as
+    // Mr. "Where No Man."` lost the object "Mr. Spock" mid-title). A
+    // verbatim-substring requirement here was wrong: it banned honest
+    // composition along with the salad, collapsing the chatbot into a
+    // quotation engine.
+    if (attemptText
+      && admissibleMouthSurface(attemptText)
+      && structurallyCompleteSurface(attemptText)
+      && factArgumentsIntactInSurface(attemptText, attempt.map(row => row.fact))) {
       text = attemptText;
       resolved = attempt;
       break;
