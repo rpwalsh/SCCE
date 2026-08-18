@@ -1,13 +1,20 @@
 {
   "schema": "scce.request_requirement_corpus.v1",
   "language": "en",
-  "corpusRevision": "bootstrap.v2.2026-08-17",
+  "corpusRevision": "bootstrap.v4.2026-08-17",
   "responseFormProfiles": [
     {
       "id": "form.long_prose.v1",
       "sourceLabel": "long-form prose",
       "surfaceLayout": {
         "sentencesPerBlock": 5
+      }
+    },
+    {
+      "id": "form.enumeration.v1",
+      "sourceLabel": "enumerated list",
+      "surfaceLayout": {
+        "sentencesPerBlock": 6
       }
     }
   ],
@@ -843,6 +850,162 @@
         "quantity": 3,
         "wordsPerUnit": 350
       }
+    },
+    {
+      "text": "List the six main characters of the television series.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "Name the members of the expedition.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "What are the planets of the solar system?",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "Who were the main cast members of the show?",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "List the countries that border Switzerland.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "Name the principal rivers of South America.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "What are the primary colors?",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "Who were the founding members of the society?",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "List the ingredients of the traditional recipe.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "Enumerate the moons of Jupiter.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "What are the official languages of Belgium?",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
+    },
+    {
+      "text": "Name the ships that took part in the voyage.",
+      "authority": "factual",
+      "requirements": {
+        "externalTruthAuthority": 0.92,
+        "sourceDependence": 0.82,
+        "uncertaintyTolerance": 0.34,
+        "brevityDetailBalance": 0.55,
+        "semanticPreservation": 0.72
+      },
+      "responseFormId": "form.enumeration.v1",
+      "responseFormSourceLabel": "enumerated list"
     }
   ]
 }

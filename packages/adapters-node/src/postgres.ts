@@ -2683,7 +2683,7 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
                EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
-               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+               OR ${observationReferencedProfileFilterSql(storage)}
                OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
              )`
           : "";
@@ -2713,7 +2713,7 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
                EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
-               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+               OR ${observationReferencedProfileFilterSql(storage)}
                OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
              )`
           : "";
@@ -2750,7 +2750,7 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
                 EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
              OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
              OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
-             OR EXISTS (SELECT 1 FROM ${storage.table("ngram_observations")} o WHERE o.metadata_json->>'profileId'=lp.id OFFSET 0)
+             OR ${observationReferencedProfileFilterSql(storage)}
              OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
            )
              AND ${access.sql}
@@ -2770,6 +2770,33 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
       )).map(row => row.profile_json);
     }
   };
+}
+
+// ngram_observations is a multi-GB table with only tens of distinct
+// profileIds. A correlated `EXISTS (... WHERE metadata_json->>'profileId'
+// = lp.id)` makes the planner seq-scan the whole table once per candidate
+// profile that has no observations (verified live: the profile-cluster
+// query sat in IO DataFileRead for 25+ minutes after whole-novel
+// training). This recursive skip scan over the (metadata_json->>
+// 'profileId') expression index enumerates the distinct profileIds in one
+// index probe per distinct value (verified live: 53ms vs 3.5 minutes for
+// the same 23 values), and because the IN subquery is uncorrelated it is
+// hashed once per query instead of re-run per row.
+function observationReferencedProfileFilterSql(storage: PostgresStorageAdapter): string {
+  const observations = storage.table("ngram_observations");
+  return `lp.id IN (
+    WITH RECURSIVE obs_profiles(pid) AS (
+      (SELECT o.metadata_json->>'profileId' FROM ${observations} o
+       WHERE o.metadata_json->>'profileId' IS NOT NULL
+       ORDER BY o.metadata_json->>'profileId' LIMIT 1)
+      UNION ALL
+      SELECT (SELECT o.metadata_json->>'profileId' FROM ${observations} o
+              WHERE o.metadata_json->>'profileId' > op.pid
+              ORDER BY o.metadata_json->>'profileId' LIMIT 1)
+      FROM obs_profiles op WHERE op.pid IS NOT NULL
+    )
+    SELECT pid FROM obs_profiles WHERE pid IS NOT NULL
+  )`;
 }
 
 async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profiles: readonly LanguageProfile[]): Promise<void> {

@@ -44,6 +44,7 @@ import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "
 import type { SemanticConsolidationResult } from "../semantic-memory-consolidation.js";
 import { metadataWithRuntimeReplanMotion, priorRejectedHypothesesFromCandidates, type RuntimeReplanMotion } from "../runtime-motion.js";
 import type { CandidateSurface } from "../candidate-contract.js";
+import { tidySurfaceText } from "../surface-linguistics.js";
 
 const proofEngineCalls = vi.hoisted(() => ({
   ablatedSupport: 0,
@@ -1344,6 +1345,48 @@ describe("kernel local evidence source anchoring", () => {
     });
     expect(definitional).toBeDefined();
     expect(definitional?.plan?.proofExcerpts?.[0]?.text).toContain("Rick Berman and Michael Piller");
+  });
+
+  it("returns a lead-anchored multi-sentence window that is a verbatim tidy-space substring when the learned response form declares a sentence budget", () => {
+    // Enumeration-shaped requests ("list the main characters of X") name
+    // things the source expresses only as instances, so no single sentence
+    // can carry the answer. The learned response-form budget widens the
+    // plan to a contiguous document-order window -- and that window must
+    // remain a verbatim substring of the span in tidySurfaceText space,
+    // because mouth.ts's source-excerpt verification refuses any answer
+    // that is not.
+    const lead = "'Space Frontier' is an American television series that follows the crew of an exploratory vessel.";
+    const castOne = "The series stars Rowan Vale as Captain Idris Marn, the commanding officer of the ship.";
+    const castTwo = "Talia Brenn co-stars as science officer Veya Sol alongside Marcus Hale as Doctor Piet Roos.";
+    const later = "The series was filmed in a converted warehouse near the studio backlot.";
+    const source = evidenceSpan({
+      id: "evidence:space-frontier-cast-window",
+      sourceVersionId: "source:space-frontier-cast-window:v1" as SourceVersionId,
+      title: "Space Frontier",
+      uri: "fixture://wiki/Space_Frontier",
+      text: `${lead} ${castOne} ${castTwo} ${later}`,
+      alpha: 0.97
+    });
+
+    const windowed = proposeSourceExactEvidenceAnswer({
+      requestText: "List the main characters of Space Frontier.",
+      selectedEvidence: [source],
+      responseSentenceBudget: 3
+    });
+    expect(windowed).toBeDefined();
+    const excerpts = (windowed?.plan?.proofExcerpts ?? []).map(excerpt => excerpt.text);
+    expect(excerpts.length).toBe(3);
+    expect(excerpts.join(" ")).toContain("Rowan Vale");
+    expect(excerpts.join(" ")).toContain("Talia Brenn");
+    // The exactness guarantee the whole construction exists for:
+    expect(tidySurfaceText(source.text).includes(excerpts.join(" "))).toBe(true);
+
+    // Without a budget the classic single-sentence contract is unchanged.
+    const single = proposeSourceExactEvidenceAnswer({
+      requestText: "List the main characters of Space Frontier.",
+      selectedEvidence: [source]
+    });
+    expect(single?.plan?.proofExcerpts?.length).toBe(1);
   });
 
   it("keeps an exact-source sentence complete when its subject anchor occurs late", () => {

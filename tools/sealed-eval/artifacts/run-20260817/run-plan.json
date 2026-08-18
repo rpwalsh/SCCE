@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "runId": "rehearsal-20260817",
+  "evaluationId": "scce-sealed-rehearsal-20260817",
+  "corpusManifest": "artifacts/run-20260816/corpus-manifest.json",
+  "questionsPath": "artifacts/run-20260816/questions.jsonl",
+  "systemManifest": "artifacts/run-20260816/system-manifest.json",
+  "ablationManifest": "templates/ablation-manifest.example.json",
+  "outputDirectory": "artifacts/run-20260817/out",
+  "seed": "rehearsal-20260817-current-build",
+  "clock": "2026-08-17T20:00:00.000Z",
+  "questionOrder": "seeded-random",
+  "conditionOrder": "seeded-random"
+}

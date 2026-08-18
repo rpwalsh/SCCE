@@ -1061,10 +1061,21 @@ export function createProductionTurnRuntime(options: {
       const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit));
       const proofNodes = graph.nodes;
       const proofEdges = graph.edges;
+      // The learned response form's surface layout supplies the sentence
+      // budget: an enumeration-shaped request (matched against the
+      // hand-authored request-requirement corpus, never a keyword list)
+      // answers with the source's contiguous lead block instead of a single
+      // lexically-best sentence -- the fix for questions whose answers the
+      // source expresses only as instances ("list the main characters"
+      // vs. a lead that names them without ever saying "characters").
+      const responseFormSentences = requirementField.responseForm?.surfaceLayout?.sentencesPerBlock;
       const answerProposal = proposeSourceExactEvidenceAnswer({
         requestText: input.text,
         selectedEvidence: supportCandidates,
-        semanticFrameBoundEvidenceIds
+        semanticFrameBoundEvidenceIds,
+        ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
+          ? { responseSentenceBudget: responseFormSentences }
+          : {})
       });
       // Not input.text directly: evaluateSemanticObligations/structural.check
       // extract material assertable items from claim.text -- a raw

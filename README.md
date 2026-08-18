@@ -26,17 +26,36 @@ runtime with a real ingested Wikipedia corpus (2026-08-17):
 - **Test suite**: 298 test files / 1,989 tests passing across the kernel,
   server, and adapter packages, including the live-database test files run
   against a real PostgreSQL instance.
-- **Sealed evaluation rehearsal**: 6/6 exact answers on the sealed
-  4-document, 6-question harness (including a correct abstention on the
-  deliberately unanswerable probe), versus 4/6 for the independent BM25
-  reference baseline. Answers carry byte-`sha256`-verified citations
-  checked against the sealed corpus bytes. Single-operator rehearsal
-  scope; the independent public-review protocol in
+- **Sealed evaluation rehearsal**: 6/6 on the objective (required-string
+  + abstention) scorer on the sealed 4-document, 6-question harness,
+  versus 4/6 for the independent BM25 reference baseline. Honest scope
+  limits, stated plainly: the objective scorer has no coherence axis, and
+  a human read of the raw answers
+  (`tools/sealed-eval/artifacts/run-20260817b/out/raw-answers.jsonl`)
+  shows 4 of 6 contain stitched or truncated sentences; citations are
+  byte-`sha256`-verified **where present** — 4 of 6 answers carry them,
+  while 2 of 6 drew on a source outside the sealed manifest and correctly
+  failed closed with a recorded citation omission instead of fabricating
+  one (which also means SCCE's retrieval was not constrained to the
+  sealed corpus the way the BM25 baseline was). Single-operator
+  rehearsal scope; the independent public-review protocol in
   [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
   not yet been executed.
 - **Live rehearsals**: the PostgreSQL schema/activation rehearsal and the
   end-to-end adapter rehearsal (ingest → promote → live turn → exact
   byte-verified citation) both pass against a real database.
+- **Enumeration-shaped questions**: "list the main characters of X"-style
+  requests return a contiguous, byte-verifiable multi-sentence excerpt
+  (learned response-form budget; no keyword lists), verified live against
+  the hydrated Wikipedia brain — the answer window is constructed in the
+  same normalization space the source-excerpt verifier compares in, so
+  verification holds by construction.
+- **Post-training query latency**: whole-novel corpus training exposed a
+  planner pathology (correlated `EXISTS` over a multi-GB observations
+  table seq-scanned once per candidate profile); replaced with a
+  recursive index skip scan — measured live at 53ms versus 3.5 minutes
+  for the same result, turn-path profile query from stuck (25+ minutes)
+  to ~1s cold.
 
 ## A third architecture for AI
 

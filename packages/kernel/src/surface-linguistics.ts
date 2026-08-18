@@ -72,6 +72,40 @@ export function stripTerminalSentenceBoundary(text: string): string {
   return isSentenceBoundarySymbol(last) ? chars.slice(0, -1).join("").trimEnd() : clean;
 }
 
+/**
+ * Canonical answer-surface normalization: NFC, ASCII-whitespace collapse,
+ * then consecutive-boundary-glyph collapse. Extracted verbatim from
+ * mouth.ts's `tidySurface` (which now delegates here) -- this is the exact
+ * space in which mouth's source-excerpt verification compares answers to
+ * evidence text, exported so answer plans can build multi-sentence windows
+ * that are verifiable substrings BY CONSTRUCTION instead of re-joined
+ * cleaned fragments that no longer match the source. Any change here
+ * changes excerpt verification; keep the two in lockstep by keeping
+ * exactly one implementation.
+ */
+export function tidySurfaceText(text: string): string {
+  const collapsed: string[] = [];
+  let pending = false;
+  for (const char of text.normalize("NFC")) {
+    if (char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f" || char === "\v") {
+      pending = collapsed.length > 0;
+      continue;
+    }
+    if (pending) collapsed.push(" ");
+    pending = false;
+    collapsed.push(char);
+  }
+  const base = collapsed.join("").trim();
+  let out = "";
+  for (const char of base) {
+    const previous = out[out.length - 1] ?? "";
+    if (isSentenceBoundarySymbol(char) && previous === char) continue;
+    if ((char === ":" || char === ";" || char === "," || char === "،" || char === "、") && previous === char) continue;
+    out += char;
+  }
+  return out;
+}
+
 export function collapseSurfaceWhitespace(text: string): string {
   let out = "";
   let pendingSpace = false;
