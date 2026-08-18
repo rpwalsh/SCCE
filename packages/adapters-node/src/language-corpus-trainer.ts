@@ -55,6 +55,15 @@ export interface LanguageCorpusTrainingInput {
   languageAliases?: readonly string[];
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   creativeEventCompiler?: CreativeEventConstructionCompiler;
+  /**
+   * Skip writing n-gram observations and models. For text whose n-gram
+   * mass is ALREADY in the store (stored-corpus construction training
+   * re-runs the language lane over previously-ingested articles),
+   * re-inserting hundreds of thousands of observation rows per MB both
+   * dominates wall time and double-counts the corpus. Constructions,
+   * units, patterns, and frames still train and persist.
+   */
+  skipNgramPersistence?: boolean;
   persistSource?: boolean;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
@@ -207,8 +216,12 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     hasher
   });
 
-  const observations = compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const models = compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const observations = input.skipNgramPersistence
+    ? []
+    : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const models = input.skipNgramPersistence
+    ? []
+    : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const constructionWarnings: string[] = [...compiledBatch.warnings];
