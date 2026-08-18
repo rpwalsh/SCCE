@@ -22,6 +22,8 @@ export interface CreativeSectionRealizationInput {
    * names its own subject always wins on its own text.
    */
   resolvedCastSubjectIds?: readonly string[];
+  /** Additional correctly-cased text (typically this turn's evidence) used only to recover proper-noun casing, never as content. */
+  casingSourceTexts?: readonly string[];
   /** Distinct attempts sample distinct continuations for the same goal. */
   attempt?: number;
   generationExtent?: number;
@@ -78,7 +80,17 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     ? properNounEntityAnchors(input.requestText).slice(0, 3)
     : resolvedCast;
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
-  const properNounCasing = properNounCasingHints([input.requestText, input.sectionGoal, ...conditioning]);
+  // Evidence text is a casing source too, not just the request: a
+  // pronoun follow-up ("...a story about her") contains none of the
+  // subject's own words, so every name reaching the surface comes from
+  // evidence and was rendered lowercase -- "Augusta ada king countess"
+  // instead of "Augusta Ada King, Countess" (verified live).
+  const properNounCasing = properNounCasingHints([
+    input.requestText,
+    input.sectionGoal,
+    ...conditioning,
+    ...(input.casingSourceTexts ?? [])
+  ]);
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,

@@ -2761,6 +2761,7 @@ export function createProductionTurnRuntime(options: {
                 narrativeConditioning: priorSectionTexts.slice(-2),
                 topicVocabulary: sectionTopicVocabulary,
                 resolvedCastSubjectIds: creativeCastSubjectIds,
+                casingSourceTexts: selectedEvidence.slice(0, 4).map(span => span.text),
                 attempt,
                 generationExtent: 180
               });
