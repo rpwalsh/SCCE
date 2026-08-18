@@ -12,7 +12,15 @@ import { createClock, createHasher } from "../packages/kernel/dist/primitives.js
 import { createIdFactory } from "../packages/kernel/dist/ids.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "../packages/kernel/dist/procedural-skill-runtime.js";
 
-const databaseUrl = process.env.SCCE_TEST_DATABASE_URL ?? "postgresql://postgres:root@localhost:5432/scce";
+// Credentials come from the environment, never from tracked source: this
+// file previously embedded a real password as a fallback, which shipped
+// to the public repository (rotation required regardless -- git history
+// retains the old value).
+const databaseUrl = process.env.SCCE_TEST_DATABASE_URL ?? process.env.SCCE_DATABASE_URL;
+if (!databaseUrl) {
+  process.stderr.write("SCCE_TEST_DATABASE_URL (or SCCE_DATABASE_URL) must be set; no embedded fallback.\n");
+  process.exit(2);
+}
 const schema = `scce_rehearsal_skill_${process.pid}_${Date.now()}`;
 if (!/^scce_rehearsal_skill_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe rehearsal schema name");
 
