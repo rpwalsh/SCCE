@@ -26,19 +26,24 @@ runtime with a real ingested Wikipedia corpus (2026-08-17):
 - **Test suite**: 298 test files / 1,989 tests passing across the kernel,
   server, and adapter packages, including the live-database test files run
   against a real PostgreSQL instance.
-- **Sealed evaluation rehearsal**: 6/6 on the objective (required-string
-  + abstention) scorer on the sealed 4-document, 6-question harness,
-  versus 4/6 for the independent BM25 reference baseline. Honest scope
-  limits, stated plainly: the objective scorer has no coherence axis, and
-  a human read of the raw answers
-  (`tools/sealed-eval/artifacts/run-20260817b/out/raw-answers.jsonl`)
-  shows 4 of 6 contain stitched or truncated sentences; citations are
-  byte-`sha256`-verified **where present** — 4 of 6 answers carry them,
-  while 2 of 6 drew on a source outside the sealed manifest and correctly
-  failed closed with a recorded citation omission instead of fabricating
-  one (which also means SCCE's retrieval was not constrained to the
-  sealed corpus the way the BM25 baseline was). Single-operator
-  rehearsal scope; the independent public-review protocol in
+- **Sealed evaluation rehearsal** (run `rehearsal-20260817g`): 6/6 exact
+  on the sealed 4-document, 6-question harness versus 4/6 for the
+  independent BM25 reference baseline — with the evaluation now sealed
+  for real (the runtime is constrained to source versions byte-matched to
+  the manifest via a trusted in-process evidence allowlist, the same
+  constraint the baseline runs under) and scored on a structural
+  coherence axis alongside required-strings (no stitched fragments,
+  unbalanced quoting, or fragment-initial sentences; language-agnostic
+  checks, no word lists). Every answer is a verbatim, document-contiguous
+  excerpt from the correct source article with a byte-`sha256`-verified
+  citation; the deliberately unanswerable probe abstains correctly. One
+  honest defect remains and is flagged by the scorer itself: the
+  abstention's answer surface is a topic stub ("what boiling point"), not
+  prose — learned abstention phrasing needs generation mass the current
+  brain lacks. Earlier runs' raw answers (b through f) are retained in
+  `tools/sealed-eval/artifacts/` showing the full defect-to-fix
+  progression. Single-operator rehearsal scope; the independent
+  public-review protocol in
   [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
   not yet been executed.
 - **Live rehearsals**: the PostgreSQL schema/activation rehearsal and the

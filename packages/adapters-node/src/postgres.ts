@@ -1457,6 +1457,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         [ids, ...evidenceAccess.params, ...versionAccess.params]
       );
       return rows.map(rowToSourceVersion);
+    },
+    async sourceVersionsByContentHashes(hashes) {
+      if (!hashes.length) return [];
+      const versionAccess = storage.informationAccessPredicate("sv", 2);
+      const rows = await storage.query<SourceVersionRow>(
+        `SELECT sv.*, s.namespace, s.canonical_uri FROM ${storage.table("source_versions")} sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id WHERE sv.content_hash=ANY($1) AND ${versionAccess.sql}`,
+        [[...hashes], ...versionAccess.params]
+      );
+      return rows.map(rowToSourceVersion);
     }
   };
 }

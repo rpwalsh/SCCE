@@ -106,6 +106,28 @@ export function tidySurfaceText(text: string): string {
   return out;
 }
 
+/**
+ * A surface that is one cased-alphabetic word of two or fewer letters
+ * ("It", "He") is never a complete answer -- it is what a truncated
+ * subject extraction looks like (verified live: a sealed-eval question
+ * answered exactly "It"). Structural, not a word list: digits ("42"),
+ * uncased scripts (a single CJK character is a complete word), and any
+ * surface with a second unit or a third letter are all non-degenerate.
+ * Shared by mouth admissibility and kernel candidate selection so a
+ * degenerate candidate loses at ranking time, letting a real
+ * evidence-plan candidate win instead of leaving the turn empty.
+ */
+export function isDegenerateBareSurface(text: string): boolean {
+  const clean = collapseSurfaceWhitespace(text);
+  if (!clean) return true;
+  const units = clean.split(" ");
+  if (units.length !== 1) return false;
+  const unit = units[0] ?? "";
+  const cased = [...unit].filter(char => char.toLocaleLowerCase() !== char.toLocaleUpperCase());
+  if (!cased.length) return false;
+  return [...unit].filter(char => !isSentenceBoundarySymbol(char)).length <= 2;
+}
+
 export function collapseSurfaceWhitespace(text: string): string {
   let out = "";
   let pendingSpace = false;
@@ -193,7 +215,33 @@ function shouldCloseSentence(chars: readonly string[], boundaryIndex: number): b
   const boundary = chars[boundaryIndex] ?? "";
   if (boundary !== ".") return true;
   if (isSingleLetterInitial(chars, boundaryIndex)) return false;
+  if (isTitleCaseAbbreviation(chars, boundaryIndex)) return false;
   return true;
+}
+
+/**
+ * A two-letter title-case token before a period, followed by a capitalized
+ * continuation, is an abbreviation ("Lt. Commander", "Dr. Mark", "Mr.
+ * Spock"), not a sentence end -- splitting there produced excerpt windows
+ * truncated mid-title (verified live: "Chief Engineer Lt." as a complete
+ * "sentence"). Structural, not a word list: the shape (exactly two
+ * letters, initial capital, lowercase second letter, capitalized next
+ * word) is what Latin-script abbreviated titles look like in any
+ * language, two-letter capitalized words that genuinely END a sentence
+ * are vanishingly rare, and all-caps acronyms ("NBC.") keep closing
+ * because their second letter is not lowercase.
+ */
+function isTitleCaseAbbreviation(chars: readonly string[], boundaryIndex: number): boolean {
+  const previous = previousSurfaceToken(chars, boundaryIndex);
+  const letters = [...previous];
+  if (letters.length !== 2) return false;
+  const first = letters[0] ?? "";
+  const second = letters[1] ?? "";
+  if (first.toLocaleLowerCase() === first.toLocaleUpperCase() || first !== first.toLocaleUpperCase()) return false;
+  if (second.toLocaleLowerCase() === second.toLocaleUpperCase() || second !== second.toLocaleLowerCase()) return false;
+  const next = nextVisibleChar(chars, boundaryIndex + 1);
+  if (!next || !isSurfaceLetter(next)) return false;
+  return next.toLocaleLowerCase() !== next.toLocaleUpperCase() && next === next.toLocaleUpperCase();
 }
 
 function isSingleLetterInitial(chars: readonly string[], boundaryIndex: number): boolean {

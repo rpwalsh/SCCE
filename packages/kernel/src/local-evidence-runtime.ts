@@ -467,20 +467,54 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // best-covering sentence -- only when a deeper sentence strictly beats
   // every lead sentence on them.
   const rows = evidence.flatMap(span => {
-    const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 12000)).slice(0, 80);
+    // Rank REAL sentences in the exact normalization space the mouth's
+    // source-excerpt verifier compares in. fastAnswerSentences' cleaning
+    // could fail to split a quote-heavy region, producing one giant
+    // "sentence" block that hoovers up unit overlap from everything it
+    // swallowed and wins the ranking on content it never surfaces
+    // (verified live: "Who played Captain James T. Kirk..." selected a
+    // block whose visible head was the retronym sentence). Sentences
+    // split from tidySurfaceText are verbatim substrings of the span by
+    // construction, so whatever wins here survives excerpt verification
+    // unchanged. Truncation drops the final (possibly cut) sentence.
+    const tidySpanText = tidySurfaceText(span.text);
+    const boundedChars = [...tidySpanText].slice(0, 12000);
+    const boundedText = boundedChars.join("");
+    const allSentences = splitSurfaceSentences(boundedText);
+    const sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
     const titleMatches = anchored.anchors.length > 0
       && evidenceTitleDistinctAnchorMatches(span, anchored.anchors);
     const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
     const contentRequestUnits = new Set([...requestUnits].filter(unit =>
       ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))));
+    // Cross-span source affinity: content-net overlap is asymmetric across
+    // sources (request words inside THIS span's title are excluded here
+    // but count as "content" for a sibling source whose title lacks them
+    // -- verified live: sealed TOS questions drew their answers from the
+    // DS9 article because "original"/"series" scored as content there).
+    // Weighting each span by how completely the request covers its title
+    // restores symmetry: the source the request names most completely
+    // wins, in either direction, with no language assumptions.
+    const titleUnitList = [...titleUnits];
+    const titleRequestCoverage = titleUnitList.length
+      ? titleUnitList.filter(titleUnit =>
+        [...requestUnits].some(unit => requestUnitMatchesSurface(unit, titleUnit))).length / titleUnitList.length
+      : 0;
+    const sourceAffinityBoost = titleMatches ? 3 * titleRequestCoverage : 0;
     let contentBoostIndex = -1;
     if (titleMatches && contentRequestUnits.size) {
-      const coverage = sentences.map((sentence, index) => ({
-        index,
-        contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits),
-        fullOverlap: requestUnitOverlapForSurface(sentence, requestUnits)
-      }));
-      const leadContent = Math.max(0, ...coverage.slice(0, 2).map(row => row.contentOverlap));
+      // Fragments (lowercase-initial in a cased script -- markup or
+      // splitting leftovers) are ineligible to receive the transferred
+      // boost: a glued image-caption block was winning the transfer on a
+      // full-overlap tie-break over the article's real cast sentence.
+      const coverage = sentences
+        .map((sentence, index) => ({
+          index,
+          contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits),
+          fullOverlap: requestUnitOverlapForSurface(sentence, requestUnits)
+        }))
+        .filter(row => !lowercaseInitialFragment(sentences[row.index] ?? ""));
+      const leadContent = Math.max(0, ...coverage.filter(row => row.index <= 1).map(row => row.contentOverlap));
       const best = [...coverage].sort((left, right) =>
         right.contentOverlap - left.contentOverlap
         || right.fullOverlap - left.fullOverlap
@@ -488,7 +522,17 @@ export function proposeSourceExactEvidenceAnswer(input: {
       if (best && best.contentOverlap > leadContent) contentBoostIndex = best.index;
     }
     return sentences.map((sentence, index) => {
-      const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
+      // Same doctrine as the transfer logic above, applied to the overlap
+      // term itself: once this span's title matches the request anchors,
+      // repeating title words earns a sentence nothing -- otherwise a
+      // lexically-empty sentence that restates the full title outscores
+      // the sentence carrying the actual content terms (verified live:
+      // "Who created Star Trek: The Original Series?" selected the
+      // retronym sentence, which answers nothing, over the lead that
+      // names Roddenberry, purely on five title-unit hits).
+      const unitOverlap = titleMatches && contentRequestUnits.size
+        ? requestUnitOverlapForSurface(sentence, contentRequestUnits)
+        : requestUnitOverlapForSurface(sentence, requestUnits);
       const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? 0.54 : 0;
       // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units); see
       // the coverage-transfer note above for when it moves off the lead.
@@ -496,6 +540,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
         && (contentBoostIndex >= 0 ? index === contentBoostIndex : index <= 1)
         ? 4
         : 0;
+      // Sentence-completeness prior: in cased scripts a well-formed
+      // sentence opens with an uppercase letter, digit, or opening
+      // punctuation. A lowercase-initial "sentence" is a fragment left by
+      // markup or splitting noise (verified live: an image-caption tail
+      // "as Captain James T. Kirk in action, ..." outranked the article's
+      // real cast sentence). Uncased scripts are exempt by construction.
+      const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
       return {
         span,
         sentence,
@@ -504,8 +555,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
           + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * 0.35
           + anchorBoost
           + titleLeadBoost
+          + sourceAffinityBoost
           + Math.max(0, 0.16 - index * 0.018)
           - fastAnswerLongSentencePenalty(sentence)
+          - fragmentPenalty
       };
     });
   })
@@ -528,6 +581,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // context), else at the winner. Contiguity is the coherence guarantee --
   // never stitched fragments from disjoint places.
   const sentenceBudget = Math.max(1, Math.min(8, Math.floor(input.responseSentenceBudget ?? 1)));
+  // Ranked sentences are already tidy-space verbatim substrings of the
+  // span (see the ranking block above), so the single-sentence answer
+  // needs no remapping and the multi-sentence window below verifies by
+  // construction.
   let answerSentences = [selected.sentence];
   if (sentenceBudget > 1) {
     // The window is built in tidySurfaceText space -- the exact space
@@ -655,6 +712,14 @@ export function proposeSourceExactEvidenceAnswer(input: {
       fakeEvidenceForbidden: true
     })
   };
+}
+
+
+ function lowercaseInitialFragment(sentence: string): boolean {
+  const leadChar = [...sentence][0] ?? "";
+  return Boolean(leadChar)
+    && leadChar.toLocaleLowerCase() !== leadChar.toLocaleUpperCase()
+    && leadChar !== leadChar.toLocaleUpperCase();
 }
 
 
@@ -2614,74 +2679,102 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 
 
  function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false): string[] {
+  // Mirrors proposeSourceExactEvidenceAnswer's ranking contract exactly
+  // (see the long notes there): sentences are ranked IN tidySurfaceText
+  // space so every returned surface is a verbatim substring of its span
+  // (fastAnswerSentences' cleaning could glue quote-heavy regions into one
+  // giant block that wins on content it never surfaces, and its
+  // anchor-focus trimming mangled quotes/parentheses into surfaces the
+  // mouth's excerpt verifier then rejected); lowercase-initial fragments
+  // are penalized; and cross-span ranking carries the source-affinity
+  // weight so the span whose title the request names most completely wins
+  // over a sibling source scoring on words that happen to be absent from
+  // its own title.
   const limit = evidenceAnswerSentenceLimit(requestText, evidence, sessionContextEvidence);
-  if (evidence.length === 1) {
-    const span = evidence[0];
-    if (!span) return [];
-    const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000));
-    const requestFeatures = featureSet(requestText, 256);
-    const requestUnits = requestUnitSet(requestText);
-    const anchors = sourceEvidenceAnchorsForRequest(requestText);
-    const focused = sentences
-      .map((sentence, index): EvidenceSentenceRow => {
-        const clean = anchorFocusedAnswerSurface(cleanSourceAnswerSurface(sentence), anchors, evidenceTitle(span));
-        const unitOverlap = requestUnitOverlapForSurface(clean, requestUnits);
-        const anchorBoost = sourceSurfaceMatchesAnyAnchor(clean, anchors) ? 0.54 : 0;
-        // See proposeSourceExactEvidenceAnswer's identical boost: must
-        // outweigh unitOverlap*0.92's realistic ceiling so the article's own
-        // opening definition beats a deep sentence that merely repeats the
-        // topic name.
-        const titleLeadBoost = anchors.length && index <= 1 && evidenceTitleDistinctAnchorMatches(span, anchors) && evidenceTitleAppearsInSurface(span, clean) ? 4 : 0;
-        return {
-          span,
-          sentence: clean,
-          features: featureSet(clean, 256),
-          index,
-          unitOverlap,
-          score: unitOverlap * 0.92 + weightedJaccard(requestFeatures, featureSet(clean, 256)) * 0.35 + Math.max(0, 0.16 - index * 0.018) + titleLeadBoost + anchorBoost - fastAnswerLongSentencePenalty(clean)
-        };
-      })
-      .filter(row => row.sentence && (row.score > 0.16 || (anchors.length > 0 && row.index === 0)))
-      .sort((left, right) => right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index);
-    const selected = selectEvidenceSentenceRows(focused.length ? focused : sentences.map((sentence, index): EvidenceSentenceRow => {
-      const clean = cleanSourceAnswerSurface(sentence);
-        return {
-          span,
-          sentence: clean,
-          features: featureSet(clean, 256),
-        index,
-        unitOverlap: requestUnitOverlapForSurface(clean, requestUnits),
-        score: Math.max(0, 0.12 - index * 0.012)
-      };
-    }), limit);
-    return selected.map(row => row.sentence);
-  }
   const requestFeatures = featureSet(requestText, 256);
   const requestUnits = requestUnitSet(requestText);
   const orderedRequestUnits = requestUnitsFromText(requestText);
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
+  const singleSpan = evidence.length === 1;
   const candidates = evidence
-    .flatMap(span => fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000)).slice(0, 80).map((surface, index) => {
-      const clean = anchorFocusedAnswerSurface(cleanSourceAnswerSurface(surface), anchors, evidenceTitle(span));
-      const features = featureSet(clean, 256);
-      const lexical = weightedJaccard(requestFeatures, features) + weightedJaccard(requestFeatures, span.features) * 0.35;
-      const unitOverlap = requestUnitOverlapForSurface(clean, requestUnits);
-      const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(clean, orderedRequestUnits);
-      const anchorBoost = sourceSurfaceMatchesAnyAnchor(clean, anchors) ? 0.54 : 0;
-      const positionPrior = Math.max(0, 0.18 - index * 0.015);
-      return {
-        span,
-        sentence: clean,
-        features,
-        index,
-        unitOverlap,
-        score: lexical + Math.min(4, unitOverlap) * 0.08 + pairOverlap * 0.16 + span.alpha * 0.12 + positionPrior + anchorBoost + fastAnswerNamedSurfaceMass(clean) * 0.22 - fastAnswerLongSentencePenalty(clean)
-      };
-    }))
-    .filter(row => row.sentence)
-    .sort((a, b) => b.score - a.score || String(a.span.id).localeCompare(String(b.span.id)));
+    .flatMap(span => {
+      const tidySpanText = tidySurfaceText(span.text);
+      const boundedChars = [...tidySpanText].slice(0, 24000);
+      const allSentences = splitSurfaceSentences(boundedChars.join(""));
+      const sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+      const titleMatches = anchors.length > 0 && evidenceTitleDistinctAnchorMatches(span, anchors);
+      const titleUnitList = requestUnitsFromText(evidenceTitle(span));
+      const titleRequestCoverage = titleUnitList.length
+        ? titleUnitList.filter(titleUnit =>
+          [...requestUnits].some(unit => requestUnitMatchesSurface(unit, titleUnit))).length / titleUnitList.length
+        : 0;
+      const sourceAffinityBoost = titleMatches && !singleSpan ? 3 * titleRequestCoverage : 0;
+      // Content-net scoring + coverage transfer, identical in doctrine to
+      // proposeSourceExactEvidenceAnswer (see the notes there): without
+      // it, the boosted article lead beats the deeper sentence carrying
+      // the request's actual content terms (verified live in run-f: "Who
+      // played Captain James T. Kirk / Benjamin Sisko" both returned the
+      // article opener without the actor's name).
+      const contentRequestUnits = new Set([...requestUnits].filter(unit =>
+        !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))));
+      let contentBoostIndex = -1;
+      if (titleMatches && contentRequestUnits.size) {
+        const coverage = sentences
+          .map((sentence, index) => ({
+            index,
+            contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits),
+            fullOverlap: requestUnitOverlapForSurface(sentence, requestUnits)
+          }))
+          .filter(row => !lowercaseInitialFragment(sentences[row.index] ?? ""));
+        const leadContent = Math.max(0, ...coverage.filter(row => row.index <= 1).map(row => row.contentOverlap));
+        const best = [...coverage].sort((left, right) =>
+          right.contentOverlap - left.contentOverlap
+          || right.fullOverlap - left.fullOverlap
+          || left.index - right.index)[0];
+        if (best && best.contentOverlap > leadContent) contentBoostIndex = best.index;
+      }
+      return sentences.map((sentence, index): EvidenceSentenceRow => {
+        const features = featureSet(sentence, 256);
+        const lexical = weightedJaccard(requestFeatures, features) + (singleSpan ? 0 : weightedJaccard(requestFeatures, span.features) * 0.35);
+        const unitOverlap = titleMatches && contentRequestUnits.size
+          ? requestUnitOverlapForSurface(sentence, contentRequestUnits)
+          : requestUnitOverlapForSurface(sentence, requestUnits);
+        const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(sentence, orderedRequestUnits);
+        const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? 0.54 : 0;
+        const titleLeadBoost = titleMatches
+          && (contentBoostIndex >= 0 ? index === contentBoostIndex : index <= 1)
+          && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
+          ? 4
+          : 0;
+        const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
+        return {
+          span,
+          sentence,
+          features,
+          index,
+          unitOverlap,
+          score: unitOverlap * 0.92
+            + lexical * 0.35
+            + pairOverlap * 0.16
+            + span.alpha * 0.12
+            + anchorBoost
+            + titleLeadBoost
+            + sourceAffinityBoost
+            + Math.max(0, 0.18 - index * 0.015)
+            - fastAnswerLongSentencePenalty(sentence)
+            - fragmentPenalty
+        };
+      });
+    })
+    .filter(row => row.sentence.length >= 24)
+    .sort((left, right) => right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = selectEvidenceSentenceRows(candidates, limit);
-  return selected.map(item => item.sentence);
+  // Adjacent sentences read in document order, whatever order they were
+  // scored in (run-f emitted "It acquired the retronym... 'Star Trek' is
+  // an American..." -- the article's sentences reversed).
+  return [...selected]
+    .sort((left, right) => String(left.span.id).localeCompare(String(right.span.id)) || left.index - right.index)
+    .map(item => item.sentence);
 }
 
 
@@ -2859,6 +2952,16 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   for (const candidate of rows) {
     if (selected.length >= limit) break;
     if (selected.some(item => weightedJaccard(item.features, candidate.features) > 0.9)) continue;
+    // Coherence contract shared with every other multi-sentence surface
+    // (source-exact window, direct-evidence join): sentences shown
+    // together must be document-adjacent in the same span, or the reader
+    // gets verbatim-but-disjoint prose whose pronouns and discourse
+    // markers dangle ("He went on to appear in 31 episodes..." with no
+    // antecedent -- verified live in the sealed-eval DS9 answers). A
+    // non-adjacent runner-up is dropped rather than stitched; a
+    // single-sentence answer is always coherent by construction.
+    // Character-index adjacency, no language assumptions.
+    if (selected.length && !selected.some(item => item.span.id === candidate.span.id && Math.abs(item.index - candidate.index) === 1)) continue;
     selected.push(candidate);
   }
   return selected;

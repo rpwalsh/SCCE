@@ -916,9 +916,19 @@ export function createProductionTurnRuntime(options: {
         : ftrlShadowRankingForFeatures(graphRetrievalFeatures(retrievalText)).catch(() => undefined);
       const semanticFrameBoundEvidenceIds = new Set(graphSlice.semanticFrameBoundEvidenceIds ?? []);
       let graph = graphSlice.graph;
-      const evidencePool = discourseEvidenceBound
+      const unsealedEvidencePool = discourseEvidenceBound
         ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))])
         : mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]);
+      // Sealed-corpus allowlist (trusted in-process runtimeControl, like
+      // signal): every downstream evidence consumer -- proof support,
+      // answer proposal, mouth realization, citations -- draws from this
+      // pool, so filtering here is the single enforcement point. A sealed
+      // turn that loses all its evidence falls through to the normal
+      // insufficient_support abstention rather than any special case.
+      const sealedSourceAllowlist = input.runtimeControl?.evidenceSourceAllowlist;
+      const evidencePool = sealedSourceAllowlist
+        ? unsealedEvidencePool.filter(span => sealedSourceAllowlist.includes(span.sourceVersionId))
+        : unsealedEvidencePool;
       const evidence = evidenceWithGraphPreviewWindows(
         input.text,
         evidencePool,

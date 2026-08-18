@@ -618,6 +618,15 @@ export interface EvidenceStore {
   getEvidenceBatch(ids: EvidenceId[]): Promise<EvidenceSpan[]>;
   searchEvidence(query: EvidenceQuery): Promise<EvidenceSearchResult[]>;
   sourceVersionsForEvidence(ids: EvidenceId[]): Promise<SourceVersion[]>;
+  /**
+   * Resolve source versions whose stored content hash matches one of the
+   * given hashes. Powers sealed-corpus evaluation: the harness derives the
+   * allowlist of source versions the runtime may answer from directly from
+   * the manifest's document bytes, so "sealed" is enforced by identity of
+   * content, never by trusting document ids or paths. Optional so
+   * fixture-backed stores that never seal remain valid.
+   */
+  sourceVersionsByContentHashes?(hashes: readonly ContentHash[]): Promise<SourceVersion[]>;
 }
 
 export interface ConversationStore {
