@@ -3168,7 +3168,15 @@ function warmupSatisfied(warmup: RuntimeStartupReadinessSnapshot): boolean {
 // whole job is answering fast look like it "always fails". The exact
 // counts stay exact -- this only avoids recomputing them on every poll
 // within a short window.
-const POSTGRES_STATUS_CACHE_MS = 15_000;
+// Longer than the operation it caches, which a TTL has to be to mean
+// anything: the exact-count scan itself takes ~10-13s against a real
+// corpus, so a 15s TTL expired almost as soon as it was written and
+// every poll paid the full scan again (measured live -- it looked like
+// the cache was broken when it was simply always stale). Table counts
+// and schema version do not change on a 60s timescale in a running
+// server; a mutation route that could change them invalidates the
+// readiness marker explicitly.
+const POSTGRES_STATUS_CACHE_MS = 60_000;
 // Keyed by context.runtime, not the ApiContext object itself: index.ts's
 // http.createServer callback builds a FRESH ApiContext object literal on
 // every single request (runtime/config/startupReadiness are captured
