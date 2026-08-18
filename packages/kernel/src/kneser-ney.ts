@@ -12,6 +12,8 @@ const MAX_BASE_CONTINUATIONS = 128;
 
 export interface KneserNeyModel {
   schema: typeof KNESER_NEY_SCHEMA;
+  /** True source identity (e.g. profileId) when known -- a long text trained in chunks yields several KneserNeyModel objects that must still count as one document for cross-source comparisons. Undefined for freshly-trained/reconstructed models with no persisted source to key on. */
+  sourceKey?: string;
   order: number;
   discount: number;
   observedSymbolCount: number;
