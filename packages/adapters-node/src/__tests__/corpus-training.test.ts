@@ -7,6 +7,7 @@ import {
   trainGutenbergCorpus,
   trainLanguageCorpusText,
   trainOssCorpus,
+  trainStoredCorpusConstructions,
   validateConfig,
   type ScceRuntimeConfig
 } from "../index.js";
@@ -208,6 +209,59 @@ describe("multi-corpus training", () => {
     expect(result.filesTrained).toBe(0);
     expect(result.heapMiBAtExit).toBeGreaterThan(0);
     expect(fixture.state.sourceVersions.length).toBe(0);
+  });
+
+  it("trains stored-corpus constructions from evidence-backed blobs, prioritized and byte-bounded", async () => {
+    const fixture = memoryStorage();
+    const article = (title: string, body: string) =>
+      `'${title}' is a subject with real prose. ${`${body} The predicate structure recurs across sentences. It recurs again in a second clause. `.repeat(8)}`;
+    const blobs = new Map<string, Buffer>([
+      ["sha256_high", Buffer.from(article("High Alpha", "The engine was designed by a careful team."))],
+      ["sha256_low", Buffer.from(article("Low Alpha", "The bridge was painted by a different crew."))]
+    ]);
+    (fixture.storage.evidence as unknown as Record<string, unknown>).listEvidenceBackedSourceVersions = async () => [
+      { sourceVersionId: "sv-high", contentHash: "sha256_high", canonicalUri: "https://example.org/high", byteLength: 160, maxAlpha: 0.9, promotedSpanCount: 3 },
+      { sourceVersionId: "sv-low", contentHash: "sha256_low", canonicalUri: "https://example.org/low", byteLength: 160, maxAlpha: 0.2, promotedSpanCount: 1 }
+    ];
+    (fixture.storage as unknown as Record<string, unknown>).blobs = {
+      get: async (hash: string) => {
+        const found = blobs.get(hash);
+        if (!found) throw new Error(`missing blob ${hash}`);
+        return found;
+      },
+      put: async (content: Uint8Array) => `sha256_stored_${content.length}`,
+      exists: async () => true
+    };
+
+    const report = await trainStoredCorpusConstructions({
+      storage: fixture.storage,
+      batchBytes: 100,
+      maxTotalBytes: 4096
+    });
+
+    expect(report.schema).toBe("scce.storedCorpusConstructionTrainReport.v1");
+    expect(report.batchesTrained).toBeGreaterThanOrEqual(1);
+    expect(report.articlesTrained).toBe(2);
+    expect(report.batchesFailed).toEqual([]);
+    expect(report.stoppedByHeapSafetyBound).toBe(false);
+    // Everything trains under the wikipedia corpus identity so hydration
+    // clusters pick the constructions up like any other corpus lane.
+    expect(allSourceSystems(fixture.state).size).toBeGreaterThan(0);
+    expect(report.reports.every(item => item.streamUri.includes("construction-training"))).toBe(true);
+
+    // A one-byte total budget still trains the top-priority batch only.
+    const boundedFixture = memoryStorage();
+    (boundedFixture.storage.evidence as unknown as Record<string, unknown>).listEvidenceBackedSourceVersions =
+      (fixture.storage.evidence as unknown as Record<string, unknown>).listEvidenceBackedSourceVersions;
+    (boundedFixture.storage as unknown as Record<string, unknown>).blobs = (fixture.storage as unknown as Record<string, unknown>).blobs;
+    // Each repeated article is ~1KB; the 1024-byte floor on the total
+    // budget admits the top-priority article, then stops before the next.
+    const bounded = await trainStoredCorpusConstructions({
+      storage: boundedFixture.storage,
+      batchBytes: 100,
+      maxTotalBytes: 1024
+    });
+    expect(bounded.articlesTrained).toBe(1);
   });
 
   it("records one file's training failure as an explicit skip and keeps training the rest", async () => {

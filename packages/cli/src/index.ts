@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -363,10 +363,26 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
     return;
   }
   if (sub === "train") {
-    if (!runtime) return usage("scce corpus train <gutenberg|oss> <path> [limits]");
+    if (!runtime) return usage("scce corpus train <gutenberg|oss|wikipedia-stored> <path> [limits]");
     const kind = args[1];
+    if (kind === "wikipedia-stored") {
+      // Production lane for building the generation construction
+      // inventory from text the blob store already holds (the corpus
+      // retrieval already trusts) -- no path argument, the corpus IS the
+      // database. Resumable via --start-batch; heap bound honored as
+      // given, same contract as the file-based trainers.
+      const options = parseCorpusTrainOptions(args.slice(2));
+      printJson(await trainStoredCorpusConstructions({
+        storage: runtime.storage,
+        startBatchIndex: options.startFileIndex,
+        maxTotalBytes: options.maxFileBytes,
+        heapCheckpointMb: options.heapCheckpointMb,
+        creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
+      }));
+      return;
+    }
     const target = args[2];
-    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss> <path> [--language=<source-alias>] [--start-file=<n>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
+    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss|wikipedia-stored> <path> [--language=<source-alias>] [--start-file=<n>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
     const options = parseCorpusTrainOptions(args.slice(3));
     if (kind === "gutenberg") {
       printJson(await trainGutenbergCorpus({
