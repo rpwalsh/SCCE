@@ -1050,6 +1050,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_version_rank ON ${q}.ngram_observations(source_version_id,count DESC,observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_profile_rank ON ${q}.ngram_observations((metadata_json->>'profileId'),count DESC,observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_system_rank ON ${q}.ngram_observations((metadata_json->>'sourceSystem'), count DESC, observed_at DESC)`,
+    // Unscoped listNgramObservations ordering; without this the 7.6M-row
+    // table is fully sorted per call (measured live: 6+ minutes).
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_global_rank ON ${q}.ngram_observations(count DESC, observed_at DESC, id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_version_updated ON ${q}.ngram_models((model_json->>'sourceVersionId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_updated ON ${q}.ngram_models((model_json->>'profileId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
