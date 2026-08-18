@@ -152,8 +152,12 @@ PostgreSQL brain — nothing staged, no mock responses.
   evidence trace (recorded in real time, played back at 6.4×).
 - ![Workbench chat with source-cited answers](docs/screenshots/workbench-chat.png)
 - ![Evidence trace details expanded on an answer](docs/screenshots/workbench-evidence-details.png)
-- ![CLI: cited answer, workspace symbol resolution, and code review](docs/screenshots/cli.png)
 - ![VS Code extension: SCCE chat sidebar beside workspace code](docs/screenshots/vscode.png)
+
+(A CLI capture was removed 2026-08-17: its text was genuine command
+output, but the image was an HTML re-rendering styled as a terminal, not
+a screenshot — which fails this section's own "nothing staged" bar. A
+real terminal capture will replace it.)
 
 ## Run SCCE
 
