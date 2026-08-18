@@ -321,6 +321,16 @@ export function evaluateHeldOutConstructionCoverage(input: {
     let heldOutPostCovered = 0;
     const preSlot = construction.slots.find(slot => slot.relationDirection === "source");
     const postSlot = construction.slots.find(slot => slot.relationDirection === "target");
+    // Coverage generalizes at the SLOT level, not the exact-adjacency
+    // level: a held-out filler counts as covered when training observed
+    // it in this slot anywhere (observedFillers), not only when the
+    // identical bigram recurs. Exact-token matching demanded bigram
+    // recurrence across the split -- verified live on a heterogeneous
+    // 150-article batch, constructions recurring 34 times in held-out
+    // text scored 0.0 coverage and were rejected wholesale, while only
+    // the most formulaic phrasing survived.
+    const preCoverageSurfaces = new Set([...trainedPreSurfaces, ...(preSlot?.observedFillers ?? [])]);
+    const postCoverageSurfaces = new Set([...trainedPostSurfaces, ...(postSlot?.observedFillers ?? [])]);
     for (const doc of input.heldOutDocuments) {
       const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
       for (let index = 0; index < lexical.length; index++) {
@@ -328,12 +338,11 @@ export function evaluateHeldOutConstructionCoverage(input: {
         const left = lexical[index - 1];
         if (!left || !preSlot) continue;
         heldOutOccurrences++;
-        if (trainedPreSurfaces.has(left.normalized)) heldOutPreCovered++;
+        if (preCoverageSurfaces.has(left.normalized)) heldOutPreCovered++;
         const right = lexical[index + 1];
-        const hasPost = Boolean(right && postSlot?.observedFillers.includes(right.normalized));
-        if (hasPost && right) {
+        if (right) {
           heldOutPostOccurrences++;
-          if (trainedPostSurfaces.has(right.normalized)) heldOutPostCovered++;
+          if (postCoverageSurfaces.has(right.normalized)) heldOutPostCovered++;
         }
       }
     }
