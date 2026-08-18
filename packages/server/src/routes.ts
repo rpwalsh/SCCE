@@ -255,11 +255,22 @@ async function dispatch(
   if (req.method === "GET" && url.pathname === "/api/brain/status") return json(await context.runtime.kernel.inspect("brain"));
   if (req.method === "GET" && url.pathname === "/api/ready") {
     const warmup = context.startupReadiness.snapshot();
+    // Warmup itself already answers "not ready" from in-memory state --
+    // no DB round trip needed to know that, and warmup is exactly when
+    // the connection pool is under its heaviest load. Live-verified: this
+    // endpoint's own DB status query was hanging behind warmup's own
+    // queries, so the one route whose job is answering "is it ready yet"
+    // could not respond WHILE the system was busy, which is precisely
+    // when a caller most needs a fast answer.
+    if (!warmupSatisfied(warmup)) {
+      invalidateHydratedRuntimeReadiness(context);
+      return json({ ok: false, warmup, postgres: undefined, exactCounts: false, serverUrl: context.config.server.url, manifest: ROUTES.length }, 503);
+    }
     const postgres = context.runtime.storage.status
       ? await context.runtime.storage.status()
       : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
     const exactCounts = hasExactPostgresCounts(postgres);
-    const ok = warmupSatisfied(warmup) && healthOk(postgres) && exactCounts;
+    const ok = healthOk(postgres) && exactCounts;
     if (ok) rememberHydratedRuntimeMarker(context, postgres);
     else invalidateHydratedRuntimeReadiness(context);
     return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
