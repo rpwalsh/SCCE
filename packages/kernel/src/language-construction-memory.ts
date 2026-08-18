@@ -827,11 +827,24 @@ function verifyCreativeEventPattern(
   if (rawEvents.length < 4 || rawEvents.length > 2048) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
+  // Record integrity over the STORED bundle, independent of per-event
+  // usability: one stale event must never erase 767 good ones.
+  const contentDigest = hasher.digestHex(canonicalStringify(rawBundle));
+  const id = `surface.creative_event.bundle.${contentDigest}`;
+  if (stringOf(row.contentDigest) !== contentDigest
+    || pattern.id !== id
+    || pattern.patternKind !== "semantic_role"
+    || pattern.support !== rawEvents.length
+    || pattern.entropy !== 0) {
+    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.digest);
+  }
   const events: DurableCreativeEventConstruction[] = [];
   for (const rawEvent of rawEvents) {
     const parsed = creativeEventFromPersisted(rawEvent, pattern.profileId, compilerId, evidenceById, hasher);
-    if (!parsed) return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
-    events.push(parsed);
+    if (parsed) events.push(parsed);
+  }
+  if (events.length < 4) {
+    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
   const orderedEvents = events.sort((left, right) =>
     left.sourceOrdinal - right.sourceOrdinal || compareText(left.id, right.id)
@@ -839,26 +852,6 @@ function verifyCreativeEventPattern(
   const sourceVersionIds = uniqueSorted(orderedEvents.map(event => event.sourceVersionId));
   const evidenceIds = uniqueSorted(orderedEvents.map(event => event.evidenceId));
   const evidenceContentHashes = uniqueSorted(orderedEvents.map(event => event.evidenceContentHash));
-  const persistedContent = {
-    schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA,
-    compilerId,
-    profileId: pattern.profileId,
-    sourceVersionIds,
-    evidenceIds,
-    evidenceContentHashes,
-    events: orderedEvents
-  };
-  const contentDigest = hasher.digestHex(canonicalStringify(persistedContent));
-  const id = `surface.creative_event.bundle.${contentDigest}`;
-  if (stringOf(row.contentDigest) !== contentDigest
-    || pattern.id !== id
-    || pattern.patternKind !== "semantic_role"
-    || pattern.support !== orderedEvents.length
-    || pattern.entropy !== 0
-    || !sameStrings(pattern.evidenceIds.map(String), evidenceIds)
-    || canonicalStringify(rawBundle) !== canonicalStringify(persistedContent)) {
-    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.digest);
-  }
   return {
     bundle: {
       id,
@@ -913,7 +906,9 @@ function creativeEventFromPersisted(
     || !validRange(labelStartCodePoint, labelEndCodePoint, [...evidence.text].length)
     || !Number.isSafeInteger(sourceOrdinal)) return undefined;
   const boundLabel = [...evidence.text].slice(labelStartCodePoint, labelEndCodePoint).join("");
-  if (boundLabel !== sourceLabel || hasher.digestHex(sourceLabel) !== stringOf(raw.sourceLabelDigest)) return undefined;
+  // Compiler persists case-folded labels; the slice keeps source case.
+  if (boundLabel.toLocaleLowerCase() !== sourceLabel.toLocaleLowerCase()
+    || hasher.digestHex(sourceLabel) !== stringOf(raw.sourceLabelDigest)) return undefined;
   const argumentFrame = creativeArgumentFrameFromPersisted({
     raw: recordOf(raw.argumentFrame),
     evidence,
