@@ -294,7 +294,17 @@ export function beamContinueSentence(model: KneserNeyModel, prompt: readonly str
       const predictions = predictKneserNey(model, context, 24)
         .filter(item => item.symbol !== "<s>" && item.symbol !== "<unk>" && !blocked.has(item.symbol));
       const recent = beam.symbols.slice(-repetitionWindow);
-      for (const item of predictions.slice(0, 8)) {
+      // A strict top-8 expansion is deterministic ARGMAX search: every
+      // call with a similar recent context converges on the identical
+      // highest-probability path regardless of choiceSeed, which is
+      // exactly why two different section goals produced byte-identical
+      // prose (verified live). Seeded weighted sampling over the wider
+      // candidate pool explores genuinely different, still
+      // probability-weighted paths per seed while staying reproducible.
+      const candidates = options.choiceSeed
+        ? seededWeightedSample(predictions.slice(0, 16), item => item.probability, 8, `${options.choiceSeed}${step}${beam.symbols.join("")}`)
+        : predictions.slice(0, 8);
+      for (const item of candidates) {
         if (item.symbol === "</s>") {
           if (beam.symbols.length >= minSymbols) finished.push({ ...beam, done: true });
           continue;
@@ -331,6 +341,27 @@ export function beamContinueSentence(model: KneserNeyModel, prompt: readonly str
     averageLogProbability: pick.logProb / Math.max(1, pick.symbols.length),
     endedAtBoundary: pick.done || isSentenceTerminalSymbol(pick.symbols[pick.symbols.length - 1] ?? "")
   };
+}
+
+/** Seeded sampling without replacement, weighted by `weightOf`: reproducible for a fixed seed, genuinely different across seeds. */
+function seededWeightedSample<T>(items: readonly T[], weightOf: (item: T) => number, count: number, seed: string): T[] {
+  const pool = [...items];
+  const chosen: T[] = [];
+  for (let draw = 0; draw < count && pool.length; draw++) {
+    const weights = pool.map(weightOf);
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    if (total <= 0) { chosen.push(...pool); break; }
+    const threshold = stableUnitInterval(`${seed}${draw}`) * total;
+    let cumulative = 0;
+    let pickIndex = pool.length - 1;
+    for (let index = 0; index < pool.length; index++) {
+      cumulative += weights[index]!;
+      if (cumulative >= threshold) { pickIndex = index; break; }
+    }
+    chosen.push(pool[pickIndex]!);
+    pool.splice(pickIndex, 1);
+  }
+  return chosen;
 }
 
 /** A symbol that is (or ends with) sentence-terminal punctuation. */

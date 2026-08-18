@@ -3409,22 +3409,48 @@ function synthesizeBeamSentencePieces(input: {
   };
   // A chained pass carries the narrative forward: each sentence continues
   // from the last, so the piece pool tells one progression, not one moment
-  // twelve ways.
-  const seedSymbols = seedUnits.length ? symbolizeData(seedUnits[0]!) : [];
-  let working = [...symbolizeData(input.contextText), ...seedSymbols];
+  // twelve ways. The boost map alone steers vocabulary choice for the
+  // whole chain, but LOCAL n-gram conditioning only sees the last ~32
+  // symbols -- without periodic reseeding a cast member mentioned in
+  // sentence one is grammatically invisible by sentence three. Cycling
+  // the seed back into context every few sentences keeps every persistent
+  // entity, not just the first, eligible for natural re-mention.
+  const reseedEvery = 3;
+  let working = [...symbolizeData(input.contextText)];
   const chainLength = Math.max(3, Math.min(10, Math.round(input.generationExtent / 20)));
+  // A short local memory means an identical reseed against a nearly
+  // identical recent tail converges on the same highest-probability
+  // completion every time -- a within-sentence repetition guard cannot
+  // catch this because the repeat spans separate sentences. A word
+  // already spoken earlier in this chain is progressively suppressed the
+  // same way a signature word is, so the beam is pushed toward its
+  // second- and third-best completions instead of repeating verbatim.
+  const usedWordCounts = new Map<string, number>();
   for (let index = 0; index < chainLength; index++) {
-    const beam = beamContinueSentence(model, working.slice(-32), {
+    const reseed = seedUnits.length && index % reseedEvery === 0;
+    const seedSymbols = reseed ? symbolizeData(seedUnits[Math.floor(index / reseedEvery) % seedUnits.length]!) : [];
+    const iterationBoost = new Map(boostSymbols);
+    for (const [word, count] of usedWordCounts) {
+      if (count < 1) continue;
+      const base = iterationBoost.get(word) ?? 1;
+      iterationBoost.set(word, base * Math.pow(0.3, count));
+    }
+    const beam = beamContinueSentence(model, [...working, ...seedSymbols].slice(-32), {
       beamWidth: 6,
       maxSymbols: 30,
       minSymbols: 6,
       blockedSymbols: blocked,
-      boostSymbols,
+      boostSymbols: iterationBoost,
       choiceSeed: input.contextText + String(index)
     });
     if (!beam || !beam.endedAtBoundary) break;
-    emit(index === 0 && seedSymbols.length ? [...seedSymbols, ...beam.symbols] : beam.symbols, beam.averageLogProbability);
-    working = [...working, ...beam.symbols];
+    for (const symbol of beam.symbols) {
+      const seedSet = new Set(seedSymbols);
+      if (seedSet.has(symbol)) continue;
+      usedWordCounts.set(symbol, (usedWordCounts.get(symbol) ?? 0) + 1);
+    }
+    emit(seedSymbols.length ? [...seedSymbols, ...beam.symbols] : beam.symbols, beam.averageLogProbability);
+    working = [...working, ...seedSymbols, ...beam.symbols];
   }
   return out;
 }
