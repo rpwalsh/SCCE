@@ -1,4 +1,4 @@
-import type { CorrectionRuleRecord, WordingRealizerPort } from "./storage.js";
+import type { CorrectionRuleRecord } from "./storage.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
@@ -373,14 +373,6 @@ export interface SpeakInput {
    * old behavior) so existing callers that don't supply it are unaffected.
    */
   requestText?: string;
-  /**
-   * Wording realizer port (docs/REALIZER_DOCTRINE.md): when present, its
-   * surfaces join the candidate pool as generated candidates subject to
-   * every existing gate. Wording-only authority -- facts are passed in
-   * already evidence-licensed, and argument integrity plus structural
-   * completeness are enforced on the way in.
-   */
-  wordingRealizer?: WordingRealizerPort;
   construct: ConstructGraph;
   field: FieldState;
   requirementField?: TurnRequirementField;
@@ -678,7 +670,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("candidate_setup");
       const creativeRequested = isCreativeRequested(input, plan);
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
-      const realizerCandidates = creativeRequested ? [] : await wordingRealizerCandidates(input, discoursePlan);
       const rawCandidates = [
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
@@ -692,7 +683,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(learnedConstructionCandidate ? [learnedConstructionCandidate] : []),
         ...(constructAnchored ? [constructAnchored] : []),
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
-        ...realizerCandidates,
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ].filter(candidate => admissibleMouthSurface(candidate.text));
       const scoredCandidates = rawCandidates.map(candidate => {
@@ -5314,67 +5304,6 @@ function importSummaryRequested(text: string): boolean {
 function importSummarySurfaceText(input: SpeakInput): string {
   void input;
   return "";
-}
-
-/**
- * Realizer surfaces enter the pool ONLY carrying facts the evidence layer
- * already licensed, and only when the wording keeps every argument intact
- * and the surface is structurally complete -- the same bar the composed
- * direct-evidence join meets. A realizer can therefore lose on quality,
- * never smuggle a claim.
- */
-async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan): Promise<SurfaceCandidate[]> {
-  const realizer = input.wordingRealizer;
-  if (!realizer) return [];
-  const state = semanticAnswerConstructState(input.construct);
-  const facts = (state?.selectedFacts ?? [])
-    .filter(fact => (fact.evidenceIds ?? []).length > 0)
-    .slice(0, 6);
-  if (!facts.length) return [];
-  let surfaces: readonly string[];
-  try {
-    surfaces = await realizer.realize({
-      requestText: mouthEchoQuestionText(input),
-      facts: facts.map(fact => ({
-        subject: fact.subject ?? "",
-        predicate: fact.predicate ?? "",
-        object: fact.object ?? "",
-        evidenceIds: (fact.evidenceIds ?? []).map(String)
-      })),
-      targetLanguage: input.targetLanguage ?? "",
-      targetScript: input.targetScript ?? "",
-      maxSentences: 4
-    });
-  } catch {
-    // A realizer failure must never cost the turn -- the pool simply
-    // proceeds without realizer candidates.
-    return [];
-  }
-  const evidenceIds = [...new Set(facts.flatMap(fact => (fact.evidenceIds ?? []).map(String)))] as EvidenceSpan["id"][];
-  return surfaces
-    .filter((surface): surface is string => typeof surface === "string" && surface.trim().length > 0)
-    .slice(0, 3)
-    .filter(surface =>
-      structurallyCompleteSurface(surface)
-      && factArgumentsIntactInSurface(surface, facts))
-    .map((surface, index) => ({
-      id: `candidate:generated:realizer:${realizer.id}:${index}`,
-      style: "surface.path.generated.wording_realizer",
-      path: "generated" as const,
-      text: surface,
-      evidenceIds,
-      fit: 0.86,
-      importedPieceIds: [],
-      discoursePlan,
-      boundaryDecisions: [],
-      audit: toJsonValue({
-        schema: "scce.mouth.wording_realizer.v1",
-        realizerId: realizer.id,
-        factKeys: facts.map(fact => semanticAnswerFactKey(fact)),
-        evidenceIds: evidenceIds.map(String),
-        externalFactCertification: true
-      })
-    }));
 }
 
 function semanticAnswerConstructState(construct: ConstructGraph): SemanticAnswerConstructState | undefined {
