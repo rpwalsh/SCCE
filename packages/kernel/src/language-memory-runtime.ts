@@ -3135,7 +3135,8 @@ function learnedContinuationDiscourse(input: {
   generationExtent: number;
   pieces: readonly GenerationPiece[];
 }): LanguageDiscourseTrace | undefined {
-  if (!input.pieces.length) return undefined;
+  // No pieces means the KN models are the only prose source -- exactly the
+  // case this fallback exists for. Coverage still gates acceptance.
   const candidates: Array<{
     text: string;
     move: LanguageDiscourseMove;
@@ -3693,6 +3694,8 @@ function isDiscourseMetadataKey(key: string): boolean {
 function looksLikeBoundaryCandidate(value: string): boolean {
   const clean = tidyInline(value);
   if (!clean || clean.length > 32) return false;
+  // Shape-transition encodings ("L→LLLL") are internal metadata, not speech.
+  if (/\S→\S/u.test(clean)) return false;
   if (isBoundaryGlyphSurface(clean)) return true;
   const symbolCount = symbolizeData(clean).filter(symbol => symbol.trim()).length;
   return symbolCount > 0 && symbolCount <= 3 && clean.length <= 24;

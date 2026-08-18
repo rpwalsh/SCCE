@@ -2686,7 +2686,7 @@ export function createProductionTurnRuntime(options: {
         });
         extendedGenerationRun = await runExtendedGeneration({
           session: extendedSession,
-          realizeSection: async section => {
+          realizeSection: async (section, _index, priorSectionTexts) => {
             // Fast direct engine call first; full Mouth only when that is
             // inadequate. Both fail empty, never echo.
             const direct = realizeCreativeSection({
@@ -2695,6 +2695,7 @@ export function createProductionTurnRuntime(options: {
               targetLanguageProfile: speakInput.languageProfile,
               requestText: input.text,
               sectionGoal: section.goal,
+              narrativeConditioning: priorSectionTexts.slice(-2),
               generationExtent: 180
             });
             if (direct.accepted) return { text: direct.text };
