@@ -240,8 +240,11 @@ describe("source-verified universal creative argument frames", () => {
       hasher
     });
     expect(hydrated.bundles).toEqual([]);
+    // Digest-first verification: any post-persistence tamper trips the
+    // whole-bundle content digest before per-member checks run. Rejection
+    // stays atomic; the code names the outermost gate that caught it.
     expect(hydrated.rejected).toEqual([expect.objectContaining({
-      code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member
+      code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.digest
     })]);
   });
 

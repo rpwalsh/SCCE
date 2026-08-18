@@ -178,7 +178,7 @@ export interface ExtendedGenerationRunResult {
  */
 export async function runExtendedGeneration(input: {
   session: DocumentGenerationSession;
-  realizeSection: (section: DocumentPlanNode, index: number) => Promise<ExtendedGenerationSectionRealization>;
+  realizeSection: (section: DocumentPlanNode, index: number, priorSectionTexts: readonly string[]) => Promise<ExtendedGenerationSectionRealization>;
   maxSections?: number;
 }): Promise<ExtendedGenerationRunResult> {
   let session = input.session;
@@ -188,7 +188,7 @@ export async function runExtendedGeneration(input: {
     const pending = nextDocumentGenerationWork(session);
     const section = pending[0];
     if (!section) break;
-    const realized = await input.realizeSection(section, index);
+    const realized = await input.realizeSection(section, index, sections.filter(row => row.accepted).map(row => row.text));
     const text = realized.text.trim();
     if (!text) {
       // An empty realization is a real failure, not an empty section: stop
