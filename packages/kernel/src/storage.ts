@@ -721,9 +721,18 @@ export interface LanguageMemoryStore {
   putSemanticFrame(frame: SemanticFrameRecord): Promise<void>;
   putSemanticFrames?(frames: readonly SemanticFrameRecord[]): Promise<void>;
   putTranslationAlignment(alignment: TranslationAlignmentRecord): Promise<void>;
-  listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramModelRecord[]>;
+  /**
+   * `maxTotalJsonBytes` on the model/unit listings is a cumulative byte
+   * budget over the records' stored JSON, enforced adapter-side in the
+   * same relevance order the listing already uses: records load until the
+   * budget is exhausted and the tail is skipped deterministically. A
+   * count limit alone does not bound memory -- whole-novel training grew
+   * single n-gram models to tens of MB, and 64 "records" of them OOMed a
+   * 4GB server heap at warmup (verified live).
+   */
+  listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<NgramModelRecord[]>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
-  listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number }): Promise<LanguageUnitRecord[]>;
+  listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
   listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;

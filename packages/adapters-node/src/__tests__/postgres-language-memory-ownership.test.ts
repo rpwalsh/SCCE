@@ -39,6 +39,34 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("enforces the cumulative JSON byte budget in relevance order for model and unit reads", async () => {
+    const { adapter, calls } = fixture();
+
+    await adapter.languageMemory.listNgramModels({ limit: 12, maxTotalJsonBytes: 64 * 1024 * 1024 });
+    await adapter.languageMemory.listLanguageUnits({ limit: 40, maxTotalJsonBytes: 24 * 1024 * 1024 });
+
+    // Count limits stopped bounding memory once whole-novel training grew
+    // single model_json blobs to tens of MB (a 4GB server heap OOMed at
+    // warmup, verified live). The window sum admits records until the
+    // byte budget is exhausted, in the SAME relevance order as the count
+    // limit, and the top record always loads so an undersized budget
+    // degrades to one record instead of zero.
+    const modelSql = calls[0]!.sql;
+    expect(modelSql).toContain("SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.updated_at DESC, model.id ASC");
+    expect(modelSql).toContain("running_json_bytes <=");
+    expect(modelSql).toContain("relevance_rank = 1");
+    expect(calls[0]?.params.at(-1)).toBe(64 * 1024 * 1024);
+    const unitSql = calls[1]!.sql;
+    expect(unitSql).toContain("SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC");
+    expect(unitSql).toContain("running_json_bytes <=");
+    expect(calls[1]?.params.at(-1)).toBe(24 * 1024 * 1024);
+
+    // Without a budget the classic count-limited query is byte-identical
+    // to the previous contract.
+    await adapter.languageMemory.listNgramModels({ limit: 12 });
+    expect(calls[2]?.sql).not.toContain("running_json_bytes");
+  });
+
   it("requires exact profile ownership for semantic-frame reads", async () => {
     const { adapter, calls } = fixture();
 
