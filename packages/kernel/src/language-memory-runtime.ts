@@ -178,6 +178,10 @@ export interface LanguageGenerationFrame {
   registerVector?: readonly number[];
   detailProfileId?: string;
   ordering?: LanguageGenerationOrdering;
+  /** Soft lexical boost, not enforced coverage: words this generation should favor when the beam has a choice. */
+  topicVocabulary?: readonly string[];
+  /** Lowercase word -> preferred surface casing (proper nouns), applied when rendering beam-synthesized text. */
+  properNounCasing?: Readonly<Record<string, string>>;
 }
 
 export interface LanguageGenerationInput {
@@ -915,7 +919,17 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
   const firstDiscourseAdequate = discourseSurfaceAdequate(firstDiscourse, generationExtent);
   const continuationDiscourse = firstDiscourseAdequate
     ? undefined
-    : learnedContinuationDiscourse({ state: input.state, contextSymbols, contextText, requiredTerms, frameAtoms, generationExtent, pieces: candidatePieces });
+    : learnedContinuationDiscourse({
+      state: input.state,
+      contextSymbols,
+      contextText,
+      requiredTerms,
+      frameAtoms,
+      generationExtent,
+      pieces: candidatePieces,
+      topicVocabulary: uniqueStrings((input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? [])),
+      properNounCasing: Object.assign({}, ...(input.frames ?? []).map(frame => frame.properNounCasing ?? {}))
+    });
   // Plan items 140-141: fluency alone (discourseSurfaceAdequate) is never
   // enough to accept the Kneser-Ney-driven fallback continuation in place
   // of the real evidence-grounded discourse -- it must also meet the same
@@ -1227,7 +1241,9 @@ function generationPieces(
       state: input.state,
       requiredTerms,
       contextText,
-      generationExtent: Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64)))
+      generationExtent: Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64))),
+      topicVocabulary: uniqueStrings((input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? [])),
+      properNounCasing: Object.assign({}, ...(input.frames ?? []).map(frame => frame.properNounCasing ?? {}))
     })
     : [];
   const synthesizedTexts = new Set(synthesized.map(sentence => tidyInline(sentence.text)));
@@ -3161,6 +3177,8 @@ function learnedContinuationDiscourse(input: {
   frameAtoms: readonly LanguageGenerationAtom[];
   generationExtent: number;
   pieces: readonly GenerationPiece[];
+  topicVocabulary?: readonly string[];
+  properNounCasing?: Readonly<Record<string, string>>;
 }): LanguageDiscourseTrace | undefined {
   // No pieces means the KN models are the only prose source -- exactly the
   // case this fallback exists for. Coverage still gates acceptance.
@@ -3187,10 +3205,10 @@ function learnedContinuationDiscourse(input: {
       maxSymbols: 30,
       minSymbols: 6,
       blockedSymbols: nonSpeechGlyphSymbols(model),
-      boostSymbols: new Map(seedSymbols.map(symbol => [symbol, 4])),
+      boostSymbols: beamGuidanceSymbols(input.state, [...seedSymbols, ...(input.topicVocabulary ?? [])]),
       choiceSeed: `${input.contextText}${requiredSeed}`
     });
-    const text = beam?.endedAtBoundary ? renderContinuationSentences([[...seedSymbols, ...beam.symbols]]) : "";
+    const text = beam?.endedAtBoundary ? renderContinuationSentences([[...seedSymbols, ...beam.symbols]], input.properNounCasing) : "";
     if (beam && text && speechBearingSurface(text) && isDiscourseBearingPriorSurface(text)) {
       const score = scoreText(input.state, text, input.contextText);
       const sourcePieceIds = input.pieces
@@ -3283,9 +3301,18 @@ function nonSpeechGlyphSymbols(model: KneserNeyModel): Set<string> {
 }
 
 /** Render beam sentences: attach left-binding punctuation, capitalize each cased sentence opener. */
-function renderContinuationSentences(sentences: readonly (readonly string[])[]): string {
+function renderContinuationSentences(
+  sentences: readonly (readonly string[])[],
+  properNounCasing?: Readonly<Record<string, string>>
+): string {
   const rendered = sentences.map(symbols => {
-    const joined = symbols.join(" ").replace(/\s+([,;:.!?…])/gu, "$1").replace(/(\S) - (\S)/gu, "$1-$2");
+    // Training symbolization lowercases every symbol (unicode-segmentation.ts
+    // normalizedSymbol), so word casing is not recoverable from the model --
+    // only the pronoun "I" and known proper nouns can be restored here.
+    const cased = symbols.map(symbol =>
+      symbol === "i" ? "I" : properNounCasing?.[symbol] ?? symbol
+    );
+    const joined = cased.join(" ").replace(/\s+([,;:.!?…])/gu, "$1").replace(/(\S) - (\S)/gu, "$1-$2");
     const first = [...joined].findIndex(char => char.toLocaleLowerCase() !== char.toLocaleUpperCase());
     if (first < 0) return joined;
     const chars = [...joined];
@@ -3293,6 +3320,48 @@ function renderContinuationSentences(sentences: readonly (readonly string[])[]):
     return chars.join("");
   }).filter(Boolean);
   return rendered.join(" ");
+}
+
+/**
+ * Words present in exactly one currently-loaded novel's vocabulary are that
+ * novel's fingerprint -- character names, invented nouns, place names.
+ * Document frequency across the loaded models (never fewer than 2, or
+ * there is no basis for comparison) tells signature from shared narrative
+ * vocabulary ("man", "fire", "water") without any English word list.
+ */
+function sourceSignatureWords(state: LanguageMemoryRuntimeState): ReadonlySet<string> {
+  const models = state.models.filter(modelSpeaksInWords);
+  // A long novel trained in several chunks yields several KneserNeyModel
+  // objects sharing one sourceKey; they must count as ONE document, or
+  // that novel's own vocabulary trivially appears "shared" with itself
+  // across its own chunks and never gets flagged as anyone's signature.
+  const vocabByGroup = new Map<string, Set<string>>();
+  for (const [index, model] of models.entries()) {
+    const key = model.sourceKey ?? `model:${index}`;
+    const set = vocabByGroup.get(key) ?? new Set<string>();
+    for (const word of model.vocabulary ?? []) set.add(word);
+    vocabByGroup.set(key, set);
+  }
+  if (vocabByGroup.size < 2) return new Set();
+  const docFrequency = new Map<string, number>();
+  for (const vocabulary of vocabByGroup.values()) {
+    for (const word of vocabulary) docFrequency.set(word, (docFrequency.get(word) ?? 0) + 1);
+  }
+  const signature = new Set<string>();
+  for (const [word, freq] of docFrequency) if (freq === 1) signature.add(word);
+  return signature;
+}
+
+/** Combine source-signature suppression with topic/seed boosts; boosts always win on overlap. */
+function beamGuidanceSymbols(state: LanguageMemoryRuntimeState, boostWords: readonly string[]): Map<string, number> {
+  const guidance = new Map<string, number>();
+  // A single novel's within-model probability for its own signature word
+  // ("martian" inside a Wells-only model) is high enough that a mild
+  // multiplier does not move it out of contention -- decoding is always
+  // from one model, so the penalty must be strong to matter.
+  for (const word of sourceSignatureWords(state)) guidance.set(word, 0.04);
+  for (const word of boostWords) guidance.set(word, 6);
+  return guidance;
 }
 
 /** Best generation-grade model: word-speaking, ranked by order x log2(vocabulary) so a rich vocabulary at a lower order beats a vocabulary-starved summary at a higher one. Char-level (script) models never continue prose: letter soup, verified live. */
@@ -3310,6 +3379,8 @@ function synthesizeBeamSentencePieces(input: {
   requiredTerms: readonly LanguageGenerationTerm[];
   contextText: string;
   generationExtent: number;
+  topicVocabulary?: readonly string[];
+  properNounCasing?: Readonly<Record<string, string>>;
 }): Array<{ text: string; id: string; support: number }> {
   const model = bestProseContinuationModel(input.state);
   if (!model) return [];
@@ -3318,10 +3389,17 @@ function synthesizeBeamSentencePieces(input: {
     .filter(term => (term.weight ?? 0) >= 0.7)
     .map(term => tidyInline(term.text))
     .filter(Boolean)).slice(0, 4);
-  const boostSymbols = new Map<string, number>(seedUnits.flatMap(unit => symbolizeData(unit)).map(symbol => [symbol, 4]));
+  // Source-signature suppression keeps one novel's fingerprint vocabulary
+  // (character names, invented nouns) out of an unrelated story; the topic
+  // lexicon from this turn's own evidence pulls word choice toward what
+  // the request is actually about. Boosts always outrank suppression.
+  const boostSymbols = beamGuidanceSymbols(input.state, [
+    ...seedUnits.flatMap(unit => symbolizeData(unit)),
+    ...(input.topicVocabulary ?? [])
+  ]);
   const out: Array<{ text: string; id: string; support: number }> = [];
   const emit = (symbols: readonly string[], averageLogProbability: number) => {
-    const text = renderContinuationSentences([symbols]);
+    const text = renderContinuationSentences([symbols], input.properNounCasing);
     if (!text || !speechBearingSurface(text)) return;
     out.push({
       text,
@@ -3331,7 +3409,7 @@ function synthesizeBeamSentencePieces(input: {
   };
   // A chained pass carries the narrative forward: each sentence continues
   // from the last, so the piece pool tells one progression, not one moment
-  // twelve ways. Alternate first-sentence ranks give the arranger choices.
+  // twelve ways.
   const seedSymbols = seedUnits.length ? symbolizeData(seedUnits[0]!) : [];
   let working = [...symbolizeData(input.contextText), ...seedSymbols];
   const chainLength = Math.max(3, Math.min(10, Math.round(input.generationExtent / 20)));
@@ -4338,6 +4416,7 @@ function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefi
   ) return undefined;
   return {
     schema: KNESER_NEY_SCHEMA,
+    sourceKey: modelProfileId(record) ?? record.streamId,
     order: row.order,
     discount: row.discount,
     observedSymbolCount: numberOf(row.observedSymbolCount),

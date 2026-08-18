@@ -10,6 +10,8 @@ export interface CreativeSectionRealizationInput {
   requestText: string;
   sectionGoal: string;
   narrativeConditioning?: readonly string[];
+  /** Words this section's prose should favor -- typically the request's own retrieved-evidence vocabulary, so word choice stays on-topic instead of drifting into an unrelated source's fingerprint. */
+  topicVocabulary?: readonly string[];
   /** Distinct attempts sample distinct continuations for the same goal. */
   attempt?: number;
   generationExtent?: number;
@@ -44,6 +46,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // varies instead of chanting every unit every time.
   const rotation = goalUnits.length ? stableRotation(input.sectionGoal) % goalUnits.length : 0;
   const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
+  const properNounCasing = properNounCasingHints([input.requestText, input.sectionGoal, ...conditioning]);
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
@@ -76,6 +79,8 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
         weight: 0.9,
         source: "section-plan"
       })),
+      topicVocabulary: input.topicVocabulary,
+      properNounCasing,
       targetLanguage: input.targetLanguage ?? "",
       targetScript: input.targetScript ?? ""
     }],
@@ -105,6 +110,29 @@ function stableRotation(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+/**
+ * Training symbolization lowercases every symbol, so word casing is not
+ * recoverable from the generation model -- only from the request text
+ * itself. A Title-Case token that is not the sentence's first word is,
+ * structurally, a proper noun (script-agnostic casing-shape check, no
+ * word list); its lowercase form maps back to its original casing.
+ */
+function properNounCasingHints(texts: readonly string[]): Record<string, string> {
+  const hints: Record<string, string> = {};
+  for (const text of texts) {
+    const words = collapseSurfaceWhitespace(text).split(/\s+/u).filter(Boolean);
+    for (let index = 1; index < words.length; index++) {
+      const word = words[index]!.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+      if (word.length < 3) continue;
+      const [first, ...rest] = [...word];
+      if (!first || first !== first.toLocaleUpperCase() || first === first.toLocaleLowerCase()) continue;
+      if (rest.some(char => char !== char.toLocaleLowerCase())) continue;
+      hints[word.toLocaleLowerCase()] = word;
+    }
+  }
+  return hints;
 }
 
 function contentUnits(text: string): string[] {
