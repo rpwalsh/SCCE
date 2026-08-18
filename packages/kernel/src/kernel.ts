@@ -444,6 +444,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         }
       }
       result.totalMs = Math.max(0, clock.now() - started);
+      result.cacheOccupancy = surfaceLanguageRuntime.cacheOccupancy();
       kernelTrace({
         stage: "runtime.start",
         label: "kernel.warmup",

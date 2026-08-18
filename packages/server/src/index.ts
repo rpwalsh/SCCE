@@ -33,11 +33,22 @@ async function main(): Promise<void> {
   const strictWarmup = process.env.SCCE_STARTUP_WARMUP_STRICT === "1";
   const performWarmup = async () => {
     const warmup = await runtime.kernel.warmup({ languageLimit: startupWarmupLanguageLimit() });
+    const memory = process.memoryUsage();
     const warmupLine = [
       `SCCE runtime warmup ${warmup.failures.length ? "completed with warnings" : "complete"}`,
       `${Math.round(warmup.totalMs)}ms`,
       `graph=${warmup.graph?.nodes ?? 0}/${warmup.graph?.edges ?? 0}`,
       `language=${warmup.language?.models ?? 0}/${warmup.language?.units ?? 0}`,
+      // Attribution for the repeated post-warmup OOMs: heapUsed is what the
+      // --max-old-space-size limit actually governs, and external/arrayBuffers
+      // is memory a heap bound does not cover at all. Reported every start so
+      // a regression in resident cost is visible without a special build.
+      `heapUsedMB=${Math.round(memory.heapUsed / 1048576)}`,
+      `heapTotalMB=${Math.round(memory.heapTotal / 1048576)}`,
+      `externalMB=${Math.round(memory.external / 1048576)}`,
+      `rssMB=${Math.round(memory.rss / 1048576)}`,
+      `cacheEntries=${warmup.cacheOccupancy?.languageMemoryEntries ?? 0}`,
+      `cacheEstMB=${Math.round((warmup.cacheOccupancy?.languageMemoryEstimatedBytes ?? 0) / 1048576)}`,
       `failures=${warmup.failures.length}`
     ].join(" ");
     process.stdout.write(`${warmupLine}\n`);
