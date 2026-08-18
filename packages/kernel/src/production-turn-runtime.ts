@@ -116,6 +116,7 @@ import {
 } from "./powerwalk.js";
 import { createPredictionLayer } from "./prediction.js";
 import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
+import { collapseSurfaceWhitespace, surfaceUnits } from "./surface-linguistics.js";
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
@@ -2679,6 +2680,13 @@ export function createProductionTurnRuntime(options: {
       const extendedGeneration = extendedGenerationDecision({ requirementField, requestedAuthority });
       let extendedGenerationRun: Awaited<ReturnType<typeof runExtendedGeneration>> | undefined;
       if (extendedGeneration.required) {
+        // This turn's own retrieved evidence names what the story is
+        // actually about; without this, word choice has nothing but the
+        // corpus itself to lean on and drifts into whichever novel the
+        // continuation model happens to favor.
+        const creativeTopicVocabulary = [...new Set(
+          selectedEvidence.slice(0, 12).flatMap(span => surfaceUnits(collapseSurfaceWhitespace(span.text).toLocaleLowerCase()))
+        )].filter(unit => unit.length >= 4).slice(0, 96);
         const extendedSession = extendedGenerationSessionForTurn({
           requestText: input.text,
           sectionTarget: extendedGeneration.sectionTarget,
@@ -2698,6 +2706,7 @@ export function createProductionTurnRuntime(options: {
               requestText: input.text,
               sectionGoal: section.goal,
               narrativeConditioning: priorSectionTexts.slice(-2),
+              topicVocabulary: creativeTopicVocabulary,
               generationExtent: 180
             });
             if (!direct.accepted) {
@@ -2714,6 +2723,7 @@ export function createProductionTurnRuntime(options: {
                 requestText: input.text,
                 sectionGoal: section.goal,
                 narrativeConditioning: priorSectionTexts.slice(-2),
+                topicVocabulary: creativeTopicVocabulary,
                 attempt: 2,
                 generationExtent: 180
               });
