@@ -42,12 +42,17 @@ import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
 import {
+  counterfactualTraceFromRejectedCandidate,
   createFunctionalCognitionEngine,
   functionalCapabilityAuthorizationGate,
   functionalSelectionGate,
   personaHistoryFromEvents,
   personaSnapshotFromSelf,
-  type FunctionalSelectionGate
+  standingFunctionalGate,
+  STANDING_FUNCTIONAL_COGNITION_TTL_MS,
+  type CounterfactualTrace,
+  type FunctionalSelectionGate,
+  type StandingFunctionalCognition
 } from "./functional-cognition.js";
 import { counterfactualTracesFromCapabilityPreview } from "./functional-cognition-adapters.js";
 import { runFunctionalCognitionOffProcess } from "./functional-cognition-offload.js";
@@ -231,6 +236,21 @@ export interface ProductionTurnRuntimeState {
    * concurrency drops, it is never silently corrupted, only delayed).
    */
   deferredFunctionalCognitionInFlight: number;
+  /**
+   * Standing self-state register: the latest COMPLETED functional-
+   * cognition projection's selection gate. Turns consult this (with a
+   * freshness bound) instead of ever blocking on the 30-45s projection;
+   * the deferred task below refreshes it continuously. First turn after
+   * a cold start reads it as missing (gate down, honestly) and fires the
+   * warmup refresh -- no turn ever waits on self-reflection.
+   */
+  standingFunctionalCognition?: StandingFunctionalCognition;
+  /**
+   * Real counterfactuals for the next projection: the candidates the
+   * judge actually rejected last turn -- roads genuinely not taken, with
+   * the judge's own scores as trace signals.
+   */
+  lastRejectedCandidateTraces?: CounterfactualTrace[];
   /**
    * Plan item 161 live wiring: induceOperatorFromLedger mines up to 256
    * EpisodeConsolidated rows plus a full readEpisode per matched episode --
@@ -1683,86 +1703,21 @@ export function createProductionTurnRuntime(options: {
       let selfDistillationAudit: JsonValue;
       let functionalConsciousnessAudit: JsonValue;
       let functionalCognitionAudit: JsonValue;
-      if (requiresLiveFunctionalCognition) {
-        const policyPopulation = durablePolicyGenomes.map(policyGenomeFromDurable);
-        const selfDistillation = ssd.distill({ model: runtimeModel, graph, state, forecast, self: selfState });
-        const functionalConsciousness = fcs.score({ self: selfState, ssd: selfDistillation });
-        const personaHistory = personaHistoryFromEvents(
-          persistedPersonaEvents,
-          personaSnapshotFromSelf({ sessionId: String(episodeId), self: selfState, t: projectionNow })
-        );
-        const governance = deps.governance
-          ? await deps.governance.observe({ policy, now: projectionNow }).catch(error =>
-            unavailableGovernanceObservation(
-              projectionNow,
-              `governance_probe_error:${error instanceof Error ? error.message : String(error)}`
-            ))
-          : unavailableGovernanceObservation(projectionNow);
-        const functionalCognition = functionalCognitionEngine.project({
-          now: projectionNow,
-          self: selfState,
-          model: runtimeModel,
-          graph,
-          policy,
-          ssdAudit: selfDistillation.audit,
-          learningNeeds: earlyLearningNeeds,
-          personaHistory,
-          governance,
-          traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview),
-          policyPopulation
-        });
-        functionalGate = functionalCapabilityAuthorizationGate(functionalSelectionGate(functionalCognition), true);
-        selfDistillationAudit = selfDistillation.audit;
-        functionalConsciousnessAudit = functionalConsciousness.audit;
-        functionalCognitionAudit = functionalCognition.audit;
-        events.push(await append(eventFactory.create({
-          episodeId,
-          typeId: "SelfModelProjected",
-          payload: {
-            phase: "preselection",
-            self: selfState,
-            selfDistillation: selfDistillation.audit,
-            fcs: functionalConsciousness.audit,
-            functionalCognition: functionalCognition.audit,
-            capabilityPlanPreview: toJsonValue({
-              objectives: capabilityPlanPreview.objectives.map(objective => ({ id: objective.id, kind: objective.kind })),
-              scoredCount: capabilityPlanPreview.scored.length
-            }),
-            authorizeCapabilities: true
-          }
-        })));
-        kernelTrace({
-          stage: "functional-cognition.project",
-          label: "kernel.turn.preselection",
-          durationMs: Date.now() - projectionStarted,
-          counts: {
-            personaSnapshots: personaHistory.length,
-            counterfactualTraces: functionalCognition.cmps.length,
-            policyPopulation: functionalCognition.pareto.front.length,
-            durablePolicyGenomes: durablePolicyGenomes.length
-          },
-          support: {
-            fc: functionalCognition.fc,
-            efc: functionalCognition.efc,
-            gov: functionalCognition.gov,
-            authorizeCapabilities: true,
-            authorizedFc: functionalGate.fc,
-            authorizedEfc: functionalGate.efc,
-            governanceReady: governance.ready,
-            governanceFailures: governance.failures,
-            selectedGoalId: functionalCognition.selectedGoal?.goal.id ?? null,
-            dciAvailable: functionalCognition.dci.available,
-            paretoAvailable: functionalCognition.pareto.available,
-            deferred: false
-          }
-        });
-      } else {
-        // fc/efc are provably false regardless of what a live computation
-        // would report -- functionalCapabilityAuthorizationGate forces them
-        // whenever capabilities aren't authorized. gov is irrelevant here:
-        // every real usage of functionalGate below ANDs it with fc, which
-        // is already false.
-        functionalGate = { fc: false, efc: false, gov: false };
+      // The standing self-state register replaces per-turn synchronous
+      // projection in BOTH modes: no turn ever blocks 30-45s on
+      // self-reflection. In authorized deployments the register's real
+      // fc/efc (bounded by freshness) authorize live; in audit-only
+      // deployments functionalCapabilityAuthorizationGate still forces
+      // them false, exactly as before. The deferred task below refreshes
+      // the register continuously; the first turn after a cold start
+      // honestly reads it as missing (gate down, warming).
+      const standingRead = standingFunctionalGate({
+        standing: runtimeState.standingFunctionalCognition,
+        now: projectionNow,
+        authorizeCapabilities: requiresLiveFunctionalCognition
+      });
+      {
+        functionalGate = standingRead.gate;
         selfDistillationAudit = lastPersistedSelfModel.selfDistillation ?? null;
         functionalConsciousnessAudit = lastPersistedSelfModel.fcs ?? null;
         functionalCognitionAudit = lastPersistedSelfModel.functionalCognition ?? null;
@@ -1770,8 +1725,18 @@ export function createProductionTurnRuntime(options: {
           stage: "functional-cognition.project",
           label: "kernel.turn.preselection",
           durationMs: Date.now() - projectionStarted,
-          counts: { personaSnapshots: 0, counterfactualTraces: 0, policyPopulation: 0, durablePolicyGenomes: durablePolicyGenomes.length },
-          support: { fc: false, efc: false, gov: false, authorizeCapabilities: false, authorizedFc: false, authorizedEfc: false, deferred: true }
+          counts: { personaSnapshots: 0, counterfactualTraces: runtimeState.lastRejectedCandidateTraces?.length ?? 0, policyPopulation: 0, durablePolicyGenomes: durablePolicyGenomes.length },
+          support: {
+            fc: functionalGate.fc,
+            efc: functionalGate.efc,
+            gov: functionalGate.gov,
+            authorizeCapabilities: requiresLiveFunctionalCognition,
+            authorizedFc: functionalGate.fc,
+            authorizedEfc: functionalGate.efc,
+            standingSource: standingRead.source,
+            standingAgeMs: standingRead.ageMs ?? null,
+            deferred: true
+          }
         });
         // The real computation still runs -- for real, on the real graph,
         // real storage, real durable event -- just after this turn's
@@ -1806,7 +1771,15 @@ export function createProductionTurnRuntime(options: {
         // rather than queuing -- the next turn under the cap catches up the
         // real audit trail; nothing is ever fabricated, only delayed.
         const DEFERRED_FUNCTIONAL_COGNITION_MAX_CONCURRENT = 1;
-        if (runtimeState.deferredFunctionalCognitionInFlight < DEFERRED_FUNCTIONAL_COGNITION_MAX_CONCURRENT) {
+        // Refresh the standing register when it is missing or has burned
+        // half its TTL -- continuous background self-projection keeps the
+        // gate warm in both authorized and audit-only modes, so authorized
+        // deployments never pay a synchronous projection either.
+        const standingAgeMs = runtimeState.standingFunctionalCognition
+          ? projectionNow - runtimeState.standingFunctionalCognition.computedAt
+          : Number.POSITIVE_INFINITY;
+        const standingNeedsRefresh = standingAgeMs > STANDING_FUNCTIONAL_COGNITION_TTL_MS / 2;
+        if (standingNeedsRefresh && runtimeState.deferredFunctionalCognitionInFlight < DEFERRED_FUNCTIONAL_COGNITION_MAX_CONCURRENT) {
           runtimeState.deferredFunctionalCognitionInFlight++;
           void (async () => {
           try {
@@ -1833,7 +1806,13 @@ export function createProductionTurnRuntime(options: {
               learningNeeds: earlyLearningNeeds,
               personaHistory,
               governance,
-              traces: counterfactualTracesFromCapabilityPreview(capabilityPlanPreview),
+              // Real counterfactuals lead: the candidates the judge
+              // actually rejected (previous turn), then capability-plan
+              // previews as supplementary projection material.
+              traces: [
+                ...(runtimeState.lastRejectedCandidateTraces ?? []),
+                ...counterfactualTracesFromCapabilityPreview(capabilityPlanPreview)
+              ].slice(0, 16),
               policyPopulation
             };
             const offloaded = deps.functionalCognitionOffloadProcess === true
@@ -1845,9 +1824,13 @@ export function createProductionTurnRuntime(options: {
                 return {
                   selfDistillationAudit: selfDistillation.audit,
                   functionalConsciousnessAudit: functionalConsciousness.audit,
-                  functionalCognitionAudit: functionalCognition.audit
+                  functionalCognitionAudit: functionalCognition.audit,
+                  gate: functionalSelectionGate(functionalCognition)
                 };
               })();
+            if (offloaded.gate) {
+              runtimeState.standingFunctionalCognition = { gate: offloaded.gate, computedAt: projectionNow };
+            }
             await append(eventFactory.create({
               episodeId,
               typeId: "SelfModelProjected",
@@ -2296,6 +2279,21 @@ export function createProductionTurnRuntime(options: {
       const selectedAssistantForceProposal = selectedProposal
         ?? assistantForceProposalFromCandidateClaimBasis(judged.selected);
       for (const rejected of judged.rejected) events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateRejected", payload: { candidateId: rejected.candidate.id, score: rejected.score, reasons: rejected.reasons } })));
+      // Feed the next self-projection REAL counterfactuals: these are the
+      // roads genuinely not taken this turn, scored by the judge itself --
+      // not capability-plan previews recast as "traces".
+      runtimeState.lastRejectedCandidateTraces = judged.rejected.slice(0, 8).map(rejected =>
+        counterfactualTraceFromRejectedCandidate({
+          episodeId: String(episodeId),
+          candidateId: rejected.candidate.id,
+          candidateKind: rejected.candidate.kind,
+          score: rejected.score,
+          reasons: rejected.reasons,
+          support: rejected.candidate.scores.support,
+          evidenceCount: rejected.candidate.evidenceIds.length,
+          hardFailure: rejected.reasons.some(reason => reason.startsWith("hard-failure:")),
+          selectedCandidateId: judged.selected.id
+        }));
       const selectedAssistantForce = assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,

@@ -21,7 +21,7 @@ import { positiveRuntimeInt } from "./runtime-graph-cache.js";
  */
 export async function runFunctionalCognitionOffProcess(
   input: FunctionalCognitionOffloadRequest
-): Promise<{ selfDistillationAudit: unknown; functionalConsciousnessAudit: unknown; functionalCognitionAudit: unknown }> {
+): Promise<{ selfDistillationAudit: unknown; functionalConsciousnessAudit: unknown; functionalCognitionAudit: unknown; gate?: import("./functional-cognition.js").FunctionalSelectionGate }> {
   const heapMb = positiveRuntimeInt("SCCE_FUNCTIONAL_COGNITION_CHILD_HEAP_MB", 384);
   const timeoutMs = positiveRuntimeInt("SCCE_FUNCTIONAL_COGNITION_CHILD_TIMEOUT_MS", 60_000);
   const processPath = fileURLToPath(functionalCognitionProcessUrl());
@@ -54,7 +54,8 @@ export async function runFunctionalCognitionOffProcess(
           resolve({
             selfDistillationAudit: message.selfDistillationAudit,
             functionalConsciousnessAudit: message.functionalConsciousnessAudit,
-            functionalCognitionAudit: message.functionalCognitionAudit
+            functionalCognitionAudit: message.functionalCognitionAudit,
+            gate: message.gate
           });
         } else {
           reject(new Error(message.error || "functional-cognition offload process returned no result"));

@@ -1,4 +1,4 @@
-import type { CounterfactualTrace, PersonaSnapshot, PolicyGenome } from "./functional-cognition.js";
+import type { CounterfactualTrace, FunctionalSelectionGate, PersonaSnapshot, PolicyGenome } from "./functional-cognition.js";
 import type { GovernanceObservation } from "./governance-observation.js";
 import type {
   ForecastEnvelope,
@@ -26,5 +26,17 @@ export interface FunctionalCognitionOffloadRequest {
 }
 
 export type FunctionalCognitionOffloadResponse =
-  | { ok: true; selfDistillationAudit: JsonValue; functionalConsciousnessAudit: JsonValue; functionalCognitionAudit: JsonValue }
+  | {
+    ok: true;
+    selfDistillationAudit: JsonValue;
+    functionalConsciousnessAudit: JsonValue;
+    functionalCognitionAudit: JsonValue;
+    /**
+     * The real selection gate from the projected report, so the parent can
+     * maintain its standing self-state register without re-parsing audit
+     * JSON. Absent on responses from older child builds; the register
+     * simply does not update then.
+     */
+    gate?: FunctionalSelectionGate;
+  }
   | { ok: false; error: string };

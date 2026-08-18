@@ -3,6 +3,7 @@ import { createNodeRuntime, readScceRuntimeConfig } from "@scce/adapters-node";
 import { drainDeferredDialoguePersistence, handleRequest, serverPatchValidationRuntime } from "./routes.js";
 import { createTrace, traceEvent } from "@scce/kernel";
 import { createRuntimeStartupReadiness, startRuntimeSurface } from "./startup.js";
+import { startDreamCycle } from "./dream-cycle.js";
 
 async function main(): Promise<void> {
   const trace = createTrace('server.start');
@@ -18,7 +19,12 @@ async function main(): Promise<void> {
   }
   const host = config.server.host ?? serverUrl.hostname;
   const port = Number(config.server.port ?? serverUrl.port ?? 3873);
+  const dreamCycle = startDreamCycle({
+    runtime,
+    config: (config.runtime as { dreamCycle?: import("./dream-cycle.js").DreamCycleConfig }).dreamCycle
+  });
   const server = http.createServer((req, res) => {
+    dreamCycle.recordActivity();
     handleRequest(req, res, { runtime, config, maxBodyBytes: config.runtime.maxFileBytes, patchValidation, startupReadiness }).catch(error => {
       res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2));
@@ -53,6 +59,7 @@ async function main(): Promise<void> {
 
   let shutdownPromise: Promise<void> | undefined;
   const shutdown = (): Promise<void> => shutdownPromise ??= (async () => {
+    dreamCycle.stop();
     await closeServer(server);
     const drained = await drainDeferredDialoguePersistence();
     if (drained.drainedConversations > 0) {

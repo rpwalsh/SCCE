@@ -121,6 +121,13 @@ export interface ScceRuntimeConfig {
      * text and never as production authority/response-form routing patterns.
      */
     allowSyntheticRequestRequirementBootstrap?: boolean;
+    /**
+     * Authorize the functional-consciousness gate to widen capability
+     * execution when the standing self-state projection is fresh. Off:
+     * audit-only (fc/efc always forced false). The standing register
+     * makes the authorized mode cost a turn nothing.
+     */
+    functionalCognitionAuthorizeCapabilities?: boolean;
   };
   connectors: {
     web?: {

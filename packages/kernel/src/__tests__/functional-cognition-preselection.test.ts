@@ -327,3 +327,68 @@ function capabilities(): Capability[] {
     }
   ];
 }
+
+describe("standing functional cognition register", () => {
+  const gate = { fc: true, efc: true, gov: true, selectedGoalId: "goal:x", selectedGoalScore: 0.8 };
+
+  it("authorizes from a fresh standing projection and degrades honestly on staleness", async () => {
+    const { standingFunctionalGate, STANDING_FUNCTIONAL_COGNITION_TTL_MS } = await import("../functional-cognition.js");
+    const now = 1_000_000_000;
+    const fresh = standingFunctionalGate({
+      standing: { gate, computedAt: now - 1000 },
+      now,
+      authorizeCapabilities: true
+    });
+    expect(fresh.source).toBe("standing-fresh");
+    expect(fresh.gate.fc).toBe(true);
+    expect(fresh.gate.efc).toBe(true);
+
+    const stale = standingFunctionalGate({
+      standing: { gate, computedAt: now - STANDING_FUNCTIONAL_COGNITION_TTL_MS - 1 },
+      now,
+      authorizeCapabilities: true
+    });
+    expect(stale.source).toBe("standing-stale");
+    expect(stale.gate.fc).toBe(false);
+    expect(stale.gate.efc).toBe(false);
+    // gov is state, not authorization -- staleness must not fabricate or
+    // erase it.
+    expect(stale.gate.gov).toBe(true);
+
+    const missing = standingFunctionalGate({ standing: undefined, now, authorizeCapabilities: true });
+    expect(missing.source).toBe("standing-missing");
+    expect(missing.gate.fc).toBe(false);
+  });
+
+  it("never authorizes in audit-only mode even when fresh", async () => {
+    const { standingFunctionalGate } = await import("../functional-cognition.js");
+    const read = standingFunctionalGate({
+      standing: { gate, computedAt: 5_000 },
+      now: 6_000,
+      authorizeCapabilities: false
+    });
+    expect(read.source).toBe("standing-fresh");
+    expect(read.gate.fc).toBe(false);
+    expect(read.gate.efc).toBe(false);
+  });
+
+  it("maps a judge-rejected candidate to a real counterfactual trace", async () => {
+    const { counterfactualTraceFromRejectedCandidate } = await import("../functional-cognition.js");
+    const trace = counterfactualTraceFromRejectedCandidate({
+      episodeId: "episode-1",
+      candidateId: "candidate:generated:alt",
+      candidateKind: "proof-answer",
+      score: 1.2,
+      reasons: ["requirement-quality=1.2", "hard-failure:telemetry_leak"],
+      support: 0.7,
+      evidenceCount: 2,
+      hardFailure: true,
+      selectedCandidateId: "candidate:winner"
+    });
+    expect(trace.sourceTraceId).toBe("episode-1");
+    expect(trace.planSteps[0]).toBe("proof-answer");
+    expect(trace.substitutedSteps).toEqual(["candidate:winner"]);
+    expect(trace.evidenceSurvival[0]).toBeCloseTo(0.7);
+    expect(trace.safetyMargins[0]).toBeLessThan(0.5);
+  });
+});
