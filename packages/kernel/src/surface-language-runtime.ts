@@ -47,6 +47,50 @@ function boundedCacheSet<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: num
   }
 }
 
+/**
+ * Real bug this guards against: surfaceLanguageMemoryCache's entry-count
+ * bound (above) treats every resident language cluster as the same
+ * size, but a hydration is itself byte-budgeted up to ~88MB
+ * (ngramModelJsonBytes + languageUnitJsonBytes in
+ * hydrateSurfaceLanguageMemory) -- 500 entries at that size is tens of
+ * GB, not a bounded cache. Confirmed live: an ordinary question about a
+ * never-warmed topic ("tell me about mmorpgs") triggered the resident-
+ * only durable fallback, hydrated one more cluster on top of the
+ * startup-warmed set, and OOM'd a 7GB heap. This tracks each entry's
+ * actual measured size (JSON size of the two large fields the byte
+ * budget already bounds) and evicts oldest-first until the AGGREGATE
+ * fits a global budget, not just the entry count.
+ */
+const SURFACE_LANGUAGE_MEMORY_CACHE_MAX_BYTES = 1_500 * 1024 * 1024;
+
+function approximateHydrationBytes(value: { models: readonly unknown[]; units: readonly unknown[] }): number {
+  try {
+    return JSON.stringify(value.models).length + JSON.stringify(value.units).length;
+  } catch {
+    return 0;
+  }
+}
+
+function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxBytes: number }>(
+  map: Map<K, V>,
+  key: K,
+  value: V,
+  maxEntries: number,
+  maxBytes: number
+): void {
+  map.delete(key);
+  map.set(key, value);
+  let totalBytes = 0;
+  for (const entry of map.values()) totalBytes += entry.approxBytes;
+  while ((map.size > maxEntries || totalBytes > maxBytes) && map.size > 1) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = map.get(oldestKey);
+    map.delete(oldestKey);
+    if (oldest) totalBytes -= oldest.approxBytes;
+  }
+}
+
 const DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES = 500;
 const DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES = 2_000;
 
@@ -69,7 +113,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   const corpusRegistry = createCorpusRegistry(deps.corpusRegistry ?? []);
 
-  const surfaceLanguageMemoryCache = new Map<string, { limit: number; loadedAt: number; value: Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>> }>();
+  const surfaceLanguageMemoryCache = new Map<string, { limit: number; loadedAt: number; value: Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>; approxBytes: number }>();
 
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
 
@@ -432,7 +476,13 @@ export function createSurfaceLanguageRuntime(options: {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
     const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
-    boundedCacheSet(surfaceLanguageMemoryCache, cacheKey, { limit, loadedAt: now, value }, surfaceLanguageMemoryCacheMaxEntries);
+    boundedSurfaceLanguageMemoryCacheSet(
+      surfaceLanguageMemoryCache,
+      cacheKey,
+      { limit, loadedAt: now, value, approxBytes: approximateHydrationBytes(value) },
+      surfaceLanguageMemoryCacheMaxEntries,
+      SURFACE_LANGUAGE_MEMORY_CACHE_MAX_BYTES
+    );
     return value;
   }
 
