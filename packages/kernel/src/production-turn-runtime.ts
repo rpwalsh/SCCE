@@ -2688,8 +2688,10 @@ export function createProductionTurnRuntime(options: {
           session: extendedSession,
           realizeSection: async (section, _index, priorSectionTexts) => {
             // Fast direct engine call first; full Mouth only when that is
-            // inadequate. Both fail empty, never echo.
-            const direct = realizeCreativeSection({
+            // inadequate. Both fail empty, never echo. One unlucky sample
+            // must not end a twelve-section document, so a declined
+            // attempt retries once with a distinct sampling seed.
+            let direct = realizeCreativeSection({
               languageMemory: languageMemoryRuntime,
               state: speakInput.languageMemory,
               targetLanguageProfile: speakInput.languageProfile,
@@ -2698,13 +2700,25 @@ export function createProductionTurnRuntime(options: {
               narrativeConditioning: priorSectionTexts.slice(-2),
               generationExtent: 180
             });
+            if (!direct.accepted) {
+              kernelTrace({
+                stage: "mouth.generate",
+                label: "kernel.turn.creative_section_direct",
+                counts: { chars: direct.text.length },
+                support: { goal: section.goal, reason: direct.reason, generation: toJsonValue(direct.generationAudit ?? null) }
+              });
+              direct = realizeCreativeSection({
+                languageMemory: languageMemoryRuntime,
+                state: speakInput.languageMemory,
+                targetLanguageProfile: speakInput.languageProfile,
+                requestText: input.text,
+                sectionGoal: section.goal,
+                narrativeConditioning: priorSectionTexts.slice(-2),
+                attempt: 2,
+                generationExtent: 180
+              });
+            }
             if (direct.accepted) return { text: direct.text };
-            kernelTrace({
-              stage: "mouth.generate",
-              label: "kernel.turn.creative_section_direct",
-              counts: { chars: direct.text.length },
-              support: { goal: section.goal, reason: direct.reason, generation: toJsonValue(direct.generationAudit ?? null) }
-            });
             const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal });
             return { text: String(sectionSpoken.text ?? "") };
           }
