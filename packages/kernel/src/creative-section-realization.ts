@@ -10,6 +10,8 @@ export interface CreativeSectionRealizationInput {
   requestText: string;
   sectionGoal: string;
   narrativeConditioning?: readonly string[];
+  /** Distinct attempts sample distinct continuations for the same goal. */
+  attempt?: number;
   generationExtent?: number;
   targetLanguage?: string;
   targetScript?: string;
@@ -43,7 +45,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     // Unit symbols, not whole sentences: KN context matching is n-gram-sized.
     // The raw goal leads only to make each section's sampling seed distinct.
     contextSymbols: [
-      collapseSurfaceWhitespace(input.sectionGoal),
+      `${collapseSurfaceWhitespace(input.sectionGoal)}attempt:${Math.max(1, Math.floor(input.attempt ?? 1))}`,
       ...contentUnits(input.requestText).slice(0, 8),
       ...conditioning.flatMap(line => contentUnits(line).slice(0, 4)),
       ...goalUnits
