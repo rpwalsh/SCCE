@@ -36,31 +36,50 @@ export interface CreativeSectionRealization {
  */
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.narrativeConditioning ?? []).filter(Boolean).slice(0, 6);
+  const goalUnits = contentUnits(input.sectionGoal).slice(0, 3);
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
-    contextSymbols: [input.sectionGoal, input.requestText, ...conditioning],
+    // Unit symbols, not whole sentences: KN context matching is n-gram-sized.
+    // The raw goal leads only to make each section's sampling seed distinct.
+    contextSymbols: [
+      collapseSurfaceWhitespace(input.sectionGoal),
+      ...contentUnits(input.requestText).slice(0, 8),
+      ...conditioning.flatMap(line => contentUnits(line).slice(0, 4)),
+      ...goalUnits
+    ],
     frames: [{
       id: "frame:creative-section",
-      role: "point",
+      role: "answer",
       force: "creative",
-      // Atom coverage demands loose containment of the atom's full text, so
-      // a whole-sentence goal atom would force the output to embed the
-      // prompt -- which the echo gate then rejects. Unit atoms make
-      // coverage mean "on topic" instead.
+      // Whole-sentence atoms would force the output to embed the prompt --
+      // which the echo gate forbids. Unit atoms and terms make coverage
+      // mean "on topic", and the required-term seed steers the
+      // continuation toward them.
       propositionAtoms: [
-        ...goalUnitAtoms(input.sectionGoal),
+        ...goalUnits.map((unit, index) => ({
+          id: `atom:creative-section:goal:${index}`,
+          text: unit,
+          kind: "surface",
+          weight: 0.9,
+          source: "section-plan"
+        })),
         ...conditioning.flatMap((line, index) =>
           contentUnits(line).slice(0, 4).map((unit, unitIndex) => ({
             id: `atom:creative-section:conditioning:${index}:${unitIndex}`,
             text: unit,
-            kind: "narrative-conditioning",
+            kind: "surface",
             weight: 0.6,
             source: "narrative-state"
           }))
         )
       ],
-      requiredTerms: [],
+      requiredTerms: goalUnits.map((unit, index) => ({
+        id: `term:creative-section:goal:${index}`,
+        text: unit,
+        weight: 0.9,
+        source: "section-plan"
+      })),
       targetLanguage: input.targetLanguage ?? "",
       targetScript: input.targetScript ?? ""
     }],
@@ -88,18 +107,6 @@ function contentUnits(text: string): string[] {
   return [...new Set(surfaceUnits(collapseSurfaceWhitespace(text).toLocaleLowerCase()))]
     .filter(unit => unit.length >= 3)
     .sort((left, right) => [...right].length - [...left].length);
-}
-
-function goalUnitAtoms(sectionGoal: string): Array<{ id: string; text: string; kind: string; weight: number; source: string }> {
-  const units = contentUnits(sectionGoal).slice(0, 4);
-  if (!units.length) return [{ id: "atom:creative-section:goal", text: sectionGoal, kind: "goal", weight: 0.9, source: "section-plan" }];
-  return units.map((unit, index) => ({
-    id: `atom:creative-section:goal:${index}`,
-    text: unit,
-    kind: "goal",
-    weight: 0.9,
-    source: "section-plan"
-  }));
 }
 
 /** Echo = normalized containment at comparable length, or >=0.8 unit overlap. */
