@@ -14,6 +14,14 @@ export interface CreativeSectionRealizationInput {
   narrativeConditioning?: readonly string[];
   /** Words this section's prose should favor -- typically the request's own retrieved-evidence vocabulary, so word choice stays on-topic instead of drifting into an unrelated source's fingerprint. */
   topicVocabulary?: readonly string[];
+  /**
+   * The document's cast, already resolved by the caller when the request
+   * text itself has none (a bare-pronoun follow-up like "write a story
+   * about her") -- typically proper-noun anchors pulled from this turn's
+   * own discourse-bound evidence. Used only as a fallback: a request that
+   * names its own subject always wins on its own text.
+   */
+  resolvedCastSubjectIds?: readonly string[];
   /** Distinct attempts sample distinct continuations for the same goal. */
   attempt?: number;
   generationExtent?: number;
@@ -50,7 +58,13 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // her" put "write"/"three"/"paragraph" into the story as characters.
   // A request with no capitalized subject (a pronoun, a common noun)
   // honestly yields no forced entity rather than a wrong one.
-  const goalUnits = properNounEntityAnchors(input.sectionGoal).slice(0, 3);
+  // A section goal built from the request text ("... [part N of M]") has
+  // the same emptiness a bare-pronoun request does -- the resolved cast
+  // fallback applies here too, not just to the whole-request entity set.
+  const resolvedCast = (input.resolvedCastSubjectIds ?? []).slice(0, 3);
+  const goalUnits = properNounEntityAnchors(input.sectionGoal).length
+    ? properNounEntityAnchors(input.sectionGoal).slice(0, 3)
+    : resolvedCast;
   // One rotated unit per section owns the hard required-coverage
   // obligation (its opener varies instead of chanting every unit every
   // time) -- but the whole document's core entities (protagonist,
@@ -60,7 +74,9 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // document has exactly one cast, present throughout.
   const rotation = goalUnits.length ? stableRotation(input.sectionGoal) % goalUnits.length : 0;
   const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
-  const persistentEntities = properNounEntityAnchors(input.requestText).slice(0, 3);
+  const persistentEntities = properNounEntityAnchors(input.requestText).length
+    ? properNounEntityAnchors(input.requestText).slice(0, 3)
+    : resolvedCast;
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
   const properNounCasing = properNounCasingHints([input.requestText, input.sectionGoal, ...conditioning]);
   const generation = input.languageMemory.generate({
