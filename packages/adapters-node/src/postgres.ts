@@ -1537,8 +1537,9 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
     observed_at_ms: span.observedAt,
       information_label: labels.get(span.id)!
     }));
-    await storage.query(
-    `WITH upserted AS (
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `WITH upserted AS (
        INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at, information_label)
      SELECT
        r.id,
@@ -1614,8 +1615,9 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
          FROM unnest(anchor_index.features || EXCLUDED.features) AS feature
          ORDER BY feature
        )`,
-      [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -1736,8 +1738,9 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
       metadata_json: node.metadata,
       information_label: labels.get(node.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("graph_nodes")} AS n(id,type_id,representation_json,alpha,evidence_ids,features,created_at,updated_at,metadata_json,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("graph_nodes")} AS n(id,type_id,representation_json,alpha,evidence_ids,features,created_at,updated_at,metadata_json,information_label)
      SELECT
        r.id,
        r.type_id,
@@ -1762,8 +1765,9 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -1789,8 +1793,9 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
       metadata_json: edge.metadata,
       information_label: labels.get(edge.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("graph_edges")} AS e(id,source_node_id,target_node_id,relation_id,alpha,weight,temporal_scope,evidence_ids,created_at,updated_at,metadata_json,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("graph_edges")} AS e(id,source_node_id,target_node_id,relation_id,alpha,weight,temporal_scope,evidence_ids,created_at,updated_at,metadata_json,information_label)
      SELECT
        r.id,
        r.source_node_id,
@@ -1819,8 +1824,9 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(e.alpha,EXCLUDED.alpha), weight=GREATEST(e.weight,EXCLUDED.weight), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(e.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, metadata_json=e.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -1849,8 +1855,9 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
       updated_at_ms: edge.updatedAt,
       information_label: labels.get(edge.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("graph_hyperedges")} AS h(id,schema_id,relation_id,participant_ports,member_node_ids,qualifiers_json,modality_json,evidence_ids,weight_vector,temporal_scope,provenance_refs,created_at,updated_at,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("graph_hyperedges")} AS h(id,schema_id,relation_id,participant_ports,member_node_ids,qualifiers_json,modality_json,evidence_ids,weight_vector,temporal_scope,provenance_refs,created_at,updated_at,information_label)
      SELECT
        r.id,
        r.schema_id,
@@ -1883,8 +1890,9 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET schema_id=EXCLUDED.schema_id, participant_ports=EXCLUDED.participant_ports, member_node_ids=EXCLUDED.member_node_ids, qualifiers_json=EXCLUDED.qualifiers_json, modality_json=EXCLUDED.modality_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(h.evidence_ids || EXCLUDED.evidence_ids))), weight_vector=EXCLUDED.weight_vector, temporal_scope=EXCLUDED.temporal_scope, provenance_refs=(SELECT ARRAY(SELECT DISTINCT unnest(h.provenance_refs || EXCLUDED.provenance_refs))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -2869,8 +2877,9 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
       information_label: profile.informationLabel
     }));
     const aliases = sourceOwnedLanguageAliasRows(labeledProfiles);
-    await storage.query(
-      `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,ngram_keys,created_at,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,ngram_keys,created_at,information_label)
        SELECT r.id, r.source_version_id, r.profile_json, r.ngram_keys, TO_TIMESTAMP(r.created_at_ms/1000.0), r.information_label
        FROM jsonb_to_recordset($1::jsonb) AS r(
          id text,
@@ -2881,8 +2890,9 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
          information_label jsonb
        )
        ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json, ngram_keys=EXCLUDED.ngram_keys, information_label=EXCLUDED.information_label`,
-      [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
     await storage.query(
       `DELETE FROM ${storage.table("language_profile_aliases")} WHERE profile_id=ANY($1)`,
       [profiles.map(profile => profile.id)]
@@ -3016,6 +3026,45 @@ function ngramObservationBatchRow(observation: NgramObservation): NgramObservati
     metadata_json: observation.metadata,
     information_label: normalizeInformationLabel(observation.informationLabel!)
   };
+}
+
+/**
+ * Chunk any batch payload below Postgres's hard 268435455-byte jsonb
+ * limit (verified live: little-women's language-pattern batch -- 5x more
+ * promoted constructions after the promotion-gate recalibration, each
+ * bundle carrying full source examples -- exceeded it in one statement
+ * and failed the whole book). Batches split at a conservative 64MB; a
+ * single row larger than that ships alone (it is still storable up to
+ * the ~200MB margin); a single row beyond the margin cannot be stored at
+ * all and throws with the row identified.
+ */
+const JSON_ROW_BATCH_TARGET_BYTES = 64 * 1024 * 1024;
+const JSON_ROW_HARD_LIMIT_BYTES = 200 * 1024 * 1024;
+
+function* serializedJsonRowBatches(rows: readonly unknown[], rowLabel: (row: unknown) => string): Generator<string> {
+  let current: string[] = [];
+  let bytes = 2;
+  for (const row of rows) {
+    const text = JSON.stringify(row);
+    const rowBytes = Buffer.byteLength(text, "utf8");
+    if (rowBytes + 2 > JSON_ROW_HARD_LIMIT_BYTES) {
+      throw new Error(`batch row ${rowLabel(row)} serializes to ${rowBytes} bytes, beyond the storable jsonb margin`);
+    }
+    const separator = current.length ? 1 : 0;
+    if (current.length && (bytes + separator + rowBytes > JSON_ROW_BATCH_TARGET_BYTES)) {
+      yield `[${current.join(",")}]`;
+      current = [];
+      bytes = 2;
+    }
+    if (current.length) bytes++;
+    current.push(text);
+    bytes += rowBytes;
+  }
+  if (current.length) yield `[${current.join(",")}]`;
+}
+
+function batchRowId(row: unknown): string {
+  return String((row as { id?: unknown })?.id ?? "(no id)");
 }
 
 function* serializedNgramObservationBatches(observations: readonly NgramObservation[]): Generator<string> {
@@ -3385,8 +3434,9 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
       updated_at_ms: model.updatedAt,
       information_label: labels.get(model.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("ngram_models")}(id,stream_id,language_hint,max_order,discount,model_json,updated_at,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("ngram_models")}(id,stream_id,language_hint,max_order,discount,model_json,updated_at,information_label)
      SELECT r.id, r.stream_id, r.language_hint, r.max_order, r.discount, r.model_json, TO_TIMESTAMP(r.updated_at_ms/1000.0), r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
@@ -3399,8 +3449,9 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=EXCLUDED.model_json, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -3422,8 +3473,9 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
       metadata_json: unit.metadata,
       information_label: labels.get(unit.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("language_units")} AS lu(id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("language_units")} AS lu(id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json,information_label)
      SELECT
        r.id,
        r.profile_id,
@@ -3452,8 +3504,9 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=lu.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -3472,8 +3525,9 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
       updated_at_ms: pattern.updatedAt,
       information_label: labels.get(pattern.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("language_patterns")} AS lp(id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("language_patterns")} AS lp(id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label)
      SELECT
        r.id,
        r.profile_id,
@@ -3496,8 +3550,9 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET support=GREATEST(lp.support,EXCLUDED.support), entropy=EXCLUDED.entropy, pattern_json=EXCLUDED.pattern_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lp.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -3514,8 +3569,9 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
       created_at_ms: frame.createdAt,
       information_label: labels.get(frame.id)!
     }));
-    await storage.query(
-    `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,embedding,evidence_ids,alpha,created_at,information_label)
+    for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
+      await storage.query(
+        `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,embedding,evidence_ids,alpha,created_at,information_label)
      SELECT
        r.id,
        r.frame_json,
@@ -3534,8 +3590,9 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids))), information_label=EXCLUDED.information_label`,
-    [JSON.stringify(payload)]
-    );
+        [payloadChunk]
+      );
+    }
   });
 }
 
