@@ -2760,6 +2760,7 @@ export function createProductionTurnRuntime(options: {
                 sectionGoal: section.goal,
                 narrativeConditioning: priorSectionTexts.slice(-2),
                 topicVocabulary: sectionTopicVocabulary,
+                resolvedCastSubjectIds: creativeCastSubjectIds,
                 attempt,
                 generationExtent: 180
               });
