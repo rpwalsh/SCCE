@@ -609,6 +609,27 @@ export interface GraphStore {
   materializeAlphaGraph(query: GraphSliceQuery): Promise<AlphaTrace>;
 }
 
+export interface WordingRealizerFact {
+  subject: string;
+  predicate: string;
+  object: string;
+  evidenceIds: readonly string[];
+}
+
+export interface WordingRealizerRequest {
+  requestText: string;
+  facts: readonly WordingRealizerFact[];
+  targetLanguage: string;
+  targetScript: string;
+  maxSentences: number;
+}
+
+/** See ScceKernelDeps.wordingRealizer for the doctrine this port lives under. */
+export interface WordingRealizerPort {
+  id: string;
+  realize(request: WordingRealizerRequest): Promise<readonly string[]> | readonly string[];
+}
+
 export interface EvidenceStore {
   putSourceVersion(source: SourceVersion): Promise<void>;
   putEvidenceSpan(span: EvidenceSpan): Promise<void>;
@@ -1191,6 +1212,17 @@ export interface ScceKernelDeps {
    * execution).
    */
   functionalCognitionAuthorizeCapabilities?: boolean;
+  /**
+   * The wording realizer port (docs/REALIZER_DOCTRINE.md, owner ruling
+   * 2026-08-17): an admissible, compact, corpus-trained learned function
+   * that chooses WORDING for facts the evidence layer already licensed.
+   * Its outputs enter the mouth's candidate pool subject to every
+   * existing gate (admissibility, structural completeness, argument
+   * integrity, entailment, citation binding); its failure mode is
+   * awkward wording, never a new assertion. Foundation-model runtimes
+   * remain banned; this port must never be backed by one.
+   */
+  wordingRealizer?: WordingRealizerPort;
   /**
    * When true, the deferred (unauthorized) functional-cognition self-
    * projection runs in a short-lived child process with its own hard
