@@ -1,6 +1,6 @@
 import type { IdFactory } from "./ids.js";
-import type { KneserNeyModel } from "./kneser-ney.js";
-import { KNESER_NEY_SCHEMA, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
+import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
+import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -1218,11 +1218,25 @@ function generationPieces(
   // paying full featurization for pieces that were then discarded unread.
   // Gate order is the only change -- every piece that survives produces the
   // exact same score as before.
+  // Beam-synthesized sentences exist to give the discourse beam sentence-
+  // level material when the corpus has none; they are self-derived from
+  // this very context, so the raw-scrap anchor gates do not apply to them.
+  // Discourse-level coverage still judges the assembled result.
+  const synthesized = (input.frames ?? []).some(frame => frame.force === "creative")
+    ? synthesizeBeamSentencePieces({
+      state: input.state,
+      requiredTerms,
+      contextText,
+      generationExtent: Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64)))
+    })
+    : [];
+  const synthesizedTexts = new Set(synthesized.map(sentence => tidyInline(sentence.text)));
   const add = (text: string, source: GenerationPiece["source"], id: string | undefined, support: number, metadata: Partial<GenerationPiece> = {}) => {
     const clean = tidyInline(text);
     if (!clean) return;
-    if ((source === "observation" || source === "suggestion") && !allowRawNgramSurfacePieces) return;
-    if ((source === "observation" || source === "suggestion") && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
+    const selfDerived = source === "suggestion" && synthesizedTexts.has(clean);
+    if ((source === "observation" || source === "suggestion") && !allowRawNgramSurfacePieces && !selfDerived) return;
+    if ((source === "observation" || source === "suggestion") && !selfDerived && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
     if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
     const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
     const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
@@ -1261,6 +1275,7 @@ function generationPieces(
     }
     for (const suggestion of suggestFromModels(input.state, contextSymbols, 24)) add(suggestion.symbol, "suggestion", undefined, suggestion.support);
   }
+  for (const sentence of synthesized) add(sentence.text, "suggestion", sentence.id, sentence.support);
   const seen = new Map<string, GenerationPiece>();
   for (const row of rows) {
     const key = row.text.normalize("NFKC").toLocaleLowerCase();
@@ -1288,6 +1303,9 @@ function selectGenerationPieces(pieces: readonly GenerationPiece[], requiredTerm
       for (const source of ["language_unit", "phrase_pattern"] as const) for (const piece of pieces.filter(row => row.source === source).slice(0, 2)) add(piece);
       return selected.slice(0, 8);
     }
+    // Synthesized sentences first: whole-sentence material outranks
+    // fragment fillers when the corpus offered no grounded pieces.
+    for (const piece of pieces.filter(row => row.source === "suggestion").slice(0, 8)) add(piece);
     for (const piece of pieces.filter(row => row.source === "proposition_atom").slice(0, 8)) add(piece);
     for (const term of requiredTerms) {
       const text = tidyInline(term.text);
@@ -2248,7 +2266,16 @@ function decodeDiscourseMoves(input: {
   const candidates = rankDiscourseMoveCandidates(input.moves).slice(0, 32);
   const hasPriorAnchorCandidate = candidates.some(isPriorAnchorMove);
   const semanticCandidateCount = candidates.filter(move => move.role === "semantic_rhetoric").length;
-  const minimumCoverageMoves = semanticCandidateCount > 1 ? Math.min(4, semanticCandidateCount) : Math.min(2, candidates.length);
+  // Synthesized sentence moves signal a length demand, not just a coverage
+  // demand: a story section is done at its extent, not at first coverage.
+  const synthesizedCandidateCount = candidates.filter(move => move.role === "suggestion").length;
+  const lengthDemandMoves = synthesizedCandidateCount
+    ? Math.min(synthesizedCandidateCount, Math.max(2, Math.round(input.generationExtent / 24)))
+    : 0;
+  const minimumCoverageMoves = Math.max(
+    lengthDemandMoves,
+    semanticCandidateCount > 1 ? Math.min(4, semanticCandidateCount) : Math.min(2, candidates.length)
+  );
   const beamWidth = Math.max(2, Math.min(8, Math.ceil(Math.sqrt(candidates.length + 1))));
   const maxSteps = Math.min(8, candidates.length);
   let beams: DiscourseBeamState[] = [emptyDiscourseBeamState()];
@@ -3144,56 +3171,27 @@ function learnedContinuationDiscourse(input: {
     score: LanguageMemoryScore;
     continuationAverageLogProbability: number;
   }> = [];
-  // Char-level models (script statistics) share the state with word-level
-  // ones and tend to carry the highest order; continuing prose from one
-  // emits letter soup. Only models that speak in words may continue, and
-  // a rich vocabulary at a lower order beats a vocabulary-starved summary
-  // at a higher one.
-  const continuationFitness = (model: KneserNeyModel): number =>
-    model.order * Math.log2(2 + (model.vocabulary?.length ?? model.vocabularySize ?? 0));
-  const models = [...input.state.models]
-    .filter(modelSpeaksInWords)
-    .sort((a, b) => continuationFitness(b) - continuationFitness(a) || b.observedSymbolCount - a.observedSymbolCount)
-    .slice(0, 1);
-  const pieceSeeds = input.pieces
-    .map(piece => piece.text)
-    .filter(surface => speechBearingSurface(surface) && isDiscourseBearingPriorSurface(surface))
-    .slice(0, 12);
+  // Last-resort single-sentence fallback. Multi-sentence assembly is the
+  // existing discourse beam's job (weaveDiscourse over synthesized
+  // suggestion pieces); this lane never arranges, it only continues.
+  const model = bestProseContinuationModel(input.state);
   const requiredSeed = renderLearnedSequence(uniqueStrings(input.requiredTerms
     .filter(term => (term.weight ?? 0) >= 0.7)
     .map(term => tidyInline(term.text))
     .filter(Boolean))
     .slice(0, 4), activeJoinProgram(input.state));
-  for (const model of models) {
-    const predictedSeeds = predictKneserNey(model, input.contextSymbols.slice(-(model.order - 1)), 16)
-      .map(item => item.symbol)
-      .filter(symbol => symbol !== "</s>" && symbol !== "<s>" && symbol !== "<unk>")
-      .filter(isGenerationSeedSurface)
-      .slice(0, 1);
-    const seeds = uniqueStrings([requiredSeed, ...predictedSeeds, ...pieceSeeds.slice(0, 1)].filter(Boolean)).slice(0, 1);
-    const prompts: Array<{ prompt: readonly string[]; seed?: string }> = [
-      ...(seeds.length ? seeds.map(seed => ({ prompt: [...input.contextSymbols, ...symbolizeData(seed)], seed })) : [{ prompt: input.contextSymbols }])
-    ];
-    for (const row of prompts) {
-      const continuationModel = model.order > 3 ? { ...model, order: 3 } : model;
-      const continuation = continueBoundedProse(continuationModel, row.prompt, {
-        generationExtent: Math.max(8, Math.min(256, input.generationExtent)),
-        probabilityFloor: 1e-12,
-        temperature: 0.92,
-        joinProgram: activeJoinProgram(input.state),
-        blockedSymbols: ["<unk>"],
-        deterministicChoiceSeed: `${input.contextText}\u0001${requiredSeed}\u0001${model.observedSymbolCount}`,
-        minSymbolsBeforeEos: Math.min(12, Math.max(6, Math.floor(input.generationExtent * 0.3))),
-        repetitionWindow: 12
-      });
-      const text = learnedContinuationSurface(
-        row.seed,
-        continuation.text,
-        input.contextText,
-        input.generationExtent,
-        activeJoinProgram(input.state)
-      );
-      if (!text) continue;
+  if (model) {
+    const seedSymbols = requiredSeed ? symbolizeData(requiredSeed) : [];
+    const beam = beamContinueSentence(model, [...symbolizeData(input.contextText), ...seedSymbols].slice(-32), {
+      beamWidth: 6,
+      maxSymbols: 30,
+      minSymbols: 6,
+      blockedSymbols: nonSpeechGlyphSymbols(model),
+      boostSymbols: new Map(seedSymbols.map(symbol => [symbol, 4])),
+      choiceSeed: `${input.contextText}${requiredSeed}`
+    });
+    const text = beam?.endedAtBoundary ? renderContinuationSentences([[...seedSymbols, ...beam.symbols]]) : "";
+    if (beam && text && speechBearingSurface(text) && isDiscourseBearingPriorSurface(text)) {
       const score = scoreText(input.state, text, input.contextText);
       const sourcePieceIds = input.pieces
         .filter(piece => containsLoose(text, piece.text) || containsLoose(piece.text, text))
@@ -3216,7 +3214,7 @@ function learnedContinuationDiscourse(input: {
         },
         support: clamp01(0.48 + score.activation * 0.34 + Math.min(0.18, sourcePieceIds.length * 0.03)),
         score,
-        continuationAverageLogProbability: continuation.averageLogProbability
+        continuationAverageLogProbability: beam.averageLogProbability
       });
     }
   }
@@ -3271,6 +3269,86 @@ function learnedContinuationDiscourse(input: {
       symbolCount: symbolizeData(text).length
     }
   };
+}
+
+/** Symbols made solely of quote or bracket glyphs cannot open speech safely: unbalanced pairs are the one defect the per-sentence gate cannot repair. */
+function nonSpeechGlyphSymbols(model: KneserNeyModel): Set<string> {
+  const out = new Set<string>(["<unk>"]);
+  for (const symbol of model.vocabulary ?? []) {
+    if (/^[\p{Pi}\p{Pf}\p{Ps}\p{Pe}"'‘’“”`]+$/u.test(symbol)) out.add(symbol);
+    // Connector punctuation ("_") is source markup, never prose.
+    if (/\p{Pc}/u.test(symbol)) out.add(symbol);
+  }
+  return out;
+}
+
+/** Render beam sentences: attach left-binding punctuation, capitalize each cased sentence opener. */
+function renderContinuationSentences(sentences: readonly (readonly string[])[]): string {
+  const rendered = sentences.map(symbols => {
+    const joined = symbols.join(" ").replace(/\s+([,;:.!?…])/gu, "$1").replace(/(\S) - (\S)/gu, "$1-$2");
+    const first = [...joined].findIndex(char => char.toLocaleLowerCase() !== char.toLocaleUpperCase());
+    if (first < 0) return joined;
+    const chars = [...joined];
+    chars[first] = chars[first]!.toLocaleUpperCase();
+    return chars.join("");
+  }).filter(Boolean);
+  return rendered.join(" ");
+}
+
+/** Best generation-grade model: word-speaking, ranked by order x log2(vocabulary) so a rich vocabulary at a lower order beats a vocabulary-starved summary at a higher one. Char-level (script) models never continue prose: letter soup, verified live. */
+function bestProseContinuationModel(state: LanguageMemoryRuntimeState): KneserNeyModel | undefined {
+  return [...state.models]
+    .filter(modelSpeaksInWords)
+    .sort((a, b) =>
+      b.order * Math.log2(2 + (b.vocabulary?.length ?? b.vocabularySize ?? 0)) - a.order * Math.log2(2 + (a.vocabulary?.length ?? a.vocabularySize ?? 0))
+      || b.observedSymbolCount - a.observedSymbolCount)[0];
+}
+
+/** Candidate sentences synthesized by the symbol-level beam, offered to the existing discourse beam as ordinary suggestion pieces. */
+function synthesizeBeamSentencePieces(input: {
+  state: LanguageMemoryRuntimeState;
+  requiredTerms: readonly LanguageGenerationTerm[];
+  contextText: string;
+  generationExtent: number;
+}): Array<{ text: string; id: string; support: number }> {
+  const model = bestProseContinuationModel(input.state);
+  if (!model) return [];
+  const blocked = nonSpeechGlyphSymbols(model);
+  const seedUnits = uniqueStrings(input.requiredTerms
+    .filter(term => (term.weight ?? 0) >= 0.7)
+    .map(term => tidyInline(term.text))
+    .filter(Boolean)).slice(0, 4);
+  const boostSymbols = new Map<string, number>(seedUnits.flatMap(unit => symbolizeData(unit)).map(symbol => [symbol, 4]));
+  const out: Array<{ text: string; id: string; support: number }> = [];
+  const emit = (symbols: readonly string[], averageLogProbability: number) => {
+    const text = renderContinuationSentences([symbols]);
+    if (!text || !speechBearingSurface(text)) return;
+    out.push({
+      text,
+      id: hashText(text).slice(0, 16),
+      support: clamp01(0.5 + 0.5 * Math.exp(Math.max(-24, averageLogProbability)))
+    });
+  };
+  // A chained pass carries the narrative forward: each sentence continues
+  // from the last, so the piece pool tells one progression, not one moment
+  // twelve ways. Alternate first-sentence ranks give the arranger choices.
+  const seedSymbols = seedUnits.length ? symbolizeData(seedUnits[0]!) : [];
+  let working = [...symbolizeData(input.contextText), ...seedSymbols];
+  const chainLength = Math.max(3, Math.min(10, Math.round(input.generationExtent / 20)));
+  for (let index = 0; index < chainLength; index++) {
+    const beam = beamContinueSentence(model, working.slice(-32), {
+      beamWidth: 6,
+      maxSymbols: 30,
+      minSymbols: 6,
+      blockedSymbols: blocked,
+      boostSymbols,
+      choiceSeed: input.contextText + String(index)
+    });
+    if (!beam || !beam.endedAtBoundary) break;
+    emit(index === 0 && seedSymbols.length ? [...seedSymbols, ...beam.symbols] : beam.symbols, beam.averageLogProbability);
+    working = [...working, ...beam.symbols];
+  }
+  return out;
 }
 
 /** A vocabulary dominated by single-code-point symbols is a char-level (script) model, not a prose model. */
@@ -3582,8 +3660,11 @@ function renderBoundary(
   joinProgram?: JoinProgramMixture
 ): string {
   const cleanBoundary = boundary.replace(/\u0000/gu, "").normalize("NFC");
+  // A move that already closed its sentence needs no learned connector:
+  // complete sentences join on whitespace, full stop.
+  const leftClosed = /[\p{Sentence_Terminal}]\s*$/u.test(left.trimEnd());
   return joinedOrSpaceFallback(
-    cleanBoundary ? [left, cleanBoundary, right] : [left, right],
+    cleanBoundary && !leftClosed ? [left, cleanBoundary, right] : [left, right],
     joinProgram
   );
 }
@@ -3714,6 +3795,8 @@ function looksLikeBoundaryCandidate(value: string): boolean {
   if (!clean || clean.length > 32) return false;
   // Shape-transition encodings ("L→LLLL") are internal metadata, not speech.
   if (/\S→\S/u.test(clean)) return false;
+  // Connector punctuation ("_") is source markup, never a discourse boundary.
+  if (/\p{Pc}/u.test(clean)) return false;
   if (isBoundaryGlyphSurface(clean)) return true;
   const symbolCount = symbolizeData(clean).filter(symbol => symbol.trim()).length;
   return symbolCount > 0 && symbolCount <= 3 && clean.length <= 24;

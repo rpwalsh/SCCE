@@ -253,6 +253,89 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
   };
 }
 
+export interface BeamSentenceContinuation {
+  symbols: string[];
+  averageLogProbability: number;
+  endedAtBoundary: boolean;
+}
+
+/**
+ * Beam-searched single-sentence continuation (Viterbi-style, pre-2000).
+ * Greedy per-step sampling drifts; a width-K beam maximizing
+ * length-normalized log probability holds a locally coherent path. The
+ * beam stops a hypothesis at a sentence-terminal symbol once past
+ * `minSymbols`, so callers can gate structural completeness per sentence.
+ */
+export function beamContinueSentence(model: KneserNeyModel, prompt: readonly string[], options: {
+  beamWidth?: number;
+  maxSymbols?: number;
+  minSymbols?: number;
+  blockedSymbols?: ReadonlySet<string>;
+  boostSymbols?: ReadonlyMap<string, number>;
+  repetitionWindow?: number;
+  choiceSeed?: string;
+  /** Explicit rank into the finished-beam pool; distinct ranks are distinct sentences. */
+  choiceRank?: number;
+} = {}): BeamSentenceContinuation | undefined {
+  const beamWidth = Math.max(2, Math.min(12, Math.floor(options.beamWidth ?? 6)));
+  const maxSymbols = Math.max(4, Math.min(64, Math.floor(options.maxSymbols ?? 28)));
+  const minSymbols = Math.max(1, Math.min(maxSymbols - 1, Math.floor(options.minSymbols ?? 5)));
+  const repetitionWindow = Math.max(1, Math.floor(options.repetitionWindow ?? 12));
+  const blocked = options.blockedSymbols ?? new Set<string>();
+  type Beam = { symbols: string[]; logProb: number; done: boolean };
+  let beams: Beam[] = [{ symbols: [], logProb: 0, done: false }];
+  const finished: Beam[] = [];
+  for (let step = 0; step < maxSymbols && beams.length; step++) {
+    const next: Beam[] = [];
+    for (const beam of beams) {
+      const context = [...prompt, ...beam.symbols].slice(-(model.order - 1));
+      const predictions = predictKneserNey(model, context, 24)
+        .filter(item => item.symbol !== "<s>" && item.symbol !== "<unk>" && !blocked.has(item.symbol));
+      const recent = beam.symbols.slice(-repetitionWindow);
+      for (const item of predictions.slice(0, 8)) {
+        if (item.symbol === "</s>") {
+          if (beam.symbols.length >= minSymbols) finished.push({ ...beam, done: true });
+          continue;
+        }
+        const repetition = recent.reduce((count, symbol) => count + Number(symbol === item.symbol), 0);
+        const boost = options.boostSymbols?.get(item.symbol) ?? 1;
+        const adjusted = Math.log(Math.max(1e-300, item.probability * boost)) + repetition * Math.log(0.18);
+        const grown = { symbols: [...beam.symbols, item.symbol], logProb: beam.logProb + adjusted, done: false };
+        if (isSentenceTerminalSymbol(item.symbol)) {
+          // A terminal glyph either ends a real sentence or the branch dies;
+          // it never rides through mid-sentence.
+          if (grown.symbols.length >= minSymbols) finished.push({ ...grown, done: true });
+        } else {
+          next.push(grown);
+        }
+      }
+    }
+    beams = next
+      .sort((a, b) => b.logProb / Math.max(1, b.symbols.length) - a.logProb / Math.max(1, a.symbols.length) || a.symbols.join("").localeCompare(b.symbols.join("")))
+      .slice(0, beamWidth);
+    if (finished.length >= beamWidth * 2) break;
+  }
+  const pool = (finished.length ? finished : beams)
+    .filter(beam => beam.symbols.length >= minSymbols)
+    .sort((a, b) => b.logProb / Math.max(1, b.symbols.length) - a.logProb / Math.max(1, a.symbols.length) || a.symbols.join("").localeCompare(b.symbols.join("")));
+  if (!pool.length) return undefined;
+  const pick = options.choiceRank !== undefined
+    ? pool[Math.min(Math.max(0, Math.floor(options.choiceRank)), pool.length - 1)]!
+    : options.choiceSeed
+      ? pool[Math.floor(stableUnitInterval(options.choiceSeed) * Math.min(5, pool.length))] ?? pool[0]!
+      : pool[0]!;
+  return {
+    symbols: pick.symbols,
+    averageLogProbability: pick.logProb / Math.max(1, pick.symbols.length),
+    endedAtBoundary: pick.done || isSentenceTerminalSymbol(pick.symbols[pick.symbols.length - 1] ?? "")
+  };
+}
+
+/** A symbol that is (or ends with) sentence-terminal punctuation. */
+export function isSentenceTerminalSymbol(symbol: string): boolean {
+  return /[\p{Sentence_Terminal}]$/u.test(symbol) && !/[\p{L}\p{N}]/u.test(symbol.slice(-1));
+}
+
 function deterministicWeightedChoice(
   values: readonly KneserNeyPrediction[],
   seed: string

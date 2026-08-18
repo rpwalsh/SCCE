@@ -39,6 +39,11 @@ export interface CreativeSectionRealization {
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.narrativeConditioning ?? []).filter(Boolean).slice(0, 6);
   const goalUnits = contentUnits(input.sectionGoal).slice(0, 3);
+  // One rotated unit per section: the section owns one topical obligation
+  // (mirroring the document plan's per-section coverage), and its opener
+  // varies instead of chanting every unit every time.
+  const rotation = goalUnits.length ? stableRotation(input.sectionGoal) % goalUnits.length : 0;
+  const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
@@ -58,25 +63,14 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       // which the echo gate forbids. Unit atoms and terms make coverage
       // mean "on topic", and the required-term seed steers the
       // continuation toward them.
-      propositionAtoms: [
-        ...goalUnits.map((unit, index) => ({
-          id: `atom:creative-section:goal:${index}`,
-          text: unit,
-          kind: "surface",
-          weight: 0.9,
-          source: "section-plan"
-        })),
-        ...conditioning.flatMap((line, index) =>
-          contentUnits(line).slice(0, 4).map((unit, unitIndex) => ({
-            id: `atom:creative-section:conditioning:${index}:${unitIndex}`,
-            text: unit,
-            kind: "surface",
-            weight: 0.6,
-            source: "narrative-state"
-          }))
-        )
-      ],
-      requiredTerms: goalUnits.map((unit, index) => ({
+      propositionAtoms: sectionUnit.map((unit, index) => ({
+        id: `atom:creative-section:goal:${index}`,
+        text: unit,
+        kind: "surface",
+        weight: 0.9,
+        source: "section-plan"
+      })),
+      requiredTerms: sectionUnit.map((unit, index) => ({
         id: `term:creative-section:goal:${index}`,
         text: unit,
         weight: 0.9,
@@ -102,6 +96,15 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     return { text: "", accepted: false, reason: "prompt-echo", generationAudit };
   }
   return { text, accepted: true, reason: "ok", generationAudit };
+}
+
+function stableRotation(value: string): number {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function contentUnits(text: string): string[] {
