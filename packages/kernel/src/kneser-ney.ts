@@ -343,23 +343,15 @@ export function beamContinueSentence(model: KneserNeyModel, prompt: readonly str
   };
 }
 
-/** Seeded sampling without replacement, weighted by `weightOf`: reproducible for a fixed seed, genuinely different across seeds. */
+/** Seeded sampling without replacement, weighted by `weightOf`: reproducible for a fixed seed, genuinely different across seeds. Repeated draws from weightedThresholdPick, each removing its pick from the pool. */
 function seededWeightedSample<T>(items: readonly T[], weightOf: (item: T) => number, count: number, seed: string): T[] {
   const pool = [...items];
   const chosen: T[] = [];
   for (let draw = 0; draw < count && pool.length; draw++) {
-    const weights = pool.map(weightOf);
-    const total = weights.reduce((sum, weight) => sum + weight, 0);
-    if (total <= 0) { chosen.push(...pool); break; }
-    const threshold = stableUnitInterval(`${seed}${draw}`) * total;
-    let cumulative = 0;
-    let pickIndex = pool.length - 1;
-    for (let index = 0; index < pool.length; index++) {
-      cumulative += weights[index]!;
-      if (cumulative >= threshold) { pickIndex = index; break; }
-    }
-    chosen.push(pool[pickIndex]!);
-    pool.splice(pickIndex, 1);
+    const pick = weightedThresholdPick(pool, weightOf, `${seed}${draw}`);
+    if (!pick) break;
+    chosen.push(pick);
+    pool.splice(pool.indexOf(pick), 1);
   }
   return chosen;
 }
@@ -373,16 +365,23 @@ function deterministicWeightedChoice(
   values: readonly KneserNeyPrediction[],
   seed: string
 ): KneserNeyPrediction | undefined {
+  const picked = weightedThresholdPick(values, item => item.probability, seed);
+  if (!picked) return undefined;
   const total = values.reduce((sum, item) => sum + item.probability, 0);
-  if (!values.length || total <= 0) return undefined;
+  return { ...picked, probability: picked.probability / total };
+}
+
+/** Single weighted draw at a seeded threshold into the cumulative-weight line -- the primitive both single-draw and multi-draw (without-replacement) seeded sampling in this file share. */
+function weightedThresholdPick<T>(items: readonly T[], weightOf: (item: T) => number, seed: string): T | undefined {
+  const total = items.reduce((sum, item) => sum + weightOf(item), 0);
+  if (!items.length || total <= 0) return undefined;
   const threshold = stableUnitInterval(seed) * total;
   let cumulative = 0;
-  for (const item of values) {
-    cumulative += item.probability;
-    if (cumulative >= threshold) return { ...item, probability: item.probability / total };
+  for (const item of items) {
+    cumulative += weightOf(item);
+    if (cumulative >= threshold) return item;
   }
-  const last = values[values.length - 1]!;
-  return { ...last, probability: last.probability / total };
+  return items[items.length - 1];
 }
 
 function stableUnitInterval(value: string): number {
