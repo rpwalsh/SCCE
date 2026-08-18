@@ -8,6 +8,7 @@ import {
 import type { NarrativeEvent } from "./narrative-state.js";
 import type { VoiceSample } from "./voice-profile.js";
 import { requestContentPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import { toJsonValue } from "./primitives.js";
 import type { JsonValue, RequestedAuthority } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
@@ -193,6 +194,13 @@ export async function runExtendedGeneration(input: {
       // An empty realization is a real failure, not an empty section: stop
       // rather than emit a document with a hole in it.
       sections.push({ nodeId: section.id, goal: section.goal, text: "", accepted: false, reason: "empty realization" });
+      break;
+    }
+    if (surfaceEchoesPrompt(text, section.goal)) {
+      // A prompt is never content. Verified live: the Mouth's creative
+      // fallback echoed the request once per section and every echo
+      // passed the downstream gates, producing a 12-echo "document".
+      sections.push({ nodeId: section.id, goal: section.goal, text: "", accepted: false, reason: "prompt echo" });
       break;
     }
     const completion = completeDocumentSection(session, {
