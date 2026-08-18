@@ -1249,7 +1249,7 @@ function generationPieces(
   const synthesizedTexts = new Set(synthesized.map(sentence => tidyInline(sentence.text)));
   const add = (text: string, source: GenerationPiece["source"], id: string | undefined, support: number, metadata: Partial<GenerationPiece> = {}) => {
     const clean = tidyInline(text);
-    if (!clean) return;
+    if (!clean || looksLikeInternalIdentifierSurface(clean)) return;
     const selfDerived = source === "suggestion" && synthesizedTexts.has(clean);
     if ((source === "observation" || source === "suggestion") && !allowRawNgramSurfacePieces && !selfDerived) return;
     if ((source === "observation" || source === "suggestion") && !selfDerived && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
@@ -3927,6 +3927,28 @@ function isAtomicBoundaryGlyph(value: string): boolean {
   return glyphs === 1;
 }
 
+/**
+ * Rejects internal record identifiers, source URIs, and content digests
+ * masquerading as prose. Found live: pattern records whose real content
+ * lives under a nested field (a creative-event bundle) fell through
+ * patternKeys' flat-string fallback, surfacing their sibling provenance
+ * fields (sourceUri, streamUri, a local filesystem path) as if they were
+ * phrase-pattern surfaces -- and isDiscourseBearingPriorSurface/
+ * hasContextAnchor both admitted them because a filename like
+ * "the-time-machine.txt" contains real English words that legitimately
+ * overlap the story's own vocabulary. This is the layer beneath mouth.ts
+ * (which cannot be imported here -- mouth.ts already imports this
+ * module), so the same class of leak needs its own structural check at
+ * this layer: no English word list, just identifier shape.
+ */
+function looksLikeInternalIdentifierSurface(value: string): boolean {
+  if (value.includes("://")) return true;
+  if (/^(?:source|stream|profile|evidence|corpus_role|language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)[._][A-Za-z0-9_.:-]{6,}/iu.test(value)) return true;
+  // A long run of hex-shaped characters is a hash/digest, not a word.
+  if (/[0-9a-f]{16,}/iu.test(value)) return true;
+  return false;
+}
+
 function isDiscourseBearingPriorSurface(value: string): boolean {
   if (isBoundaryGlyphSurface(value)) return false;
   const symbols = symbolizeData(value).filter(symbol => symbol.trim());
@@ -4273,13 +4295,24 @@ function importedNgramModelIdsForOrders(state: LanguageMemoryRuntimeState, order
     .slice(0, 64);
 }
 
+/**
+ * A creative-event bundle pattern's real content lives nested under
+ * "bundle" -- these flat siblings are provenance, never phrase surfaces,
+ * regardless of what the fallback below would otherwise scrape.
+ */
+const PATTERN_PROVENANCE_FIELD_NAMES = new Set([
+  "sourceUri", "streamUri", "relativePath", "sourceHash", "sourceSystem", "sourceSystemId",
+  "sourceVersionId", "profileId", "textHash", "contentDigest", "provenanceClass",
+  "languageAliases", "schema", "forceClass", "evidenceId", "index"
+]);
+
 function patternKeys(pattern: LanguagePatternRecord): string[] {
   const json = jsonRecord(pattern.patternJson);
   const counts = jsonRecord(json.counts);
   const keys = Object.keys(counts);
   if (keys.length) return keys.slice(0, 64);
   return Object.entries(json)
-    .filter(([, value]) => typeof value === "string")
+    .filter(([key, value]) => typeof value === "string" && !PATTERN_PROVENANCE_FIELD_NAMES.has(key))
     .map(([, value]) => String(value))
     .slice(0, 64);
 }
