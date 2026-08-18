@@ -93,6 +93,11 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     functionalCognitionOffloadProcess: true,
     // Explicit config opt-in only -- see ScceRuntimeConfig.runtime.
     allowSyntheticRequestRequirementBootstrap: config.runtime.allowSyntheticRequestRequirementBootstrap === true,
+    // Live functional-consciousness authorization: with the standing
+    // self-state register, authorized mode costs a turn nothing (the gate
+    // reads the latest completed background projection under a freshness
+    // bound), so it is config-driven rather than hardwired off.
+    functionalCognitionAuthorizeCapabilities: config.runtime.functionalCognitionAuthorizeCapabilities === true,
     corpusRegistry: corpusRegistryEntriesFromConfig(config),
     evaluationCondition: options.evaluationCondition,
     evaluationRunId: options.evaluationRunId,

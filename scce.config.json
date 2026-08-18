@@ -75,7 +75,8 @@
         ]
       }
     },
-    "allowSyntheticRequestRequirementBootstrap": true
+    "allowSyntheticRequestRequirementBootstrap": true,
+    "functionalCognitionAuthorizeCapabilities": true
   },
   "connectors": {
     "web": {

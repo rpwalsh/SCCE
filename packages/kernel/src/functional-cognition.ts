@@ -222,7 +222,10 @@ function collectGoalSignals(input: {
       id: `goal:${hash32(goal).toString(16)}`,
       goal,
       source: input.self.learningGoals.includes(goal) ? "user" : "belief",
-      ssdPressure: ssdPressureFor(goal, input.ssdAudit),
+      ssdPressure: Math.max(
+        ssdPressureFor(goal, input.ssdAudit),
+        learningNeedPressureFor(goal, input.learningNeeds ?? [])
+      ),
       capabilityGap: capabilityGapFor(goal, input.self),
       lastAddressedAt: 0,
       lastAttemptAt: 0,
@@ -409,6 +412,26 @@ function governancePredicate(input: {
     && invariantPolicyKernel(input.policy);
 }
 
+/**
+ * Goal pressure grounded in the learning loop's REAL detected needs
+ * instead of only substring-matching goal words inside an audit blob: a
+ * goal whose tokens overlap a field gap the learning loop actually
+ * reported is under genuine, evidence-derived pressure. Token-level,
+ * data-driven, no word lists.
+ */
+function learningNeedPressureFor(goal: string, learningNeeds: readonly string[]): number {
+  if (!learningNeeds.length) return 0;
+  const goalTokens = goal.toLocaleLowerCase().split(/\s+/u).filter(token => token.length >= 3);
+  if (!goalTokens.length) return 0;
+  let best = 0;
+  for (const need of learningNeeds) {
+    const needText = need.toLocaleLowerCase();
+    const hits = goalTokens.filter(token => needText.includes(token)).length;
+    best = Math.max(best, hits / goalTokens.length);
+  }
+  return clamp01(0.25 + best * 0.7);
+}
+
 function ssdPressureFor(goal: string, audit?: JsonValue): number {
   if (!audit || typeof audit !== "object" || Array.isArray(audit)) return 0.25;
   const text = JSON.stringify(audit).toLowerCase();
@@ -512,6 +535,78 @@ export function functionalCapabilityAuthorizationGate(
 ): FunctionalSelectionGate {
   if (authorizeCapabilities) return gate;
   return { ...gate, fc: false, efc: false };
+}
+
+/**
+ * The standing self-state register: the most recent COMPLETED functional-
+ * cognition projection, maintained in the background, consulted by turns
+ * instead of recomputing 30-45s of projection synchronously. Freshness is
+ * part of the contract -- a projection older than the TTL cannot
+ * authorize anything (fc/efc degrade to false with gov preserved), which
+ * makes "the self-model is current" a live precondition of agency rather
+ * than an assumption.
+ */
+export interface StandingFunctionalCognition {
+  gate: FunctionalSelectionGate;
+  computedAt: number;
+}
+
+export const STANDING_FUNCTIONAL_COGNITION_TTL_MS = 10 * 60 * 1000;
+
+export function standingFunctionalGate(input: {
+  standing: StandingFunctionalCognition | undefined;
+  now: number;
+  authorizeCapabilities: boolean;
+  ttlMs?: number;
+}): { gate: FunctionalSelectionGate; source: "standing-fresh" | "standing-stale" | "standing-missing"; ageMs?: number } {
+  const ttl = Math.max(1000, Math.floor(input.ttlMs ?? STANDING_FUNCTIONAL_COGNITION_TTL_MS));
+  if (!input.standing) {
+    return {
+      gate: { fc: false, efc: false, gov: false },
+      source: "standing-missing"
+    };
+  }
+  const ageMs = Math.max(0, input.now - input.standing.computedAt);
+  if (ageMs > ttl) {
+    return {
+      gate: { ...input.standing.gate, fc: false, efc: false },
+      source: "standing-stale",
+      ageMs
+    };
+  }
+  return {
+    gate: functionalCapabilityAuthorizationGate(input.standing.gate, input.authorizeCapabilities),
+    source: "standing-fresh",
+    ageMs
+  };
+}
+
+/**
+ * A REAL counterfactual: a candidate the judge actually considered and
+ * rejected this turn -- a road genuinely not taken, with the judge's own
+ * scores as the trace signals. Replaces capability-plan previews recast
+ * as "traces", which simulated nothing.
+ */
+export function counterfactualTraceFromRejectedCandidate(input: {
+  episodeId: string;
+  candidateId: string;
+  candidateKind: string;
+  score: number;
+  reasons: readonly string[];
+  support: number;
+  evidenceCount: number;
+  hardFailure: boolean;
+  selectedCandidateId: string;
+}): CounterfactualTrace {
+  return {
+    id: `counterfactual:rejected:${input.candidateId}`,
+    sourceTraceId: input.episodeId,
+    planSteps: [input.candidateKind, ...input.reasons.slice(0, 4)],
+    evidenceSurvival: [clamp01(input.evidenceCount > 0 ? input.support : 0)],
+    predictedSkillConfidence: [clamp01(1 / (1 + Math.exp(-input.score)))],
+    substitutedSteps: [input.selectedCandidateId],
+    safetyMargins: [input.hardFailure ? 0.1 : 0.85]
+  };
 }
 
 export function functionalCandidateGateFailures(
