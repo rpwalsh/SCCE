@@ -1307,6 +1307,15 @@ export interface RuntimeWarmupResult {
     loaded: boolean;
     rules: number;
   };
+  /** Resident cache occupancy after warmup -- see surface-language-runtime's cacheOccupancy(). */
+  cacheOccupancy?: {
+    languageMemoryEntries: number;
+    languageMemoryEstimatedBytes: number;
+    candidateProfileEntries: number;
+    aliasProfileEntries: number;
+    surfaceProfiles: number;
+    sourceAnchorFrames: number;
+  };
   failures: string[];
 }
 

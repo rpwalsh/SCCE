@@ -762,6 +762,27 @@ export function createSurfaceLanguageRuntime(options: {
     requestSemanticFrames,
     sourceAnchorSemanticFramesCached,
     uniqueRecordsById,
+    /**
+     * Resident occupancy of the caches this module owns. Exists because
+     * three separate attempts at bounding surfaceLanguageMemoryCache all
+     * "looked right" while the server kept OOMing post-warmup -- without
+     * a way to read the bound's actual effect, each fix was a guess. Any
+     * future memory regression should be checked here first: if these
+     * numbers are small while heapUsed is large, the memory is NOT in
+     * this module and the search belongs elsewhere.
+     */
+    cacheOccupancy() {
+      let languageMemoryEstimatedBytes = 0;
+      for (const entry of surfaceLanguageMemoryCache.values()) languageMemoryEstimatedBytes += entry.approxEstimatedBytes;
+      return {
+        languageMemoryEntries: surfaceLanguageMemoryCache.size,
+        languageMemoryEstimatedBytes,
+        candidateProfileEntries: surfaceCandidateProfileCache.size,
+        aliasProfileEntries: sourceOwnedAliasProfileCache.size,
+        surfaceProfiles: surfaceProfileCache?.value.length ?? 0,
+        sourceAnchorFrames: sourceAnchorSemanticFrameCache?.value.length ?? 0
+      };
+    },
     invalidate() {
       surfaceLanguageMemoryCache.clear();
       sourceOwnedAliasProfileCache.clear();
