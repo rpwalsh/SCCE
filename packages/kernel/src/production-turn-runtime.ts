@@ -2687,18 +2687,8 @@ export function createProductionTurnRuntime(options: {
         extendedGenerationRun = await runExtendedGeneration({
           session: extendedSession,
           realizeSection: async section => {
-            // Two-tier section realization. Tier 1: a direct,
-            // section-scoped call into the same generation engine the
-            // Mouth uses -- milliseconds, fails closed with an explicit
-            // reason, prompts never become content. Tier 2 (only when
-            // tier 1 is inadequate): the full Mouth, whose richer
-            // plan-built frames can succeed where a single bare frame
-            // cannot -- but whose creative fallback ECHOES the request
-            // when learned realization fails (verified live: 12 sections
-            // x ~42s of full-turn machinery = 509s producing the request
-            // echoed twelve times). runExtendedGeneration's prompt-echo
-            // guard rejects that echo, so tier-2 failure now costs one
-            // honest rejected section, never a 12-echo "document".
+            // Fast direct engine call first; full Mouth only when that is
+            // inadequate. Both fail empty, never echo.
             const direct = realizeCreativeSection({
               languageMemory: languageMemoryRuntime,
               state: speakInput.languageMemory,
