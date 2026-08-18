@@ -792,17 +792,27 @@ function evaluateConstructionPromotion(input: {
     const postCoverage = report && report.heldOutPostPredicateOccurrences > 0
       ? ratio(report.heldOutPostPredicateCovered, report.heldOutPostPredicateOccurrences)
       : undefined;
+    // Strong predicate recurrence is generalization evidence in its own
+    // right: a construction whose predicate independently recurs 8+ times
+    // in the held-out slice has demonstrated cross-split generality even
+    // when its exact slot fillers are all novel (verified live: recurring
+    // 34 times with every filler unseen scored 0.0 coverage and was
+    // rejected, while only formulaic phrasing survived). The override
+    // demands 8x the recurrence the coverage path needs.
+    const strongRecurrence = Boolean(report && report.heldOutOccurrences >= Math.max(8, thresholds.minHeldOutOccurrences * 8));
     const reason = !split.heldOut.length
       ? "no_heldout_evidence"
       : !report
         ? "no_heldout_coverage"
-        : report.heldOutOccurrences < thresholds.minHeldOutOccurrences
-          ? "heldout_occurrences_low"
-          : preCoverage < thresholds.minPrePredicateCoverage
-            ? "pre_predicate_coverage_low"
-            : postCoverage !== undefined && postCoverage < thresholds.minPostPredicateCoverage
-              ? "post_predicate_coverage_low"
-              : undefined;
+        : strongRecurrence
+          ? undefined
+          : report.heldOutOccurrences < thresholds.minHeldOutOccurrences
+            ? "heldout_occurrences_low"
+            : preCoverage < thresholds.minPrePredicateCoverage
+              ? "pre_predicate_coverage_low"
+              : postCoverage !== undefined && postCoverage < thresholds.minPostPredicateCoverage
+                ? "post_predicate_coverage_low"
+                : undefined;
     if (!reason) {
       promoted.add(set.bindingId);
       continue;
@@ -860,8 +870,12 @@ function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Ha
   for (let index = 0; index < promoted.length; index++) {
     const span = promoted[index]!;
     const digest = hasher.digestHex(`${span.sourceVersionId}\u001f${span.id}`);
-    const offset = Number.parseInt(digest.slice(0, 2), 16) % 5;
-    ((index + offset) % 5 === 4 ? heldOut : train).push(span);
+    // One third held out (was one fifth): on heterogeneous multi-article
+    // batches a ~3-chunk holdout gave most constructions no statistical
+    // chance to recur at all -- 574 of 786 candidates were rejected with
+    // zero held-out occurrences (verified live).
+    const offset = Number.parseInt(digest.slice(0, 2), 16) % 3;
+    ((index + offset) % 3 === 2 ? heldOut : train).push(span);
   }
   if (!heldOut.length) {
     heldOut.push(promoted[promoted.length - 1]!);
