@@ -1,7 +1,7 @@
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
-import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
-import { collapseSurfaceWhitespace } from "./surface-linguistics.js";
+
+import { collapseSurfaceWhitespace, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
 
 export interface CreativeSectionRealizationInput {
@@ -71,11 +71,11 @@ export function surfaceEchoesPrompt(surface: string, prompt: string): boolean {
   const longer = cleanSurface.length >= cleanPrompt.length ? cleanSurface : cleanPrompt;
   const shorter = cleanSurface.length >= cleanPrompt.length ? cleanPrompt : cleanSurface;
   if (longer.includes(shorter) && longer.length <= shorter.length * 2) return true;
-  const surfaceUnits = new Set(splitPriorUnits(normalizePriorKey(cleanSurface)).filter(unit => unit.length >= 3));
-  const promptUnits = new Set(splitPriorUnits(normalizePriorKey(cleanPrompt)).filter(unit => unit.length >= 3));
-  if (!surfaceUnits.size || !promptUnits.size) return false;
+  const surfaceSet = new Set(surfaceUnits(cleanSurface).filter(unit => unit.length >= 3));
+  const promptSet = new Set(surfaceUnits(cleanPrompt).filter(unit => unit.length >= 3));
+  if (!surfaceSet.size || !promptSet.size) return false;
   let shared = 0;
-  for (const unit of surfaceUnits) if (promptUnits.has(unit)) shared++;
-  const union = surfaceUnits.size + promptUnits.size - shared;
+  for (const unit of surfaceSet) if (promptSet.has(unit)) shared++;
+  const union = surfaceSet.size + promptSet.size - shared;
   return union > 0 && shared / union >= 0.8;
 }
