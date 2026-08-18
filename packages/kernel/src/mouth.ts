@@ -671,6 +671,16 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("candidate_setup");
       const creativeRequested = isCreativeRequested(input, plan);
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
+      // An echo of the request is never an answer. For a creative turn
+      // that holds unconditionally; elsewhere it holds whenever nothing
+      // grounds the surface, because a candidate with no promoted
+      // evidence has nothing to say that is not already in the question.
+      // Live-verified: "What is the boiling point of tungsten?" returned
+      // "what boiling point", and "What is the capital city of Mongolia?"
+      // returned "Mongolia" -- both HTTP 200, both zero-evidence
+      // runtime-motion candidates, both fabricated successes on
+      // questions this corpus cannot answer.
+      const groundedSurfaceAvailable = input.evidence.some(span => span.status === "promoted");
       const rawCandidates = [
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
@@ -686,8 +696,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ].filter(candidate => admissibleMouthSurface(candidate.text)
-        // A creative answer that echoes the request is not an answer.
-        && !(creativeRequested && surfaceEchoesPrompt(candidate.text, mouthEchoQuestionText(input))));
+        && !((creativeRequested || !groundedSurfaceAvailable) && surfaceEchoesPrompt(candidate.text, mouthEchoQuestionText(input))));
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
         const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
