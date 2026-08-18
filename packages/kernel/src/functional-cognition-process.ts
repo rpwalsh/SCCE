@@ -1,5 +1,5 @@
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
-import { createFunctionalCognitionEngine } from "./functional-cognition.js";
+import { createFunctionalCognitionEngine, functionalSelectionGate } from "./functional-cognition.js";
 import type {
   FunctionalCognitionOffloadRequest,
   FunctionalCognitionOffloadResponse
@@ -44,7 +44,8 @@ process.once("message", (message: unknown) => {
       ok: true,
       selfDistillationAudit: selfDistillation.audit,
       functionalConsciousnessAudit: functionalConsciousness.audit,
-      functionalCognitionAudit: functionalCognition.audit
+      functionalCognitionAudit: functionalCognition.audit,
+      gate: functionalSelectionGate(functionalCognition)
     };
     process.send?.(response, disconnect);
   } catch (error) {
