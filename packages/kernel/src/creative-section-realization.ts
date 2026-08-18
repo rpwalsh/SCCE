@@ -23,16 +23,9 @@ export interface CreativeSectionRealization {
 }
 
 /**
- * Section-scoped creative realization: a DIRECT call into the same
- * overgenerate-and-rank engine the Mouth uses (language-memory-runtime's
- * generate -- sentence plans, clause lattices, discourse beams,
- * Kneser-Ney ranking), invoked at section granularity instead of
- * re-running the Mouth's entire candidate/proof/energy pipeline once per
- * section. Verified live before this existed: a 12-section story spent
- * 509 seconds re-running full turns and returned the request echoed
- * twelve times, because the Mouth's creative fallback echoes the request
- * text when learned realization is inadequate. Here the failure mode is
- * an explicit rejection, never an echo: prompts are never content.
+ * Section-scoped call into the same generation engine the Mouth uses,
+ * without the Mouth's per-turn pipeline cost. Fails closed with a
+ * reason; prompts are never content.
  */
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.narrativeConditioning ?? []).filter(Boolean).slice(0, 6);
@@ -69,12 +62,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   return { text, accepted: true, reason: "ok" };
 }
 
-/**
- * Language-agnostic prompt-echo detection: the surface is an echo when it
- * is (near-)contained in the prompt space -- normalized containment
- * either way at comparable length, or near-total unit overlap. Unit
- * comparison, no word lists.
- */
+/** Echo = normalized containment at comparable length, or >=0.8 unit overlap. */
 export function surfaceEchoesPrompt(surface: string, prompt: string): boolean {
   const cleanSurface = collapseSurfaceWhitespace(surface).toLocaleLowerCase();
   const cleanPrompt = collapseSurfaceWhitespace(prompt).toLocaleLowerCase();

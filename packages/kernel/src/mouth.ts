@@ -1184,7 +1184,11 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
       const deterministicVerdict = proofGateVerdict(input.entailment);
       const terminalRuntimeMotionSelected = Boolean(input.selectedCandidate && kernelCandidateCarriesTerminalRuntimeMotionSurface(input.selectedCandidate));
-      const deterministicSurfaces = terminalRuntimeMotionSelected
+      // Creative has no deterministic realization: every surface below is
+      // claim/request-derived and would echo the prompt. Empty is honest.
+      const deterministicSurfaces = input.requestedAuthority === "creative" && !terminalRuntimeMotionSelected
+        ? []
+        : terminalRuntimeMotionSelected
         ? [input.selectedCandidate?.answer ?? ""]
         : [
           input.selectedCandidate && kernelCandidateDirectSurfaceAllowed(input.selectedCandidate, input)

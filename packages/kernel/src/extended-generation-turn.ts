@@ -197,9 +197,7 @@ export async function runExtendedGeneration(input: {
       break;
     }
     if (surfaceEchoesPrompt(text, section.goal)) {
-      // A prompt is never content. Verified live: the Mouth's creative
-      // fallback echoed the request once per section and every echo
-      // passed the downstream gates, producing a 12-echo "document".
+      // A prompt is never content.
       sections.push({ nodeId: section.id, goal: section.goal, text: "", accepted: false, reason: "prompt echo" });
       break;
     }
