@@ -52,7 +52,15 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         evidenceIds: input.evidence.map(span => span.id),
         hasher: options.hasher
       });
-      const symbols = canonicalSurfaceSequence(lattice).map(unit => unit.surface);
+      const canonicalSymbols = canonicalSurfaceSequence(lattice).map(unit => unit.surface);
+      // A grapheme-dominated canonical path over whitespace-spaced text means
+      // segmentation never resolved words; the spaced symbols are the
+      // structural truth. A char-level KN model trained here poisons every
+      // downstream generation call with letter soup (verified live).
+      const spacedSymbols = symbolizeData(input.text);
+      const symbols = sequenceSpeaksInWords(canonicalSymbols) || !sequenceSpeaksInWords(spacedSymbols)
+        ? canonicalSymbols
+        : spacedSymbols;
       const graphemes = lattice.units
         .filter(unit => unit.kind === "grapheme")
         .sort((left, right) => left.utf16Start - right.utf16Start)
@@ -532,6 +540,14 @@ class SpaceSavingCounter<T> {
     const right = this.heap[rightIndex]!;
     return left.count < right.count || (left.count === right.count && left.insertedAt < right.insertedAt);
   }
+}
+
+/** True when a sampled majority of symbols carry more than one code point. */
+function sequenceSpeaksInWords(symbols: readonly string[]): boolean {
+  const sample = symbols.slice(0, 2048).filter(symbol => symbol.trim());
+  if (!sample.length) return false;
+  const multiPoint = sample.filter(symbol => [...symbol].length > 1).length;
+  return multiPoint / sample.length >= 0.5;
 }
 
 function primaryLanguageHint(profile: LanguageProfile): string {

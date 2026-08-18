@@ -3144,8 +3144,16 @@ function learnedContinuationDiscourse(input: {
     score: LanguageMemoryScore;
     continuationAverageLogProbability: number;
   }> = [];
+  // Char-level models (script statistics) share the state with word-level
+  // ones and tend to carry the highest order; continuing prose from one
+  // emits letter soup. Only models that speak in words may continue, and
+  // a rich vocabulary at a lower order beats a vocabulary-starved summary
+  // at a higher one.
+  const continuationFitness = (model: KneserNeyModel): number =>
+    model.order * Math.log2(2 + (model.vocabulary?.length ?? model.vocabularySize ?? 0));
   const models = [...input.state.models]
-    .sort((a, b) => b.order - a.order || b.observedSymbolCount - a.observedSymbolCount)
+    .filter(modelSpeaksInWords)
+    .sort((a, b) => continuationFitness(b) - continuationFitness(a) || b.observedSymbolCount - a.observedSymbolCount)
     .slice(0, 1);
   const pieceSeeds = input.pieces
     .map(piece => piece.text)
@@ -3263,6 +3271,16 @@ function learnedContinuationDiscourse(input: {
       symbolCount: symbolizeData(text).length
     }
   };
+}
+
+/** A vocabulary dominated by single-code-point symbols is a char-level (script) model, not a prose model. */
+function modelSpeaksInWords(model: { vocabulary?: readonly string[] }): boolean {
+  const sample = (model.vocabulary ?? [])
+    .filter(symbol => symbol !== "<unk>" && symbol !== "<s>" && symbol !== "</s>")
+    .slice(0, 256);
+  if (!sample.length) return false;
+  const multiPoint = sample.filter(symbol => [...symbol].length > 1).length;
+  return multiPoint / sample.length >= 0.5;
 }
 
 function learnedContinuationSurface(
