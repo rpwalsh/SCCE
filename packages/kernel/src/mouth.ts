@@ -1,4 +1,5 @@
 import type { CorrectionRuleRecord } from "./storage.js";
+import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
@@ -684,7 +685,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(constructAnchored ? [constructAnchored] : []),
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
-      ].filter(candidate => admissibleMouthSurface(candidate.text));
+      ].filter(candidate => admissibleMouthSurface(candidate.text)
+        // A creative answer that echoes the request is not an answer.
+        && !(creativeRequested && surfaceEchoesPrompt(candidate.text, mouthEchoQuestionText(input))));
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
         const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
@@ -3541,6 +3544,8 @@ function learnedCreativeProposalCandidate(
   if (realizationPath !== "learned_continuation" && realizationPath !== "learned_structural_composition") return undefined;
   const text = tidySurface(invention.proposalSurface);
   if (!text || !admissibleMouthSurface(text)) return undefined;
+  // A plan skeleton that echoes the request is not a creative answer.
+  if (surfaceEchoesPrompt(text, mouthEchoQuestionText(input))) return undefined;
   const evidenceIds = invention.basisEvidenceIds.filter(id => input.evidence.some(span => String(span.id) === String(id)));
   const sourcePieceIds = uniqueStrings([
     ...stringArrayFromJson(realization.sourcePieceIds),
