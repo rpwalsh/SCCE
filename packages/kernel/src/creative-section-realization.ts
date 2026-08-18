@@ -1,7 +1,9 @@
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
-import { collapseSurfaceWhitespace, surfaceUnits } from "./surface-linguistics.js";
+import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
+import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
+
 
 export interface CreativeSectionRealizationInput {
   languageMemory: LanguageMemoryRuntime;
@@ -40,18 +42,25 @@ export interface CreativeSectionRealization {
  */
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.narrativeConditioning ?? []).filter(Boolean).slice(0, 6);
-  const goalUnits = contentUnits(input.sectionGoal).slice(0, 3);
+  // Proper-noun anchors only (casing shape, sentence-position corrected):
+  // a purely structural signal, not a ranking over every word by length.
+  // contentUnits' length ranking had no way to tell a request's own
+  // instruction words ("write", "paragraph", "three") from its actual
+  // subject -- live-verified: "write a three paragraph short story about
+  // her" put "write"/"three"/"paragraph" into the story as characters.
+  // A request with no capitalized subject (a pronoun, a common noun)
+  // honestly yields no forced entity rather than a wrong one.
+  const goalUnits = properNounEntityAnchors(input.sectionGoal).slice(0, 3);
   // One rotated unit per section owns the hard required-coverage
   // obligation (its opener varies instead of chanting every unit every
   // time) -- but the whole document's core entities (protagonist,
-  // antagonist, and any other topical nouns from the ORIGINAL request,
-  // not the per-section goal) are boosted in EVERY section. Rotating them
-  // away entirely was the reason "Einstein" was absent from sections
-  // whose rotated unit happened to land on a different word -- a
-  // multi-section document has exactly one cast, present throughout.
+  // antagonist) are boosted in EVERY section. Rotating them away entirely
+  // was the reason "Einstein" was absent from sections whose rotated
+  // unit happened to land on a different word -- a multi-section
+  // document has exactly one cast, present throughout.
   const rotation = goalUnits.length ? stableRotation(input.sectionGoal) % goalUnits.length : 0;
   const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
-  const persistentEntities = contentUnits(input.requestText).slice(0, 3);
+  const persistentEntities = properNounEntityAnchors(input.requestText).slice(0, 3);
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
   const properNounCasing = properNounCasingHints([input.requestText, input.sectionGoal, ...conditioning]);
   const generation = input.languageMemory.generate({
@@ -132,14 +141,22 @@ function stableRotation(value: string): number {
 function properNounCasingHints(texts: readonly string[]): Record<string, string> {
   const hints: Record<string, string> = {};
   for (const text of texts) {
-    const words = collapseSurfaceWhitespace(text).split(/\s+/u).filter(Boolean);
-    for (let index = 1; index < words.length; index++) {
-      const word = words[index]!.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
-      if (word.length < 3) continue;
-      const [first, ...rest] = [...word];
-      if (!first || first !== first.toLocaleUpperCase() || first === first.toLocaleLowerCase()) continue;
-      if (rest.some(char => char !== char.toLocaleLowerCase())) continue;
-      hints[word.toLocaleLowerCase()] = word;
+    // Skip the first word of every SENTENCE, not just the first word of
+    // the whole string -- conditioning is prior generated prose (often
+    // several sentences), and treating only string-index-0 as sentence-
+    // initial mislabeled every other sentence's ordinary opener ("The",
+    // "They") as a proper noun, then applied that casing mid-sentence
+    // everywhere the word recurred (verified live).
+    for (const sentence of splitSurfaceSentences(text)) {
+      const words = collapseSurfaceWhitespace(sentence).split(/\s+/u).filter(Boolean);
+      for (let index = 1; index < words.length; index++) {
+        const word = words[index]!.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+        if (word.length < 3) continue;
+        const [first, ...rest] = [...word];
+        if (!first || first !== first.toLocaleUpperCase() || first === first.toLocaleLowerCase()) continue;
+        if (rest.some(char => char !== char.toLocaleLowerCase())) continue;
+        hints[word.toLocaleLowerCase()] = word;
+      }
     }
   }
   return hints;
@@ -150,6 +167,28 @@ function contentUnits(text: string): string[] {
   return [...new Set(surfaceUnits(collapseSurfaceWhitespace(text).toLocaleLowerCase()))]
     .filter(unit => unit.length >= 3)
     .sort((left, right) => [...right].length - [...left].length);
+}
+
+/**
+ * Proper-noun anchors from casing shape (namedSubjectAnchors), corrected
+ * for the one false positive that check cannot see on its own: a word
+ * capitalized only because it opens a sentence ("Write a five page
+ * story...") is not a proper noun. A word is kept only if it is
+ * capitalized somewhere that is NOT the first word of its sentence, or if
+ * it is a multi-word run (["ada", "lovelace"] -- true names rarely double
+ * as ordinary sentence openers).
+ */
+export function properNounEntityAnchors(text: string): string[] {
+  const sentenceInitialWords = new Set(
+    splitSurfaceSentences(text)
+      .map(sentence => collapseSurfaceWhitespace(sentence).split(/\s+/u)[0])
+      .filter((word): word is string => Boolean(word))
+      .map(word => word.toLocaleLowerCase())
+  );
+  return namedSubjectAnchors(text).filter(anchor => {
+    if (anchor.includes(" ")) return true;
+    return !sentenceInitialWords.has(anchor.toLocaleLowerCase());
+  });
 }
 
 /** Echo = normalized containment at comparable length, or >=0.8 unit overlap. */

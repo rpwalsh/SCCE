@@ -41,7 +41,7 @@ import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js"
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
-import { realizeCreativeSection } from "./creative-section-realization.js";
+import { properNounEntityAnchors, realizeCreativeSection } from "./creative-section-realization.js";
 import {
   counterfactualTraceFromRejectedCandidate,
   createFunctionalCognitionEngine,
@@ -407,6 +407,23 @@ export function createProductionTurnRuntime(options: {
     sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached, surfaceLanguageProfilesCached,
     uniqueRecordsById
   } = surfaceLanguageRuntime;
+  // A resident-only hydration miss must never crash the turn: an ordinary
+  // question whose language cluster had never been touched before (a
+  // request-evidence cluster, a translation target -- anything beyond
+  // SCCE_STARTUP_LANGUAGE_LIMIT's bounded warm set) failed the whole turn
+  // with the raw "was not warmed" error surfaced to the caller
+  // (live-verified on "tell me about mmorpgs"/"tell me about einstein").
+  // The resident-only attempt still runs first, so the common warm-
+  // cluster case keeps its fast path; only a genuine miss pays a real
+  // durable hydration -- once, since the cache holds it resident after.
+  const hydrateSurfaceLanguageMemoryResidentOrDurable: typeof hydrateSurfaceLanguageMemoryCached = async (limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, hydrationOptions) => {
+    try {
+      return await hydrateSurfaceLanguageMemoryCached(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, hydrationOptions);
+    } catch (error) {
+      if (!hydrationOptions?.residentOnly || !isResidentRuntimeNotWarmError(error)) throw error;
+      return hydrateSurfaceLanguageMemoryCached(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, { ...hydrationOptions, residentOnly: false });
+    }
+  };
   const { activeBrainMarker, calibrationModelsCached, correctionRulesCached } = runtimeMemory;
   const { learnHydrateReplan, runtimeMotionDeferredByDeadline } = runtimeAcquisition;
   const {
@@ -629,7 +646,7 @@ export function createProductionTurnRuntime(options: {
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
-        () => hydrateSurfaceLanguageMemoryCached(
+        () => hydrateSurfaceLanguageMemoryResidentOrDurable(
           12,
           selectedSurfaceCluster,
           selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal",
@@ -1438,7 +1455,7 @@ export function createProductionTurnRuntime(options: {
         )
       );
       const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
-        ? await hydrateSurfaceLanguageMemoryCached(
+        ? await hydrateSurfaceLanguageMemoryResidentOrDurable(
           12,
           evidenceSurfaceCluster,
           "evidence-source-cluster-selected",
@@ -1544,7 +1561,7 @@ export function createProductionTurnRuntime(options: {
         }));
         if (deps.evaluationCondition?.flags.disableLanguageMemory !== true) {
           surfaceLanguage = productionTranslationPlan.targetCluster
-            ? await hydrateSurfaceLanguageMemoryCached(
+            ? await hydrateSurfaceLanguageMemoryResidentOrDurable(
               12,
               productionTranslationPlan.targetCluster,
               "translation-target-cluster-selected",
@@ -1552,7 +1569,7 @@ export function createProductionTurnRuntime(options: {
               "",
               { residentOnly: fastRuntimeBudget }
             )
-            : await hydrateSurfaceLanguageMemoryCached(
+            : await hydrateSurfaceLanguageMemoryResidentOrDurable(
               12,
               undefined,
               "translation-target-ambiguous-or-unknown",
@@ -2691,10 +2708,18 @@ export function createProductionTurnRuntime(options: {
         // The document's persistent cast, derived once from the whole
         // request (not the per-section goal): this is what
         // narrative-state.ts's real consistency tracking follows across
-        // sections, not a per-call heuristic.
-        const creativeCastSubjectIds = [...new Set(
-          surfaceUnits(collapseSurfaceWhitespace(input.text).toLocaleLowerCase())
-        )].filter(unit => unit.length >= 4).slice(0, 3);
+        // sections, not a per-call heuristic. A request whose subject is
+        // a bare pronoun ("write a story about her") has no proper noun
+        // of its own to find -- but selectedEvidence, resolved through
+        // the SAME discourse-binding this turn already used for factual
+        // pronoun follow-ups (discourse-state.ts, metadata.runtimeEvidenceIds),
+        // carries the real subject's own text when a prior turn's
+        // discourse object was bound. This falls back to that, not to a
+        // heuristic: no cast at all is the honest result when neither
+        // signal resolves.
+        const creativeCastSubjectIds = properNounEntityAnchors(input.text).length
+          ? properNounEntityAnchors(input.text).slice(0, 3)
+          : properNounEntityAnchors(selectedEvidence.slice(0, 3).map(span => span.text).join(" ")).slice(0, 3);
         const extendedSession = extendedGenerationSessionForTurn({
           requestText: input.text,
           sectionTarget: extendedGeneration.sectionTarget,
@@ -3499,6 +3524,10 @@ async function dispatchBuildTestThroughExecutive(input: {
 function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {
   if (value) return value;
   throw new Error(`hydrated runtime unavailable: required learned surface language for ${context}`);
+}
+
+function isResidentRuntimeNotWarmError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("hydrated runtime unavailable: resident");
 }
 
 export function typedSemanticInputForMouth(input: {
