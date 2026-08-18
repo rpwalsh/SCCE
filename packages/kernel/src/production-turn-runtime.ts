@@ -2569,6 +2569,7 @@ export function createProductionTurnRuntime(options: {
       const mouthStarted = Date.now();
       const speakInput = {
         requestText: input.text,
+        ...(deps.wordingRealizer ? { wordingRealizer: deps.wordingRealizer } : {}),
         construct: spokenConstructGraph,
         field,
         languageProfile: translationTarget
