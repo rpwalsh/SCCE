@@ -70,7 +70,7 @@ import {
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
-import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, tidySurfaceText } from "./surface-linguistics.js";
+import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, tidySurfaceText } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   realizeLearnedSurface,
@@ -2842,6 +2842,40 @@ function kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate: Candidate
   ));
 }
 
+/**
+ * A candidate whose style CLAIMS direct evidence must read like direct
+ * evidence. Verified live against the sealed-eval rehearsal answers: the
+ * multi-fact join produced stitches like `Leonard Nimoy as Mr. "Where No
+ * Man."` (a fact fragment truncated mid-title and spliced into an episode
+ * clause) and non-adjacent pairs like `Lovelace is often considered the
+ * first computer programmer. These described a method...` ("These" has no
+ * antecedent in the answer -- the source sentences are paragraphs apart).
+ * Both are structurally detectable with zero language-specific word
+ * lists: a single-sentence surface must be a COMPLETE verbatim evidence
+ * sentence (fragment prefixes are substrings, so substring checking alone
+ * cannot catch truncation), and a multi-sentence surface must be a
+ * CONTIGUOUS excerpt of one span -- the same tidy-space window semantics
+ * the source-exact answer plan already guarantees by construction. When
+ * the join fails this, the builder degrades to its best single verifiable
+ * fact instead of shipping the stitch.
+ */
+function directEvidenceSurfaceVerified(text: string, evidence: readonly EvidenceSpan[]): boolean {
+  const spanSurfaces = evidence
+    .filter(span => span.status === "promoted")
+    .flatMap(span => [span.text, span.textPreview])
+    .filter((surface): surface is string => typeof surface === "string")
+    .map(surface => tidySurface(surface));
+  if (!spanSurfaces.length) return false;
+  const tidyText = tidySurface(text);
+  const sentences = splitUnicodeSurfaceSentences(tidyText);
+  if (!sentences.length) return false;
+  if (sentences.length === 1) {
+    const sentence = sentences[0] ?? "";
+    return spanSurfaces.some(surface => splitUnicodeSurfaceSentences(surface).includes(sentence));
+  }
+  return spanSurfaces.some(surface => surface.includes(tidyText));
+}
+
 function kernelCandidateParticipatingEvidenceIds(candidate: CandidateSurface, input: SpeakInput): Set<string> {
   const audit = jsonRecord(candidate.audit);
   const claimBases = Array.isArray(audit.claimBases) ? audit.claimBases.map(jsonRecord) : [];
@@ -3130,7 +3164,7 @@ function semanticDirectEvidenceCandidate(
       contexts: observedSourceSpan ? [{ observedSourceSpan }] : undefined
     });
     const attemptText = admissibleJoinedCandidateText(joined);
-    if (attemptText && admissibleMouthSurface(attemptText)) {
+    if (attemptText && admissibleMouthSurface(attemptText) && directEvidenceSurfaceVerified(attemptText, input.evidence)) {
       text = attemptText;
       resolved = attempt;
       break;
@@ -5720,6 +5754,7 @@ function containsStructuredCandidateTelemetry(text: string): boolean {
 function admissibleMouthSurface(text: string): boolean {
   const clean = tidySurface(text);
   if (!clean) return false;
+  if (isDegenerateBareSurface(clean)) return false;
   if (containsUnresolvedSurfaceKey(clean)) return false;
   if (containsSurfaceRealizerTelemetry(clean) || containsInternalSurfaceArtifact(clean) || containsStructuredCandidateTelemetry(clean)) return false;
   return detectCannedAnswerSpeech(clean).length === 0;

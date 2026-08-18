@@ -1,6 +1,7 @@
 import type { EpistemicForce, JsonValue, PolicyProfile, RequestedAuthority, ValidationGraph } from "./types.js";
 import type { CandidateField, CandidateSurface } from "./candidate.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
+import { isDegenerateBareSurface } from "./surface-linguistics.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
 import {
   functionalCandidateGateFailures,
@@ -127,13 +128,23 @@ function selectForRequirementField(input: {
     ];
     const positive = POSITIVE_QUALITY_KEYS.reduce((sum, key) => sum + weights[key] * quality[key], 0);
     const negative = NEGATIVE_QUALITY_KEYS.reduce((sum, key) => sum + penalties[key] * quality[key], 0);
+    // A degenerate bare answer surface ("It" -- verified live from a
+    // truncated proof-claim subject) must lose to ANY candidate with a
+    // real surface. A penalty rather than a hard failure: when every
+    // candidate is degenerate the judge still selects one (the mouth's
+    // admissibility gate then blocks its surface and the turn abstains
+    // normally) instead of throwing "no admissible candidates".
+    const degenerateSurface = candidate.answer.trim().length > 0 && isDegenerateBareSurface(candidate.answer);
     const rawScore = Number.isFinite(positive - negative) ? positive - negative : -1;
-    const score = hardFailures.length ? -1_000_000 - hardFailures.length : rawScore;
+    const score = hardFailures.length
+      ? -1_000_000 - hardFailures.length
+      : degenerateSurface ? rawScore - 1_000 : rawScore;
     const reasons = [
       `requirement-quality=${rawScore.toFixed(6)}`,
       `coverage=${quality.requirementCoverage.toFixed(3)}`,
       `truth=${quality.truthSupport.toFixed(3)}`,
       `novelty=${quality.novelty.toFixed(3)}`,
+      ...(degenerateSurface ? ["degenerate-answer-surface"] : []),
       ...hardFailures.map(failure => `hard-failure:${failure}`)
     ];
     return { candidate, quality, positive, negative, rawScore, score, hardFailures, reasons };

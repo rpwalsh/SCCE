@@ -44,6 +44,11 @@ try {
       if (initialization.error) throw initialization.error;
       const state = initialization.state;
       const ownerInput = ownerInputForEvaluationQuestion(question, state);
+      // Trusted in-process control (not JSON metadata): the turn may only
+      // answer from source versions byte-matched to the sealed manifest.
+      if (state.evidenceSourceAllowlist) {
+        ownerInput.runtimeControl = { ...ownerInput.runtimeControl, evidenceSourceAllowlist: state.evidenceSourceAllowlist };
+      }
       const started = performance.now();
       const result = await state.runtime.kernel.turn(ownerInput);
       const elapsedMs = Math.max(0, performance.now() - started);
@@ -118,7 +123,18 @@ async function initialize() {
   });
   try {
     const readiness = await assertHydratedRuntimeReady(runtime.storage);
-    return { runtime, readiness, corpus, condition, runId: parsedEnvironment.runId };
+    // Sealed for real: derive the allowlist of source versions the runtime
+    // may answer from directly from the manifest documents' content hashes.
+    // Identity of bytes, never document ids or paths. A manifest document
+    // with no matching live source version simply contributes nothing --
+    // the harness's byte-identity check already catches corpus drift.
+    let evidenceSourceAllowlist;
+    if (typeof runtime.storage.evidence.sourceVersionsByContentHashes === "function") {
+      const hashes = [...corpus.documents.values()].map(document => `sha256_${document.sha256}`);
+      const sealedVersions = await runtime.storage.evidence.sourceVersionsByContentHashes(hashes);
+      evidenceSourceAllowlist = Object.freeze(sealedVersions.map(version => version.sourceVersionId));
+    }
+    return { runtime, readiness, corpus, condition, runId: parsedEnvironment.runId, evidenceSourceAllowlist };
   } catch (error) {
     await runtime.close();
     runtime = undefined;
