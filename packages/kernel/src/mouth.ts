@@ -70,7 +70,7 @@ import {
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
-import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences } from "./surface-linguistics.js";
+import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, tidySurfaceText } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   realizeLearnedSurface,
@@ -6996,8 +6996,11 @@ function collapseWhitespace(text: string): string {
   return out.join("");
 }
 
+// Delegates to the canonical implementation in surface-linguistics.ts so
+// answer plans building excerpt windows normalize in the exact space this
+// file's source-excerpt verification compares in. One implementation only.
 function tidySurface(text: string): string {
-  return collapseConsecutiveBoundaryGlyphs(collapseWhitespace(text.normalize("NFC")).trim());
+  return tidySurfaceText(text);
 }
 
 function collapseConsecutiveBoundaryGlyphs(text: string): string {

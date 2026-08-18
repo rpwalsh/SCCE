@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1.0",
+  "systems": [
+    {
+      "systemId": "reference.bm25",
+      "conditionId": "baseline",
+      "displayName": "Independent BM25 reference",
+      "mode": "jsonl-stdio",
+      "command": [
+        "node",
+        "harness/adapters/reference-bm25.mjs",
+        "--corpus-manifest=artifacts/run-20260816/corpus-manifest.json"
+      ],
+      "cwd": ".",
+      "env": {},
+      "timeoutMs": 60000,
+      "networkPolicy": "disabled",
+      "assistance": "none"
+    },
+    {
+      "systemId": "scce",
+      "conditionId": "full",
+      "displayName": "SCCE full",
+      "mode": "jsonl-stdio",
+      "command": [
+        "node",
+        "integration/scce-jsonl-adapter.mjs"
+      ],
+      "cwd": ".",
+      "env": {
+        "SCCE_EVAL_CONDITION": "full",
+        "SCCE_EVAL_CONFIG_PATH": "../../scce.config.json"
+      },
+      "timeoutMs": 300000,
+      "networkPolicy": "disabled",
+      "assistance": "none"
+    }
+  ]
+}

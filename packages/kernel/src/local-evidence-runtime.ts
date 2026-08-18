@@ -3,7 +3,7 @@ import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, js
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
-import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
 import type {
   ConstructGraph,
   EpistemicForce,
@@ -412,6 +412,14 @@ export function proposeSourceExactEvidenceAnswer(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
+  /**
+   * Sentence budget from the request's LEARNED response form
+   * (`requirementField.responseForm.surfaceLayout.sentencesPerBlock`) --
+   * enumeration-shaped requests get the selected span's contiguous lead
+   * block instead of a single sentence. 1 (the default) preserves the
+   * classic single-sentence behavior exactly.
+   */
+  responseSentenceBudget?: number;
 }): LocalEvidenceAnswerCandidate | undefined {
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!promoted.length) return undefined;
@@ -505,15 +513,52 @@ export function proposeSourceExactEvidenceAnswer(input: {
     .sort((left, right) => right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = rows[0];
   if (!selected) return undefined;
+  // Learned response-form sentence budget (lexical-gap fix for
+  // enumeration-shaped requests): a request like "list the main characters
+  // of X" names things the source expresses only as instances (names and
+  // ranks in the article lead), so no single sentence can win on unit
+  // overlap -- the highest-overlap sentence is whichever lead sentence
+  // repeats the title, and the actual enumeration a few sentences later is
+  // lexically unreachable. When the request's LEARNED response form (from
+  // the hand-authored request-requirement corpus -- no keyword lists, works
+  // for any language the corpus covers) declares a multi-sentence surface
+  // layout, the plan returns a contiguous, document-order window of the
+  // selected span's sentences instead of one: anchored at the span start
+  // when the winner is a lead sentence (the lead block IS the enumeration
+  // context), else at the winner. Contiguity is the coherence guarantee --
+  // never stitched fragments from disjoint places.
+  const sentenceBudget = Math.max(1, Math.min(8, Math.floor(input.responseSentenceBudget ?? 1)));
+  let answerSentences = [selected.sentence];
+  if (sentenceBudget > 1) {
+    // The window is built in tidySurfaceText space -- the exact space
+    // mouth.ts's source-excerpt verification compares answers to evidence
+    // text in -- and self-verified as a substring before use, so the
+    // multi-sentence answer keeps every downstream exactness guarantee
+    // (excerpt preemption, certification, byte-verified citations). A
+    // window that fails reconstruction falls back to the classic
+    // single-sentence behavior rather than shipping an unverifiable
+    // surface.
+    const tidySpan = tidySurfaceText(selected.span.text);
+    const tidySentences = splitSurfaceSentences(tidySpan).filter(sentence => sentence.length >= 24);
+    const matchIndex = tidySentences.findIndex(sentence =>
+      sentence.includes(selected.sentence) || selected.sentence.includes(sentence));
+    const start = selected.index <= 1 || matchIndex <= 1
+      ? 0
+      : Math.min(Math.max(0, matchIndex), Math.max(0, tidySentences.length - sentenceBudget));
+    const window = tidySentences.slice(start, start + sentenceBudget);
+    if (window.length > 1 && tidySpan.includes(window.join(" "))) {
+      answerSentences = window;
+    }
+  }
   const plan: LocalEvidenceAnswerPlan = {
     planId: "ans.plan.source_exact.31a6c2f8",
     kindId: LOCAL_ANSWER_KIND_IDS.evidenceBoundary,
     evidence: [selected.span],
     slotSurfaces: {
-      [LOCAL_ANSWER_SLOT_IDS.sentence]: [selected.sentence]
+      [LOCAL_ANSWER_SLOT_IDS.sentence]: answerSentences
     },
-    maxSentences: 1,
-    proofExcerpts: [{ text: selected.sentence, evidenceId: selected.span.id }],
+    maxSentences: answerSentences.length,
+    proofExcerpts: answerSentences.map(sentence => ({ text: sentence, evidenceId: selected.span.id })),
     audit: toJsonValue({
       source: "kernel.turn.source_exact_proposal",
       basisClassId: "basis.source_exact.54d2a9be",
@@ -522,6 +567,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       sourceAnchors: anchored.anchors,
       proposalScore: selected.score,
       proposalSentenceIndex: selected.index,
+      responseSentenceBudget: sentenceBudget,
       proofEnrichmentOptional: true,
       fakeEvidenceForbidden: true
     })
