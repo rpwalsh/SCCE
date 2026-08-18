@@ -571,7 +571,7 @@ async function dispatch(
           runtimeControl: requestTiming.turnExecution
         } : {})
       });
-      if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(500, "runtime produced no answer surface");
+      if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(422, "runtime declined: no admissible answer surface");
       const calibrationModels = await loadCalibrationModelSet({
         store: context.runtime.storage.dialogueMemory,
         minPoints: 2,
