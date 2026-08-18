@@ -124,6 +124,41 @@ describe("surface language resident-only cache", () => {
     expect(fixture.totalDurableCalls()).toBeGreaterThan(callsBeforeReaskingFirst);
   });
 
+  it("evicts on aggregate size even when the entry count is far under its cap", async () => {
+    // Real bug, crashed a live 7GB-heap server twice. The entry-count
+    // bound above treats every resident language cluster as the same
+    // size, but ONE cluster hydration is hundreds of MB of live heap
+    // (measured: 42MB of models+units JSON becomes 365MB of heap once
+    // parsed and Kneser-Ney-indexed), so a 500-entry cap permits tens of
+    // GB. Two earlier attempts at this bound still OOM'd: the first
+    // JSON.stringify'd the whole models array, which throws RangeError
+    // above V8's ~512MB string cap and was caught into a 0-byte
+    // measurement -- so every entry weighed nothing and nothing was ever
+    // evicted; the second measured JSON bytes but budgeted them as if
+    // they were heap bytes, permitting ~9x too much. maxEntries is left
+    // high here precisely so that ONLY the size bound can explain the
+    // eviction.
+    const fixture = runtimeFixture({
+      cacheMs: 10_000_000,
+      surfaceLanguageMemoryCacheMaxEntries: 100,
+      surfaceLanguageMemoryCacheMaxEstimatedBytes: 1
+    });
+
+    // A cluster-scoped hydration, so the entry actually carries records:
+    // the unscoped path returns empty arrays and would weigh nothing no
+    // matter how the estimate is computed.
+    const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected", undefined, "first request");
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected", undefined, "second request");
+
+    // Only one entry may remain resident, so re-asking the older one
+    // must force a real durable re-read even though the entry count
+    // never came near its 100-entry cap.
+    const callsBeforeReaskingFirst = fixture.totalDurableCalls();
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected", undefined, "first request");
+    expect(fixture.totalDurableCalls()).toBeGreaterThan(callsBeforeReaskingFirst);
+  });
+
   it("hydrates the learned segmentation population selected for the surface profile", async () => {
     const fixture = runtimeFixture();
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
@@ -142,7 +177,7 @@ describe("surface language resident-only cache", () => {
   });
 });
 
-function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number } = {}) {
+function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number } = {}) {
   const calls = {
     active: 0,
     evidence: 0,
