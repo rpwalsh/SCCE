@@ -297,14 +297,41 @@ function sectionForChunk(sections: SectionBoundary[], chunk: ChunkBoundary): Sec
   return selectedBoundary;
 }
 
+/**
+ * Anchor features ARE the retrieval index (`isEvidenceRetrievalFeature`
+ * accepts only `anchor:*`), so this budget decides what is findable at all.
+ */
+const EVIDENCE_ANCHOR_FEATURE_LIMIT = 3072;
+const EVIDENCE_FEATURE_LIMIT = 4096;
+
 function evidenceFeatures(text: string, section: SectionBoundary | undefined, index: number): string[] {
+  const anchors = anchorFeatureSet(text, EVIDENCE_ANCHOR_FEATURE_LIMIT);
   const base = featureSet(text, 900);
-  const anchors = anchorFeatureSet(text, 256);
   const structural = [`span-index:${Math.floor(index / 4)}`, `span-mod:${index % 4}`];
   if (section) structural.push(`section:${section.title.toLowerCase()}`, `section-depth:${section.depth}`);
   const density = symbolizeData(text).length / Math.max(1, [...text].length);
   structural.push(`density:${Math.round(density * 100)}`);
-  return [...new Set([...anchors, ...base, ...structural])].sort().slice(0, 1100);
+  // Ordered by retrieval value, then truncated -- never sorted first.
+  //
+  // The previous `.sort().slice(0, 1100)` truncated ALPHABETICALLY, which
+  // is a systematically biased cut rather than a neutral one: every term
+  // late in the alphabet was dropped first. Live proof from this corpus --
+  // the Ada Lovelace article's alphabetically-last surviving feature was
+  // `sym:lovelace`, so `sym:zaragoza` (and everything after "l") was never
+  // indexed, and "which building at Zaragoza University..." could not
+  // retrieve the one document that answers it. Sorting also placed the
+  // whole `anchor:*` namespace first purely because "a" sorts early, and
+  // the cap then decided how many of them survived by accident.
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const group of [anchors, structural, base]) {
+    for (const feature of group) {
+      if (seen.has(feature)) continue;
+      seen.add(feature);
+      ordered.push(feature);
+    }
+  }
+  return ordered.slice(0, EVIDENCE_FEATURE_LIMIT);
 }
 
 function evidenceAlpha(input: { features: string[]; structuralConfidence: number; chunk: ChunkBoundary; lexicalEntropy: number; mediaType: string }): number {

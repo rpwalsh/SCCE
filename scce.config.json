@@ -12,7 +12,7 @@
     "workspaceRoot": ".",
     "tempRoot": ".tmp/scce-runs",
     "maxFileBytes": 67108864,
-    "maxChunkBytes": 131072,
+    "maxChunkBytes": 4096,
     "spreadsheet": {
       "maxSourceBytes": 67108864,
       "maxSheets": 32,
