@@ -1228,6 +1228,17 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
       const rows = await storage.query<EventRow>(`SELECT * FROM ${storage.table("events")} WHERE episode_id=$1 ORDER BY t,id`, [episodeId]);
       return rows.map(rowToEvent);
     },
+    async readEpisodeEventSkeletons(episodeIds) {
+      if (!episodeIds.length) return [];
+      // Deliberately no payload_json: the batched history-induction callers
+      // consume only identity and type, and payloads are the bulk of the
+      // detoast cost on this table.
+      const rows = await storage.query<{ id: string; episode_id: string; type_id: string }>(
+        `SELECT id, episode_id, type_id FROM ${storage.table("events")} WHERE episode_id=ANY($1) ORDER BY t,id`,
+        [[...episodeIds]]
+      );
+      return rows.map(row => ({ id: row.id, episodeId: row.episode_id, typeId: row.type_id }));
+    },
     async readRange(input: EventRangeQuery) {
       const params: unknown[] = [];
       const where: string[] = [];
