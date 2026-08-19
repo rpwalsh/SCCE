@@ -96,6 +96,25 @@ import type {
   SourceVersion
 } from "./types.js";
 
+/**
+ * Retrieval unit size. At the previous 131072 this produced 1.04 evidence
+ * spans per document -- an entire Wikipedia article as ONE span, up to
+ * 131024 characters -- so retrieval could only ever return a whole article
+ * and the anchor index covered roughly its first 82 distinct words. Every
+ * cloze answer living past the lead paragraph was unreachable, which is
+ * exactly what the 2026-08-18 sealed run measured: 0/160 on cloze against
+ * a BM25 reference at 98%, with retrieval returning an Audi article for a
+ * question about a building at Zaragoza University.
+ *
+ * language-training-batch.ts had already recorded that 128KB was "far too
+ * coarse a unit" and worked around it in alignment windowing rather than
+ * fixing the chunk size itself.
+ *
+ * Paragraph boundaries are still respected (segmentByParagraphs); this only
+ * decides how many paragraphs accumulate before a new span starts.
+ */
+export const DEFAULT_EVIDENCE_CHUNK_BYTES = 4096;
+
 export function createIngestionRuntime(options: {
   deps: ScceKernelDeps;
   clock: ReturnType<typeof createClock>;
@@ -277,7 +296,7 @@ export function createIngestionRuntime(options: {
           languageProfile: profile,
           sourceTrust: source.sourceTrust,
           observedAt: now,
-          maxChunkBytes: deps.maxChunkBytes ?? 131072,
+          maxChunkBytes: deps.maxChunkBytes ?? DEFAULT_EVIDENCE_CHUNK_BYTES,
           metadata: file.metadata,
           exactSourceText: true
         });
