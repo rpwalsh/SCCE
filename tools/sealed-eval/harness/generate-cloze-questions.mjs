@@ -139,7 +139,18 @@ function clozeItemsForDocument(input) {
         schemaVersion: SCHEMA_VERSION,
         questionId,
         category: "cloze",
-        prompt: `Complete this sentence from the source documents, answering with the missing text only: ${candidate.prompt}`,
+        // The bare elided sentence, nothing else. The previous English
+        // instruction preamble ("Complete this sentence from the source
+        // documents, answering with the missing text only:") violated the
+        // project's no-hardcoded-English rule inside its own benchmark, and
+        // measurably poisoned retrieval: the trace showed "complete this
+        // sentence" / "missing text only" becoming subject anchors that
+        // admitted unrelated documents. The elided sentence is already the
+        // language-agnostic task -- every content word is a real corpus
+        // anchor -- and scoring checks requiredStrings containment, so a
+        // system answering with the completed sentence still scores without
+        // any response-format instruction.
+        prompt: candidate.prompt,
         gold: {
           acceptedAnswers: [candidate.answer.text],
           requiredStrings: [distinctiveToken(candidate.answer.text)],
