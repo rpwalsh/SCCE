@@ -40,6 +40,7 @@ export function emptySurfaceLanguageMemory(): {
   state: LanguageMemoryRuntimeState;
   active: { activeImportRunIds: never[] };
   corpusPlan: never[];
+  rescopeForSurface: (surface: string) => { state: LanguageMemoryRuntimeState; surfaceProfile: LanguageProfile | undefined };
 } {
   const competenceVector = {
     scriptRecognition: 0,
@@ -96,7 +97,11 @@ export function emptySurfaceLanguageMemory(): {
       })
     },
     active: { activeImportRunIds: [] },
-    corpusPlan: []
+    corpusPlan: [],
+    rescopeForSurface(this: void) {
+      const value = emptySurfaceLanguageMemory();
+      return { state: value.state, surfaceProfile: undefined };
+    }
   };
 }
 

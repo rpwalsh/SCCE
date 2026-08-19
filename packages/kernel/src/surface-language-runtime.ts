@@ -285,7 +285,13 @@ export function createSurfaceLanguageRuntime(options: {
         state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
         surfaceProfile: undefined as LanguageProfile | undefined,
         active,
-        corpusPlan
+        corpusPlan,
+        // Nothing here depends on the surface; rescoping returns the same
+        // unscoped empty state so the cached-hit path stays uniform.
+        rescopeForSurface: () => ({
+          state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
+          surfaceProfile: undefined as LanguageProfile | undefined
+        })
       };
     }
     const roleScopedCorpusPlan = preferredCorpusRoleId
@@ -371,18 +377,31 @@ export function createSurfaceLanguageRuntime(options: {
         return typeof record.profileId === "string" ? record.profileId : "";
       }).filter(Boolean)
     ]);
-    const roleCluster = preferredCorpusRoleId
-      ? corpusRoleLanguageCluster({
-        roleId: preferredCorpusRoleId,
-        target: cluster,
-        profiles: persistedProfiles.filter(profile => roleProfileIds.has(profile.id)),
-        surface: preferredSurface
-      })
-      : undefined;
-    const effectiveCluster = roleCluster ?? cluster;
-    const state = effectiveCluster
-      ? scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster)
-      : markLanguageMemoryStateUnscoped(hydrated, unscopedReason);
+    const roleProfiles = persistedProfiles.filter(profile => roleProfileIds.has(profile.id));
+    // The ONLY thing the request surface influences in this whole function:
+    // which role cluster scopes the already-hydrated payload. Everything
+    // above -- the 64MB model read, unit/pattern/frame loads, trie build --
+    // is surface-independent, so this tail is factored out and returned so
+    // a cached hydration can be re-scoped for a new request in milliseconds
+    // instead of re-hydrated in minutes.
+    const scopeForSurface = (surface: string) => {
+      const roleCluster = preferredCorpusRoleId
+        ? corpusRoleLanguageCluster({
+          roleId: preferredCorpusRoleId,
+          target: cluster,
+          profiles: roleProfiles,
+          surface
+        })
+        : undefined;
+      const effectiveCluster = roleCluster ?? cluster;
+      return {
+        state: effectiveCluster
+          ? scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster)
+          : markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
+        surfaceProfile: effectiveCluster?.members[0] as LanguageProfile | undefined
+      };
+    };
+    const scoped = scopeForSurface(preferredSurface);
     return {
       models,
       observations,
@@ -392,10 +411,11 @@ export function createSurfaceLanguageRuntime(options: {
       segmentationPopulationModels,
       constructionEvidence,
       requestControlPatterns: learnedRequestControlPatterns,
-      state,
-      surfaceProfile: effectiveCluster?.members[0] as LanguageProfile | undefined,
+      state: scoped.state,
+      surfaceProfile: scoped.surfaceProfile,
       active,
-      corpusPlan
+      corpusPlan,
+      rescopeForSurface: scopeForSurface
     };
   }
 
@@ -524,15 +544,24 @@ export function createSurfaceLanguageRuntime(options: {
         .sort((left, right) => right.score - left.score || right.margin - left.margin)[0];
       if (residentRoleMatch) return residentRoleMatch.entry.value;
     }
-    const preferredSurfaceKey = preferredSurface.trim()
-      ? hasher.digestHex(preferredSurface.normalize("NFC"))
-      : "surface:none";
-    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${preferredSurfaceKey}`;
+    // The request surface is deliberately NOT part of this key. Hydration
+    // content depends only on (cluster, role); the surface influences just
+    // the scoping tail, which rescopeForSurface re-runs against the cached
+    // payload below. Keying on the surface hash meant every distinct
+    // request text was a guaranteed miss -- the same defect as the
+    // readiness cache keyed on a rebuilt context object -- and a cold
+    // process re-paid the full durable hydration (measured: 535s of a 581s
+    // creative turn) for every new question. The residentRoleMatch branch
+    // above already established that cross-surface reuse of a role-scoped
+    // hydration is sound; this makes the fallback key agree with it.
+    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}`;
     const cached = surfaceLanguageMemoryCache.get(cacheKey);
     if (cached
       && cached.limit >= limit
       && (hydrationOptions.residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
-      return cached.value;
+      return preferredCorpusRoleId && preferredSurface.trim() && cached.value.rescopeForSurface
+        ? { ...cached.value, ...cached.value.rescopeForSurface(preferredSurface) }
+        : cached.value;
     }
     if (hydrationOptions.residentOnly) {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
