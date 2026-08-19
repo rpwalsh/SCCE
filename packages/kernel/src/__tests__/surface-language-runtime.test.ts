@@ -105,22 +105,31 @@ describe("surface language resident-only cache", () => {
     // three calls instead of the real 500/2000-entry production default.
     const fixture = runtimeFixture({ cacheMs: 10_000_000, surfaceLanguageMemoryCacheMaxEntries: 2, surfaceCandidateProfileCacheMaxEntries: 2 });
 
-    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "first request");
-    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "second request");
+    // The request surface no longer participates in the cache key at all --
+    // hydration content depends only on (cluster, role, reason), and the
+    // surface-dependent scoping is re-run against the cached payload -- so
+    // distinct questions can no longer grow this Map by one entry each.
+    // That closes the original growth vector outright; what remains to
+    // prove is that the eviction machinery still bounds the entries that
+    // legitimately differ, so distinct entries are created here through the
+    // unscoped-reason key dimension instead of the request text.
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "first-reason", undefined, "any request");
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "second-reason", undefined, "any request");
     const callsBeforeThird = fixture.totalDurableCalls();
-    // Re-hydrating "second request" (still within the 2-entry cap) must not
+    // Re-hydrating the second entry (still within the 2-entry cap) must not
     // trigger a new durable read -- proves the cache itself still works,
-    // not just that it evicts everything.
-    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "second request");
+    // not just that it evicts everything. The request text differs on
+    // purpose: it must NOT cause a miss.
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "second-reason", undefined, "a different question entirely");
     expect(fixture.totalDurableCalls()).toBe(callsBeforeThird);
 
-    // A third distinct request text exceeds the 2-entry cap and must evict
-    // "first request" (the oldest), forcing a real durable re-read the next
-    // time it's asked for -- if the Map were unbounded, this would still be
-    // served from cache with zero new durable calls.
-    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "third request");
+    // A third distinct entry exceeds the 2-entry cap and must evict the
+    // first (the oldest), forcing a real durable re-read the next time it
+    // is asked for -- if the Map were unbounded, this would still be served
+    // from cache with zero new durable calls.
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "third-reason", undefined, "any request");
     const callsBeforeReaskingFirst = fixture.totalDurableCalls();
-    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "source-surface-ambiguous-or-no-signal", undefined, "first request");
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "first-reason", undefined, "any request");
     expect(fixture.totalDurableCalls()).toBeGreaterThan(callsBeforeReaskingFirst);
   });
 
@@ -149,7 +158,11 @@ describe("surface language resident-only cache", () => {
     // matter how the estimate is computed.
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
     await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected", undefined, "first request");
-    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected", undefined, "second request");
+    // A second, distinct entry (the unscoped key) pushes the aggregate over
+    // the 1-byte budget and must evict the cluster-scoped entry. Request
+    // text cannot create the second entry any more -- it is no longer part
+    // of the key -- so the key's reason dimension carries it.
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "budget-pressure", undefined, "second request");
 
     // Only one entry may remain resident, so re-asking the older one
     // must force a real durable re-read even though the entry count
