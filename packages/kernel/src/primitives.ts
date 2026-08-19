@@ -122,7 +122,7 @@ export function symbolizeData(text: string): string[] {
 const featureSetMemo = createStringMemo(cacheKey => {
   const separator = cacheKey.indexOf(":");
   return computeFeatureSet(cacheKey.slice(separator + 1), Number(cacheKey.slice(0, separator)));
-}, { maxEntries: 2048, maxKeyChars: 8192, maxTotalChars: 4_000_000 });
+}, { maxEntries: 2048, maxKeyChars: 262_144, maxTotalChars: 8_000_000 });
 
 export function featureSet(text: string, limit = 2000): string[] {
   return featureSetMemo(`${limit}:${text}`).slice();
