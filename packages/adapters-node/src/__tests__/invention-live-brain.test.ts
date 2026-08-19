@@ -64,8 +64,10 @@ describe("invention against the live trained brain", () => {
         await runtime.close();
       }
     },
-    // Creative turns are the heaviest path (multi-section realization);
-    // sized for a loaded machine rather than an idle one.
-    600_000
+    // Measured: a COLD creative turn costs ~81s after the hydration-key,
+    // byte-budget-window, and observation-prefetch fixes (was 651s). 3x
+    // margin over that measurement -- a timeout generous enough to hide a
+    // regression back to minutes would defeat the point of having one.
+    240_000
   );
 });
