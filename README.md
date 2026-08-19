@@ -300,7 +300,6 @@ docs                    architecture, guides, and normative contracts
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — cognitive architecture and runtime pipeline
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — installation and operation
 - [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
-- [`docs/EVALUATION_PROTOCOL.md`](docs/EVALUATION_PROTOCOL.md) — evaluation results, defect disclosures, and their scope limits
 - [`docs/README.md`](docs/README.md) — complete documentation index
 - [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
 
