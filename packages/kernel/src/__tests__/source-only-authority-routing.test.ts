@@ -212,41 +212,11 @@ describe("source-only request-authority routing", () => {
     expect(translation.answer).not.toContain("REPORT_TEMPLATE_BODY_SHOULD_NOT_BE_SPOKEN");
   });
 
-  // Skipped: a source-only runtime (this file's whole premise) has neither
-  // imported construction bundles nor a trained language-memory model by
-  // definition. invention-planner.ts's buildDraft has exactly two paths that
-  // can produce genuinely new prose -- deferSurfaceRealization (needs
-  // structuralBundles.length >= 1) and reusedLearnedProposalFromMemory
-  // (bails when languageMemoryState.models.length === 0) -- and both require
-  // prior learned material this runtime never has. Without either,
-  // proposalSurface falls back to a reformation of the request's own terms,
-  // which Mouth's surface.reject.creative_request_drift guard then correctly
-  // rejects as an echo, leaving the final answer empty. Production always
-  // runs against a trained/hydrated brain server, so this needs live-server
-  // integration testing against that server, not a fabricated in-test
-  // corpus (unlike brain-influence-boundary.test.ts's compiled-corpus fix,
-  // which exercises Mouth's realization/attribution machinery directly
-  // rather than invention-planner's zero-corpus fallback).
-  it.skip("invention answer is real invented narrative content, not an echo of the request (requires a live trained/hydrated brain server)", async () => {
-    const { turns, cases, files } = await runAuthorityMatrixTurns();
-
-    const invention = turns.find(row => row.behavior === "invention")!.turn;
-    expect(invention.selectedCandidate?.force).toBe("invented");
-    expect(invention.answer.trim().length).toBeGreaterThan(0);
-    expect(invention.answer).not.toMatch(/(?:^|\s)(?:sym:[^\s|]+|bi:[^\s|]+\|[^\s|]+|tri:[^\s|]+\|[^\s|]+\|[^\s|]+|char:\S+)(?:$|\s)/u);
-    expect(invention.answer).not.toMatch(/(?:node|edge|relation|hyperedge)_[0-9a-f]{24,}/iu);
-    expect(invention.answer).not.toContain("language_memory");
-    const inventionRequest = cases.find(row => row.behavior === "invention")!.text;
-    const requestUnits = inventionRequest.normalize("NFKC").toLocaleLowerCase().match(/[\p{Letter}\p{Number}_-]+/gu) ?? [];
-    const normalizedInvention = invention.answer.normalize("NFKC").toLocaleLowerCase();
-    expect(requestUnits.filter(unit => [...unit].length >= 3).some(unit => normalizedInvention.includes(unit))).toBe(true);
-    for (const sourceSentence of files
-      .flatMap(file => file.text.split(/(?<=[.!?])\s+|\r?\n+/u))
-      .map(sentence => sentence.trim())
-      .filter(sentence => [...sentence].length >= 16)) {
-      expect(invention.answer).not.toContain(sourceSentence);
-    }
-  });
+  // The invented-narrative property cannot run in this file by its own
+  // premise (a source-only runtime has no trained material, so both of
+  // invention-planner's genuine-prose paths bail). It is tested against
+  // the real trained brain in packages/adapters-node/src/__tests__/
+  // invention-live-brain.test.ts, gated on SCCE_TEST_DATABASE_URL.
 });
 
 const candidateKinds: Record<RequestedAuthority, string[]> = {
