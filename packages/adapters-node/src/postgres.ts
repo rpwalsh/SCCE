@@ -1364,26 +1364,61 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const features = evidenceQueryFeatures(query.features ?? []);
       if (features.length && features.every(isEvidenceAnchorFeature) && !query.sourceId && !query.sourceVersionId) {
         const access = storage.informationAccessPredicate("evidence", 3);
+        // Okapi BM25 ranking over anchor postings, with presence-only term
+        // frequency (the index stores a feature SET, so tf is 1 wherever a
+        // feature occurs and the tf saturation term collapses to a constant).
+        //
+        // Ranking by raw COUNT(*) treated every matched feature as equally
+        // informative, so a match on "the" counted exactly as much as a match
+        // on "zaragoza". Measured on this corpus: for "which building at
+        // Zaragoza University is called the Ada Byron Building", the ten
+        // top-ranked spans all scored overlap=8 purely on {the, and, in,
+        // computer, science, building}, and the article that actually answers
+        // the question never surfaced. IDF is what separates those; length
+        // normalisation is what stops a long span winning simply by
+        // containing more words to match.
+        //
+        // Document frequency is computed within the candidate set rather than
+        // the whole corpus: it needs no extra scan beyond the join already
+        // being performed, and only the RELATIVE rarity of the query's own
+        // features affects the ordering.
         const rows = await storage.query<EvidenceRow>(
           `WITH requested_features AS (
              SELECT feature, feature_ord
              FROM unnest($1::text[]) WITH ORDINALITY AS requested(feature, feature_ord)
            ),
-           candidate_hits AS (
-             SELECT anchor_index.evidence_id AS id,
-                    COUNT(*) AS overlap_count,
-                    MIN(requested.feature_ord) AS first_feature_ord
+           feature_hits AS (
+             SELECT anchor_index.evidence_id AS id, requested.feature, requested.feature_ord
              FROM requested_features requested
              JOIN ${storage.table("evidence_anchor_index")} anchor_index
                ON anchor_index.features @> ARRAY[requested.feature]::text[]
-             GROUP BY anchor_index.evidence_id
+           ),
+           candidate_count AS (SELECT GREATEST(1, COUNT(DISTINCT id))::float8 AS n FROM feature_hits),
+           feature_df AS (SELECT feature, COUNT(DISTINCT id)::float8 AS df FROM feature_hits GROUP BY feature),
+           candidate_length AS (
+             SELECT hits.id, GREATEST(1, OCTET_LENGTH(evidence.text_content))::float8 AS len
+             FROM (SELECT DISTINCT id FROM feature_hits) hits
+             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
+           ),
+           mean_length AS (SELECT GREATEST(1, AVG(len)) AS len FROM candidate_length),
+           candidate_hits AS (
+             SELECT feature_hits.id,
+                    SUM(LN(1 + ((SELECT n FROM candidate_count) - feature_df.df + 0.5) / (feature_df.df + 0.5)))
+                      / (0.25 + 0.75 * (candidate_length.len / (SELECT len FROM mean_length))) AS score,
+                    COUNT(*) AS overlap_count,
+                    MIN(feature_hits.feature_ord) AS first_feature_ord
+             FROM feature_hits
+             JOIN feature_df ON feature_df.feature = feature_hits.feature
+             JOIN candidate_length ON candidate_length.id = feature_hits.id
+             GROUP BY feature_hits.id, candidate_length.len
            )
            SELECT evidence.*
            FROM candidate_hits hits
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
            WHERE ${evidenceStatusCondition("evidence", query.status)}
              AND ${access.sql}
-           ORDER BY hits.overlap_count DESC,
+           ORDER BY hits.score DESC,
+                    hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
                     CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
                     evidence.alpha DESC,
@@ -1391,7 +1426,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            LIMIT $2`,
           [features, query.limit ?? 80, ...access.params]
         );
-        return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting evidence search" }));
+        return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
       if (features.length && !query.sourceId && !query.sourceVersionId) {
         const featureBranches = features.map((_, index) =>
