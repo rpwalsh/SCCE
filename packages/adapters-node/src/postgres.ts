@@ -3417,17 +3417,50 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const exactRows = await scopedRows(profileIds);
         return exactRows.map(rowToNgramObservation);
       }
+      // Index-first prefetch. The flat form of this query -- all predicates
+      // in one WHERE with ORDER BY count DESC LIMIT -- planned as a parallel
+      // seq scan over the whole 30GB / 13.5M-row table: pg_stat_activity
+      // caught it live at 375s (wait=IO/DataFileRead) inside a single
+      // creative turn's hydration. The cause is not a missing index (the
+      // expression index exists and is valid) but estimation: the
+      // information-access predicate's jsonb containment operators (<@, ?)
+      // carry fixed default selectivities the planner cannot learn, even
+      // with expression statistics (added; estimate went 1 -> ~1700 against
+      // 9.16M actual, still seq-scanning at 42s warm). No statistics object
+      // fixes an operator whose selectivity is a hard-coded constant, so
+      // the query shape has to make the index walk non-optional.
+      //
+      // The inner subquery matches idx_..._ngram_source_system_rank's
+      // expression and ordering exactly and carries no other predicates, so
+      // it can only be an index walk; the access filter then applies to the
+      // 2x-overscanned prefix. Measured on the exact live parameters:
+      // 43.9ms against the flat form's 42000ms, full LIMIT returned.
+      //
+      // Trade, stated plainly: if the access filter rejects more than half
+      // of the top-ranked prefix, the result may come back shorter than
+      // `limit` even though deeper admissible rows exist. Corpus rows all
+      // carry the public label in this deployment, so the filter passes
+      // ~everything; a deployment where labels reject most corpus rows
+      // should raise the overscan, not remove the prefetch.
       const params: unknown[] = [];
-      const where: string[] = [];
-      if (query.streamId) { params.push(query.streamId); where.push(`observation.stream_id=$${params.length}`); }
-      if (query.languageHint) { params.push(query.languageHint); where.push(`observation.language_hint=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
-      appendInformationAccess(storage, "observation", params, where);
+      const innerWhere: string[] = [];
+      if (query.streamId) { params.push(query.streamId); innerWhere.push(`observation.stream_id=$${params.length}`); }
+      if (query.languageHint) { params.push(query.languageHint); innerWhere.push(`observation.language_hint=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); innerWhere.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
+      const accessWhere: string[] = [];
+      appendInformationAccess(storage, "scoped", params, accessWhere);
+      params.push(Math.max(1, limit) * 2);
+      const prefetchParam = params.length;
       params.push(limit);
       return (await storage.query<NgramObservationRow>(
-        `SELECT * FROM ${table} observation
-         WHERE ${where.join(" AND ")}
-         ORDER BY count DESC, observed_at DESC, id ASC
+        `SELECT scoped.* FROM (
+           SELECT * FROM ${table} observation
+           ${innerWhere.length ? `WHERE ${innerWhere.join(" AND ")}` : ""}
+           ORDER BY count DESC, observed_at DESC
+           LIMIT $${prefetchParam}
+         ) scoped
+         WHERE ${accessWhere.join(" AND ")}
+         ORDER BY scoped.count DESC, scoped.observed_at DESC, scoped.id ASC
          LIMIT $${params.length}`,
         params
       )).map(rowToNgramObservation);
