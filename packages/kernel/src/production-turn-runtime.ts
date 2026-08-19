@@ -486,10 +486,34 @@ export function createProductionTurnRuntime(options: {
     };
   }
 
+/**
+ * A whole-turn replan is only worth its cost when the recovery motion
+ * actually brought new evidence back. learnHydrateReplan reports that
+ * directly: "hydrated" means it ingested something, while "empty",
+ * "failed" and "unavailable" all mean the graph is byte-for-byte what the
+ * first pass already read.
+ *
+ * Re-entering turn() on those statuses re-runs seeding, graph slicing,
+ * proof, and candidate generation over identical inputs and necessarily
+ * reaches the identical conclusion. Measured on the 2026-08-18 sealed run:
+ * every turn ran the full pipeline twice (~60s instead of ~30s) and the
+ * second pass changed no answer, because a sealed run disables connectors
+ * so the motion can only ever report "unavailable".
+ */
+function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): boolean {
+  return motion?.status === "hydrated" && motion.ingestedEvidenceCount > 0;
+}
+
   async function turn(input: OwnerInput): Promise<TurnResult> {
 
       return withBufferedEventWrites(async () => {
       const turnStarted = Date.now();
+      // A recovery motion that ran but did not justify a replan still has to
+      // be reported: result.runtimeMotion previously came only from
+      // inheritedRuntimeMotion, which exists solely on a second pass, so
+      // skipping the pointless replan would otherwise silently drop the
+      // record that acquisition was attempted and came back empty.
+      let performedRuntimeMotion: RuntimeReplanMotion | undefined;
       const timingParts: Record<string, number> = {};
       let timingStageStarted = turnStarted;
       const markTiming = (stage: "seedMs" | "graphSliceMs" | "proofMs" | "candidateMs" | "planningMs" | "mouthMs" | "validationMs" | "forecastMs" | "maintenanceMs"): void => {
@@ -2124,11 +2148,14 @@ export function createProductionTurnRuntime(options: {
               trigger,
               events
             });
-            runtimeState.lastField = undefined;
-            return turn({
-              ...input,
-              metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-            });
+            performedRuntimeMotion = motion;
+            if (runtimeMotionAddedEvidence(motion)) {
+              runtimeState.lastField = undefined;
+              return turn({
+                ...input,
+                metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+              });
+            }
           }
           motion = runtimeMotionDeferredByDeadline({
             episodeId,
@@ -2848,11 +2875,14 @@ export function createProductionTurnRuntime(options: {
             events,
             priorRejectedHypotheses: priorRejectedHypothesesFromCandidates(judged.rejected, hasher)
           });
-          runtimeState.lastField = undefined;
-          return turn({
-            ...input,
-            metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-          });
+          performedRuntimeMotion = motion;
+          if (runtimeMotionAddedEvidence(motion)) {
+            runtimeState.lastField = undefined;
+            return turn({
+              ...input,
+              metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+            });
+          }
         }
         events.push(await append(eventFactory.create({
           episodeId,
@@ -3124,22 +3154,36 @@ export function createProductionTurnRuntime(options: {
             events,
             priorRejectedHypotheses: priorRejectedHypothesesFromCandidates(judged.rejected, hasher)
           });
-          runtimeState.lastField = undefined;
-          return turn({
-            ...input,
-            metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-          });
+          performedRuntimeMotion = motion;
+          if (runtimeMotionAddedEvidence(motion)) {
+            runtimeState.lastField = undefined;
+            return turn({
+              ...input,
+              metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
+            });
+          }
+          events.push(await append(eventFactory.create({
+            episodeId,
+            typeId: "ActionPrepared",
+            payload: toJsonValue({
+              runtimeMotion: motion,
+              reason: "runtime-motion-added-no-evidence",
+              replanSkipped: true,
+              coherence: runtimeCoherenceTrace
+            })
+          })));
+        } else {
+          events.push(await append(eventFactory.create({
+            episodeId,
+            typeId: "ActionPrepared",
+            payload: toJsonValue({
+              runtimeMotion: "not_started",
+              reason: "runtime-deadline-reserve",
+              deadlineDecision: recoveryDecision,
+              coherence: runtimeCoherenceTrace
+            })
+          })));
         }
-        events.push(await append(eventFactory.create({
-          episodeId,
-          typeId: "ActionPrepared",
-          payload: toJsonValue({
-            runtimeMotion: "not_started",
-            reason: "runtime-deadline-reserve",
-            deadlineDecision: recoveryDecision,
-            coherence: runtimeCoherenceTrace
-          })
-        })));
       }
       await deps.storage.constructs.putValidation(validation);
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
@@ -3244,7 +3288,7 @@ export function createProductionTurnRuntime(options: {
           languageAcquisition: toJsonValue({ maintenanceDeferred: true, maintenance: afterTurnMaintenance.audit }),
           mouth: toJsonValue({ surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, uncertainty: spoken.uncertainty }),
           runtimeCoherence: runtimeCoherenceTrace,
-          ...(inheritedRuntimeMotion ? { runtimeMotion: toJsonValue(inheritedRuntimeMotion) } : {}),
+          ...(inheritedRuntimeMotion ?? performedRuntimeMotion ? { runtimeMotion: toJsonValue((inheritedRuntimeMotion ?? performedRuntimeMotion) as RuntimeReplanMotion) } : {}),
           discourseObject: discourseObjectTrace,
           corrections: correctionMemory.summarize(correctionRules),
           userModelStore: userModelStoreToJson(userModelStore),
@@ -3394,7 +3438,7 @@ export function createProductionTurnRuntime(options: {
           runtimeCoherence: runtimeCoherenceTrace
         }),
         runtimeCoherence: runtimeCoherenceTrace,
-        ...(inheritedRuntimeMotion ? { runtimeMotion: toJsonValue(inheritedRuntimeMotion) } : {}),
+        ...(inheritedRuntimeMotion ?? performedRuntimeMotion ? { runtimeMotion: toJsonValue((inheritedRuntimeMotion ?? performedRuntimeMotion) as RuntimeReplanMotion) } : {}),
         discourseObject: discourseObjectTrace,
         proofCarryingAnswer: pcaReport.audit,
         pface: pfaceEstimate?.audit,
