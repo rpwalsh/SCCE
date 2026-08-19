@@ -96,7 +96,13 @@ export function tidySurfaceText(text: string): string {
  */
 const tidySurfaceTextMemo = createStringMemo(computeTidySurfaceText, {
   maxEntries: 4096,
-  maxKeyChars: 8192,
+  // Deliberately high. maxKeyChars exists to stop one pathological input
+  // evicting the working set, and maxTotalChars already bounds the memory --
+  // so a low value here only excludes the inputs most worth caching. Measured
+  // on a real turn: 82.5% hit rate but 3 calls landed over an 8192 cap, and
+  // those were whole evidence texts run through a per-codepoint loop every
+  // time, which was the single largest CPU consumer in the profile (18.8%).
+  maxKeyChars: 262_144,
   maxTotalChars: 4_000_000
 });
 
