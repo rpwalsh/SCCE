@@ -1,6 +1,6 @@
 import type { EventLedger } from "./storage.js";
 import type { ConsolidatedEpisode } from "./episodic-memory-consolidation.js";
-import type { Hasher } from "./types.js";
+import type { EpisodeId, Hasher } from "./types.js";
 import { createHasher } from "./primitives.js";
 import {
   induceOperatorCandidate,
@@ -27,25 +27,56 @@ import {
  * least 2 steps -- the minimum an induced operator can be. Episodes with
  * fewer real action events are honestly excluded, not padded.
  */
+
+/**
+ * One batched, payload-free read for every episode's event skeletons,
+ * replacing a readEpisode call per episode: measured at 242 queries and
+ * 6.9s of a single warm turn's database time across the two history-
+ * induction runtimes that share this. Falls back to per-episode reads for
+ * stores that do not implement the batched reader.
+ */
+async function episodeEventSkeletonsByEpisode(
+  events: EventLedger,
+  episodeIds: readonly string[]
+): Promise<Map<string, Array<{ id: string; typeId: string }>>> {
+  const byEpisode = new Map<string, Array<{ id: string; typeId: string }>>();
+  if (!episodeIds.length) return byEpisode;
+  if (events.readEpisodeEventSkeletons) {
+    for (const row of await events.readEpisodeEventSkeletons(episodeIds as EpisodeId[])) {
+      const bucket = byEpisode.get(row.episodeId) ?? [];
+      bucket.push({ id: row.id, typeId: row.typeId });
+      byEpisode.set(row.episodeId, bucket);
+    }
+    return byEpisode;
+  }
+  for (const episodeId of episodeIds) {
+    const rows = await events.readEpisode(episodeId as EpisodeId);
+    byEpisode.set(episodeId, rows.map(event => ({ id: String(event.id), typeId: String(event.typeId) })));
+  }
+  return byEpisode;
+}
+
 export async function episodeActionTypeTraces(events: EventLedger, limit = 256): Promise<EpisodeTrace[]> {
   const consolidatedRows = await events.readRange({ typeId: "EpisodeConsolidated", limit });
-  const traces: EpisodeTrace[] = [];
-  const seenEpisodeIds = new Set<string>();
+  const consolidatedByEpisode = new Map<string, ConsolidatedEpisode>();
   for (const row of consolidatedRows) {
     const consolidated = row.payload as unknown as ConsolidatedEpisode;
     const episodeId = consolidated?.episodeId;
-    if (!episodeId || seenEpisodeIds.has(String(episodeId))) continue;
-    seenEpisodeIds.add(String(episodeId));
-    const episodeEvents = await events.readEpisode(episodeId);
+    if (episodeId && !consolidatedByEpisode.has(String(episodeId))) consolidatedByEpisode.set(String(episodeId), consolidated);
+  }
+  const skeletons = await episodeEventSkeletonsByEpisode(events, [...consolidatedByEpisode.keys()]);
+  const traces: EpisodeTrace[] = [];
+  for (const [episodeId, consolidated] of consolidatedByEpisode) {
+    const episodeEvents = skeletons.get(episodeId) ?? [];
     const eventsById = new Map(episodeEvents.map(event => [event.id, event]));
     const actionTypeSequence = (consolidated.actionEventIds ?? [])
-      .map(id => eventsById.get(id)?.typeId)
+      .map(id => eventsById.get(String(id))?.typeId)
       .filter((typeId): typeId is NonNullable<typeof typeId> => Boolean(typeId))
       .map(typeId => String(typeId));
     if (actionTypeSequence.length < 2) continue;
     const succeeded = episodeEvents.some(event => event.typeId === "CapabilitySucceeded")
       && !episodeEvents.some(event => event.typeId === "CapabilityFailed");
-    traces.push({ episodeId: String(episodeId), actionTypeSequence, succeeded });
+    traces.push({ episodeId, actionTypeSequence, succeeded });
   }
   return traces;
 }
