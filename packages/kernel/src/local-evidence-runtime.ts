@@ -1477,13 +1477,32 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 }
 
 
+/**
+ * Pair-memoized (re-applied after the 8cdd0d1 revert: the memo is pure
+ * performance with byte-identical results, measured at 1.8s of a 6.9s
+ * steady-state turn; the behavioral admission/ordering changes from that
+ * commit are what regressed and stay reverted).
+ */
+const requestUnitMatchMemo = new Map<string, boolean>();
+const REQUEST_UNIT_MATCH_MEMO_MAX = 200_000;
+
  function requestUnitMatchesSurface(unit: string, surfaceUnit: string): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
+  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${unit}${surfaceUnit}` : undefined;
+  if (memoKey !== undefined) {
+    const cached = requestUnitMatchMemo.get(memoKey);
+    if (cached !== undefined) return cached;
+  }
   const minLength = Math.min(unit.length, surfaceUnit.length);
   const maxLength = Math.max(unit.length, surfaceUnit.length);
   const prefixCompatible = (unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && minLength / Math.max(1, maxLength) >= 0.72;
-  return prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
+  const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
+  if (memoKey !== undefined) {
+    if (requestUnitMatchMemo.size >= REQUEST_UNIT_MATCH_MEMO_MAX) requestUnitMatchMemo.clear();
+    requestUnitMatchMemo.set(memoKey, value);
+  }
+  return value;
 }
 
 
