@@ -2799,18 +2799,6 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           ? 4
           : 0;
         const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
-        // A request that NEAR-DUPLICATES a corpus sentence (cloze, quotation,
-        // paraphrase-with-gap) has high ordered adjacent-pair overlap with
-        // exactly that sentence -- and a natural question essentially never
-        // does, because question word order is not sentence word order. In
-        // that regime the duplicate must outrank salience: verified live,
-        // "The computer centre in the village of ____, near where Lovelace
-        // lived..." answered "Lovelace is often considered the first
-        // computer programmer" because titleLeadBoost(4)+sourceAffinity(3)
-        // swamp unitOverlap(0.92). Gated at pairOverlap >= 0.5 so the boost
-        // is inert for the question-shaped requests whose regressions the
-        // lead boosts were added to fix.
-        const nearDuplicateBoost = pairOverlap >= 0.5 ? 6 * pairOverlap : 0;
         return {
           span,
           sentence,
@@ -2820,7 +2808,6 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           score: unitOverlap * 0.92
             + lexical * 0.35
             + pairOverlap * 0.16
-            + nearDuplicateBoost
             + span.alpha * 0.12
             + anchorBoost
             + titleLeadBoost
