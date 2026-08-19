@@ -593,6 +593,16 @@ export interface EventLedger {
   append(event: ScceEvent): Promise<void>;
   appendBatch(events: ScceEvent[]): Promise<void>;
   readEpisode(episodeId: EpisodeId): Promise<ScceEvent[]>;
+  /**
+   * Batched, payload-free event skeletons for many episodes at once.
+   * Exists because per-turn history induction (induced-reasoning and
+   * procedural-skill runtimes) was issuing one readEpisode per past
+   * consolidated episode -- 242 queries and 6.9s of a single warm turn's
+   * database time, measured -- while consuming ONLY id/episodeId/typeId
+   * and never the payloads it forced Postgres to detoast. Optional so
+   * fixture stores stay valid; callers fall back to readEpisode.
+   */
+  readEpisodeEventSkeletons?(episodeIds: readonly EpisodeId[]): Promise<Array<{ id: string; episodeId: string; typeId: string }>>;
   readRange(input: EventRangeQuery): Promise<ScceEvent[]>;
   latestLedgerHash(): Promise<string>;
 }

@@ -41,19 +41,35 @@ export async function buildTestProceduralEpisodeTraces(
 ): Promise<ProceduralEpisodeTrace[]> {
   const consolidatedRows = await events.readRange({ typeId: "EpisodeConsolidated", limit });
   const traces: ProceduralEpisodeTrace[] = [];
+  const episodeIds: string[] = [];
   const seenEpisodeIds = new Set<string>();
   for (const row of consolidatedRows) {
     const consolidated = row.payload as unknown as ConsolidatedEpisode;
     const episodeId = consolidated?.episodeId;
     if (!episodeId || seenEpisodeIds.has(String(episodeId))) continue;
     seenEpisodeIds.add(String(episodeId));
-    const episodeEvents = await events.readEpisode(episodeId);
+    episodeIds.push(String(episodeId));
+  }
+  // Batched, payload-free skeletons instead of one readEpisode per episode
+  // (see induced-reasoning-operator-runtime.ts's shared rationale: this
+  // pair of loops measured 242 queries / 6.9s in one warm turn).
+  const skeletons = events.readEpisodeEventSkeletons
+    ? await events.readEpisodeEventSkeletons(episodeIds as EpisodeId[])
+    : (await Promise.all(episodeIds.map(async episodeId => (await events.readEpisode(episodeId as EpisodeId)).map(event => ({ id: String(event.id), episodeId, typeId: String(event.typeId) }))))).flat();
+  const byEpisode = new Map<string, Array<{ typeId: string }>>();
+  for (const row of skeletons) {
+    const bucket = byEpisode.get(row.episodeId) ?? [];
+    bucket.push({ typeId: row.typeId });
+    byEpisode.set(row.episodeId, bucket);
+  }
+  for (const episodeId of episodeIds) {
+    const episodeEvents = byEpisode.get(episodeId) ?? [];
     const ranBuild = episodeEvents.some(event => event.typeId === "BuildExecuted");
     const ranTest = episodeEvents.some(event => event.typeId === "TestExecuted");
     if (!ranBuild || !ranTest) continue;
     const succeeded = episodeEvents.some(event => event.typeId === "CapabilitySucceeded")
       && !episodeEvents.some(event => event.typeId === "CapabilityFailed");
-    traces.push({ episodeId: String(episodeId), steps: [BUILD_TEST_SKILL_STEP], succeeded });
+    traces.push({ episodeId, steps: [BUILD_TEST_SKILL_STEP], succeeded });
   }
   return traces;
 }
