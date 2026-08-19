@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Clock, Hasher, JsonValue, SourceRedactionInterval } from "./types.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
+import { createStringMemo } from "./pure-memo.js";
 
 export function createCanonicalJson() {
   return { stringify: canonicalStringify };
@@ -112,7 +113,25 @@ export function symbolizeData(text: string): string[] {
     .slice(0, 200000);
 }
 
+/**
+ * 6.8% of one profiled turn (2026-08-18) was spent re-deriving feature sets
+ * for text already seen. Callers receive a fresh array every time: the
+ * cached value is never handed out directly, because ~190 call sites is far
+ * too many to audit for incidental mutation of a returned array.
+ */
+const featureSetMemo = createStringMemo(cacheKey => {
+  const separator = cacheKey.indexOf(":");
+  return computeFeatureSet(cacheKey.slice(separator + 1), Number(cacheKey.slice(0, separator)));
+}, { maxEntries: 2048, maxKeyChars: 8192, maxTotalChars: 4_000_000 });
+
 export function featureSet(text: string, limit = 2000): string[] {
+  return featureSetMemo(`${limit}:${text}`).slice();
+}
+
+/** Exposed for tests and diagnostics. */
+export const featureSetMemoStats = (): ReturnType<typeof featureSetMemo.stats> => featureSetMemo.stats();
+
+function computeFeatureSet(text: string, limit: number): string[] {
   const safe = text.replace(/\u0000/g, " ").normalize("NFC");
   const symbols = symbolizeData(safe);
   const features = new Set<string>();
