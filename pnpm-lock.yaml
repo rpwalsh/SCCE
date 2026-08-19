@@ -74,6 +74,10 @@ importers:
       '@unicode/unicode-17.0.0':
         specifier: 1.6.17
         version: 1.6.17
+    devDependencies:
+      vite-node:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.20.0)(jiti@2.7.0)(yaml@2.9.0)
 
   packages/server:
     dependencies:
