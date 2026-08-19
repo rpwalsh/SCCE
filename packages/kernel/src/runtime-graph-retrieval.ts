@@ -539,7 +539,16 @@ export function createRuntimeGraphRetrieval(options: {
       },
       support: {
         sourceAnchoringRequired: anchored.required,
-        sourceIdentityBoundEvidenceAbsent: promoted.length > 0 && evidence.length === 0
+        sourceIdentityBoundEvidenceAbsent: promoted.length > 0 && evidence.length === 0,
+        anchors: anchored.anchors,
+        // Which spans actually survived, at a glance: diagnosing why a
+        // wrong-topic span kept winning cloze retrieval required exactly
+        // this and it was not in the trace.
+        admitted: evidence.slice(0, 8).map(span => ({
+          id: String(span.id).slice(0, 40),
+          chars: [...String(span.text ?? "")].length,
+          head: String(span.text ?? "").replace(/\s+/gu, " ").slice(0, 60)
+        }))
       }
     });
     const admittedIds = new Set(evidence.map(span => String(span.id)));
