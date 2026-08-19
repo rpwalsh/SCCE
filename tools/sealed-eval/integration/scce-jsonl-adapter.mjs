@@ -105,14 +105,36 @@ try {
   if (runtime) await runtime.close();
 }
 
+/** Every connector off, by construction rather than by listing the ones known today: a connector added later is disabled here without anyone remembering to update this. */
+function withConnectorsDisabled(config) {
+  const connectors = config.connectors ?? {};
+  const disabled = {};
+  for (const [name, value] of Object.entries(connectors)) {
+    disabled[name] = value && typeof value === "object" ? { ...value, enabled: false } : value;
+  }
+  return { ...config, connectors: disabled };
+}
+
 async function initialize() {
   if (environmentError) throw environmentError;
   const condition = createEvaluationCondition(parsedEnvironment.conditionInput);
   const corpus = await loadVerifiedCorpusManifest(parsedEnvironment.corpusManifestPath);
   const loadedConfig = await readScceRuntimeConfig(parsedEnvironment.configPath);
-  const config = parsedEnvironment.databaseSchema
+  const schemaScopedConfig = parsedEnvironment.databaseSchema
     ? { ...loadedConfig, database: { ...loadedConfig.database, schema: parsedEnvironment.databaseSchema } }
     : loadedConfig;
+  // A sealed run answers from the sealed corpus or it abstains -- it never
+  // reaches the network, whatever the ambient config says. The system
+  // manifest declares networkPolicy "disabled", but that field is a
+  // declaration the harness does not enforce anywhere, so enforcement
+  // belongs here, at the one place that knows an evaluation is running.
+  // Live-verified violation this prevents: with the ambient config's web
+  // connector enabled, "What is the boiling point of tungsten?" and
+  // "Who won the 1998 FIFA World Cup?" -- both absent from the corpus by
+  // construction, both abstention probes -- came back carrying live
+  // DuckDuckGo results, which silently converts a sealed evaluation into
+  // an open-web one.
+  const config = withConnectorsDisabled(schemaScopedConfig);
   const clock = createClock({ fixedTime: Date.parse(condition.clockIso), stepMs: 1 });
   runtime = createNodeRuntime(config, {
     evaluationCondition: condition,
