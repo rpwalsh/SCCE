@@ -70,28 +70,50 @@ export function pairedReleaseReport(input) {
   }
 
   // Release-gate metrics computed from the run itself. unsupportedRate is
-  // the fraction of ANSWERED items that were wrong -- an answer the corpus
+  // the fraction of ASSERTED items that were wrong -- an answer the corpus
   // did not support. Abstentions are excluded from it deliberately:
   // declining is the correct behaviour this system is built for, and
   // counting it as unsupported would penalise exactly the property the
   // gate exists to protect.
+  //
+  // Enforcing that exclusion needs the per-question status, which the
+  // objective scores do not carry -- they record exactScore, not whether
+  // the system declined. Reading exactScore === 0 as "unsupported" silently
+  // conflated the two: on the 2026-08-18 rerun it reported unsupportedRate
+  // 100% for a system that asserted nothing at all, 159 of those 160 being
+  // abstentions. Statuses come from the raw answers when supplied, and when
+  // they are not, the metric is reported as unavailable rather than guessed.
+  const statusByQuestion = new Map();
+  if (input.answersPath) {
+    for (const row of readJsonl(input.answersPath)) {
+      if (row.systemId === input.systemId) statusByQuestion.set(row.questionId, row.status);
+    }
+  }
+  const declined = questionId => statusByQuestion.get(questionId) === "abstained";
   const answered = [...subject.values()].filter(row => row.exactScore !== null && row.exactScore !== undefined);
   const abstentionRows = [...subject.entries()].filter(([questionId]) => questionById.get(questionId)?.gold?.unanswerable === true);
   const answerableRows = [...subject.entries()].filter(([questionId]) => questionById.get(questionId)?.gold?.unanswerable !== true);
-  const wrongAnswers = answerableRows.filter(([, row]) => row.exactScore === 0).length;
+  const assertedRows = statusByQuestion.size ? answerableRows.filter(([questionId]) => !declined(questionId)) : undefined;
+  const abstainedOnAnswerable = statusByQuestion.size ? answerableRows.length - assertedRows.length : undefined;
   const metrics = {
-    unsupportedRate: answerableRows.length ? wrongAnswers / answerableRows.length : 0,
+    unsupportedRate: assertedRows
+      ? (assertedRows.length ? assertedRows.filter(([, row]) => row.exactScore === 0).length / assertedRows.length : 0)
+      : null,
     exactAnchorAccuracy: answerableRows.length ? answerableRows.filter(([, row]) => row.exactScore === 1).length / answerableRows.length : 0,
     cycleAccuracy: abstentionRows.length ? abstentionRows.filter(([, row]) => row.exactScore === 1).length / abstentionRows.length : 1
   };
 
-  const gate = evaluateReleaseGate(metrics, {
-    maxUnsupportedRate: input.maxUnsupportedRate ?? 0.2,
-    minExactAnchorAccuracy: input.minExactAnchorAccuracy ?? 0.7,
-    minCycleAccuracy: input.minCycleAccuracy ?? 0.9
-  }, pairedResults.length ? pairedResults : undefined);
+  // A metric that could not be computed must never be scored as if it
+  // passed. Without statuses the gate is not evaluated at all.
+  const gate = metrics.unsupportedRate === null
+    ? { passed: false, notEvaluated: true, failures: [{ id: "unsupported_rate", reason: "not evaluated: pass --answers=<raw-answers.jsonl> so abstentions can be separated from unsupported assertions" }] }
+    : evaluateReleaseGate(metrics, {
+      maxUnsupportedRate: input.maxUnsupportedRate ?? 0.2,
+      minExactAnchorAccuracy: input.minExactAnchorAccuracy ?? 0.7,
+      minCycleAccuracy: input.minCycleAccuracy ?? 0.9
+    }, pairedResults.length ? pairedResults : undefined);
 
-  return { categories, metrics, gate, classEffects, corrected, pairedCount: pairedResults.length, answeredCount: answered.length };
+  return { categories, metrics, gate, classEffects, corrected, pairedCount: pairedResults.length, answeredCount: answered.length, assertedCount: assertedRows?.length, abstainedOnAnswerable };
 }
 
 const args = new Map(process.argv.slice(2).map(argument => {
@@ -104,6 +126,7 @@ if (args.get("objective") && args.get("questions")) {
     questionsPath: args.get("questions"),
     systemId: args.get("system") ?? "scce",
     referenceSystemId: args.get("reference") ?? "reference.bm25",
+    answersPath: args.get("answers"),
     alpha: Number(args.get("alpha") ?? 0.05),
     bootstrapSamples: Number(args.get("bootstrap") ?? 10000)
   });
@@ -113,7 +136,9 @@ if (args.get("objective") && args.get("questions")) {
     console.log(`  ${category.padEnd(14)} subject ${String(row.subjectCorrect).padStart(3)}/${row.n} (${pct(row.subjectCorrect / row.n)})   reference ${String(row.referenceCorrect).padStart(3)}/${row.n} (${pct(row.referenceCorrect / row.n)})   coherent ${row.coherent}/${row.n}`);
   }
   console.log("\n=== release-gate metrics (computed from this run) ===");
-  console.log("  unsupportedRate     ", pct(report.metrics.unsupportedRate));
+  console.log("  unsupportedRate     ", report.metrics.unsupportedRate === null
+    ? "unavailable (pass --answers to separate abstentions from unsupported assertions)"
+    : `${pct(report.metrics.unsupportedRate)} of ${report.assertedCount} asserted (${report.abstainedOnAnswerable} answerable items abstained)`);
   console.log("  exactAnchorAccuracy ", pct(report.metrics.exactAnchorAccuracy));
   console.log("  cycleAccuracy       ", pct(report.metrics.cycleAccuracy), "(abstention correctness)");
   console.log("  gate passed:", report.gate.passed);
