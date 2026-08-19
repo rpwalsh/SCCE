@@ -1213,14 +1213,29 @@ export interface ScceKernelDeps {
    */
   functionalCognitionAuthorizeCapabilities?: boolean;
   /**
-   * The wording realizer port (docs/REALIZER_DOCTRINE.md, owner ruling
-   * 2026-08-17): an admissible, compact, corpus-trained learned function
-   * that chooses WORDING for facts the evidence layer already licensed.
-   * Its outputs enter the mouth's candidate pool subject to every
-   * existing gate (admissibility, structural completeness, argument
-   * integrity, entailment, citation binding); its failure mode is
-   * awkward wording, never a new assertion. Foundation-model runtimes
-   * remain banned; this port must never be backed by one.
+   * The wording realizer port: an optional, compact, corpus-trained
+   * learned function that chooses WORDING for facts the evidence layer
+   * already licensed. Its outputs enter the mouth's candidate pool
+   * subject to every existing gate (admissibility, structural
+   * completeness, argument integrity, entailment, citation binding); its
+   * failure mode is awkward wording, never a new assertion.
+   *
+   * Admissibility conditions, stated here rather than in a separate
+   * document so they cannot drift from the code they govern:
+   *   1. Wording-only authority. Facts arrive already evidence-licensed;
+   *      the realizer never contributes a claim, only phrasing.
+   *   2. Corpus-bound training -- no knowledge from outside the corpus.
+   *   3. Small and task-specific, not a general model.
+   *   4. CPU-local inference; no hosted inference endpoint.
+   *   5. Per-language cluster routing rather than one global model.
+   *
+   * Foundation-model and LLM-style runtimes remain banned as the seat of
+   * knowledge or claim authority; this port must never be backed by one.
+   * `tools/no-hidden-model-check.mjs` enforces that statically, failing
+   * the build on the known hosted/local model packages and endpoints.
+   *
+   * Unset by default: absent a port, `generate()` in
+   * language-memory-runtime remains the only realization engine.
    */
   wordingRealizer?: WordingRealizerPort;
   /**
