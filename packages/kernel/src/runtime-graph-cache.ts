@@ -39,34 +39,61 @@ export function runtimeFlag(name: string, fallback: boolean): boolean {
 }
 
 
+/**
+ * Per-item byte cost, memoized on the item itself.
+ *
+ * fitRuntimeGraphSliceToBudget shrinks a slice by ~26% per step until it
+ * fits, and re-measured the WHOLE slice on every step -- about fourteen
+ * full walks for a large graph, each one re-serializing the same node
+ * metadata it had already measured. The cuts are interdependent (edges are
+ * kept by which nodes survive), so the walk itself has to be repeated; what
+ * does not is the arithmetic for an individual item, which is a pure
+ * function of that item. Array.slice preserves object identity, so the same
+ * node object recurs across every step and hits this cache.
+ *
+ * WeakMap, so a retired slice's nodes are collectible: profiling showed
+ * 12.5% of a turn in the garbage collector and this path is a large part of
+ * what feeds it.
+ */
+const nodeByteEstimates = new WeakMap<object, number>();
+
+function memoizedBytes(item: object, compute: () => number): number {
+  const cached = nodeByteEstimates.get(item);
+  if (cached !== undefined) return cached;
+  const bytes = compute();
+  nodeByteEstimates.set(item, bytes);
+  return bytes;
+}
+
 export function estimateRuntimeGraphSliceBytes(value: RuntimeGraphSliceValue): number {
   let bytes = 2048;
   for (const node of value.graph.nodes) {
-    bytes += 280;
-    bytes += String(node.id).length * 2 + String(node.typeId).length * 2;
-    bytes += node.features.reduce((sum, feature) => sum + feature.length * 2 + 24, 0);
-    bytes += node.evidenceIds.reduce((sum, id) => sum + String(id).length * 2 + 16, 0);
-    bytes += estimateJsonBytes(node.representation, 4096) + estimateJsonBytes(node.metadata, 4096);
+    bytes += memoizedBytes(node, () => 280
+      + String(node.id).length * 2 + String(node.typeId).length * 2
+      + node.features.reduce((sum, feature) => sum + feature.length * 2 + 24, 0)
+      + node.evidenceIds.reduce((sum, id) => sum + String(id).length * 2 + 16, 0)
+      + estimateJsonBytes(node.representation, 4096) + estimateJsonBytes(node.metadata, 4096));
   }
   for (const edge of value.graph.edges) {
-    bytes += 260;
-    bytes += String(edge.id).length * 2 + String(edge.source).length * 2 + String(edge.target).length * 2 + String(edge.relationId).length * 2;
-    bytes += edge.evidenceIds.reduce((sum, id) => sum + String(id).length * 2 + 16, 0);
-    bytes += estimateJsonBytes(edge.metadata, 2048);
+    bytes += memoizedBytes(edge, () => 260
+      + String(edge.id).length * 2 + String(edge.source).length * 2 + String(edge.target).length * 2 + String(edge.relationId).length * 2
+      + edge.evidenceIds.reduce((sum, id) => sum + String(id).length * 2 + 16, 0)
+      + estimateJsonBytes(edge.metadata, 2048));
   }
   for (const hyperedge of value.graph.hyperedges) {
-    bytes += 220;
-    bytes += String(hyperedge.id).length * 2 + String(hyperedge.relationId).length * 2;
-    bytes += hyperedge.memberNodeIds.reduce((sum, id) => sum + String(id).length * 2 + 16, 0);
-    bytes += hyperedge.provenanceRefs.reduce((sum, id) => sum + String(id).length * 2 + 16, 0);
-    bytes += estimateJsonBytes(hyperedge.weightVector, 2048) + estimateJsonBytes(hyperedge.temporalScope, 2048);
+    bytes += memoizedBytes(hyperedge, () => 220
+      + String(hyperedge.id).length * 2 + String(hyperedge.relationId).length * 2
+      + hyperedge.memberNodeIds.reduce((sum, id) => sum + String(id).length * 2 + 16, 0)
+      + hyperedge.provenanceRefs.reduce((sum, id) => sum + String(id).length * 2 + 16, 0)
+      + estimateJsonBytes(hyperedge.weightVector, 2048) + estimateJsonBytes(hyperedge.temporalScope, 2048));
   }
   for (const span of value.evidence) {
-    bytes += 360;
-    bytes += String(span.id).length * 2 + String(span.sourceId).length * 2 + String(span.sourceVersionId).length * 2;
-    bytes += (span.text?.length ?? 0) * 2 + (span.textPreview?.length ?? 0) * 2;
-    bytes += span.features.reduce((sum, feature) => sum + feature.length * 2 + 24, 0);
-    bytes += estimateJsonBytes(span.languageHints, 2048) + estimateJsonBytes(span.scriptHints, 2048) + estimateJsonBytes(span.trustVector, 2048) + estimateJsonBytes(span.provenance, 4096);
+    bytes += memoizedBytes(span, () => 360
+      + String(span.id).length * 2 + String(span.sourceId).length * 2 + String(span.sourceVersionId).length * 2
+      + (span.text?.length ?? 0) * 2 + (span.textPreview?.length ?? 0) * 2
+      + span.features.reduce((sum, feature) => sum + feature.length * 2 + 24, 0)
+      + estimateJsonBytes(span.languageHints, 2048) + estimateJsonBytes(span.scriptHints, 2048)
+      + estimateJsonBytes(span.trustVector, 2048) + estimateJsonBytes(span.provenance, 4096));
   }
   bytes += (value.semanticFrameBoundEvidenceIds ?? []).reduce((sum, id) => sum + id.length * 2 + 16, 0);
   return bytes;

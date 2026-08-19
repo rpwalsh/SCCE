@@ -86,6 +86,13 @@ export function createNodePostgresGovernanceProbe(
     ...(options.environment ?? process.env)
   });
   const workspaceRoot = path.resolve(options.workspaceRoot);
+  // Opt back into the historical whole-ledger scan at process start, for an
+  // operator who wants it inline rather than from the scheduled audit.
+  const fullScanOnStart = ["1", "true", "on", "yes"].includes(String(environment.SCCE_GOVERNANCE_FULL_LEDGER_SCAN_ON_START ?? "").trim().toLowerCase());
+  const boundedFirstScanEvents = (() => {
+    const parsed = Number.parseInt(String(environment.SCCE_GOVERNANCE_LEDGER_WINDOW_EVENTS ?? ""), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 4096;
+  })();
   let ledgerCheckpoint: EventLedgerCheckpointState | undefined;
   return {
     async observe(input): Promise<GovernanceObservation> {
@@ -124,7 +131,7 @@ export function createNodePostgresGovernanceProbe(
    */
   async function observeEventLedgerIncremental(): Promise<EventLedgerGovernanceObservation> {
     try {
-      if (!ledgerCheckpoint) return await fullyVerifyEventLedgerAndCheckpoint();
+      if (!ledgerCheckpoint) return await establishLedgerCheckpoint();
 
       const anchorRows = await options.storage.query<{ id: string; t: string | number; hash: string; ledger_hash: string }>(
         `SELECT id, t, hash, ledger_hash FROM ${options.storage.table("events")} WHERE id = $1`,
@@ -204,6 +211,102 @@ export function createNodePostgresGovernanceProbe(
         events: 0
       };
     }
+  }
+
+  /**
+   * First call of a process: establish the checkpoint against a BOUNDED
+   * window instead of reading the whole ledger.
+   *
+   * The full scan this replaces read every column of every row -- including
+   * payload_json, which is the bulk of the table -- so a 173k-event ledger
+   * pulled hundreds of megabytes into memory and hashed it, profiled at 16%
+   * of a turn's wall clock and rising with the ledger forever. The CLI pays
+   * it per turn, because there it is one process per turn.
+   *
+   * It bought less than its cost suggests. `scce db audit` (CLI, plan items
+   * 66/68) already exists as the periodic full audit, and its own comment
+   * states the point exactly: the bounded path "cannot see a tamper before
+   * its checkpoint anchor; this command is the only thing that can". A full
+   * scan at process start only moves that blind spot to the process's start
+   * time -- a tamper a second later is equally invisible to it. Whole-
+   * history assurance is the scheduled audit's job, and paying for a weaker
+   * version of it on the answer path bought latency, not safety.
+   *
+   * What this path is actually responsible for -- detecting tampering with
+   * events appended during this process's lifetime -- is unchanged: the
+   * anchor plus verified suffix chain still covers all of it. The bounded
+   * window verifies recent history too, so an obviously-corrupt tail still
+   * fails closed here rather than waiting for the audit.
+   *
+   * The observation reports mode "bounded_first_scan" and names the audit
+   * command, so a reader of the trace sees the limitation instead of
+   * inferring whole-ledger verification from a bare "verified".
+   */
+  async function establishLedgerCheckpoint(): Promise<EventLedgerGovernanceObservation> {
+    if (fullScanOnStart) return await fullyVerifyEventLedgerAndCheckpoint();
+
+    const windowSize = boundedFirstScanEvents;
+    const tailRows = await options.storage.query<PostgresGovernanceEventRow>(
+      `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+         FROM ${options.storage.table("events")}
+        ORDER BY t DESC, id DESC
+        LIMIT ${windowSize}`
+    );
+    // Sorted here rather than trusting the query's ORDER BY to survive the
+    // driver: the chain check is order-dependent, the window is bounded, and
+    // this matches the full scan's `ORDER BY t ASC, id ASC` exactly.
+    const rows = [...tailRows].sort((left, right) => Number(left.t) - Number(right.t) || left.id.localeCompare(right.id));
+    if (rows.length === 0) {
+      return { available: true, passed: false, reason: "event_ledger_empty", events: 0, evidence: toJsonValue({ mode: "bounded_first_scan", windowEvents: 0 }) };
+    }
+
+    const totalRows = await options.storage.query<{ count: string | number }>(
+      `SELECT count(*) AS count FROM ${options.storage.table("events")}`
+    );
+    const totalEvents = Number(totalRows[0]?.count ?? rows.length);
+
+    // The window's own hash chain must hold. Its first row's ledger hash
+    // cannot be checked without its predecessor, so continuity is verified
+    // from the second row on; the event hashes are all checkable.
+    const eventChain = createAuditEngine().verifyEventChain(rows.map(rowToEvent));
+    const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
+    for (let index = 1; index < rows.length; index++) {
+      const previous = rows[index - 1]!;
+      const row = rows[index]!;
+      const expected = sha256(`${previous.ledger_hash}\u001f${row.hash}`);
+      if (row.ledger_hash !== expected) brokenLedgerHashes.push({ eventId: row.id, expected, observed: row.ledger_hash });
+    }
+    const passed = eventChain.ok && brokenLedgerHashes.length === 0;
+    if (passed) {
+      const last = rows[rows.length - 1]!;
+      ledgerCheckpoint = {
+        anchorEventId: last.id,
+        anchorT: Number(last.t),
+        anchorHash: last.hash,
+        anchorLedgerHash: last.ledger_hash,
+        totalEvents
+      };
+    }
+    return {
+      available: true,
+      passed,
+      reason: passed
+        ? "verified_bounded_window"
+        : !eventChain.ok
+          ? "event_hash_chain_invalid"
+          : "postgres_ledger_hash_chain_invalid",
+      events: totalEvents,
+      latestLedgerHash: rows[rows.length - 1]!.ledger_hash,
+      evidence: toJsonValue({
+        mode: "bounded_first_scan",
+        windowEvents: rows.length,
+        totalEvents,
+        unverifiedOlderEvents: Math.max(0, totalEvents - rows.length),
+        eventChain,
+        brokenLedgerHashes: brokenLedgerHashes.slice(0, 32),
+        wholeHistoryAssurance: "scce db audit"
+      })
+    };
   }
 
   async function fullyVerifyEventLedgerAndCheckpoint(): Promise<EventLedgerGovernanceObservation> {

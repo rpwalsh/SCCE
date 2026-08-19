@@ -60,6 +60,7 @@ function buildLedger(count: number, startAt = 1_000): PostgresGovernanceEventRow
 interface FakeGovernanceStorage {
   storage: { schema: string; table: (name: string) => string; query: <T>(sql: string, params?: unknown[]) => Promise<T[]> };
   fullScanCount: () => number;
+  windowScanCount: () => number;
   setRows: (rows: PostgresGovernanceEventRow[]) => void;
   setPrivileges: (updateAllowed: boolean, deleteAllowed: boolean) => void;
   setTriggerCount: (n: number) => void;
@@ -71,6 +72,7 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
   let deleteAllowed = false;
   let triggerCount = 1;
   let fullScans = 0;
+  let windowScans = 0;
   const sorted = () => [...rows].sort((a, b) => Number(a.t) - Number(b.t) || a.id.localeCompare(b.id));
   return {
     storage: {
@@ -92,11 +94,20 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
           const [anchorId, anchorT] = params as [string, number];
           return sorted().filter(row => Number(row.t) > anchorT || (Number(row.t) === anchorT && row.id > anchorId)) as unknown as T[];
         }
+        if (/count\(\*\)/i.test(sql)) {
+          return [{ count: String(rows.length) }] as T[];
+        }
+        if (sql.includes("ORDER BY t DESC")) {
+          windowScans += 1;
+          const limit = Number(/LIMIT (\d+)/.exec(sql)?.[1] ?? rows.length);
+          return sorted().slice(-limit).reverse() as unknown as T[];
+        }
         fullScans += 1;
         return sorted() as unknown as T[];
       }
     },
     fullScanCount: () => fullScans,
+    windowScanCount: () => windowScans,
     setRows: next => { rows = next; },
     setPrivileges: (u, d) => { updateAllowed = u; deleteAllowed = d; },
     setTriggerCount: n => { triggerCount = n; }
@@ -104,7 +115,13 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
 }
 
 describe("incremental governance ledger verification", () => {
-  it("does a full scan only once, then verifies just the appended suffix on later calls", async () => {
+  it("establishes its checkpoint from a bounded window, never a whole-ledger scan, then verifies just the appended suffix", async () => {
+    // The whole-ledger scan is `scce db audit`'s job (plan items 66/68).
+    // Doing it here too cost O(all events) INCLUDING payload_json on every
+    // process start -- profiled at 16% of a turn -- to move a blind spot
+    // from "before the anchor" to "before process start", which the audit
+    // command's own comment already identifies as the thing only it can
+    // close. The answer path must not read the whole ledger.
     const fake = fakeGovernanceStorage(buildLedger(3));
     const approvals = createApprovalSession();
     const root = await tempRoot();
@@ -112,16 +129,19 @@ describe("incremental governance ledger verification", () => {
 
     const first = await probe.observe({ policy: DEFAULT_POLICY, now: 2_000 });
     expect(first.eventLedger).toMatchObject({ passed: true, events: 3 });
-    expect(fake.fullScanCount()).toBe(1);
+    expect(fake.fullScanCount()).toBe(0);
+    expect(fake.windowScanCount()).toBe(1);
 
     fake.setRows(buildLedger(5));
     const second = await probe.observe({ policy: DEFAULT_POLICY, now: 2_001 });
     expect(second.eventLedger).toMatchObject({ passed: true, events: 5 });
-    expect(fake.fullScanCount()).toBe(1);
+    expect(fake.fullScanCount()).toBe(0);
+    expect(fake.windowScanCount()).toBe(1);
 
     const third = await probe.observe({ policy: DEFAULT_POLICY, now: 2_002 });
     expect(third.eventLedger).toMatchObject({ passed: true, events: 5 });
-    expect(fake.fullScanCount()).toBe(1);
+    expect(fake.fullScanCount()).toBe(0);
+    expect(fake.windowScanCount()).toBe(1);
   });
 
   it("fails closed and forces a rescan when the checkpoint anchor is mutated", async () => {
@@ -132,17 +152,22 @@ describe("incremental governance ledger verification", () => {
     const probe = createNodePostgresGovernanceProbe({ storage: fake.storage as never, approvals, workspaceRoot: root, environment: {} });
 
     await probe.observe({ policy: DEFAULT_POLICY, now: 2_000 });
-    expect(fake.fullScanCount()).toBe(1);
+    expect(fake.fullScanCount()).toBe(0);
+    expect(fake.windowScanCount()).toBe(1);
 
     const tampered = ledger.map((row, index) => index === ledger.length - 1 ? { ...row, hash: "tampered_hash" } : row);
     fake.setRows(tampered);
     const observed = await probe.observe({ policy: DEFAULT_POLICY, now: 2_001 });
     expect(observed.eventLedger).toMatchObject({ passed: false, reason: "checkpoint_anchor_mutated_or_missing" });
 
-    // The failed check discarded the checkpoint, so the next call rescans fully instead of trusting stale state.
+    // The failed check discarded the checkpoint, so the next call re-establishes
+    // one from a fresh bounded window instead of trusting stale state. It still
+    // never reads the whole ledger: closing the pre-anchor blind spot is
+    // `scce db audit`'s job, and a failure here does not change that.
     fake.setRows(ledger);
     await probe.observe({ policy: DEFAULT_POLICY, now: 2_002 });
-    expect(fake.fullScanCount()).toBe(2);
+    expect(fake.fullScanCount()).toBe(0);
+    expect(fake.windowScanCount()).toBe(2);
   });
 
   it("fails closed when a broken ledger hash appears in the newly appended suffix", async () => {
