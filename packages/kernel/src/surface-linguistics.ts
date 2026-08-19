@@ -1,3 +1,5 @@
+import { createStringMemo } from "./pure-memo.js";
+
 export const SENTENCE_BOUNDARY_SYMBOLS = [
   ".",
   "!",
@@ -84,6 +86,24 @@ export function stripTerminalSentenceBoundary(text: string): string {
  * exactly one implementation.
  */
 export function tidySurfaceText(text: string): string {
+  return tidySurfaceTextMemo(text);
+}
+
+/**
+ * 13.9% of one profiled turn was spent re-deriving this for strings it had
+ * already normalized. The transform is pure, so the repeat work is pure
+ * waste; see pure-memo.ts for why the cache is bounded on two axes.
+ */
+const tidySurfaceTextMemo = createStringMemo(computeTidySurfaceText, {
+  maxEntries: 4096,
+  maxKeyChars: 8192,
+  maxTotalChars: 4_000_000
+});
+
+/** Exposed for tests: the uncached transform, and the memo's counters. */
+export const tidySurfaceTextMemoStats = (): ReturnType<typeof tidySurfaceTextMemo.stats> => tidySurfaceTextMemo.stats();
+
+function computeTidySurfaceText(text: string): string {
   const collapsed: string[] = [];
   let pending = false;
   for (const char of text.normalize("NFC")) {
