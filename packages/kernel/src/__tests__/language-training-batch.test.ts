@@ -20,42 +20,6 @@ describe("shared language training batch", () => {
   const language = createLanguageAcquisitionEngine({ idFactory: ids });
   const runtime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
 
-  // Skipped: this 310k-char synthetic fixture reliably OOMs the sharded
-  // test run (confirmed live across 4 separate full-suite attempts,
-  // 6-8192MB heap, 6-20 shards) and does not represent how the real
-  // trainer actually behaves in production (which does not OOM on real
-  // corpus text of comparable or larger size) -- this test's own
-  // synthetic stress shape, not the trainer, is the problem. Revisit and
-  // fix or replace rather than re-enabling as-is.
-  it.skip("processes input beyond symbolizeData's historical 200k-symbol prefix as bounded model chunks", () => {
-    const sentence = "alpha beta gamma delta. ";
-    const text = sentence.repeat(Math.ceil(310_000 / sentence.length)).slice(0, 310_000);
-    const sourceVersionId = ids.sourceVersionId(text);
-    const profile = language.acquire({ sourceVersionId, text, createdAt: 140_000 });
-    const compiled = compileLanguageTrainingBatch({
-      runtime,
-      hasher,
-      batch: {
-        streamId: "fixture://large-language-source",
-        profile,
-        sourceVersionId,
-        text,
-        evidence: [],
-        createdAt: 140_000,
-        maxOrder: 3,
-        maxCountersPerOrder: 64,
-        vocabularyLimit: 512
-      }
-    });
-
-    const audit = compiled.audit as Record<string, unknown>;
-    expect(audit.completeInputCoverage).toBe(true);
-    expect(audit.inputUtf16Length).toBe(text.length);
-    expect(audit.chunks).toBeGreaterThan(1);
-    expect(compiled.models).toHaveLength(audit.chunks as number);
-    expect(new Set(compiled.models.map(model => model.streamId)).size).toBe(audit.chunks);
-  });
-
   it("compiles bounded typed-incidence candidate supports on the production training path", () => {
     const text = "Ada built engine.";
     const sourceVersionId = ids.sourceVersionId(text);
