@@ -1865,10 +1865,21 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row))
     .sort((left, right) =>
-      right.exactTitleMatches - left.exactTitleMatches ||
+      // Existence first, then SPECIFICITY, then RARITY -- never raw match
+      // count descending. Counting title matches was a proxy for "this
+      // anchor is a real document title at all", and it inverts the moment
+      // a generic unit is part of many titles: on a live cloze request the
+      // sentence-initial instruction word "complete" out-titled the actual
+      // subjects ("ada byron building", "zaragoza university") because it
+      // matched dozens of unrelated documents, so the primary anchor -- and
+      // with it the admitted evidence -- locked onto prompt wording instead
+      // of the subject. A subject anchor is precisely the one that matches
+      // FEW documents.
+      (right.exactTitleMatches > 0 ? 1 : 0) - (left.exactTitleMatches > 0 ? 1 : 0) ||
+      sourceAnchorPhraseRank(right.anchor) - sourceAnchorPhraseRank(left.anchor) ||
+      (left.exactTitleMatches || Number.MAX_SAFE_INTEGER) - (right.exactTitleMatches || Number.MAX_SAFE_INTEGER) ||
       right.completeSourceMatches - left.completeSourceMatches ||
       right.supportMass - left.supportMass ||
-      sourceAnchorPhraseRank(right.anchor) - sourceAnchorPhraseRank(left.anchor) ||
       left.anchor.localeCompare(right.anchor)
     );
   return ranked[0]?.anchor;
