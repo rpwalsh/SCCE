@@ -59,6 +59,7 @@ import { counterfactualTracesFromCapabilityPreview } from "./functional-cognitio
 import { runFunctionalCognitionOffProcess } from "./functional-cognition-offload.js";
 import { POLICY_OBJECTIVE_SCHEMA_ID, policyGenomeFromDurable } from "./policy-evolution.js";
 import { unavailableGovernanceObservation } from "./governance-observation.js";
+import { runtimeFlag } from "./runtime-graph-cache.js";
 import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
 import { createJudge } from "./judge.js";
@@ -435,6 +436,7 @@ export function createProductionTurnRuntime(options: {
   } = engines;
 
 
+  const persistAlphaFlowEnabled = runtimeFlag("SCCE_PERSIST_ALPHA_FLOW", false);
   async function persistAlphaRecord(alphaRecord: ReturnType<typeof alphaPersistence.record>, field: TurnResult["field"]): Promise<void> {
     await deps.storage.flowCache.putPpf({
       id: alphaRecord.cacheKey,
@@ -1101,7 +1103,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         payload: toJsonValue({ phase: "graph_activated", operators: operatorActivations })
       })));
       const alphaRecord = alphaRecordFromField({ graph, requestText: input.text, requestFeatures: featureSet(input.text, 1024), field, createdAt: clock.now() });
-      void persistAlphaRecord(alphaRecord, field).catch(error => failures.push(`alpha persistence failed: ${error instanceof Error ? error.message : String(error)}`));
+      // Opt-in only. persistAlphaRecord writes multi-MB ppf_cache and
+      // alpha_traces rows every turn -- measured at 4.3s of one warm turn's
+      // 26.9s database time -- to tables with ZERO readers anywhere in the
+      // repo (getPpf/getAlphaTrace/listAlphaTraces have no callers), under a
+      // key containing requestHash and fieldHash so it could never hit as a
+      // cache either. A cache nothing reads is a log; a mandatory 4.3s log
+      // on the answer path is a defect. The mechanism stays for replay
+      // debugging behind an explicit flag.
+      if (persistAlphaFlowEnabled) {
+        void persistAlphaRecord(alphaRecord, field).catch(error => failures.push(`alpha persistence failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
       const importedPriorTrace = jsonRecord(field.ppfDiagnostics).importedPriorTrace ?? null;
       events.push(await append(eventFactory.create({ episodeId, typeId: "FieldSeeded", payload: { seeds: field.seeds.slice(0, 16) } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "FieldActivated", payload: { active: field.active.slice(0, 24), importedPriorTrace } })));
