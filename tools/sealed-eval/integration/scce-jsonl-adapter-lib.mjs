@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -55,10 +56,28 @@ export function ownerInputForEvaluationQuestion(question, evaluation) {
     ? question.conversationId
     : `sealed:${evaluation.runId}:${question.questionId}`;
   const turnIndex = Number.isInteger(question.turnIndex) && question.turnIndex >= 0 ? question.turnIndex : 0;
+  // Owner directive (2026-08-19): a hard 10s cap per turn. Authored through
+  // the kernel's own runtime-deadline mechanism (runtime-deadline.ts,
+  // "runtime.deadline" shape for direct kernel callers) so every
+  // deadlineCheckpoint in production-turn-runtime becomes load-bearing for
+  // the evaluation too: overruns degrade at stage boundaries into the best
+  // answer available instead of being killed from outside mid-thought.
+  const startedMonotonicMs = performance.now();
+  const turnBudgetMs = 10_000;
+  const deadline = {
+    schema: "scce.runtime_deadline.v1",
+    clock: "node.performance.v1",
+    budgetMs: turnBudgetMs,
+    responseReserveMs: 1_000,
+    startedMonotonicMs,
+    deadlineMonotonicMs: startedMonotonicMs + turnBudgetMs,
+    computeDeadlineMonotonicMs: startedMonotonicMs + turnBudgetMs - 1_000
+  };
   return {
     text: question.prompt,
     // Gold answers and protectedMetadata are deliberately not copied into the runtime boundary.
     metadata: {
+      runtime: { deadline },
       questionId: question.questionId,
       conversationId,
       turnIndex,
