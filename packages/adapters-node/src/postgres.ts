@@ -3352,12 +3352,26 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       // exactly one record instead of zero.
       if (query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0) {
         params.push(Math.floor(query.maxTotalJsonBytes));
+        // The running-byte window used to scan the WHOLE filtered set:
+        // octet_length(...::text) detoasts and serialises every matching
+        // JSONB blob before LIMIT applies, so admitting 6 models read
+        // hundreds of MB (the table is 1087MB) -- the dominant cost of the
+        // 473s hydration a traced creative turn attributed to
+        // candidate.language.hydrate. The budget filter and the count limit
+        // both only ever shrink a prefix of the SAME relevance ordering, so
+        // windowing over the top-LIMIT prefetch is provably identical
+        // output at LIMIT-rows serialisation cost instead of table-wide.
         return (await storage.query<NgramModelRow>(
           `SELECT ranked.* FROM (
              SELECT model.*,
                SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
                ROW_NUMBER() OVER (ORDER BY model.updated_at DESC, model.id ASC) AS relevance_rank
-             FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")}
+             FROM (
+               SELECT * FROM ${storage.table("ngram_models")} model
+               WHERE ${where.join(" AND ")}
+               ORDER BY model.updated_at DESC, model.id ASC
+               LIMIT $${limitParam}
+             ) model
            ) ranked
            WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
            ORDER BY ranked.updated_at DESC, ranked.id ASC LIMIT $${limitParam}`,
@@ -3436,12 +3450,18 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       // whole-novel training, so count limits stopped bounding memory.
       if (query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0) {
         params.push(Math.floor(query.maxTotalJsonBytes));
+        // Same prefetch equivalence as listNgramModels above.
         return (await storage.query<LanguageUnitRow>(
           `SELECT ranked.* FROM (
              SELECT unit.*,
                SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
                ROW_NUMBER() OVER (ORDER BY unit.alpha DESC, unit.id ASC) AS relevance_rank
-             FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")}
+             FROM (
+               SELECT * FROM ${storage.table("language_units")} unit
+               WHERE ${where.join(" AND ")}
+               ORDER BY unit.alpha DESC, unit.id ASC
+               LIMIT $${unitLimitParam}
+             ) unit
            ) ranked
            WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
            ORDER BY ranked.alpha DESC, ranked.id ASC LIMIT $${unitLimitParam}`,
