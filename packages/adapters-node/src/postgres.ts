@@ -2017,6 +2017,22 @@ function graphQueryFeatures(query: GraphSliceQuery): string[] {
  */
 const EVIDENCE_FEATURE_POSTING_CAP = 400;
 
+/**
+ * Whether language_profiles carries the precomputed
+ * referenced_by_language_memory column. Probed once per process: the answer
+ * only changes when a migration runs, and probing per query would reintroduce
+ * a round trip on the very path this exists to shorten.
+ */
+let referencedProfileFlagProbe: Promise<boolean> | undefined;
+
+function referencedProfileFlagAvailable(store: { query<T>(sql: string, params?: unknown[]): Promise<T[]>; schema: string }): Promise<boolean> {
+  referencedProfileFlagProbe ??= store.query<{ present: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='language_profiles' AND column_name='referenced_by_language_memory') AS present`,
+    [store.schema]
+  ).then(rows => rows[0]?.present === true).catch(() => false);
+  return referencedProfileFlagProbe;
+}
+
 function evidenceQueryFeatures(features: readonly string[]): string[] {
   return uniquePostgresStrings(features.filter(isEvidenceRetrievalFeature)).slice(0, 512);
 }
@@ -2799,8 +2815,24 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
       if (typeof query === "object" && query?.surfaceNgrams !== undefined) {
         const ngrams = [...new Set(query.surfaceNgrams.map(value => value.normalize("NFC").toLowerCase()).filter(Boolean))].slice(0, 1024);
         if (!ngrams.length) return [];
+        // These EXISTS answer a question that does not depend on the
+        // request: is this profile referenced by language memory at all?
+        // On the trigram path the prefilter cannot reduce the rows they
+        // run over -- measured, ngram_keys && $1 matches 22390 of 22463
+        // profiles -- so they execute per row across the whole table on
+        // every turn, which is the bulk of runtime.seed.surface_cluster.
+        //
+        // tools/migrations/2026-08-18-language-profile-referenced-flag.sql
+        // precomputes and trigger-maintains that answer as a column. It is
+        // used when present and the correlated form kept when not, so this
+        // is correct both before and after that migration runs. Hoisting
+        // the EXISTS into a MATERIALIZED union instead was measured at
+        // 16148ms against 794ms and rejected: the cost is the repetition,
+        // not the probe.
         const referencedFilter = query.referencedByLanguageMemory
-          ? `AND (
+          ? (await referencedProfileFlagAvailable(storage))
+            ? "AND lp.referenced_by_language_memory"
+            : `AND (
                EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
@@ -2829,8 +2861,24 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
           .map(normalizeSourceLanguageAlias)
           .filter(Boolean))].sort();
         if (!aliasKeys.length) return [];
+        // These EXISTS answer a question that does not depend on the
+        // request: is this profile referenced by language memory at all?
+        // On the trigram path the prefilter cannot reduce the rows they
+        // run over -- measured, ngram_keys && $1 matches 22390 of 22463
+        // profiles -- so they execute per row across the whole table on
+        // every turn, which is the bulk of runtime.seed.surface_cluster.
+        //
+        // tools/migrations/2026-08-18-language-profile-referenced-flag.sql
+        // precomputes and trigger-maintains that answer as a column. It is
+        // used when present and the correlated form kept when not, so this
+        // is correct both before and after that migration runs. Hoisting
+        // the EXISTS into a MATERIALIZED union instead was measured at
+        // 16148ms against 794ms and rejected: the cost is the repetition,
+        // not the probe.
         const referencedFilter = query.referencedByLanguageMemory
-          ? `AND (
+          ? (await referencedProfileFlagAvailable(storage))
+            ? "AND lp.referenced_by_language_memory"
+            : `AND (
                EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
                OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)

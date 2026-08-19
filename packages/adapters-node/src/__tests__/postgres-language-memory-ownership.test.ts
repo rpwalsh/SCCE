@@ -162,12 +162,17 @@ describe("Postgres language-memory ownership queries", () => {
       surfaceNgrams: ["QEL", "ela", "qel"]
     });
 
-    const sql = calls[0]!.sql;
+    // Found by content, not position: a one-off probe for the
+    // referenced_by_language_memory column (tools/migrations) can
+    // precede it. This test is about the profile query's shape.
+    const call = calls.find(entry => entry.sql.includes("lp.ngram_keys"))!;
+    expect(call).toBeDefined();
+    const sql = call.sql;
     expect(sql).toContain("lp.ngram_keys && $1::text[]");
     expect(sql).toContain("FROM unnest(lp.ngram_keys)");
     expect(sql.indexOf("lp.ngram_keys &&")).toBeLessThan(sql.indexOf("LIMIT $2"));
-    expect(calls[0]?.params[0]).toEqual(["qel", "ela"]);
-    expect(calls[0]?.params[1]).toBe(19);
+    expect(call.params[0]).toEqual(["qel", "ela"]);
+    expect(call.params[1]).toBe(19);
   });
 });
 
