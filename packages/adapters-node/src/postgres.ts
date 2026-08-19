@@ -1387,11 +1387,29 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              SELECT feature, feature_ord
              FROM unnest($1::text[]) WITH ORDINALITY AS requested(feature, feature_ord)
            ),
+           -- Postings are capped per feature. Without this the CTE
+           -- materialises every posting of every query term, and a query
+           -- carrying "the" pulls essentially the whole corpus into an
+           -- intermediate that is then COUNT(DISTINCT)-ed twice and joined
+           -- back for lengths: measured at 279817ms for ONE retrieval on
+           -- 23k spans.
+           --
+           -- The cap is not just a speed knob, it is also the right ranking
+           -- behaviour. A term present in more documents than the cap is not
+           -- discriminative, and capping its posting list drives its df to
+           -- the ceiling and its IDF toward zero, which is exactly where a
+           -- stopword belongs. Selective terms have shorter posting lists
+           -- than the cap and are unaffected, so the terms that decide the
+           -- ranking are the ones carried in full.
            feature_hits AS (
-             SELECT anchor_index.evidence_id AS id, requested.feature, requested.feature_ord
+             SELECT postings.evidence_id AS id, requested.feature, requested.feature_ord
              FROM requested_features requested
-             JOIN ${storage.table("evidence_anchor_index")} anchor_index
-               ON anchor_index.features @> ARRAY[requested.feature]::text[]
+             CROSS JOIN LATERAL (
+               SELECT anchor_index.evidence_id
+               FROM ${storage.table("evidence_anchor_index")} anchor_index
+               WHERE anchor_index.features @> ARRAY[requested.feature]::text[]
+               LIMIT ${EVIDENCE_FEATURE_POSTING_CAP}
+             ) postings
            ),
            candidate_count AS (SELECT GREATEST(1, COUNT(DISTINCT id))::float8 AS n FROM feature_hits),
            feature_df AS (SELECT feature, COUNT(DISTINCT id)::float8 AS df FROM feature_hits GROUP BY feature),
@@ -1990,6 +2008,14 @@ function graphQueryFeatures(query: GraphSliceQuery): string[] {
   }
   return [...features];
 }
+
+/**
+ * Maximum postings read per query feature during BM25 candidate generation.
+ * Bounds retrieval work at (query features x this) rather than the size of
+ * the largest posting list, and simultaneously floors the IDF of any term
+ * common enough to hit it.
+ */
+const EVIDENCE_FEATURE_POSTING_CAP = 400;
 
 function evidenceQueryFeatures(features: readonly string[]): string[] {
   return uniquePostgresStrings(features.filter(isEvidenceRetrievalFeature)).slice(0, 512);
