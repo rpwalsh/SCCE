@@ -135,4 +135,54 @@ describe("compositional per-claim force (Valid(Y) = ∧i Valid(yi | force(yi)))"
     expect(decision.force).not.toBe("insufficient_support");
     expect(decision.unsupportedClaimIds).toEqual([]);
   });
+  it("requested invention is not vetoed by proof-layer contradiction against the factual corpus", () => {
+    // Live defect: a 4.4KB invented story under explicit creative authority
+    // carried one grounded claim and one invented claim -- every claim
+    // passing its own bar, unsupportedClaimIds empty -- and was still
+    // labeled insufficient_support by the contradiction veto, because
+    // fiction diverges from the corpus by design. The sealed adapter maps
+    // that label to status "abstained", so the mislabel converts delivered
+    // creative work into a refusal.
+    const claims: AssistantForceClaim[] = [
+      { id: "claim.grounded", basis: "direct_evidence", evidenceIds: ["evidence:1"] },
+      { id: "claim.invented", basis: "invented", evidenceIds: [] }
+    ];
+    const decision = assistantForceDecision({
+      requestedAuthority: "creative",
+      contradiction: 0.9,
+      selectedProposal: { id: "proposal.story", claims }
+    });
+    expect(decision.force).toBe("creative_answer");
+    expect(decision.unsupportedClaimIds).toEqual([]);
+    expect(decision.reasonIds).toContain("assistant_force.proposal.contradiction_noted_not_gating_creative");
+  });
+
+  it("contradiction still vetoes the same composition without explicit creative authority", () => {
+    const claims: AssistantForceClaim[] = [
+      { id: "claim.grounded", basis: "direct_evidence", evidenceIds: ["evidence:1"] },
+      { id: "claim.invented", basis: "invented", evidenceIds: [] }
+    ];
+    const decision = assistantForceDecision({
+      requestedAuthority: "factual",
+      contradiction: 0.9,
+      selectedProposal: { id: "proposal.story", claims }
+    });
+    expect(decision.force).toBe("insufficient_support");
+    expect(decision.reasonIds).toContain("assistant_force.contradiction_pressure");
+  });
+
+  it("requested invention still never masks an unsupported factual sub-claim, contradiction or not", () => {
+    const claims: AssistantForceClaim[] = [
+      { id: "claim.factual.unsupported", basis: "direct_evidence", evidenceIds: [] },
+      { id: "claim.invented", basis: "invented", evidenceIds: [] }
+    ];
+    const decision = assistantForceDecision({
+      requestedAuthority: "creative",
+      contradiction: 0.9,
+      selectedProposal: { id: "proposal.mixed", claims }
+    });
+    expect(decision.force).toBe("insufficient_support");
+    expect(decision.unsupportedClaimIds).toEqual(["claim.factual.unsupported"]);
+  });
+
 });
