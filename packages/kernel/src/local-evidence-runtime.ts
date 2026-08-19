@@ -1477,34 +1477,13 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 }
 
 
-/**
- * Pair-memoized: this runs pairwise between a request's units and every
- * surface unit of every candidate sentence across every admitted span, and
- * the pairs repeat massively -- the same ~10 request units against a
- * recurring surface vocabulary. Profiled at 1.8s of a 6.9s steady-state
- * turn (boundedEditDistance 17.1% + this wrapper 8.8%) recomputing answers
- * it had already computed. Bounded exactly like the other pure memos.
- */
-const requestUnitMatchMemo = new Map<string, boolean>();
-const REQUEST_UNIT_MATCH_MEMO_MAX = 200_000;
-
  function requestUnitMatchesSurface(unit: string, surfaceUnit: string): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
-  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${unit}${surfaceUnit}` : undefined;
-  if (memoKey !== undefined) {
-    const cached = requestUnitMatchMemo.get(memoKey);
-    if (cached !== undefined) return cached;
-  }
   const minLength = Math.min(unit.length, surfaceUnit.length);
   const maxLength = Math.max(unit.length, surfaceUnit.length);
   const prefixCompatible = (unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && minLength / Math.max(1, maxLength) >= 0.72;
-  const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
-  if (memoKey !== undefined) {
-    if (requestUnitMatchMemo.size >= REQUEST_UNIT_MATCH_MEMO_MAX) requestUnitMatchMemo.clear();
-    requestUnitMatchMemo.set(memoKey, value);
-  }
-  return value;
+  return prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
 }
 
 
@@ -1721,33 +1700,13 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     semanticFrameBoundEvidenceIds
   );
   if (!anchored.required) return anchored;
-  // Admission matches against SPECIFIC anchors when any exist. The full
-  // anchor list includes single generic units and instruction-derived
-  // phrases; matching against all of them admitted 39K-130K-char spans on
-  // unrelated topics (live trace: an Audi article admitted for a Zaragoza
-  // University question through generic-anchor title matches), which then
-  // dominated both downstream selection (wrong answers) and turn latency
-  // (sentence-splitting and unit-matching over megabytes of wrong text).
-  // Single-unit anchor requests have no multi-unit anchors and keep the
-  // previous behavior via the fallback.
-  const specificAnchors = anchored.anchors.filter(anchor =>
-    splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
-  const admissionAnchors = specificAnchors.length ? specificAnchors : anchored.anchors;
-  const admitted = anchored.evidence.filter(span => (
-    evidenceExactSourceAnchorMatches(span, admissionAnchors)
-    || evidenceTitleDistinctAnchorMatches(span, admissionAnchors)
-    || semanticFrameBoundEvidenceIds.has(String(span.id))
-  ));
-  // Passage-sized spans rank ahead of oversized parents at equal standing:
-  // after the 2026-08-18/19 re-chunk, the same content exists as focused
-  // 4KB children whose text downstream stages can actually verify against,
-  // while the whole-article parents remain only as graph linkage. Stable:
-  // relative order within each size class is preserved.
-  const passages = admitted.filter(span => [...String(span.text ?? "")].length <= 4096);
-  const oversized = admitted.filter(span => [...String(span.text ?? "")].length > 4096);
   return {
     ...anchored,
-    evidence: [...passages, ...oversized]
+    evidence: anchored.evidence.filter(span => (
+      evidenceExactSourceAnchorMatches(span, anchored.anchors)
+      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
+      || semanticFrameBoundEvidenceIds.has(String(span.id))
+    ))
   };
 }
 
