@@ -112,20 +112,44 @@ export function surfaceEntityRuns(text: string): string[] {
 
 export function boundedEditDistance(left: string, right: string, maxDistance: number): number {
   if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
-  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  // Banded Levenshtein (Ukkonen). A cell (i, j) with |i - j| > maxDistance
+  // can never hold a value <= maxDistance, so only the diagonal band of
+  // width 2*maxDistance+1 is computed: O(n * maxDistance) instead of the
+  // full O(n * m) row this previously filled. Profiled at 8.7% of a turn's
+  // CPU via requestUnitSimilarity, which calls this pairwise in a loop.
+  //
+  // Values are clamped at maxDistance+1. That preserves exactness for every
+  // result <= maxDistance (costs along an optimal DP path are
+  // non-decreasing, so a path to a small final value never crosses a
+  // clamped cell) and collapses everything larger into the single
+  // "too far" answer the callers already treat as a miss.
+  const cap = maxDistance + 1;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => Math.min(index, cap));
   for (let i = 1; i <= left.length; i++) {
-    const current = [i];
-    let rowMin = i;
-    for (let j = 1; j <= right.length; j++) {
+    const current: number[] = new Array(right.length + 1).fill(cap);
+    const from = Math.max(1, i - maxDistance);
+    const to = Math.min(right.length, i + maxDistance);
+    if (from === 1) current[0] = Math.min(i, cap);
+    // Column 0 is a live cell of the row (deleting all of `left` so far);
+    // seeding rowMin from cap alone made a row whose band lies entirely
+    // past `right`'s end look exhausted and return early -- caught by the
+    // oracle test on ("b", "", 1), where the true distance is 1.
+    let rowMin = from === 1 ? (current[0] ?? cap) : cap;
+    for (let j = from; j <= to; j++) {
       const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-      const value = Math.min((previous[j] ?? 0) + 1, (current[j - 1] ?? 0) + 1, (previous[j - 1] ?? 0) + cost);
+      const value = Math.min(
+        (previous[j] ?? cap) + 1,
+        (current[j - 1] ?? cap) + 1,
+        (previous[j - 1] ?? cap) + cost,
+        cap
+      );
       current[j] = value;
       rowMin = Math.min(rowMin, value);
     }
-    if (rowMin > maxDistance) return maxDistance + 1;
+    if (rowMin > maxDistance) return cap;
     previous = current;
   }
-  return previous[right.length] ?? maxDistance + 1;
+  return Math.min(previous[right.length] ?? cap, cap);
 }
 
 
