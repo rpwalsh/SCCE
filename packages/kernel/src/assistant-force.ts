@@ -116,11 +116,14 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
     // decides the force here.
     force = "translation_answer";
     reasonIds.push("assistant_force.requested_translation_authority");
-  } else if (contradicted) {
-    // Contradiction pressure outranks a merely-incidental creative signal
-    // too: an "invented" epistemic force paired with high contradiction
-    // means the claim is unsupportable, not that it should be waved
-    // through as intentionally creative output.
+  } else if (contradicted && input.requestedAuthority !== "creative") {
+    // Contradiction pressure outranks a merely-incidental creative signal:
+    // an "invented" epistemic force paired with high contradiction means
+    // the claim is unsupportable, not that it should be waved through as
+    // intentionally creative output. EXPLICITLY REQUESTED creative
+    // authority is different -- the user asked for invention, invention
+    // diverges from the corpus by design, and the proposal path above
+    // makes the same distinction.
     force = "insufficient_support";
     reasonIds.push("assistant_force.contradiction_pressure");
   } else if (creative) {
@@ -214,15 +217,26 @@ function proposalForceDecision(input: {
   if (invalidActionClaims.length > 0) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.action_result_without_durable_receipt");
+  } else if (input.input.requestedAuthority === "creative" && inventedClaims.length > 0 && unsupportedClaims.length === 0) {
+    // Requested invention outranks contradiction pressure, never per-claim
+    // failure. An invented narrative is EXPECTED to diverge from the
+    // factual corpus; proof-layer contradiction against fiction is a
+    // category error, and it was flipping 4KB of requested creative prose
+    // to insufficient_support (live audit: reasonIds
+    // ["assistant_force.contradiction_pressure"], unsupportedClaimIds [],
+    // every claim passing its own bar). Per-unit honesty is intact: a
+    // factual sub-claim that fails ITS bar still vetoes through
+    // unsupportedClaims below, invalid action receipts still veto above,
+    // and the contradiction mass stays in the audit for the trace.
+    force = "creative_answer";
+    reasonIds.push("assistant_force.proposal.requested_invention");
+    if (input.contradicted) reasonIds.push("assistant_force.proposal.contradiction_noted_not_gating_creative");
   } else if (input.contradicted) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.contradiction_pressure");
   } else if (unsupportedClaims.length > 0) {
     force = "insufficient_support";
     reasonIds.push("assistant_force.proposal.unsupported_claim_among_composed_units");
-  } else if (input.input.requestedAuthority === "creative" && inventedClaims.length > 0) {
-    force = "creative_answer";
-    reasonIds.push("assistant_force.proposal.requested_invention");
   } else {
     force = selectProposalForce(claimDecisions);
     reasonIds.push(reasonForProposalForce(force));

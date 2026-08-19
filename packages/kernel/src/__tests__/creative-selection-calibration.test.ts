@@ -89,7 +89,7 @@ describe("creative candidate selection and preference calibration", () => {
     expect(decision.scores.find(row => row.candidateId === decision.selected.id)?.reasons).toContain("creative-authority-fit");
   });
 
-  it("keeps explicit creative and translation authority ahead of direct evidence while contradiction remains first", () => {
+  it("keeps explicit creative and translation authority ahead of direct evidence; contradiction no longer gates requested invention", () => {
     const direct = "evidence.direct" as EvidenceId;
     expect(assistantForceDecision({
       requestedAuthority: "creative",
@@ -105,8 +105,21 @@ describe("creative candidate selection and preference calibration", () => {
       evidenceIds: [direct],
       directEvidenceIds: [direct]
     }).force).toBe("translation_answer");
+    // Deliberate doctrine change (2026-08-19): under EXPLICIT creative
+    // authority, proof-layer contradiction against the factual corpus no
+    // longer converts requested invention into a refusal -- fiction
+    // diverges from the corpus by design, and the mislabel was turning
+    // delivered 4KB stories into adapter-level "abstained". Contradiction
+    // still gates every non-creative authority (asserted below), and
+    // incidental creative signals without the requested authority remain
+    // gated (assistant-force.ts flat path keeps that branch).
     expect(assistantForceDecision({
       requestedAuthority: "creative",
+      epistemicForce: "invented",
+      contradiction: 0.9
+    }).force).toBe("creative_answer");
+    expect(assistantForceDecision({
+      requestedAuthority: "factual",
       epistemicForce: "invented",
       contradiction: 0.9
     }).force).toBe("insufficient_support");
