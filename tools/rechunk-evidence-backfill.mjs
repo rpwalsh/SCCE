@@ -67,7 +67,7 @@ let lastId = "";
 while (totals.parents < LIMIT) {
   const { rows } = await client.query(
     `SELECT id, source_id, source_version_id, content_hash, media_type, byte_start, char_start,
-            text_content, trust_vector, provenance_json, information_label, observed_at
+            text_content, trust_vector, provenance_json, information_label, observed_at, status, alpha
        FROM ${t("evidence_spans")}
       WHERE status='promoted' AND octet_length(text_content) > $1 AND id > $2
       ORDER BY id ASC LIMIT $3`,
@@ -112,6 +112,30 @@ while (totals.parents < LIMIT) {
         const byteEnd = Number(parent.byte_start) + Number(child.byteEnd);
         const charStart = Number(parent.char_start) + Number(child.charStart);
         const charEnd = Number(parent.char_start) + Number(child.charEnd);
+        // A subdivision of admitted content inherits its parent's admission
+        // outcome; it never earns a better one. Real ingestion runs
+        // admission.decide() per source and can lower a span's alpha or
+        // quarantine it outright (ingestion-runtime.ts), and this job
+        // deliberately does not re-run that gate -- the parent already passed
+        // it and the child is a strict subset of the same bytes. So the
+        // parent's verdict is inherited instead of recomputed:
+        //
+        //   status: taken from the parent, never hardcoded "promoted"
+        //   alpha:  clamped to the parent's, so a lowered-alpha source cannot
+        //           produce children scored higher than it was
+        //   trust:  the parent's admission/action audit is carried over, so a
+        //           child's provenance is not thinner than its parent's
+        //
+        // Measured before this was added: 642 of 4374 children (15%) had a
+        // higher alpha than the parent they were cut from.
+        const childAlpha = Math.min(Number(child.alpha), Number(parent.alpha));
+        const parentTrust = parent.trust_vector && typeof parent.trust_vector === "object" ? parent.trust_vector : {};
+        const childTrust = child.trustVector && typeof child.trustVector === "object" ? child.trustVector : {};
+        const childTrustVector = { ...childTrust };
+        for (const key of ["admission", "action", "sourceTrust", "forceClass"]) {
+          if (parentTrust[key] !== undefined && childTrustVector[key] === undefined) childTrustVector[key] = parentTrust[key];
+        }
+
         // evidence_spans.content_hash is a foreign key into the
         // content-addressed blob store, so a child's bytes must exist there
         // before the span referencing them can.
@@ -134,8 +158,8 @@ while (totals.parents < LIMIT) {
             String(child.contentHash), parent.media_type, byteStart, byteEnd, charStart, charEnd,
             String(child.textPreview ?? child.text).slice(0, 2000), child.text,
             child.languageHints ?? {}, child.scriptHints ?? {},
-            child.trustVector ?? parent.trust_vector ?? {}, parent.provenance_json ?? {},
-            child.features, "promoted", Number(child.alpha), parent.observed_at,
+            childTrustVector, parent.provenance_json ?? {},
+            child.features, parent.status, childAlpha, parent.observed_at,
             parent.information_label
           ]
         );
