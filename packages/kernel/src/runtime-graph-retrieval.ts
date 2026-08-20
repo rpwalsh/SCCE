@@ -7,6 +7,7 @@ import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import {
   evidenceForRequest,
   evidenceTitleInitialismMatches,
+  orderedSequenceUnits,
   promotedSessionEvidence,
   requestInitialismCandidates,
   requestNeedsSourceAnchoredEvidence,
@@ -15,6 +16,7 @@ import {
   sourceAnchoredEvidenceForRequest,
   sourceEvidenceAnchorsForRequest,
   sourceIdentityAdmissibleEvidenceForRequest,
+  spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
   trailingInitialismTokensForAnchor
 } from "./local-evidence-runtime.js";
@@ -211,10 +213,13 @@ export function createRuntimeGraphRetrieval(options: {
       }
     }
     while (sourceAnchorEvidenceCache.size > sourceAnchorEvidenceCacheMaxEntries) {
-      const oldest = [...sourceAnchorEvidenceCache.entries()]
-        .sort((left, right) => left[1].loadedAt - right[1].loadedAt)[0];
-      if (!oldest) break;
-      sourceAnchorEvidenceCache.delete(oldest[0]);
+      let oldestKey: string | undefined;
+      let oldestAt = Number.POSITIVE_INFINITY;
+      for (const [key, entry] of sourceAnchorEvidenceCache) {
+        if (entry.loadedAt < oldestAt) { oldestAt = entry.loadedAt; oldestKey = key; }
+      }
+      if (oldestKey === undefined) break;
+      sourceAnchorEvidenceCache.delete(oldestKey);
     }
     return boundedIds
       .map(id => selected.get(id))
@@ -246,11 +251,19 @@ export function createRuntimeGraphRetrieval(options: {
 
   function evictGraphSliceCache(): void {
     while (graphSliceCache.size > graphSliceCacheMaxEntries || graphSliceCacheBytes > graphSliceCacheMaxBytes) {
-      const victim = [...graphSliceCache.entries()]
-        .sort((left, right) => left[1].accessedAt - right[1].accessedAt || left[1].hits - right[1].hits)[0];
-      if (!victim) return;
-      graphSliceCache.delete(victim[0]);
-      graphSliceCacheBytes -= victim[1].bytes;
+      let victimKey: string | undefined;
+      let victimEntry: GraphSliceCacheEntry | undefined;
+      for (const [key, entry] of graphSliceCache) {
+        if (!victimEntry
+          || entry.accessedAt < victimEntry.accessedAt
+          || (entry.accessedAt === victimEntry.accessedAt && entry.hits < victimEntry.hits)) {
+          victimKey = key;
+          victimEntry = entry;
+        }
+      }
+      if (victimKey === undefined || !victimEntry) return;
+      graphSliceCache.delete(victimKey);
+      graphSliceCacheBytes -= victimEntry.bytes;
     }
   }
 
@@ -342,6 +355,25 @@ export function createRuntimeGraphRetrieval(options: {
         }
       });
       const anchoredEvidence = anchoredSelection.evidence;
+      // Near-duplicate fast path: the duplicated sentence's span IS the
+      // answer source; the radius-1 graph fetch and hot-neighborhood load
+      // buy nothing and cost most of the turn's 5s graphSlice budget breach.
+      const fastPathSequence = orderedSequenceUnits(text);
+      const nearDuplicateEvidence = fastPathSequence.length >= 4
+        ? anchoredEvidence.filter(span => spanContainsRequestNearDuplicateSentence(span, fastPathSequence))
+        : [];
+      if (nearDuplicateEvidence.length) {
+        kernelTrace({
+          stage: "graph.resolve.near_duplicate_fast_path",
+          label: "kernel.graphForText",
+          counts: { evidence: nearDuplicateEvidence.length }
+        });
+        return cacheGraphSlice(cacheKey, emptyRuntimeGraphSlice(
+          { evidenceIds: nearDuplicateEvidence.map(span => span.id), features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 },
+          mergeEvidenceSpans(nearDuplicateEvidence),
+          anchoredSelection.semanticFrameBoundEvidenceIds
+        ), "postgres");
+      }
       if (!anchoredEvidence.length) {
         return cacheGraphSlice(cacheKey, { graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [], features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 } }, evidence: [], semanticFrameBoundEvidenceIds: [] }, "postgres");
       }
