@@ -898,6 +898,15 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         realizedCreativeCandidate ??
         (energySelected && !energySelected.forbiddenHits.length && !energySelectedIsBlockedKernelCandidate ? energySelected : undefined);
       const selectedEnergy = energyRows.find(row => row.candidate.id === selected?.id)?.result;
+      if (typeof process !== "undefined" && process.env?.SCCE_DEBUG_MOUTH) {
+        console.error("[mouth-select]", JSON.stringify({
+          winner: selected ? { id: String(selected.id).slice(0, 60), kind: (selected as { kind?: string }).kind, text: String(selected.text ?? "").slice(0, 90) } : null,
+          planner: plannerSelectedCandidate ? String(plannerSelectedCandidate.id).slice(0, 50) : null,
+          semanticGraph: semanticGraphCandidate ? String(semanticGraphCandidate.id).slice(0, 50) : null,
+          structured: structuredConstructCandidate ? String(structuredConstructCandidate.id).slice(0, 50) : null,
+          proofBoundary: proofBoundarySelectedCandidate ? String(proofBoundarySelectedCandidate.id).slice(0, 50) : null
+        }));
+      }
       markMouthPhase("candidate_selection");
       const selectedBoundSourceSurface = Boolean(
         selected &&

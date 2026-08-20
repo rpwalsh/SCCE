@@ -677,22 +677,23 @@ export function createRuntimeGraphRetrieval(options: {
     // when a famous anchor dominates the top-4 groups, the discriminative
     // pairs ("rosalind|franklin") never got searched and the near-duplicate
     // span never entered the pool.
+    // Extras exist for near-duplicate recall; question-shaped requests keep
+    // their bounded query budget.
+    if (!requestSentenceSequences(text).length) return groups;
     const covered = new Set(groups.flat());
-    const sequence = orderedSequenceUnits(text);
-    const requestBigrams: Array<{ feature: string; weight: number }> = [];
-    for (let index = 0; index < sequence.length - 1; index++) {
-      const left = sequence[index] ?? "";
-      const right = sequence[index + 1] ?? "";
-      if (!left || !right || left === right) continue;
-      if (genericQuestionSignal(left) || genericQuestionSignal(right)) continue;
-      const feature = `anchor:bi:${left}|${right}`;
-      if (covered.has(feature)) continue;
-      requestBigrams.push({ feature, weight: left.length + right.length });
-    }
-    const extras = uniqueKernelStrings(requestBigrams
+    // Same generator as index time: filtered-sequence bigrams do not exist
+    // in the anchor index, so extras built from them searched for nothing.
+    const requestBigrams = anchorFeatureSet(text, 96)
+      .filter(feature => feature.startsWith("anchor:bi:"))
+      .filter(feature => !covered.has(feature))
+      .filter(feature => {
+        const units = feature.slice("anchor:bi:".length).split("|");
+        return units.every(unit => unit.length >= 3 && !genericQuestionSignal(unit));
+      })
+      .map(feature => ({ feature, weight: feature.length }))
       .sort((a, b) => b.weight - a.weight)
-      .map(item => item.feature))
-      .slice(0, 4);
+      .map(item => item.feature);
+    const extras = uniqueKernelStrings(requestBigrams).slice(0, 4);
     if (extras.length >= 2) groups.push(extras);
     return groups;
   }
