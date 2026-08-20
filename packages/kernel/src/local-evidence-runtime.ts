@@ -430,22 +430,24 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // with its development context, not this function's single
   // highest-scoring sentence. Defer to that path instead of returning a
   // single generic sentence that happens to score well here.
-  if (temporalCounterexampleExpected(input.requestText, promoted)) return undefined;
-  const anchored = sourceAnchoredEvidenceForRequest(
+  // A near-duplicate request is a quotation with a hole, not a temporal
+  // question: the anachronism check hijacked every year-hole cloze.
+  const proposeSequence = orderedSequenceUnits(input.requestText);
+  const proposeNearDuplicate = proposeSequence.length >= 4
+    && promoted.some(span => spanContainsRequestNearDuplicateSentence(span, proposeSequence));
+  if (!proposeNearDuplicate && temporalCounterexampleExpected(input.requestText, promoted)) return undefined;
+  // Single admission authority; a private copy of this filter silently
+  // dropped content-admitted (near-duplicate) spans at the answer stage.
+  const anchored = sourceIdentityAdmissibleEvidenceForRequest(
     input.requestText,
     promoted,
-    input.semanticFrameBoundEvidenceIds
+    input.semanticFrameBoundEvidenceIds ?? new Set()
   );
-  const evidence = anchored.required
-    ? anchored.evidence.filter(span => (
-      evidenceExactSourceAnchorMatches(span, anchored.anchors)
-      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
-      || input.semanticFrameBoundEvidenceIds?.has(String(span.id))
-    ))
-    : promoted;
+  const evidence = anchored.required ? anchored.evidence : promoted;
   if (!evidence.length) return undefined;
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
+  const requestSequenceUnits = orderedSequenceUnits(input.requestText);
   // The lead boost below exists so a deep-article sentence that merely
   // repeats the topic name several times can't outrank the article's own
   // opening definition -- but as an unconditional flat boost it also made
@@ -547,22 +549,30 @@ export function proposeSourceExactEvidenceAnswer(input: {
       // "as Captain James T. Kirk in action, ..." outranked the article's
       // real cast sentence). Uncased scripts are exempt by construction.
       const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
+      // Same near-duplicate dominance as bestEvidenceSentences.
+      const nearDuplicateFraction = surfaceRequestOrderedAdjacentPairFraction(sentence, requestSequenceUnits, titleUnits);
+      const nearDuplicateBoost = nearDuplicateFraction >= 0.5 && !promotedSessionEvidence(span)
+        ? 12 * nearDuplicateFraction
+        : 0;
       return {
         span,
         sentence,
         index,
+        nearDuplicate: nearDuplicateBoost > 0,
         score: unitOverlap * 0.92
           + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * 0.35
           + anchorBoost
           + titleLeadBoost
           + sourceAffinityBoost
+          + nearDuplicateBoost
           + Math.max(0, 0.16 - index * 0.018)
           - fastAnswerLongSentencePenalty(sentence)
           - fragmentPenalty
       };
     });
   })
-    .filter(row => row.sentence.length >= 24)
+    // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
+    .filter(row => row.sentence.length >= 24 || row.nearDuplicate)
     .sort((left, right) => right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = rows[0];
   if (!selected) return undefined;
@@ -652,19 +662,20 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (!evidence.length) return undefined;
   const temporalEvidence = (input.temporalEvidence ?? evidence)
     .filter(span => span.status === "promoted" || promotedSessionEvidence(span));
-  const counterexample = temporalCounterexampleAnswerPlan(input.requestText, temporalEvidence);
-  if (counterexample) return counterexample;
-  if (temporalCounterexampleExpected(input.requestText, temporalEvidence)) return undefined;
+  // Same near-duplicate exemption as proposeSourceExactEvidenceAnswer.
+  const planSequence = orderedSequenceUnits(input.requestText);
+  const planNearDuplicate = planSequence.length >= 4
+    && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, planSequence));
+  if (!planNearDuplicate) {
+    const counterexample = temporalCounterexampleAnswerPlan(input.requestText, temporalEvidence);
+    if (counterexample) return counterexample;
+    if (temporalCounterexampleExpected(input.requestText, temporalEvidence)) return undefined;
+  }
   const collection = collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
   if (collection) return collection;
-  const anchored = sourceAnchoredEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds);
-  const answerAnchoredEvidence = anchored.required
-    ? anchored.evidence.filter(span => (
-      evidenceExactSourceAnchorMatches(span, anchored.anchors)
-      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
-      || input.semanticFrameBoundEvidenceIds?.has(String(span.id))
-    ))
-    : anchored.evidence;
+  // Single admission authority (same fix as proposeSourceExactEvidenceAnswer).
+  const anchored = sourceIdentityAdmissibleEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds ?? new Set());
+  const answerAnchoredEvidence = anchored.evidence;
   const explicitContextEvidence = input.explicitContextEvidenceIds?.size
     ? evidence.filter(span => input.explicitContextEvidenceIds?.has(String(span.id)))
     : [];
@@ -1486,6 +1497,19 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
 const requestUnitMatchMemo = new Map<string, boolean>();
 const REQUEST_UNIT_MATCH_MEMO_MAX = 200_000;
 
+// Corpus sentences are stable strings re-tokenized by several scorers per turn.
+const surfaceUnitsMemo = new Map<string, string[]>();
+const SURFACE_UNITS_MEMO_MAX = 100_000;
+
+ function memoizedSurfaceUnits(surface: string): string[] {
+  const cached = surfaceUnitsMemo.get(surface);
+  if (cached) return cached;
+  const units = splitPriorUnits(normalizePriorKey(surface));
+  if (surfaceUnitsMemo.size >= SURFACE_UNITS_MEMO_MAX) surfaceUnitsMemo.clear();
+  surfaceUnitsMemo.set(surface, units);
+  return units;
+}
+
  function requestUnitMatchesSurface(unit: string, surfaceUnit: string): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
@@ -1574,7 +1598,7 @@ const REQUEST_UNIT_MATCH_MEMO_MAX = 200_000;
 
 
  function requestUnitOverlapForSurface(surface: string, requestUnits: ReadonlySet<string>): number {
-  const surfaceUnits = splitPriorUnits(normalizePriorKey(surface)).filter(unit => unit.length >= 4);
+  const surfaceUnits = memoizedSurfaceUnits(surface).filter(unit => unit.length >= 4);
   let overlap = 0;
   for (const unit of requestUnits) {
     if (surfaceUnits.some(surfaceUnit => requestUnitMatchesSurface(unit, surfaceUnit))) overlap++;
@@ -1616,11 +1640,26 @@ export function sourceAnchoredEvidenceForRequest(
 ): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   const initialismTokens = requestInitialismCandidates(requestText, anchors);
+  // The initialism must refine among anchor-matched titles, not admit any
+  // title with matching initials ("...visit Babbage as often..." admitted
+  // Arthur Schopenhauer and Antoun Saad via "as").
   const initialismEvidence = initialismTokens.length
-    ? evidence.filter(span => evidenceTitleInitialismMatches(span, initialismTokens))
+    ? evidence.filter(span => evidenceTitleInitialismMatches(span, initialismTokens)
+      && (evidenceTitleDistinctAnchorMatches(span, anchors) || evidenceExactSourceAnchorMatches(span, anchors)))
     : [];
   if (initialismEvidence.length) {
     return { required: true, anchors: uniqueKernelStrings(anchors), evidence: initialismEvidence };
+  }
+  // Near-duplicate (cloze/quotation) requests: the span containing the
+  // duplicated sentence IS the source identity; anchor heuristics are
+  // question-shaped machinery and pick wrong-topic spans here.
+  const nearDuplicateSequence = orderedSequenceUnits(requestText);
+  if (nearDuplicateSequence.length >= 4) {
+    const nearDuplicates = evidence.filter(span =>
+      spanContainsRequestNearDuplicateSentence(span, nearDuplicateSequence));
+    if (nearDuplicates.length) {
+      return { required: true, anchors: uniqueKernelStrings(anchors), evidence: nearDuplicates };
+    }
   }
   if (!anchors.length) return { required: false, anchors, evidence: [...evidence] };
   const durableEvidencePresent = evidence.some(span => !String(span.id).startsWith("evidence_session_"));
@@ -1719,15 +1758,38 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     semanticFrameBoundEvidenceIds
   );
   if (!anchored.required) return anchored;
+  // Generic single-unit anchors admitted unrelated articles by title; match
+  // multi-unit anchors when any exist.
+  const specificAnchors = anchored.anchors.filter(anchor =>
+    splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
+  const admissionAnchors = specificAnchors.length ? specificAnchors : anchored.anchors;
+  // Content admits only in the near-duplicate regime, so cross-title
+  // mentions still stay out for question-shaped requests.
+  const requestSequenceUnits = orderedSequenceUnits(requestText);
+  const admitted = anchored.evidence.filter(span => (
+    evidenceExactSourceAnchorMatches(span, admissionAnchors)
+    || evidenceTitleDistinctAnchorMatches(span, admissionAnchors)
+    || semanticFrameBoundEvidenceIds.has(String(span.id))
+    || spanContainsRequestNearDuplicateSentence(span, requestSequenceUnits)
+  ));
+  // Post-rechunk, 4KB children carry the same content; parents are graph linkage only.
+  const passages = admitted.filter(span => [...String(span.text ?? "")].length <= 4096);
+  const oversized = admitted.filter(span => [...String(span.text ?? "")].length > 4096);
   return {
     ...anchored,
-    evidence: anchored.evidence.filter(span => (
-      evidenceExactSourceAnchorMatches(span, anchored.anchors)
-      || evidenceTitleDistinctAnchorMatches(span, anchored.anchors)
-      || semanticFrameBoundEvidenceIds.has(String(span.id))
-    ))
+    evidence: [...passages, ...oversized]
   };
 }
+
+export function spanContainsRequestNearDuplicateSentence(span: EvidenceSpan, requestSequenceUnits: readonly string[]): boolean {
+  if (requestSequenceUnits.length < 2) return false;
+  // Session spans echo the request itself; only durable memory counts as a source.
+  if (String(span.id).startsWith("evidence_session_")) return false;
+  const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
+  return fastAnswerSentences(evidenceWindowText(span).slice(0, 4000)).some(sentence =>
+    surfaceRequestOrderedAdjacentPairFraction(sentence, requestSequenceUnits, titleUnits) >= 0.5);
+}
+
 
 function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, requestText: string): boolean {
   const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
@@ -2705,6 +2767,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   index: number;
   score: number;
   unitOverlap: number;
+  nearDuplicate: boolean;
 }
 
 
@@ -2724,6 +2787,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const requestFeatures = featureSet(requestText, 256);
   const requestUnits = requestUnitSet(requestText);
   const orderedRequestUnits = requestUnitsFromText(requestText);
+  const requestSequenceUnits = orderedSequenceUnits(requestText);
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   const singleSpan = evidence.length === 1;
   const candidates = evidence
@@ -2734,6 +2798,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       const sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
       const titleMatches = anchors.length > 0 && evidenceTitleDistinctAnchorMatches(span, anchors);
       const titleUnitList = requestUnitsFromText(evidenceTitle(span));
+      const titleUnitSet = new Set(titleUnitList);
       const titleRequestCoverage = titleUnitList.length
         ? titleUnitList.filter(titleUnit =>
           [...requestUnits].some(unit => requestUnitMatchesSurface(unit, titleUnit))).length / titleUnitList.length
@@ -2777,15 +2842,22 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           ? 4
           : 0;
         const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
+        // Near-duplicated source sentence must outrank titleLead(4)+affinity(<=3).
+        const nearDuplicateFraction = surfaceRequestOrderedAdjacentPairFraction(sentence, requestSequenceUnits, titleUnitSet);
+        const nearDuplicateBoost = nearDuplicateFraction >= 0.5 && !promotedSessionEvidence(span)
+          ? 12 * nearDuplicateFraction
+          : 0;
         return {
           span,
           sentence,
           features,
           index,
           unitOverlap,
+          nearDuplicate: nearDuplicateBoost > 0,
           score: unitOverlap * 0.92
             + lexical * 0.35
             + pairOverlap * 0.16
+            + nearDuplicateBoost
             + span.alpha * 0.12
             + anchorBoost
             + titleLeadBoost
@@ -2796,7 +2868,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         };
       });
     })
-    .filter(row => row.sentence.length >= 24)
+    // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
+    .filter(row => row.sentence.length >= 24 || row.nearDuplicate)
     .sort((left, right) => right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = selectEvidenceSentenceRows(candidates, limit);
   // Adjacent sentences read in document order, whatever order they were
@@ -2969,7 +3042,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 
  function sourceSurfaceMatchesAnyAnchor(surface: string, anchors: readonly string[]): boolean {
   if (!surface || !anchors.length) return false;
-  const units = splitPriorUnits(normalizePriorKey(surface)).filter(Boolean);
+  const units = memoizedSurfaceUnits(surface).filter(Boolean);
   return anchors.some(anchor => {
     const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
     return anchorUnits.length > 0 && sourceAnchorPhraseContains(units, anchorUnits);
@@ -3013,9 +3086,43 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 }
 
 
+// True word order with repetitions; requestUnitsFromText dedupes and so destroys adjacency.
+export function orderedSequenceUnits(text: string): string[] {
+  return memoizedSurfaceUnits(text)
+    .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(unit => unit.length >= 4);
+}
+
+
+// Fraction of the request's ordered adjacent unit pairs appearing as ordered
+// adjacent pairs in the sentence; only a near-duplicate (cloze/quotation)
+// scores high, a natural question's word order never does.
+ function surfaceRequestOrderedAdjacentPairFraction(surface: string, requestSequenceUnits: readonly string[], excludedUnits?: ReadonlySet<string>): number {
+  if (requestSequenceUnits.length < 2) return 0;
+  const surfaceUnits = orderedSequenceUnits(surface);
+  if (surfaceUnits.length < 2) return 0;
+  const surfacePairs = new Set<string>();
+  for (let index = 0; index < surfaceUnits.length - 1; index++) {
+    surfacePairs.add(`${surfaceUnits[index]} ${surfaceUnits[index + 1]}`);
+  }
+  let pairs = 0;
+  let matched = 0;
+  for (let index = 0; index < requestSequenceUnits.length - 1; index++) {
+    const left = requestSequenceUnits[index] ?? "";
+    const right = requestSequenceUnits[index + 1] ?? "";
+    if (!left || !right || left === right) continue;
+    // Title-internal pairs are naming, not content.
+    if (excludedUnits?.has(left) && excludedUnits.has(right)) continue;
+    pairs++;
+    if (surfacePairs.has(`${left} ${right}`)) matched++;
+  }
+  return pairs ? matched / pairs : 0;
+}
+
+
  function surfaceRequestAdjacentUnitPairOverlap(surface: string, requestUnits: readonly string[]): number {
   if (requestUnits.length < 2) return 0;
-  const surfaceUnits = splitPriorUnits(normalizePriorKey(surface)).filter(unit => unit.length >= 4);
+  const surfaceUnits = memoizedSurfaceUnits(surface).filter(unit => unit.length >= 4);
   let overlap = 0;
   for (let index = 0; index < requestUnits.length - 1; index++) {
     const left = requestUnits[index] ?? "";
@@ -3027,7 +3134,21 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 }
 
 
+// Pure of its input; span windows are stable corpus text re-split every
+// turn — measured 2.2s of a 2.4s admission stage.
+const fastAnswerSentencesMemo = new Map<string, string[]>();
+const FAST_ANSWER_SENTENCES_MEMO_MAX = 4096;
+
  function fastAnswerSentences(text: string): string[] {
+  const cached = fastAnswerSentencesMemo.get(text);
+  if (cached) return cached;
+  const value = fastAnswerSentencesUncached(text);
+  if (fastAnswerSentencesMemo.size >= FAST_ANSWER_SENTENCES_MEMO_MAX) fastAnswerSentencesMemo.clear();
+  fastAnswerSentencesMemo.set(text, value);
+  return value;
+}
+
+ function fastAnswerSentencesUncached(text: string): string[] {
   const merged: string[] = [];
   for (const rawSentence of splitSurfaceSentences(text)) {
     const sentence = cleanFastAnswerSentence(rawSentence);
