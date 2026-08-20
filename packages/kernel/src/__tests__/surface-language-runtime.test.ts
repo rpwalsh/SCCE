@@ -82,17 +82,19 @@ describe("surface language resident-only cache", () => {
     expect(fixture.totalDurableCalls()).toBe(durableCallsAfterWarmup);
   });
 
-  it("retrieves surface candidates from the durable trigram index instead of the recent-profile window", async () => {
+  it("retrieves surface candidates from durable memory-referenced profiles, not the recent-profile window", async () => {
     const fixture = runtimeFixture();
 
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
 
+    // Global-first: the whole-memory durable set answers without a
+    // per-surface trigram query (measured 2.7s/turn to return nothing);
+    // the trigram query remains only as the global-miss fallback.
     expect(cluster?.profileIds).toEqual(["profile.fixture"]);
     expect(fixture.profileQueries.at(-1)).toMatchObject({
-      limit: 32,
       referencedByLanguageMemory: true
     });
-    expect(fixture.profileQueries.at(-1)?.surfaceNgrams).toContain("fix");
+    expect(fixture.profileQueries.at(-1)?.surfaceNgrams).toBeUndefined();
   });
 
   it("evicts the oldest entry instead of growing without bound once the request-text-keyed caches exceed their configured size", async () => {
