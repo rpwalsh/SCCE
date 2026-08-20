@@ -482,7 +482,16 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const boundedChars = [...tidySpanText].slice(0, 12000);
     const boundedText = boundedChars.join("");
     const allSentences = splitSurfaceSentences(boundedText);
-    const sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+    let sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+    // Splitter mismatch guard (see bestEvidenceSentences): inject the
+    // near-duplicate gate's matching sentences when verbatim-preserving.
+    if (proposeSequences.length) {
+      const gateMatches = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 6000))
+        .filter(candidate => proposeSequences.some(sequence =>
+          surfaceRequestOrderedAdjacentPairFraction(candidate, sequence) >= 0.5))
+        .filter(candidate => tidySpanText.includes(candidate) && !sentences.includes(candidate));
+      if (gateMatches.length) sentences = [...gateMatches, ...sentences].slice(0, 80);
+    }
     const titleMatches = anchored.anchors.length > 0
       && evidenceTitleDistinctAnchorMatches(span, anchored.anchors);
     const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
@@ -573,7 +582,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
   })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
     .filter(row => row.sentence.length >= 24 || row.nearDuplicate)
-    .sort((left, right) => right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
+    // The duplicated sentence outranks everything: a unit-rich table blob
+    // can beat the boost on raw overlap count.
+    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = rows[0];
   if (!selected) return undefined;
   // Learned response-form sentence budget (lexical-gap fix for
@@ -2818,7 +2829,19 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       const tidySpanText = tidySurfaceText(span.text);
       const boundedChars = [...tidySpanText].slice(0, 24000);
       const allSentences = splitSurfaceSentences(boundedChars.join(""));
-      const sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+      let sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+      // Splitter mismatch guard: the near-duplicate GATE segments with
+      // fastAnswerSentences; in table-heavy chunks this splitter glues the
+      // duplicated sentence into a blob no row can match. Inject the
+      // gate's matching sentences as rows, but only when they survive as
+      // verbatim tidy-space substrings (the mouth verifier's contract).
+      if (requestSequences.length) {
+        const gateMatches = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 6000))
+          .filter(candidate => requestSequences.some(sequence =>
+            surfaceRequestOrderedAdjacentPairFraction(candidate, sequence) >= 0.5))
+          .filter(candidate => tidySpanText.includes(candidate) && !sentences.includes(candidate));
+        if (gateMatches.length) sentences = [...gateMatches, ...sentences].slice(0, 80);
+      }
       const titleMatches = anchors.length > 0 && evidenceTitleDistinctAnchorMatches(span, anchors);
       const titleUnitList = requestUnitsFromText(evidenceTitle(span));
       const titleUnitSet = new Set(titleUnitList);
@@ -2894,7 +2917,9 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
     })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
     .filter(row => row.sentence.length >= 24 || row.nearDuplicate)
-    .sort((left, right) => right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
+    // The duplicated sentence outranks everything: a unit-rich table blob
+    // can beat the boost on raw overlap count.
+    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const selected = selectEvidenceSentenceRows(candidates, limit);
   // Adjacent sentences read in document order, whatever order they were
   // scored in (run-f emitted "It acquired the retronym... 'Star Trek' is
@@ -3121,7 +3146,7 @@ export function orderedSequenceUnits(text: string): string[] {
 // Fraction of the request's ordered adjacent unit pairs appearing as ordered
 // adjacent pairs in the sentence; only a near-duplicate (cloze/quotation)
 // scores high, a natural question's word order never does.
- function surfaceRequestOrderedAdjacentPairFraction(surface: string, requestSequenceUnits: readonly string[], excludedUnits?: ReadonlySet<string>): number {
+export function surfaceRequestOrderedAdjacentPairFraction(surface: string, requestSequenceUnits: readonly string[], excludedUnits?: ReadonlySet<string>): number {
   if (requestSequenceUnits.length < 2) return 0;
   const surfaceUnits = orderedSequenceUnits(surface);
   if (surfaceUnits.length < 2) return 0;

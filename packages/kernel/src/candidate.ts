@@ -850,7 +850,11 @@ function cleanGraphInferenceSurface(input: {
 }): string {
   const routedProof = input.entailment.proof as unknown as { claim?: { text?: unknown } };
   const routedClaimText = typeof routedProof.claim?.text === "string" ? routedProof.claim.text : "";
-  const claim = cleanIncomingSurface(input.entailment.claim?.text ?? routedClaimText);
+  const rawClaim = input.entailment.claim?.text ?? routedClaimText;
+  const claim = cleanIncomingSurface(rawClaim);
+  if (typeof process !== "undefined" && process.env?.SCCE_DEBUG_MOUTH) {
+    console.error("[graph-claim]", JSON.stringify({ rawHead: String(rawClaim ?? "").slice(0, 90), cleanedHead: claim.slice(0, 90), fellToBound: !claim }));
+  }
   if (claim) return claim;
   return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence);
 }

@@ -8,6 +8,7 @@ import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { ensureSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
+import { requestSentenceSequences, surfaceRequestOrderedAdjacentPairFraction } from "./local-evidence-runtime.js";
 
 export interface EvidenceGroundedAnswer {
   answer: string;
@@ -263,6 +264,14 @@ function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceS
     })))
     .filter(row => cleanSentence(row.text))
     .sort((a, b) => b.score - a.score || a.evidenceId.localeCompare(b.evidenceId));
+  // A near-duplicated sentence IS the answer; the list-signal weights
+  // below otherwise hand clozes a name-roster from table-heavy chunks.
+  const emitterSequences = requestSentenceSequences(requestText);
+  if (emitterSequences.length) {
+    const duplicated = sentences.find(row =>
+      emitterSequences.some(sequence => surfaceRequestOrderedAdjacentPairFraction(row.text, sequence) >= 0.5));
+    if (duplicated) return ensureSentence(duplicated.text);
+  }
   const compactMemberList = sentences.find(row => row.compactMemberList >= 0.62);
   if (compactMemberList) return ensureSentence(compactMemberList.text);
   const anchoredLead = sentences.find(row => row.anchorSignal >= 0.78 && cleanSentence(row.text).length >= 72);
