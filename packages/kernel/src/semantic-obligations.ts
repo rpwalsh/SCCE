@@ -23,6 +23,7 @@ import { clamp01, featureSet, mean, stableVector, toJsonValue, symbolizeData, we
 import { hoeffdingLcb } from "./causal-math.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { hasCasedLetter } from "./surface-linguistics.js";
+import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 
 export interface SemanticObligationEvaluation {
   verdict: SemanticEntailmentVerdict;
@@ -300,6 +301,11 @@ const DEATH_QUESTION_PATTERN = /\bdied?\b|\bdeath\b|\bdeceased\b|\bdying\b|\bpas
  */
 export function extractTemporalAnswerFromEvidence(claimText: string, evidence: readonly EvidenceSpan[]): string | undefined {
   if (!TEMPORAL_QUESTION_PATTERN.test(claimText)) return undefined;
+  // A near-duplicate request already names its answer sentence; a date
+  // extract must not override it ("24th century" in a cloze pulled the
+  // series premiere date instead of the duplicated lead sentence).
+  const sequences = requestSentenceSequences(claimText);
+  if (sequences.length && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, sequences))) return undefined;
   const wantsDeath = DEATH_QUESTION_PATTERN.test(claimText) && !BIRTH_QUESTION_PATTERN.test(claimText);
   for (const span of evidence) {
     const text = span.textPreview || span.text || "";
