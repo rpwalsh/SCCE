@@ -1490,6 +1490,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           (bundle.creativeEvents?.length ?? 0) > 0
         )
       );
+      // Durable candidate-stage hydration ran 54s on a cold turn AFTER the
+      // deadline had passed -- the checks only ran once it finished. Consult
+      // the deadline first; past-budget turns hydrate resident-only.
+      const candidateHydrateDecision = deadlineCheckpoint("runtime.candidates.language_hydrate", 1_500);
+      const candidateHydrateResidentOnly = fastRuntimeBudget || candidateHydrateDecision?.allowed === false;
       const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
         ? await hydrateSurfaceLanguageMemoryResidentOrDurable(
           12,
@@ -1497,7 +1502,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "evidence-source-cluster-selected",
           undefined,
           "",
-          { residentOnly: fastRuntimeBudget }
+          { residentOnly: candidateHydrateResidentOnly }
         )
         : undefined;
       // Deliberately NOT residentOnly even under the fast runtime budget: a
