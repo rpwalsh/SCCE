@@ -1804,7 +1804,11 @@ export function spanContainsRequestNearDuplicateSentence(span: EvidenceSpan, req
   // Session spans echo the request itself; only durable memory counts as a source.
   if (String(span.id).startsWith("evidence_session_")) return false;
   const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
-  return fastAnswerSentences(evidenceWindowText(span).slice(0, 4000)).some(sentence =>
+  // slice(0,4000) blinded the gate to the last ~90 chars of a 4096-byte
+  // chunk, exactly where boundary-split sentences live.
+  const window = evidenceWindowText(span);
+  const bounded = window.length <= 6000 ? window : window.slice(0, 4000);
+  return fastAnswerSentences(bounded).some(sentence =>
     requestSequences.some(sequence =>
       surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits) >= 0.5));
 }

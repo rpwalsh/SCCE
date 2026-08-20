@@ -98,9 +98,11 @@ import {
   localEvidenceAnswerProofExcerpts,
   localEvidenceAnswerSurface,
   proposeSourceExactEvidenceAnswer,
+  requestSentenceSequences,
   runtimeEvidenceWindowsForRequest,
   sessionContextEvidenceEnabled,
   sourceAnchoredEvidenceForRequest,
+  spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
 import { formatSurfaceMessage, localeFromMetadata } from "./localization.js";
@@ -1493,8 +1495,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // Durable candidate-stage hydration ran 54s on a cold turn AFTER the
       // deadline had passed -- the checks only ran once it finished. Consult
       // the deadline first; past-budget turns hydrate resident-only.
-      const candidateHydrateDecision = deadlineCheckpoint("runtime.candidates.language_hydrate", 1_500);
-      const candidateHydrateResidentOnly = fastRuntimeBudget || candidateHydrateDecision?.allowed === false;
+      // requiredMs is the honest worst cost: a cold durable hydrate loads
+      // whole ngram model blobs (measured 55s); admitting it on a 1.5s
+      // estimate let a 10s turn run 61s.
+      const candidateHydrateDecision = deadlineCheckpoint("runtime.candidates.language_hydrate", 5_000);
+      // A near-duplicate turn quotes, it does not generate: no threshold can
+      // bound a 55s stage, so the quote regime skips durable hydration.
+      const turnSequences = requestSentenceSequences(input.text);
+      const nearDuplicateTurn = turnSequences.length > 0
+        && selectedEvidence.some(span => spanContainsRequestNearDuplicateSentence(span, turnSequences));
+      const candidateHydrateResidentOnly = fastRuntimeBudget || nearDuplicateTurn || candidateHydrateDecision?.allowed === false;
       const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
         ? await hydrateSurfaceLanguageMemoryResidentOrDurable(
           12,
