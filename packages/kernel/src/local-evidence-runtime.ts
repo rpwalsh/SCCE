@@ -432,9 +432,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // single generic sentence that happens to score well here.
   // A near-duplicate request is a quotation with a hole, not a temporal
   // question: the anachronism check hijacked every year-hole cloze.
-  const proposeSequence = orderedSequenceUnits(input.requestText);
-  const proposeNearDuplicate = proposeSequence.length >= 4
-    && promoted.some(span => spanContainsRequestNearDuplicateSentence(span, proposeSequence));
+  const proposeSequences = requestSentenceSequences(input.requestText);
+  const proposeNearDuplicate = proposeSequences.length > 0
+    && promoted.some(span => spanContainsRequestNearDuplicateSentence(span, proposeSequences));
   if (!proposeNearDuplicate && temporalCounterexampleExpected(input.requestText, promoted)) return undefined;
   // Single admission authority; a private copy of this filter silently
   // dropped content-admitted (near-duplicate) spans at the answer stage.
@@ -447,7 +447,6 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (!evidence.length) return undefined;
   const requestFeatures = featureSet(input.requestText, 256);
   const requestUnits = requestUnitSet(input.requestText);
-  const requestSequenceUnits = orderedSequenceUnits(input.requestText);
   // The lead boost below exists so a deep-article sentence that merely
   // repeats the topic name several times can't outrank the article's own
   // opening definition -- but as an unconditional flat boost it also made
@@ -550,7 +549,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
       // real cast sentence). Uncased scripts are exempt by construction.
       const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
       // Same near-duplicate dominance as bestEvidenceSentences.
-      const nearDuplicateFraction = surfaceRequestOrderedAdjacentPairFraction(sentence, requestSequenceUnits, titleUnits);
+      const nearDuplicateFraction = proposeSequences.reduce((best, sequence) =>
+        Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits)), 0);
       const nearDuplicateBoost = nearDuplicateFraction >= 0.5 && !promotedSessionEvidence(span)
         ? 12 * nearDuplicateFraction
         : 0;
@@ -663,9 +663,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const temporalEvidence = (input.temporalEvidence ?? evidence)
     .filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   // Same near-duplicate exemption as proposeSourceExactEvidenceAnswer.
-  const planSequence = orderedSequenceUnits(input.requestText);
-  const planNearDuplicate = planSequence.length >= 4
-    && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, planSequence));
+  const planSequences = requestSentenceSequences(input.requestText);
+  const planNearDuplicate = planSequences.length > 0
+    && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, planSequences));
   if (!planNearDuplicate) {
     const counterexample = temporalCounterexampleAnswerPlan(input.requestText, temporalEvidence);
     if (counterexample) return counterexample;
@@ -1657,10 +1657,10 @@ export function sourceAnchoredEvidenceForRequest(
   // Near-duplicate (cloze/quotation) requests: the span containing the
   // duplicated sentence IS the source identity; anchor heuristics are
   // question-shaped machinery and pick wrong-topic spans here.
-  const nearDuplicateSequence = orderedSequenceUnits(requestText);
-  if (nearDuplicateSequence.length >= 4) {
+  const nearDuplicateSequences = requestSentenceSequences(requestText);
+  if (nearDuplicateSequences.length) {
     const nearDuplicates = evidence.filter(span =>
-      spanContainsRequestNearDuplicateSentence(span, nearDuplicateSequence));
+      spanContainsRequestNearDuplicateSentence(span, nearDuplicateSequences));
     if (nearDuplicates.length) {
       return { required: true, anchors: uniqueKernelStrings(anchors), evidence: nearDuplicates };
     }
@@ -1769,12 +1769,12 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   const admissionAnchors = specificAnchors.length ? specificAnchors : anchored.anchors;
   // Content admits only in the near-duplicate regime, so cross-title
   // mentions still stay out for question-shaped requests.
-  const requestSequenceUnits = orderedSequenceUnits(requestText);
+  const admissionSequences = requestSentenceSequences(requestText);
   const admitted = anchored.evidence.filter(span => (
     evidenceExactSourceAnchorMatches(span, admissionAnchors)
     || evidenceTitleDistinctAnchorMatches(span, admissionAnchors)
     || semanticFrameBoundEvidenceIds.has(String(span.id))
-    || spanContainsRequestNearDuplicateSentence(span, requestSequenceUnits)
+    || spanContainsRequestNearDuplicateSentence(span, admissionSequences)
   ));
   // Post-rechunk, 4KB children carry the same content; parents are graph linkage only.
   const passages = admitted.filter(span => [...String(span.text ?? "")].length <= 4096);
@@ -1785,13 +1785,28 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   };
 }
 
-export function spanContainsRequestNearDuplicateSentence(span: EvidenceSpan, requestSequenceUnits: readonly string[]): boolean {
-  if (requestSequenceUnits.length < 2) return false;
+// Gate per REQUEST sentence: a two-sentence cloze context halves the whole-
+// request fraction, so no single corpus sentence could ever reach 0.5.
+export function requestSentenceSequences(text: string): string[][] {
+  // An interrogative request is never a near-duplicate: a question can
+  // restate a short evidence sentence, a cloze never ends with "?".
+  if (endsWithUnicodeQuestionMark(text.trim())) return [];
+  const whole = orderedSequenceUnits(text);
+  const sequences = splitSurfaceSentences(text)
+    .map(sentence => orderedSequenceUnits(sentence))
+    .filter(sequence => sequence.length >= 4);
+  if (whole.length >= 4 && !sequences.length) return [whole];
+  return sequences;
+}
+
+export function spanContainsRequestNearDuplicateSentence(span: EvidenceSpan, requestSequences: readonly (readonly string[])[]): boolean {
+  if (!requestSequences.length) return false;
   // Session spans echo the request itself; only durable memory counts as a source.
   if (String(span.id).startsWith("evidence_session_")) return false;
   const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
   return fastAnswerSentences(evidenceWindowText(span).slice(0, 4000)).some(sentence =>
-    surfaceRequestOrderedAdjacentPairFraction(sentence, requestSequenceUnits, titleUnits) >= 0.5);
+    requestSequences.some(sequence =>
+      surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits) >= 0.5));
 }
 
 
@@ -2791,7 +2806,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const requestFeatures = featureSet(requestText, 256);
   const requestUnits = requestUnitSet(requestText);
   const orderedRequestUnits = requestUnitsFromText(requestText);
-  const requestSequenceUnits = orderedSequenceUnits(requestText);
+  const requestSequences = requestSentenceSequences(requestText);
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   const singleSpan = evidence.length === 1;
   const candidates = evidence
@@ -2847,7 +2862,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           : 0;
         const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
         // Near-duplicated source sentence must outrank titleLead(4)+affinity(<=3).
-        const nearDuplicateFraction = surfaceRequestOrderedAdjacentPairFraction(sentence, requestSequenceUnits, titleUnitSet);
+        const nearDuplicateFraction = requestSequences.reduce((best, sequence) =>
+          Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnitSet)), 0);
         const nearDuplicateBoost = nearDuplicateFraction >= 0.5 && !promotedSessionEvidence(span)
           ? 12 * nearDuplicateFraction
           : 0;
@@ -3120,7 +3136,13 @@ export function orderedSequenceUnits(text: string): string[] {
     pairs++;
     if (surfacePairs.has(`${left} ${right}`)) matched++;
   }
-  return pairs ? matched / pairs : 0;
+  // Symmetric denominator: a multi-sentence cloze context fully contains
+  // its source sentence, so coverage is measured against the smaller pair
+  // set; the absolute floor keeps trivial fragments and question-shaped
+  // requests (whose non-title matches stay tiny) out.
+  if (matched < 3) return 0;
+  const denominator = Math.min(pairs, Math.max(1, surfacePairs.size));
+  return denominator ? Math.min(1, matched / denominator) : 0;
 }
 
 

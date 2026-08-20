@@ -11,6 +11,7 @@ import {
   promotedSessionEvidence,
   requestInitialismCandidates,
   requestNeedsSourceAnchoredEvidence,
+  requestSentenceSequences,
   sessionOwnerObservationSurface,
   sourceAnchorPhraseContains,
   sourceAnchoredEvidenceForRequest,
@@ -358,9 +359,9 @@ export function createRuntimeGraphRetrieval(options: {
       // Near-duplicate fast path: the duplicated sentence's span IS the
       // answer source; the radius-1 graph fetch and hot-neighborhood load
       // buy nothing and cost most of the turn's 5s graphSlice budget breach.
-      const fastPathSequence = orderedSequenceUnits(text);
-      const nearDuplicateEvidence = fastPathSequence.length >= 4
-        ? anchoredEvidence.filter(span => spanContainsRequestNearDuplicateSentence(span, fastPathSequence))
+      const fastPathSequences = requestSentenceSequences(text);
+      const nearDuplicateEvidence = fastPathSequences.length
+        ? anchoredEvidence.filter(span => spanContainsRequestNearDuplicateSentence(span, fastPathSequences))
         : [];
       if (nearDuplicateEvidence.length) {
         kernelTrace({
@@ -672,6 +673,27 @@ export function createRuntimeGraphRetrieval(options: {
       const mergedSymFeatures = uniqueKernelStrings([...symFeatures, ...trailingFeatures]);
       if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
     }
+    // One extra group of the request's longest uncovered adjacent bigrams:
+    // when a famous anchor dominates the top-4 groups, the discriminative
+    // pairs ("augusta|gregory") never got searched and the near-duplicate
+    // span never entered the pool.
+    const covered = new Set(groups.flat());
+    const sequence = orderedSequenceUnits(text);
+    const requestBigrams: Array<{ feature: string; weight: number }> = [];
+    for (let index = 0; index < sequence.length - 1; index++) {
+      const left = sequence[index] ?? "";
+      const right = sequence[index + 1] ?? "";
+      if (!left || !right || left === right) continue;
+      if (genericQuestionSignal(left) || genericQuestionSignal(right)) continue;
+      const feature = `anchor:bi:${left}|${right}`;
+      if (covered.has(feature)) continue;
+      requestBigrams.push({ feature, weight: left.length + right.length });
+    }
+    const extras = uniqueKernelStrings(requestBigrams
+      .sort((a, b) => b.weight - a.weight)
+      .map(item => item.feature))
+      .slice(0, 4);
+    if (extras.length >= 2) groups.push(extras);
     return groups;
   }
 
