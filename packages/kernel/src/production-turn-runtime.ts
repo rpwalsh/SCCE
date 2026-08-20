@@ -102,6 +102,7 @@ import {
   runtimeEvidenceWindowsForRequest,
   sessionContextEvidenceEnabled,
   sourceAnchoredEvidenceForRequest,
+  evidenceSpanProvenanceTitle,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
@@ -1011,8 +1012,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const sourceAnchorAudit = discourseEvidenceBound
         ? { required: false, anchors: [] as string[], evidence }
         : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
-      const admissibleEvidence = sourceAnchorAudit.required ? sourceAnchorAudit.evidence : evidence;
-      if (sourceAnchorAudit.required) graph = graphFilteredToEvidence(graph, sourceAnchorAudit.evidence);
+      // Empty audit over a titleless pool: identity admission can never bind
+      // workspace-file spans, so fall back to the titleless spans the graph
+      // slice already content-admitted; titled corpora keep strict abstention.
+      const auditFallbackEvidence = sourceAnchorAudit.required && !sourceAnchorAudit.evidence.length
+        ? evidence.filter(span => !evidenceSpanProvenanceTitle(span)).slice(0, 24)
+        : [];
+      const admissibleEvidence = sourceAnchorAudit.required
+        ? (sourceAnchorAudit.evidence.length ? sourceAnchorAudit.evidence : auditFallbackEvidence)
+        : evidence;
+      if (sourceAnchorAudit.required && admissibleEvidence.length) graph = graphFilteredToEvidence(graph, admissibleEvidence);
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
       const semanticRetrievalStarted = Date.now();
       const compiledMemorySlice = semanticMemory.buildSlice({
