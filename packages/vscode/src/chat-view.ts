@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ScceClient, ScceHttpError, type TurnAnswer, type TurnStreamFrame } from "./client.js";
 import { turnDetail } from "./turn-detail.js";
+import { speakableAnswerText } from "./speech.js";
 
 export interface ChatSessionRecord {
   id: string;
@@ -117,7 +118,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       const spoken = answerSurface(answer);
       this.appendHistory({ id: cryptoRandomId(), role: "assistant", text: spoken, detail: turnDetail(answer), createdAt: Date.now() });
-      void webview.postMessage({ type: "answer", text: spoken, detail: turnDetail(answer) });
+      void webview.postMessage({ type: "answer", text: spoken, detail: turnDetail(answer), speech: speakableAnswerText(spoken) });
     } catch (error) {
       const messageText = error instanceof ScceHttpError
         ? `SCCE request failed (${error.status}): ${error.message}`
@@ -275,10 +276,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </style>
 </head>
 <body>
-  <div class="toolbar"><button id="clear">Clear conversation</button></div>
+  <div class="toolbar"><button id="voice" title="Speak replies aloud; with speech input available, listens again after each reply">Voice: off</button><button id="clear">Clear conversation</button></div>
   <div class="messages" id="messages"><div class="empty" id="empty">Ask SCCE anything about this workspace.<div class="hint">It can explain code, plan and apply changes, and answer questions grounded in what it has actually read.</div></div></div>
   <div class="composer">
     <textarea id="input" rows="1" placeholder="Message SCCE&hellip;"></textarea>
+    <button id="mic" class="secondary" title="Speak a message">&#127908;</button>
     <button id="plan-code" class="secondary" title="Plan a bounded coding request from this text (file scope and diagnostic selection happen in VS Code dialogs, not here)">Plan code change</button>
     <button id="send">Send</button>
   </div>
@@ -291,9 +293,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   const sendButton = document.getElementById('send');
   const planCodeButton = document.getElementById('plan-code');
   const clearButton = document.getElementById('clear');
+  const voiceButton = document.getElementById('voice');
+  const micButton = document.getElementById('mic');
   let sending = false;
   let typingRow = null;
   let streamingRow = null;
+
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let voiceOn = !!(vscodeApi.getState() || {}).voiceOn;
+  let recognizer = null;
+  let listening = false;
+
+  function renderVoiceButton() {
+    voiceButton.textContent = 'Voice: ' + (voiceOn ? 'on' : 'off');
+    micButton.textContent = listening ? '\\u25A0' : '\\uD83C\\uDFA4';
+  }
+
+  function stopSpeaking() {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  }
+
+  function speak(text) {
+    if (!voiceOn || !window.speechSynthesis || !text) return;
+    stopSpeaking();
+    const utterance = new SpeechSynthesisUtterance(text);
+    if (Recognition) utterance.onend = () => { if (voiceOn && !sending) startListening(); };
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function stopListening() {
+    if (recognizer) { try { recognizer.abort(); } catch (e) {} recognizer = null; }
+    listening = false;
+    renderVoiceButton();
+  }
+
+  function startListening() {
+    if (!Recognition) {
+      addMessage('assistant', 'Speech input is not available inside this panel. Windows dictation works instead: click the message box and press Win+H. Voice replies still speak aloud.');
+      return;
+    }
+    if (listening) { stopListening(); return; }
+    stopSpeaking();
+    recognizer = new Recognition();
+    recognizer.lang = navigator.language || 'en-US';
+    recognizer.interimResults = true;
+    recognizer.onresult = event => {
+      let transcript = '';
+      for (const result of event.results) transcript += result[0].transcript;
+      inputEl.value = transcript;
+      autoGrow();
+      if (event.results[event.results.length - 1].isFinal && voiceOn) { stopListening(); send(); }
+    };
+    recognizer.onerror = () => stopListening();
+    recognizer.onend = () => { if (listening) stopListening(); };
+    listening = true;
+    renderVoiceButton();
+    recognizer.start();
+  }
 
   function escapeHtml(value) {
     return String(value)
@@ -410,6 +466,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (sending) { vscodeApi.postMessage({ type: 'cancel' }); return; }
     const text = inputEl.value.trim();
     if (!text) return;
+    stopSpeaking();
+    stopListening();
     addMessage('owner', text);
     inputEl.value = '';
     autoGrow();
@@ -424,10 +482,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   sendButton.addEventListener('click', send);
+  voiceButton.addEventListener('click', () => {
+    voiceOn = !voiceOn;
+    vscodeApi.setState(Object.assign({}, vscodeApi.getState() || {}, { voiceOn }));
+    if (!voiceOn) { stopSpeaking(); stopListening(); }
+    renderVoiceButton();
+  });
+  micButton.addEventListener('click', startListening);
+  renderVoiceButton();
   planCodeButton.addEventListener('click', () => {
     vscodeApi.postMessage({ type: 'codingRequest', text: inputEl.value.trim() });
   });
   clearButton.addEventListener('click', () => {
+    stopSpeaking();
+    stopListening();
     messagesEl.querySelectorAll('.row').forEach(row => row.remove());
     emptyEl.style.display = '';
     vscodeApi.postMessage({ type: 'clear' });
@@ -454,6 +522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       setSending(false);
       addMessage('assistant', message.text, message.detail, streamingRow);
       streamingRow = null;
+      speak(message.speech || '');
       return;
     }
     if (message.type === 'error') {
