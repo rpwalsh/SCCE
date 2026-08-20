@@ -3472,6 +3472,10 @@ export function attachLocalEvidenceAnswerConstruct(input: {
   const clean = cleanSourceAnswerSurface(sentence);
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   if (!clean || !anchors.length) return clean;
+  // A near-duplicated sentence is emitted whole: anchor-mention trimming
+  // cut the answer span out of the sentence head (Horsley Towers).
+  const realizationSequences = requestSentenceSequences(requestText);
+  if (realizationSequences.some(sequence => surfaceRequestOrderedAdjacentPairFraction(clean, sequence) >= 0.5)) return clean;
   const exactTitle = plan.evidence.some(span => evidenceExactSourceAnchorMatches(span, anchors));
   if (exactTitle) return clean;
   const mention = anchorMentionSurface(clean, anchors);

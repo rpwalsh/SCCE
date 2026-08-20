@@ -1,4 +1,5 @@
 import type { CorrectionRuleRecord, WordingRealizerPort } from "./storage.js";
+import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
@@ -656,7 +657,13 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // a synthesized, conversational one (verified live: "who was Ada
       // Lovelace..." always returned a verbatim/collapsed source excerpt
       // even though nothing about the request asked for exact wording).
-      const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= 0.6;
+      // A near-duplicate request spells the source's own wording; it IS a
+      // source-preservation request even when no field flag says so.
+      const mouthRequestSequences = requestSentenceSequences(mouthEchoQuestionText(input));
+      const nearDuplicatePreservation = mouthRequestSequences.length > 0
+        && input.evidence.some(span => spanContainsRequestNearDuplicateSentence(span, mouthRequestSequences));
+      const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= 0.6
+        || nearDuplicatePreservation;
       const preserveEvidenceBackedKernelCandidate = Boolean(
         sourcePreservationRequested &&
         kernelSelectedCandidate &&
