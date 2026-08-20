@@ -671,7 +671,11 @@ export function proposeSourceExactEvidenceAnswer(input: {
     if (counterexample) return counterexample;
     if (temporalCounterexampleExpected(input.requestText, temporalEvidence)) return undefined;
   }
-  const collection = collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
+  // A near-duplicate is a quotation, not an enumeration request: the
+  // collection plan answered clozes with name-list salads.
+  const collection = planNearDuplicate
+    ? undefined
+    : collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
   if (collection) return collection;
   // Single admission authority (same fix as proposeSourceExactEvidenceAnswer).
   const anchored = sourceIdentityAdmissibleEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds ?? new Set());
