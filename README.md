@@ -16,6 +16,9 @@ SCCE compiles evidence, language, reasoning, and learned skills into sparse, ins
 
 **Implemented · Benchmarked · Operational**
 
+**Evaluate it**: [QUICKSTART.md](QUICKSTART.md) — build, train a small corpus, and talk to it locally in ~10 minutes.
+**License it**: [COMMERCIAL.md](COMMERCIAL.md) — source is inspection-only; commercial and evaluation licenses available.
+
 SCCE is an implemented cognitive runtime, not a proposal, model wrapper, or retrieval layer. This repository contains its evidence-preserving ingestion, persistent cognitive graph, reasoning, planning, learned language, durable memory, application surfaces, and sealed evaluation harness.
 
 ## Current verified status
