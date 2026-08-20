@@ -16,6 +16,7 @@ import {
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { promotedSessionEvidence } from "./local-evidence-runtime.js";
 import { estimatorScore, featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
+import { proseGistSurface } from "./evidence-gist.js";
 import { type CalibrationModel, calibratedScoreTrace } from "./scoring/calibration.js";
 import {
   CALIBRATION_IDS,
@@ -747,7 +748,8 @@ function boundEvidenceSurface(evidenceIds: readonly EvidenceId[], evidence: read
   const boundIds = new Set(evidenceIds.map(String));
   for (const span of evidence) {
     if (!boundIds.has(String(span.id))) continue;
-    const surface = cleanIncomingSurface(span.text) || cleanIncomingSurface(span.textPreview);
+    const raw = typeof span.text === "string" && span.text ? span.text : typeof span.textPreview === "string" ? span.textPreview : "";
+    const surface = cleanIncomingSurface(proseGistSurface(raw)) || cleanIncomingSurface(raw);
     if (surface) return surface;
   }
   return "";
@@ -850,11 +852,7 @@ function cleanGraphInferenceSurface(input: {
 }): string {
   const routedProof = input.entailment.proof as unknown as { claim?: { text?: unknown } };
   const routedClaimText = typeof routedProof.claim?.text === "string" ? routedProof.claim.text : "";
-  const rawClaim = input.entailment.claim?.text ?? routedClaimText;
-  const claim = cleanIncomingSurface(rawClaim);
-  if (typeof process !== "undefined" && process.env?.SCCE_DEBUG_MOUTH) {
-    console.error("[graph-claim]", JSON.stringify({ rawHead: String(rawClaim ?? "").slice(0, 90), cleanedHead: claim.slice(0, 90), fellToBound: !claim }));
-  }
+  const claim = cleanIncomingSurface(input.entailment.claim?.text ?? routedClaimText);
   if (claim) return claim;
   return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence);
 }
