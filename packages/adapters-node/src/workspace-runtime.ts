@@ -506,6 +506,33 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         return { ...adapterBaseline, report };
       }
       const conversationId = normalizedOptions.conversationId || project.workspace.id;
+      if (adapterBaseline.selectedIntentId === "workspace.intent.unsupported") {
+        // Free-text questions get the real evidence-bound turn pipeline, not
+        // the structural-intent adapter that would otherwise recite findings.
+        const turn = await input.runtime.kernel.turn({
+          text: question,
+          metadata: toJsonValue({ workspaceId: project.workspace.id, conversationId, requestOrigin: "workspace-ask" })
+        }).catch(() => undefined);
+        const turnText = typeof turn?.answer === "string" && /[\p{L}\p{N}]/u.test(turn.answer) ? turn.answer : "";
+        if (turn && turnText) {
+          const answer: WorkspaceQuestionAnswer = {
+            ...adapterBaseline,
+            path: "workspace_kernel_context",
+            generatedBy: "workspace-kernel-context",
+            answer: turnText,
+            confidence: Math.min(1, Math.max(0, Math.max(adapterBaseline.confidence, turn.entailment?.support ?? 0))),
+            sourceRefs: turn.evidence.slice(0, 12).map(span => ({
+              path: String(span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? (span.provenance as Record<string, JsonValue>).uri ?? span.id : span.id),
+              evidenceSpanId: String(span.id),
+              contentHash: String(span.contentHash)
+            })),
+            data: toJsonValue({ adapterBaseline, kernel: { episodeId: String(turn.episodeId), epistemicForce: turn.epistemicForce } })
+          };
+          const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, answer.answer, toJsonValue(answer), answer.sourceRefs);
+          await input.runtime.storage.workspace.putReport(report);
+          return { ...answer, report };
+        }
+      }
       const learnedProfile = await latestDialogueStyleProfile(input.runtime.storage.dialogueMemory, conversationId);
       const calibrationModels = await loadCalibrationModelSet({
         store: input.runtime.storage.dialogueMemory,

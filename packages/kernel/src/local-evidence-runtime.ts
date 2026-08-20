@@ -1622,6 +1622,10 @@ const SURFACE_UNITS_MEMO_MAX = 100_000;
 }
 
 
+export function evidenceSpanProvenanceTitle(span: EvidenceSpan): string {
+  return evidenceTitle(span);
+}
+
  function evidenceTitle(span: EvidenceSpan): string {
   const provenance = jsonRecord(span.provenance);
   const metadata = jsonRecord(provenance.metadata);
@@ -1787,6 +1791,22 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     || semanticFrameBoundEvidenceIds.has(String(span.id))
     || spanContainsRequestNearDuplicateSentence(span, admissionSequences)
   ));
+  // Titleless corpora (workspace files) can never satisfy title-identity
+  // admission; content-anchor admission applies to titleless spans ONLY, so
+  // titled corpora keep the strict cross-title abstention guarantees.
+  if (!admitted.length && evidence.length) {
+    const titleless = evidence.filter(span => !evidenceTitle(span));
+    const contentAnchors = uniqueKernelStrings(anchored.anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))).filter(unit => [...unit].length >= 3);
+    const requiredHits = Math.min(2, contentAnchors.length);
+    const scored = titleless
+      .map(span => {
+        const surface = normalizePriorKey(String(span.text ?? span.textPreview ?? ""));
+        return { span, hits: contentAnchors.filter(anchor => surface.includes(anchor)).length };
+      })
+      .filter(row => row.hits >= requiredHits)
+      .sort((left, right) => right.hits - left.hits);
+    admitted.push(...scored.slice(0, 12).map(row => row.span));
+  }
   // Post-rechunk, 4KB children carry the same content; parents are graph linkage only.
   const passages = admitted.filter(span => [...String(span.text ?? "")].length <= 4096);
   const oversized = admitted.filter(span => [...String(span.text ?? "")].length > 4096);
