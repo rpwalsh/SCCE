@@ -553,7 +553,8 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         kernel,
         streamPlan
       };
-      const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, answer.answer, toJsonValue(answer), answer.sourceRefs);
+      const { kernel: _kernel, streamPlan: _streamPlan, ...reportableAnswer } = answer;
+      const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, answer.answer, toJsonValue(reportableAnswer), answer.sourceRefs);
       await input.runtime.storage.workspace.putReport(report);
       return { ...answer, report };
     },
