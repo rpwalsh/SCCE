@@ -184,7 +184,7 @@ export function proveClaim(input: SemanticProofInput): SemanticProofResult {
     ? directEvidenceCount / input.candidateEvidence.length
     : 0;
   const contradictionFraction = input.candidateEvidence.length
-    ? contradictions.length / Math.max(1, input.candidateEvidence.length)
+    ? new Set(contradictions.map(item => item.evidenceId)).size / Math.max(1, input.candidateEvidence.length)
     : 0;
   const certifiedFraction = evaluated.length
     ? certified.length / Math.max(1, evaluated.length)

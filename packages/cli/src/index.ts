@@ -519,7 +519,8 @@ async function workspace(runtime: ReturnType<typeof createWorkspaceRuntime>, arg
   if (sub === "answer" || sub === "ask") {
     const question = args.slice(1).filter(arg => !arg.startsWith("--")).join(" ").trim();
     if (!question) return usage("scce workspace ask <question>");
-    printJson(await runtime.answer(question, undefined, parseWorkspaceOptions(args.slice(1))));
+    const { kernel: _kernel, streamPlan: _streamPlan, report: _report, ...compact } = await runtime.answer(question, undefined, parseWorkspaceOptions(args.slice(1)));
+    printJson(compact);
     return;
   }
   if (sub === "code" || sub === "plan-code") {
