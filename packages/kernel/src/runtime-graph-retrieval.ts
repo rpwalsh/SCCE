@@ -675,7 +675,7 @@ export function createRuntimeGraphRetrieval(options: {
     }
     // One extra group of the request's longest uncovered adjacent bigrams:
     // when a famous anchor dominates the top-4 groups, the discriminative
-    // pairs ("augusta|gregory") never got searched and the near-duplicate
+    // pairs ("rosalind|franklin") never got searched and the near-duplicate
     // span never entered the pool.
     const covered = new Set(groups.flat());
     const sequence = orderedSequenceUnits(text);
