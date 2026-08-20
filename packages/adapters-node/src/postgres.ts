@@ -1458,8 +1458,10 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
       if (features.length && !query.sourceId && !query.sourceVersionId) {
+        // Same posting cap as the BM25 branch: an uncapped common feature
+        // materialises the whole corpus per branch.
         const featureBranches = features.map((_, index) =>
-          `SELECT id, ${index + 1}::bigint AS feature_ord FROM ${storage.table("evidence_spans")} WHERE features @> ARRAY[$${index + 1}]::text[]`
+          `(SELECT id, ${index + 1}::bigint AS feature_ord FROM ${storage.table("evidence_spans")} WHERE features @> ARRAY[$${index + 1}]::text[] LIMIT ${EVIDENCE_FEATURE_POSTING_CAP})`
         );
         const limitIndex = features.length + 1;
         const access = storage.informationAccessPredicate("ev", limitIndex + 1);

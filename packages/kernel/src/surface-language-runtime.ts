@@ -723,10 +723,14 @@ export function createSurfaceLanguageRuntime(options: {
     if (cached && (residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return selectLanguageProfileClusterForSurface(cached.clusters, surface)?.cluster;
     }
-    if (residentOnly) {
-      const { clusters } = await surfaceLanguageProfilesCached(true);
-      return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster;
-    }
+    // Whole-memory cluster set answers most surfaces without a per-request query.
+    const global = await surfaceLanguageProfilesCached(residentOnly);
+    const globalSelected = selectLanguageProfileClusterForSurface(global.clusters, surface)?.cluster;
+    if (globalSelected || residentOnly) return globalSelected;
+    // Global under its cap holds every memory-referenced profile; a
+    // trigram-filtered subset of an already-scanned set cannot match more.
+    // Measured: this per-surface query cost 2.7s/turn to return nothing.
+    if (global.profiles.length && global.profiles.length < surfaceLanguageProfileLimit) return undefined;
     const profiles = await deps.storage.model.listLanguageProfiles({
       limit: surfaceLanguageProfileLimit,
       referencedByLanguageMemory: true,
