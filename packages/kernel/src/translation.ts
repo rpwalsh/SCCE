@@ -10,6 +10,7 @@ import {
   type LanguageProfileCluster
 } from "./language.js";
 import { createLanguageInductionEngine, type TranslationSeed } from "./language-induction.js";
+import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { surfaceEntityRuns } from "./kernel-answer-primitives.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibratedRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
@@ -252,7 +253,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         }))
       ] : [];
       const inducedSeeds = seedDocuments.length
-        ? createLanguageInductionEngine({ hasher: options.hasher }).induce({ documents: seedDocuments }).translationSeeds
+        ? createLanguageInductionEngine({ hasher: options.hasher }).induce({ documents: boundedInductionDocuments(seedDocuments) }).translationSeeds
         : [];
       const seedLookup = buildSeedLookup([...(input.durableSeeds ?? []), ...inducedSeeds]);
       const constructionLookup = buildConstructionLookup(input.durableConstructions ?? []);

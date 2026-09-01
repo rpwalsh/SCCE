@@ -6,7 +6,7 @@ process.env.SCCE_TRACE = "1";
 const trace = createTrace("realtest");
 globalThis.__sccTrace = trace;
 
-const config = await readScceRuntimeConfig("scce.realtest.config.json");
+const config = await readScceRuntimeConfig(process.env.SCCE_CONFIG || "scce.realtest.config.json");
 const runtime = createNodeRuntime(config);
 const question = process.argv[2] || "What license does SlopBlocker use?";
 const result = await runtime.kernel.turn({ text: question });
