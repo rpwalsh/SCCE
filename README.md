@@ -6,7 +6,7 @@ Sovereign intelligence on ordinary hardware.
 
 SCCE is a self-contained cognitive engine that ingests evidence, builds durable knowledge, reasons, plans, acts, and learns — without a foundation-model runtime.
 
-No LLM inference. No vector-database RAG loop. No GPU cluster. No cloud dependency.
+No LLM in the reasoning core -- evidence, proof, and planning are graph-native. Optional, declared, config-gated local models may assist wording and visual embeddings (off by default; see `models.declared.json`). No vector-database RAG loop. No GPU cluster. No cloud dependency at inference.
 
 ![SCCE knowledge graph explorer showing ingested evidence and reasoning traces](docs/screenshots/dashboard.jpg)
 
@@ -24,7 +24,7 @@ SCCE is an implemented cognitive runtime, not a proposal, model wrapper, or retr
 ## Current verified status
 
 Measured against this repository's own gates, on a live PostgreSQL-backed
-runtime with a real ingested Wikipedia corpus (2026-08-18):
+runtime with a real ingested Wikipedia corpus (2026-08-20):
 
 - **Test suite**: 1,640 kernel tests (237 files) and 80 server tests (18
   files) passing, including live-database tests run against a real
@@ -51,16 +51,17 @@ runtime with a real ingested Wikipedia corpus (2026-08-18):
   rather than question templates so the generator encodes no English
   question grammar and produces a benchmark in whatever language the
   corpus is in.
-- **Sealed head-to-head (6-question diagnostic, post-fix)**: SCCE 4/6
-  versus 3/6 for the independent BM25 reference — winning direct QA 2/2
-  and abstention 2/2, losing cloze 0/2. N=6 is far below what this
-  repository's own cluster-bootstrap gate will certify, so this is a
-  diagnostic signal, not a result. A full 168-question run is the
-  measurement that counts.
-- **Known open defect**: SCCE returns empty on cloze-shaped prompts whose
-  answers are verbatim in its own sealed corpus, where BM25 scores 94%.
-  Retrieval and direct QA are unaffected and correct; this is a
-  task-shape gap in realization, and it is unfixed.
+- **Sealed 168-question head-to-head (2026-08-20)**: SCCE 157/168 exact
+  answers versus 158/168 for the independent BM25 reference on identical
+  evidence, held across every change landed since (each change is
+  re-certified by a full sealed run before it is pushed). The remaining
+  11 misses are mapped in the repository's decision log; none are
+  retrieval failures.
+- **Real-use trial**: a private repository (50 files) ingested cold
+  answered questions from its own documents with evidence-bound citations
+  ("What license does X use?" -> the license file). Two crashes and two
+  out-of-memory mechanisms found by that trial are fixed at the primitives
+  (see `DECISIONS.md`).
 - Single-operator rehearsal scope throughout. The independent
   public-review protocol in
   [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
