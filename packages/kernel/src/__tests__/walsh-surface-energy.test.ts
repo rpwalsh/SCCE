@@ -118,7 +118,8 @@ describe("Walsh surface energy", () => {
   });
 
   it("rejects canned hydrated-answer speech before final selection", () => {
-    const result = scoreSurfaceEnergy(candidate("c:canned", "The hydrated brain has 1 active import run. I cannot certify external factual claims from this shard.", { force: "underdetermined", evidenceIds: [] }), context({
+    // Marker-based: the surface is a runtime boundary template by origin id, whatever language it renders in.
+    const result = scoreSurfaceEnergy(candidate("c:canned", "Das hydrierte Gehirn hat einen aktiven Importlauf.", { force: "underdetermined", evidenceIds: [], metadata: { surfaceOriginId: "surface.boundary.brain_import_summary.v1" } }), context({
       proofVerdict: "unsupported_prior_only",
       expectedForce: "underdetermined",
       proposition: "brain import summary"
@@ -303,7 +304,8 @@ function candidate(id: string, text: string, options: Partial<SurfaceEnergyCandi
     semanticPreservation: options.semanticPreservation ?? 0.88,
     correctionAppliedCount: options.correctionAppliedCount ?? 0,
     forbiddenSurfaceHits: options.forbiddenSurfaceHits ?? [],
-    boundaryDecisions: options.boundaryDecisions ?? []
+    boundaryDecisions: options.boundaryDecisions ?? [],
+    metadata: options.metadata
   };
 }
 

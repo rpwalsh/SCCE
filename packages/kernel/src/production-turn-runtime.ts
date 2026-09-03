@@ -124,6 +124,7 @@ import { collapseSurfaceWhitespace, surfaceUnits } from "./surface-linguistics.j
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
+import { deriveClosedClassWords } from "./closed-class-words.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -615,7 +616,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       kernelTrace({ stage: "runtime.start", label: "kernel.turn", counts: { textChars: input.text.length } });
       const repoFiles = repoFilesFromMetadata(input.metadata);
-      const repoCognition = repoFiles ? toJsonValue(repoCognitionForTurn({ requestText: input.text, files: repoFiles })) : undefined;
       const documentGenerationRequest = documentGenerationRequestFromMetadata(input.metadata);
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
@@ -723,6 +723,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }
         }
         : baseAuthorityLanguage;
+      // Repo cognition runs after the language seed so symbol localization filters
+      // closed-class words derived from the active language, not a hardcoded list.
+      const repoCognition = repoFiles
+        ? toJsonValue(repoCognitionForTurn({
+          requestText: input.text,
+          files: repoFiles,
+          closedClassWords: deriveClosedClassWords({ models: authorityLanguage.state.models ?? [] })
+        }))
+        : undefined;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
       const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
       const authorityDialogueState = updateDialogueState({

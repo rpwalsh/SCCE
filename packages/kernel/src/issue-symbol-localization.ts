@@ -121,14 +121,15 @@ export function extractFileSymbols(path: string, text: string): SourceSymbol[] {
 export function localizeIssueToSymbols(
   issueText: string,
   symbols: readonly SourceSymbol[],
-  options: { limit?: number } = {}
+  options: { limit?: number; closedClassWords?: ReadonlySet<string> } = {}
 ): SymbolLocalizationCandidate[] {
-  const issueTerms = new Set(tokenize(issueText));
+  const closedClassWords = options.closedClassWords ?? EMPTY_CLOSED_CLASS;
+  const issueTerms = new Set(tokenize(issueText, closedClassWords));
   if (!issueTerms.size) return [];
   const candidates: SymbolLocalizationCandidate[] = [];
   for (const symbol of symbols) {
-    const nameTerms = new Set(tokenize(symbol.name));
-    const contextTerms = new Set(tokenize(symbol.context));
+    const nameTerms = new Set(tokenize(symbol.name, closedClassWords));
+    const contextTerms = new Set(tokenize(symbol.context, closedClassWords));
     const matchedTerms: string[] = [];
     let score = 0;
     for (const term of issueTerms) {
@@ -147,17 +148,15 @@ export function localizeIssueToSymbols(
   return candidates.slice(0, Math.max(0, limit));
 }
 
-const STOPWORDS = new Set([
-  "a", "an", "the", "is", "are", "was", "were", "be", "been", "to", "of", "in", "on", "for", "and", "or",
-  "it", "this", "that", "with", "when", "does", "do", "did", "not", "no", "at", "as", "by", "from", "if"
-]);
+// Closed-class words come from the active language (closed-class-words.ts), never a hardcoded list.
+const EMPTY_CLOSED_CLASS: ReadonlySet<string> = new Set();
 
-function tokenize(text: string): string[] {
+function tokenize(text: string, closedClassWords: ReadonlySet<string> = EMPTY_CLOSED_CLASS): string[] {
   const words = text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLocaleLowerCase()
     .match(/[a-z0-9]+/g) ?? [];
-  return words.filter(word => word.length > 2 && !STOPWORDS.has(word));
+  return words.filter(word => word.length > 2 && !closedClassWords.has(word));
 }
 
 function clamp01(value: number): number {

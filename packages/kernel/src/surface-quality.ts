@@ -50,7 +50,25 @@ const TELEMETRY_TERMS = [
   "profile excerpt evidence count"
 ] as const;
 
-export function detectCannedAnswerSpeech(text: string): SurfaceQualityIssue[] {
+export interface CannedSpeechMarkers {
+  surfaceOriginId?: string;
+  proofStatusId?: string;
+  answerPolicyId?: string;
+}
+
+// Canned certification/boundary speech is detected from trace markers, never from
+// the rendered language: the surface's origin or proof status says it is a runtime
+// boundary template, regardless of what language it was rendered in.
+const CANNED_CERTIFICATION_ORIGIN_PREFIXES = ["surface.boundary.", "surface.import_summary", "pca.boundary"];
+const NON_CERTIFYING_PROOF_STATUS_PREFIX = "proof.status.non_certifying";
+
+export function cannedCertificationMarker(markers: CannedSpeechMarkers): boolean {
+  const origin = markers.surfaceOriginId ?? "";
+  if (CANNED_CERTIFICATION_ORIGIN_PREFIXES.some(prefix => origin.startsWith(prefix))) return true;
+  return (markers.answerPolicyId ?? "").includes("boundary") && (markers.proofStatusId ?? "").startsWith(NON_CERTIFYING_PROOF_STATUS_PREFIX);
+}
+
+export function detectCannedAnswerSpeech(text: string, markers: CannedSpeechMarkers = {}): SurfaceQualityIssue[] {
   const normalized = normalizeForQuality(text);
   const issues: SurfaceQualityIssue[] = [];
   const add = (id: string, kind: SurfaceQualityIssueKind, matched: string, trace: JsonValue = {}) => {
@@ -81,10 +99,7 @@ export function detectCannedAnswerSpeech(text: string): SurfaceQualityIssue[] {
   if (telemetryHits.length >= 3 && numericInventory) {
     add(SURFACE_QUALITY_ISSUE_IDS.telemetry, SURFACE_QUALITY_KIND_IDS.telemetry, telemetryHits.slice(0, 4).join("; "), toJsonValue({ telemetryHits, numericInventory }));
   }
-  const certificationBoilerplate =
-    (normalized.includes("cannot certify") && (normalized.includes("external factual claim") || normalized.includes("available evidence") || normalized.includes("direct evidence"))) ||
-    (normalized.includes("no sentence certified") && normalized.includes("available evidence")) ||
-    (normalized.includes("hydrated brain") && normalized.includes("active import run"));
+  const certificationBoilerplate = cannedCertificationMarker(markers);
   if (certificationBoilerplate) {
     add(SURFACE_QUALITY_ISSUE_IDS.certification, SURFACE_QUALITY_KIND_IDS.canned, boundedMatchedText(normalized), toJsonValue({ detector: "sq.det.1e4b9a70" }));
   }

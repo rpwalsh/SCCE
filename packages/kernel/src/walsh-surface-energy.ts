@@ -5,7 +5,7 @@ import type { DiscoursePlan, OutputForce, SurfacePlan } from "./mouth-types.js";
 import type { TurnRequirement, TurnRequirementField } from "./turn-requirements.js";
 import type { ConstructGraph, FieldState, JsonValue, RequestedAuthority } from "./types.js";
 import { clamp01, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
-import { SURFACE_QUALITY_ISSUE_IDS, SURFACE_QUALITY_REJECTION_IDS, detectCannedAnswerSpeech } from "./surface-quality.js";
+import { SURFACE_QUALITY_ISSUE_IDS, SURFACE_QUALITY_REJECTION_IDS, detectCannedAnswerSpeech, type CannedSpeechMarkers } from "./surface-quality.js";
 import { featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
 
@@ -654,7 +654,7 @@ function generalFakeFactualAuthority(candidate: SurfaceEnergyCandidate, context:
 }
 
 function telemetryLeak(candidate: SurfaceEnergyCandidate): TermScore {
-  const issues = detectCannedAnswerSpeech(candidate.text);
+  const issues = detectCannedAnswerSpeech(candidate.text, cannedMarkersFromMetadata(candidate.metadata));
   const qualityTelemetry = issues.some(issue => issue.id === SURFACE_QUALITY_ISSUE_IDS.telemetry || issue.kind === "sq.kind.6b9e13d0");
   const internal = internalTelemetryHits(candidate.text);
   const metadata = recordValue(candidate.metadata);
@@ -754,7 +754,7 @@ function hardConstraintViolations(candidate: SurfaceEnergyCandidate, context: Su
   const out: SurfaceEnergyHardViolation[] = [];
   const add = (id: string, trace: JsonValue = {}) => out.push({ id, severity: "reject", trace });
   const forbidden = forbiddenSurfaceHits(candidate, context, stats);
-  const cannedSpeech = detectCannedAnswerSpeech(candidate.text);
+  const cannedSpeech = detectCannedAnswerSpeech(candidate.text, cannedMarkersFromMetadata(candidate.metadata));
   // Missing required numbers/entities, a learned prior cited as evidence,
   // and a generically fake-factual-authority surface are evidentiary
   // concerns, not surface-quality/safety ones -- evidence is a citation,
@@ -1254,4 +1254,15 @@ function hashText(text: string): string {
     h2 = Math.imul(h2 + cp, 1099511627);
   }
   return `${(h1 >>> 0).toString(16).padStart(8, "0")}${(h2 >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function cannedMarkersFromMetadata(metadata: JsonValue | undefined): CannedSpeechMarkers {
+  const record = recordValue(metadata);
+  const frame = recordValue(record.semanticFrame);
+  const pick = (value: unknown): string | undefined => typeof value === "string" && value ? value : undefined;
+  return {
+    surfaceOriginId: pick(record.surfaceOriginId) ?? pick(frame.surfaceOriginId),
+    proofStatusId: pick(record.proofStatusId) ?? pick(frame.proofStatusId),
+    answerPolicyId: pick(record.answerPolicyId) ?? pick(frame.answerPolicyId)
+  };
 }

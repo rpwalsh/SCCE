@@ -1,4 +1,5 @@
 import type { CorrectionRuleRecord, WordingRealizerPort } from "./storage.js";
+import { deriveClosedClassWords } from "./closed-class-words.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
@@ -5368,7 +5369,8 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
       })),
       targetLanguage: input.targetLanguage ?? "",
       targetScript: input.targetScript ?? "",
-      maxSentences: 4
+      maxSentences: 4,
+      closedClassWords: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })]
     });
   } catch {
     // A realizer failure must never cost the turn -- the pool simply
