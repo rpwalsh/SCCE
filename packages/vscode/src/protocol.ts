@@ -35,7 +35,11 @@ export type ScceEndpoint =
   | "workspace.patch.plan.request"
   | "workspace.patch"
   | "project.summary"
-  | "workspace.status";
+  | "workspace.status"
+  | "learning.review"
+  | "learning.review.decide"
+  | "learning.curriculum"
+  | "learning.pursue";
 
 export interface ReadyResponse {
   ok: boolean;
