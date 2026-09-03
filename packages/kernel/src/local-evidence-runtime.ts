@@ -617,7 +617,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // when the winner is a lead sentence (the lead block IS the enumeration
   // context), else at the winner. Contiguity is the coherence guarantee --
   // never stitched fragments from disjoint places.
-  const sentenceBudget = Math.max(1, Math.min(8, Math.floor(input.responseSentenceBudget ?? 1)));
+  // A quotation with a hole is answered by the quoted sentence alone; the enumeration window is for enumeration requests.
+  const sentenceBudget = selected.nearDuplicate ? 1 : Math.max(1, Math.min(8, Math.floor(input.responseSentenceBudget ?? 1)));
   // Ranked sentences are already tidy-space verbatim substrings of the
   // span (see the ranking block above), so the single-sentence answer
   // needs no remapping and the multi-sentence window below verifies by
@@ -661,6 +662,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       sourceAnchors: anchored.anchors,
       proposalScore: selected.score,
       proposalSentenceIndex: selected.index,
+      nearDuplicate: selected.nearDuplicate,
       responseSentenceBudget: sentenceBudget,
       proofEnrichmentOptional: true,
       fakeEvidenceForbidden: true
@@ -751,6 +753,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       entailmentForce: input.entailment?.force ?? "unverified-proposal",
       certificationVerifierVerdict: input.semanticProof?.verdict ?? "unverified-proposal",
       selectedSentenceCount: sentences.length,
+      nearDuplicate: planNearDuplicate,
       fakeEvidenceForbidden: true
     })
   };
@@ -813,6 +816,11 @@ export function preferredLocalEvidenceAnswer(
   if (!primary) return alternate;
   if (!alternate) return primary;
   return localEvidenceAnswerPriority(alternate.plan) > localEvidenceAnswerPriority(primary.plan) ? alternate : primary;
+}
+
+/** A request that quotes a remembered sentence is recall, whatever its surface suggested before memory was consulted. */
+export function localEvidenceAnswerIsQuotationRecall(candidate: LocalEvidenceAnswerCandidate | undefined): boolean {
+  return candidate !== undefined && jsonRecord(candidate.plan.audit).nearDuplicate === true;
 }
 
 export function localEvidenceAnswerClaimSurface(candidate: LocalEvidenceAnswerCandidate): string {
@@ -1854,12 +1862,18 @@ export function spanContainsRequestNearDuplicateSentence(span: EvidenceSpan, req
   // slice(0,4000) blinded the gate to the last ~90 chars of a 4096-byte
   // chunk, exactly where boundary-split sentences live.
   const window = evidenceWindowText(span);
-  const bounded = window.length <= 6000 ? window : window.slice(0, 4000);
+  // A boundary-joined span carries its quoted sentence at the join, past the cheap head window.
+  const bounded = window.length <= 6000 || boundaryJoinedSpan(span) ? window.slice(0, 12000) : window.slice(0, 4000);
   return fastAnswerSentences(bounded).some(sentence =>
     requestSequences.some(sequence =>
       surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits) >= 0.5));
 }
 
+
+function boundaryJoinedSpan(span: EvidenceSpan): boolean {
+  const provenance = span.provenance;
+  return Boolean(provenance && typeof provenance === "object" && !Array.isArray(provenance) && Array.isArray((provenance as Record<string, unknown>).boundaryJoin));
+}
 
 function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, requestText: string): boolean {
   const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
@@ -2970,7 +2984,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
-  const selected = selectEvidenceSentenceRows(candidates, limit);
+  // The quoted sentence answers a quotation by itself (same doctrine as the source-exact window).
+  const selected = selectEvidenceSentenceRows(candidates, candidates[0]?.nearDuplicate ? 1 : limit);
   // Adjacent sentences read in document order, whatever order they were
   // scored in (run-f emitted "It acquired the retronym... 'Star Trek' is
   // an American..." -- the article's sentences reversed).
