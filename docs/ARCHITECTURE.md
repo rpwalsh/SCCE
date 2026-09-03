@@ -347,7 +347,7 @@ The mouth realizes answers from three native strategies — extractive splicing
 continuation (`kneser-ney.ts`) — all scored by `scoreSurfaceEnergy`
 (`walsh-surface-energy.ts`). A fourth, optional strategy plugs into the kernel's existing
 `WordingRealizerPort`: **lexically-constrained decoding** with a small local ONNX model
-(`packages/adapters-node/src/constrained-realizer.ts`, runtime `@huggingface/transformers`).
+(`packages/adapters-node/src/constrained-realizer.ts`, via the declared local ONNX runtime).
 
 Doctrine, unchanged: the reasoning/evidence core decides *what* may be said. The constrained
 decoder only arranges wording. At every decode step its logits are masked to tokens that occur

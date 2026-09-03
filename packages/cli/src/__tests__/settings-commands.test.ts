@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SETTINGS_FIELDS, modelDirectoryFor } from "../settings-commands.js";
 
 describe("settings fields", () => {
-  it("validates the Ollama host as loopback and the API endpoint as https", () => {
+  it("validates the local model-server host as loopback and the API endpoint as https", () => {
     const ollama = SETTINGS_FIELDS.find(field => field.key === "realization.ollama.host")!;
     expect(ollama.validate?.("http://localhost:11434")).toBeUndefined();
     expect(ollama.validate?.("http://127.0.0.1:11434")).toBeUndefined();

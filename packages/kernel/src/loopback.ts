@@ -1,4 +1,4 @@
-/** Loopback host check shared by every surface that validates a local endpoint (Ollama host, server URL). */
+/** Loopback host check shared by every surface that validates a local endpoint (local model-server host, server URL). */
 export function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLocaleLowerCase().replace(/^\[|\]$/g, "");
   if (normalized === "localhost" || normalized === "::1") return true;
