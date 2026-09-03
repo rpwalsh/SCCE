@@ -18,7 +18,7 @@ import { runProcess } from "./document.js";
  * The code mouth: retrieve (code-graph facts) -> propose (a realizer constrained to the
  * workspace's own symbols) -> apply -> compile/typecheck gate -> bounded retry loop
  * (bounded-autonomous-debugging decides continue/stop). Only a patch that passes the
- * gate survives; anything else is rolled back. ChatGPT hopes; this compiles or it refuses.
+ * gate survives; anything else is rolled back: it compiles, or it refuses.
  */
 
 export interface CodeMouthContext {

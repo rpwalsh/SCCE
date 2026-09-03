@@ -61,7 +61,7 @@ runtime with a real ingested Wikipedia corpus (2026-08-20):
   answered questions from its own documents with evidence-bound citations
   ("What license does X use?" -> the license file). Two crashes and two
   out-of-memory mechanisms found by that trial are fixed at the primitives
-  (see `DECISIONS.md`).
+  (recorded in the private decision log).
 - Single-operator rehearsal scope throughout. The independent
   public-review protocol in
   [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
