@@ -142,13 +142,14 @@ import { conflictingGraphEdgeIntervals } from "./graph-temporal.js";
 import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
+  explicitAuthorityRequirements,
   projectRequestAuthority,
   requestOperatorDialogueSupport,
   requestOperatorGraphSupport
 } from "./request-authority.js";
 import { hybridRecall } from "./retrieval.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { preferredLocalEvidenceAnswer } from "./local-evidence-runtime.js";
+import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer } from "./local-evidence-runtime.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -771,7 +772,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...authorityLanguage.state.importedPatterns
         ], 2048)
       };
-      const requirementField = deriveTurnRequirementField({
+      let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
           ...explicitTurnRequirementsFromInput(input, explicitAuthority),
@@ -782,14 +783,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         contextContribution: requirementContextFromMetadata(input.metadata)
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
-      const requestedAuthority = authorityProjection.requestedAuthority;
+      let requestedAuthority = authorityProjection.requestedAuthority;
       let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: operatorOutcomeSupport(input.metadata)
       });
-      const requestedAuthorityDecision = toJsonValue({
+      let requestedAuthorityDecision = toJsonValue({
         ...jsonRecord(authorityProjection.trace),
         activeOperatorIds: activeRequestOperatorIds(operatorActivations)
       });
@@ -1038,6 +1039,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? (sourceAnchorAudit.evidence.length ? sourceAnchorAudit.evidence : auditFallbackEvidence)
         : evidence;
       if (sourceAnchorAudit.required && admissibleEvidence.length) graph = graphFilteredToEvidence(graph, admissibleEvidence);
+      kernelTrace({
+        stage: "graph.resolve.pool_admission",
+        label: "kernel.turn",
+        counts: { pool: evidence.length, admitted: admissibleEvidence.length, fallback: auditFallbackEvidence.length },
+        support: {
+          required: sourceAnchorAudit.required,
+          anchors: sourceAnchorAudit.anchors.slice(0, 8),
+          spans: evidence.slice(0, 8).map(span => ({ id: String(span.id).slice(-12), chars: [...String(span.text ?? "")].length, window: [...String(span.retrievalWindow ?? span.text ?? "")].length, admitted: admissibleEvidence.includes(span) }))
+        }
+      });
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
       const semanticRetrievalStarted = Date.now();
       const compiledMemorySlice = semanticMemory.buildSlice({
@@ -1190,6 +1201,28 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ? { responseSentenceBudget: responseFormSentences }
           : {})
       });
+      // Quotation recall: the request near-duplicates a remembered sentence, so it is recall whatever the pre-retrieval projection said.
+      if (requestedAuthority === "creative" && !explicitAuthority && localEvidenceAnswerIsQuotationRecall(answerProposal)) {
+        requirementField = deriveTurnRequirementField({
+          requestText: input.text,
+          explicitRequirements: [
+            ...explicitTurnRequirementsFromInput(input, explicitAuthority),
+            ...workspacePlanContext.explicitRequirements,
+            ...explicitAuthorityRequirements({ requestText: input.text, authority: "factual", sourceId: "quotation_recall" })
+          ],
+          dialogueState: authorityDialogueState,
+          languageMemoryState: requestRequirementLanguageState,
+          contextContribution: requirementContextFromMetadata(input.metadata)
+        });
+        requestedAuthority = "factual";
+        requestedAuthorityDecision = toJsonValue({ ...jsonRecord(requestedAuthorityDecision), requestedAuthority, selectedAuthority: requestedAuthority, revision: "quotation_recall" });
+        kernelTrace({
+          stage: "candidate.proposal.quotation_recall",
+          label: "kernel.turn.source_exact",
+          counts: { revised: 1 },
+          support: { projectedAuthority: authorityProjection.projectedAuthority, requestedAuthority }
+        });
+      }
       // Not input.text directly: evaluateSemanticObligations/structural.check
       // extract material assertable items from claim.text -- a raw
       // interrogative request ("Who was X, and what did Y?") doesn't carry

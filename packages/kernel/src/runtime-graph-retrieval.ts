@@ -370,9 +370,10 @@ export function createRuntimeGraphRetrieval(options: {
           label: "kernel.graphForText",
           counts: { evidence: nearDuplicateEvidence.length }
         });
+        const quotationEvidence = joinContiguousQuotationSpans(mergeEvidenceSpans(nearDuplicateEvidence), sourceContentHash);
         return cacheGraphSlice(cacheKey, emptyRuntimeGraphSlice(
-          { evidenceIds: nearDuplicateEvidence.map(span => span.id), features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 },
-          mergeEvidenceSpans(nearDuplicateEvidence),
+          { evidenceIds: quotationEvidence.map(span => span.id), features: [...features], topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 },
+          quotationEvidence,
           anchoredSelection.semanticFrameBoundEvidenceIds
         ), "postgres");
       }
@@ -414,6 +415,11 @@ export function createRuntimeGraphRetrieval(options: {
         semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
       };
       return cacheGraphSlice(cacheKey, value, "postgres");
+    }
+    // An unanchored (creative-projected) request that quotes a remembered sentence is recall; the quoted sentence's span is the answer source.
+    if (!sourceAnchoringRequired && !residentOnly) {
+      const quoted = await quotationGraphSlice(text, features, topicTerms);
+      if (quoted) return cacheGraphSlice(cacheKey, quoted, "postgres");
     }
     if (!requireDurableGraphLookup && !sourceAnchoringRequired) {
       const hot = await hotNeighborhoodCached();
@@ -516,6 +522,31 @@ export function createRuntimeGraphRetrieval(options: {
     return hotNeighborhoodLoad;
   }
 
+
+  async function quotationGraphSlice(text: string, features: readonly string[], topicTerms: readonly string[]): Promise<RuntimeGraphSliceValue | undefined> {
+    const sequences = requestSentenceSequences(text);
+    if (!sequences.length || !sourceEvidenceAnchorsForRequest(text).length) return undefined;
+    const anchorFeatures = sourceAnchorRetrievalFeatures(text).map(feature => feature.slice("anchor:".length));
+    const selection = await sourceAnchoredEvidenceForText(text, anchorFeatures, false);
+    const quoted = selection.evidence.filter(span => spanContainsRequestNearDuplicateSentence(span, sequences));
+    if (!quoted.length) return undefined;
+    kernelTrace({
+      stage: "graph.resolve.near_duplicate_fast_path",
+      label: "kernel.graphForText",
+      counts: { evidence: quoted.length },
+      support: { sourceAnchoringRequired: false }
+    });
+    const quotationEvidence = joinContiguousQuotationSpans(mergeEvidenceSpans(quoted), sourceContentHash);
+    return emptyRuntimeGraphSlice(
+      { evidenceIds: quotationEvidence.map(span => span.id), features: [...features], topicTerms: [...topicTerms], radius: 0, limitNodes: 0, limitEdges: 0 },
+      quotationEvidence,
+      selection.semanticFrameBoundEvidenceIds
+    );
+  }
+
+  function sourceContentHash(text: string): string {
+    return `sha256_${hasher.digestHex(text)}`;
+  }
 
   async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
     const anchorFeatureGroups = sourceAnchorRetrievalFeatureGroups(text);
@@ -1869,6 +1900,34 @@ export function dropContainerSpans<T extends { id: unknown; sourceVersionId: unk
       && other.charEnd - other.charStart < span.charEnd - span.charStart);
     return covered.length < 2;
   });
+}
+
+/** A quoted sentence cut by a chunk boundary lives in two contiguous spans of one source version; joined, the span is still that source's own bytes over one range, so every identity field is recomputed. Pure. */
+export function joinContiguousQuotationSpans(spans: readonly EvidenceSpan[], contentHash: (text: string) => string): EvidenceSpan[] {
+  const ordered = [...spans].sort((left, right) => String(left.sourceVersionId).localeCompare(String(right.sourceVersionId)) || left.byteStart - right.byteStart);
+  const joined: EvidenceSpan[] = [];
+  for (const span of ordered) {
+    const previous = joined[joined.length - 1];
+    if (previous && previous.sourceVersionId === span.sourceVersionId && previous.byteEnd === span.byteStart && previous.charEnd === span.charStart) {
+      const text = previous.text + span.text;
+      const provenance = previous.provenance && typeof previous.provenance === "object" && !Array.isArray(previous.provenance) ? previous.provenance : {};
+      joined[joined.length - 1] = {
+        ...previous,
+        byteEnd: span.byteEnd,
+        charEnd: span.charEnd,
+        text,
+        textPreview: previous.textPreview,
+        contentHash: contentHash(text) as EvidenceSpan["contentHash"],
+        features: [...new Set([...previous.features, ...span.features])],
+        provenance: { ...provenance, byteRange: [previous.byteStart, span.byteEnd], charRange: [previous.charStart, span.charEnd], boundaryJoin: [String(previous.id), String(span.id)] },
+        alpha: Math.max(previous.alpha, span.alpha)
+      };
+      delete joined[joined.length - 1]!.retrievalWindow;
+      continue;
+    }
+    joined.push(span);
+  }
+  return joined;
 }
 
 export function isControlCorpusSpan(span: EvidenceSpan): boolean {
