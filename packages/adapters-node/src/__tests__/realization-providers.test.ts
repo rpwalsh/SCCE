@@ -16,7 +16,7 @@ describe("generate-then-verify", () => {
   });
 });
 
-describe("ollama provider", () => {
+describe("local model-server provider", () => {
   it("returns a verified surface and never marks unverified output as verified", async () => {
     const good = createOllamaProvider({ host: "http://localhost:11434", model: "m", fetchImpl: fakeFetch({ response: "pump alpha is stable at 42 psi." }) });
     expect((await good.realize(request))[0]).toMatchObject({ verified: true });
