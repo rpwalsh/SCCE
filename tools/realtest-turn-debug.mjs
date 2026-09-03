@@ -9,7 +9,7 @@ globalThis.__sccTrace = trace;
 const config = await readScceRuntimeConfig(process.env.SCCE_CONFIG || "scce.realtest.config.json");
 const runtime = createNodeRuntime(config);
 const question = process.argv[2] || "What license does SlopBlocker use?";
-const result = await runtime.kernel.turn({ text: question });
+const result = await runtime.kernel.turn({ text: question, ...(process.env.SCCE_DEBUG_FAST ? { metadata: { fastLocalEvidenceAnswer: true } } : {}) });
 console.log(JSON.stringify({
   answer: result.answer,
   force: result.epistemicForce,
@@ -24,5 +24,6 @@ if (trace) {
     if (true) console.log("TRACE", row.stage, JSON.stringify(row.counts ?? {}), JSON.stringify(row.support ?? {}));
   }
 }
+console.error("RSS_MB", Math.round(process.memoryUsage().rss / 1048576), "HEAP_MB", Math.round(process.memoryUsage().heapUsed / 1048576));
 await runtime.close?.();
 process.exit(0);

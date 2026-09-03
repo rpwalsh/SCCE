@@ -20,7 +20,7 @@ import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
 } from "./language.js";
-import { createClock, createHasher, toJsonValue } from "./primitives.js";
+import { createClock, createHasher, toJsonValue, sourceTextSurface } from "./primitives.js";
 import {
   informationLabelAllowsRead,
   joinInformationLabels,
@@ -205,7 +205,10 @@ export function createIngestionRuntime(options: {
         };
         await deps.storage.evidence.putSourceVersion(originalSource);
         const derivative = file.evidenceDerivative;
-        const sourceText = derivative?.text ?? file.text;
+        const rawSourceText = derivative?.text ?? file.text;
+        // HTML is never language evidence raw: strip scripts/styles/chrome before any
+        // lattice/induction sees it (a fetched page carried 100KB of inline JS -> OOM).
+        const sourceText = file.mediaType.toLocaleLowerCase().startsWith("text/html") ? sourceTextSurface(rawSourceText, 0) : rawSourceText;
         const sourceBytes = derivative?.bytes ?? file.bytes;
         if (!Buffer.from(sourceText, "utf8").equals(Buffer.from(sourceBytes))) {
           throw new Error(`evidence derivative bytes do not encode source text: ${file.uri}`);

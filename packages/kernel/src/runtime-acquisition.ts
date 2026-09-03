@@ -196,6 +196,8 @@ export function createRuntimeAcquisition(options: {
   const { deps, eventFactory, hasher, failures, append, ingest: ingestSource } = options;
 
 
+  // Runtime-acquired pages are bounded at the fetch, before any parser sees them.
+  const MAX_ACQUIRED_SOURCE_BYTES = 2 * 1024 * 1024;
   async function learnHydrateReplan(input: {
     ownerInput: OwnerInput;
     episodeId: EpisodeId;
@@ -252,6 +254,10 @@ export function createRuntimeAcquisition(options: {
           const fetched = await deps.connectors.fetch(searchUri);
           if (fetched.bytes.byteLength === 0) {
             motionFailures.push(`fetch returned zero bytes: ${redactSecrets(searchUri)}`);
+            continue;
+          }
+          if (fetched.bytes.byteLength > MAX_ACQUIRED_SOURCE_BYTES) {
+            motionFailures.push(`fetch exceeded acquisition byte cap (${fetched.bytes.byteLength} > ${MAX_ACQUIRED_SOURCE_BYTES}): ${redactSecrets(searchUri)}`);
             continue;
           }
           fetchedSourceCount++;
