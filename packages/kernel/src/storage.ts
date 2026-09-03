@@ -640,6 +640,8 @@ export interface WordingRealizerRequest {
   maxSentences: number;
   /** Closed-class vocabulary of the active language (derived, never hardcoded) a wording realizer may use besides fact tokens. */
   closedClassWords?: readonly string[];
+  /** An invention may say more than the facts; it is labelled invented, never sourced. */
+  invention?: boolean;
 }
 
 /** See ScceKernelDeps.wordingRealizer for the doctrine this port lives under. */

@@ -407,6 +407,23 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
   return clampRequirementField(field);
 }
 
+/** The request minus the spans its learned patterns and frames matched: what remains is the subject, in any language the corpus covers. Pure. */
+export function requestSubjectText(requestText: string, field: Pick<TurnRequirementField, "trace">): string {
+  const chars = [...requestText];
+  const activations = jsonRecord(field.trace).activations;
+  const spans = (Array.isArray(activations) ? activations : [])
+    .map(row => jsonRecord(row))
+    .filter(row => row.kind === "pattern" || row.kind === "frame")
+    .map(row => jsonRecord(row.span))
+    .map(span => [Number(span.charStart), Number(span.charEnd)] as const)
+    .filter(([start, end]) => Number.isInteger(start) && Number.isInteger(end) && end > start && end - start < chars.length);
+  if (!spans.length) return requestText;
+  const keep = chars.map(() => true);
+  for (const [start, end] of spans) for (let index = Math.max(0, start); index < Math.min(chars.length, end); index++) keep[index] = false;
+  const remainder = chars.filter((_, index) => keep[index]).join("").replace(/\s+/gu, " ").trim();
+  return remainder.split(" ").filter(Boolean).length >= 2 ? remainder : requestText;
+}
+
 /** Activate every compatible operator; this deliberately does not choose one mode. */
 export function activateCognitiveOperators(input: ActivateCognitiveOperatorsInput): ActivatedOperator[] {
   const model = input.model ?? DEFAULT_COGNITIVE_OPERATOR_MODEL;

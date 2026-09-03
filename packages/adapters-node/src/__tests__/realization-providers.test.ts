@@ -85,3 +85,27 @@ describe("api-key provider sovereignty gate", () => {
     expect(lines.join("\n")).toMatch(/2 evidence spans/u);
   });
 });
+
+describe("invention", () => {
+  it("prompts an invention without facts and admits the draft as invented", async () => {
+    const provider = createOllamaProvider({ host: "http://x", model: "m", fetchImpl: fakeFetch({ response: "Einstein raised his chalk like a sword as the dragon circled the lecture hall." }) });
+    const out = await provider.realize({ ...request, facts: [], invention: true, requestText: "write a short story about einstein fighting a dragon" });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.verified).toBe(true);
+    const built = buildProviderPrompt({ ...request, facts: [], invention: true });
+    expect(built.system).toMatch(/Invent freely/u);
+    expect(built.prompt).not.toContain("Facts:");
+    expect(await provider.realize({ ...request, facts: [] })).toEqual([]);
+  });
+});
+
+describe("invention trimming", () => {
+  it("keeps only complete sentences of a draft cut off by the token budget", async () => {
+    const { trimToSentenceBoundary } = await import("../realization-providers.js");
+    expect(trimToSentenceBoundary("He drew his chalk. The dragon roared! Then the sky went dar")).toBe("He drew his chalk. The dragon roared!");
+    expect(trimToSentenceBoundary("no boundary at all")).toBe("");
+    const provider = createOllamaProvider({ host: "http://x", model: "m", fetchImpl: fakeFetch({ response: "Einstein won. The dragon fle" }) });
+    const out = await provider.realize({ ...request, facts: [], invention: true });
+    expect(out[0]?.text).toBe("Einstein won.");
+  });
+});
