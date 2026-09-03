@@ -3,20 +3,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { CONDITION_IDS } from "./scce-trace-verifier.mjs";
 
-export const EVALUATION_CONDITION_IDS = Object.freeze([
-  "full",
-  "no_relation_potential",
-  "no_query_diffusion",
-  "no_powerwalk",
-  "no_graph",
-  "lexical_only",
-  "no_support_engine",
-  "deterministic_mouth",
-  "no_language_memory",
-  "no_incremental_learning",
-  "no_shard_router"
-]);
+export const EVALUATION_CONDITION_IDS = CONDITION_IDS;
 
 /** Parse the process environment once, before a runtime is constructed. */
 export function parseEvaluationEnvironment(environment) {

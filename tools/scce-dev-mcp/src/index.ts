@@ -17,6 +17,7 @@ import { handleGitDiffSummary } from './tools/git.js';
 import { handleGitLog } from './tools/git.js';
 import { handleTestRun } from './tools/tests.js';
 import { handleTestFailures } from './tools/tests.js';
+import { handleListCommands } from './tools/tests.js';
 import { handlePgSchema } from './tools/postgres.js';
 import { handlePgQuery } from './tools/postgres.js';
 import { handlePgExplain } from './tools/postgres.js';
@@ -174,6 +175,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'test_list_commands',
+      description: 'List the closed registry of commandIds accepted by test_run/test_failures.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
       name: 'pg_schema',
       description: 'Read-only Postgres schema inspection for the configured schema (SCCE_DATABASE_URL overrides the connection target).',
       inputSchema: {
@@ -277,6 +283,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: await handleTestRun(validated as any) }] };
       case 'test_failures':
         return { content: [{ type: 'text', text: await handleTestFailures(validated as any) }] };
+      case 'test_list_commands':
+        return { content: [{ type: 'text', text: handleListCommands() }] };
       case 'pg_schema':
         return { content: [{ type: 'text', text: await handlePgSchema(validated as any) }] };
       case 'pg_query':
