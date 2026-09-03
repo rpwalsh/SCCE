@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import {
   createBoundedDebugSession,
@@ -145,16 +147,15 @@ export function createTypeScriptCodeMouthPorts(input: {
       if (!input.realizer) return undefined;
       const facts = [
         { subject: "request", predicate: "asks", object: request, evidenceIds: ["request"] },
+        { subject: path.basename(context.targetPath), predicate: "contains", object: context.targetText.slice(0, 24_000), evidenceIds: ["source"] },
         { subject: path.basename(context.targetPath), predicate: "exports", object: context.symbols.slice(0, 64).join(" "), evidenceIds: ["code-graph"] },
         ...diagnostics.slice(0, 6).map((diagnostic, index) => ({ subject: `diagnostic ${index + 1}`, predicate: "says", object: `${diagnostic.message} (line ${diagnostic.line ?? "?"})`, evidenceIds: [diagnostic.id] }))
       ];
       const surfaces = await input.realizer.realize({ requestText: request, facts, targetLanguage: "typescript", targetScript: "Latn", maxSentences: 40, closedClassWords: TYPESCRIPT_CLOSED_CLASS });
-      const code = surfaces.map(surface => surface.trim()).filter(Boolean)[0];
-      if (!code) return undefined;
-      const targetDiagnostic = diagnostics.find(diagnostic => diagnostic.path === context.targetPath && diagnostic.line);
-      const operation: RepairOperation = targetDiagnostic
-        ? { id: `op:${attempt}:replace`, risk: 0.5, kind: "replace", path: context.targetPath, startLine: targetDiagnostic.line, endLine: targetDiagnostic.line, content: code, reason: `attempt ${attempt}: replace diagnostic line` }
-        : { id: `op:${attempt}:insert`, risk: 0.35, kind: "insert", path: context.targetPath, content: `\n${code}\n`, reason: `attempt ${attempt}: append proposal` };
+      const code = surfaces.map(surface => surface.replace(/\s+$/u, "")).filter(surface => surface.trim())[0];
+      if (!code || code === context.targetText.replace(/\s+$/u, "")) return undefined;
+      const lineCount = context.targetText.split("\n").length;
+      const operation: RepairOperation = { id: `op:${attempt}:rewrite`, risk: 0.5, kind: "replace", path: context.targetPath, startLine: 1, endLine: lineCount, content: code, reason: `attempt ${attempt}: whole-file rewrite from the realizer` };
       return { operations: [operation], surface: code };
     },
     async apply(operations) {
@@ -178,9 +179,15 @@ export function createTypeScriptCodeMouthPorts(input: {
     },
     async verify() {
       const tsconfig = input.tsconfigPath ?? path.join(root, "tsconfig.json");
-      const command = input.tscCommand ?? { command: process.execPath, args: [path.join(root, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "-p", tsconfig] };
+      const localTsc = path.join(root, "node_modules", "typescript", "bin", "tsc");
+      const tsc = existsSync(localTsc) ? localTsc : createRequire(import.meta.url).resolve("typescript/bin/tsc");
+      const command = input.tscCommand ?? { command: process.execPath, args: [tsc, "--noEmit", "-p", tsconfig] };
       const result = await runProcess(command.command, command.args, { cwd: root, timeoutMs: 180_000 });
       const diagnostics = parseTscDiagnostics(`${result.stdout}\n${result.stderr}`, root);
+      if (result.code !== 0 && !diagnostics.length) {
+        // The gate itself failed to run: report that as a build failure rather than a clean bill.
+        diagnostics.push({ id: "tsc:unavailable", class: "syntax", message: `typecheck did not run: ${(result.stderr || result.stdout || "").trim().slice(0, 300)}`, raw: (result.stderr || result.stdout || "").trim().slice(0, 300), confidence: 1 });
+      }
       return { buildSucceeded: result.code === 0 && diagnostics.length === 0, testsSucceeded: true, diagnostics };
     }
   };
