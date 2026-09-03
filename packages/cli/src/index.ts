@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
+import { createTypeScriptCodeMouthPorts, runCodeMouth, selectRealizationPort } from "@scce/adapters-node";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -76,6 +77,21 @@ async function main(): Promise<void> {
         if (!parsed.args[0]) return usage("scce ingest <path-or-uri>");
         printJson(await createWorkspaceRuntime({ runtime, config }).ingest(parsed.args[0], parseWorkspaceOptions(parsed.args.slice(1))));
         return;
+      case "code": {
+        const target = parsed.args.find(arg => arg.startsWith("--path="))?.slice(7);
+        const request = parsed.args.filter(arg => !arg.startsWith("--")).join(" ").trim();
+        if (!target || !request) return usage("scce code --path=<workspace-file> <request>");
+        const realizer = selectRealizationPort(config);
+        const result = await runCodeMouth({
+          request,
+          targetPath: target,
+          maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3),
+          log: message => process.stderr.write(`[code-mouth] ${message}\n`),
+          ports: createTypeScriptCodeMouthPorts({ workspaceRoot: config.runtime.workspaceRoot, realizer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
+        });
+        printJson(result);
+        break;
+      }
       case "settings":
         await runSettingsCommand(parsed.configPath ?? "scce.config.json", parsed.args);
         break;
@@ -1400,6 +1416,7 @@ function usage(error?: string): void {
     "  pnpm scce settings [show | set <key> <value>]   (interactive when no args; writes scce.config.json)",
     "  pnpm scce model list | download <org/name> [--clip] [--dtype=q8] | remove <org/name>",
     "  pnpm scce sensor run <id>",
+    "  pnpm scce code --path=<workspace-file> [--attempts=3] <request>   (compile-gated patch loop; needs a realization provider)",
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
     "  pnpm scce project summary [path]",
