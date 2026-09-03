@@ -16,7 +16,9 @@ console.log(JSON.stringify({
   evidenceCount: result.evidence.length,
   evidenceHeads: result.evidence.slice(0, 3).map(span => String(span.text ?? span.textPreview ?? "").slice(0, 80)),
   entailment: { support: result.entailment?.support, force: result.entailment?.force, claim: String(result.entailment?.claim?.text ?? "").slice(0, 100) },
-  eventTypes: [...new Set((result.events ?? []).map(event => event.typeId))]
+  eventTypes: [...new Set((result.events ?? []).map(event => event.typeId))],
+  selectedAnswerChars: String(result.selectedCandidate?.answer ?? result.candidates?.selected?.answer ?? "").length,
+  resultKeys: Object.keys(result).slice(0, 40)
 }, null, 2));
 if (trace) {
   for (const line of readFileSync(trace.file, "utf8").trim().split("\n")) {

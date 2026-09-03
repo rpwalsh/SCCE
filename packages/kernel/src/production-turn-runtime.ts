@@ -151,7 +151,7 @@ import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { estimateKneserNeyGenerationCostMs } from "./runtime-cost-estimate.js";
-import { createRuntimeGraphRetrieval } from "./runtime-graph-retrieval.js";
+import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
 import type { RuntimeReplanMotion } from "./runtime-motion.js";
@@ -920,7 +920,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const discourseObject = discourseObjectStateFromMetadata(input.metadata);
       const discourseObjectTrace = discourseObject ? toJsonValue(discourseObject) : undefined;
       if (discourseObjectTrace) events.push(await append(eventFactory.create({ episodeId, typeId: "DiscourseObjectBound", payload: discourseObjectTrace })));
-      const retrievalText = retrievalTextForTurn(input);
+      // A program-authority request (imperative: write/fix/add code) is never a near-duplicate of
+      // corpus prose; rendering it interrogative for retrieval disables the near-dup fast path
+      // language-neutrally (a question mark, not an English verb list). Evidence must then be
+      // anchored, or the turn falls to the code mouth / offer-to-learn arm.
+      const baseRetrievalText = retrievalTextForTurn(input);
+      const retrievalText = requestedAuthority === "program" && !/[?？؟]s*$/u.test(baseRetrievalText) ? `${baseRetrievalText}?` : baseRetrievalText;
       const sessionEvidence = mergeEvidenceSpans([...currentOwnerSessionEvidence(input), ...sessionEvidenceFromMetadata(input.metadata)]);
       const metadataEvidence = await evidenceFromTurnMetadata(input.metadata);
       const metadataEvidenceIds = new Set([
@@ -995,8 +1000,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const semanticFrameBoundEvidenceIds = new Set(graphSlice.semanticFrameBoundEvidenceIds ?? []);
       let graph = graphSlice.graph;
       const unsealedEvidencePool = discourseEvidenceBound
-        ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))])
-        : mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]);
+        ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
+        : mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]).filter(span => !isControlCorpusSpan(span) && (requestedAuthority !== "program" || isCodeEvidenceSpan(span)));
       // Sealed-corpus allowlist (trusted in-process runtimeControl, like
       // signal): every downstream evidence consumer -- proof support,
       // answer proposal, mouth realization, citations -- draws from this
