@@ -148,6 +148,8 @@ import {
 } from "./request-authority.js";
 import { hybridRecall } from "./retrieval.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
+import { preferredLocalEvidenceAnswer } from "./local-evidence-runtime.js";
+import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { estimateKneserNeyGenerationCostMs } from "./runtime-cost-estimate.js";
@@ -1421,8 +1423,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             semanticFrameBoundEvidenceIds
           })
         : undefined;
-      const selectedPoolLocalEvidenceAnswer = richLocalEvidenceAnswer
-        ?? (evidenceProposalAdmissible ? answerProposal : undefined);
+      // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.
+      const selectedPoolLocalEvidenceAnswer = preferredLocalEvidenceAnswer(richLocalEvidenceAnswer, evidenceProposalAdmissible ? answerProposal : undefined);
       // Direct source evidence may propose a bounded answer without full proof.
       // Proof strengthens force; material contradiction can still reject it.
       kernelTrace({
@@ -2621,7 +2623,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         selectedCandidateEvidenceIds.size === localAnswerEvidenceIds.length &&
         localAnswerEvidenceIds.every(id => selectedCandidateEvidenceIds.has(id))
       );
-      const priorConstructGraph = runtimeDiagnosticRequested
+      const localAnswerConstructGraph = runtimeDiagnosticRequested
         ? assembly.constructGraph
         : selectedLocalEvidenceAnswer && longPathBasisAnswer
           ? attachLocalEvidenceAnswerConstruct({
@@ -2632,6 +2634,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             hasher
           })
           : assembly.constructGraph;
+      // Learned graph prior: the graph-node answer / insufficient-support constructs the mouth already knows how to realize.
+      const priorConstructGraph = runtimeDiagnosticRequested
+        ? localAnswerConstructGraph
+        : attachLearnedGraphPriorConstruct({ construct: localAnswerConstructGraph, requestText: input.text, graph, field, selectedEvidence, brainMarker: brain, hasher });
       const proposalConstructGraph = attachCognitiveProposal({ construct: priorConstructGraph, proposal: selectedProposal });
       const selectedInventions = selectedInvention ? [selectedInvention] : [];
       const inventionConstructGraph = selectedInventions.reduce(
