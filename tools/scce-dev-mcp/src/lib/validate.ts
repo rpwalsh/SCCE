@@ -68,6 +68,7 @@ export const toolSchemas = {
     commandId: boundedString(64),
     maxFailures: boundedInt(1, 200, 10)
   }).strict(),
+  test_list_commands: z.object({}).strict(),
   pg_schema: z.object({
     schema: sqlIdentifier.optional()
   }).strict(),

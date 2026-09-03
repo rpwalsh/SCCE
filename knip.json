@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/knip/schema.json",
+  "ignoreExportsUsedInFile": true,
   "ignoreBinaries": [
     "tokei",
     "dev"
@@ -19,5 +20,10 @@
     "packages/adapters-node/src/scce2/concept-graph-stream.ts": ["types"],
     "packages/adapters-node/src/scce2/ngram-stream.ts": ["types"],
     "tools/scce-dev-mcp/src/lib/run.ts": ["types"]
+  },
+  "workspaces": {
+    "packages/adapters-node": {
+      "ignoreDependencies": ["tree-sitter-wasms"]
+    }
   }
 }

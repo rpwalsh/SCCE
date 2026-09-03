@@ -27,7 +27,8 @@ import {
   estimateRuntimeGraphSliceBytes,
   fitRuntimeGraphSliceToBudget,
   positiveRuntimeInt,
-  runtimeFlag
+  runtimeFlag,
+  uniqueById
 } from "./runtime-graph-cache.js";
 import {
   createBm25SparseIndex,
@@ -1738,9 +1739,7 @@ export function createRuntimeGraphRetrieval(options: {
 
 
   function mergeEvidenceSpans(spans: EvidenceSpan[]): EvidenceSpan[] {
-    const byId = new Map<string, EvidenceSpan>();
-    for (const span of spans) if (!byId.has(String(span.id))) byId.set(String(span.id), span);
-    return [...byId.values()];
+    return uniqueById(spans);
   }
   function graphRetrievalFeatures(text: string): string[] {
     const features = new Map<string, true>();

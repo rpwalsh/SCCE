@@ -26,6 +26,7 @@ export const OPAQUE_FORM_CLASS_CLUSTER_SCHEMA = "scce.opaque_form_class_cluster.
  * growth instead of dragging unrelated clusters in behind it.
  */
 export interface OpaqueFormClassCluster {
+  schema: typeof OPAQUE_FORM_CLASS_CLUSTER_SCHEMA;
   id: string;
   formClassIds: readonly string[];
   /** Union of every member form class's observed variant surfaces -- for inspection, not consumed by the algorithm. */
@@ -109,7 +110,7 @@ export function clusterOpaqueFormClasses(input: {
         }
       }
       const id = `opaque_form_class_cluster.${input.hasher.digestHex(formClassIds.join("|")).slice(0, 32)}`;
-      return { id, formClassIds, memberVariantSurfaces, minPairwiseSimilarity };
+      return { schema: OPAQUE_FORM_CLASS_CLUSTER_SCHEMA, id, formClassIds, memberVariantSurfaces, minPairwiseSimilarity };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
 }
