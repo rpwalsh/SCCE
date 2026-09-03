@@ -232,6 +232,27 @@ export class ScceClient {
     return result;
   }
 
+  // Phase 6/8 surfaces: settings and local models through the server's shared schema.
+  async getSettings(): Promise<SettingsView> {
+    return this.request("GET", "/api/settings", undefined, value => value as SettingsView);
+  }
+
+  async putSetting(key: string, value: string | boolean | number): Promise<{ key: string; value: unknown; restartRequired: boolean }> {
+    return this.request("POST", "/api/settings", { key, value: String(value) }, value => value as { key: string; value: unknown; restartRequired: boolean });
+  }
+
+  async listModels(): Promise<ModelsView> {
+    return this.request("GET", "/api/models", undefined, value => value as ModelsView);
+  }
+
+  async downloadModel(modelId: string, kind: "causal-lm" | "clip"): Promise<unknown> {
+    return this.request("POST", "/api/models/download", { modelId, kind }, identity);
+  }
+
+  async removeModel(modelId: string): Promise<{ removed: boolean }> {
+    return this.request("POST", "/api/models/remove", { modelId }, value => value as { removed: boolean });
+  }
+
   private async request<T>(method: "GET" | "POST", route: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
@@ -378,4 +399,15 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
       rejectPromise(new DOMException("aborted", "AbortError"));
     }, { once: true });
   });
+}
+
+export interface SettingsView {
+  configPath: string;
+  fields: Array<{ key: string; label: string; kind: "string" | "boolean" | "choice" | "number"; choices?: string[]; value: unknown }>;
+}
+
+export interface ModelsView {
+  modelDir: string;
+  models: Array<{ id: string; path: string; bytes: number; files: number; active: boolean; size: string }>;
+  totalBytes: number;
 }

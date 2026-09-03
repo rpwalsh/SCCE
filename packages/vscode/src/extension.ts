@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat-view.js";
 import { ScceClient } from "./client.js";
-import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from "./config.js";
+import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken, isLoopbackHostname } from "./config.js";
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
 import type { ScceEndpoint } from "./protocol.js";
 import {
@@ -102,6 +102,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   const chatViewProvider = new ChatViewProvider(context.extensionUri, context.workspaceState, client, output);
+  void autoIngestOpenWorkspace(client, output);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chatViewProvider)
   );
@@ -358,6 +359,48 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         showAppliedReceipt(applied);
       }
     }),
+    // Phase 6/8: settings and local models. VS Code settings are the editor-side view;
+    // "push" writes them to the server's scce.config.json through the shared schema.
+    vscode.commands.registerCommand("scce.settings.open", () => vscode.commands.executeCommand("workbench.action.openSettings", "scce")),
+    vscode.commands.registerCommand("scce.settings.push", async () => {
+      const surface = readSurfaceSettings();
+      if (surface.problems.length) { void vscode.window.showErrorMessage(`SCCE settings not pushed: ${surface.problems.join("; ")}`); return; }
+      try {
+        const activeClient = await client();
+        for (const [key, value] of Object.entries(surface.values)) await activeClient.putSetting(key, value);
+        output.appendLine(`[settings] pushed ${Object.keys(surface.values).length} settings to the server config (restart the server to apply)`);
+        void vscode.window.showInformationMessage("SCCE: settings pushed to the server config. Restart the SCCE server to apply.");
+      } catch (error) {
+        void vscode.window.showErrorMessage(`SCCE settings push failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }),
+    vscode.commands.registerCommand("scce.models.manage", async () => {
+      try {
+        const activeClient = await client();
+        const view = await activeClient.listModels();
+        const items: vscode.QuickPickItem[] = [
+          ...view.models.map(model => ({ label: `${model.active ? "$(check) " : ""}${model.id}`, description: `${model.size}, ${model.files} files`, detail: model.path })),
+          { label: "$(cloud-download) Download a model…", description: "explicit network access, into the local model directory" }
+        ];
+        const picked = await vscode.window.showQuickPick(items, { title: `SCCE local models (${view.modelDir})` });
+        if (!picked) return;
+        if (picked.label.startsWith("$(cloud-download)")) {
+          const modelId = await vscode.window.showInputBox({ prompt: "Model id (org/name), e.g. onnx-community/Qwen2.5-1.5B-Instruct or Xenova/clip-vit-base-patch32" });
+          if (!modelId) return;
+          const kind = modelId.toLowerCase().includes("clip") ? "clip" : "causal-lm";
+          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `SCCE: downloading ${modelId}` }, () => activeClient.downloadModel(modelId, kind));
+          void vscode.window.showInformationMessage(`SCCE: downloaded ${modelId}`);
+          return;
+        }
+        const modelId = picked.label.replace(/^\$\(check\) /u, "");
+        const action = await vscode.window.showQuickPick(["Use for constrained decoding", "Use for visual embeddings", "Remove"], { title: modelId });
+        if (action === "Remove") { await activeClient.removeModel(modelId); void vscode.window.showInformationMessage(`SCCE: removed ${modelId}`); }
+        else if (action === "Use for constrained decoding") { await activeClient.putSetting("realization.constrainedDecoding.modelId", modelId); await activeClient.putSetting("realization.constrainedDecoding.modelDir", view.modelDir); }
+        else if (action === "Use for visual embeddings") { await activeClient.putSetting("ingestion.visual.embeddings.modelId", modelId); await activeClient.putSetting("ingestion.visual.embeddings.modelDir", view.modelDir); }
+      } catch (error) {
+        void vscode.window.showErrorMessage(`SCCE models: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }),
     vscode.commands.registerCommand("scce.tasks.clear", async () => {
       await timeline.clear();
       provider.refresh();
@@ -365,6 +408,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   void vscode.commands.executeCommand("scce.checkReadiness");
+}
+
+function readSurfaceSettings(): { values: Record<string, string | boolean>; problems: string[] } {
+  const settings = vscode.workspace.getConfiguration("scce");
+  const problems: string[] = [];
+  const ollamaHost = settings.get<string>("realization.ollamaHost", "http://localhost:11434");
+  try { if (!isLoopbackHostname(new URL(ollamaHost).hostname)) problems.push("realization.ollamaHost must be a loopback host"); } catch { problems.push("realization.ollamaHost must be a URL"); }
+  return {
+    problems,
+    values: {
+      "realization.provider": settings.get<string>("realization.provider", "native"),
+      "realization.ollama.host": ollamaHost,
+      "realization.ollama.model": settings.get<string>("realization.ollamaModel", ""),
+      "ingestion.visual.embeddings.enabled": settings.get<boolean>("ingestion.imageEmbeddings", false),
+      "ingestion.observation.workspaceAutoIngest": settings.get<boolean>("workspace.autoIngest", true),
+      "ingestion.observation.screen": settings.get<boolean>("observation.screen", false),
+      "ingestion.observation.otherApplications": settings.get<boolean>("observation.otherApplications", false)
+    }
+  };
+}
+
+/** Phase 7: the open workspace is already consented-to; anything beyond it is opt-in per source and logged while active. */
+async function autoIngestOpenWorkspace(client: () => Promise<ScceClient>, output: vscode.OutputChannel): Promise<void> {
+  const settings = vscode.workspace.getConfiguration("scce");
+  for (const key of ["observation.screen", "observation.otherApplications"]) {
+    if (settings.get<boolean>(key, false)) output.appendLine(`[observation] opt-in source active: scce.${key} (no observer is installed yet; this toggle is the consent record)`);
+  }
+  if (!settings.get<boolean>("workspace.autoIngest", true)) return;
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) return;
+  try {
+    const result = await (await client()).workspaceIngest(folder.uri.fsPath);
+    output.appendLine(`[workspace] auto-ingested ${folder.uri.fsPath}: ${JSON.stringify(result).slice(0, 200)}`);
+  } catch (error) {
+    output.appendLine(`[workspace] auto-ingest skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export function deactivate(): void {}

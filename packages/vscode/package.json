@@ -80,6 +80,18 @@
       {
         "command": "scce.tasks.clear",
         "title": "SCCE: Clear Task Timeline"
+      },
+      {
+        "command": "scce.settings.open",
+        "title": "SCCE: Open Settings"
+      },
+      {
+        "command": "scce.settings.push",
+        "title": "SCCE: Push VS Code Settings To Server Config"
+      },
+      {
+        "command": "scce.models.manage",
+        "title": "SCCE: Manage Local Models"
       }
     ],
     "configuration": {
@@ -96,6 +108,56 @@
           "minimum": 1000,
           "maximum": 600000,
           "description": "Maximum duration for one SCCE HTTP request."
+        },
+        "scce.realization.provider": {
+          "type": "string",
+          "enum": [
+            "native",
+            "ollama",
+            "api"
+          ],
+          "default": "native",
+          "description": "Realization provider. native = SCCE's own mouth (default). ollama = local Ollama (loopback only). api = remote API; requires the server-side acknowledgement that evidence leaves this device."
+        },
+        "scce.realization.ollamaHost": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama host. Only loopback hosts are accepted."
+        },
+        "scce.realization.ollamaModel": {
+          "type": "string",
+          "default": "",
+          "description": "Ollama model name used when the provider is ollama."
+        },
+        "scce.ingestion.imageEmbeddings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Compute visual embeddings for images and rendered PDF pages (requires a locally downloaded CLIP model)."
+        },
+        "scce.ingestion.camera.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable live camera/video ingestion sources configured on the server. Off by default; active sources are logged."
+        },
+        "scce.ingestion.camera.device": {
+          "type": "string",
+          "default": "",
+          "description": "Sensor id (from the server's ingestion.sensors) to run when camera ingestion is enabled."
+        },
+        "scce.workspace.autoIngest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ingest the opened workspace folder automatically when SCCE binds to it. Opening the workspace in SCCE is the consent."
+        },
+        "scce.observation.screen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt in to observing screen contents beyond the open workspace. Off by default; logged whenever active."
+        },
+        "scce.observation.otherApplications": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt in to observing other running applications. Off by default; logged whenever active."
         }
       }
     },

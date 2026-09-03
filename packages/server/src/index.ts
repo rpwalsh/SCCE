@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   });
   const server = http.createServer((req, res) => {
     dreamCycle.recordActivity();
-    handleRequest(req, res, { runtime, config, maxBodyBytes: config.runtime.maxFileBytes, patchValidation, startupReadiness }).catch(error => {
+    handleRequest(req, res, { runtime, config, configPath, maxBodyBytes: config.runtime.maxFileBytes, patchValidation, startupReadiness }).catch(error => {
       res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2));
     });

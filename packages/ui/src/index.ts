@@ -170,6 +170,15 @@ export function renderWorkbench(serverUrl: string): string {
             <div id="approval-list" class="tree"><div>${escapeHtml(uiText("side.approvals.none"))}</div></div>
           </div>
           <div class="dev-section">
+            <h3>${escapeHtml(uiText("side.settings"))}</h3>
+            <div class="hint">${escapeHtml(uiText("side.settings.hint"))}</div>
+            <div id="settings-form" class="tree"></div>
+          </div>
+          <div class="dev-section">
+            <h3>${escapeHtml(uiText("side.models"))}<button class="small-btn" id="model-download">${escapeHtml(uiText("side.models.download"))}</button></h3>
+            <div id="models-list" class="tree"><div>${escapeHtml(uiText("side.models.empty"))}</div></div>
+          </div>
+          <div class="dev-section">
             <h3>${escapeHtml(uiText("pane.inspector"))}<button class="small-btn" id="inspect">${escapeHtml(uiText("button.inspect"))}</button></h3>
             <pre class="json" id="inspect-json">{}</pre>
           </div>
@@ -385,6 +394,58 @@ export function renderWorkbench(serverUrl: string): string {
       }
     }
     async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw new Error(JSON.stringify(j)); return j; }
+    // Settings and local models (Phase 6/8): labels come from the locale table (settings.<key>).
+    function settingLabel(field) { return (typeof I18N !== 'undefined' && I18N['settings.' + field.key]) || field.label; }
+    async function loadSettings() {
+      const host = document.getElementById('settings-form'); if (!host) return;
+      try {
+        const view = await get('/api/settings');
+        host.innerHTML = '';
+        for (const field of view.fields) {
+          const row = document.createElement('label'); row.className = 'setting';
+          const name = document.createElement('span'); name.textContent = settingLabel(field); row.appendChild(name);
+          let input;
+          if (field.kind === 'boolean') { input = document.createElement('input'); input.type = 'checkbox'; input.checked = field.value === true; }
+          else if (field.kind === 'choice') { input = document.createElement('select'); for (const choice of field.choices || []) { const o = document.createElement('option'); o.value = choice; o.textContent = choice; if (choice === field.value) o.selected = true; input.appendChild(o); } }
+          else { input = document.createElement('input'); input.type = field.kind === 'number' ? 'number' : 'text'; input.value = field.value == null ? '' : String(field.value); }
+          const status = document.createElement('em');
+          input.addEventListener('change', async () => {
+            const value = field.kind === 'boolean' ? input.checked : input.value;
+            try { await post('/api/settings', { key: field.key, value }); status.textContent = uiMsg('side.settings.saved'); }
+            catch (error) { status.textContent = uiMsg('side.settings.error') + ': ' + String(error.message || error).slice(0, 120); }
+          });
+          row.appendChild(input); row.appendChild(status); host.appendChild(row);
+        }
+      } catch (error) { host.textContent = String(error.message || error); }
+    }
+    async function loadModels() {
+      const host = document.getElementById('models-list'); if (!host) return;
+      try {
+        const view = await get('/api/models');
+        host.innerHTML = '';
+        if (!view.models.length) { host.textContent = uiMsg('side.models.empty'); return; }
+        for (const model of view.models) {
+          const row = document.createElement('div'); row.className = 'model';
+          row.appendChild(Object.assign(document.createElement('span'), { textContent: (model.active ? '* ' : '') + model.id + '  ' + model.size + (model.active ? '  (' + uiMsg('side.models.active') + ')' : '') }));
+          for (const [label, action] of [[uiMsg('side.models.use_decoding'), () => Promise.all([post('/api/settings', { key: 'realization.constrainedDecoding.modelId', value: model.id }), post('/api/settings', { key: 'realization.constrainedDecoding.modelDir', value: view.modelDir })])], [uiMsg('side.models.use_visual'), () => Promise.all([post('/api/settings', { key: 'ingestion.visual.embeddings.modelId', value: model.id }), post('/api/settings', { key: 'ingestion.visual.embeddings.modelDir', value: view.modelDir })])], [uiMsg('side.models.remove'), () => post('/api/models/remove', { modelId: model.id })]]) {
+            const button = document.createElement('button'); button.className = 'small-btn'; button.textContent = label;
+            button.addEventListener('click', async () => { try { await action(); await loadModels(); await loadSettings(); } catch (error) { row.appendChild(Object.assign(document.createElement('em'), { textContent: String(error.message || error).slice(0, 120) })); } });
+            row.appendChild(button);
+          }
+          host.appendChild(row);
+        }
+      } catch (error) { host.textContent = String(error.message || error); }
+    }
+    function uiMsg(key) { return (typeof I18N !== 'undefined' && I18N[key]) || key; }
+    const modelDownload = document.getElementById('model-download');
+    if (modelDownload) modelDownload.addEventListener('click', async () => {
+      const modelId = window.prompt(uiMsg('side.models.download_prompt')); if (!modelId) return;
+      modelDownload.disabled = true;
+      try { await post('/api/models/download', { modelId, kind: /clip/i.test(modelId) ? 'clip' : 'causal-lm' }); await loadModels(); }
+      catch (error) { window.alert(String(error.message || error).slice(0, 200)); }
+      finally { modelDownload.disabled = false; }
+    });
+    setTimeout(() => { loadSettings(); loadModels(); }, 0);
     async function get(url) { const r = await fetch(url); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw new Error(JSON.stringify(j)); return j; }
     async function refreshApprovals() { const r = await get('/api/session/approvals'); renderApprovals(r); return r; }
     function renderApprovals(state) {

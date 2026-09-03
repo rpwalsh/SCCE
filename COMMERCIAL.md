@@ -1,15 +1,16 @@
 # Commercial licensing
 
 SCCE's source is published for inspection only (see [LICENSE](LICENSE)).
-Running it beyond personal evaluation requires a commercial license.
+Running it requires a commercial license.
 
 ## What you are licensing
 
 A self-contained cognitive runtime that:
 
 - **Proves what it says.** Every answer is bound to ingested evidence with
-  an inspectable proof route — no hallucination by construction, because
-  there is no generative model to hallucinate. When it doesn't know, it
+  an inspectable proof route — the reasoning core has no generative model to
+  hallucinate, and the optional local wording models (off by default) can only
+  emit tokens the evidence licensed. When it doesn't know, it
   says so.
 - **Runs where your data must stay.** CPU-only, PostgreSQL-backed, zero
   network dependency at inference time. Suitable for air-gapped,
@@ -37,4 +38,4 @@ hardware. Methodology and custody chain: [docs/EVALUATION_PROTOCOL.md](docs/EVAL
 
 Open an issue at [github.com/rpwalsh/SCCE/issues](https://github.com/rpwalsh/SCCE/issues)
 with the label `licensing`, or contact the repository owner. Evaluation
-licenses for proof-of-concept deployments are available.
+licenses are available.

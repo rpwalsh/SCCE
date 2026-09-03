@@ -1,10 +1,10 @@
 import http from "node:http";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
@@ -12,6 +12,8 @@ import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from ".
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 
 export interface ApiContext {
+  /** Path of scce.config.json; settings routes write back through the shared schema. */
+  configPath?: string;
   runtime: ReturnType<typeof createNodeRuntime>;
   config: Awaited<ReturnType<typeof readScceRuntimeConfig>>;
   startupReadiness: RuntimeStartupReadiness;
@@ -67,6 +69,11 @@ export const ROUTES = [
   { method: "GET", path: "/", label: "workbench", mutates: false, requiresDb: false },
   { method: "GET", path: "/health", label: "health", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/manifest", label: "api manifest", mutates: false, requiresDb: false },
+  { method: "GET", path: "/api/settings", label: "settings view", mutates: true, requiresDb: false },
+  { method: "POST", path: "/api/settings", label: "settings update", mutates: true, requiresDb: false },
+  { method: "GET", path: "/api/models", label: "local models", mutates: true, requiresDb: false },
+  { method: "POST", path: "/api/models/download", label: "model download (explicit)", mutates: true, requiresDb: false },
+  { method: "POST", path: "/api/models/remove", label: "model remove", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/brain/status", label: "brain status", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/ready", label: "readiness", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/db/init", label: "database initialize", mutates: true, requiresDb: true },
@@ -464,6 +471,41 @@ async function dispatch(
   }
   if (req.method === "POST" && url.pathname === "/api/train") return json(await context.runtime.kernel.train(validateTrain(await readBody(req, context.maxBodyBytes))));
   if (req.method === "POST" && url.pathname === "/api/causal/analyze") return json(await context.runtime.kernel.analyzeCausalEffect(validateCausalAnalysisRequest(await readBody(req, context.maxBodyBytes))));
+  // Phase 6/8: settings and local-model management through the shared schema.
+  if (url.pathname === "/api/settings" && (req.method === "GET" || req.method === "POST")) {
+    const configPath = path.resolve(context.configPath ?? "scce.config.json");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    if (req.method === "POST") {
+      const body = jsonRecord(await readBody(req, context.maxBodyBytes));
+      const key = typeof body.key === "string" ? body.key : "";
+      const value = applySetting(raw, key, body.value === undefined || body.value === null ? "" : String(body.value));
+      await writeFile(configPath, `${JSON.stringify(raw, null, 2)}
+`, "utf8");
+      return json({ schema: "scce.settings.update.v1", key, value, configPath, restartRequired: true });
+    }
+    return json({ schema: "scce.settings.view.v1", configPath, fields: settingsView(raw) });
+  }
+  if (url.pathname === "/api/models" && req.method === "GET") {
+    const modelDir = modelDirectoryForConfig(context.config);
+    const models = await listLocalModels(modelDir);
+    const active = [context.config.realization?.constrainedDecoding?.modelId, context.config.ingestion?.visual?.embeddings?.modelId].filter(Boolean);
+    return json({ schema: "scce.models.list.v1", modelDir, models: models.map(model => ({ ...model, active: active.includes(model.id), size: formatBytes(model.bytes) })), totalBytes: models.reduce((sum, model) => sum + model.bytes, 0) });
+  }
+  if (url.pathname === "/api/models/download" && req.method === "POST") {
+    const body = jsonRecord(await readBody(req, context.maxBodyBytes));
+    const modelId = typeof body.modelId === "string" ? body.modelId : "";
+    if (!isModelId(modelId)) throw new HttpError(400, "modelId must be org/name");
+    const kind = body.kind === "clip" ? "clip" : "causal-lm";
+    const record = await downloadModel({ modelDir: modelDirectoryForConfig(context.config), modelId, kind, dtype: typeof body.dtype === "string" ? body.dtype as "q8" : "q8" });
+    return json({ schema: "scce.models.download.v1", model: { ...record, size: formatBytes(record.bytes) } });
+  }
+  if (url.pathname === "/api/models/remove" && req.method === "POST") {
+    const body = jsonRecord(await readBody(req, context.maxBodyBytes));
+    const modelId = typeof body.modelId === "string" ? body.modelId : "";
+    if (!isModelId(modelId)) throw new HttpError(400, "modelId must be org/name");
+    const removed = await removeLocalModel(modelDirectoryForConfig(context.config), modelId);
+    return json({ schema: "scce.models.remove.v1", modelId, removed });
+  }
   if (req.method === "POST" && url.pathname === "/api/turn") {
     const trace = (globalThis as any).__sccTrace;
     const turnStarted = Date.now();
@@ -3502,4 +3544,18 @@ class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
   }
+}
+
+function modelDirectoryForConfig(config: ApiContext["config"]): string {
+  return path.resolve(config.realization?.constrainedDecoding?.modelDir ?? config.ingestion?.visual?.embeddings?.modelDir ?? "models");
+}
+
+function isModelId(value: string): boolean {
+  const parts = value.split("/");
+  const segment = /^[A-Za-z0-9_.-]+$/u;
+  return parts.length === 2 && parts.every(part => segment.test(part) && part !== "." && part !== "..");
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
