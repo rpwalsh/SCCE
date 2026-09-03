@@ -557,7 +557,8 @@ export function createRuntimeGraphRetrieval(options: {
       : { evidence: [], semanticFrameBoundEvidenceIds: [] };
     const promoted = mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence])
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
-        && evidenceProofBoundary(span).certifiesFactualProof);
+        && evidenceProofBoundary(span).certifiesFactualProof
+        && !isControlCorpusSpan(span));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
@@ -1851,4 +1852,27 @@ export function maxSimScore(query: readonly number[], regions: readonly (readonl
     if (cosine > best) best = cosine;
   }
   return best;
+}
+
+/** Control corpora (request-requirement / creative-event bootstraps) are routing and language evidence, never answer evidence. Stamped at ingest; older spans are recognized by uri or record shape. */
+export function isControlCorpusSpan(span: EvidenceSpan): boolean {
+  const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
+  if (typeof provenance.controlCorpus === "string" && provenance.controlCorpus) return true;
+  const uri = String(provenance.uri ?? "").toLocaleLowerCase();
+  if (/request-requirement|creative-event-compat/u.test(uri)) return true;
+  const head = String(span.text ?? span.textPreview ?? "").slice(0, 4000);
+  return /"authority"\s*:\s*"[a-z_]+"\s*,\s*"requirements"\s*:/u.test(head) || /"schema"\s*:\s*"scce\.(request_requirement|creative_event_compatibility)/u.test(head);
+}
+
+/** Code evidence: a span whose source is code (media type, code-graph facts, or a code file extension). Program-authority requests answer from code evidence only. */
+const CODE_MEDIA_MARKERS = ["javascript", "typescript", "x-python", "x-rust", "x-go", "x-java", "x-csharp", "x-c++", "source"];
+const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".php", ".rb", ".swift", ".kt"];
+export function isCodeEvidenceSpan(span: EvidenceSpan): boolean {
+  const media = String(span.mediaType ?? "").toLocaleLowerCase();
+  if (CODE_MEDIA_MARKERS.some(marker => media.includes(marker))) return true;
+  const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
+  const metadata = provenance.metadata && typeof provenance.metadata === "object" && !Array.isArray(provenance.metadata) ? provenance.metadata as Record<string, unknown> : {};
+  if (metadata.sourceCode && typeof metadata.sourceCode === "object") return true;
+  const uri = String(provenance.uri ?? "").toLocaleLowerCase();
+  return CODE_EXTENSIONS.some(extension => uri.endsWith(extension));
 }

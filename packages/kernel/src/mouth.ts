@@ -7213,3 +7213,17 @@ function clarificationCandidate(
     boundaryDecisions: []
   };
 }
+
+function clarificationSurfaceFromFacts(facts: readonly SemanticAnswerFact[]): string {
+  const usable = facts.filter(fact => (fact.evidenceIds ?? []).length > 0 && (fact.subject || fact.object));
+  if (!usable.length) return "";
+  const keys = usable.map(fact => semanticAnswerFactKey(fact));
+  const result = selectClarificationQuestion({
+    hypotheses: usable.map((fact, index) => ({ id: `hypothesis:${index}`, weight: Math.max(0.01, Number((fact as { support?: number }).support ?? 0.5)), trueFactIds: new Set([keys[index]!]) })),
+    candidateFactIds: keys
+  });
+  const selectedKey = result.selected?.factId ?? keys[0]!;
+  const fact = usable[Math.max(0, keys.indexOf(selectedKey))]!;
+  const surface = [fact.subject, fact.predicate, fact.object].map(part => String(part ?? "").trim()).filter(Boolean).join(" ");
+  return surface ? `${surface}?` : "";
+}
