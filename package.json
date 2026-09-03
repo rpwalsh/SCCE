@@ -38,12 +38,13 @@
     "eval:generate-questions": "node tools/sealed-eval/harness/generate-cloze-questions.mjs",
     "rehearsal:postgres": "node tools/live-postgres-rehearsal.mjs",
     "rehearsal:adapter": "node tools/live-adapter-rehearsal.mjs",
-  "rehearsal:sparse-ranking": "node tools/live-sparse-ranking-rehearsal.mjs",
+    "rehearsal:sparse-ranking": "node tools/live-sparse-ranking-rehearsal.mjs",
     "rehearsal:procedural-skill": "node tools/procedural-skill-live-rehearsal.mjs",
     "rehearsal:graph-surface-alignment-batch": "node tools/graph-surface-alignment-batch-manifest.mjs",
     "rehearsal:bounded-debugging": "node tools/bounded-debugging-live-rehearsal.mjs",
     "maintenance:evidence-anchors": "pnpm --dir packages/adapters-node backfill:evidence-anchors",
     "maintenance:rechunk-evidence": "node tools/rechunk-evidence-backfill.mjs",
+    "maintenance:demote-runtime-html": "node tools/demote-runtime-acquired-html.mjs",
     "validate": "pnpm mcp:verify && pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",
     "scce": "node packages/cli/dist/index.js",
     "hygiene:language-control": "node packages/cli/dist/index.js hygiene language-control",
@@ -72,8 +73,7 @@
     "vscode:test:host": "pnpm --dir packages/vscode test:host",
     "vscode:package": "pnpm --dir packages/vscode package"
   },
-  "dependencies": {
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.15.3",
     "@types/pg": "^8.11.11",

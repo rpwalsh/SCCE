@@ -556,10 +556,10 @@ export function createRuntimeGraphRetrieval(options: {
     const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
       ? await sourceAnchorSemanticFrameEvidence(text)
       : { evidence: [], semanticFrameBoundEvidenceIds: [] };
-    const promoted = mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence])
+    const promoted = dropContainerSpans(mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence])
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof
-        && !isControlCorpusSpan(span));
+        && !isControlCorpusSpan(span)));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
@@ -1854,6 +1854,23 @@ export function maxSimScore(query: readonly number[], regions: readonly (readonl
 }
 
 /** Control corpora (request-requirement / creative-event bootstraps) are routing and language evidence, never answer evidence. Stamped at ingest; older spans are recognized by uri or record shape. */
+/** A whole-article span whose sentence-aligned children are also in the pool is the same memory at the wrong granularity; the children speak for it. Pure. */
+export function dropContainerSpans<T extends { id: unknown; sourceVersionId: unknown; charStart: number; charEnd: number }>(spans: readonly T[]): T[] {
+  const bySource = new Map<string, T[]>();
+  for (const span of spans) {
+    const key = String(span.sourceVersionId);
+    bySource.set(key, [...(bySource.get(key) ?? []), span]);
+  }
+  return spans.filter(span => {
+    const siblings = bySource.get(String(span.sourceVersionId)) ?? [];
+    const covered = siblings.filter(other => other !== span
+      && other.charStart >= span.charStart
+      && other.charEnd <= span.charEnd
+      && other.charEnd - other.charStart < span.charEnd - span.charStart);
+    return covered.length < 2;
+  });
+}
+
 export function isControlCorpusSpan(span: EvidenceSpan): boolean {
   const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
   if (typeof provenance.controlCorpus === "string" && provenance.controlCorpus) return true;
