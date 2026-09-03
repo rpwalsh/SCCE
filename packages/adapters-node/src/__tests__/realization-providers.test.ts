@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createApiKeyProvider, createOllamaProvider, providerAsWordingRealizer, verifySurfaceAgainstFacts } from "../realization-providers.js";
+import { buildProviderPrompt, createApiKeyProvider, createOllamaProvider, providerAsWordingRealizer, verifySurfaceAgainstFacts } from "../realization-providers.js";
 
 const facts = [{ subject: "pump alpha", predicate: "is", object: "stable at 42 psi", evidenceIds: ["e1", "e2"] }];
 const request = { requestText: "status?", facts, targetLanguage: "en", targetScript: "Latn", maxSentences: 2, closedClassWords: ["the", "and"] };
@@ -13,6 +13,15 @@ describe("generate-then-verify", () => {
   it("rejects any unlicensed content word", () => {
     expect(verifySurfaceAgainstFacts("The pump alpha exploded.", facts, new Set(["the"]))).toBe(false);
     expect(verifySurfaceAgainstFacts("", facts, new Set())).toBe(false);
+  });
+});
+
+describe("provider prompt", () => {
+  it("carries an instruction, the request, and each fact once", () => {
+    const built = buildProviderPrompt({ ...request, facts: [...facts, ...facts] });
+    expect(built.system).toMatch(/only words that appear in the facts/u);
+    expect(built.prompt).toContain("status?");
+    expect(built.prompt.split("pump alpha is stable at 42 psi").length).toBe(2);
   });
 });
 
