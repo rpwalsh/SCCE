@@ -44,9 +44,19 @@ export function verifySurfaceAgainstFacts(surface: string, facts: readonly Wordi
   });
 }
 
-export function buildProviderPrompt(request: WordingRealizerRequest): string {
-  // Language-neutral: the facts in their own language; the verifier, not the prompt, enforces faithfulness.
-  return request.facts.map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`).join("\n") + "\n";
+export interface ProviderPrompt {
+  system: string;
+  prompt: string;
+}
+
+/** Request + deduplicated facts in their own language; the verifier, not the prompt, enforces faithfulness. */
+export function buildProviderPrompt(request: WordingRealizerRequest): ProviderPrompt {
+  const facts = [...new Set(request.facts.map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`.replace(/\s+/gu, " ").trim()))];
+  const sentences = Math.max(1, request.maxSentences ?? 2);
+  return {
+    system: `Answer the request using only the facts. Use only words that appear in the facts. Write in the language of the facts. Output at most ${sentences} sentence(s): the answer only, with no preamble, commentary, or questions.`,
+    prompt: `Request:\n${request.requestText}\n\nFacts:\n${facts.join("\n")}\n\nAnswer:`
+  };
 }
 
 export interface OllamaProviderOptions {
@@ -66,12 +76,12 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
       const facts = request.facts.filter(fact => fact.evidenceIds.length > 0);
       if (!facts.length) return [];
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8_000);
       try {
         const response = await fetchImpl(`${host}/api/generate`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: options.model, prompt: buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: 0, num_predict: 96 } }),
+          body: JSON.stringify({ model: options.model, ...buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: 0, num_predict: 96 } }),
           signal: controller.signal
         });
         if (!response.ok) return [];
@@ -116,14 +126,15 @@ export function createApiKeyProvider(options: ApiProviderOptions): RealizationPr
       const facts = request.facts.filter(fact => fact.evidenceIds.length > 0);
       if (!facts.length) return [];
       const spanCount = new Set(facts.flatMap(fact => fact.evidenceIds)).size;
+      const built = buildProviderPrompt({ ...request, facts });
       log.info(`realization.api: evidence left the device -> ${new URL(options.endpoint).host} (model ${options.model}, ${spanCount} evidence spans)`);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8_000);
       try {
         const response = await fetchImpl(options.endpoint, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({ model: options.model, messages: [{ role: "user", content: buildProviderPrompt({ ...request, facts }) }], temperature: 0, max_tokens: 96 }),
+          body: JSON.stringify({ model: options.model, messages: [{ role: "system", content: built.system }, { role: "user", content: built.prompt }], temperature: 0, max_tokens: 96 }),
           signal: controller.signal
         });
         if (!response.ok) return [];
