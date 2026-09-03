@@ -5855,6 +5855,12 @@ function containsSurfaceRealizerTelemetry(text: string): boolean {
 function stripInternalSurfaceArtifactTokens(text: string): string {
   return text
     .replace(/\{[^{}]*scce\.surface\.realizer[^{}]*\}/giu, " ")
+    // wikitext that survived chunking: file links, image options, headings, templates, stray brackets
+    .replace(/\[\[(?:File|Image):[^\]]*(?:\]\])?/giu, " ")
+    .replace(/\|\s*(?:alt|thumb|thumbnail|frame|frameless|border|left|right|center|upright|\d+px)\s*(?:=[^\]|\n]*)?/giu, " ")
+    .replace(/={2,}\s*[^=\n]+?\s*={2,}/gu, " ")
+    .replace(/\{\{[^{}]*\}\}/gu, " ")
+    .replace(/\[\[|\]\]/gu, "")
     .replace(/\bsemantic\.answer\.meaning_slot\.[A-Za-z0-9_.:-]+\b/giu, "")
     .replace(/\bsurface\.(?:point|limit|grounding|ref)\s*=\s*[^\n.?!]*(?:[.?!]|\n|$)/giu, " ")
     .replace(/\b(?:(?:language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)_[A-Za-z0-9_:.:-]+|(?:node|edge|relation|hyperedge)_[0-9a-f]{32,64})\b/giu, "")
@@ -5869,6 +5875,7 @@ function containsOnlyInternalSurfaceArtifacts(text: string): boolean {
 
 function containsInternalSurfaceArtifact(text: string): boolean {
   return /scce\.surface\.realizer/iu.test(text) ||
+    /\[\[(?:File|Image):|\|alt=|\{\{[^{}]*\}\}|={2,}\s*[^=\n]+?\s*={2,}/iu.test(text) ||
     /\bsemantic\.answer\.meaning_slot\.[A-Za-z0-9_.:-]+\b/iu.test(text) ||
     /\bsurface\.(?:point|limit|grounding|ref)\s*=/iu.test(text) ||
     /\b(?:(?:language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)_[A-Za-z0-9_:.:-]+|(?:node|edge|relation|hyperedge)_[0-9a-f]{32,64})\b/iu.test(text) ||
