@@ -1,4 +1,5 @@
 import { buildConstructionGrammarMdlState, currentConstructionGrammarMdlScore } from "./construction-grammar-mdl-incremental.js";
+import type { ConstructionGrammarMdlScore } from "./construction-grammar-mdl.js";
 import {
   induceLearnedConstructions,
   type AlignedSurfaceExample,
@@ -24,16 +25,12 @@ export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argumen
  */
 export const UNIVERSAL_CREATIVE_EVENT_COMPILER_ID = "surface.compiler.universal.induced.v1" as const;
 
-/** Below this many observed examples an MDL comparison has nothing to say; the count-only induction check still applies. */
-const MDL_GATE_MINIMUM_EXAMPLES = 4;
-
 export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   input: "surface.construction_memory.reject.input",
   ownership: "surface.construction_memory.reject.ownership",
   evidence: "surface.construction_memory.reject.evidence",
   coordinates: "surface.construction_memory.reject.coordinates",
   induction: "surface.construction_memory.reject.induction",
-  mdl: "surface.construction_memory.reject.mdl",
   identity: "surface.construction_memory.reject.identity",
   digest: "surface.construction_memory.reject.digest",
   member: "surface.construction_memory.reject.member",
@@ -199,6 +196,7 @@ export type LanguageConstructionPatternCompilation =
       status: "compiled";
       pattern: LanguagePatternRecord;
       bundle: DurableLanguageConstructionBundle;
+      mdl?: ConstructionGrammarMdlScore;
     }
   | {
       status: "rejected";
@@ -288,12 +286,8 @@ export function compileLanguageConstructionPattern(input: {
   if (induction.rejected.length > 0 || induction.constructions.length === 0) {
     return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
   }
-  // MDL gate: a grammar enters durable memory only when it describes the examples in fewer bits than their literal text.
+  // MDL score travels with the compiled grammar as an audit signal; short-example grammars legitimately cost more bits than their literal text, so it never rejects.
   const mdl = currentConstructionGrammarMdlScore(buildConstructionGrammarMdlState({ constructions: induction.constructions, formClasses: induction.formClasses }));
-  const literalBits = alignedExamples.reduce((sum, example) => sum + example.surface.length * 8, 0);
-  if (mdl.observedExampleCount >= MDL_GATE_MINIMUM_EXAMPLES && mdl.totalBits > literalBits) {
-    return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.mdl);
-  }
   if (induction.constructions.some(item => item.profileKey !== input.profileId)
     || induction.formClasses.some(item => item.profileKey !== input.profileId)) {
     return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
@@ -333,7 +327,7 @@ export function compileLanguageConstructionPattern(input: {
     evidenceIds: evidenceIds as EvidenceSpan["id"][],
     updatedAt: input.updatedAt
   };
-  return { status: "compiled", pattern, bundle };
+  return { status: "compiled", pattern, bundle, mdl };
 }
 
 export function createUniversalCreativeEventConstructionCompiler(): CreativeEventConstructionCompiler {
