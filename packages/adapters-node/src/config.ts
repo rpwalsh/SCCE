@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { isLoopbackHostname } from "@scce/kernel";
 import {
   assertValidRelationPotentialModel,
   createCorpusRegistry,
@@ -105,7 +106,7 @@ export interface ScceRuntimeConfig {
     excludedPaths: string[];
     /** Serialized offline-trained model. Runtime only performs frozen inference. */
     relationPotentialModel?: RelationPotentialModel;
-    tools: { pdftotext?: string; tesseract?: string; node?: string; pnpm?: string };
+    tools: { pdftotext?: string; pdftoppm?: string; tesseract?: string; node?: string; pnpm?: string };
     patchValidation?: PatchValidationRuntimeConfig;
     corpora?: {
       wikipedia?: WikipediaCorpusConfig;
@@ -157,8 +158,20 @@ export interface ScceRuntimeConfig {
    * Realization providers around the native mouth. Everything here is opt-in and
    * declared in models.declared.json; the native mouth is always the default.
    */
+  /** Visual evidence ingestion (Phase 3). Off by default; declared in models.declared.json. */
+  ingestion?: {
+    /** Live sensor sources (Phase 4): pluggable, each off unless enabled; every active source is logged. */
+    sensors?: Array<{ id: string; kind: "video-file" | "webcam"; input: string; enabled: boolean; fps?: number; changeThreshold?: number; maxFrames?: number }>;
+    visual?: {
+      embeddings: { enabled: boolean; modelId: string; modelDir: string; renderPdfPages?: boolean; maxPages?: number };
+    };
+  };
   realization?: {
     provider?: "native" | "ollama" | "api";
+    /** Local Ollama (loopback only, no sovereignty gate). */
+    ollama?: { host: string; model: string };
+    /** Remote API. Refuses to start unless acknowledgeRemoteDataExposure is true; key comes from the env var named here, never from config. */
+    apiProvider?: { endpoint: string; model: string; apiKeyEnv: string; acknowledgeRemoteDataExposure?: boolean };
     constrainedDecoding?: {
       enabled: boolean;
       modelId: string;
@@ -205,12 +218,33 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   if (!Array.isArray(config.runtime.allowedRoots) || config.runtime.allowedRoots.length === 0) throw new Error(`${source}: runtime.allowedRoots must be non-empty`);
   if (!config.security?.informationAccess) throw new Error(`${source}: security.informationAccess is required`);
   if (!config.security.defaultSourceInformationLabel) throw new Error(`${source}: security.defaultSourceInformationLabel is required`);
+  const visual = config.ingestion?.visual?.embeddings;
+  if (visual?.enabled) {
+    if (!visual.modelId) throw new Error(`${source}: ingestion.visual.embeddings.modelId is required when enabled`);
+    if (!visual.modelDir) throw new Error(`${source}: ingestion.visual.embeddings.modelDir is required when enabled (weights are never fetched at ingest)`);
+  }
   const constrained = config.realization?.constrainedDecoding;
   if (constrained?.enabled) {
     if (!constrained.modelId) throw new Error(`${source}: realization.constrainedDecoding.modelId is required when enabled`);
     if (!constrained.modelDir) throw new Error(`${source}: realization.constrainedDecoding.modelDir is required when enabled (weights are never fetched at inference)`);
   }
   if (config.realization?.provider && !["native", "ollama", "api"].includes(config.realization.provider)) throw new Error(`${source}: realization.provider must be native, ollama, or api`);
+  if (config.realization?.provider === "ollama") {
+    const ollama = config.realization.ollama;
+    if (!ollama?.host || !ollama.model) throw new Error(`${source}: realization.ollama.host and .model are required for provider ollama`);
+    let hostname = "";
+    try { hostname = new URL(ollama.host).hostname; } catch { throw new Error(`${source}: realization.ollama.host must be a URL`); }
+    if (!isLoopbackHostname(hostname)) throw new Error(`${source}: realization.ollama.host must be loopback (localhost, 127.0.0.0/8, ::1)`);
+  }
+  if (config.realization?.provider === "api") {
+    const api = config.realization.apiProvider;
+    if (!api?.endpoint || !api.model || !api.apiKeyEnv) throw new Error(`${source}: realization.apiProvider.endpoint, .model and .apiKeyEnv are required for provider api`);
+    if (api.acknowledgeRemoteDataExposure !== true) throw new Error(`${source}: realization.apiProvider.acknowledgeRemoteDataExposure must be true to send evidence off-device`);
+    if (!api.endpoint.toLocaleLowerCase().startsWith("https://")) throw new Error(`${source}: realization.apiProvider.endpoint must be https`);
+  }
+  for (const sensor of config.ingestion?.sensors ?? []) {
+    if (!sensor.id || !sensor.input || !["video-file", "webcam"].includes(sensor.kind)) throw new Error(`${source}: ingestion.sensors entries need id, kind (video-file|webcam) and input`);
+  }
   try {
     normalizeSpreadsheetExtractionLimits(config.runtime.spreadsheet);
   } catch (error) {
