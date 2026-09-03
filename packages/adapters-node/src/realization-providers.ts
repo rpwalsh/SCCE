@@ -52,6 +52,13 @@ export function isCodeRequest(request: Pick<WordingRealizerRequest, "targetLangu
   return CODE_LANGUAGES.has(String(request.targetLanguage ?? "").toLocaleLowerCase());
 }
 
+/** A draft cut off by the token budget keeps its complete sentences; a cut with no boundary keeps nothing. Pure. */
+export function trimToSentenceBoundary(text: string): string {
+  const trimmed = text.trim();
+  const match = /^[\s\S]*[.!?。！？؟।]["”’')\]]*/u.exec(trimmed);
+  return match ? match[0].trim() : "";
+}
+
 /** Strips a single markdown code fence a model may wrap code in. Pure. */
 export function stripCodeFence(text: string): string {
   const match = /^\s*```[\w+-]*\r?\n([\s\S]*?)\r?\n```\s*$/u.exec(text);
@@ -75,6 +82,13 @@ export function buildProviderPrompt(request: WordingRealizerRequest): ProviderPr
     };
   }
   const facts = [...new Set(request.facts.map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`.replace(/\s+/gu, " ").trim()))];
+  if (request.invention) {
+    const sentences = Math.max(1, request.maxSentences ?? 8);
+    return {
+      system: `Write the requested piece in at most ${sentences} sentences, in the language of the request. Invent freely; if facts are given, keep them true and do not contradict them. No preamble, title, or commentary.`,
+      prompt: `Request:\n${request.requestText}\n\n${facts.length ? `Facts:\n${facts.join("\n")}\n\n` : ""}Piece:`
+    };
+  }
   const sentences = Math.max(1, request.maxSentences ?? 2);
   return {
     system: `Answer the request in at most ${sentences} complete sentence(s), each with a subject and a verb, restating the facts that answer it. Use only words that appear in the facts and keep every name and number you use exactly as written there. Write in the language of the facts. No preamble, commentary, or questions.`,
@@ -97,22 +111,25 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
     id: `ollama:${options.model}`,
     async realize(request) {
       const facts = request.facts.filter(fact => fact.evidenceIds.length > 0);
-      if (!facts.length) return [];
+      const invention = request.invention === true;
+      if (!facts.length && !invention) return [];
       const code = isCodeRequest(request);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : 8_000));
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : invention ? 20_000 : 8_000));
       try {
         const response = await fetchImpl(`${host}/api/generate`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: options.model, ...buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: 0, num_predict: code ? 2048 : 96 } }),
+          body: JSON.stringify({ model: options.model, ...buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: invention ? 0.7 : 0, num_predict: code ? 2048 : invention ? 320 : 96 } }),
           signal: controller.signal
         });
         if (!response.ok) return [];
         const payload = await response.json() as { response?: string };
-        const text = code ? stripCodeFence(String(payload.response ?? "")) : String(payload.response ?? "").trim();
+        const raw = String(payload.response ?? "");
+        const text = code ? stripCodeFence(raw) : invention ? trimToSentenceBoundary(raw) : raw.trim();
         if (!text.trim() || (!code && degenerateSurface(text))) return [];
-        const verified = code || verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
+        // An invention is admitted as invented; only sourced prose is word-licensed against the facts.
+        const verified = code || invention || verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
         return [{ text, verified, provider: this.id }];
       } catch {
         return [];
