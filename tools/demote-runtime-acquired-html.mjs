@@ -4,7 +4,11 @@
 //   --parents:  whole-article spans that fully contain two or more sentence-aligned sibling spans of the same source version
 //   node tools/demote-runtime-acquired-html.mjs [--apply] [--parents] [--schema=scce3_runtime]
 // Without --apply it only reports. Reads the database URL from SCCE_DATABASE_URL.
-import pg from "pg";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+const pg = createRequire(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "packages", "adapters-node", "package.json"))("pg");
 
 const apply = process.argv.includes("--apply");
 const schema = process.argv.find(arg => arg.startsWith("--schema="))?.slice(9) ?? "scce3_runtime";
