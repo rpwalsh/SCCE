@@ -57,7 +57,7 @@ describe("audit, learning, and benchmark source contracts", () => {
     expect(noFrontier.releaseGate).toBe("blocked_frontier_missing");
 
     const frontierRecords = tasks.map(task => ({
-      provider: "Anthropic",
+      provider: "example-provider",
       model: "Claude fixture",
       benchmark: "broad-fixture",
       taskId: task.id,
