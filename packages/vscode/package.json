@@ -82,6 +82,14 @@
         "title": "SCCE: Clear Task Timeline"
       },
       {
+        "command": "scce.learning.review",
+        "title": "SCCE: Review Learned Material"
+      },
+      {
+        "command": "scce.learning.curriculum",
+        "title": "SCCE: What SCCE Wants To Learn"
+      },
+      {
         "command": "scce.settings.open",
         "title": "SCCE: Open Settings"
       },

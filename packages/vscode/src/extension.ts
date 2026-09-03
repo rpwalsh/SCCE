@@ -191,6 +191,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showInformationMessage(answer.answer.slice(0, 500));
       }
     }),
+    vscode.commands.registerCommand("scce.learning.review", async () => {
+      const listed = await run("learning.review", "List material held for review", false, async activeClient => activeClient.listHeldSources());
+      const held = listed && typeof listed === "object" && "held" in listed ? (listed as { held: Array<{ id: string; uri: string; title: string; preview: string }> }).held : [];
+      if (!held.length) { void vscode.window.showInformationMessage("SCCE: nothing is waiting for your review."); return; }
+      const picked = await vscode.window.showQuickPick(held.map(item => ({ label: item.title || item.uri, description: item.uri, detail: item.preview.slice(0, 200), item })), { title: "Material SCCE fetched with your consent — is it true?", ignoreFocusOut: true });
+      if (!picked) return;
+      const decision = await vscode.window.showQuickPick([{ label: "True, keep it", value: "promoted" as const }, { label: "Not true, discard", value: "rejected" as const }], { title: picked.description, ignoreFocusOut: true });
+      if (!decision) return;
+      await run("learning.review.decide", decision.value === "promoted" ? "Promote held material" : "Reject held material", true, async activeClient => activeClient.reviewHeldSource(picked.item.id, decision.value));
+    }),
+    vscode.commands.registerCommand("scce.learning.curriculum", async () => {
+      const listed = await run("learning.curriculum", "List what SCCE wants to learn", false, async activeClient => activeClient.listCurriculum());
+      const items = listed && typeof listed === "object" && "items" in listed ? (listed as { items: Array<{ planId: string; query: string; rationale: string }> }).items : [];
+      if (!items.length) { void vscode.window.showInformationMessage("SCCE: no self-proposed learning is waiting for consent."); return; }
+      const picked = await vscode.window.showQuickPick(items.map(item => ({ label: item.query, detail: item.rationale, item })), { title: "SCCE wants to learn — let it search the web for this?", ignoreFocusOut: true });
+      if (!picked) return;
+      const result = await run("learning.pursue", "Consent and learn", true, async activeClient => activeClient.pursueCurriculum(picked.item.planId));
+      const heldCount = result && typeof result === "object" && "held" in result ? (result as { held: unknown[] }).held.length : 0;
+      if (heldCount) void vscode.window.showInformationMessage(`SCCE fetched ${heldCount} source(s); run "SCCE: Review Learned Material" to confirm what is true.`);
+    }),
     vscode.commands.registerCommand("scce.workspace.status", () => run("workspace.status", "Load read-only workspace status", false, async activeClient => {
       const { status: workspaceStatus } = await serverBoundWorkspace(activeClient);
       return workspaceStatus;

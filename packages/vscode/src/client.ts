@@ -54,6 +54,23 @@ export interface HeldSourceView {
   evidenceCount: number;
 }
 
+export interface CurriculumItemView {
+  planId: string;
+  query: string;
+  rationale: string;
+}
+
+function parseCurriculum(value: unknown): { items: CurriculumItemView[] } {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const items = Array.isArray(record.items) ? record.items : [];
+  return { items: items.map(item => { const row = item as Record<string, unknown>; return { planId: String(row.planId ?? ""), query: String(row.query ?? ""), rationale: String(row.rationale ?? "") }; }).filter(item => item.planId && item.query) };
+}
+
+function parsePursue(value: unknown): { answer: string; held: HeldSourceView[] } {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return { answer: String(record.answer ?? ""), held: parseLearningHeld({ held: record.held }).held };
+}
+
 function parseLearningHeld(value: unknown): { held: HeldSourceView[] } {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const held = Array.isArray(record.held) ? record.held : [];
@@ -165,6 +182,14 @@ export class ScceClient {
       const attempt = parseWorkspacePatchAttempt(value);
       return "pendingApproval" in attempt ? attempt : verifyAppliedPatchMatchesPlan(attempt, plan);
     });
+  }
+
+  listCurriculum(): Promise<{ items: CurriculumItemView[] }> {
+    return this.request("GET", "/api/learning/curriculum", undefined, parseCurriculum);
+  }
+
+  pursueCurriculum(planId: string): Promise<{ answer: string; held: HeldSourceView[] }> {
+    return this.request("POST", "/api/learning/pursue", { planId: requireNonEmpty(planId, "curriculum plan id") }, parsePursue);
   }
 
   listHeldSources(): Promise<{ held: HeldSourceView[] }> {

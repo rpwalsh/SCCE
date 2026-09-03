@@ -155,11 +155,16 @@ async function main(): Promise<void> {
             }, workspaceTurn.codingRequest.rootPath, parseWorkspaceOptions(workspaceTurn.codingRequest.workspaceOptionArgs))
             : undefined;
           const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
+          const turnStartedMonotonicMs = performance.now();
           const turnInput = {
             text,
             metadata: {
               runtimePath: { hydratedRuntime: true, serverPath: false, sourceOnlySimulation: false },
-              runtime: { workspacePlans: workspacePlans.map(plan => toJsonValue(plan)) },
+              runtime: {
+                workspacePlans: workspacePlans.map(plan => toJsonValue(plan)),
+                // Owner contract: a hard 10s cap per turn, degraded at stage boundaries rather than killed.
+                deadline: { schema: "scce.runtime_deadline.v1", clock: "node.performance.v1", budgetMs: 10_000, responseReserveMs: 1_000, startedMonotonicMs: turnStartedMonotonicMs, deadlineMonotonicMs: turnStartedMonotonicMs + 10_000, computeDeadlineMonotonicMs: turnStartedMonotonicMs + 9_000 }
+              },
               activeBrainVersion: active.activeBrainVersion,
               activeImportRunIds: active.activeImportRunIds,
               conversationId,
