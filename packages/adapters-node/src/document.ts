@@ -118,6 +118,7 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
   const completeStructure = finalizeStructure(normalized, structural);
   const diagnostics = documentDiagnostics({ bytes, text: normalized, attempts, sizeBytes: info.size });
   const relativeUri = normalizePath(path.relative(config.runtime.workspaceRoot, absolutePath));
+  const visualAttributes = await visualAttributesForDocument(absolutePath, ext, mediaType, config);
   const sourceCodeFacts = extractNodeSourceCodeFacts({
     absolutePath,
     uri: relativeUri,
@@ -144,6 +145,7 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
       structure: completeStructure,
       typedExtraction,
       sourceCode: sourceCodeFacts ?? null,
+      visual: visualAttributes ?? null,
       diagnostics,
       sha256,
       totalExtractionMs: Date.now() - start
@@ -381,4 +383,23 @@ function documentDiagnostics(input: { bytes: Uint8Array; text: string; attempts:
 
 function firstLine(text: string): string {
   return text.split(/\r?\n/)[0] ?? "";
+}
+
+// Visual attributes (Phase 3) for images and rendered PDF pages. Late import keeps
+// document.ts free of the model runtime and avoids a module cycle with visual-ingest.
+async function visualAttributesForDocument(absolutePath: string, ext: string, mediaType: string, config: ScceRuntimeConfig): Promise<JsonValue | undefined> {
+  const settings = config.ingestion?.visual?.embeddings;
+  if (!settings?.enabled) return undefined;
+  const visual = await import("./visual-ingest.js");
+  const embedder = visual.activeVisualEmbedder();
+  if (!embedder) return undefined;
+  try {
+    if (isImageMedia(mediaType)) return toJsonValue((await embedder.embedImageFile(absolutePath)) ?? null) ?? undefined;
+    if (ext === ".pdf" && settings.renderPdfPages !== false) {
+      return toJsonValue((await visual.embedPdfPages(absolutePath, embedder, { pdftoppm: config.runtime.tools.pdftoppm, maxPages: settings.maxPages })) ?? null) ?? undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }

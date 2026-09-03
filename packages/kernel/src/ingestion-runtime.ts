@@ -346,6 +346,11 @@ export function createIngestionRuntime(options: {
         for (const span of admittedSpans) await deps.storage.blobs.put(Buffer.from(span.text, "utf8"), source.mediaType);
         if (deps.storage.evidence.putEvidenceSpans) await deps.storage.evidence.putEvidenceSpans(admittedSpans);
         else for (const span of admittedSpans) await deps.storage.evidence.putEvidenceSpan(span);
+        // Visual attributes (Phase 3) ride on the first admitted span of the document; provenance stays on the node.
+        const visual = visualAttributesFromMetadata(file.metadata);
+        if (visual && admittedSpans[0] && deps.storage.evidence.putEvidenceVisual) {
+          await deps.storage.evidence.putEvidenceVisual({ evidenceId: admittedSpans[0].id, embedding: visual.embedding, regions: visual.regions, model: visual.model });
+        }
         evidenceCount += admittedSpans.length;
         if (decision.disposition !== "promote") {
           await deps.storage.ingestion.put({
@@ -993,4 +998,15 @@ function labelRecords<T extends { informationLabel?: InformationLabel }>(
   informationLabel: InformationLabel
 ): Array<T & { informationLabel: InformationLabel }> {
   return records.map(record => ({ ...record, informationLabel }));
+}
+
+function visualAttributesFromMetadata(metadata: unknown): { embedding: number[]; regions: number[][]; model: string } | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const visual = (metadata as Record<string, unknown>).visual;
+  if (!visual || typeof visual !== "object" || Array.isArray(visual)) return undefined;
+  const record = visual as Record<string, unknown>;
+  const embedding = Array.isArray(record.embedding) ? record.embedding.map(Number).filter(Number.isFinite) : [];
+  if (!embedding.length) return undefined;
+  const regions = Array.isArray(record.regions) ? record.regions.filter(Array.isArray).map(region => (region as unknown[]).map(Number).filter(Number.isFinite)) : [];
+  return { embedding, regions, model: typeof record.model === "string" ? record.model : "unknown" };
 }

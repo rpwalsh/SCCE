@@ -15,7 +15,8 @@ import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./pos
 import { NodeFileIngestAdapter } from "./files.js";
 import { NodeBuildTestAdapter } from "./process.js";
 import { ConfiguredConnectorAdapter } from "./connectors.js";
-import { createConstrainedDecodingRealizer } from "./constrained-realizer.js";
+import { selectRealizationPort } from "./realization-providers.js";
+import { createClipVisualEmbedder, registerVisualEmbedder } from "./visual-ingest.js";
 import { createApprovalSession, type ApprovalSession } from "./approval-session.js";
 import { createNodePostgresGovernanceProbe } from "./governance-probe.js";
 import { corpusRegistryEntriesFromConfig } from "./config.js";
@@ -76,16 +77,16 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
   });
   // Declared, config-gated fourth realization strategy (see models.declared.json). Absent
   // unless enabled; weights load from a local directory only.
-  const constrainedDecoding = config.realization?.constrainedDecoding;
-  const wordingRealizer = constrainedDecoding?.enabled
-    ? createConstrainedDecodingRealizer({
-      modelId: constrainedDecoding.modelId,
-      modelDir: constrainedDecoding.modelDir,
-      dtype: constrainedDecoding.dtype,
-      maxNewTokens: constrainedDecoding.maxNewTokens,
-      log: message => console.error(`[scce] ${message}`)
-    })
+  // Declared, config-gated visual embedder (Phase 3): registered for document extraction and
+  // handed to the kernel only as a text->visual-space query function.
+  const visualEmbeddings = config.ingestion?.visual?.embeddings;
+  const visualEmbedder = visualEmbeddings?.enabled
+    ? createClipVisualEmbedder({ modelId: visualEmbeddings.modelId, modelDir: visualEmbeddings.modelDir, log: message => console.error(`[scce] ${message}`) })
     : undefined;
+  registerVisualEmbedder(visualEmbedder);
+  // Provider selection (Phase 5): native (default; Phase 2 decoder when enabled), ollama, or api
+  // behind its sovereignty gate. Any provider error yields no surfaces -> native mouth.
+  const wordingRealizer = selectRealizationPort(config);
   const kernel = createScceKernel({
     storage,
     files,
@@ -94,6 +95,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     connectors,
     approvals,
     ...(wordingRealizer ? { wordingRealizer } : {}),
+    ...(visualEmbedder ? { visualQueryEmbedder: (text: string) => visualEmbedder.embedText(text) } : {}),
     policy: config.policy,
     maxChunkBytes: config.runtime.maxChunkBytes,
     informationAccess,

@@ -102,7 +102,7 @@ const HOT_QUERY_EDGE_BRANCH_LIMIT = 4;
 const HOT_QUERY_HYPEREDGE_BRANCH_LIMIT = 4;
 
 export function createRuntimeGraphRetrieval(options: {
-  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels">;
+  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels" | "visualQueryEmbedder">;
   clock: ReturnType<typeof createClock>;
   hasher: ReturnType<typeof createHasher>;
   candidates: ReturnType<typeof createCandidateEngine>;
@@ -537,11 +537,14 @@ export function createRuntimeGraphRetrieval(options: {
     // in alongside "ada lovelace"). Searching per-group and unioning
     // results lets sourceIdentityAdmissibleEvidenceForRequest's real
     // exact-title-match ranking see every candidate document at all.
-    const evidenceResults = anchorFeatureGroups.length
+    const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(group =>
         deps.storage.evidence.searchEvidence({ features: group, limit: 32 })
       )).then(groupResults => groupResults.flat())
       : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48 });
+    // Late-interaction visual prefilter (Phase 3): one more candidate group upstream of
+    // admission and graph activation; it narrows, it never decides.
+    const evidenceResults = [...anchoredEvidenceResults, ...(await visualEvidenceResults(text))];
     kernelTrace({
       stage: "graph.resolve.anchor_evidence_search",
       label: "kernel.sourceAnchoredEvidenceForText",
@@ -696,6 +699,24 @@ export function createRuntimeGraphRetrieval(options: {
     const extras = uniqueKernelStrings(requestBigrams).slice(0, 4);
     if (extras.length >= 2) groups.push(extras);
     return groups;
+  }
+
+  async function visualEvidenceResults(text: string): Promise<Array<{ span: EvidenceSpan; score: number; reason: string }>> {
+    const embed = deps.visualQueryEmbedder;
+    const search = deps.storage.evidence.searchEvidenceByVisual;
+    if (!embed || !search) return [];
+    try {
+      const query = await embed(text);
+      if (!query?.length) return [];
+      const rows = await search({ embedding: query, limit: 24 });
+      return rows
+        .map(row => ({ span: row.span, score: Math.max(row.score, maxSimScore(query, row.regions)), reason: "visual-late-interaction" }))
+        .filter(row => row.score >= 0.2)
+        .sort((left, right) => right.score - left.score)
+        .slice(0, 12);
+    } catch {
+      return [];
+    }
   }
 
   function sourceAnchorRetrievalFeatures(text: string): string[] {
@@ -1817,4 +1838,17 @@ export function createRuntimeGraphRetrieval(options: {
       sourceAnchorEvidenceCache.clear();
     }
   };
+}
+
+/** MaxSim: best cosine between the query vector and any region vector (late interaction). Pure. */
+export function maxSimScore(query: readonly number[], regions: readonly (readonly number[])[]): number {
+  let best = 0;
+  for (const region of regions) {
+    let dot = 0, qn = 0, rn = 0;
+    const length = Math.min(query.length, region.length);
+    for (let index = 0; index < length; index++) { dot += query[index]! * region[index]!; qn += query[index]! ** 2; rn += region[index]! ** 2; }
+    const cosine = qn && rn ? dot / Math.sqrt(qn * rn) : 0;
+    if (cosine > best) best = cosine;
+  }
+  return best;
 }

@@ -626,6 +626,12 @@ export interface WordingRealizerFact {
   evidenceIds: readonly string[];
 }
 
+export interface EvidenceVisualSearchResult {
+  span: EvidenceSpan;
+  score: number;
+  regions: readonly (readonly number[])[];
+}
+
 export interface WordingRealizerRequest {
   requestText: string;
   facts: readonly WordingRealizerFact[];
@@ -660,6 +666,14 @@ export interface EvidenceStore {
    * fixture-backed stores that never seal remain valid.
    */
   sourceVersionsByContentHashes?(hashes: readonly ContentHash[]): Promise<SourceVersion[]>;
+  /**
+   * Visual evidence attributes (Phase 3): a whole-image/page vector and per-region
+   * vectors stored ON the evidence span, so provenance lives once on the node.
+   * Optional: stores without pgvector or without a visual model never implement it.
+   */
+  putEvidenceVisual?(input: { evidenceId: EvidenceId; embedding: readonly number[]; regions: readonly (readonly number[])[]; model: string }): Promise<void>;
+  /** Cosine prefilter over whole-image vectors; callers rerank with MaxSim over `regions`. */
+  searchEvidenceByVisual?(input: { embedding: readonly number[]; limit: number }): Promise<EvidenceVisualSearchResult[]>;
   /**
    * Enumerate source versions that promoted evidence actually draws on,
    * ordered by evidence alpha (the sources the runtime leans on first).
@@ -1250,6 +1264,8 @@ export interface ScceKernelDeps {
    * language-memory-runtime remains the only realization engine.
    */
   wordingRealizer?: WordingRealizerPort;
+  /** Adapter-provided text->visual-space query embedding (Phase 3); absent when the visual model is off. The kernel stays model-free. */
+  visualQueryEmbedder?: (text: string) => Promise<readonly number[] | undefined>;
   /**
    * When true, the deferred (unauthorized) functional-cognition self-
    * projection runs in a short-lived child process with its own hard
