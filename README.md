@@ -247,9 +247,37 @@ Commands:
   pnpm scce ingest wiki <dump-path> --index=<index-path>
   pnpm scce corpus train gutenberg <path>
   pnpm scce turn <prompt> [--detail=brief|normal|detailed|stepwise]
+  pnpm scce learn pending | confirm <id> | reject <id> | curriculum | pursue <planId>
+  pnpm scce code --path=<workspace-file> [--attempts=3] <request>
+  pnpm scce settings show | get <key> | set <key> <value> | edit
+  pnpm scce model list | download <org/name> | remove <org/name>
   pnpm scce inspect last
   pnpm scce inspect brain
 ```
+
+### Learning with consent
+
+SCCE never searches the web on its own. When a question has no evidence,
+the turn asks first: the workbench and VS Code chat show an offer to
+search and learn, `scce turn` asks at the prompt, and a pending
+`network.search` approval appears in the session. Material fetched after
+consent is not knowledge yet: it is held in quarantine with a preview,
+and only becomes evidence when you confirm it is true (Learning panel,
+chat buttons, or `scce learn confirm <id>`). The learning loop's own
+proposals ("wants to learn: …") take the same path through
+`scce learn curriculum` and `scce learn pursue`.
+
+### Assist mode
+
+`realization.provider` selects who words the answer: `native` (default,
+no model), `ollama` (a local model server on loopback), or `api` (a
+remote provider, which refuses to start until
+`realization.apiProvider.acknowledgeRemoteDataExposure` is set). A model
+never decides what is true: it drafts a sentence from the turn's evidence
+facts, the draft is verified word by word against those facts and the
+question, and it competes in the mouth's energy ranking like any other
+candidate. The same provider backs `scce code`, where the verifier is the
+compiler: a patch that does not typecheck is rolled back.
 
 There is no CLI screenshot. A previous one was removed on 2026-08-17
 because the image was an HTML re-rendering styled to look like a

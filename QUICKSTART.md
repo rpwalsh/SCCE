@@ -66,10 +66,31 @@ from `packages/vscode`, then install the generated `.vsix` via VS Code's
 
 - Every answer is evidence-bound: sources are listed with the answer, and
   the audit detail shows the proof route that produced it.
-- Ask about something it was never taught — it says it doesn't know
-  instead of inventing an answer.
+- Ask about something it was never taught — it asks whether it may search
+  and learn instead of inventing an answer, and what it fetches waits for
+  your confirmation before it counts as knowledge.
 - Turn latency on ordinary hardware: ~2.5s median on the sealed benchmark
   corpus.
+
+## 6. Let it learn, with your consent
+
+Enable a web connector in `scce.config.json`, then ask about something
+outside what you taught it. The answer carries an offer to search; approve
+it (chat button, workbench Approvals panel, or the prompt in `pnpm scce turn`).
+The fetched pages land in the Learning panel with a preview. Mark each one
+true or not true; only confirmed material is promoted to evidence, and the
+question is answered again from it. `pnpm scce learn curriculum` lists what
+SCCE itself wants to learn next; `pnpm scce learn pursue <planId>` consents.
+
+## 7. Assist mode (optional)
+
+With a local model server running on loopback, set
+`realization.provider` to `ollama` and `realization.ollama.model` to a pulled
+model (`pnpm scce settings set realization.provider ollama`). The model
+drafts wording from the turn's evidence facts; every draft is verified
+against those facts before it can be emitted. The same setting lets
+`pnpm scce code --path=src/file.ts "<request>"` propose a patch that must
+pass the TypeScript compiler before it is kept.
 
 ## Verification
 
