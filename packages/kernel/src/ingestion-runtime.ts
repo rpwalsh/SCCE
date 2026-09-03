@@ -340,6 +340,11 @@ export function createIngestionRuntime(options: {
             alpha: action?.action === "lower-alpha" ? Math.min(span.alpha, action.alpha) : span.alpha,
             status: decision.disposition === "promote" ? "promoted" as const : "quarantined" as const,
             informationLabel,
+            // Control corpora (request-requirement / creative-event bootstraps) are language and
+            // routing evidence, never answer evidence: stamped so retrieval can exclude them.
+            ...(requestRequirementCorpus || creativeEventCompatibilityCorpus
+              ? { provenance: { ...(span.provenance as Record<string, JsonValue>), controlCorpus: requestRequirementCorpus ? "request-requirements" : "creative-event-compatibility" } }
+              : {}),
             trustVector: { ...(span.trustVector as Record<string, JsonValue>), admission: decision.audit, action: action?.action ?? "quarantine" }
           };
         });
