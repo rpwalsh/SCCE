@@ -74,7 +74,7 @@ export async function runCodeMouth(input: {
   for (let attempt = 1; attempt <= session.budget.maxAttempts; attempt++) {
     const proposal = await input.ports.propose({ request: input.request, context, diagnostics, attempt });
     if (!proposal || !proposal.operations.length) {
-      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "no proposer produced a patch; enable a realization provider (constrained decoding or ollama) or provide a diagnostic-bound request" };
+      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "no proposer produced a patch; enable a realization provider (constrained decoding or a local model server) or provide a diagnostic-bound request" };
     }
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
     if (!check.permitted) return { outcome: "budget_exhausted", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: check.reason };

@@ -58,7 +58,7 @@ describe("audit, learning, and benchmark source contracts", () => {
 
     const frontierRecords = tasks.map(task => ({
       provider: "example-provider",
-      model: "Claude fixture",
+      model: "example fixture",
       benchmark: "broad-fixture",
       taskId: task.id,
       score: 0.86,

@@ -255,7 +255,7 @@ export function broadBenchmarkReadiness(input: {
     releaseGate,
     notes: [
       "releaseGate=passed requires every required task class, minimum local class score, and supplied frontier records for each task",
-      frontierRecords.length ? `frontier records supplied: ${frontierRecords.length}` : "frontier records missing; no Claude/frontier-beater claim is admissible"
+      frontierRecords.length ? `frontier records supplied: ${frontierRecords.length}` : "frontier records missing; no frontier-beater claim is admissible"
     ]
   };
 }

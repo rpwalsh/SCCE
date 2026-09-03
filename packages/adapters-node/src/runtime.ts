@@ -84,7 +84,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     ? createClipVisualEmbedder({ modelId: visualEmbeddings.modelId, modelDir: visualEmbeddings.modelDir, log: message => console.error(`[scce] ${message}`) })
     : undefined;
   registerVisualEmbedder(visualEmbedder);
-  // Provider selection (Phase 5): native (default; Phase 2 decoder when enabled), ollama, or api
+  // Provider selection (Phase 5): native (default; Phase 2 decoder when enabled), a local model server, or a remote API
   // behind its sovereignty gate. Any provider error yields no surfaces -> native mouth.
   const wordingRealizer = selectRealizationPort(config);
   const kernel = createScceKernel({
