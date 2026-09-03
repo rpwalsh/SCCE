@@ -129,6 +129,9 @@ export function evidenceForRequest(
         contentAnchorAligned
       );
       const initialismAligned = evidenceTitleInitialismMatches(span, initialismTokens);
+      // A whole-article span must not lose to a dense passage on size alone: an anchor-aligned oversized span is also scored by its best sentence window.
+      const windowLexical = anchorAligned && [...String(span.text ?? "")].length > 4096 ? bestSentenceWindowLexical(span, requestFeatures) : 0;
+      const rankedLexical = Math.max(lexical, windowLexical);
       const explicitContextAligned = explicitContextEvidenceIds.has(String(span.id));
       const semanticFrameBoundAligned = semanticFrameBoundEvidenceIds.has(String(span.id));
       const priorityAligned = priorityIds.has(String(span.id)) && (
@@ -142,7 +145,7 @@ export function evidenceForRequest(
       const initialismBoost = initialismAligned ? 0.6 : 0;
       const alphaBoost = lexical >= 0.025 || semanticFrameBoundAligned || priorityAligned || anchorAligned || initialismAligned ? span.alpha * 0.18 : 0;
       const sessionBoost = sessionSpan && (lexical >= 0.045 || priorityAligned) ? 0.08 : 0;
-      return { span, score: lexical + alphaBoost + sessionBoost + priorityBoost + initialismBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, initialismAligned, sessionSpan, contentOverlap };
+      return { span, score: rankedLexical + alphaBoost + sessionBoost + priorityBoost + initialismBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, initialismAligned, sessionSpan, contentOverlap };
     })
     .filter(row => {
       if (row.explicitContextAligned || row.semanticFrameBoundAligned || row.priorityAligned || row.anchorAligned || row.initialismAligned) return true;
@@ -248,6 +251,17 @@ export function evidenceWithGraphPreviewWindows(text: string, evidence: readonly
   });
 }
 
+
+/** Best request overlap of any sentence in an oversized span (memoized sentence split); bounded to the first 12000 chars. */
+function bestSentenceWindowLexical(span: EvidenceSpan, requestFeatures: ReturnType<typeof featureSet>): number {
+  let best = 0;
+  for (const sentence of fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 12000))) {
+    if (sentence.length < 24) continue;
+    const score = weightedJaccard(requestFeatures, featureSet(sentence, 128));
+    if (score > best) best = score;
+  }
+  return best;
+}
 
 export function runtimeEvidenceWindowsForRequest(text: string, evidence: readonly EvidenceSpan[]): EvidenceSpan[] {
   const requestFeatures = featureSet(text, 256);
@@ -435,7 +449,6 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const proposeSequences = requestSentenceSequences(input.requestText);
   const proposeNearDuplicate = proposeSequences.length > 0
     && promoted.some(span => spanContainsRequestNearDuplicateSentence(span, proposeSequences));
-  if (!proposeNearDuplicate && temporalCounterexampleExpected(input.requestText, promoted)) return undefined;
   // Single admission authority; a private copy of this filter silently
   // dropped content-admitted (near-duplicate) spans at the answer stage.
   const anchored = sourceIdentityAdmissibleEvidenceForRequest(
@@ -510,7 +523,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
       ? titleUnitList.filter(titleUnit =>
         [...requestUnits].some(unit => requestUnitMatchesSurface(unit, titleUnit))).length / titleUnitList.length
       : 0;
-    const sourceAffinityBoost = titleMatches ? 3 * titleRequestCoverage : 0;
+    // The primary anchor's own article carries the topic; another titled source that also fits gets most, not all, of the affinity.
+    const primaryAnchor = anchored.anchors[0];
+    const primaryTitle = Boolean(primaryAnchor) && (evidenceTitleDistinctAnchorMatches(span, [primaryAnchor!]) || evidenceExactSourceAnchorMatches(span, [primaryAnchor!]));
+    const sourceAffinityBoost = titleMatches ? 3 * titleRequestCoverage * (primaryTitle ? 1 : 0.7) : 0;
     let contentBoostIndex = -1;
     if (titleMatches && contentRequestUnits.size) {
       // Fragments (lowercase-initial in a cased script -- markup or
@@ -678,9 +694,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const planNearDuplicate = planSequences.length > 0
     && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, planSequences));
   if (!planNearDuplicate) {
+    // A found counterexample answers; merely expecting one must not veto the evidence-boundary answer below.
     const counterexample = temporalCounterexampleAnswerPlan(input.requestText, temporalEvidence);
     if (counterexample) return counterexample;
-    if (temporalCounterexampleExpected(input.requestText, temporalEvidence)) return undefined;
   }
   // A near-duplicate is a quotation, not an enumeration request: the
   // collection plan answered clozes with name-list salads.
@@ -1977,6 +1993,12 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
 }
 
 
+/** An anchor that titles only a few documents is a subject, not an instruction word that happens to sit in many titles. */
+const SUBJECT_ANCHOR_TITLE_MATCH_BOUND = 4;
+function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
+  return row.exactTitleMatches > 0 && row.exactTitleMatches <= SUBJECT_ANCHOR_TITLE_MATCH_BOUND;
+}
+
  function primarySourceAnchorForRequest(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined {
   const ranked = sourceEvidenceAnchorsForRequest(requestText)
     .map(anchor => {
@@ -1996,7 +2018,8 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
         supportMass += kernelClamp01(span.alpha);
       }
       if (!exactTitleMatches && !completeSourceMatches) return undefined;
-      return { anchor, exactTitleMatches, completeSourceMatches, supportMass };
+      const requestOrder = normalizePriorKey(requestText).indexOf(normalizePriorKey(anchor));
+      return { anchor, exactTitleMatches, completeSourceMatches, supportMass, requestOrder: requestOrder < 0 ? Number.MAX_SAFE_INTEGER : requestOrder };
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row))
     .sort((left, right) =>
@@ -2011,6 +2034,8 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
       // of the subject. A subject anchor is precisely the one that matches
       // FEW documents.
       (right.exactTitleMatches > 0 ? 1 : 0) - (left.exactTitleMatches > 0 ? 1 : 0) ||
+      // Two subject-like anchors (both rare titles): the request states its topic first, so the earlier one owns the answer.
+      (subjectLikeAnchor(left) && subjectLikeAnchor(right) ? left.requestOrder - right.requestOrder : 0) ||
       sourceAnchorPhraseRank(right.anchor) - sourceAnchorPhraseRank(left.anchor) ||
       (left.exactTitleMatches || Number.MAX_SAFE_INTEGER) - (right.exactTitleMatches || Number.MAX_SAFE_INTEGER) ||
       right.completeSourceMatches - left.completeSourceMatches ||
@@ -2154,7 +2179,8 @@ export function sourceAnchorPhraseContains(sourceUnits: readonly string[], ancho
     const anchorUnits = titleAnchorUnits(anchor);
     if (!anchorUnits.length) continue;
     if (titleAnchorPhraseMatches(coreTitle || title, anchor)) {
-      if (anchorUnits.length === 1 && rawCoreUnits.length > 1 && !evidenceTitleExactlyMatchesAnchor(span, anchor)) continue;
+      // Count the anchor's raw units here: a short unit ("ada") is still a unit of the phrase.
+      if (splitPriorUnits(anchor).filter(Boolean).length === 1 && rawCoreUnits.length > 1 && !evidenceTitleExactlyMatchesAnchor(span, anchor)) continue;
       return true;
     }
     const matchedTitleUnits = titleUnits.filter(titleUnit => anchorUnits.some(unit => titleAnchorUnitMatches(unit, titleUnit)));
@@ -2193,7 +2219,11 @@ export function sourceAnchorPhraseContains(sourceUnits: readonly string[], ancho
   if (title === anchor) return true;
   const paddedTitle = ` ${title} `;
   const paddedAnchor = ` ${anchor} `;
-  return paddedTitle.includes(` ${anchor} `) || paddedAnchor.includes(` ${title} `);
+  if (paddedTitle.includes(` ${anchor} `) || paddedAnchor.includes(` ${title} `)) return true;
+  // Unit-wise with suffix tolerance: an inflected or possessive form of a title unit ("lovelace's") still names the title.
+  const titleUnits = splitPriorUnits(title).filter(Boolean);
+  const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
+  return titleUnits.length >= 1 && titleUnits.length === anchorUnits.length && titleUnits.every((unit, index) => titleAnchorUnitMatches(anchorUnits[index]!, unit));
 }
 
 
