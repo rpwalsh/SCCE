@@ -15,6 +15,7 @@ import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./pos
 import { NodeFileIngestAdapter } from "./files.js";
 import { NodeBuildTestAdapter } from "./process.js";
 import { ConfiguredConnectorAdapter } from "./connectors.js";
+import { createConstrainedDecodingRealizer } from "./constrained-realizer.js";
 import { createApprovalSession, type ApprovalSession } from "./approval-session.js";
 import { createNodePostgresGovernanceProbe } from "./governance-probe.js";
 import { corpusRegistryEntriesFromConfig } from "./config.js";
@@ -73,6 +74,18 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     journal: createExecutiveEventJournal(storage),
     maxConflictRetries: 5
   });
+  // Declared, config-gated fourth realization strategy (see models.declared.json). Absent
+  // unless enabled; weights load from a local directory only.
+  const constrainedDecoding = config.realization?.constrainedDecoding;
+  const wordingRealizer = constrainedDecoding?.enabled
+    ? createConstrainedDecodingRealizer({
+      modelId: constrainedDecoding.modelId,
+      modelDir: constrainedDecoding.modelDir,
+      dtype: constrainedDecoding.dtype,
+      maxNewTokens: constrainedDecoding.maxNewTokens,
+      log: message => console.error(`[scce] ${message}`)
+    })
+    : undefined;
   const kernel = createScceKernel({
     storage,
     files,
@@ -80,6 +93,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     governance,
     connectors,
     approvals,
+    ...(wordingRealizer ? { wordingRealizer } : {}),
     policy: config.policy,
     maxChunkBytes: config.runtime.maxChunkBytes,
     informationAccess,
