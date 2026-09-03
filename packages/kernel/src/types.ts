@@ -1090,7 +1090,8 @@ export interface SourceAdmissionContext {
     | "learned_prior"
     | "language_only"
     | "quarantine_only";
-  promotionAuthority: "automatic" | "training" | "owner";
+  /** review: held in quarantine until the owner confirms the material is truthful. */
+  promotionAuthority: "automatic" | "training" | "owner" | "review";
 }
 
 export interface IngestInput {

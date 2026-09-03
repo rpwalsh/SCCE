@@ -11,8 +11,30 @@ export function turnDetail(answer: TurnAnswer): unknown {
     conversationId: answer?.dialogue?.conversationId ?? null,
     proof: answer?.entailment?.proof ?? null,
     events: (answer?.events ?? []).slice(0, 40).map(event => ({ typeId: event.typeId, id: event.id })),
-    sources: turnSources(answer)
+    sources: turnSources(answer),
+    learning: turnLearning(answer)
   };
+}
+
+export interface TurnLearning {
+  status: "awaiting_consent" | "held_for_review";
+  planId?: string;
+  heldSources: Array<{ id: string; uri: string; title: string; snippet: string }>;
+}
+
+/** Consent and truthfulness prompts come from the kernel's runtime motion: ask before searching, confirm before learning. */
+export function turnLearning(answer: TurnAnswer): TurnLearning | null {
+  const motion = answer?.runtimeMotion;
+  if (!motion || typeof motion !== "object" || Array.isArray(motion)) return null;
+  const record = motion as Record<string, unknown>;
+  if (record.status === "awaiting_consent") {
+    const consent = record.consent && typeof record.consent === "object" ? record.consent as Record<string, unknown> : {};
+    return typeof consent.planId === "string" ? { status: "awaiting_consent", planId: consent.planId, heldSources: [] } : null;
+  }
+  if (record.status === "held_for_review" && Array.isArray(record.heldSources) && record.heldSources.length) {
+    return { status: "held_for_review", heldSources: record.heldSources.map(item => { const row = item as Record<string, unknown>; return { id: String(row.id ?? ""), uri: String(row.uri ?? ""), title: String(row.title ?? ""), snippet: String(row.snippet ?? "") }; }).filter(item => item.id) };
+  }
+  return null;
 }
 
 // Evidence is a citation, not a requirement: when the turn found real

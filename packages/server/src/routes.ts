@@ -6,7 +6,9 @@ import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
-import { CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+import {
+  listHeldSources,
+  reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -72,6 +74,8 @@ export const ROUTES = [
   { method: "GET", path: "/api/settings", label: "settings view", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/settings", label: "settings update", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/models", label: "local models", mutates: true, requiresDb: false },
+  { method: "GET", path: "/api/learning/held", label: "material held for owner review", mutates: false, requiresDb: true },
+  { method: "POST", path: "/api/learning/review", label: "confirm or reject held material", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/models/download", label: "model download (explicit)", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/models/remove", label: "model remove", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/brain/status", label: "brain status", mutates: false, requiresDb: true },
@@ -485,6 +489,22 @@ async function dispatch(
     }
     return json({ schema: "scce.settings.view.v1", configPath, fields: settingsView(raw) });
   }
+  if (url.pathname === "/api/learning/held" && req.method === "GET") {
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 20));
+    return json({ schema: "scce.learning.held.v1", held: await listHeldSources(context.runtime.storage, limit) });
+  }
+  if (url.pathname === "/api/learning/review" && req.method === "POST") {
+    const body = jsonRecord(await readBody(req, context.maxBodyBytes));
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const decision = body.decision === "promoted" || body.decision === "rejected" ? body.decision : undefined;
+    if (!id || !decision) throw new HttpError(400, "id and decision (promoted|rejected) are required");
+    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 500) : undefined;
+    try {
+      return json({ schema: "scce.learning.review.v1", review: await reviewHeldSource(context.runtime.storage, { id, decision, reason, reviewer: "owner" }) });
+    } catch (error) {
+      throw new HttpError(/not found/u.test(String(error)) ? 404 : 409, error instanceof Error ? error.message : String(error));
+    }
+  }
   if (url.pathname === "/api/models" && req.method === "GET") {
     const modelDir = modelDirectoryForConfig(context.config);
     const models = await listLocalModels(modelDir);
@@ -839,7 +859,7 @@ function validateSourceAdmissionContext(value: unknown): SourceAdmissionContext 
   if (!["direct_evidence", "learned_prior", "language_only", "quarantine_only"].includes(String(intendedUse))) {
     throw new HttpError(400, "sourceAdmission.intendedUse is invalid");
   }
-  if (!["automatic", "training", "owner"].includes(String(promotionAuthority))) {
+  if (!["automatic", "training", "owner", "review"].includes(String(promotionAuthority))) {
     throw new HttpError(400, "sourceAdmission.promotionAuthority is invalid");
   }
   return {

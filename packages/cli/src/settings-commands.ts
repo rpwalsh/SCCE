@@ -24,16 +24,24 @@ export { SETTINGS_FIELDS };
 export async function runSettingsCommand(configPath: string, args: string[]): Promise<void> {
   const absolute = path.resolve(configPath);
   const raw = JSON.parse(await readFile(absolute, "utf8")) as Record<string, unknown>;
-  if (args[0] === "show") {
+  const sub = args[0];
+  if (sub === "show" || sub === "list") {
     for (const field of SETTINGS_FIELDS) process.stdout.write(`${field.key} = ${JSON.stringify(getSettingPath(raw, field.key) ?? null)}\n`);
     return;
   }
-  if (args[0] === "set" && args[1]) {
+  if (sub === "get" && args[1]) {
+    if (!SETTINGS_FIELDS.some(field => field.key === args[1])) throw new Error(`unknown setting ${args[1]}; see: scce settings show`);
+    process.stdout.write(`${JSON.stringify(getSettingPath(raw, args[1]) ?? null)}\n`);
+    return;
+  }
+  if (sub === "set" && args[1]) {
     const value = applySetting(raw, args[1], args.slice(2).join(" "));
     await writeFile(absolute, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
     process.stdout.write(`${args[1]} = ${JSON.stringify(value)} written to ${absolute}\n`);
     return;
   }
+  if (sub && sub !== "edit") throw new Error("usage: scce settings show | get <key> | set <key> <value> | edit");
+  if (!stdin.isTTY) throw new Error("scce settings edit needs an interactive terminal; use show, get, or set");
   const rl = createInterface({ input: stdin, output: stdout });
   try {
     for (const field of SETTINGS_FIELDS) {

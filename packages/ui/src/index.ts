@@ -1,6 +1,7 @@
 export * from "./workbench-model.js";
 export * from "./developer-surface.js";
 export * from "./locales.js";
+export * as codexSurface from "./codex-surface.js";
 
 import { uiMessageScript, uiText } from "./locales.js";
 
@@ -177,6 +178,11 @@ export function renderWorkbench(serverUrl: string): string {
           <div class="dev-section">
             <h3>${escapeHtml(uiText("side.models"))}<button class="small-btn" id="model-download">${escapeHtml(uiText("side.models.download"))}</button></h3>
             <div id="models-list" class="tree"><div>${escapeHtml(uiText("side.models.empty"))}</div></div>
+          </div>
+          <div class="dev-section">
+            <h3>${escapeHtml(uiText("side.learning"))}<button class="small-btn" id="refresh-learning">${escapeHtml(uiText("side.learning.refresh"))}</button></h3>
+            <div class="hint">${escapeHtml(uiText("side.learning.hint"))}</div>
+            <div id="learning-list" class="tree"><div>${escapeHtml(uiText("side.learning.none"))}</div></div>
           </div>
           <div class="dev-section">
             <h3>${escapeHtml(uiText("pane.inspector"))}<button class="small-btn" id="inspect">${escapeHtml(uiText("button.inspect"))}</button></h3>
@@ -448,6 +454,44 @@ export function renderWorkbench(serverUrl: string): string {
     setTimeout(() => { loadSettings(); loadModels(); }, 0);
     async function get(url) { const r = await fetch(url); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw new Error(JSON.stringify(j)); return j; }
     async function refreshApprovals() { const r = await get('/api/session/approvals'); renderApprovals(r); return r; }
+    function heldItem(item, onDone) {
+      const box = document.createElement('div'); box.className = 'approval-item';
+      const title = document.createElement('strong'); title.textContent = item.title || item.uri; box.appendChild(title);
+      const uri = document.createElement('code'); uri.textContent = item.uri; box.appendChild(uri);
+      const preview = document.createElement('div'); preview.className = 'hint'; preview.textContent = item.preview || item.snippet || ''; box.appendChild(preview);
+      for (const decision of ['promoted', 'rejected']) {
+        const button = document.createElement('button'); button.textContent = uiMsg(decision === 'promoted' ? 'side.learning.confirm' : 'side.learning.reject');
+        button.onclick = async () => { log('POST /api/learning/review ' + decision); try { const r = await post('/api/learning/review', { id: item.id, decision }); inspector.textContent = JSON.stringify(r, null, 2); box.remove(); if (onDone) await onDone(decision); } catch (e) { preview.textContent = uiMsg('side.learning.error') + ': ' + e.message; } };
+        box.appendChild(button);
+      }
+      return box;
+    }
+    async function refreshLearning() {
+      const list = document.getElementById('learning-list'); if (!list) return;
+      const r = await get('/api/learning/held'); list.innerHTML = '';
+      if (!r.held || !r.held.length) { const d = document.createElement('div'); d.textContent = uiMsg('side.learning.none'); list.appendChild(d); return r; }
+      for (const item of r.held) list.appendChild(heldItem(item, refreshLearning));
+      return r;
+    }
+    // Consent and truthfulness controls ride on the answer row: ask before searching, confirm before learning.
+    function addLearningControls(r, text) {
+      const motion = r && r.runtimeMotion; if (!motion || typeof motion !== 'object') return;
+      const resend = async () => { add('scce', uiMsg('learn.retry')); prompt.value = text; sendButton.onclick(); };
+      if (motion.status === 'awaiting_consent' && motion.consent && motion.consent.planId) {
+        const row = document.createElement('div'); row.className = 'row scce';
+        const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = uiMsg('learn.offer');
+        const button = document.createElement('button'); button.textContent = uiMsg('learn.offer.yes');
+        button.onclick = async () => { log('POST /api/session/approve ' + motion.consent.planId); try { await post('/api/session/approve', { planId: motion.consent.planId }); button.disabled = true; await refreshApprovals(); await resend(); } catch (e) { bubble.textContent = uiMsg('error.prefix') + ' ' + e.message; } };
+        bubble.appendChild(document.createElement('br')); bubble.appendChild(button); row.appendChild(bubble); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
+      }
+      if (motion.status === 'held_for_review' && Array.isArray(motion.heldSources) && motion.heldSources.length) {
+        const row = document.createElement('div'); row.className = 'row scce';
+        const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = uiMsg('learn.held');
+        let remaining = motion.heldSources.length;
+        for (const item of motion.heldSources) bubble.appendChild(heldItem(item, async decision => { remaining--; await refreshLearning(); if (remaining === 0 && decision === 'promoted') await resend(); }));
+        row.appendChild(bubble); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
+      }
+    }
     function renderApprovals(state) {
       document.getElementById('operator-grant-toggle').checked = Boolean(state.operatorGrant);
       const list = document.getElementById('approval-list');
@@ -534,6 +578,7 @@ export function renderWorkbench(serverUrl: string): string {
         const r = await postTurnStream('/api/turn?stream=1', { text, sessionId, conversationId: sessionId }, frame => { if (frame.type === 'progress') showTyping(frame.phase); });
         hideTyping(); setSending(false);
         add('scce', turnSurface(r), turnDetail(r));
+        addLearningControls(r, text);
         addFeedbackControls(r.dialogue, text);
         inspector.textContent = JSON.stringify({ dialogue: r.dialogue, proof: r.entailment?.proof, pca: r.proofCarryingAnswer, pface: r.pface, language: r.languageAcquisition, actionGraph: r.actionGraph, functionalCognition: r.functionalCognition }, null, 2);
         trace.textContent = (r.events || []).map(e => e.typeId + ' ' + e.id).join('\\n');
@@ -544,6 +589,7 @@ export function renderWorkbench(serverUrl: string): string {
       }
     };
     document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); inspector.textContent = JSON.stringify(r, null, 2); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
+    document.getElementById('refresh-learning').onclick = async () => { log('GET /api/learning/held'); try { const r = await refreshLearning(); inspector.textContent = JSON.stringify(r, null, 2); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
     document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r = await refreshApprovals(); inspector.textContent = JSON.stringify(r, null, 2); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
     document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant ' + e.target.checked); try { const r = await post('/api/session/operator-grant', { enabled: e.target.checked }); renderApprovals(r); inspector.textContent = JSON.stringify(r, null, 2); } catch (err) { inspector.textContent = t('error.prefix') + ' ' + err.message; e.target.checked = !e.target.checked; } };
     refreshApprovals().catch(() => {});
