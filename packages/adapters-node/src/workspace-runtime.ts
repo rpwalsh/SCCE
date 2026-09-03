@@ -506,7 +506,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         return { ...adapterBaseline, report };
       }
       const conversationId = normalizedOptions.conversationId || project.workspace.id;
-      if (adapterBaseline.selectedIntentId === "workspace.intent.unsupported") {
+      if (adapterBaseline.selectedIntentId === "workspace.intent.unsupported" && typeof input.runtime.kernel.turn === "function") {
         // Free-text questions get the real evidence-bound turn pipeline, not
         // the structural-intent adapter that would otherwise recite findings.
         const turn = await input.runtime.kernel.turn({
@@ -580,8 +580,14 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         kernel,
         streamPlan
       };
+      // Report keeps a compact kernel summary, never the full payload (RangeError at V8 string cap).
       const { kernel: _kernel, streamPlan: _streamPlan, ...reportableAnswer } = answer;
-      const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, answer.answer, toJsonValue(reportableAnswer), answer.sourceRefs);
+      const reportKernel = {
+        pragmatics: kernel.pragmatics,
+        answerGraphId: kernel.answerGraph.id,
+        dialogueStateId: kernel.dialogueState.turnId
+      };
+      const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, answer.answer, toJsonValue({ ...reportableAnswer, kernel: reportKernel }), answer.sourceRefs);
       await input.runtime.storage.workspace.putReport(report);
       return { ...answer, report };
     },

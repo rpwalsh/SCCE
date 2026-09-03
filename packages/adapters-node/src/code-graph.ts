@@ -30,6 +30,7 @@ export interface NodeSourceCodeFactsInput {
 export function extractNodeSourceCodeFacts(input: NodeSourceCodeFactsInput): SourceCodeFileFacts | undefined {
   const normalized = normalizePath(input.uri);
   if (isIgnoredSourcePath(normalized)) return undefined;
+  if (!sourceFactsTextAdmissible(input.mediaType, input.text)) return undefined;
   const parser = parserFor(normalized, input.mediaType);
   const packageFacts = parseManifestFacts(normalized, input.text);
   if (parser.id === "typescript-compiler-api") {
@@ -915,8 +916,19 @@ function isTypeScriptParseable(normalizedPath: string, mediaType: string): boole
   return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext) || mediaType.includes("typescript") || mediaType.includes("javascript");
 }
 
+// Bounded INSIDE the primitive: a fetched text/html page with 100KB inline scripts is not
+// source, and garbage-as-JS through the parser produced millions of recovery nodes (live OOM).
+const MAX_SOURCE_FACT_BYTES = 2 * 1024 * 1024;
+const NON_SOURCE_TEXT_MEDIA = ["text/html", "text/markdown", "text/csv", "text/tab-separated-values", "text/xml", "text/calendar", "text/vcard", "text/rtf"];
+export function sourceFactsTextAdmissible(mediaType: string, text: string): boolean {
+  const lower = mediaType.toLocaleLowerCase();
+  if (NON_SOURCE_TEXT_MEDIA.some(media => lower.startsWith(media))) return false;
+  return Buffer.byteLength(text, "utf8") <= MAX_SOURCE_FACT_BYTES;
+}
 function isProbablySourceLike(normalizedPath: string, mediaType: string, text: string): boolean {
-  if (mediaType.startsWith("text/")) return true;
+  const lower = mediaType.toLocaleLowerCase();
+  if (NON_SOURCE_TEXT_MEDIA.some(media => lower.startsWith(media))) return false;
+  if (lower.includes("javascript") || lower.includes("typescript") || lower.startsWith("text/x-")) return true;
   if (parseManifestFacts(normalizedPath, text)) return true;
   return looksStructurallyLikeSource(text);
 }

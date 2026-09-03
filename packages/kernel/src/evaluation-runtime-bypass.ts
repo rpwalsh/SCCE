@@ -41,6 +41,7 @@ export function emptySurfaceLanguageMemory(): {
   active: { activeImportRunIds: never[] };
   corpusPlan: never[];
   rescopeForSurface: (surface: string) => { state: LanguageMemoryRuntimeState; surfaceProfile: LanguageProfile | undefined };
+  measuredHeapBytes: number;
 } {
   const competenceVector = {
     scriptRecognition: 0,
@@ -56,6 +57,7 @@ export function emptySurfaceLanguageMemory(): {
     localizationReliability: 0
   };
   return {
+    measuredHeapBytes: 0,
     models: [],
     observations: [],
     units: [],

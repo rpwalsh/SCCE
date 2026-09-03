@@ -1,3 +1,4 @@
+import { traceEvent } from "./debug/trace.js";
 import { createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
@@ -154,6 +155,15 @@ function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxEstimatedByte
 const DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES = 500;
 const DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES = 2_000;
 
+const approxJsonMb = (rows: readonly unknown[]): number => {
+  if (!(globalThis as { __sccTrace?: unknown }).__sccTrace) return 0;
+  let bytes = 0;
+  for (const row of rows) { try { bytes += JSON.stringify(row).length; } catch { bytes += 512 * 1024 * 1024; } }
+  return Math.round(bytes / 1048576);
+};
+const hydrateHeapTrace = (stage: string, counts: Record<string, number>) =>
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, { stage, label: "kernel.language.hydrate", counts: { ...counts, heapMb: (process.env.SCCE_TRACE_GC === "1" && typeof (globalThis as { gc?: () => void }).gc === "function" ? ((globalThis as { gc?: () => void }).gc!(), 0) : 0) + Math.round(process.memoryUsage().heapUsed / 1048576) } });
+
 export function createSurfaceLanguageRuntime(options: {
   deps: Pick<ScceKernelDeps, "storage" | "corpusRegistry">;
   languageMemoryRuntime: ReturnType<typeof createLanguageMemoryRuntime>;
@@ -229,6 +239,7 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = ""
   ) {
     const boundedLimit = Math.max(1, Math.min(64, Math.floor(limit)));
+    const hydrateHeapStart = process.memoryUsage().heapUsed;
     const profileIds = preferredCorpusRoleId ? undefined : cluster?.profileIds;
     const hydrationLimits = {
       ngramModels: Math.max(12, boundedLimit * Math.max(1, corpusRegistry.length)),
@@ -244,17 +255,24 @@ export function createSurfaceLanguageRuntime(options: {
     // best records still load, the oversized tail is skipped
     // deterministically. Sized so several concurrently-cached clusters
     // fit a default 4GB heap with parsed-object overhead.
+    // TOTAL durable-hydration JSON budgets across the whole query fan-out. Per-query
+    // budgets multiplied by corpus count: a wiki-brain turn hydrated 3.9GB of heap
+    // (6 models / 768 patterns / 393 frames, 141s) before producing nothing. Shares
+    // are divided across hydrationQueries at the load sites below.
     const hydrationByteBudgets = {
-      ngramModelJsonBytes: 64 * 1024 * 1024,
-      languageUnitJsonBytes: 24 * 1024 * 1024
+      ngramModelJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_NGRAM_MB) || 16) * 1024 * 1024,
+      languageUnitJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_UNITS_MB) || 8) * 1024 * 1024
     };
+    const hydrationShare = (total: number, fanOut: number) => Math.max(256 * 1024, Math.floor(total / Math.max(1, fanOut)));
     const exactProfileOwnerCount = Math.max(1, profileIds?.length ?? 0);
+    // Per-profile scaling is capped at the general bounded limits: 214 profiles asked for
+    // 54,784 observations (then trimmed to 3,840 after loading) -- 1.8GB of heap for nothing.
     const exactProfileHydrationLimits = {
-      ngramModels: Math.max(12, exactProfileOwnerCount * 4),
-      ngramObservations: Math.max(256, exactProfileOwnerCount * 256),
-      languageUnits: Math.max(256, exactProfileOwnerCount * 256),
-      languagePatterns: Math.max(96, exactProfileOwnerCount * 96),
-      semanticFrames: Math.max(128, exactProfileOwnerCount * 128)
+      ngramModels: Math.min(Math.max(12, exactProfileOwnerCount * 4), hydrationLimits.ngramModels),
+      ngramObservations: Math.min(Math.max(256, exactProfileOwnerCount * 256), hydrationLimits.ngramObservations),
+      languageUnits: Math.min(Math.max(256, exactProfileOwnerCount * 256), hydrationLimits.languageUnits),
+      languagePatterns: Math.min(Math.max(96, exactProfileOwnerCount * 96), hydrationLimits.languagePatterns),
+      semanticFrames: Math.min(Math.max(128, exactProfileOwnerCount * 128), hydrationLimits.semanticFrames)
     };
     const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, hydrationLimits);
     const [active, requestControlPatterns] = await Promise.all([
@@ -312,6 +330,7 @@ export function createSurfaceLanguageRuntime(options: {
     }> = profileIds?.length
       ? [{ profileIds, limits: exactProfileHydrationLimits }]
       : corpusQueries;
+    hydrateHeapTrace("language.hydrate.start", { queries: hydrationQueries.length, boundedLimit, limit, obsLimit: hydrationQueries[0]?.limits.ngramObservations ?? -1, unitLimit: hydrationQueries[0]?.limits.languageUnits ?? -1, patternLimit: hydrationQueries[0]?.limits.languagePatterns ?? -1, profiles: hydrationQueries[0]?.profileIds?.length ?? -1, corpora: corpusRegistry.length });
     const [
       modelsBySource,
       observationsBySource,
@@ -321,11 +340,11 @@ export function createSurfaceLanguageRuntime(options: {
       persistedProfiles,
       segmentationPopulationModels
     ] = await Promise.all([
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationByteBudgets.ngramModelJsonBytes }))),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationByteBudgets.languageUnitJsonBytes }))),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { part: "listNgramObservations", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languageUnitJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { part: "listLanguageUnits", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languagePatterns }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { part: "listSemanticFrames", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       preferredCorpusRoleId
         ? surfaceProfileCache
           ? Promise.resolve(surfaceProfileCache.value)
@@ -353,6 +372,7 @@ export function createSurfaceLanguageRuntime(options: {
     const constructionEvidence = constructionEvidenceIds.length
       ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds)
       : [];
+    hydrateHeapTrace("language.hydrate.loaded", { modelsJsonMb: approxJsonMb(models), observationsJsonMb: approxJsonMb(observations), unitsJsonMb: approxJsonMb(units), patternsJsonMb: approxJsonMb(patterns), framesJsonMb: approxJsonMb(semanticFrames), constructionEvidenceJsonMb: approxJsonMb(constructionEvidence), models: models.length, observations: observations.length, units: units.length, patterns: patterns.length, semanticFrames: semanticFrames.length, constructionEvidence: constructionEvidence.length, queries: hydrationQueries.length });
     const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
       importRunId: active.activeImportRunIds[0],
       models,
@@ -365,6 +385,7 @@ export function createSurfaceLanguageRuntime(options: {
       semanticFrames,
       constructionEvidence
     });
+    hydrateHeapTrace("language.hydrate.built", { importedUnits: hydrated.importedUnits?.length ?? 0, importedPatterns: hydrated.importedPatterns?.length ?? 0 });
     const roleProfileIds = new Set<string>([
       ...units.map(unit => unit.profileId),
       ...patterns.map(pattern => pattern.profileId),
@@ -415,7 +436,10 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceProfile: scoped.surfaceProfile,
       active,
       corpusPlan,
-      rescopeForSurface: scopeForSurface
+      rescopeForSurface: scopeForSurface,
+      // Measured, not estimated: Map-heavy n-gram state is invisible to JSON-size estimates
+      // (120MB of JSON hydrated to 3.3GB of heap while the estimator never triggered eviction).
+      measuredHeapBytes: Math.max(0, process.memoryUsage().heapUsed - hydrateHeapStart)
     };
   }
 
@@ -570,7 +594,7 @@ export function createSurfaceLanguageRuntime(options: {
     boundedSurfaceLanguageMemoryCacheSet(
       surfaceLanguageMemoryCache,
       cacheKey,
-      { limit, loadedAt: now, value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
+      { limit, loadedAt: now, value, approxEstimatedBytes: Math.max(approximateHydrationEstimatedBytes(value), value.measuredHeapBytes ?? 0) },
       surfaceLanguageMemoryCacheMaxEntries,
       surfaceLanguageMemoryCacheMaxEstimatedBytes
     );
