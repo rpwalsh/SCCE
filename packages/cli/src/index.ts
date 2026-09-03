@@ -1420,7 +1420,7 @@ function usage(error?: string): void {
     "  pnpm scce settings show | get <key> | set <key> <value> | edit   (edit is interactive; writes scce.config.json)",
     "  pnpm scce model list | download <org/name> [--clip] [--dtype=q8] | remove <org/name>",
     "  pnpm scce sensor run <id>",
-    "  pnpm scce learn pending | confirm <id> | reject <id>   (material fetched with your consent stays quarantined until you confirm it is true)",
+    "  pnpm scce learn pending | confirm <id> | reject <id> | curriculum | pursue <planId>   (self-proposed learning waits for consent; fetched material stays quarantined until you confirm it is true)",
     "  pnpm scce code --path=<workspace-file> [--attempts=3] <request>   (compile-gated patch loop; needs a realization provider)",
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
