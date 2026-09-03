@@ -1,5 +1,6 @@
 import type { CorrectionRuleRecord, WordingRealizerPort } from "./storage.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
+import { selectClarificationQuestion } from "./clarification-question.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
@@ -4381,7 +4382,13 @@ function supportBoundaryCandidate(
   // semantic caveat record routed through the same construction-grammar/
   // Mouth realization pipeline as ordinary answers, not a raw-string
   // shortcut. See docs/PRODUCTION_COMPLETION_PLAN_250.md.
-  if (!admissibleLearnedSurface(generatedText, generation)) return undefined;
+  if (!admissibleLearnedSurface(generatedText, generation)) {
+    // Gap closed: instead of dropping the candidate (and the turn ending with an empty
+    // answer), ask the smallest clarifying question -- the fact whose yes/no answer best
+    // separates the competing readings (clarification-question.ts, expected information
+    // gain). The surface is the fact's own evidence text, so nothing English is hardcoded.
+    return clarificationCandidate(semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], generation, discoursePlan);
+  }
   return {
     id: "candidate:generated:proof-boundary",
     style: "surface.path.generated.proof_boundary",
@@ -7175,4 +7182,34 @@ function hash32(text: string): number {
   let h = 2166136261;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
   return h >>> 0;
+}
+
+function clarificationCandidate(
+  facts: readonly SemanticAnswerFact[],
+  generation: SurfaceCandidate["generation"],
+  discoursePlan: DiscoursePlan
+): SurfaceCandidate | undefined {
+  const usable = facts.filter(fact => (fact.evidenceIds ?? []).length > 0 && (fact.subject || fact.object));
+  if (!usable.length) return undefined;
+  const keys = usable.map(fact => semanticAnswerFactKey(fact));
+  const result = selectClarificationQuestion({
+    hypotheses: usable.map((fact, index) => ({ id: `hypothesis:${index}`, weight: Math.max(0.01, Number((fact as { support?: number }).support ?? 0.5)), trueFactIds: new Set([keys[index]!]) })),
+    candidateFactIds: keys
+  });
+  const selectedKey = result.selected?.factId ?? keys[0]!;
+  const fact = usable[Math.max(0, keys.indexOf(selectedKey))]!;
+  const surface = [fact.subject, fact.predicate, fact.object].map(part => String(part ?? "").trim()).filter(Boolean).join(" ");
+  if (!surface) return undefined;
+  return {
+    id: `candidate:generated:clarification:${selectedKey}`,
+    style: "surface.path.generated.clarification",
+    path: "generated",
+    text: `${surface}?`,
+    evidenceIds: (fact.evidenceIds ?? []).slice(0, 5) as EvidenceSpan["id"][],
+    fit: 0.5,
+    importedPieceIds: [],
+    generation,
+    discoursePlan,
+    boundaryDecisions: []
+  };
 }
