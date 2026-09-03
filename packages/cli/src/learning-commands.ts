@@ -1,12 +1,12 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { listHeldSources, reviewHeldSource, type HeldSource } from "@scce/kernel";
+import { createHasher, curriculumItemFromPlan, learningConsentInput, listHeldSources, reviewHeldSource, type HeldSource } from "@scce/kernel";
 import type { createNodeRuntime } from "@scce/adapters-node";
 
 /** Ask-before-learning at the terminal: consent to search, then confirm each fetched source is true before it becomes knowledge. */
 
 type Runtime = ReturnType<typeof createNodeRuntime>;
-type TurnLike = { runtimeMotion?: unknown };
+type TurnLike = { runtimeMotion?: unknown; answer?: string };
 interface Motion { status?: string; consent?: { planId?: string }; heldSources?: Array<{ id: string; uri: string; title?: string; snippet?: string }> }
 
 function motionOf(result: TurnLike): Motion | undefined {
@@ -68,10 +68,28 @@ export async function runLearnCommand(runtime: Runtime, args: string[]): Promise
     process.stdout.write(`${review.decision} ${review.uri} (${review.promotedEvidence} evidence spans promoted)\n`);
     return;
   }
+  if (sub === "curriculum") {
+    const items = runtime.approvals.snapshot().pending.map(record => curriculumItemFromPlan({ id: record.planId as never, capabilityId: record.capabilityId, input: record.input })).filter(Boolean);
+    if (!items.length) { process.stdout.write("no self-proposed learning is waiting for consent in this session\n"); return; }
+    for (const item of items) process.stdout.write(`- ${item!.planId}\n  wants to learn: ${item!.query}\n  ${item!.rationale}\n`);
+    return;
+  }
+  if (sub === "pursue" && args[1]) {
+    const record = runtime.approvals.snapshot().pending.find(item => item.planId === args[1]);
+    const item = record ? curriculumItemFromPlan({ id: record.planId as never, capabilityId: record.capabilityId, input: record.input }) : undefined;
+    if (!item) throw new Error(`no pending curriculum item ${args[1]}; see: scce learn curriculum`);
+    runtime.approvals.approve(item.planId);
+    const consent = runtime.approvals.requestApproval({ capabilityId: "network.search", input: learningConsentInput(item.query, createHasher()), reason: "owner-consent-required" });
+    runtime.approvals.approve(consent.planId);
+    const turn = () => runtime.kernel.turn({ text: item.query, metadata: { conversationId: `curriculum:${item.planId}`, sessionId: `curriculum:${item.planId}` } });
+    const result = await negotiateLearning(runtime, turn, await turn());
+    process.stdout.write(`${result.answer}\n`);
+    return;
+  }
   if (sub === "consent" && args[1]) {
     runtime.approvals.approve(args[1]);
     process.stdout.write(`consent recorded for ${args[1]} in this process; ask again in the same session to search\n`);
     return;
   }
-  throw new Error("usage: scce learn pending | confirm <id> | reject <id>");
+  throw new Error("usage: scce learn pending | confirm <id> | reject <id> | curriculum | pursue <planId>");
 }

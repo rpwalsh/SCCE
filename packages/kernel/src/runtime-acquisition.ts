@@ -186,6 +186,7 @@ export async function recordConnectorDispatchPolicyEvaluation(input: {
 }
 
 import type { CapabilityPlan } from "./types.js";
+import { learningConsentInput } from "./learning-review.js";
 
 export function createRuntimeAcquisition(options: {
   now?: () => number;
@@ -220,7 +221,7 @@ export function createRuntimeAcquisition(options: {
     const sourceUris: string[] = [];
     const sourceSurfaces: string[] = [];
     const heldCandidates = new Map<string, { title: string; snippet: string }>();
-    const consentInput = toJsonValue({ schema: "scce.learning_consent.v1", capabilityId: "network.search", query: input.ownerInput.text, queryHash });
+    const consentInput = learningConsentInput(input.ownerInput.text, hasher);
     const consentGranted = deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true;
     let consent: RuntimeReplanMotion["consent"];
     if (deps.connectors && !consentGranted) {
