@@ -875,9 +875,24 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const validGeneratedCandidateAvailable = generatedCandidates.some(candidate => (
         energyRows.some(row => row.candidate.id === candidate.id && row.result.valid)
       ));
+      // A verified realizer surface (every content word licensed by the evidence facts) that tops the energy ranking and is bound to the kernel candidate's own evidence speaks that evidence in fluent prose; the kernel candidate preempts it only when exact source wording was requested.
+      const verifiedRealizerCandidate = energySelected
+        && energySelected.id.startsWith("candidate:generated:realizer:")
+        && !energySelected.forbiddenHits.length
+        && energySelected.evidenceIds.length > 0
+        && !creativeRequested
+        ? energySelected
+        : undefined;
+      const realizerSpeaksKernelEvidence = Boolean(
+        verifiedRealizerCandidate
+        && selectedKernelCandidate
+        && !sourcePreservationRequested
+        && selectedKernelCandidate.evidenceIds.some(id => verifiedRealizerCandidate.evidenceIds.map(String).includes(String(id)))
+      );
       const plannerSelectedCandidate = selectedKernelCandidate &&
         !creativeRequested &&
         !selectedKernelCandidate.forbiddenHits.length &&
+        !realizerSpeaksKernelEvidence &&
         (!isVerifiedSourceExcerptKernelCandidate || sourcePreservationRequested || !validGeneratedCandidateAvailable) &&
         kernelCandidateCanPreempt(input, selectedKernelCandidate)
         ? selectedKernelCandidate
@@ -891,6 +906,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         creativeRequested && energySelected && kernelSelectedCandidate && energySelected.id === kernelSelectedCandidate.id
       );
       const selected = plannerSelectedCandidate ??
+        verifiedRealizerCandidate ??
         semanticGraphCandidate ??
         structuredConstructCandidate ??
         proofBoundarySelectedCandidate ??
