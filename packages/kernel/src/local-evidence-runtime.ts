@@ -1718,12 +1718,15 @@ export function sourceAnchoredEvidenceForRequest(
   const semanticFrameBoundEvidence = semanticFrameBoundEvidenceIds?.size
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
     : [];
+  // A named subject owns content admission: instruction phrases around it must not admit whatever article contains them.
+  const named = namedSubjectAnchors(requestText);
+  const contentAnchors = named.length ? named : anchors;
   const contentBoundEvidence = evidence.filter(span =>
-    anchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, requestText))
+    contentAnchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, requestText))
   );
   const contentMentionEvidence = contentBoundEvidence.length
     ? []
-    : evidence.filter(span => anchors.some(anchor => evidenceContentMentionsAnchor(span, anchor)));
+    : evidence.filter(span => contentAnchors.some(anchor => evidenceContentMentionsAnchor(span, anchor)));
   if (primaryAnchor
     && !primaryEvidence.length
     && !contentBoundEvidence.length
@@ -1739,11 +1742,11 @@ export function sourceAnchoredEvidenceForRequest(
     return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: uniqueEvidenceById([...primaryEvidence, ...semanticFrameBoundEvidence]) };
   }
   const exact = evidence.filter(span => (
-    (evidenceExactSourceAnchorMatches(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors)) &&
+    (evidenceExactSourceAnchorMatches(span, contentAnchors) || evidenceTitleDistinctAnchorMatches(span, contentAnchors)) &&
     evidenceAnchorFitForRequest(span, requestText)
   ));
   const selected = evidence.filter(span => (
-    (evidenceSourceMatchesAnchors(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors)) &&
+    (evidenceSourceMatchesAnchors(span, contentAnchors) || evidenceTitleDistinctAnchorMatches(span, contentAnchors)) &&
     evidenceAnchorFitForRequest(span, requestText)
   ));
   return {
@@ -2014,7 +2017,9 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
 }
 
  function primarySourceAnchorForRequest(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined {
-  const ranked = sourceEvidenceAnchorsForRequest(requestText)
+  // A named subject is the only primary candidate: an unsourced name must not hand the request to an instruction phrase that happens to title an article.
+  const namedCandidates = namedSubjectAnchors(requestText);
+  const ranked = (namedCandidates.length ? namedCandidates : sourceEvidenceAnchorsForRequest(requestText))
     .map(anchor => {
       const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
       if (!anchorUnits.length) return undefined;

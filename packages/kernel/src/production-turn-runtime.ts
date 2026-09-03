@@ -206,7 +206,8 @@ import {
 import {
   TURN_REQUIREMENT_DIMENSIONS,
   activateCognitiveOperators,
-  deriveTurnRequirementField
+  deriveTurnRequirementField,
+  requestSubjectText
 } from "./turn-requirements.js";
 import {
   EMPTY_WORKING_MEMORY,
@@ -929,6 +930,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // anchored, or the turn falls to the code mouth / offer-to-learn arm.
       const baseRetrievalText = retrievalTextForTurn(input);
       const retrievalText = requestedAuthority === "program" && !/[?？؟]s*$/u.test(baseRetrievalText) ? `${baseRetrievalText}?` : baseRetrievalText;
+      // A creative request's learned instruction spans are not its subject: retrieval and admission read the remainder.
+      const subjectRetrievalText = requestedAuthority === "creative" ? requestSubjectText(retrievalText, requirementField) : retrievalText;
       const sessionEvidence = mergeEvidenceSpans([...currentOwnerSessionEvidence(input), ...sessionEvidenceFromMetadata(input.metadata)]);
       const metadataEvidence = await evidenceFromTurnMetadata(input.metadata);
       const metadataEvidenceIds = new Set([
@@ -953,7 +956,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "graph.resolve.shard-router",
           () => discourseEvidenceBound
             ? graphForEvidenceIds([...metadataEvidenceIds])
-            : graphForText(retrievalText, {
+            : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
               // Reverted to conditional (was unconditionally true): this
               // flag doesn't just tighten anchoring, it switches
@@ -1028,7 +1031,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const calibrationModels = await calibrationModelsCached();
       const sourceAnchorAudit = discourseEvidenceBound
         ? { required: false, anchors: [] as string[], evidence }
-        : sourceAnchoredEvidenceForRequest(input.text, evidence, semanticFrameBoundEvidenceIds);
+        : sourceAnchoredEvidenceForRequest(requestedAuthority === "creative" ? subjectRetrievalText : input.text, evidence, semanticFrameBoundEvidenceIds);
       // Empty audit over a titleless pool: identity admission can never bind
       // workspace-file spans, so fall back to the titleless spans the graph
       // slice already content-admitted; titled corpora keep strict abstention.
@@ -2813,7 +2816,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       const extendedGeneration = extendedGenerationDecision({ requirementField, requestedAuthority });
       let extendedGenerationRun: Awaited<ReturnType<typeof runExtendedGeneration>> | undefined;
-      if (extendedGeneration.required) {
+      // One lane: a realized invention from the mouth's own realizer stands; the section generator is the fallback.
+      const primarySpoken = await realizeOnce(speakInput);
+      const realizedInvention = primarySpoken.text.trim().length > 0
+        && String(primarySpoken.realizationTrace.selected.surfaceRealizationId ?? primarySpoken.realizationTrace.selected.id).startsWith("candidate:generated:creative:realizer:");
+      if (extendedGeneration.required && !realizedInvention) {
         // This turn's own retrieved evidence names what the story is
         // actually about; without this, word choice has nothing but the
         // corpus itself to lean on and drifts into whichever novel the
@@ -2845,6 +2852,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         extendedGenerationRun = await runExtendedGeneration({
           session: extendedSession,
           realizeSection: async (section, _index, priorSectionTexts, conditioning) => {
+            if (deadlineCheckpoint("runtime.mouth.extended_section", 1_000)?.allowed === false) return { text: "" };
             // The real established-facts conditioning (narrative-state.ts)
             // tells this section which cast members already appeared --
             // still-unintroduced members are boosted harder so the whole
@@ -2930,9 +2938,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           support: { decision: extendedGeneration.audit, run: extendedGenerationRun.audit }
         });
       }
-      let spoken = extendedGenerationRun?.answer
-        ? { ...(await realizeOnce(speakInput)), text: extendedGenerationRun.answer }
-        : await realizeOnce(speakInput);
+      let spoken = extendedGenerationRun?.answer ? { ...primarySpoken, text: extendedGenerationRun.answer } : primarySpoken;
       deadlineCheckpoint("runtime.mouth.primary.complete", 0);
       // CRITICAL fix: the empty-mouth recovery path below is real and
       // works (confirmed live: a genuinely empty realization reliably

@@ -7,6 +7,7 @@ import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
+import { requestSubjectText } from "./turn-requirements.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import type {
@@ -688,7 +689,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("candidate_setup");
       const creativeRequested = isCreativeRequested(input, plan);
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
-      const realizerCandidates = creativeRequested ? [] : await wordingRealizerCandidates(input, discoursePlan);
+      const realizerCandidates = await wordingRealizerCandidates(input, discoursePlan, creativeRequested);
       // An echo of the request is never an answer. For a creative turn
       // that holds unconditionally; elsewhere it holds whenever nothing
       // grounds the surface, because a candidate with no promoted
@@ -842,6 +843,13 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           && energyRows.some(row => row.candidate.id === candidate.id && row.result.valid)
         ))
         : undefined;
+      // The realizer's own invention (the same realizer that speaks sourced answers) outranks the section generator's creative surfaces.
+      const realizerInventionCandidate = creativeRequested
+        ? energyRows
+          .filter(row => row.result.valid && row.candidate.id.startsWith("candidate:generated:creative:realizer:"))
+          .map(row => byCandidateId.get(row.candidate.id))
+          .find((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate && !candidate.forbiddenHits.length))
+        : undefined;
       const realizedCreativeCandidate = creativeRequested
         ? energyRows
           .filter(row => row.result.valid && row.candidate.id.startsWith("candidate:generated:creative:"))
@@ -907,6 +915,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       );
       const selected = plannerSelectedCandidate ??
         verifiedRealizerCandidate ??
+        realizerInventionCandidate ??
         semanticGraphCandidate ??
         structuredConstructCandidate ??
         proofBoundarySelectedCandidate ??
@@ -3443,8 +3452,10 @@ function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
     .filter(requirement => requirement.origin.semanticRoleId === "role.request.requirement.v1")
     .map(requirement => requirement.origin.requestSpan)
     .filter(span => span.charEnd > span.charStart);
-  const controlBoundary = controlSpans.reduce((end, span) => Math.max(end, span.charEnd), 0);
-  const requestText = input.entailment.claim.text;
+  // The request, not the entailment claim (on a creative turn that is the retrieved passage), minus its learned instruction spans: the subject the invention must keep.
+  const claimText = mouthEchoQuestionText(input);
+  const requestText = input.requirementField ? requestSubjectText(claimText, input.requirementField) : claimText;
+  const controlBoundary = requestText === claimText ? controlSpans.reduce((end, span) => Math.max(end, span.charEnd), 0) : 0;
   const tokens = [...requestText.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)].map(match => {
     const utf16Start = match.index ?? 0;
     const text = match[0];
@@ -5387,18 +5398,21 @@ function importSummarySurfaceText(input: SpeakInput): string {
  * direct-evidence join meets. A realizer can therefore lose on quality,
  * never smuggle a claim.
  */
-async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan): Promise<SurfaceCandidate[]> {
+async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan, invention = false): Promise<SurfaceCandidate[]> {
   const realizer = input.wordingRealizer;
   if (!realizer) return [];
   const state = semanticAnswerConstructState(input.construct);
+  const requestText = mouthEchoQuestionText(input);
+  // An invention draws only on facts about the request's own subject; the same realizer speaks both lanes.
   const facts = (state?.selectedFacts ?? [])
     .filter(fact => (fact.evidenceIds ?? []).length > 0)
+    .filter(fact => !invention || (Boolean(fact.subject) && containsSurface(requestText, fact.subject ?? "")))
     .slice(0, 6);
-  if (!facts.length) return [];
+  if (!facts.length && !invention) return [];
   let surfaces: readonly string[];
   try {
     surfaces = await realizer.realize({
-      requestText: mouthEchoQuestionText(input),
+      requestText,
       facts: facts.map(fact => ({
         subject: fact.subject ?? "",
         predicate: fact.predicate ?? "",
@@ -5407,8 +5421,9 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
       })),
       targetLanguage: input.targetLanguage ?? "",
       targetScript: input.targetScript ?? "",
-      maxSentences: 4,
-      closedClassWords: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })]
+      maxSentences: invention ? 8 : 4,
+      closedClassWords: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })],
+      ...(invention ? { invention: true } : {})
     });
   } catch {
     // A realizer failure must never cost the turn -- the pool simply
@@ -5421,11 +5436,12 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
     .slice(0, 3)
     .filter(surface =>
       structurallyCompleteSurface(surface)
-      && realizerFactArgumentsIntact(surface, facts))
+      && (invention || realizerFactArgumentsIntact(surface, facts)))
     .map((surface, index) => ({
-      id: `candidate:generated:realizer:${realizer.id}:${index}`,
-      style: "surface.path.generated.wording_realizer",
+      id: invention ? `candidate:generated:creative:realizer:${realizer.id}:${index}` : `candidate:generated:realizer:${realizer.id}:${index}`,
+      style: invention ? "surface.path.generated.invention_realizer" : "surface.path.generated.wording_realizer",
       path: "generated" as const,
+      ...(invention ? { claimBasis: "invented" as const } : {}),
       text: surface,
       evidenceIds,
       fit: 0.86,
@@ -5437,7 +5453,8 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
         realizerId: realizer.id,
         factKeys: facts.map(fact => semanticAnswerFactKey(fact)),
         evidenceIds: evidenceIds.map(String),
-        externalFactCertification: true
+        externalFactCertification: !invention,
+        invention
       })
     }));
 }
