@@ -46,6 +46,18 @@ describe("source admission", () => {
     expect(Object.values(decision.trustChecks).every(Boolean)).toBe(true);
   });
 
+  it("holds runtime web evidence for owner review instead of promoting it", () => {
+    const source = sourceVersion("runtime-acquisition", "https://example.test/paper", 0.9);
+    const evidence = [span(source, "alpha graph proof with source provenance and benchmark evidence", 0.72)];
+    const decision = createSourceAdmissionController().decide({
+      source,
+      evidence,
+      context: { sourceClass: "runtime_web", intendedUse: "direct_evidence", promotionAuthority: "review" },
+      metadata: { diagnostics: { charLength: 1200, parserCount: 2 } }
+    });
+    expect(decision.disposition).toBe("quarantine");
+  });
+
   it("limits a promoted language-only corpus to language influence", () => {
     const source = sourceVersion("training", "corpus://language", 0.9);
     const evidence = [span(source, "learned multilingual surface construction", 0.72)];

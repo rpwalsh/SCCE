@@ -14,6 +14,12 @@ describe("generate-then-verify", () => {
     expect(verifySurfaceAgainstFacts("The pump alpha exploded.", facts, new Set(["the"]))).toBe(false);
     expect(verifySurfaceAgainstFacts("", facts, new Set())).toBe(false);
   });
+
+  it("licenses words from the request being answered, never new content", () => {
+    expect(verifySurfaceAgainstFacts("Pump alpha is stable at 42 psi in the north hall.", facts, new Set(["the", "in"]))).toBe(false);
+    expect(verifySurfaceAgainstFacts("Pump alpha is stable at 42 psi in the north hall.", facts, new Set(["the", "in"]), "Which pump is in the north hall?")).toBe(true);
+    expect(verifySurfaceAgainstFacts("Pump alpha exploded in the north hall.", facts, new Set(["the", "in"]), "Which pump is in the north hall?")).toBe(false);
+  });
 });
 
 describe("provider prompt", () => {

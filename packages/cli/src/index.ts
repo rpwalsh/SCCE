@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
+import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { createTypeScriptCodeMouthPorts, runCodeMouth, selectRealizationPort } from "@scce/adapters-node";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -92,6 +93,9 @@ async function main(): Promise<void> {
         printJson(result);
         break;
       }
+      case "learn":
+        await runLearnCommand(runtime, parsed.args);
+        return;
       case "settings":
         await runSettingsCommand(parsed.configPath ?? "scce.config.json", parsed.args);
         break;
@@ -163,7 +167,7 @@ async function main(): Promise<void> {
               ...(turnArgs.detailProfileId ? { detailProfileId: turnArgs.detailProfileId } : {})
             }
           };
-          const result = await runtime.kernel.turn(turnInput);
+          const result = await negotiateLearning(runtime, () => runtime.kernel.turn(turnInput), await runtime.kernel.turn(turnInput));
           const calibrationModels = await loadCalibrationModelSet({
             store: runtime.storage.dialogueMemory,
             minPoints: 2,
@@ -1413,9 +1417,10 @@ function usage(error?: string): void {
     "  pnpm scce workspace init <path>",
     "  pnpm scce workspace ingest [path]",
     "  pnpm scce workspace ask <question>",
-    "  pnpm scce settings [show | set <key> <value>]   (interactive when no args; writes scce.config.json)",
+    "  pnpm scce settings show | get <key> | set <key> <value> | edit   (edit is interactive; writes scce.config.json)",
     "  pnpm scce model list | download <org/name> [--clip] [--dtype=q8] | remove <org/name>",
     "  pnpm scce sensor run <id>",
+    "  pnpm scce learn pending | confirm <id> | reject <id>   (material fetched with your consent stays quarantined until you confirm it is true)",
     "  pnpm scce code --path=<workspace-file> [--attempts=3] <request>   (compile-gated patch loop; needs a realization provider)",
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",

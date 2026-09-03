@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { SETTINGS_FIELDS, modelDirectoryFor } from "../settings-commands.js";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { SETTINGS_FIELDS, modelDirectoryFor, runSettingsCommand } from "../settings-commands.js";
+
+describe("settings subcommands", () => {
+  const configPath = path.join(mkdtempSync(path.join(tmpdir(), "scce-settings-")), "scce.config.json");
+  writeFileSync(configPath, "{}\n");
+  const capture = async (args: string[]) => {
+    const lines: string[] = [];
+    const original = process.stdout.write;
+    process.stdout.write = ((chunk: string) => { lines.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try { await runSettingsCommand(configPath, args); } finally { process.stdout.write = original; }
+    return lines.join("");
+  };
+
+  it("sets, gets, and lists through the shared schema", async () => {
+    await capture(["set", "realization.provider", "ollama"]);
+    expect(JSON.parse(readFileSync(configPath, "utf8")).realization.provider).toBe("ollama");
+    expect(await capture(["get", "realization.provider"])).toBe("\"ollama\"\n");
+    expect(await capture(["list"])).toContain("realization.provider = \"ollama\"");
+  });
+
+  it("rejects unknown subcommands and keys instead of entering the wizard", async () => {
+    await expect(runSettingsCommand(configPath, ["bogus"])).rejects.toThrow(/usage/u);
+    await expect(runSettingsCommand(configPath, ["get", "nope.key"])).rejects.toThrow(/unknown setting/u);
+  });
+});
 
 describe("settings fields", () => {
   it("validates the local model-server host as loopback and the API endpoint as https", () => {
