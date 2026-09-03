@@ -185,7 +185,10 @@ export async function recordConnectorDispatchPolicyEvaluation(input: {
   await policyEvolution.putEvaluation(evaluation);
 }
 
+import type { CapabilityPlan } from "./types.js";
+
 export function createRuntimeAcquisition(options: {
+  now?: () => number;
   deps: ScceKernelDeps;
   eventFactory: ReturnType<typeof createEventFactory>;
   hasher: ReturnType<typeof createHasher>;
@@ -194,6 +197,7 @@ export function createRuntimeAcquisition(options: {
   ingest(input: IngestInput): Promise<IngestResult>;
 }) {
   const { deps, eventFactory, hasher, failures, append, ingest: ingestSource } = options;
+  const now = options.now ?? (() => Date.now());
 
 
   // Runtime-acquired pages are bounded at the fetch, before any parser sees them.
@@ -215,6 +219,28 @@ export function createRuntimeAcquisition(options: {
     let ingestedEvidenceCount = 0;
     const sourceUris: string[] = [];
     const sourceSurfaces: string[] = [];
+    const heldCandidates = new Map<string, { title: string; snippet: string }>();
+    const consentInput = toJsonValue({ schema: "scce.learning_consent.v1", capabilityId: "network.search", query: input.ownerInput.text, queryHash });
+    const consentGranted = deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true;
+    let consent: RuntimeReplanMotion["consent"];
+    if (deps.connectors && !consentGranted) {
+      // Unknown topics ask before touching the network: the plan waits in the approval session until the owner says yes.
+      const planId = `capability_network.search_${hasher.digestHex(`${queryHash}\u001fconsent`).slice(0, 32)}`;
+      const plan: CapabilityPlan = {
+        id: planId as CapabilityPlan["id"],
+        episodeId: input.episodeId,
+        capabilityId: "network.search",
+        phase: "prepare",
+        status: "planned",
+        input: consentInput,
+        riskVector: { risk: 0.32, mutates: false },
+        permission: { allowed: false, dryRun: true, requiresExplicitApproval: true, reason: "owner-consent-required" },
+        createdAt: now()
+      };
+      await deps.storage.capabilities.putPlan(plan);
+      await deps.approvals?.observePending(plan);
+      consent = { capabilityId: "network.search", planId, granted: false };
+    }
     input.events.push(await append(eventFactory.create({
       episodeId: input.episodeId,
       typeId: "RuntimeMotionPlanned",
@@ -227,11 +253,12 @@ export function createRuntimeAcquisition(options: {
         requestedAuthority: input.requestedAuthority,
         queryHash,
         connectorConfigured: Boolean(deps.connectors),
+        consentGranted,
         readOnlyOperations: ["search", "fetch"]
       })
     })));
 
-    if (deps.connectors) {
+    if (deps.connectors && consentGranted) {
       let searchRows: Awaited<ReturnType<typeof deps.connectors.search>> = [];
       try {
         const dispatched = deps.executive
@@ -268,7 +295,7 @@ export function createRuntimeAcquisition(options: {
             sourceAdmission: {
               sourceClass: "runtime_web",
               intendedUse: "direct_evidence",
-              promotionAuthority: "automatic"
+              promotionAuthority: "review"
             },
             sourceTrust: {
               identity: 0.68,
@@ -312,20 +339,39 @@ export function createRuntimeAcquisition(options: {
           });
           ingestedSourceCount += ingest.sources;
           if (ingest.events.some(event => event.typeId === "SourcePromoted")) ingestedEvidenceCount += ingest.evidence;
-          if (ingest.sources > 0) sourceUris.push(canonicalUri);
+          if (ingest.sources > 0) {
+            sourceUris.push(canonicalUri);
+            heldCandidates.set(canonicalUri, { title: searchRow.title, snippet: searchRow.snippet });
+          }
         } catch (error) {
           motionFailures.push(runtimeMotionFailure(`fetch_ingest:${searchUri}`, error));
         }
       }
     }
 
+    let heldSources: NonNullable<RuntimeReplanMotion["heldSources"]> = [];
+    if (fetchedSourceCount > 0 && ingestedEvidenceCount === 0) {
+      try {
+        const pending = await deps.storage.quarantine.listPending({ limit: 24 });
+        heldSources = pending
+          .filter(item => heldCandidates.has(item.uri))
+          .map(item => ({ id: item.id, uri: item.uri, title: sourceTextSurface(heldCandidates.get(item.uri)?.title ?? "", 160), snippet: sourceTextSurface(heldCandidates.get(item.uri)?.snippet ?? "", 320) }))
+          .slice(0, 3);
+      } catch (error) {
+        motionFailures.push(runtimeMotionFailure("held_sources", error));
+      }
+    }
     const status: RuntimeReplanMotion["status"] = !deps.connectors
       ? "unavailable"
-      : ingestedEvidenceCount > 0
-        ? "hydrated"
-        : motionFailures.length > 0 && searchResultCount === 0
-          ? "failed"
-          : "empty";
+      : !consentGranted
+        ? "awaiting_consent"
+        : ingestedEvidenceCount > 0
+          ? "hydrated"
+          : heldSources.length > 0
+            ? "held_for_review"
+            : motionFailures.length > 0 && searchResultCount === 0
+              ? "failed"
+              : "empty";
     const motion: RuntimeReplanMotion = {
       schema: "scce.runtime_motion.learn_hydrate_replan.v1",
       motionId: "motion.learn_hydrate_replan",
@@ -337,6 +383,8 @@ export function createRuntimeAcquisition(options: {
       queryHash,
       connectorConfigured: Boolean(deps.connectors),
       status,
+      ...(consent ? { consent } : {}),
+      ...(heldSources.length ? { heldSources } : {}),
       searchResultCount,
       fetchedSourceCount,
       ingestedSourceCount,

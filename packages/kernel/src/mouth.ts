@@ -2899,6 +2899,21 @@ function factArgumentsIntactInSurface(
     .every(argument => surface.includes(argument)));
 }
 
+/** Realizer surfaces paraphrase: a clause-sized fact argument counts as intact when one of its name or number spans survives (the verifier already licenses every content word). */
+function realizerFactArgumentsIntact(text: string, facts: ReadonlyArray<{ subject: string; object: string }>): boolean {
+  const surface = tidySurface(text).toLocaleLowerCase();
+  if (!surface) return false;
+  return facts.every(fact => [fact.subject, fact.object]
+    .map(argument => tidySurface(argument ?? ""))
+    .filter(argument => argument.length >= 2)
+    .every(argument => {
+      if (surface.includes(argument.toLocaleLowerCase())) return true;
+      if (argument.split(/s+/u).length < 6) return false;
+      const spans = argument.match(/(?:\p{Lu}[\p{L}\p{M}\p{N}'’-]*(?:\s+\p{Lu}[\p{L}\p{M}\p{N}'’-]*)*|\p{N}[\p{N}.,:]*)/gu) ?? [];
+      return spans.some(span => span.length >= 2 && surface.includes(span.toLocaleLowerCase()));
+    }));
+}
+
 function kernelCandidateParticipatingEvidenceIds(candidate: CandidateSurface, input: SpeakInput): Set<string> {
   const audit = jsonRecord(candidate.audit);
   const claimBases = Array.isArray(audit.claimBases) ? audit.claimBases.map(jsonRecord) : [];
@@ -5390,7 +5405,7 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
     .slice(0, 3)
     .filter(surface =>
       structurallyCompleteSurface(surface)
-      && factArgumentsIntactInSurface(surface, facts))
+      && realizerFactArgumentsIntact(surface, facts))
     .map((surface, index) => ({
       id: `candidate:generated:realizer:${realizer.id}:${index}`,
       style: "surface.path.generated.wording_realizer",

@@ -65,7 +65,8 @@ describe("turnDetail", () => {
       conversationId: "conversation:1",
       proof: { id: "proof:1" },
       events: [{ typeId: "OwnerAsked", id: "event:1" }],
-      sources: [{ id: "evidence:1", title: "source:1", preview: "Real evidence text." }]
+      sources: [{ id: "evidence:1", title: "source:1", preview: "Real evidence text." }],
+      learning: null
     });
   });
 

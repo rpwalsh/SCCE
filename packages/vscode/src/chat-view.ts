@@ -76,6 +76,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       void vscode.commands.executeCommand("scce.workspace.codingRequest", typeof record.text === "string" ? record.text : undefined);
       return;
     }
+    if (record.type === "consent" && typeof record.planId === "string" && typeof record.text === "string") {
+      try {
+        const client = await this.clientFactory();
+        await client.approveWorkspacePatch(record.planId);
+        this.output.appendLine(`[chat] consent granted for ${record.planId}; asking again`);
+        await this.handleMessage({ type: "send", text: record.text });
+      } catch (error) {
+        void this.view?.webview.postMessage({ type: "error", text: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (record.type === "review" && typeof record.id === "string" && (record.decision === "promoted" || record.decision === "rejected")) {
+      try {
+        const client = await this.clientFactory();
+        const outcome = await client.reviewHeldSource(record.id, record.decision);
+        this.output.appendLine(`[chat] held source ${record.id}: ${outcome.review.decision} (${outcome.review.promotedEvidence} spans)`);
+        if (record.decision === "promoted" && typeof record.text === "string" && record.resend === true) await this.handleMessage({ type: "send", text: record.text });
+      } catch (error) {
+        void this.view?.webview.postMessage({ type: "error", text: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (record.type !== "send" || typeof record.text !== "string") return;
     const text = record.text.trim();
     if (!text) return;
@@ -117,8 +139,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         throw error;
       }
       const spoken = answerSurface(answer);
-      this.appendHistory({ id: cryptoRandomId(), role: "assistant", text: spoken, detail: turnDetail(answer), createdAt: Date.now() });
-      void webview.postMessage({ type: "answer", text: spoken, detail: turnDetail(answer), speech: speakableAnswerText(spoken) });
+      const detail = { ...(turnDetail(answer) as Record<string, unknown>), requestText: text };
+      this.appendHistory({ id: cryptoRandomId(), role: "assistant", text: spoken, detail, createdAt: Date.now() });
+      void webview.postMessage({ type: "answer", text: spoken, detail, speech: speakableAnswerText(spoken) });
     } catch (error) {
       const messageText = error instanceof ScceHttpError
         ? `SCCE request failed (${error.status}): ${error.message}`
@@ -211,6 +234,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
   .bubble ul, .bubble ol { margin: 4px 0; padding-left: 20px; }
   .bubble strong { font-weight: 600; }
+  .learning { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--vscode-focusBorder); border-radius: 6px; }
+  .learning-ask { margin-bottom: 6px; }
+  .learning-item { margin: 6px 0; }
+  .learning button { margin: 4px 6px 0 0; padding: 3px 10px; cursor: pointer; }
   .details { margin-top: 6px; }
   .details summary { cursor: pointer; font-size: 0.85em; color: var(--vscode-descriptionForeground); user-select: none; }
   .details pre {
@@ -412,6 +439,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       sources.appendChild(list);
       bubble.appendChild(sources);
+    }
+    if (role === 'assistant' && detail && detail.learning && detail.learning.status) {
+      const learning = detail.learning;
+      const box = document.createElement('div');
+      box.className = 'learning';
+      const ask = document.createElement('div');
+      ask.className = 'learning-ask';
+      if (learning.status === 'awaiting_consent') {
+        ask.textContent = 'I have no evidence on this yet. Search the web and learn it?';
+        box.appendChild(ask);
+        const yes = document.createElement('button');
+        yes.textContent = 'Yes, search and learn';
+        yes.onclick = () => { yes.disabled = true; showTyping('learning'); vscodeApi.postMessage({ type: 'consent', planId: learning.planId, text: detail.requestText || '' }); };
+        box.appendChild(yes);
+      } else if (learning.status === 'held_for_review') {
+        ask.textContent = 'I found material but have not learned it. Is it true?';
+        box.appendChild(ask);
+        let remaining = learning.heldSources.length;
+        for (const source of learning.heldSources) {
+          const item = document.createElement('div');
+          item.className = 'learning-item';
+          const title = document.createElement('div'); title.className = 'source-title'; title.textContent = source.title || source.uri; item.appendChild(title);
+          const uri = document.createElement('div'); uri.className = 'source-preview'; uri.textContent = source.uri; item.appendChild(uri);
+          if (source.snippet) { const snippet = document.createElement('div'); snippet.className = 'source-preview'; snippet.textContent = source.snippet; item.appendChild(snippet); }
+          for (const decision of ['promoted', 'rejected']) {
+            const button = document.createElement('button');
+            button.textContent = decision === 'promoted' ? 'True, keep it' : 'Not true, discard';
+            button.onclick = () => { remaining--; for (const b of item.querySelectorAll('button')) b.disabled = true; if (remaining === 0) showTyping('learning'); vscodeApi.postMessage({ type: 'review', id: source.id, decision, text: detail.requestText || '', resend: remaining === 0 }); };
+            item.appendChild(button);
+          }
+          box.appendChild(item);
+        }
+      }
+      row.appendChild(box);
     }
     if (detail) {
       const details = document.createElement('details');

@@ -2914,7 +2914,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const emptyAuthoritySurface = (spokenWordCount === 0 || spokenWordCount < 4)
         && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         && !runtimeDiagnosticRequested;
-      if (emptyAuthoritySurface && !inheritedRuntimeMotion) {
+      if (emptyAuthoritySurface && !inheritedRuntimeMotion && !performedRuntimeMotion) {
         const recoveryDecision = deadlineCheckpoint("runtime.replan.empty_mouth", 5_000);
         if (recoveryDecision?.allowed !== false) {
           const motion = await learnHydrateReplan({
@@ -3193,6 +3193,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && !candidateIsSafeNonExecutingPlan(judged.selected)
         && !runtimeDiagnosticRequested
         && !inheritedRuntimeMotion
+        && !performedRuntimeMotion
       ) {
         const recoveryDecision = deadlineCheckpoint("runtime.replan.coherence", 5_000);
         if (recoveryDecision?.allowed !== false) {

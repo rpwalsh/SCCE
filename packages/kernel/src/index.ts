@@ -225,3 +225,4 @@ export * from "./affected-test-prediction.js";
 export * from "./repo-cognition.js";
 export * from "./loopback.js";
 export * from "./bounded-autonomous-debugging.js";
+export * from "./learning-review.js";

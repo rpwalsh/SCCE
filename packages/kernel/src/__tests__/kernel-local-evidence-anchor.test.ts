@@ -1,3 +1,5 @@
+import { reviewHeldSource } from "../learning-review.js";
+import type { QuarantineSource } from "../storage.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   createClock,
@@ -1595,6 +1597,8 @@ describe("kernel local evidence source anchoring", () => {
     const acquiredEvidence: EvidenceSpan[] = [];
     const fixture = storageFixture({ evidence: acquiredEvidence });
     const calls: string[] = [];
+    const approved = new Set<string>();
+    const pendingPlans: Array<{ id: unknown; capabilityId: string; input: unknown }> = [];
     const sourceUri = "https://fixture.invalid/pump-alpha-control";
     // Real connector-fetched content goes through the same ingestion
     // pipeline as any other source, which requires an explicit
@@ -1636,46 +1640,54 @@ describe("kernel local evidence source anchoring", () => {
           };
         }
       },
+      approvals: {
+        isApproved: ({ capabilityId, input }) => approved.has(`${capabilityId}:${JSON.stringify(input)}`),
+        observePending: plan => { pendingPlans.push(plan); }
+      },
       idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
       clock,
       deterministicReplay: true
     });
 
-    const result = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
+    // 1) Unknown topic: the kernel asks for consent and touches no network.
+    const asked = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
+    expect(calls).toEqual([]);
+    expect(asked.runtimeMotion).toMatchObject({ status: "awaiting_consent", consent: { capabilityId: "network.search", granted: false } });
+    const consent = (asked.runtimeMotion as { consent: { planId: string } }).consent;
+    const pendingPlan = pendingPlans.find(plan => String(plan.id) === consent.planId);
+    expect(pendingPlan?.capabilityId).toBe("network.search");
 
+    // 2) Owner consents: search and fetch run, the material is held for review, nothing is promoted.
+    approved.add(`${pendingPlan!.capabilityId}:${JSON.stringify(pendingPlan!.input)}`);
+    const held = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
     expect(calls).toEqual([
       "search:What controls Pump Alpha?:3",
       `fetch:${sourceUri}`
     ]);
+    expect(held.runtimeMotion).toMatchObject({ status: "held_for_review", fetchedSourceCount: 1, ingestedEvidenceCount: 0 });
+    const heldSources = (held.runtimeMotion as { heldSources: Array<{ id: string; uri: string }> }).heldSources;
+    expect(heldSources.map(source => source.uri)).toEqual([sourceUri]);
+    expect(acquiredEvidence).toHaveLength(1);
+    expect(acquiredEvidence[0]?.status).toBe("quarantined");
+    expect(held.assistantForce).not.toBe("source_grounded_answer");
+
+    // 3) Owner confirms the material is truthful: it promotes, and the next turn answers from it.
+    const review = await reviewHeldSource(fixture.storage, { id: heldSources[0]!.id, decision: "promoted", now: clock.now() });
+    expect(review.promotedEvidence).toBe(1);
+    const result = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
     expect(result.answer.toLocaleLowerCase()).toContain("pump alpha");
     expect(result.answer).toContain("POST /api/pumps/alpha/control");
     expect(result.answer.toLocaleLowerCase()).not.toContain("what — controls");
     expect(result.answer).not.toContain("Insufficient support");
     expect(result.answer).not.toContain("enough source-backed evidence");
-    // This fixture's connector-acquired content carries default trust scores
-    // that clear admission.ts's *default* promotion bar (identity 0.68,
-    // integrity 1, parserReliability 0.78, directness 0.72, authority 0.52
-    // -- all above the default minimums), and admission.test.ts's "promotes
-    // runtime web evidence from typed automatic admission" test confirms
-    // that's the intended, validated behavior for runtime_web + "automatic"
-    // promotionAuthority, not a bug: the fetched source promotes to real
-    // evidence in one pass rather than landing in quarantine.
-    expect(result.runtimeMotion).toMatchObject({
-      motionId: "motion.learn_hydrate_replan",
-      attempt: 1,
-      status: "hydrated",
-      ingestedSourceCount: 1,
-      ingestedEvidenceCount: 1,
-      sourceUris: [sourceUri]
-    });
     expect(acquiredEvidence).toHaveLength(1);
     expect(acquiredEvidence[0]?.status).toBe("promoted");
     expect(JSON.stringify(acquiredEvidence.map(span => span.provenance))).toContain(sourceUri);
     expect(result.evidence.map(span => String(span.id))).toEqual([String(acquiredEvidence[0]?.id)]);
     expect(result.assistantForce).toBe("source_grounded_answer");
     expect(result.guardFlags.sourceBacked).toBe(true);
-    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionPlanned")).toHaveLength(1);
-    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionCompleted")).toHaveLength(1);
+    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionPlanned")).toHaveLength(2);
+    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionCompleted")).toHaveLength(2);
   });
 
   it("answers deterministic arithmetic without requiring source evidence", async () => {
@@ -2309,6 +2321,7 @@ function storageFixture(input: {
   languagePatterns?: LanguagePatternRecord[];
 }): { storage: ScceStorage; events: ScceEvent[]; metrics: { graphReads: number; languageMemoryReads: number } } {
   const events: ScceEvent[] = [];
+  const quarantined = new Map<string, QuarantineSource>();
   const metrics = { graphReads: 0, languageMemoryReads: 0 };
   const currentGraph = () => input.graph ?? graphSlice(input.evidence);
   const storage = {
@@ -2340,17 +2353,24 @@ function storageFixture(input: {
       putEvidenceSpan: async (span: EvidenceSpan) => {
         if (!input.evidence.some(existing => String(existing.id) === String(span.id))) input.evidence.push(span);
       },
-      promoteEvidence: async () => input.evidence.length,
+      promoteEvidence: async (ids: EvidenceId[]) => {
+        let promoted = 0;
+        for (const span of input.evidence) if (ids.map(String).includes(String(span.id)) && span.status !== "promoted") { (span as { status: string }).status = "promoted"; promoted++; }
+        return promoted;
+      },
       getEvidence: async (id: EvidenceId) => input.evidence.find(span => String(span.id) === String(id)) ?? null,
       getEvidenceBatch: async (ids: EvidenceId[]) => input.evidence.filter(span => ids.map(String).includes(String(span.id))),
-      searchEvidence: async () => input.evidence.map(span => ({ span, score: span.alpha, reason: "fixture" })),
+      searchEvidence: async (query?: { status?: string; sourceVersionId?: unknown }) => input.evidence
+        .filter(span => (query?.status ?? "promoted") === "any" || (span.status ?? "promoted") === (query?.status ?? "promoted"))
+        .filter(span => !query?.sourceVersionId || String(span.sourceVersionId) === String(query.sourceVersionId))
+        .map(span => ({ span, score: span.alpha, reason: "fixture" })),
       sourceVersionsForEvidence: async () => []
     },
     quarantine: {
-      put: async () => undefined,
-      get: async () => null,
-      listPending: async () => [],
-      markDecision: async () => undefined
+      put: async (source: QuarantineSource) => { quarantined.set(source.id, source); },
+      get: async (id: string) => quarantined.get(id) ?? null,
+      listPending: async (query?: { limit?: number }) => [...quarantined.values()].filter(source => source.decision === "pending").slice(0, query?.limit ?? 50),
+      markDecision: async (id: string, decision: { decision: "promoted" | "rejected" }) => { const source = quarantined.get(id); if (source) quarantined.set(id, { ...source, decision: decision.decision }); }
     },
     model: {
       readModel: async (): Promise<ModelState> => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),

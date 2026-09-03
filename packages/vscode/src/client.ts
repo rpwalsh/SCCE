@@ -46,6 +46,27 @@ export interface TurnStreamFrame {
   assistantForce?: string;
 }
 
+export interface HeldSourceView {
+  id: string;
+  uri: string;
+  title: string;
+  preview: string;
+  evidenceCount: number;
+}
+
+function parseLearningHeld(value: unknown): { held: HeldSourceView[] } {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const held = Array.isArray(record.held) ? record.held : [];
+  return { held: held.map(item => { const row = item as Record<string, unknown>; return { id: String(row.id ?? ""), uri: String(row.uri ?? ""), title: String(row.title ?? ""), preview: String(row.preview ?? ""), evidenceCount: Number(row.evidenceCount ?? 0) }; }).filter(item => item.id) };
+}
+
+function parseLearningReview(value: unknown): { review: { id: string; decision: string; promotedEvidence: number } } {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const review = record.review && typeof record.review === "object" ? record.review as Record<string, unknown> : {};
+  if (!review.id) throw new Error("SCCE learning review returned no review record");
+  return { review: { id: String(review.id), decision: String(review.decision ?? ""), promotedEvidence: Number(review.promotedEvidence ?? 0) } };
+}
+
 export interface TurnAnswerEvidenceSpan {
   id?: string;
   sourceId?: string;
@@ -144,6 +165,14 @@ export class ScceClient {
       const attempt = parseWorkspacePatchAttempt(value);
       return "pendingApproval" in attempt ? attempt : verifyAppliedPatchMatchesPlan(attempt, plan);
     });
+  }
+
+  listHeldSources(): Promise<{ held: HeldSourceView[] }> {
+    return this.request("GET", "/api/learning/held", undefined, parseLearningHeld);
+  }
+
+  reviewHeldSource(id: string, decision: "promoted" | "rejected"): Promise<{ review: { id: string; decision: string; promotedEvidence: number } }> {
+    return this.request("POST", "/api/learning/review", { id: requireNonEmpty(id, "held source id"), decision }, parseLearningReview);
   }
 
   approveWorkspacePatch(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {

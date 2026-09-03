@@ -52,7 +52,11 @@ export interface RuntimeReplanMotion {
   parentEpisodeId: string;
   queryHash: string;
   connectorConfigured: boolean;
-  status: "hydrated" | "empty" | "unavailable" | "failed";
+  status: "hydrated" | "empty" | "unavailable" | "failed" | "awaiting_consent" | "held_for_review";
+  /** Owner consent for network.search is pending on this approval plan. */
+  consent?: { capabilityId: "network.search"; planId: string; granted: boolean };
+  /** Fetched sources held in quarantine until the owner confirms their truthfulness. */
+  heldSources?: Array<{ id: string; uri: string; title: string; snippet: string }>;
   searchResultCount: number;
   fetchedSourceCount: number;
   ingestedSourceCount: number;

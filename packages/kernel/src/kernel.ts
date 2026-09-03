@@ -271,6 +271,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     }
   });
   const runtimeAcquisition = createRuntimeAcquisition({
+    now: () => clock.now(),
     deps,
     eventFactory,
     hasher,

@@ -32,9 +32,10 @@ export interface ProviderLogger {
 
 const WORD_RE = /[\p{L}\p{M}\p{N}'’-]+/gu;
 
-/** Generate-then-verify: every content word of the surface must occur in the facts (closed-class words and numbers from facts excepted). Pure. */
-export function verifySurfaceAgainstFacts(surface: string, facts: readonly WordingRealizerFact[], closedClassWords: ReadonlySet<string>): boolean {
+/** Generate-then-verify: every content word of the surface must occur in the facts or in the request being answered (closed-class words excepted). Pure. */
+export function verifySurfaceAgainstFacts(surface: string, facts: readonly WordingRealizerFact[], closedClassWords: ReadonlySet<string>, requestText = ""): boolean {
   const licensed = new Set<string>();
+  for (const word of requestText.match(WORD_RE) ?? []) licensed.add(word.toLocaleLowerCase());
   for (const fact of facts) for (const part of [fact.subject, fact.predicate, fact.object]) for (const word of String(part ?? "").match(WORD_RE) ?? []) licensed.add(word.toLocaleLowerCase());
   const words = surface.match(WORD_RE) ?? [];
   if (!words.length) return false;
@@ -54,7 +55,7 @@ export function buildProviderPrompt(request: WordingRealizerRequest): ProviderPr
   const facts = [...new Set(request.facts.map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`.replace(/\s+/gu, " ").trim()))];
   const sentences = Math.max(1, request.maxSentences ?? 2);
   return {
-    system: `Answer the request using only the facts. Use only words that appear in the facts. Write in the language of the facts. Output at most ${sentences} sentence(s): the answer only, with no preamble, commentary, or questions.`,
+    system: `Answer the request in at most ${sentences} complete sentence(s), each with a subject and a verb, restating the facts that answer it. Use only words that appear in the facts and keep every name and number you use exactly as written there. Write in the language of the facts. No preamble, commentary, or questions.`,
     prompt: `Request:\n${request.requestText}\n\nFacts:\n${facts.join("\n")}\n\nAnswer:`
   };
 }
@@ -88,7 +89,7 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
         const payload = await response.json() as { response?: string };
         const text = String(payload.response ?? "").trim();
         if (!text || degenerateSurface(text)) return [];
-        const verified = verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []));
+        const verified = verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
         return [{ text, verified, provider: this.id }];
       } catch {
         return [];
@@ -141,7 +142,7 @@ export function createApiKeyProvider(options: ApiProviderOptions): RealizationPr
         const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; content?: Array<{ text?: string }> };
         const text = String(payload.choices?.[0]?.message?.content ?? payload.content?.[0]?.text ?? "").trim();
         if (!text || degenerateSurface(text)) return [];
-        const verified = verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []));
+        const verified = verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
         return [{ text, verified, provider: this.id }];
       } catch (error) {
         log.warn(`realization.api failed, native fallback: ${error instanceof Error ? error.message : String(error)}`);
