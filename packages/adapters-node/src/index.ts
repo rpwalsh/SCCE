@@ -32,3 +32,4 @@ export * from "./language-control-hygiene.js";
 export * from "./runtime.js";
 export * from "./hydration-runtime.js";
 export * from "./scce2/index.js";
+export * from "./constrained-realizer.js";

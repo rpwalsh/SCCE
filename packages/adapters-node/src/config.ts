@@ -153,6 +153,20 @@ export interface ScceRuntimeConfig {
     defaultSourceInformationLabel?: InformationLabel;
   };
   policy: PolicyProfile;
+  /**
+   * Realization providers around the native mouth. Everything here is opt-in and
+   * declared in models.declared.json; the native mouth is always the default.
+   */
+  realization?: {
+    provider?: "native" | "ollama" | "api";
+    constrainedDecoding?: {
+      enabled: boolean;
+      modelId: string;
+      modelDir: string;
+      dtype?: "q8" | "q4" | "fp16" | "fp32";
+      maxNewTokens?: number;
+    };
+  };
   metadata?: JsonValue;
 }
 
@@ -191,6 +205,12 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   if (!Array.isArray(config.runtime.allowedRoots) || config.runtime.allowedRoots.length === 0) throw new Error(`${source}: runtime.allowedRoots must be non-empty`);
   if (!config.security?.informationAccess) throw new Error(`${source}: security.informationAccess is required`);
   if (!config.security.defaultSourceInformationLabel) throw new Error(`${source}: security.defaultSourceInformationLabel is required`);
+  const constrained = config.realization?.constrainedDecoding;
+  if (constrained?.enabled) {
+    if (!constrained.modelId) throw new Error(`${source}: realization.constrainedDecoding.modelId is required when enabled`);
+    if (!constrained.modelDir) throw new Error(`${source}: realization.constrainedDecoding.modelDir is required when enabled (weights are never fetched at inference)`);
+  }
+  if (config.realization?.provider && !["native", "ollama", "api"].includes(config.realization.provider)) throw new Error(`${source}: realization.provider must be native, ollama, or api`);
   try {
     normalizeSpreadsheetExtractionLimits(config.runtime.spreadsheet);
   } catch (error) {

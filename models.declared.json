@@ -1,0 +1,10 @@
+{
+  "schema": "scce.declared-models.v1",
+  "note": "Every model runtime or model endpoint SCCE may use must be declared here with the config gate that enables it. Undeclared ones remain forbidden (tools/no-hidden-model-check.mjs). Declared != enabled: each is off unless its gate is set in scce.config.json.",
+  "packages": [
+    { "name": "@huggingface/transformers", "purpose": "Local ONNX runtime for the constrained-decoding realization candidate (Phase 2) and local embeddings (Phase 3).", "gate": "realization.constrainedDecoding.enabled / ingestion.visual.embeddings.enabled", "network": "Model files are fetched only by an explicit `scce model download`; inference never calls out." }
+  ],
+  "endpoints": [
+    { "match": "localhost:11434/api", "purpose": "Ollama local realization provider (Phase 5).", "gate": "realization.provider = \"ollama\"", "network": "loopback only" }
+  ]
+}

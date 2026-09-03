@@ -26,6 +26,10 @@ const FORBIDDEN_ENDPOINTS = [
   "localhost:11434/api"
 ];
 
+// "Hidden" is the operative word: a runtime or endpoint declared in models.declared.json
+// (with the config gate that enables it) is visible, auditable, and off by default -- not a
+// violation. Undeclared stays forbidden.
+const declared = await readDeclaredModels();
 const violations = [];
 const scannedFiles = [];
 for (const relativeRoot of SCAN_ROOTS) await scanDirectory(path.resolve(ROOT, relativeRoot));
@@ -38,6 +42,8 @@ const report = {
   scannedFiles: scannedFiles.length,
   forbiddenPackages: FORBIDDEN_PACKAGES,
   forbiddenEndpoints: FORBIDDEN_ENDPOINTS,
+  declaredPackages: declared.packages,
+  declaredEndpoints: declared.endpoints,
   violations,
   status: violations.length === 0 ? "passed" : "failed",
   limitation: "This static gate does not replace the sealed runner's network isolation and process-level traffic attestation."
@@ -70,7 +76,7 @@ async function scanPackageManifest(file) {
   const manifest = JSON.parse(await readFile(file, "utf8"));
   for (const section of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
     for (const dependency of Object.keys(manifest[section] ?? {})) {
-      if (FORBIDDEN_PACKAGES.includes(dependency.toLowerCase())) add(file, `${section} contains forbidden external-model dependency ${dependency}`);
+      if (FORBIDDEN_PACKAGES.includes(dependency.toLowerCase()) && !declared.packages.includes(dependency.toLowerCase())) add(file, `${section} contains forbidden external-model dependency ${dependency}`);
     }
   }
 }
@@ -84,12 +90,12 @@ async function scanSource(file) {
     ...source.matchAll(/\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu)
   ].map(match => match[1]?.toLowerCase()).filter(Boolean);
   for (const specifier of moduleSpecifiers) {
-    if (FORBIDDEN_PACKAGES.some(dependency => specifier === dependency || specifier.startsWith(`${dependency}/`))) {
+    if (FORBIDDEN_PACKAGES.some(dependency => (specifier === dependency || specifier.startsWith(`${dependency}/`)) && !declared.packages.includes(dependency))) {
       add(file, `imports forbidden external-model module ${specifier}`);
     }
   }
   const lower = source.toLowerCase();
-  for (const endpoint of FORBIDDEN_ENDPOINTS) if (lower.includes(endpoint)) add(file, `contains forbidden external-model endpoint ${endpoint}`);
+  for (const endpoint of FORBIDDEN_ENDPOINTS) if (lower.includes(endpoint) && !declared.endpoints.includes(endpoint)) add(file, `contains forbidden external-model endpoint ${endpoint}`);
 }
 
 function add(file, reason) {
@@ -103,4 +109,16 @@ function relative(file) {
 function gitCommit() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8", windowsHide: true });
   return result.status === 0 ? result.stdout.trim() : null;
+}
+
+async function readDeclaredModels() {
+  try {
+    const parsed = JSON.parse(await readFile(path.resolve(ROOT, "models.declared.json"), "utf8"));
+    return {
+      packages: (parsed.packages ?? []).map(item => String(item.name ?? "").toLowerCase()).filter(Boolean),
+      endpoints: (parsed.endpoints ?? []).map(item => String(item.match ?? "").toLowerCase()).filter(Boolean)
+    };
+  } catch {
+    return { packages: [], endpoints: [] };
+  }
 }

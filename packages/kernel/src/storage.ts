@@ -632,6 +632,8 @@ export interface WordingRealizerRequest {
   targetLanguage: string;
   targetScript: string;
   maxSentences: number;
+  /** Closed-class vocabulary of the active language (derived, never hardcoded) a wording realizer may use besides fact tokens. */
+  closedClassWords?: readonly string[];
 }
 
 /** See ScceKernelDeps.wordingRealizer for the doctrine this port lives under. */

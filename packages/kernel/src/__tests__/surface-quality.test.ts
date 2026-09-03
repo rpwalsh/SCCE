@@ -3,15 +3,23 @@ import { describe, expect, it } from "vitest";
 import { SURFACE_QUALITY_ISSUE_IDS, SURFACE_QUALITY_KIND_IDS, detectCannedAnswerSpeech } from "../surface-quality.js";
 
 describe("surface quality guard", () => {
-  it("rejects certification-boundary boilerplate as canned answer speech", () => {
+  it("rejects certification-boundary speech from trace markers, in any language", () => {
+    for (const text of ["Keine Aussage ist durch die Belege zertifiziert.", "利用可能な証拠では認証できません。", "Nothing here is certified."]) {
+      const issues = detectCannedAnswerSpeech(text, { surfaceOriginId: "surface.boundary.certification.v1" });
+      expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.canned);
+      expect(issues.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.certification);
+    }
+    const byStatus = detectCannedAnswerSpeech("whatever", { answerPolicyId: "force.policy.boundary_summary", proofStatusId: "proof.status.non_certifying_prediction" });
+    expect(byStatus.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.certification);
+  });
+
+  it("never sniffs English phrases: boilerplate-looking prose without markers is not canned", () => {
     const issues = detectCannedAnswerSpeech([
       "The current answer has no sentence certified by the available evidence.",
       "The hydrated brain has 1 active import run.",
       "I cannot certify external factual claims from this shard."
     ].join(" "));
-
-    expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.canned);
-    expect(issues.map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.certification);
+    expect(issues.map(issue => issue.id)).not.toContain(SURFACE_QUALITY_ISSUE_IDS.certification);
   });
 
   it("rejects raw control IDs and proof boundary keys", () => {

@@ -110,13 +110,14 @@ export function changedFilePathsFromRequestText(requestText: string, knownPaths:
 export function repoCognitionForTurn(input: {
   requestText: string;
   files: readonly RepoCognitionFile[];
+  closedClassWords?: ReadonlySet<string>;
 }): RepoCognitionResult | undefined {
   if (!input.files.length) return undefined;
 
   const symbols = input.files.flatMap(file => file.syntaxNodes
     ? [...symbolsFromSyntaxNodes(file.path, file.text, file.syntaxNodes), ...extractSqlTableSymbols(file.path, file.text)]
     : extractFileSymbols(file.path, file.text));
-  const symbolLocalization = localizeIssueToSymbols(input.requestText, symbols, { limit: 10 });
+  const symbolLocalization = localizeIssueToSymbols(input.requestText, symbols, { limit: 10, closedClassWords: input.closedClassWords });
   const semanticEdges = resolveTreeSitterStructuralEdges(input.files.flatMap(file => file.syntaxNodes ?? []));
 
   const allFilePaths = input.files.map(file => file.path);
