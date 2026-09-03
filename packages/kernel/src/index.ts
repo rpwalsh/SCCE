@@ -223,3 +223,4 @@ export * from "./repo-semantic-resolver.js";
 export * from "./issue-symbol-localization.js";
 export * from "./affected-test-prediction.js";
 export * from "./repo-cognition.js";
+export * from "./loopback.js";

@@ -772,6 +772,8 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `ALTER TABLE ${q}.source_versions DROP COLUMN IF EXISTS trust`,
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
+    `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_embedding vector(512)`,
+    `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_regions JSONB`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, schema_id TEXT NOT NULL, relation_id TEXT NOT NULL, participant_ports JSONB NOT NULL, member_node_ids TEXT[] NOT NULL, qualifiers_json JSONB NOT NULL, modality_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
@@ -1068,6 +1070,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_version_rank ON ${q}.semantic_frames((frame_json->>'sourceVersionId'),alpha DESC,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_surface_rank ON ${q}.semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_embedding ON ${q}.semantic_frames USING ivfflat (embedding vector_cosine_ops) WITH (lists = 64)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_visual_embedding ON ${q}.evidence_spans USING ivfflat (visual_embedding vector_cosine_ops) WITH (lists = 32)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_pair ON ${q}.translation_alignments(source_language,target_language,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_scce2_import_run ON ${q}.scce2_import_ledger(import_run_id,imported_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_scce2_import_force ON ${q}.scce2_import_ledger(force_class,imported_at DESC)`,
@@ -1348,6 +1351,31 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
         await storage.query(`INSERT INTO ${storage.table("source_versions")}(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
       });
+    },
+    async putEvidenceVisual(input) {
+      await storage.query(
+        `UPDATE ${storage.table("evidence_spans")} SET visual_embedding=$2::vector, visual_regions=$3::jsonb, provenance_json=provenance_json || jsonb_build_object('visualModel', $4::text) WHERE id=$1`,
+        [String(input.evidenceId), vectorLiteral([...input.embedding], 512), JSON.stringify(input.regions.map(region => [...region])), input.model]
+      );
+    },
+    async searchEvidenceByVisual(input) {
+      const params: unknown[] = [vectorLiteral([...input.embedding], 512)];
+      const where: string[] = ["ev.visual_embedding IS NOT NULL", "ev.status='promoted'"];
+      appendInformationAccess(storage, "ev", params, where);
+      params.push(Math.max(1, Math.min(256, Math.floor(input.limit))));
+      const rows = await storage.query<EvidenceRow & { visual_regions: unknown; visual_score: string }>(
+        `SELECT ev.*, (1 - (ev.visual_embedding <=> $1::vector)) AS visual_score
+         FROM ${storage.table("evidence_spans")} ev
+         WHERE ${where.join(" AND ")}
+         ORDER BY ev.visual_embedding <=> $1::vector
+         LIMIT ${params.length}`,
+        params
+      );
+      return rows.map(row => ({
+        span: rowToEvidence(row),
+        score: Number(row.visual_score),
+        regions: Array.isArray(row.visual_regions) ? (row.visual_regions as number[][]) : []
+      }));
     },
     async putEvidenceSpan(span) {
       await putEvidenceSpansBatch(storage, [span]);

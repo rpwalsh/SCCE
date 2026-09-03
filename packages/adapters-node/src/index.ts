@@ -33,3 +33,7 @@ export * from "./runtime.js";
 export * from "./hydration-runtime.js";
 export * from "./scce2/index.js";
 export * from "./constrained-realizer.js";
+export * from "./visual-ingest.js";
+export * from "./realization-providers.js";
+export * from "./sensor-ingest.js";
+export * from "./model-management.js";

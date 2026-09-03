@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -75,6 +76,15 @@ async function main(): Promise<void> {
         if (!parsed.args[0]) return usage("scce ingest <path-or-uri>");
         printJson(await createWorkspaceRuntime({ runtime, config }).ingest(parsed.args[0], parseWorkspaceOptions(parsed.args.slice(1))));
         return;
+      case "settings":
+        await runSettingsCommand(parsed.configPath ?? "scce.config.json", parsed.args);
+        break;
+      case "model":
+        await runModelCommand(config, parsed.args);
+        break;
+      case "sensor":
+        await runSensorCommand(config, runtime, parsed.args);
+        break;
       case "workspace":
         await workspace(createWorkspaceRuntime({ runtime, config }), parsed.args);
         return;
@@ -1387,6 +1397,9 @@ function usage(error?: string): void {
     "  pnpm scce workspace init <path>",
     "  pnpm scce workspace ingest [path]",
     "  pnpm scce workspace ask <question>",
+    "  pnpm scce settings [show | set <key> <value>]   (interactive when no args; writes scce.config.json)",
+    "  pnpm scce model list | download <org/name> [--clip] [--dtype=q8] | remove <org/name>",
+    "  pnpm scce sensor run <id>",
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
     "  pnpm scce project summary [path]",
