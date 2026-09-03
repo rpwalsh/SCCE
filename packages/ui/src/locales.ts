@@ -31,6 +31,8 @@ export const UI_MESSAGES_EN_US = {
   "learn.offer.yes": "Yes, search and learn",
   "learn.held": "I found material but have not learned it. Is it true?",
   "learn.retry": "Asking again with what you confirmed…",
+  "learn.curriculum.title": "Wants to learn",
+  "learn.curriculum.pursue": "Let it learn",
   "side.models.use_visual": "Use for visual",
   "side.models.active": "active",
   "settings.realization.provider": "Realization provider",

@@ -1,4 +1,28 @@
+import { toJsonValue } from "./primitives.js";
 import type { PromotionDecision, ScceStorage } from "./storage.js";
+import type { CapabilityPlan, JsonValue } from "./types.js";
+
+/** The approval-session fingerprint for consent to search the web about one query; the kernel and every surface build it here. */
+export function learningConsentInput(query: string, hasher: { digestHex(input: string): string }): JsonValue {
+  return toJsonValue({ schema: "scce.learning_consent.v1", capabilityId: "network.search", query, queryHash: hasher.digestHex(query) });
+}
+
+export const LEARNING_SOURCE_ACQUISITION_KIND = "learning_source_acquisition";
+
+/** A self-proposed curriculum item: a learning plan the kernel wants pursued, waiting for the owner. */
+export interface LearningCurriculumItem {
+  planId: string;
+  capabilityId: string;
+  query: string;
+  rationale: string;
+  utility: number;
+}
+
+export function curriculumItemFromPlan(plan: Pick<CapabilityPlan, "id" | "capabilityId" | "input">): LearningCurriculumItem | undefined {
+  const input = plan.input && typeof plan.input === "object" && !Array.isArray(plan.input) ? plan.input as Record<string, JsonValue> : {};
+  if (input.kind !== LEARNING_SOURCE_ACQUISITION_KIND || typeof input.query !== "string" || !input.query.trim()) return undefined;
+  return { planId: String(plan.id), capabilityId: plan.capabilityId, query: input.query, rationale: typeof input.rationale === "string" ? input.rationale : "", utility: typeof input.utility === "number" ? input.utility : 0 };
+}
 
 /** Owner review of material acquired at runtime: held sources stay quarantined until confirmed truthful here. */
 

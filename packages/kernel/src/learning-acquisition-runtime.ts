@@ -45,13 +45,17 @@ export function learningAcquisitionCapabilityPlans(input: {
     const capability = registry.get(sourcePlan.capabilityId);
     if (!capability) continue;
     const payload = learningAcquisitionPayload(sourcePlan);
-    out.push(planner.plan({
+    const plan = planner.plan({
       episodeId: input.episodeId,
       capability,
       payload,
       now: input.now + out.length,
       approved: false
-    }));
+    });
+    // Self-set curriculum never reaches the network on its own: a network plan waits in the approval session until the owner lets it learn.
+    out.push(capability.kind === "network"
+      ? { ...plan, phase: "prepare", permission: { allowed: false, dryRun: true, requiresExplicitApproval: true, reason: "owner-consent-required" } }
+      : plan);
   }
   return out;
 }

@@ -7,6 +7,8 @@ import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
+  curriculumItemFromPlan,
+  learningConsentInput,
   listHeldSources,
   reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
@@ -76,6 +78,8 @@ export const ROUTES = [
   { method: "GET", path: "/api/models", label: "local models", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/learning/held", label: "material held for owner review", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/learning/review", label: "confirm or reject held material", mutates: true, requiresDb: true },
+  { method: "GET", path: "/api/learning/curriculum", label: "self-proposed learning awaiting consent", mutates: false, requiresDb: false },
+  { method: "POST", path: "/api/learning/pursue", label: "consent to a curriculum item and learn it", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/models/download", label: "model download (explicit)", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/models/remove", label: "model remove", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/brain/status", label: "brain status", mutates: false, requiresDb: true },
@@ -488,6 +492,22 @@ async function dispatch(
       return json({ schema: "scce.settings.update.v1", key, value, configPath, restartRequired: true });
     }
     return json({ schema: "scce.settings.view.v1", configPath, fields: settingsView(raw) });
+  }
+  if (url.pathname === "/api/learning/curriculum" && req.method === "GET") {
+    const items = context.runtime.approvals.snapshot().pending.map(record => curriculumItemFromPlan({ id: record.planId as never, capabilityId: record.capabilityId, input: record.input })).filter(Boolean);
+    return json({ schema: "scce.learning.curriculum.v1", items });
+  }
+  if (url.pathname === "/api/learning/pursue" && req.method === "POST") {
+    const body = jsonRecord(await readBody(req, context.maxBodyBytes));
+    const planId = typeof body.planId === "string" ? body.planId.trim() : "";
+    const record = context.runtime.approvals.snapshot().pending.find(item => item.planId === planId);
+    const item = record ? curriculumItemFromPlan({ id: record.planId as never, capabilityId: record.capabilityId, input: record.input }) : undefined;
+    if (!item) throw new HttpError(404, "no pending curriculum item with that planId");
+    context.runtime.approvals.approve(planId);
+    const consent = context.runtime.approvals.requestApproval({ capabilityId: "network.search", input: learningConsentInput(item.query, createHasher()), reason: "owner-consent-required" });
+    context.runtime.approvals.approve(consent.planId);
+    const result = await context.runtime.kernel.turn({ text: item.query, metadata: { conversationId: `curriculum:${planId}`, sessionId: `curriculum:${planId}` } });
+    return json({ schema: "scce.learning.pursue.v1", item, answer: result.answer, runtimeMotion: result.runtimeMotion ?? null, held: await listHeldSources(context.runtime.storage, 20) });
   }
   if (url.pathname === "/api/learning/held" && req.method === "GET") {
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 20));

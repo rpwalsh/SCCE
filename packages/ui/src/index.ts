@@ -502,6 +502,14 @@ export function renderWorkbench(serverUrl: string): string {
       if (!pending.length) { const d = document.createElement('div'); d.textContent = state.operatorGrant ? t('side.approvals.operator_grant_enabled') : t('side.approvals.none'); list.appendChild(d); return; }
       pending.forEach(item => {
         const box = document.createElement('div'); box.className = 'approval-item';
+        const curriculum = item.input && typeof item.input === 'object' && item.input.kind === 'learning_source_acquisition' && typeof item.input.query === 'string' ? item.input : null;
+        if (curriculum) {
+          const title = document.createElement('strong'); title.textContent = uiMsg('learn.curriculum.title') + ': ' + curriculum.query; box.appendChild(title);
+          const why = document.createElement('code'); why.textContent = curriculum.rationale || item.reason || ''; box.appendChild(why);
+          const button = document.createElement('button'); button.textContent = uiMsg('learn.curriculum.pursue');
+          button.onclick = async () => { log('POST /api/learning/pursue ' + item.planId); button.disabled = true; try { const r = await post('/api/learning/pursue', { planId: item.planId }); inspector.textContent = JSON.stringify(r, null, 2); add('scce', r.answer || uiMsg('learn.held'), r.runtimeMotion); addLearningControls(r, curriculum.query); await refreshLearning(); await refreshApprovals(); } catch (e) { why.textContent = t('error.prefix') + ' ' + e.message; button.disabled = false; } };
+          box.appendChild(button); list.appendChild(box); return;
+        }
         const title = document.createElement('strong'); title.textContent = item.capabilityId; box.appendChild(title);
         const code = document.createElement('code'); code.textContent = item.planId; box.appendChild(code);
         const reason = document.createElement('code'); reason.textContent = item.reason || t('approval.required'); box.appendChild(reason);
