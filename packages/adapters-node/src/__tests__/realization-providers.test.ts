@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProviderPrompt, createApiKeyProvider, createOllamaProvider, providerAsWordingRealizer, verifySurfaceAgainstFacts } from "../realization-providers.js";
+import { buildProviderPrompt, createApiKeyProvider, stripCodeFence, createOllamaProvider, providerAsWordingRealizer, verifySurfaceAgainstFacts } from "../realization-providers.js";
 
 const facts = [{ subject: "pump alpha", predicate: "is", object: "stable at 42 psi", evidenceIds: ["e1", "e2"] }];
 const request = { requestText: "status?", facts, targetLanguage: "en", targetScript: "Latn", maxSentences: 2, closedClassWords: ["the", "and"] };
@@ -28,6 +28,18 @@ describe("provider prompt", () => {
     expect(built.system).toMatch(/only words that appear in the facts/u);
     expect(built.prompt).toContain("status?");
     expect(built.prompt.split("pump alpha is stable at 42 psi").length).toBe(2);
+  });
+});
+
+describe("code requests", () => {
+  it("asks for the whole corrected file and is verified by the compile gate, not by prose licensing", async () => {
+    const codeRequest = { requestText: "fix add", facts: [{ subject: "math.ts", predicate: "contains", object: "export function add(a: number, b: number) { return a - b; }", evidenceIds: ["source"] }], targetLanguage: "typescript", targetScript: "Latn", maxSentences: 40, closedClassWords: [] };
+    const built = buildProviderPrompt(codeRequest);
+    expect(built.system).toMatch(/complete corrected file/u);
+    expect(built.prompt).toContain("return a - b");
+    const provider = createOllamaProvider({ host: "http://localhost:11434", model: "m", fetchImpl: fakeFetch({ response: "```typescript\nexport function add(a: number, b: number) { return a + b; }\n```" }) });
+    expect((await provider.realize(codeRequest))[0]).toMatchObject({ verified: true, text: "export function add(a: number, b: number) { return a + b; }" });
+    expect(stripCodeFence("plain")).toBe("plain");
   });
 });
 

@@ -45,6 +45,19 @@ export function verifySurfaceAgainstFacts(surface: string, facts: readonly Wordi
   });
 }
 
+const CODE_LANGUAGES = new Set(["typescript", "javascript", "python", "rust", "go", "java", "c", "cpp", "csharp", "ruby", "php", "kotlin", "swift", "shell", "sql"]);
+
+/** Code requests are verified by the code mouth's compile gate, not by prose word licensing. */
+export function isCodeRequest(request: Pick<WordingRealizerRequest, "targetLanguage">): boolean {
+  return CODE_LANGUAGES.has(String(request.targetLanguage ?? "").toLocaleLowerCase());
+}
+
+/** Strips a single markdown code fence a model may wrap code in. Pure. */
+export function stripCodeFence(text: string): string {
+  const match = /^\s*```[\w+-]*\r?\n([\s\S]*?)\r?\n```\s*$/u.exec(text);
+  return (match?.[1] ?? text).replace(/\s+$/u, "");
+}
+
 export interface ProviderPrompt {
   system: string;
   prompt: string;
@@ -52,6 +65,15 @@ export interface ProviderPrompt {
 
 /** Request + deduplicated facts in their own language; the verifier, not the prompt, enforces faithfulness. */
 export function buildProviderPrompt(request: WordingRealizerRequest): ProviderPrompt {
+  if (isCodeRequest(request)) {
+    const language = String(request.targetLanguage).toLocaleLowerCase();
+    const source = request.facts.find(fact => fact.predicate === "contains")?.object ?? "";
+    const notes = request.facts.filter(fact => fact.predicate !== "contains" && fact.predicate !== "asks").map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`);
+    return {
+      system: `You edit ${language} source files. Reply with the complete corrected file contents only: no explanation, no markdown fences, no omitted sections. Change only what the request and the compiler diagnostics require.`,
+      prompt: `Request:\n${request.requestText}\n\n${notes.length ? `Compiler diagnostics and workspace facts:\n${notes.join("\n")}\n\n` : ""}Current file:\n${source}\n\nCorrected file:`
+    };
+  }
   const facts = [...new Set(request.facts.map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`.replace(/\s+/gu, " ").trim()))];
   const sentences = Math.max(1, request.maxSentences ?? 2);
   return {
@@ -76,20 +98,21 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
     async realize(request) {
       const facts = request.facts.filter(fact => fact.evidenceIds.length > 0);
       if (!facts.length) return [];
+      const code = isCodeRequest(request);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8_000);
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : 8_000));
       try {
         const response = await fetchImpl(`${host}/api/generate`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: options.model, ...buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: 0, num_predict: 96 } }),
+          body: JSON.stringify({ model: options.model, ...buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: 0, num_predict: code ? 2048 : 96 } }),
           signal: controller.signal
         });
         if (!response.ok) return [];
         const payload = await response.json() as { response?: string };
-        const text = String(payload.response ?? "").trim();
-        if (!text || degenerateSurface(text)) return [];
-        const verified = verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
+        const text = code ? stripCodeFence(String(payload.response ?? "")) : String(payload.response ?? "").trim();
+        if (!text.trim() || (!code && degenerateSurface(text))) return [];
+        const verified = code || verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
         return [{ text, verified, provider: this.id }];
       } catch {
         return [];
