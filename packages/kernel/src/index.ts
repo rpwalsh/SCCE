@@ -192,6 +192,8 @@ export * from "./turn-requirements.js";
 export * from "./extended-generation-turn.js";
 export * from "./generative-derivation-runtime.js";
 export * from "./request-requirement-learning.js";
+export * from "./code-request.js";
+export * from "./code-request.js";
 export * from "./request-authority.js";
 export * from "./cognitive-planner.js";
 export * from "./spectral-forecast.js";

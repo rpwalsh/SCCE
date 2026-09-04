@@ -642,6 +642,8 @@ export interface WordingRealizerRequest {
   closedClassWords?: readonly string[];
   /** An invention may say more than the facts; it is labelled invented, never sourced. */
   invention?: boolean;
+  /** Formal language of a requested artifact; its compiler, not word licensing, verifies the result. */
+  codeLanguage?: string;
 }
 
 /** See ScceKernelDeps.wordingRealizer for the doctrine this port lives under. */

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { TASK_TIMELINE_SCHEMA, type ExtensionTaskState, type ScceEndpoint } from "./protocol.js";
+import { TASK_TIMELINE_SCHEMA, isScceEndpoint, type ExtensionTaskState, type ScceEndpoint } from "./protocol.js";
 
 export const TASK_STORAGE_KEY = "scce.taskTimeline.v1";
 const MAX_TASKS = 100;
@@ -111,16 +111,7 @@ function parseTask(value: unknown): ExtensionTaskRecord[] {
   }];
 }
 
-function isEndpoint(value: unknown): value is ScceEndpoint {
-  return value === "ready"
-    || value === "workspace.initialize"
-    || value === "workspace.ingest"
-    || value === "workspace.ask"
-    || value === "workspace.patch.plan.request"
-    || value === "workspace.patch"
-    || value === "project.summary"
-    || value === "workspace.status";
-}
+const isEndpoint = isScceEndpoint;
 
 function isState(value: unknown): value is ExtensionTaskState {
   return value === "pending_approval" || value === "running" || value === "succeeded" || value === "failed" || value === "interrupted" || value === "cancelled";

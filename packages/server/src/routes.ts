@@ -4,7 +4,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createTypeScriptCodeMouthPorts, runCodeMouth, selectRealizationPort, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   curriculumItemFromPlan,
@@ -118,6 +118,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/workspace/patch/plan", label: "workspace patch plan", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/workspace/patch/plan/request", label: "workspace coding request plan", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/workspace/patch", label: "workspace patch transaction", mutates: true, requiresDb: true },
+  { method: "POST", path: "/api/workspace/code", label: "workspace code edit", mutates: true, requiresDb: false },
   // These legacy GET handlers persist workspace/report records. The manifest
   // advertises that side effect so clients cannot mistake them for read-only.
   { method: "GET", path: "/api/project/summary", label: "project summary", mutates: true, requiresDb: true },
@@ -424,6 +425,26 @@ async function dispatch(
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       promptText: typeof body.promptText === "string" ? body.promptText : undefined
     }, typeof body.path === "string" ? body.path : undefined, workspaceOptions(body)));
+  }
+  if (req.method === "POST" && url.pathname === "/api/workspace/code") {
+    if (context.config.policy.allowMutation !== true) throw new HttpError(403, "code editing is disabled by config.policy.allowMutation");
+    const body = requireFields(await readBody(req, context.maxBodyBytes), ["path", "request"]) as Record<string, unknown>;
+    const targetPath = typeof body.path === "string" ? body.path.trim() : "";
+    const request = typeof body.request === "string" ? body.request.trim() : "";
+    if (!targetPath || !request) throw new HttpError(400, "workspace code requires path and request");
+    const approvalInput = { path: targetPath, request };
+    if (!approved(context, "workspace.code", approvalInput)) return pendingApproval(context, "workspace.code", approvalInput);
+    const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Number(body.attempts))) : 3;
+    // The compiler decides: the mouth keeps only a patch its gate accepted, and rolls back everything else.
+    return json(await runCodeMouth({
+      request,
+      targetPath,
+      maxAttempts: attempts,
+      ports: createTypeScriptCodeMouthPorts({
+        workspaceRoot: context.config.runtime.workspaceRoot,
+        realizer: selectRealizationPort(context.config)
+      })
+    }) as unknown as JsonValue);
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan") {
     const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes));

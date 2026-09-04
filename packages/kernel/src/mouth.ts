@@ -402,6 +402,8 @@ export interface SpeakInput {
   languageMemory: LanguageMemoryRuntimeState;
   answerDraft?: string;
   targetLanguage?: LanguageId;
+  /** Formal language this turn's artifact is written in, when the request named one. */
+  codeLanguage?: string;
   targetScript?: ScriptId;
   style?: StyleProfile;
   styleProfileId?: StyleProfileId;
@@ -691,7 +693,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("candidate_setup");
       const creativeRequested = isCreativeRequested(input, plan);
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
-      const realizerCandidates = await wordingRealizerCandidates(input, discoursePlan, creativeRequested);
+      const realizerCandidates = await wordingRealizerCandidates(input, discoursePlan, creativeRequested, input.codeLanguage);
       // An echo of the request is never an answer. For a creative turn
       // that holds unconditionally; elsewhere it holds whenever nothing
       // grounds the surface, because a candidate with no promoted
@@ -717,9 +719,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
         ...realizerCandidates,
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
-      ].filter(candidate => admissibleMouthSurface(candidate.text)
+      ].filter(candidate => (candidate.id.startsWith("candidate:generated:code:") ? candidate.text.trim().length > 0 : admissibleMouthSurface(candidate.text))
         // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
-        && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")));
+        && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && !candidate.id.startsWith("candidate:generated:code:") && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")));
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
         const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
@@ -917,7 +919,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const energySelectedIsBlockedKernelCandidate = Boolean(
         creativeRequested && energySelected && kernelSelectedCandidate && energySelected.id === kernelSelectedCandidate.id
       );
+      const codeRealizerCandidate = input.codeLanguage
+        ? scoredCandidates.find(candidate => candidate.id.startsWith("candidate:generated:code:") && !candidate.forbiddenHits.length)
+        : undefined;
       const selected = plannerSelectedCandidate ??
+        codeRealizerCandidate ??
         verifiedRealizerCandidate ??
         realizerInventionCandidate ??
         semanticGraphCandidate ??
@@ -5412,7 +5418,7 @@ function importSummarySurfaceText(input: SpeakInput): string {
  * direct-evidence join meets. A realizer can therefore lose on quality,
  * never smuggle a claim.
  */
-async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan, invention = false): Promise<SurfaceCandidate[]> {
+async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan, invention = false, codeLanguage?: string): Promise<SurfaceCandidate[]> {
   const realizer = input.wordingRealizer;
   if (!realizer) return [];
   const state = semanticAnswerConstructState(input.construct);
@@ -5422,7 +5428,8 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
     .filter(fact => (fact.evidenceIds ?? []).length > 0)
     .filter(fact => !invention || (Boolean(fact.subject) && containsSurface(requestText, fact.subject ?? "")))
     .slice(0, 6);
-  if (!facts.length && !invention) return [];
+  // An artifact request stands on its compiler, so it needs no facts to be answerable.
+  if (!facts.length && !invention && !codeLanguage) return [];
   let surfaces: readonly string[];
   try {
     surfaces = await realizer.realize({
@@ -5433,11 +5440,12 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
         object: fact.object ?? "",
         evidenceIds: (fact.evidenceIds ?? []).map(String)
       })),
-      targetLanguage: input.targetLanguage ?? "",
+      targetLanguage: codeLanguage ?? input.targetLanguage ?? "",
       targetScript: input.targetScript ?? "",
       maxSentences: invention ? 8 : 4,
       closedClassWords: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })],
-      ...(invention ? { invention: true } : {})
+      ...(invention ? { invention: true } : {}),
+      ...(codeLanguage ? { codeLanguage } : {})
     });
   } catch {
     // A realizer failure must never cost the turn -- the pool simply
@@ -5449,11 +5457,14 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
     .filter((surface): surface is string => typeof surface === "string" && surface.trim().length > 0)
     .slice(0, 3)
     .filter(surface =>
-      structurallyCompleteSurface(surface)
-      && (invention || realizerFactArgumentsIntact(surface, facts)))
+      codeLanguage
+        ? surface.trim().length > 0
+        : structurallyCompleteSurface(surface) && (invention || realizerFactArgumentsIntact(surface, facts)))
     .map((surface, index) => ({
-      id: invention ? `candidate:generated:creative:realizer:${realizer.id}:${index}` : `candidate:generated:realizer:${realizer.id}:${index}`,
-      style: invention ? "surface.path.generated.invention_realizer" : "surface.path.generated.wording_realizer",
+      id: codeLanguage
+        ? `candidate:generated:code:realizer:${realizer.id}:${index}`
+        : invention ? `candidate:generated:creative:realizer:${realizer.id}:${index}` : `candidate:generated:realizer:${realizer.id}:${index}`,
+      style: codeLanguage ? "surface.path.generated.code_realizer" : invention ? "surface.path.generated.invention_realizer" : "surface.path.generated.wording_realizer",
       path: "generated" as const,
       ...(invention ? { claimBasis: "invented" as const } : {}),
       text: surface,
@@ -6449,7 +6460,7 @@ function sessionAssertionTurn(input: SpeakInput): boolean {
 
 /** Corpus-oriented truth at the mouth: a sourced surface that shares none of the request's content units (nor its source title) speaks about something else. Pure. */
 function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: SpeakInput, quotation: boolean): string[] {
-  if (quotation) return [];
+  if (quotation || candidate.id.startsWith("candidate:generated:code:")) return [];
   const units = mouthCoverageUnits(input);
   if (!units.length) return [];
   const ids = new Set([...candidate.evidenceIds, ...(candidate.id === input.selectedCandidate?.id ? input.selectedCandidate?.evidenceIds ?? [] : [])].map(String));
