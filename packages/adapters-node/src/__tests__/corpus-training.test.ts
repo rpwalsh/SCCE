@@ -266,6 +266,40 @@ describe("multi-corpus training", () => {
     expect(bounded.articlesTrained).toBe(1);
   });
 
+  it("asks the graph for the batch's own slice, so the construction lane has surfaces to align to", async () => {
+    const article = (title: string, body: string) =>
+      `'${title}' is a subject with real prose. ${`${body} The predicate structure recurs across sentences. It recurs again in a second clause. `.repeat(8)}`;
+    const blob = Buffer.from(article("Graph Bound", "The engine was designed by a careful team."));
+    const fixture = memoryStorage();
+    (fixture.storage.evidence as unknown as Record<string, unknown>).listEvidenceBackedSourceVersions = async () => [
+      { sourceVersionId: "sv-graph", contentHash: "sha256_graph", canonicalUri: "https://example.org/graph", byteLength: blob.length, maxAlpha: 0.9, promotedSpanCount: 3 }
+    ];
+    (fixture.storage as unknown as Record<string, unknown>).blobs = {
+      get: async () => blob,
+      put: async (content: Uint8Array) => `sha256_stored_${content.length}`,
+      exists: async () => true
+    };
+    // The graph was projected from the original ingestion's spans, so the lane looks them up by source version.
+    (fixture.storage.evidence as unknown as Record<string, unknown>).searchEvidence = async () =>
+      [{ span: { id: "evidence.original" }, score: 1 }];
+    const sliceQueries: Array<Record<string, unknown>> = [];
+    (fixture.storage as unknown as Record<string, unknown>).graph = {
+      getSlice: async (query: Record<string, unknown>) => {
+        sliceQueries.push(query);
+        return { nodes: [], edges: [], hyperedges: [], bounded: true, query };
+      }
+    };
+
+    const report = await trainStoredCorpusConstructions({ storage: fixture.storage, batchBytes: 4096, maxTotalBytes: 65_536 });
+
+    // Alignment lattices are built only from a batch that carries its graph. Training used to pass none at all,
+    // so the construction lane compiled nothing on every run the trainer had ever made.
+    expect(report.batchesTrained).toBeGreaterThanOrEqual(1);
+    expect(sliceQueries.length).toBeGreaterThan(0);
+    expect((sliceQueries[0]!.evidenceIds as unknown[]).length).toBeGreaterThan(0);
+    expect(report.batchesFailed).toEqual([]);
+  });
+
   it("records one file's training failure as an explicit skip and keeps training the rest", async () => {
     const root = await tempDir("oss-failure-fixture-");
     await writeFile(path.join(root, "README.md"), "Readable docs explain the pump API and the maintenance flow.", "utf8");

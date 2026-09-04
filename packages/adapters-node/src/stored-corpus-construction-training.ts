@@ -8,6 +8,9 @@ import {
 } from "@scce/kernel";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
+/** Alignment observations carried between batches; bounded so a long run stays inside its heap budget. */
+const ALIGNMENT_MEMORY = 4096;
+
 export interface StoredCorpusConstructionTrainingOptions {
   storage: ScceStorage;
   /** Cumulative text budget across this run. Default 64MB. */
@@ -81,12 +84,15 @@ export async function trainStoredCorpusConstructions(
   });
 
   const reports: LanguageCorpusTrainingReport[] = [];
+  let alignmentPromotionMemory: LanguageCorpusTrainingReport["alignmentPromotionObservations"] = [];
+  let alignmentCalibrationMemory: LanguageCorpusTrainingReport["alignmentCalibrationObservations"] = [];
   const batchesFailed: StoredCorpusConstructionTrainingReport["batchesFailed"] = [];
   let batchIndex = 0;
   let articlesTrained = 0;
   let bytesTrained = 0;
   let stoppedByHeapSafetyBound = false;
   let pending: string[] = [];
+  let pendingSourceVersionIds: string[] = [];
   let pendingBytes = 0;
 
   const trainPending = async (): Promise<void> => {
@@ -94,12 +100,14 @@ export async function trainStoredCorpusConstructions(
     const currentIndex = batchIndex++;
     const text = pending.join("\n\n");
     const articleCount = pending.length;
+    const currentSourceVersionIds = pendingSourceVersionIds;
     pending = [];
+    pendingSourceVersionIds = [];
     const currentBytes = pendingBytes;
     pendingBytes = 0;
     if (currentIndex < startBatchIndex) return;
     try {
-      reports.push(await trainLanguageCorpusText({
+      const report = await trainLanguageCorpusText({
         storage: input.storage,
         sourceSystem,
         streamUri: `${sourceSystem}:construction-training:batch-${String(currentIndex).padStart(4, "0")}`,
@@ -117,13 +125,21 @@ export async function trainStoredCorpusConstructions(
         ngramMaxCountersPerOrder: 64,
         ngramVocabularyLimit: 4096,
         creativeEventCompiler: compiler,
+        graphSnapshotSourceVersionIds: currentSourceVersionIds,
+        alignmentPromotionObservations: alignmentPromotionMemory,
+        alignmentCalibrationObservations: alignmentCalibrationMemory,
         corpusMetadata: {
           lane: "stored-corpus-construction-training",
           batchIndex: currentIndex,
           articleCount,
           purpose: "generation construction inventory from the retrieval corpus"
         }
-      }));
+      });
+      reports.push(report);
+      // A construction is promoted on what the corpus shows, not on one batch. The held-out evidence each batch
+      // produces is carried into the next, bounded so a long run stays inside its heap budget.
+      alignmentPromotionMemory = [...alignmentPromotionMemory, ...report.alignmentPromotionObservations].slice(-ALIGNMENT_MEMORY);
+      alignmentCalibrationMemory = [...alignmentCalibrationMemory, ...report.alignmentCalibrationObservations].slice(-ALIGNMENT_MEMORY);
       articlesTrained += articleCount;
       bytesTrained += currentBytes;
     } catch (error) {
@@ -151,6 +167,7 @@ export async function trainStoredCorpusConstructions(
     }
     if (!text) continue;
     pending.push(text);
+    pendingSourceVersionIds.push(String(version.sourceVersionId));
     pendingBytes += Buffer.byteLength(text, "utf8");
     if (pendingBytes >= batchBytes) await trainPending();
   }
