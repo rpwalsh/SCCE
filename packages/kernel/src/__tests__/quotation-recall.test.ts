@@ -69,3 +69,15 @@ describe("quotation recall", () => {
     expect(localEvidenceAnswerIsQuotationRecall(rich)).toBe(true);
   });
 });
+
+describe("request coverage", () => {
+  it("refuses a passage that shares none of the request's content units, and admits one whose title carries them", async () => {
+    const { answerCoversRequest } = await import("../local-evidence-runtime.js");
+    const units = ["current", "chief", "executive", "company", "makes", "graphics", "cards"];
+    expect(answerCoversRequest(["Poison Ivy is a character appearing in American comic books."], span(), units)).toBe(false);
+    expect(answerCoversRequest(["Benjamin Sisko commands the station."], span(), ["commands", "deep", "space", "nine"])).toBe(true);
+    expect(answerCoversRequest(["anything"], span(), [])).toBe(true);
+    const proposal = proposeSourceExactEvidenceAnswer({ requestText: "Who is the current chief executive of the company that makes the Arc graphics cards?", selectedEvidence: [span()] });
+    expect(proposal).toBeUndefined();
+  });
+});
