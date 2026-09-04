@@ -94,6 +94,8 @@ import {
   type ProofStore,
   type QuarantineSource,
   type QuarantineStore,
+  type RelationObservationRecord,
+  type RelationObservationStore,
   type ScceEvent,
   type ScceStorage,
   type SemanticProof,
@@ -151,6 +153,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly evidence: EvidenceStore;
   readonly blobs: BlobStore;
   readonly quarantine: QuarantineStore;
+  readonly relationObservations: RelationObservationStore;
   readonly proofs: ProofStore;
   readonly constructs: ConstructStore;
   readonly capabilities: CapabilityAuditStore;
@@ -193,6 +196,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.evidence = createEvidenceStore(this);
     this.graph = createGraphStore(this);
     this.quarantine = createQuarantineStore(this);
+    this.relationObservations = createRelationObservationStore(this);
     this.proofs = createProofStore(this);
     this.constructs = createConstructStore(this);
     this.capabilities = createCapabilityStore(this);
@@ -784,6 +788,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS qualifiers_json JSONB NOT NULL DEFAULT '{}'::jsonb`,
     `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS modality_json JSONB NOT NULL DEFAULT '{}'::jsonb`,
     `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS evidence_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[]`,
+    `CREATE TABLE IF NOT EXISTS ${q}.relation_observations (relation_seed_id TEXT NOT NULL, channel TEXT NOT NULL, source_family_id TEXT NOT NULL, signature TEXT NOT NULL, candidate_id TEXT NOT NULL, source_id TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY(relation_seed_id,channel,source_family_id,signature))`,
     `CREATE TABLE IF NOT EXISTS ${q}.quarantine_sources (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, source_version_id TEXT NOT NULL, uri TEXT NOT NULL, content_hash TEXT NOT NULL, media_type TEXT NOT NULL, fetched_at TIMESTAMPTZ NOT NULL, trust_vector JSONB NOT NULL, permission_vector JSONB NOT NULL, license_hint TEXT, decision TEXT NOT NULL, decision_json JSONB)`,
     `CREATE TABLE IF NOT EXISTS ${q}.semantic_proofs (id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, verdict TEXT NOT NULL, confidence_json JSONB NOT NULL, proof_graph_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, transform_ids TEXT[] NOT NULL, scores_json JSONB NOT NULL, validator_version TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.construct_graphs (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, force_vector JSONB NOT NULL, graph_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -1049,6 +1054,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_hyperedges_provenance ON ${q}.graph_hyperedges USING GIN(provenance_refs)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_proofs_evidence ON ${q}.semantic_proofs USING GIN(evidence_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_quarantine_decision ON ${q}.quarantine_sources(decision,fetched_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_relation_observations_seed ON ${q}.relation_observations(relation_seed_id,channel)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_learning_needs_status ON ${q}.learning_needs(status,priority DESC,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_stream_order ON ${q}.ngram_observations(stream_id,language_hint,order_n,observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_version_rank ON ${q}.ngram_observations(source_version_id,count DESC,observed_at DESC)`,
@@ -1795,17 +1801,28 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
         : [];
       const hyperedgeMemberIds = ids.slice(0, Math.max(32, Math.min(ids.length, Math.floor((query.limitNodes ?? 800) / 3))));
       const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
-      const hyperedges = ids.length
-        ? (await storage.query<HyperedgeRow>(
+      // The same overlap-estimate cliff as the node lookup: 20ms at 32 member ids, 765ms at 213, for the same
+      // rows. Asking in index-sized groups keeps it on the GIN index.
+      const hyperedgeLimit = Math.max(64, Math.floor((query.limitEdges ?? 2000) / 4));
+      const hyperedgeRows = new Map<string, HyperedgeRow>();
+      for (let index = 0; index < hyperedgeMemberIds.length; index += EVIDENCE_LOOKUP_GROUP) {
+        const group = hyperedgeMemberIds.slice(index, index + EVIDENCE_LOOKUP_GROUP);
+        const rows = await storage.query<HyperedgeRow>(
           `SELECT *
            FROM ${storage.table("graph_hyperedges")} hyperedge
            WHERE member_node_ids && $1
              AND ${hyperedgeAccess.sql}
            ORDER BY updated_at DESC
            LIMIT $2`,
-          [hyperedgeMemberIds, Math.max(64, Math.floor((query.limitEdges ?? 2000) / 4)), ...hyperedgeAccess.params]
-        )).map(rowToHyperedge)
-        : [];
+          [group, hyperedgeLimit, ...hyperedgeAccess.params]
+        );
+        for (const row of rows) if (!hyperedgeRows.has(row.id)) hyperedgeRows.set(row.id, row);
+        if (hyperedgeRows.size >= hyperedgeLimit) break;
+      }
+      const hyperedges = [...hyperedgeRows.values()]
+        .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
+        .slice(0, hyperedgeLimit)
+        .map(rowToHyperedge);
       return { nodes, edges, hyperedges, bounded: true, query };
     },
     async getTemporalSlice(query: TemporalGraphQuery): Promise<TemporalGraph> {
@@ -1997,6 +2014,9 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
   });
 }
 
+/** Evidence ids per graph lookup: small enough that the planner keeps using the GIN index. */
+const EVIDENCE_LOOKUP_GROUP = 32;
+
 async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuery): Promise<GraphNode[]> {
   if (query.seedNodeIds?.length) {
     const access = storage.informationAccessPredicate("node", 3);
@@ -2007,8 +2027,19 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
   }
   if (query.evidenceIds?.length) {
     const access = storage.informationAccessPredicate("node", 3);
-    return (await storage.query<GraphNodeRow>(
-    `WITH evidence_candidates AS MATERIALIZED (
+    const limit = query.limitNodes ?? 800;
+    // An overlap test against a long array loses the planner's selectivity estimate: past roughly a hundred ids
+    // it stops trusting the GIN index and sequentially scans every node (measured on a 1.39M-node corpus: 19ms
+    // at 20 ids, 19.8s at 200, for the same answer). Asking in index-sized groups keeps every lookup on the
+    // index and returns the same rows, ordered the same way.
+    const groups: string[][] = [];
+    for (let index = 0; index < query.evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) {
+      groups.push([...query.evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP)] as string[]);
+    }
+    const seen = new Map<string, GraphNodeRow>();
+    for (const group of groups) {
+      const rows = await storage.query<GraphNodeRow>(
+        `WITH evidence_candidates AS MATERIALIZED (
        SELECT *
        FROM ${storage.table("graph_nodes")} node
        WHERE evidence_ids && $1
@@ -2018,8 +2049,16 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
      FROM evidence_candidates
      ORDER BY alpha DESC, updated_at DESC
      LIMIT $2`,
-    [query.evidenceIds, query.limitNodes ?? 800, ...access.params]
-    )).map(rowToGraphNode);
+        [group, limit, ...access.params]
+      );
+      for (const row of rows) if (!seen.has(row.id)) seen.set(row.id, row);
+    }
+    return [...seen.values()]
+      .sort((left, right) =>
+        Number(right.alpha ?? 0) - Number(left.alpha ?? 0)
+        || new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
+      .slice(0, limit)
+      .map(rowToGraphNode);
   }
   const features = graphQueryFeatures(query);
   if (features.length) {
@@ -2031,8 +2070,13 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
   }
   if (query.allowLatestFallback) {
     const access = storage.informationAccessPredicate("node", 2);
+    // A warm-up asks for the highest-alpha nodes, and on a repo-ingested corpus those are code observations
+    // carrying whole source files: measured 180KB average and 15MB maximum against a 641-byte corpus average,
+    // so one warm-up dragged roughly 116MB across the connection mid-turn. A node too large to be worth caching
+    // is simply not cached; a lookup that actually needs it still fetches it by id.
+    const bound = query.maxRepresentationBytes;
     return (await storage.query<GraphNodeRow>(
-      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE ${access.sql} ORDER BY alpha DESC, updated_at DESC, id LIMIT $1`,
+      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE ${access.sql}${bound ? " AND pg_column_size(node.representation_json) <= " + Math.floor(bound) : ""} ORDER BY alpha DESC, updated_at DESC, id LIMIT $1`,
       [query.limitNodes ?? 800, ...access.params]
     )).map(rowToGraphNode);
   }
@@ -2122,6 +2166,48 @@ function createQuarantineStore(storage: PostgresStorageAdapter): QuarantineStore
     },
     async markDecision(id, decision) {
       await storage.query(`UPDATE ${storage.table("quarantine_sources")} SET decision=$2, decision_json=$3::jsonb WHERE id=$1`, [id, decision.decision, JSON.stringify(decision)]);
+    }
+  };
+}
+
+interface RelationObservationRow {
+  candidate_id: string;
+  relation_seed_id: string;
+  channel: string;
+  source_id: string;
+  source_family_id: string;
+  signature: string;
+  observed_at: Date | string;
+}
+
+function createRelationObservationStore(storage: PostgresStorageAdapter): RelationObservationStore {
+  return {
+    async put(rows) {
+      for (const row of rows) {
+        await storage.query(
+          `INSERT INTO ${storage.table("relation_observations")}(relation_seed_id,channel,source_family_id,signature,candidate_id,source_id,observed_at) VALUES($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7/1000.0)) ON CONFLICT(relation_seed_id,channel,source_family_id,signature) DO NOTHING`,
+          [row.relationSeedId, row.channel, row.sourceFamilyId, row.signature, row.candidateId, row.sourceId, row.observedAt]
+        );
+      }
+    },
+    async list(query) {
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (query?.channel) { params.push(query.channel); where.push(`channel=$${params.length}`); }
+      params.push(query?.limit ?? 20000);
+      const rows = await storage.query<RelationObservationRow>(
+        `SELECT * FROM ${storage.table("relation_observations")} ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY observed_at DESC LIMIT $${params.length}`,
+        params
+      );
+      return rows.map(row => ({
+        candidateId: row.candidate_id,
+        relationSeedId: row.relation_seed_id,
+        channel: row.channel,
+        sourceId: row.source_id,
+        sourceFamilyId: row.source_family_id,
+        signature: row.signature,
+        observedAt: new Date(row.observed_at).getTime()
+      }));
     }
   };
 }

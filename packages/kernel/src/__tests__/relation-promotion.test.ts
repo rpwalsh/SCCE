@@ -5,6 +5,8 @@ import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import {
   compileRelationPromotionModel,
+  mergeRelationObservations,
+  relationObservationsFromCandidates,
   relationPromotionDecision
 } from "../relation-promotion.js";
 import { graphFromStructuredSemanticCandidates } from "../typed-ingest.js";
@@ -195,6 +197,29 @@ describe("held-out relation promotion", () => {
       ...graph.hyperedges[0]!,
       memberNodeIds: []
     })).toThrow(/must equal observed participant-port node IDs/u);
+  });
+  it("counts sources seen in earlier ingestion runs, so a corpus taken a batch at a time can still promote", () => {
+    const everything = separableCandidates(80);
+    const batch = everything.slice(0, 4);
+
+    const batchOnly = compileRelationPromotionModel({ candidates: batch });
+    expect(batchOnly.decisions.every(decision => !decision.promoted)).toBe(true);
+    expect(batchOnly.decisions.some(decision =>
+      decision.reasons.includes("insufficient_independent_sources"))).toBe(true);
+
+    const withHistory = compileRelationPromotionModel({
+      candidates: batch,
+      priorObservations: relationObservationsFromCandidates(everything.slice(4))
+    });
+    expect(withHistory.decisions.some(decision => decision.promoted)).toBe(true);
+  });
+
+  it("a repeated source family adds nothing that was not already observed", () => {
+    const everything = separableCandidates(80);
+    const observations = relationObservationsFromCandidates(everything);
+    const merged = mergeRelationObservations(observations, observations);
+
+    expect(merged).toHaveLength(observations.length);
   });
 });
 
