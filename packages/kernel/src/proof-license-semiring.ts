@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan items 133-135. A proof-license product semiring: the carrier is a
  * finite map from proof-license state to a base-semiring value. This is the

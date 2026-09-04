@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export * from "./config.js";
 export * from "./postgres.js";
 export * from "./files.js";
@@ -36,6 +38,7 @@ export * from "./constrained-realizer.js";
 export * from "./visual-ingest.js";
 export * from "./realization-providers.js";
 export * from "./code-verification.js";
+export * from "./code-mouth-compiler-proposer.js";
 export * from "./sensor-ingest.js";
 export * from "./model-management.js";
 export * from "./settings-schema.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor, type CapabilityDispatchDisposition } from "./capability-dispatcher.js";
 import { createEventFactory } from "./events.js";
 import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
@@ -188,6 +190,30 @@ export async function recordConnectorDispatchPolicyEvaluation(input: {
 import type { CapabilityPlan } from "./types.js";
 import { learningConsentInput } from "./learning-review.js";
 
+/**
+ * The subject a source URI names. A fetched page titles itself for a reader
+ * ("Antikythera mechanism - Wikipedia") while a corpus titles itself by subject,
+ * and source-identity admission compares against the subject. Taking the URI's
+ * last path segment when the document title contains it keeps acquired sources
+ * addressable the same way ingested ones are, with no site or language rules. Pure.
+ */
+export function sourceSubjectTitle(canonicalUri: string, documentTitle: string): string {
+  const withoutQuery = canonicalUri.split(/[?#]/u)[0] ?? "";
+  const segment = withoutQuery.split("/").filter(Boolean).pop() ?? "";
+  let decoded = segment;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    decoded = segment;
+  }
+  const subject = decoded.replace(/\.[\p{L}\p{N}]{1,5}$/u, "").replace(/[_+]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!subject) return documentTitle;
+  const normalize = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const normalizedSubject = normalize(subject);
+  if (!normalizedSubject) return documentTitle;
+  return normalize(documentTitle).includes(normalizedSubject) ? subject : documentTitle;
+}
+
 export function createRuntimeAcquisition(options: {
   now?: () => number;
   deps: ScceKernelDeps;
@@ -316,7 +342,7 @@ export function createRuntimeAcquisition(options: {
               canonicalUri,
               sourceUri: canonicalUri,
               uri: canonicalUri,
-              title: searchRow.title,
+              title: sourceSubjectTitle(canonicalUri, searchRow.title),
               snippet: searchRow.snippet,
               acquisition: {
                 motionId: "motion.learn_hydrate_replan",

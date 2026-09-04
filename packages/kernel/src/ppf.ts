@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { GraphEdge, GraphNode, NodeId, RelationId } from "./types.js";
 import { normalizeVector } from "./primitives.js";
 import { chernoffInformation, subspaceDriftEntropy } from "./causal-math.js";

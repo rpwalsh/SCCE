@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { identity, multiply as matMul, transpose, zeros } from "./math.js";
 import { mean } from "./primitives.js";
 

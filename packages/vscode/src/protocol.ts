@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export const EXTENSION_PROTOCOL_SCHEMA = "scce.vscode.message.v1" as const;
 export const TASK_TIMELINE_SCHEMA = "scce.vscode.task_timeline.v1" as const;
 
@@ -51,10 +53,12 @@ export function isScceEndpoint(value: unknown): value is ScceEndpoint {
 }
 
 export interface CodeEditResult {
-  outcome: "resolved" | "no_proposal" | "budget_exhausted" | "stopped";
+  outcome: "resolved" | "no_proposal" | "awaiting_selection" | "budget_exhausted" | "stopped";
   attempts: number;
   finalDiagnostics: ReadonlyArray<{ file?: string; line?: number; message?: string }>;
   reason?: string;
+  /** Fixes the compiler owns for this file when more than one answers the request. */
+  candidates?: ReadonlyArray<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }>;
 }
 
 export interface ReadyResponse {

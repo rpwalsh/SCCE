@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Claim, ConstructGraph, EvidenceSpan, FieldState, GraphNode, Hasher, SemanticEntailmentResult, TruthState } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { featureSet, sourceTextSurface, toJsonValue, symbolizeData } from "./primitives.js";

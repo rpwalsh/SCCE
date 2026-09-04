@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan, GraphSlice, JsonValue, LanguageProfile, ModelState, TrainInput } from "./types.js";
 import type { QuarantineSource } from "./storage.js";
 import { clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";

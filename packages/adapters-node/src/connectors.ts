@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { toJsonValue, type ConnectorPort, type JsonValue } from "@scce/kernel";

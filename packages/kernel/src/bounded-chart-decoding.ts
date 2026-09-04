@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { computeTreeDecomposition, type DecompositionGraph, type TreeDecompositionBag } from "./tree-decomposition.js";
 import { emptyDerivationChart, insertDerivation, combineCells, chartKeyId, type ChartKey, type DerivationChart } from "./derivation-chart.js";
 import type { ProofLicenseCarrier, ProofLicenseSemiring } from "./proof-license-semiring.js";

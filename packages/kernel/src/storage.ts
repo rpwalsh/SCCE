@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type {
   AlphaTrace,
   BenchmarkInput,
@@ -644,6 +646,8 @@ export interface WordingRealizerRequest {
   invention?: boolean;
   /** Formal language of a requested artifact; its compiler, not word licensing, verifies the result. */
   codeLanguage?: string;
+  /** The caller checks the draft's meaning against the evidence, so the provider must not gate on vocabulary. */
+  meaningVerifiedDownstream?: boolean;
 }
 
 /** See ScceKernelDeps.wordingRealizer for the doctrine this port lives under. */

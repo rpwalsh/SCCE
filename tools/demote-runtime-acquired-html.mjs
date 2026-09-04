@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 // Two retrieval-hygiene demotions, both reversible (status -> quarantined, previous status recorded):
 //   default:    pages runtime acquisition fetched and promoted automatically before the consent gate existed (raw HTML)
 //   --parents:  whole-article spans that fully contain two or more sentence-aligned sibling spans of the same source version

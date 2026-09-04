@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export const genericChatMouthFixture = {
   claim: "Greenhouse vents open before noon above 70% humidity.",
   evidenceText: "The greenhouse opens its vents before noon when humidity rises above 70%.",

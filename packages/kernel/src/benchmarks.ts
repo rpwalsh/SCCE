@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { BenchmarkInput, BenchmarkTask, BuildTestResult, EmissionGraph, EvidenceSpan, JsonValue, SemanticEntailmentResult, TurnResult, ValidationGraph } from "./types.js";
 import { clamp01, mean, toJsonValue, weightedJaccard, featureSet } from "./primitives.js";
 

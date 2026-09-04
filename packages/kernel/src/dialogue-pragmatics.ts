@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, clamp01, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import type { JsonValue } from "./types.js";

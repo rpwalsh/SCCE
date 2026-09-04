@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";

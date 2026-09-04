@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -393,6 +395,11 @@ export function sessionContextEvidenceEnabled(metadata: JsonValue | undefined): 
 }
 
 
+/** The span a source opens with: a chunk in the middle of a document has no lead sentence to boost. Pure. */
+function documentOpeningSpan(span: EvidenceSpan): boolean {
+  return span.charStart === 0;
+}
+
 export function localEvidenceAnswerSurface(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
@@ -563,7 +570,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units); see
       // the coverage-transfer note above for when it moves off the lead.
       const titleLeadBoost = titleMatches
-        && (contentBoostIndex >= 0 ? index === contentBoostIndex : index <= 1)
+        && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentOpeningSpan(span) && index <= 1))
         ? 4
         : 0;
       // Sentence-completeness prior: in cased scripts a well-formed
@@ -1742,8 +1749,7 @@ export function sourceAnchoredEvidenceForRequest(
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
     : [];
   // A named subject owns content admission: instruction phrases around it must not admit whatever article contains them.
-  const named = namedSubjectAnchors(requestText);
-  const contentAnchors = named.length ? named : anchors;
+  const contentAnchors = anchorsAboutNamedSubject(requestText);
   const contentBoundEvidence = evidence.filter(span =>
     contentAnchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, requestText))
   );
@@ -2035,14 +2041,33 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
 
 /** An anchor that titles only a few documents is a subject, not an instruction word that happens to sit in many titles. */
 const SUBJECT_ANCHOR_TITLE_MATCH_BOUND = 4;
+/**
+ * Every request anchor built on a named subject, in the request's own anchor order; the full anchor list
+ * when the request names none. This is what keeps an instruction phrase ("short story") from owning a
+ * request while still allowing the anchor that actually titles the source ("Voynich manuscript"). Pure.
+ */
+function anchorsAboutNamedSubject(requestText: string): string[] {
+  const anchors = sourceEvidenceAnchorsForRequest(requestText);
+  const named = namedSubjectAnchors(requestText)
+    .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))
+    .filter(unit => unit.length >= 3);
+  if (!named.length) return anchors;
+  const about = anchors.filter(anchor => {
+    const units = splitPriorUnits(normalizePriorKey(anchor));
+    return units.some(unit => named.includes(unit));
+  });
+  return about.length ? about : anchors;
+}
+
 function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
   return row.exactTitleMatches > 0 && row.exactTitleMatches <= SUBJECT_ANCHOR_TITLE_MATCH_BOUND;
 }
 
  function primarySourceAnchorForRequest(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined {
-  // A named subject is the only primary candidate: an unsourced name must not hand the request to an instruction phrase that happens to title an article.
-  const namedCandidates = namedSubjectAnchors(requestText);
-  const ranked = (namedCandidates.length ? namedCandidates : sourceEvidenceAnchorsForRequest(requestText))
+  // The subject owns the request, but the anchor that names it is often longer than the capitalised part
+  // ("Voynich manuscript" for the name "Voynich"), so keep every anchor built on a named subject and drop
+  // only the instruction phrases that name none.
+  const ranked = anchorsAboutNamedSubject(requestText)
     .map(anchor => {
       const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
       if (!anchorUnits.length) return undefined;
@@ -2975,7 +3000,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(sentence, orderedRequestUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? 0.54 : 0;
         const titleLeadBoost = titleMatches
-          && (contentBoostIndex >= 0 ? index === contentBoostIndex : index <= 1)
+          && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentOpeningSpan(span) && index <= 1))
           && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
           ? 4
           : 0;

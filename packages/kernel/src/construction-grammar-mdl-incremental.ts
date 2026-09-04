@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { LearnedConstruction, LearnedConstructionPart, LearnedFormClass } from "./language-construction.js";
 import { CONSTRUCTION_GRAMMAR_MDL_SCHEMA, type ConstructionGrammarMdlScore } from "./construction-grammar-mdl.js";
 

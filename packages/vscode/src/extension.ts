@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
@@ -188,7 +190,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const request = await vscode.window.showInputBox({ prompt: "What should change in this file?" });
       if (!request) return;
       await run("workspace.code", "Edit " + targetPath, true, async activeClient => {
-        const result = await activeClient.editCode(targetPath, request);
+        let result = await activeClient.editCode(targetPath, request);
+        // The compiler owns several fixes here; choosing one for the owner would be a guess, so it picks.
+        if (result.outcome === "awaiting_selection" && result.candidates?.length) {
+          const picked = await vscode.window.showQuickPick(
+            result.candidates.map(candidate => ({
+              label: candidate.fixName,
+              description: "TS" + candidate.diagnosticCode,
+              detail: candidate.codeFixIdentity,
+              identity: candidate.codeFixIdentity
+            })),
+            { title: "Fixes TypeScript offers for " + targetPath, placeHolder: "Choose the fix to apply" }
+          );
+          if (!picked) return result as unknown as Record<string, unknown>;
+          result = await activeClient.editCode(targetPath, request + " codeFixIdentity:" + picked.identity);
+        }
         const summary = result.outcome === "resolved"
           ? "SCCE edited " + targetPath + ": the compiler accepted the change after " + result.attempts + " attempt(s)."
           : "SCCE did not change " + targetPath + ": " + result.outcome + ". Every attempt was rolled back.";

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 // Live verification for plan items 215-216 (procedural skill compilation +
 // execution, packages/kernel/src/procedural-skill-runtime.ts): proves the
 // compile-from-real-ledger-history -> execute-through-the-real-capability

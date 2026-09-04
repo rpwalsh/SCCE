@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { TextDecoder } from "node:util";
 import { withBrainBundleEntryStream } from "./brain-bundle.js";
 import { readScce2ConceptSnapshot, type Scce2Concept, type Scce2Relation } from "./brain-shard-reader.js";

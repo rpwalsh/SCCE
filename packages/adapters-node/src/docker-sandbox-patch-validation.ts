@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmod, lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";

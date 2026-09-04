@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -10,7 +12,7 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -436,7 +438,7 @@ async function dispatch(
     if (!approved(context, "workspace.code", approvalInput)) return pendingApproval(context, "workspace.code", approvalInput);
     const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Number(body.attempts))) : 3;
     // The compiler decides: the mouth keeps only a patch its gate accepted, and rolls back everything else.
-    return json(await runCodeMouth({
+    const codeResult = await runCodeMouth({
       request,
       targetPath,
       maxAttempts: attempts,
@@ -444,7 +446,29 @@ async function dispatch(
         workspaceRoot: context.config.runtime.workspaceRoot,
         realizer: selectRealizationPort(context.config)
       })
-    }) as unknown as JsonValue);
+    });
+    // A repair that is forgotten cannot be learned from: every accepted patch enters the ledger with what
+    // it answered and how it was proven, so the same request can be recognised again later.
+    if (codeResult.outcome === "resolved") {
+      const clock = createClock();
+      const hasher = createHasher();
+      const idFactory = createIdFactory({ clock, hasher });
+      const events = createEventFactory({ idFactory, clock, hasher });
+      await context.runtime.storage.events.append(events.create({
+        episodeId: idFactory.episodeId(),
+        typeId: "CodePatchApplied",
+        payload: {
+          schema: "scce.code_patch_applied.v1",
+          path: targetPath,
+          request,
+          attempts: codeResult.attempts,
+          provedBy: codeResult.reason,
+          operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
+          remainingDiagnostics: codeResult.finalDiagnostics.length
+        }
+      })).catch(() => undefined);
+    }
+    return json(codeResult as unknown as JsonValue);
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan") {
     const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes));

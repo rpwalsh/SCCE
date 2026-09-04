@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { runProcess } from '../lib/run.js';
 import { truncate } from '../lib/run.js';
 import { resolvePgConnection } from '../lib/pgConfig.js';

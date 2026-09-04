@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan item 231. The preregistered task classes for the signed blind
  * evaluation gate, as a real typed config artifact -- not prose. Every

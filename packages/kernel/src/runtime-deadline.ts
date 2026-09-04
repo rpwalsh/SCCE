@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { JsonValue } from "./types.js";
 
 export const RUNTIME_DEADLINE_SCHEMA = "scce.runtime_deadline.v1" as const;

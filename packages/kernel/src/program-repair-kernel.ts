@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ArtifactId, BuildTestResult, ContentHash, FileArtifact, Hasher, JsonValue, ProgramGraph } from "./types.js";
 import { canonicalStringify, clamp01, createHasher, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createProgramHydrationContract, hydrationSummary, validateProgramGraphHydration } from "./program-runtime.js";

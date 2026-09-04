@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Observation } from "./ingestion-lanes.js";
 import { createHasher, toJsonValue } from "./primitives.js";
 import type { EvidenceId, Hasher, JsonValue, SourceId, SourceVersionId } from "./types.js";

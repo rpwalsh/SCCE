@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { opaqueRoleId, type OpaqueRoleModel } from "./opaque-role-induction.js";
 import type { RelationPromotionModel } from "./relation-promotion.js";

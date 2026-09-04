@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createRequire } from "node:module";
 import path from "node:path";
 import { inflateRawSync } from "node:zlib";

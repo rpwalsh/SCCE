@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Clock, EvidenceSpan, Hasher, JsonValue, ModelState, PolicyProfile, SemanticEntailmentResult, TrainInput } from "./types.js";
 import { clamp01, createClock, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createLanguageInductionEngine, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";

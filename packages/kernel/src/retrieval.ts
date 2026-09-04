@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan, GraphSlice, Hasher, JsonValue, RetrievalRole } from "./types.js";
 import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
 import { featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Claim, EpistemicForce, EvidenceId, EvidenceSpan, FieldState, GraphNode, Hasher, JsonValue, ProofGraphEdge, ProofGraphNode } from "./types.js";
 import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { assessStabilityAdjustedSupport, causalMinimumCoverCoding, hoeffdingLcb } from "./causal-math.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -1684,7 +1686,9 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        information_label jsonb
      )
      ON CONFLICT(id) DO UPDATE SET
-       status=EXCLUDED.status,
+       -- Re-observing the same bytes is not a reason to unlearn them: a span the owner promoted stays
+       -- promoted, so asking again after confirming a source cannot silently re-quarantine it.
+       status=CASE WHEN ev.status='promoted' THEN ev.status ELSE EXCLUDED.status END,
        alpha=GREATEST(ev.alpha, EXCLUDED.alpha),
        trust_vector=ev.trust_vector || EXCLUDED.trust_vector,
        provenance_json=ev.provenance_json || EXCLUDED.provenance_json,
@@ -2103,7 +2107,7 @@ function uniquePostgresStrings(values: readonly string[]): string[] {
 function createQuarantineStore(storage: PostgresStorageAdapter): QuarantineStore {
   return {
     async put(source) {
-      await storage.query(`INSERT INTO ${storage.table("quarantine_sources")}(id,source_id,source_version_id,uri,content_hash,media_type,fetched_at,trust_vector,permission_vector,license_hint,decision,decision_json) VALUES($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7/1000.0),$8::jsonb,$9::jsonb,$10,$11,$12::jsonb) ON CONFLICT(id) DO UPDATE SET decision=EXCLUDED.decision, decision_json=EXCLUDED.decision_json`, [source.id, source.sourceId, source.sourceVersionId, source.uri, source.contentHash, source.mediaType, source.fetchedAt, JSON.stringify(source.trustVector), JSON.stringify(source.permissionVector), source.licenseHint ?? null, source.decision, JSON.stringify(source.decisionJson ?? null)]);
+      await storage.query(`INSERT INTO ${storage.table("quarantine_sources")} AS quarantine(id,source_id,source_version_id,uri,content_hash,media_type,fetched_at,trust_vector,permission_vector,license_hint,decision,decision_json) VALUES($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7/1000.0),$8::jsonb,$9::jsonb,$10,$11,$12::jsonb) ON CONFLICT(id) DO UPDATE SET decision=CASE WHEN quarantine.decision <> 'pending' THEN quarantine.decision ELSE EXCLUDED.decision END, decision_json=CASE WHEN quarantine.decision <> 'pending' THEN quarantine.decision_json ELSE EXCLUDED.decision_json END`, [source.id, source.sourceId, source.sourceVersionId, source.uri, source.contentHash, source.mediaType, source.fetchedAt, JSON.stringify(source.trustVector), JSON.stringify(source.permissionVector), source.licenseHint ?? null, source.decision, JSON.stringify(source.decisionJson ?? null)]);
     },
     async get(id) {
       const rows = await storage.query<QuarantineRow>(`SELECT * FROM ${storage.table("quarantine_sources")} WHERE id=$1`, [id]);

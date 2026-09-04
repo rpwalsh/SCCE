@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { EXTENSION_PROTOCOL_SCHEMA, parseExtensionMessage, parseReadyResponse, parseWorkspaceAnswerResponse, parseWorkspaceIngestResponse } from "../protocol.js";
 

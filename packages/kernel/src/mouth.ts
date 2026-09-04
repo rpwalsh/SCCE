@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorrectionRuleRecord, WordingRealizerPort } from "./storage.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
@@ -404,6 +406,8 @@ export interface SpeakInput {
   targetLanguage?: LanguageId;
   /** Formal language this turn's artifact is written in, when the request named one. */
   codeLanguage?: string;
+  /** Judges a candidate wording against this turn's evidence, so faithfulness is meaning, not vocabulary. */
+  meaningVerifier?: (text: string) => { support: number; contradiction: number };
   targetScript?: ScriptId;
   style?: StyleProfile;
   styleProfileId?: StyleProfileId;
@@ -922,8 +926,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const codeRealizerCandidate = input.codeLanguage
         ? scoredCandidates.find(candidate => candidate.id.startsWith("candidate:generated:code:") && !candidate.forbiddenHits.length)
         : undefined;
-      const selected = plannerSelectedCandidate ??
-        codeRealizerCandidate ??
+      const groundedRealizerCandidate = !creativeRequested && !sourcePreservationRequested
+        ? scoredCandidates.find(candidate => candidate.id.startsWith("candidate:generated:realizer:") && !candidate.forbiddenHits.length)
+        : undefined;
+      const selected = codeRealizerCandidate ??
+        groundedRealizerCandidate ??
+        plannerSelectedCandidate ??
         verifiedRealizerCandidate ??
         realizerInventionCandidate ??
         semanticGraphCandidate ??
@@ -1030,6 +1038,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       let outputSurfaceText = protectedSelectedSurface
         ? unmarkedOutputSurfaceText
         : applyProofSurfaceMarker(unmarkedOutputSurfaceText, proofSurface, { exposeMarker: Boolean(input.style?.exposeProofTerms), preserveFormatting: preserveRequestedFormat });
+      // Reciting a passage is not answering it. When the surface is the source verbatim, it is cut back to what
+      // the request actually asked for; the passage stays reachable through the citation.
+      const recomposed = !input.codeLanguage && !creativeRequested && !sourcePreservationRequested
+        ? recomposedFromSource(outputSurfaceText, input)
+        : undefined;
+      if (recomposed) outputSurfaceText = recomposed;
       let outputSurfacePreservation = outputSurfaceText === protectedSurfaceText ? protectedSurfacePreservation : semanticPreservation({ text: outputSurfaceText, plan, entailment: input.entailment });
       let emittedSurfaceEnergy = scoreSurfaceEnergy({
         id: selected?.id ?? "candidate:generated:emitted-surface",
@@ -5418,6 +5432,171 @@ function importSummarySurfaceText(input: SpeakInput): string {
  * direct-evidence join meets. A realizer can therefore lose on quality,
  * never smuggle a claim.
  */
+/**
+ * The grounded sentence this turn already settled on, expressed as a fact the realizer can speak. Its subject
+ * is the source's own title, so nothing outside the cited span enters the wording. Pure.
+ */
+/** Below this there is no sentence to reword, only a fragment. */
+const EXCERPT_PARAPHRASE_FLOOR = 24;
+
+/**
+ * Faithfulness as meaning rather than vocabulary: the draft is put back through this turn's own entailment
+ * against the same evidence, and the invariants a rewording must never move (numbers, and the names the facts
+ * assert) have to survive it. A paraphrase that says the same thing in different words passes; one that drops
+ * a number, renames a subject, or contradicts the source does not. Falls back to the caller's own judgement
+ * only when no verifier was supplied.
+ */
+/** Case is not evidence. A digit- or symbol-bearing unit is the same unit in every script, so that is what a
+ *  wording may not invent; whether a name belongs is settled by entailment, not by how it is written. Pure. */
+function fabricationCheckable(symbol: { kind: "number" | "symbol" | "entity" }): boolean {
+  return symbol.kind !== "entity";
+}
+
+/** Comparison folds case where a script has it and is unchanged where it does not. Pure. */
+function foldedContains(haystack: string, needle: string): boolean {
+  return containsSurface(haystack.toLocaleLowerCase(), needle.toLocaleLowerCase());
+}
+
+/** Only a passage-length surface is a recitation; a short factual span is simply the answer. */
+const VERBATIM_RECITATION_FLOOR = 160;
+
+/** Punctuation and spacing are cleaned on the way out, so recitation is recognised by letters and digits alone. Pure. */
+function recitationKey(text: string): string {
+  let out = "";
+  for (const char of text.toLocaleLowerCase().normalize("NFKC")) {
+    if (isLetterChar(char) || isDigitChar(char)) out += char;
+  }
+  return out;
+}
+
+/** A surface carrying a source passage whole is the source speaking, not the answer. Pure. */
+function surfaceIsVerbatimSource(text: string, input: SpeakInput): boolean {
+  const key = recitationKey(text);
+  if (collapseWhitespace(text).length < VERBATIM_RECITATION_FLOOR) return false;
+  const sources = [
+    String(input.selectedCandidate?.answer ?? ""),
+    ...input.evidence.filter(span => span.status === "promoted").map(span => String(span.text || span.textPreview || ""))
+  ];
+  return sources.some(source => {
+    const sourceKey = recitationKey(source);
+    return sourceKey.length > 0 && (sourceKey.includes(key) || key.includes(sourceKey));
+  });
+}
+
+/** Brackets are punctuation, not a language's grammar, so this reads the same in every script. An aside the
+ *  caller judges to carry content stays; only an empty one is cut. Pure. */
+function withoutBracketedAsides(text: string, keep: (content: string) => boolean): string {
+  const opens = new Map([["(", ")"], ["[", "]"], ["（", "）"], ["【", "】"]]);
+  let out = "";
+  let depth = 0;
+  let aside = "";
+  let opener = "";
+  const closers: string[] = [];
+  for (const char of text) {
+    const close = opens.get(char);
+    if (close) {
+      if (depth === 0) { opener = char; aside = ""; }
+      else aside += char;
+      closers.push(close);
+      depth++;
+      continue;
+    }
+    if (depth > 0 && char === closers[closers.length - 1]) {
+      closers.pop();
+      depth--;
+      if (depth === 0) { if (keep(aside)) out += opener + aside + char; }
+      else aside += char;
+      continue;
+    }
+    if (depth > 0) aside += char;
+    else out += char;
+  }
+  return closeSpacingAfterCut(collapseWhitespace(out));
+}
+
+/** Cutting an aside leaves a space stranded before the punctuation that followed it. Pure. */
+function closeSpacingAfterCut(text: string): string {
+  const trailing = new Set([",", ".", ";", ":", "!", "?", ")", "]", "、", "。", "，", "；", "：", "！", "？"]);
+  const chars = [...text];
+  let out = "";
+  for (let index = 0; index < chars.length; index++) {
+    const char = chars[index] ?? "";
+    if (char === " " && trailing.has(chars[index + 1] ?? "")) continue;
+    out += char;
+  }
+  return out;
+}
+
+/** The request's own words decide which sentences survive; meaning decides whether the cut may be spoken. Pure. */
+function recomposedFromSource(text: string, input: SpeakInput): string | undefined {
+  if (!surfaceIsVerbatimSource(text, input)) return undefined;
+  const units = mouthCoverageUnits(input);
+  const covers = (sentence: string) => units.some(unit => containsSurface(sentence.toLocaleLowerCase(), unit.toLocaleLowerCase()));
+  // An aside carrying a number, a code, or a word the request asked about is content, and content is never cut.
+  const trimmedText = withoutBracketedAsides(text, content =>
+    covers(content) || invariantSymbols(content).some(symbol => symbol.kind !== "entity"));
+  const sentences = splitUnicodeSurfaceSentences(trimmedText).map(sentence => sentence.trim()).filter(Boolean);
+  if (!sentences.length) return undefined;
+  // A continuation attaches to what precedes it, so a sentence answering the request carries the next one along.
+  const covered = sentences.map((sentence, index) => index === 0 || covers(sentence));
+  const kept = sentences.filter((_, index) => covered[index] === true || covered[index - 1] === true);
+  const candidate = tidySurfaceText(kept.join(" ")).trim();
+  if (!candidate || candidate === collapseWhitespace(text)) return undefined;
+  if (!structurallyCompleteSurface(candidate)) return undefined;
+  if (units.length && !covers(candidate)) return undefined;
+  return meaningSurvives(candidate, sourceExcerptFacts(input), input) ? candidate : undefined;
+}
+
+function meaningSurvives(surface: string, facts: readonly SemanticAnswerFact[], input: SpeakInput): boolean {
+  const verifier = input.meaningVerifier;
+  if (!verifier) return true;
+  // Leaving a date out is not a falsehood; putting in one the evidence never carried is. So a wording is
+  // checked for symbols it invents, not for symbols it declines to repeat.
+  const licensed = new Set(
+    facts.flatMap(fact => invariantSymbols([fact.subject, fact.object].filter(Boolean).join(" ")).map(symbol => symbol.text))
+  );
+  for (const symbol of invariantSymbols(surface).filter(fabricationCheckable)) {
+    if (![...licensed].some(text => foldedContains(text, symbol.text) || foldedContains(symbol.text, text))) return false;
+  }
+  const verdict = verifier(surface);
+  return verdict.contradiction < MEANING_CONTRADICTION_CEILING && verdict.support >= MEANING_SUPPORT_FLOOR;
+}
+
+const MEANING_SUPPORT_FLOOR = 0.3;
+const MEANING_CONTRADICTION_CEILING = 0.45;
+
+/** An identifier is not a surface: opaque ids carry no wording a sentence can be built from. Pure. */
+function factHasSpeakableSurface(fact: SemanticAnswerFact): boolean {
+  const speakable = (value: string | undefined) => {
+    const text = String(value ?? "").trim();
+    if (!text) return false;
+    return !/^[\p{L}_]+_[0-9a-f]{12,}$/u.test(text);
+  };
+  return speakable(fact.subject) && speakable(fact.object) && speakable(fact.predicate);
+}
+
+function sourceExcerptFacts(input: SpeakInput): SemanticAnswerFact[] {
+  const candidate = input.selectedCandidate;
+  const excerpt = String(candidate?.answer ?? "").trim();
+  if (!candidate || !excerpt || !candidate.evidenceIds.length) return [];
+  // Licensing permits only the excerpt's own words, so there is nothing to gain on a short, already clean
+  // sentence and the model call would cost seconds to return the same text. A long excerpt can still be
+  // shortened within its own vocabulary, which is worth asking for.
+  if (excerpt.length < EXCERPT_PARAPHRASE_FLOOR) return [];
+  const span = input.evidence.find(item => candidate.evidenceIds.map(String).includes(String(item.id)));
+  if (!span || span.status !== "promoted") return [];
+  const provenance = jsonRecord(span.provenance);
+  const metadata = jsonRecord(provenance.metadata);
+  const subject = stringFromJson(provenance.title) || stringFromJson(metadata.title) || "";
+  if (!subject) return [];
+  return [{
+    subject,
+    predicate: "states",
+    object: excerpt.slice(0, 1200),
+    evidenceIds: candidate.evidenceIds.map(String)
+  } as SemanticAnswerFact];
+}
+
 async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan, invention = false, codeLanguage?: string): Promise<SurfaceCandidate[]> {
   const realizer = input.wordingRealizer;
   if (!realizer) return [];
@@ -5429,12 +5608,23 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
     .filter(fact => !invention || (Boolean(fact.subject) && containsSurface(requestText, fact.subject ?? "")))
     .slice(0, 6);
   // An artifact request stands on its compiler, so it needs no facts to be answerable.
-  if (!facts.length && !invention && !codeLanguage) return [];
+  // A grounded answer that came from a source excerpt has no fact triples, which used to leave the realizer
+  // with nothing and make assist mode identical to native on ordinary questions. The excerpt itself is the
+  // fact: paraphrasing it stays licensed, because every word it may use comes from that sentence.
+  // A fact whose predicate or object is an internal identifier says nothing a sentence can be built from.
+  // Handing those to a realizer produced fluent nonsense (a Lovelace question answered in Indonesian), so a
+  // fact only counts when its parts are surfaces; otherwise the grounded sentence is the fact.
+  const speakableFacts = facts.filter(factHasSpeakableSurface);
+  const groundedFacts = speakableFacts.length ? speakableFacts : sourceExcerptFacts(input);
+  // A whole sentence is not a clause-sized argument: the argument check belongs to short fact triples, and a
+  // rewording of an excerpt is judged by whether it still means the same thing.
+  const wordedFromExcerpt = speakableFacts.length === 0 && groundedFacts.length > 0;
+  if (!groundedFacts.length && !invention && !codeLanguage) return [];
   let surfaces: readonly string[];
   try {
     surfaces = await realizer.realize({
       requestText,
-      facts: facts.map(fact => ({
+      facts: groundedFacts.map(fact => ({
         subject: fact.subject ?? "",
         predicate: fact.predicate ?? "",
         object: fact.object ?? "",
@@ -5445,21 +5635,24 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
       maxSentences: invention ? 8 : 4,
       closedClassWords: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })],
       ...(invention ? { invention: true } : {}),
-      ...(codeLanguage ? { codeLanguage } : {})
+      ...(codeLanguage ? { codeLanguage } : {}),
+      ...(input.meaningVerifier && !invention && !codeLanguage ? { meaningVerifiedDownstream: true } : {})
     });
   } catch {
     // A realizer failure must never cost the turn -- the pool simply
     // proceeds without realizer candidates.
     return [];
   }
-  const evidenceIds = [...new Set(facts.flatMap(fact => (fact.evidenceIds ?? []).map(String)))] as EvidenceSpan["id"][];
+  const evidenceIds = [...new Set(groundedFacts.flatMap(fact => (fact.evidenceIds ?? []).map(String)))] as EvidenceSpan["id"][];
   return surfaces
     .filter((surface): surface is string => typeof surface === "string" && surface.trim().length > 0)
     .slice(0, 3)
     .filter(surface =>
       codeLanguage
         ? surface.trim().length > 0
-        : structurallyCompleteSurface(surface) && (invention || realizerFactArgumentsIntact(surface, facts)))
+        : structurallyCompleteSurface(surface)
+          && (invention || wordedFromExcerpt || realizerFactArgumentsIntact(surface, groundedFacts))
+          && (invention || codeLanguage !== undefined || meaningSurvives(surface, groundedFacts, input)))
     .map((surface, index) => ({
       id: codeLanguage
         ? `candidate:generated:code:realizer:${realizer.id}:${index}`
@@ -5476,7 +5669,7 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
       audit: toJsonValue({
         schema: "scce.mouth.wording_realizer.v1",
         realizerId: realizer.id,
-        factKeys: facts.map(fact => semanticAnswerFactKey(fact)),
+        factKeys: groundedFacts.map(fact => semanticAnswerFactKey(fact)),
         evidenceIds: evidenceIds.map(String),
         externalFactCertification: !invention,
         invention
@@ -6506,6 +6699,16 @@ function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {
   return aligned ? [] : ["surface.reject.creative_semantic_drift"];
 }
 
+/**
+ * A bracket whose first element is empty, left by a source template that rendered to nothing: "(; 10 December
+ * 1815" should read "(10 December 1815". Punctuation shape only, so it holds in any script, and it removes no
+ * word from the surface. Real effect beyond reading: the runtime coherence debris check treats "(;" as source
+ * leakage and demotes an otherwise well-grounded answer to insufficient support. Pure.
+ */
+function collapseEmptyBracketLead(text: string): string {
+  return text.replace(/([([{\u3010\uff08])\s*[;,:\u3001\uff0c\uff1b]+\s*/gu, "$1");
+}
+
 function repairSurfaceReadability(input: { text: string; plan: SurfacePlan; discoursePlan: DiscoursePlan; preservation: { missingTerms: string[] } }): SurfaceRepairResult {
   const before = tidySurface(input.text);
   const deduped = collapseRepeatedSurfaceUnits(before);
@@ -6516,7 +6719,7 @@ function repairSurfaceReadability(input: { text: string; plan: SurfacePlan; disc
     ? sentenceDeduped
     : repairSurfaceDelimiterBalance(sentenceDeduped);
   const boundaryLimited = collapseRepeatedInlineBoundaries(delimiterBalanced, sentenceBoundaryForInput(input.plan), boundaryFormsForKind(input.plan.boundaryProfile, "inline"));
-  const normalized = removeEmptyLines(boundaryLimited);
+  const normalized = removeEmptyLines(collapseEmptyBracketLead(boundaryLimited));
   const requiredTerms = input.plan.requiredTerms.filter(term => term.weight >= 0.45).map(term => term.text);
   const requiredSymbols = input.plan.orderedPoints.flatMap(point => invariantSymbols(point.proposition)).map(symbol => symbol.text);
   const preservesTerms = requiredTerms.every(term => containsSurface(normalized, term) || !containsSurface(before, term));

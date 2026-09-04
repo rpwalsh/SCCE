@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { featureSet, type ContentHash, type EvidenceId, type EvidenceSpan, type SourceId, type SourceVersionId } from "../index.js";
 import {

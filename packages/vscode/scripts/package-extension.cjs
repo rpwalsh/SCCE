@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 const fs = require("node:fs");
 const path = require("node:path");
 const { createVSIX } = require("@vscode/vsce");

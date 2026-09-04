@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { BoundaryProfile } from "./control-plane-profiles.js";
 import type { MeterPattern, RegisterVector } from "./correction-memory.js";
 import type { EvidenceId, JsonValue } from "./types.js";

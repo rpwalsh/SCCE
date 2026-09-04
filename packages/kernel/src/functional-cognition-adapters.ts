@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CapabilityPlanPreview, CapabilityScore } from "./tool-cognition.js";
 import type { CounterfactualTrace } from "./functional-cognition.js";
 import { clamp01 } from "./primitives.js";

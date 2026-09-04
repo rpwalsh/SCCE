@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
 import type { SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
