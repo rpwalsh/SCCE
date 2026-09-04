@@ -93,6 +93,7 @@ export async function trainStoredCorpusConstructions(
   let stoppedByHeapSafetyBound = false;
   let pending: string[] = [];
   let pendingSourceVersionIds: string[] = [];
+  let pendingFamilyRanges: { start: number; end: number; sourceFamilyId: string }[] = [];
   let pendingBytes = 0;
 
   const trainPending = async (): Promise<void> => {
@@ -101,8 +102,10 @@ export async function trainStoredCorpusConstructions(
     const text = pending.join("\n\n");
     const articleCount = pending.length;
     const currentSourceVersionIds = pendingSourceVersionIds;
+    const currentFamilyRanges = pendingFamilyRanges;
     pending = [];
     pendingSourceVersionIds = [];
+    pendingFamilyRanges = [];
     const currentBytes = pendingBytes;
     pendingBytes = 0;
     if (currentIndex < startBatchIndex) return;
@@ -126,6 +129,7 @@ export async function trainStoredCorpusConstructions(
         ngramVocabularyLimit: 4096,
         creativeEventCompiler: compiler,
         graphSnapshotSourceVersionIds: currentSourceVersionIds,
+        sourceFamilyRanges: currentFamilyRanges,
         alignmentPromotionObservations: alignmentPromotionMemory,
         alignmentCalibrationObservations: alignmentCalibrationMemory,
         corpusMetadata: {
@@ -166,6 +170,10 @@ export async function trainStoredCorpusConstructions(
       continue;
     }
     if (!text) continue;
+    // Each article keeps its own family: collapsing a batch into one synthetic source left the held-out gate
+    // with a single family to draw on, which no amount of training could turn into independent evidence.
+    const start = pending.reduce((total, item) => total + item.length + 2, 0);
+    pendingFamilyRanges.push({ start, end: start + text.length, sourceFamilyId: String(version.sourceVersionId) });
     pending.push(text);
     pendingSourceVersionIds.push(String(version.sourceVersionId));
     pendingBytes += Buffer.byteLength(text, "utf8");
