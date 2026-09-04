@@ -976,7 +976,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               // creative candidate's embedded factual premise -- it passed
               // on main with this exact conditional before any of this
               // session's changes.
-              sourceAnchoringRequired: requestedAuthority !== "creative",
+              // A thin creative margin still retrieves anchored, so memory can decide the authority (see memoryDecidesAuthority).
+              sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
               residentOnly: fastRuntimeBudget
             }),
           () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText)
@@ -3285,9 +3286,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       await deps.storage.constructs.putValidation(validation);
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
+      // A grounded label needs a spoken surface: when the mouth admitted none, the turn is insufficient support.
+      const groundedLabel = runtimeCoherence.assistantForceAfter === "source_grounded_answer" || runtimeCoherence.assistantForceAfter === "certified_fact";
       const emission = {
         ...rawEmission,
-        assistantForce: runtimeCoherence.assistantForceAfter
+        assistantForce: groundedLabel && !rawEmission.answer.trim() ? "insufficient_support" as const : runtimeCoherence.assistantForceAfter
       };
       // Fired exactly once per non-recursive turn, right here: this is the
       // earliest point where emission.answer is settled -- past
