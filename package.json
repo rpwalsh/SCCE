@@ -71,7 +71,8 @@
     "mcp:test": "pnpm --dir tools/scce-dev-mcp test",
     "mcp:verify": "pnpm mcp:build && pnpm mcp:test",
     "vscode:test:host": "pnpm --dir packages/vscode test:host",
-    "vscode:package": "pnpm --dir packages/vscode package"
+    "vscode:package": "pnpm --dir packages/vscode package",
+    "maintenance:accumulate-relations": "node tools/accumulate-relation-observations.mjs"
   },
   "dependencies": {},
   "devDependencies": {

@@ -39,7 +39,8 @@ import {
   graphFromStructuredSemanticCandidates
 } from "./typed-ingest.js";
 import {
-  compileRelationPromotionModel
+  compileRelationPromotionModel,
+  relationObservationsFromCandidates
 } from "./relation-promotion.js";
 import { compileOpaqueRoleModel } from "./opaque-role-induction.js";
 import { compileRoleSurfaceOrderModel } from "./role-surface-order.js";
@@ -580,10 +581,28 @@ export function createIngestionRuntime(options: {
         events.push(await append(eventFactory.create({ episodeId, typeId: "EvidenceLinked", payload: { sourceVersionId, diagnostics: extracted.diagnostics } })));
         });
       }
+      // Independence is a property of the corpus, not of one batch: the sources that supported a relation in
+      // earlier runs count here too, or a corpus ingested a few files at a time can never promote anything.
+      const priorRelationObservations = deps.storage.relationObservations
+        ? await deps.storage.relationObservations.list({}).catch(() => [])
+        : [];
       const relationPromotionModel = compileRelationPromotionModel({
         candidates: relationCandidates,
+        priorObservations: priorRelationObservations.map(row => ({
+          candidateId: row.candidateId,
+          relationSeedId: row.relationSeedId,
+          channel: row.channel as StructuredSemanticCandidate["channel"],
+          sourceId: row.sourceId,
+          sourceFamilyId: row.sourceFamilyId,
+          signature: row.signature
+        })),
         hasher
       });
+      if (deps.storage.relationObservations && relationCandidates.length) {
+        await deps.storage.relationObservations.put(
+          relationObservationsFromCandidates(relationCandidates).map(row => ({ ...row, observedAt: clock.now() }))
+        );
+      }
       const opaqueRoleModel = compileOpaqueRoleModel({
         candidates: relationCandidates,
         promotionModel: relationPromotionModel,

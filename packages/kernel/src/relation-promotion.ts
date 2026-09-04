@@ -51,7 +51,7 @@ export interface RelationPromotionModel {
   audit: JsonValue;
 }
 
-interface RelationObservation {
+export interface RelationObservation {
   candidateId: string;
   relationSeedId: string;
   channel: SemanticCandidateChannel;
@@ -87,10 +87,18 @@ const MIN_FIT_SOURCES = 2;
  */
 export function compileRelationPromotionModel(input: {
   candidates: readonly StructuredSemanticCandidate[];
+  priorObservations?: readonly RelationObservation[];
   hasher?: Hasher;
 }): RelationPromotionModel {
   const hasher = input.hasher ?? createHasher();
-  const observations = relationObservations(input.candidates);
+  // A relation earns its identity across independent sources, and sources arrive one ingestion at a time. Scoring
+  // only the batch in hand meant a corpus of thousands of documents was judged four documents at a time, and no
+  // relation ever reached the independence the gate asks for. Prior runs' observations are the same sufficient
+  // statistics, deduplicated the same way, so carrying them forward changes what is known, not how it is judged.
+  const observations = mergeRelationObservations(
+    relationObservations(input.candidates),
+    input.priorObservations ?? []
+  );
   const relationSeedIds = [...new Set(observations.map(row => row.relationSeedId))].sort();
   const sourceFamilyIds = [...new Set(observations.map(row => row.sourceFamilyId))].sort();
   const split = sourceDisjointSplit(sourceFamilyIds, hasher);
@@ -207,6 +215,35 @@ export function relationPromotionDecision(
   relationSeedId: string
 ): RelationPromotionDecision | undefined {
   return model?.decisions.find(decision => decision.relationSeedId === relationSeedId);
+}
+
+/** Observations from prior runs join this run's, deduplicated on the identity that makes a source independent. Pure. */
+export function mergeRelationObservations(
+  current: readonly RelationObservation[],
+  prior: readonly RelationObservation[]
+): RelationObservation[] {
+  const unique = new Map<string, RelationObservation>();
+  for (const row of [...prior, ...current]) {
+    unique.set(canonicalStringify({
+      relationSeedId: row.relationSeedId,
+      channel: row.channel,
+      sourceFamilyId: row.sourceFamilyId,
+      signature: row.signature
+    }), row);
+  }
+  return [...unique.values()].sort((left, right) =>
+    left.sourceFamilyId.localeCompare(right.sourceFamilyId)
+    || left.sourceId.localeCompare(right.sourceId)
+    || left.relationSeedId.localeCompare(right.relationSeedId)
+    || left.signature.localeCompare(right.signature)
+    || left.candidateId.localeCompare(right.candidateId));
+}
+
+/** This run's candidates as promotion observations, for the store that carries them to the next run. Pure. */
+export function relationObservationsFromCandidates(
+  candidates: readonly StructuredSemanticCandidate[]
+): RelationObservation[] {
+  return relationObservations(candidates);
 }
 
 function relationObservations(candidates: readonly StructuredSemanticCandidate[]): RelationObservation[] {

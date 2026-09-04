@@ -112,7 +112,7 @@ export function createRuntimeGraphRetrieval(options: {
   failures: string[];
   cacheMs: number;
   kernelTrace(event: Parameters<typeof traceEvent>[1]): void;
-  sourceAnchorSemanticFramesCached(options?: { residentOnly?: boolean }): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>>;
+  sourceAnchorSemanticFramesCached(options?: { residentOnly?: boolean }): Promise<Array<{ frame: SemanticFrameRecord; surface?: string; surfaceUnits: string[] }>>;
 }) {
   const { deps, clock, hasher, candidates, failures, kernelTrace, sourceAnchorSemanticFramesCached } = options;
   const surfaceLanguageMemoryCacheMs = options.cacheMs;
@@ -159,6 +159,7 @@ export function createRuntimeGraphRetrieval(options: {
   const hotNeighborhoodNodeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_NODES", 640);
 
   const hotNeighborhoodEdgeLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EDGES", 1280);
+  const hotNeighborhoodMaxNodeBytes = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_MAX_NODE_BYTES", 32_768);
 
   const hotNeighborhoodEvidenceLimit = positiveRuntimeInt("SCCE_HOT_NEIGHBORHOOD_EVIDENCE", 320);
 
@@ -519,9 +520,12 @@ export function createRuntimeGraphRetrieval(options: {
   }
 
 
+  // "Resident" has to mean already here. Returning the in-flight warm-up made a turn wait for a cache it did
+  // not ask for: measured 9.1s of a 11.4s turn spent awaiting a warm-up started by the previous turn, most of it
+  // idle on the connection. The load still runs, and the turn that started it still benefits; a turn that only
+  // wanted to peek takes the durable path instead of paying for someone else's cache.
   async function hotNeighborhoodIfResident(): Promise<HotGraphNeighborhood | undefined> {
-    if (hotNeighborhood) return hotNeighborhood;
-    return hotNeighborhoodLoad;
+    return hotNeighborhood;
   }
 
 
@@ -638,6 +642,7 @@ export function createRuntimeGraphRetrieval(options: {
     if (!anchors.length) return { evidence: [], semanticFrameBoundEvidenceIds: [] };
     const frames = await sourceAnchorSemanticFramesCached({ residentOnly }).catch(() => []);
     const semanticFrameBoundEvidenceIds = uniqueKernelStrings(frames
+      .filter(row => frameSurfaceCouldCarryAnchor(row.surface, anchors))
       .filter(row => semanticFrameMatchesSourceAnchor(row.surfaceUnits, anchors))
       .flatMap(row => row.frame.evidenceIds.map(String)))
       .slice(0, 64);
@@ -648,6 +653,17 @@ export function createRuntimeGraphRetrieval(options: {
     };
   }
 
+
+  /** A cheap containment test on the raw surface, so only real candidates pay for being split into units. */
+  function frameSurfaceCouldCarryAnchor(surface: string | undefined, anchors: readonly string[]): boolean {
+    if (surface === undefined) return true;
+    if (!surface) return false;
+    const folded = surface.toLocaleLowerCase();
+    return anchors.some(anchor => {
+      const units = splitPriorUnits(anchor).filter(Boolean);
+      return units.length > 0 && folded.includes(String(units[0]).toLocaleLowerCase());
+    });
+  }
 
   function semanticFrameMatchesSourceAnchor(surfaceUnits: readonly string[], anchors: readonly string[]): boolean {
     if (!surfaceUnits.length) return false;
@@ -777,7 +793,8 @@ export function createRuntimeGraphRetrieval(options: {
       const graph = await deps.storage.graph.getSlice({
         limitNodes: hotNeighborhoodNodeLimit,
         limitEdges: hotNeighborhoodEdgeLimit,
-        allowLatestFallback: true
+        allowLatestFallback: true,
+        maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
       });
       if (epoch !== runtimeCacheEpoch || !graph.nodes.length) return undefined;
       const closureCapacity = hotNeighborhoodNodeLimit <= 1

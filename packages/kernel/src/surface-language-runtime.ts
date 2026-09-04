@@ -204,7 +204,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   let sourceAnchorSemanticFrameCache: {
     loadedAt: number;
-    value: Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>;
+    value: Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>;
   } | undefined;
 
   type ResidentOnlyOptions = {
@@ -788,7 +788,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   async function sourceAnchorSemanticFramesCached(
     cacheOptions: ResidentOnlyOptions = {}
-  ): Promise<Array<{ frame: SemanticFrameRecord; surfaceUnits: string[] }>> {
+  ): Promise<Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>> {
     const now = clock.now();
     if (sourceAnchorSemanticFrameCache
       && (cacheOptions.residentOnly
@@ -797,12 +797,20 @@ export function createSurfaceLanguageRuntime(options: {
     }
     if (cacheOptions.residentOnly) return residentRuntimeNotWarm("semantic-frames");
     const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 });
+    // Splitting every frame's surface into units cost seconds on a corpus of thousands of frames, and a request
+    // only ever looks at the handful its anchors could match. The surface is kept; the units are derived on the
+    // first read and remembered, so the same value is served either way.
     const value = frames.map(frame => {
       const record = jsonRecord(frame.frameJson);
       const surface = sourceTextSurface(kernelString(record.preview) ?? kernelString(record.text) ?? "", 6000);
+      let units: string[] | undefined;
       return {
         frame,
-        surfaceUnits: surface ? splitPriorUnits(normalizePriorKey(surface)).filter(Boolean) : []
+        surface,
+        get surfaceUnits(): string[] {
+          units ??= surface ? splitPriorUnits(normalizePriorKey(surface)).filter(Boolean) : [];
+          return units;
+        }
       };
     });
     sourceAnchorSemanticFrameCache = { loadedAt: now, value };
