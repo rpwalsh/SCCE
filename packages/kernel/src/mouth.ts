@@ -1288,7 +1288,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const deterministicEvidenceIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
       const deterministicSpans = input.evidence.filter(span => deterministicEvidenceIds.has(String(span.id)));
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
-        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits));
+        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? ""));
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
         && (terminalRuntimeMotionSelected
           || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
@@ -6436,7 +6436,8 @@ function repairPreservation(input: { text: string; plan: SurfacePlan; preservati
 
 /** The request's content units the mouth holds an answer to: no derived closed-class word, nothing short enough for the fuzzy matcher to confuse. Pure. */
 function mouthCoverageUnits(input: SpeakInput): string[] {
-  if (!input.requestText || sessionAssertionTurn(input)) return [];
+  // A translation carries the source, not the request; it is judged by preservation, not coverage.
+  if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
   const closedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
   return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
 }
@@ -6455,7 +6456,7 @@ function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: S
   const bound = input.evidence.filter(span => ids.has(String(span.id)));
   const spans = bound.length ? bound : input.evidence;
   if (!spans.length) return [];
-  return spans.some(span => answerCoversRequest([text], span, units)) ? [] : ["surface.reject.request_coverage"];
+  return spans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "")) ? [] : ["surface.reject.request_coverage"];
 }
 
 /** A surface repeats the request when it echoes it or when every content unit it carries is already in the request: it adds nothing. Pure. */
