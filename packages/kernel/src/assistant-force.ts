@@ -379,6 +379,7 @@ function selectProposalForce(claims: readonly AssistantForceClaimDecision[]): As
 function reasonForProposalForce(force: AssistantForceClass): string {
   switch (force) {
     case "action_result": return "assistant_force.proposal.verified_action_result";
+    case "verified_artifact": return "assistant_force.proposal.verified_artifact";
     case "translation_answer": return "assistant_force.proposal.translated";
     case "creative_answer": return "assistant_force.proposal.invented";
     case "certified_fact": return "assistant_force.proposal.certified_direct_evidence";

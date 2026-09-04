@@ -180,6 +180,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const { binding } = await serverBoundWorkspace(activeClient);
       return activeClient.projectSummary(binding.resolvedRoot);
     })),
+    vscode.commands.registerCommand("scce.workspace.code", async () => {
+      const editor = vscode.window.activeTextEditor;
+      const relative = editor ? vscode.workspace.asRelativePath(editor.document.uri, false) : "";
+      const targetPath = await vscode.window.showInputBox({ prompt: "File to edit", value: relative });
+      if (!targetPath) return;
+      const request = await vscode.window.showInputBox({ prompt: "What should change in this file?" });
+      if (!request) return;
+      await run("workspace.code", "Edit " + targetPath, true, async activeClient => {
+        const result = await activeClient.editCode(targetPath, request);
+        const summary = result.outcome === "resolved"
+          ? "SCCE edited " + targetPath + ": the compiler accepted the change after " + result.attempts + " attempt(s)."
+          : "SCCE did not change " + targetPath + ": " + result.outcome + ". Every attempt was rolled back.";
+        if (result.outcome === "resolved") void vscode.window.showInformationMessage(summary);
+        else void vscode.window.showWarningMessage(summary);
+        return result as unknown as Record<string, unknown>;
+      });
+    }),
     vscode.commands.registerCommand("scce.workspace.ask", async () => {
       const question = await vscode.window.showInputBox({ title: "Ask SCCE about this workspace", prompt: "The question and answer will be persisted by the local SCCE runtime.", ignoreFocusOut: true });
       if (!question?.trim()) return;

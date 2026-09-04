@@ -62,6 +62,10 @@
         "title": "SCCE: Show Project Summary"
       },
       {
+        "command": "scce.workspace.code",
+        "title": "SCCE: Edit File With Compile Gate"
+      },
+      {
         "command": "scce.workspace.ask",
         "title": "SCCE: Ask About Workspace"
       },

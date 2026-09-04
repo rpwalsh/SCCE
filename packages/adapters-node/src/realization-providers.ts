@@ -20,6 +20,8 @@ export interface RealizationOutput {
   provider: string;
 }
 
+import { createTypeScriptSnippetVerifier, type CodeVerifier } from "./code-verification.js";
+
 export interface RealizationProvider {
   id: string;
   realize(request: WordingRealizerRequest): Promise<RealizationOutput[]>;
@@ -47,9 +49,14 @@ export function verifySurfaceAgainstFacts(surface: string, facts: readonly Wordi
 
 const CODE_LANGUAGES = new Set(["typescript", "javascript", "python", "rust", "go", "java", "c", "cpp", "csharp", "ruby", "php", "kotlin", "swift", "shell", "sql"]);
 
-/** Code requests are verified by the code mouth's compile gate, not by prose word licensing. */
-export function isCodeRequest(request: Pick<WordingRealizerRequest, "targetLanguage">): boolean {
-  return CODE_LANGUAGES.has(String(request.targetLanguage ?? "").toLocaleLowerCase());
+/** Code requests are verified by a compiler, not by prose word licensing. */
+export function isCodeRequest(request: Pick<WordingRealizerRequest, "targetLanguage" | "codeLanguage">): boolean {
+  return CODE_LANGUAGES.has(String(request.codeLanguage ?? request.targetLanguage ?? "").toLocaleLowerCase());
+}
+
+/** A request that carries the current file text asks for a rewrite of it; without one it asks for a new artifact. */
+export function isWholeFileCodeRequest(request: WordingRealizerRequest): boolean {
+  return request.facts.some(fact => fact.predicate === "contains");
 }
 
 /** A draft cut off by the token budget keeps its complete sentences; a cut with no boundary keeps nothing. Pure. */
@@ -73,9 +80,21 @@ export interface ProviderPrompt {
 /** Request + deduplicated facts in their own language; the verifier, not the prompt, enforces faithfulness. */
 export function buildProviderPrompt(request: WordingRealizerRequest): ProviderPrompt {
   if (isCodeRequest(request)) {
-    const language = String(request.targetLanguage).toLocaleLowerCase();
+    const language = String(request.codeLanguage ?? request.targetLanguage).toLocaleLowerCase();
     const source = request.facts.find(fact => fact.predicate === "contains")?.object ?? "";
     const notes = request.facts.filter(fact => fact.predicate !== "contains" && fact.predicate !== "asks").map(fact => `${fact.subject} ${fact.predicate} ${fact.object}`);
+    if (!isWholeFileCodeRequest(request)) {
+      return {
+        system: `You write ${language}. Reply with the complete ${language} source only: no explanation, no commentary, no markdown fences. Include every import, type and helper the code needs to compile on its own.`,
+        prompt: `Request:
+${request.requestText}
+
+${notes.length ? `Context:
+${notes.join("\n")}
+
+` : ""}Source:`
+      };
+    }
     return {
       system: `You edit ${language} source files. Reply with the complete corrected file contents only: no explanation, no markdown fences, no omitted sections. Change only what the request and the compiler diagnostics require.`,
       prompt: `Request:\n${request.requestText}\n\n${notes.length ? `Compiler diagnostics and workspace facts:\n${notes.join("\n")}\n\n` : ""}Current file:\n${source}\n\nCorrected file:`
@@ -102,6 +121,10 @@ export interface OllamaProviderOptions {
   fetchImpl?: typeof fetch;
   log?: ProviderLogger;
   timeoutMs?: number;
+  /** Proves a generated artifact by compiling it; without one, code is emitted unproven. */
+  codeVerifier?: CodeVerifier;
+  /** Generation attempts for an artifact that fails its compiler. */
+  codeRepairAttempts?: number;
 }
 
 export function createOllamaProvider(options: OllamaProviderOptions): RealizationProvider {
@@ -112,29 +135,64 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
     async realize(request) {
       const facts = request.facts.filter(fact => fact.evidenceIds.length > 0);
       const invention = request.invention === true;
-      if (!facts.length && !invention) return [];
       const code = isCodeRequest(request);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : invention ? 20_000 : 8_000));
+      if (!facts.length && !invention && !code) return [];
+      const language = String(request.codeLanguage ?? request.targetLanguage ?? "").toLocaleLowerCase();
+      const generate = async (diagnostics: readonly string[]): Promise<string> => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : invention ? 20_000 : 8_000));
+        try {
+          const built = buildProviderPrompt({ ...request, facts });
+          // A failed compile is the only instruction a repair attempt needs: the compiler said what is wrong.
+          const prompt = diagnostics.length
+            ? `${built.prompt}\n\nThe previous attempt did not compile:\n${diagnostics.join("\n")}\n\nCorrected source:`
+            : built.prompt;
+          const response = await fetchImpl(`${host}/api/generate`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: options.model, system: built.system, prompt, stream: false, options: { temperature: invention ? 0.7 : 0, num_predict: code ? 2048 : invention ? 320 : 96 } }),
+            signal: controller.signal
+          });
+          if (!response.ok) return "";
+          const payload = await response.json() as { response?: string };
+          return String(payload.response ?? "");
+        } finally {
+          clearTimeout(timer);
+        }
+      };
       try {
-        const response = await fetchImpl(`${host}/api/generate`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: options.model, ...buildProviderPrompt({ ...request, facts }), stream: false, options: { temperature: invention ? 0.7 : 0, num_predict: code ? 2048 : invention ? 320 : 96 } }),
-          signal: controller.signal
-        });
-        if (!response.ok) return [];
-        const payload = await response.json() as { response?: string };
-        const raw = String(payload.response ?? "");
-        const text = code ? stripCodeFence(raw) : invention ? trimToSentenceBoundary(raw) : raw.trim();
-        if (!text.trim() || (!code && degenerateSurface(text))) return [];
+        if (code) {
+          const attempts = Math.max(1, Math.min(3, options.codeRepairAttempts ?? 2));
+          let diagnostics: readonly string[] = [];
+          let unproven: RealizationOutput | undefined;
+          for (let attempt = 1; attempt <= attempts; attempt++) {
+            const artifact = stripCodeFence(await generate(diagnostics)).trim();
+            if (!artifact) break;
+            const verification = options.codeVerifier
+              ? await options.codeVerifier.verify({ language, source: artifact })
+              : { status: "unsupported" as const, diagnostics: [] };
+            if (verification.status === "verified") {
+              return [{ text: artifact, verified: true, provider: this.id }];
+            }
+            if (verification.status === "unsupported") {
+              // Nothing proved it wrong and nothing proved it right; keep it only if no attempt ever compiles.
+              unproven ??= { text: artifact, verified: true, provider: this.id };
+              break;
+            }
+            diagnostics = verification.diagnostics;
+            options.log?.warn(`[scce] generated ${language} did not compile (attempt ${attempt}/${attempts})`);
+          }
+          // Code that failed its compiler is never returned: a broken artifact is worse than none.
+          return unproven ? [unproven] : [];
+        }
+        const raw = await generate([]);
+        const text = invention ? trimToSentenceBoundary(raw) : raw.trim();
+        if (!text.trim() || degenerateSurface(text)) return [];
         // An invention is admitted as invented; only sourced prose is word-licensed against the facts.
-        const verified = code || invention || verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
+        const verified = invention || verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
         return [{ text, verified, provider: this.id }];
       } catch {
         return [];
-      } finally {
-        clearTimeout(timer);
       }
     }
   };
@@ -214,7 +272,7 @@ export function selectRealizationPort(config: ScceRuntimeConfig, options: { log?
   const provider = realization?.provider ?? "native";
   const log = options.log ?? { info: message => console.error(`[scce] ${message}`), warn: message => console.error(`[scce] ${message}`) };
   if (provider === "ollama" && realization?.ollama) {
-    return providerAsWordingRealizer(createOllamaProvider({ host: realization.ollama.host, model: realization.ollama.model, log }));
+    return providerAsWordingRealizer(createOllamaProvider({ host: realization.ollama.host, model: realization.ollama.model, log, codeVerifier: createTypeScriptSnippetVerifier() }));
   }
   if (provider === "api" && realization?.apiProvider) {
     return providerAsWordingRealizer(createApiKeyProvider({
