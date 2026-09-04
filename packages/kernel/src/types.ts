@@ -51,6 +51,7 @@ export type AssistantForceClass =
   | "translation_answer"
   | "creative_answer"
   | "action_result"
+  | "verified_artifact"
   | "conjecture"
   | "insufficient_support";
 

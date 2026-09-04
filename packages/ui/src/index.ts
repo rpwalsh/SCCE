@@ -300,6 +300,12 @@ export function renderWorkbench(serverUrl: string): string {
       return label.charAt(0).toUpperCase() + label.slice(1).replace(/_/g, ' ');
     }
     function hideTyping() { if (typingRow) { typingRow.remove(); typingRow = null; } }
+    let runningTaskId = '';
+    function showAnswerPreview(answer) {
+      showTyping('');
+      const node = typingRow && typingRow.querySelector('#typing-phase');
+      if (node) node.textContent = String(answer).replace(/\s+/g, ' ').slice(0, 160);
+    }
     function setSending(next) {
       sending = next;
       sendButton.textContent = sending ? t('button.stop') : t('button.send');
@@ -313,7 +319,41 @@ export function renderWorkbench(serverUrl: string): string {
     }
     function answerHasSpeech(text) { return /[\\p{L}\\p{N}]/u.test(String(text || '')); }
     function turnDetail(r) {
-      return { dialogue: r.dialogue || null, proof: r.entailment?.proof || null, actionGraph: r.actionGraph || null };
+      return { dialogue: r.dialogue || null, proof: r.entailment?.proof || null, actionGraph: r.actionGraph || null, evidence: evidenceRows(r) };
+    }
+    function evidenceRows(r) {
+      return (Array.isArray(r && r.evidence) ? r.evidence : []).slice(0, 12).map(span => {
+        const provenance = (span && span.provenance) || {};
+        return {
+          id: String(span && span.id || ''),
+          title: String(provenance.title || provenance.uri || span && span.sourceVersionId || ''),
+          uri: String(provenance.uri || provenance.canonicalUri || ''),
+          excerpt: String(span && (span.textPreview || span.text) || '').replace(/\s+/g, ' ').slice(0, 240)
+        };
+      });
+    }
+    function renderEvidence(r) {
+      const tree = document.getElementById('evidence-tree');
+      if (!tree) return;
+      const rows = evidenceRows(r);
+      tree.innerHTML = '';
+      if (!rows.length) { tree.textContent = t('side.evidence.empty'); return; }
+      for (const row of rows) {
+        const item = document.createElement('div');
+        item.className = 'evidence-item';
+        const head = document.createElement('div');
+        head.className = 'evidence-title';
+        if (row.uri) {
+          const link = document.createElement('a');
+          link.href = row.uri; link.target = '_blank'; link.rel = 'noreferrer'; link.textContent = row.title || row.uri;
+          head.appendChild(link);
+        } else head.textContent = row.title || row.id;
+        const body = document.createElement('div');
+        body.className = 'evidence-excerpt';
+        body.textContent = row.excerpt;
+        item.appendChild(head); item.appendChild(body);
+        tree.appendChild(item);
+      }
     }
     function addFeedbackControls(dialogue, promptText) {
       if (!dialogue || !dialogue.conversationId) return;
@@ -528,6 +568,7 @@ export function renderWorkbench(serverUrl: string): string {
       ['session.operator_grant', t('cmd.session.operator_grant'), 'POST /api/session/operator-grant'],
       ['connectors.quota', t('cmd.connectors.quota'), 'GET /api/connectors/quota'],
       ['kernel.codebase_ingest', t('cmd.ingest.codebase'), 'POST /api/codebase/ingest'],
+      ['workspace.code', t('cmd.workspace.code'), 'POST /api/workspace/code'],
       ['workspace.init', t('cmd.workspace.init'), 'POST /api/workspace/init'],
       ['workspace.ingest', t('cmd.workspace.ingest'), 'POST /api/workspace/ingest'],
       ['workspace.ask', t('cmd.workspace.ask'), 'POST /api/workspace/ask'],
@@ -551,10 +592,24 @@ export function renderWorkbench(serverUrl: string): string {
       ['kernel.turn', t('cmd.kernel.turn'), 'POST /api/turn']
     ];
     function renderPalette(q) { const needle = q.toLowerCase(); paletteList.innerHTML = ''; commands.filter(c => (c[1] + ' ' + c[2]).toLowerCase().includes(needle)).forEach((c, i) => { const d = document.createElement('div'); d.className = 'cmd' + (i === 0 ? ' active' : ''); d.innerHTML = '<strong></strong><span></span>'; d.querySelector('strong').textContent = c[1]; d.querySelector('span').textContent = c[2]; d.onclick = () => runCommand(c[0]); paletteList.appendChild(d); }); }
+    async function editCode() {
+      const targetPath = window.prompt(t('prompt.code_path'));
+      if (!targetPath || !targetPath.trim()) return;
+      const request = window.prompt(t('prompt.code_request'));
+      if (!request || !request.trim()) return;
+      log('POST /api/workspace/code ' + targetPath);
+      const result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() });
+      inspector.textContent = JSON.stringify(result, null, 2);
+      toggleDevPanel(true);
+      add('scce', (result && result.outcome === 'resolved' ? t('code.resolved') : t('code.unchanged'))
+        .replace('{path}', targetPath.trim())
+        .replace('{outcome}', String(result && result.outcome)));
+    }
     async function runCommand(id) {
       closePalette();
       try {
         if (id === 'kernel.turn') return sendButton.click();
+        if (id === 'workspace.code') return editCode();
         if (id === 'kernel.codebase_ingest') { const p = window.prompt(t('prompt.codebase_path')); if (!p || !p.trim()) return; log('POST /api/codebase/ingest'); const r = await post('/api/codebase/ingest', { path: p.trim() }); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
         if (id === 'workspace.init') { const p = window.prompt(t('prompt.workspace_path')); if (!p || !p.trim()) return; log('POST /api/workspace/init'); const r = await post('/api/workspace/init', { path: p.trim() }); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
         if (id === 'workspace.ingest') { const p = window.prompt(t('prompt.workspace_path')); log('POST /api/workspace/ingest'); const r = await post('/api/workspace/ingest', p && p.trim() ? { path: p.trim() } : {}); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
@@ -577,22 +632,34 @@ export function renderWorkbench(serverUrl: string): string {
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendButton.click(); }
     });
     sendButton.onclick = async () => {
+      if (sending) {
+        if (!runningTaskId) return;
+        log('POST /api/turn/task/' + runningTaskId + '/cancel');
+        try { await post('/api/turn/task/' + runningTaskId + '/cancel', {}); } catch (e) { add('error', t('error.prefix') + ' ' + e.message); }
+        return;
+      }
       const text = prompt.value.trim(); if (!text) return;
       add('owner', text);
       prompt.value = ''; autoGrow();
       setSending(true); showTyping('');
       log('POST /api/turn?stream=1');
       try {
-        const r = await postTurnStream('/api/turn?stream=1', { text, sessionId, conversationId: sessionId }, frame => { if (frame.type === 'progress') showTyping(frame.phase); });
-        hideTyping(); setSending(false);
+        const r = await postTurnStream('/api/turn?stream=1', { text, sessionId, conversationId: sessionId }, frame => {
+          if (frame.taskId) runningTaskId = String(frame.taskId);
+          if (frame.type === 'progress') showTyping(frame.phase);
+          // The extension shows the answer the moment the kernel settles it; the workbench dropped that frame and waited.
+          if (typeof frame.answer === 'string' && answerHasSpeech(frame.answer)) showAnswerPreview(frame.answer);
+        });
+        hideTyping(); setSending(false); runningTaskId = '';
         add('scce', turnSurface(r), turnDetail(r));
+        renderEvidence(r);
         addLearningControls(r, text);
         addFeedbackControls(r.dialogue, text);
         inspector.textContent = JSON.stringify({ dialogue: r.dialogue, proof: r.entailment?.proof, pca: r.proofCarryingAnswer, pface: r.pface, language: r.languageAcquisition, actionGraph: r.actionGraph, functionalCognition: r.functionalCognition }, null, 2);
         trace.textContent = (r.events || []).map(e => e.typeId + ' ' + e.id).join('\\n');
         await refreshApprovals();
       } catch (e) {
-        hideTyping(); setSending(false);
+        hideTyping(); setSending(false); runningTaskId = '';
         add('error', t('error.prefix') + ' ' + e.message);
       }
     };

@@ -91,6 +91,8 @@ async function main(): Promise<void> {
           ports: createTypeScriptCodeMouthPorts({ workspaceRoot: config.runtime.workspaceRoot, realizer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
         });
         printJson(result);
+        // A caller scripting an edit needs the outcome in the exit code, not only in the report.
+        if (result.outcome !== "resolved") process.exitCode = 1;
         break;
       }
       case "learn":

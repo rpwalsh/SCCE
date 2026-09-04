@@ -27,19 +27,35 @@ export type ExtensionMessage =
 
 export type ExtensionTaskState = "pending_approval" | "running" | "succeeded" | "failed" | "interrupted" | "cancelled";
 
-export type ScceEndpoint =
-  | "ready"
-  | "workspace.initialize"
-  | "workspace.ingest"
-  | "workspace.ask"
-  | "workspace.patch.plan.request"
-  | "workspace.patch"
-  | "project.summary"
-  | "workspace.status"
-  | "learning.review"
-  | "learning.review.decide"
-  | "learning.curriculum"
-  | "learning.pursue";
+export const SCCE_ENDPOINTS = [
+  "ready",
+  "workspace.initialize",
+  "workspace.ingest",
+  "workspace.ask",
+  "workspace.patch.plan.request",
+  "workspace.patch",
+  "workspace.code",
+  "project.summary",
+  "workspace.status",
+  "learning.review",
+  "learning.review.decide",
+  "learning.curriculum",
+  "learning.pursue"
+] as const;
+
+export type ScceEndpoint = typeof SCCE_ENDPOINTS[number];
+
+/** The one membership test; every validator derives from it so the list cannot drift again. */
+export function isScceEndpoint(value: unknown): value is ScceEndpoint {
+  return typeof value === "string" && (SCCE_ENDPOINTS as readonly string[]).includes(value);
+}
+
+export interface CodeEditResult {
+  outcome: "resolved" | "no_proposal" | "budget_exhausted" | "stopped";
+  attempts: number;
+  finalDiagnostics: ReadonlyArray<{ file?: string; line?: number; message?: string }>;
+  reason?: string;
+}
 
 export interface ReadyResponse {
   ok: boolean;
@@ -156,7 +172,7 @@ export function parseProjectSummaryResponse(value: unknown): ProjectSummaryRespo
 }
 
 function endpoint(value: unknown): ScceEndpoint {
-  if (value === "ready" || value === "workspace.initialize" || value === "workspace.ingest" || value === "workspace.ask" || value === "workspace.patch.plan.request" || value === "workspace.patch" || value === "project.summary" || value === "workspace.status") return value;
+  if (isScceEndpoint(value)) return value;
   throw new Error("unsupported SCCE endpoint");
 }
 

@@ -150,6 +150,7 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer } from "./local-evidence-runtime.js";
+import { codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -773,11 +774,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...authorityLanguage.state.importedPatterns
         ], 2048)
       };
+      // Structure, not vocabulary: a request that names a formal language or a code path is asking for an artifact.
+      const codeSignal = codeRequestSignal(input.text);
+      const codeRequest = codeRequestRecognized(codeSignal);
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
           ...explicitTurnRequirementsFromInput(input, explicitAuthority),
-          ...workspacePlanContext.explicitRequirements
+          ...workspacePlanContext.explicitRequirements,
+          ...codeRequestRequirements(input.text, codeSignal)
         ],
         dialogueState: authorityDialogueState,
         languageMemoryState: requestRequirementLanguageState,
@@ -2711,6 +2716,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const mouthStarted = Date.now();
       const speakInput = {
         requestText: input.text,
+        ...(codeRequest && codeSignal.language ? { codeLanguage: codeSignal.language } : {}),
         ...(deps.wordingRealizer ? { wordingRealizer: deps.wordingRealizer } : {}),
         construct: spokenConstructGraph,
         field,
@@ -3288,9 +3294,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
       // A grounded label needs a spoken surface: when the mouth admitted none, the turn is insufficient support.
       const groundedLabel = runtimeCoherence.assistantForceAfter === "source_grounded_answer" || runtimeCoherence.assistantForceAfter === "certified_fact";
+      // An artifact its compiler accepted is proven by that compiler, whatever the prose lanes could not support.
+      const spokenArtifact = String(spoken.realizationTrace.selected.surfaceRealizationId ?? spoken.realizationTrace.selected.id).startsWith("candidate:generated:code:")
+        && rawEmission.answer.trim().length > 0;
       const emission = {
         ...rawEmission,
-        assistantForce: groundedLabel && !rawEmission.answer.trim() ? "insufficient_support" as const : runtimeCoherence.assistantForceAfter
+        assistantForce: spokenArtifact
+          ? "verified_artifact" as const
+          : groundedLabel && !rawEmission.answer.trim() ? "insufficient_support" as const : runtimeCoherence.assistantForceAfter
       };
       // Fired exactly once per non-recursive turn, right here: this is the
       // earliest point where emission.answer is settled -- past

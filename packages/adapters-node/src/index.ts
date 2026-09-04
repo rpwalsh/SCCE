@@ -35,6 +35,7 @@ export * from "./scce2/index.js";
 export * from "./constrained-realizer.js";
 export * from "./visual-ingest.js";
 export * from "./realization-providers.js";
+export * from "./code-verification.js";
 export * from "./sensor-ingest.js";
 export * from "./model-management.js";
 export * from "./settings-schema.js";

@@ -4,6 +4,7 @@ import {
   parseReadyResponse,
   parseWorkspaceAnswerResponse,
   parseWorkspaceIngestResponse,
+  type CodeEditResult,
   type ProjectSummaryResponse,
   type ReadyResponse,
   type WorkspaceAnswerResponse,
@@ -305,6 +306,11 @@ export class ScceClient {
 
   async removeModel(modelId: string): Promise<{ removed: boolean }> {
     return this.request("POST", "/api/models/remove", { modelId }, value => value as { removed: boolean });
+  }
+
+  /** Edits a workspace file through the compile gate: only a patch the compiler accepted survives. */
+  async editCode(targetPath: string, request: string, attempts?: number): Promise<CodeEditResult> {
+    return this.request("POST", "/api/workspace/code", { path: targetPath, request, ...(attempts ? { attempts } : {}) }, value => value as CodeEditResult);
   }
 
   private async request<T>(method: "GET" | "POST", route: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
