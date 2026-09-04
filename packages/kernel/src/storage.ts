@@ -723,6 +723,23 @@ export interface QuarantineStore {
   markDecision(id: string, decision: PromotionDecision): Promise<void>;
 }
 
+/** One source family's support for one relation seed, carried between ingestion runs. */
+export interface RelationObservationRecord {
+  candidateId: string;
+  relationSeedId: string;
+  channel: string;
+  sourceId: string;
+  sourceFamilyId: string;
+  signature: string;
+  observedAt: number;
+}
+
+/** Promotion needs every source that ever supported a relation, not only the batch in hand. */
+export interface RelationObservationStore {
+  put(rows: readonly RelationObservationRecord[]): Promise<void>;
+  list(query?: { channel?: string; limit?: number }): Promise<RelationObservationRecord[]>;
+}
+
 export interface IngestionCheckpointStore {
   put(checkpoint: IngestionCheckpoint): Promise<void>;
   get(id: string): Promise<IngestionCheckpoint | null>;
@@ -1003,6 +1020,7 @@ export interface ScceStorage extends StorageAdmin {
   evidence: EvidenceStore;
   blobs: BlobStore;
   quarantine: QuarantineStore;
+  relationObservations?: RelationObservationStore;
   proofs: ProofStore;
   constructs: ConstructStore;
   capabilities: CapabilityAuditStore;
@@ -1135,7 +1153,7 @@ export interface KernelRuntimePorts {
 // independently bumped to 23 for its own new tables. Both are real,
 // distinct structural additions from the same base, so the merged
 // schema is one past the higher of the two, not either original value.
-export const POSTGRES_SCHEMA_VERSION = 24;
+export const POSTGRES_SCHEMA_VERSION = 25;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1151,6 +1169,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "graph_edges",
   "graph_hyperedges",
   "quarantine_sources",
+  "relation_observations",
   "semantic_proofs",
   "construct_graphs",
   "validation_graphs",
