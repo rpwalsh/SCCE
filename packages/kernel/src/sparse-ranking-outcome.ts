@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { pairwiseLabelFromEntailment } from "./sparse-ranking-labels.js";
 import { createFtrlProximalRanker } from "./sparse-ranking.js";
 import { FTRL_GRAPH_NODE_RANK_TASK_CLASS, type FtrlShadowRanking } from "./sparse-ranking-shadow.js";

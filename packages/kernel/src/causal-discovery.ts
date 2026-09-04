@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { JsonValue } from "./types.js";
 import { benjaminiHochberg, grangerTest, selectLagByAic, stationarize, transferEntropy, type GrangerEdge, type TemporalSeries, type TransferEntropyEdge } from "./temporal-causal.js";
 import { clamp01, mean, toJsonValue, variance } from "./primitives.js";

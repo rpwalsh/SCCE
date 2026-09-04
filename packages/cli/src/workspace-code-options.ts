@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
 
 export const WORKSPACE_CODE_USAGE = "scce workspace plan-code --path=<workspace-file> [--diagnostic-code=<integer>] [options] <request>" as const;

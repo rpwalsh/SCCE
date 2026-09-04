@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CapabilityPlan, ConstructGraph, EmissionGraph, EpisodeId, FieldState, Hasher, IngestResult, JsonValue, SemanticEntailmentResult, TrainResult, TurnResult, ValidationGraph } from "./types.js";
 import { clamp01, createHasher, mean, toJsonValue } from "./primitives.js";
 import type { AlphaPersistenceRecord, AlphaReuseDecision } from "./alpha-field-persistence.js";

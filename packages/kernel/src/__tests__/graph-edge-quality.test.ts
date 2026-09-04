@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { scoreGraphEdgeQuality } from "../graph-edge-quality.js";
 import { GRAPH_QUALITY_CLASS_IDS, GRAPH_QUALITY_REASON_IDS } from "../question-routing-ids.js";

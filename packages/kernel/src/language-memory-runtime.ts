@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
 import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
 import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";

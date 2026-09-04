@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceId, EvidenceSpan, GraphNode, Hasher, JsonValue, NodeId, SourceVersionId } from "./types.js";
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan items 189-190. Affected-test prediction for a generated patch:
  * real static import-graph reachability, not a heuristic guess. Every

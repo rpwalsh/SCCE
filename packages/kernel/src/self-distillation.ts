@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ForecastEnvelope, ForecastState, FunctionalSelfState, GraphSlice, JsonValue, ModelState } from "./types.js";
 import { clamp01, mean, normalizeVector, toJsonValue } from "./primitives.js";
 import { featureSketchProjection, featureSketchSupportShare } from "./latent.js";

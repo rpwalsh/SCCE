@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorrectionRuleRecord, CorrectionRuleKind, UserModelClaimRecord, UserModelClaimStore } from "./storage.js";
 import type { RecordUserModelClaimInput, UserModelClaim, UserModelClaimKind, UserModelStore } from "./user-model-store.js";
 import { recordUserModelClaim } from "./user-model-store.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export const GRAPH_QUALITY_CLASS_IDS = {
   answerGrade: "qr.gq.0b4f2a19",
   weakFragment: "qr.gq.6d91c3e0",

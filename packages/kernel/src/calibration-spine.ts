@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, clamp01, createClock, featureSet, toJsonValue } from "./primitives.js";
 import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, type CalibrationModel } from "./scoring/calibration.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Phase 15: real, bounded repo-file collection feeding
  * repo-cognition.ts's live-turn wiring. Reads only caller-supplied

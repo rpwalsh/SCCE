@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { runProcess, truncate } from '../lib/run.js';
 import { resolveCommand, UnknownCommandError, UnsupportedFilterError, InvalidFilterError, listCommands } from '../lib/commands.js';
 import { resolveRepositoryRoot } from '../lib/repoRoot.js';

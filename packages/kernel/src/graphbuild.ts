@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan, GraphEdge, GraphNode, Hyperedge, JsonValue, LanguageProfile, SourceVersionId } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { clamp01, toJsonValue, weightedJaccard } from "./primitives.js";

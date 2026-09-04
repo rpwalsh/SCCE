@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { AlphaTrace, ConstructGraph, ForecastEnvelope, ForecastState, GraphSnapshot, JsonValue, ProgramGraph } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { covariance, jacobiEigenvaluesSymmetric } from "./math.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createHasher, curriculumItemFromPlan, learningConsentInput, listHeldSources, reviewHeldSource, type HeldSource } from "@scce/kernel";

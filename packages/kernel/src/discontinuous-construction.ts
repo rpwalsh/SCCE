@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan item 97. Discontinuous construction support (interleave/move):
  * a construction realized as multiple, possibly out-of-order surface

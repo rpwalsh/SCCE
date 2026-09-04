@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { clamp01, createClock } from "../primitives.js";
 import { calibratedScore, type ScoreTrace } from "./score-trace.js";
 import { regularizedCalibrationLoss } from "../equation-operators.js";

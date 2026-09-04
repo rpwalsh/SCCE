@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { WordingRealizerFact, WordingRealizerPort, WordingRealizerRequest } from "@scce/kernel";
 import { createConstrainedDecodingRealizer, degenerateSurface } from "./constrained-realizer.js";
 import type { ScceRuntimeConfig } from "./config.js";
@@ -20,7 +22,7 @@ export interface RealizationOutput {
   provider: string;
 }
 
-import { createTypeScriptSnippetVerifier, type CodeVerifier } from "./code-verification.js";
+import { createSnippetVerifier, type CodeVerifier } from "./code-verification.js";
 
 export interface RealizationProvider {
   id: string;
@@ -47,6 +49,31 @@ export function verifySurfaceAgainstFacts(surface: string, facts: readonly Wordi
   });
 }
 
+/**
+ * Word licensing proves the vocabulary came from the facts; it cannot see who did what to whom, so a draft
+ * could pair one fact's subject with another fact's object and still pass. This checks the pairing: within a
+ * sentence, an object may only appear alongside its own fact's subject, unless that subject is the only one
+ * in play. Script-neutral: it compares the fact's own strings, never a vocabulary of its own. Pure.
+ */
+export function factRelationsIntact(surface: string, facts: readonly WordingRealizerFact[]): boolean {
+  const subjects = [...new Set(facts.map(fact => String(fact.subject ?? "").trim()).filter(Boolean))];
+  if (subjects.length < 2) return true;
+  const sentences = surface.split(/(?<=[.!?\u3002\uff01\uff1f\u061f\u0964])\s+/u).filter(part => part.trim());
+  const mentions = (haystack: string, needle: string) => needle.length > 0 && haystack.toLocaleLowerCase().includes(needle.toLocaleLowerCase());
+  for (const sentence of sentences) {
+    for (const fact of facts) {
+      const object = String(fact.object ?? "").trim();
+      const subject = String(fact.subject ?? "").trim();
+      if (!object || !subject || object.length < 3) continue;
+      if (!mentions(sentence, object)) continue;
+      if (mentions(sentence, subject)) continue;
+      // The object is here without its subject: allowed only when no other subject is present to bind it to.
+      if (subjects.some(other => other !== subject && mentions(sentence, other))) return false;
+    }
+  }
+  return true;
+}
+
 const CODE_LANGUAGES = new Set(["typescript", "javascript", "python", "rust", "go", "java", "c", "cpp", "csharp", "ruby", "php", "kotlin", "swift", "shell", "sql"]);
 
 /** Code requests are verified by a compiler, not by prose word licensing. */
@@ -57,6 +84,12 @@ export function isCodeRequest(request: Pick<WordingRealizerRequest, "targetLangu
 /** A request that carries the current file text asks for a rewrite of it; without one it asks for a new artifact. */
 export function isWholeFileCodeRequest(request: WordingRealizerRequest): boolean {
   return request.facts.some(fact => fact.predicate === "contains");
+}
+
+/** Room to restate what the facts actually say, bounded so a runaway generation cannot stall the turn. Pure. */
+function prosePredictBudget(facts: readonly WordingRealizerFact[]): number {
+  const characters = facts.reduce((total, fact) => total + String(fact.object ?? "").length + String(fact.subject ?? "").length, 0);
+  return Math.max(96, Math.min(512, 96 + Math.ceil(characters / 3)));
 }
 
 /** A draft cut off by the token budget keeps its complete sentences; a cut with no boundary keeps nothing. Pure. */
@@ -109,8 +142,11 @@ ${notes.join("\n")}
     };
   }
   const sentences = Math.max(1, request.maxSentences ?? 2);
+  // A downstream meaning check earns a real answer; without one the wording stays inside the facts' vocabulary.
+  const ownWords = `Answer the request in at most ${sentences} complete sentence(s), each with a subject and a verb, in your own words. Say only what the facts state, add nothing they do not, and keep every name, date and number exactly right. Write in the language of the facts. No preamble, commentary, or questions.`;
+  const restate = `Answer the request in at most ${sentences} complete sentence(s), each with a subject and a verb, restating the facts that answer it. Use only words that appear in the facts and keep every name and number you use exactly as written there. Write in the language of the facts. No preamble, commentary, or questions.`;
   return {
-    system: `Answer the request in at most ${sentences} complete sentence(s), each with a subject and a verb, restating the facts that answer it. Use only words that appear in the facts and keep every name and number you use exactly as written there. Write in the language of the facts. No preamble, commentary, or questions.`,
+    system: request.meaningVerifiedDownstream === true ? ownWords : restate,
     prompt: `Request:\n${request.requestText}\n\nFacts:\n${facts.join("\n")}\n\nAnswer:`
   };
 }
@@ -150,7 +186,7 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
           const response = await fetchImpl(`${host}/api/generate`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ model: options.model, system: built.system, prompt, stream: false, options: { temperature: invention ? 0.7 : 0, num_predict: code ? 2048 : invention ? 320 : 96 } }),
+            body: JSON.stringify({ model: options.model, system: built.system, prompt, stream: false, options: { temperature: invention ? 0.7 : 0, num_predict: code ? 2048 : invention ? 320 : prosePredictBudget(facts) } }),
             signal: controller.signal
           });
           if (!response.ok) return "";
@@ -162,13 +198,14 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
       };
       try {
         if (code) {
-          const attempts = Math.max(1, Math.min(3, options.codeRepairAttempts ?? 2));
+          const wholeFile = isWholeFileCodeRequest(request);
+          const attempts = wholeFile ? 1 : Math.max(1, Math.min(3, options.codeRepairAttempts ?? 2));
           let diagnostics: readonly string[] = [];
           let unproven: RealizationOutput | undefined;
           for (let attempt = 1; attempt <= attempts; attempt++) {
             const artifact = stripCodeFence(await generate(diagnostics)).trim();
             if (!artifact) break;
-            const verification = options.codeVerifier
+            const verification = options.codeVerifier && !wholeFile
               ? await options.codeVerifier.verify({ language, source: artifact })
               : { status: "unsupported" as const, diagnostics: [] };
             if (verification.status === "verified") {
@@ -186,10 +223,17 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
           return unproven ? [unproven] : [];
         }
         const raw = await generate([]);
-        const text = invention ? trimToSentenceBoundary(raw) : raw.trim();
+        // Whatever the budget, a half-finished clause is not an answer: keep the complete sentences.
+        const trimmed = trimToSentenceBoundary(raw);
+        const text = invention ? trimmed : (trimmed || raw.trim());
         if (!text.trim() || degenerateSurface(text)) return [];
         // An invention is admitted as invented; only sourced prose is word-licensed against the facts.
-        const verified = invention || verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText);
+        // Vocabulary licensing is the fallback, not the standard: when the caller checks the draft's meaning
+        // against the evidence it came from, a real paraphrase is allowed to use words the source did not.
+        const verified = invention
+          || request.meaningVerifiedDownstream === true
+          || (verifySurfaceAgainstFacts(text, facts, new Set(request.closedClassWords ?? []), request.requestText)
+            && factRelationsIntact(text, facts));
         return [{ text, verified, provider: this.id }];
       } catch {
         return [];
@@ -272,7 +316,7 @@ export function selectRealizationPort(config: ScceRuntimeConfig, options: { log?
   const provider = realization?.provider ?? "native";
   const log = options.log ?? { info: message => console.error(`[scce] ${message}`), warn: message => console.error(`[scce] ${message}`) };
   if (provider === "ollama" && realization?.ollama) {
-    return providerAsWordingRealizer(createOllamaProvider({ host: realization.ollama.host, model: realization.ollama.model, log, codeVerifier: createTypeScriptSnippetVerifier() }));
+    return providerAsWordingRealizer(createOllamaProvider({ host: realization.ollama.host, model: realization.ollama.model, log, codeVerifier: createSnippetVerifier({ ...(realization?.languageChecks ? { checks: realization.languageChecks } : {}) }) }));
   }
   if (provider === "api" && realization?.apiProvider) {
     return providerAsWordingRealizer(createApiKeyProvider({

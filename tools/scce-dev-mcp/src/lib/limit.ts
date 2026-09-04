@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 function limitLines(text: string, max = 200): string {
   const lines = text.split(/\r?\n/);
   if (lines.length <= max) return text;

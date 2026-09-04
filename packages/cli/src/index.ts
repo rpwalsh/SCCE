@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
@@ -1263,7 +1265,16 @@ function parseArgs(argv: string[]): Parsed {
     if (flag === "--config") configPath = args.shift() ?? configPath;
     else throw new Error(`unknown flag: ${flag}`);
   }
-  return { configPath, command: args.shift(), args };
+  const command = args.shift();
+  // The same flag after the command means the same thing; requiring it first silently used the default config.
+  const rest: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index];
+    if (value === "--config") { configPath = args[++index] ?? configPath; continue; }
+    if (value?.startsWith("--config=")) { configPath = value.slice("--config=".length) || configPath; continue; }
+    if (value !== undefined) rest.push(value);
+  }
+  return { configPath, command, args: rest };
 }
 
 function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; sessionId?: string; conversationId?: string; targetLanguage?: string; detailProfileId?: string } {

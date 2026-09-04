@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Phase 15 (183-184): tree-sitter as SCCE's portable multilingual syntax
  * substrate -- real concrete syntax trees feeding the language-neutral

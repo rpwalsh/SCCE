@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 // Live rehearsal for plan item 194 (packages/kernel/src/bounded-autonomous-debugging.ts,
 // plan items 191-193): runs one real bounded-debugging session against a
 // deliberately introduced, isolated synthetic bug in a scratch fixture --
