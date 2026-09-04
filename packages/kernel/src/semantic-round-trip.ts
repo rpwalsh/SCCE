@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Hasher } from "./types.js";
 import type { SemanticAtom } from "./semantic-proof-types.js";
 import { atomizeText } from "./semantic-proof-system.js";

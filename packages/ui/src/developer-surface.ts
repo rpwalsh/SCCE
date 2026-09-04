@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export type SurfacePaneId = "explorer" | "search" | "source" | "proof" | "program" | "database" | "connectors" | "approvals";
 export type SurfaceEditorKind = "chat" | "json" | "graph" | "code" | "diff" | "terminal" | "table" | "config";
 export type SurfaceSeverity = "info" | "warning" | "error";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceId, EvidenceSpan, Hasher, JsonValue, SemanticEntailmentResult } from "./types.js";
 import { canonicalStringify, clamp01, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { extensionOf, normalizePath, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, type SourceCodeFileFacts, type SourceRepositoryFacts } from "./source-code-graph.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export * from "./workbench-model.js";
 export * from "./developer-surface.js";
 export * from "./locales.js";
@@ -598,7 +600,16 @@ export function renderWorkbench(serverUrl: string): string {
       const request = window.prompt(t('prompt.code_request'));
       if (!request || !request.trim()) return;
       log('POST /api/workspace/code ' + targetPath);
-      const result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() });
+      let result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() });
+      // The compiler owns several fixes here; the owner chooses rather than SCCE guessing.
+      if (result && result.outcome === 'awaiting_selection' && Array.isArray(result.candidates) && result.candidates.length) {
+        const menu = result.candidates.map((candidate, index) => (index + 1) + ') TS' + candidate.diagnosticCode + ' ' + candidate.fixName).join('\n');
+        const choice = window.prompt(t('code.choose') + '\n' + menu, '1');
+        const index = Number(choice) - 1;
+        const candidate = result.candidates[index];
+        if (!candidate) { inspector.textContent = JSON.stringify(result, null, 2); toggleDevPanel(true); return; }
+        result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() + ' codeFixIdentity:' + candidate.codeFixIdentity });
+      }
       inspector.textContent = JSON.stringify(result, null, 2);
       toggleDevPanel(true);
       add('scce', (result && result.outcome === 'resolved' ? t('code.resolved') : t('code.unchanged'))

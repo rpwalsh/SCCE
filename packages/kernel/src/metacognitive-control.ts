@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan items 175-176. Real metacognitive control: tracks progress,
  * uncertainty, contradiction, repeated state, and remaining budget across

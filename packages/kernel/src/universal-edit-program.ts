@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan items 98-99. Universal edit-program induction between a source and
  * target surface form: COPY/INSERT/DELETE/SUBSTITUTE via a real minimum-

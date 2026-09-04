@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFile } from "node:fs/promises";
 
 const serverUrl = process.env.SCCE_LIVE_SERVER_URL ?? "http://127.0.0.1:3873";

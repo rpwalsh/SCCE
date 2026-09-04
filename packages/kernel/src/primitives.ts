@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash, randomBytes } from "node:crypto";
 import type { Clock, Hasher, JsonValue, SourceRedactionInterval } from "./types.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";

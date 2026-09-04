@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /** Loopback host check shared by every surface that validates a local endpoint (local model-server host, server URL). */
 export function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLocaleLowerCase().replace(/^\[|\]$/g, "");

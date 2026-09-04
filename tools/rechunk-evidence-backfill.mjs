@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 // Re-chunks oversized evidence spans in place, from text already in the
 // database. No re-fetch, no re-parse, no graph rebuild, no retraining.
 //

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { taskDecompositionGraphFromJson, openHypothesesFromWorkingMemory, taskResumptionSnapshotForTurn, taskResumptionSnapshotFromJson, syncTaskResumptionSnapshotForTurn } from "../task-resumption-turn-request.js";
 import { addTaskDecompositionNode, EMPTY_TASK_DECOMPOSITION } from "../hierarchical-task-decomposition.js";

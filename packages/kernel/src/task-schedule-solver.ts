@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan items 173-174. A real constraint-solver dispatch for the
  * precedence-scheduling problem class this codebase actually has:

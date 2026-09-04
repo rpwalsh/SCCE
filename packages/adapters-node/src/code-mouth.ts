@@ -1,4 +1,7 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { existsSync } from "node:fs";
+import { isCompilerRepairProposal, proposeCompilerOwnedRepair } from "./code-mouth-compiler-proposer.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -37,6 +40,8 @@ export interface CodeMouthProposal {
 }
 
 export interface CodeMouthVerification {
+  /** False when no test command ran, so a caller never reads silence as a passing suite. */
+  testsRun?: boolean;
   buildSucceeded: boolean;
   testsSucceeded: boolean;
   diagnostics: ProgramDiagnostic[];
@@ -46,16 +51,20 @@ export interface CodeMouthPorts {
   retrieve: (targetPath: string) => Promise<CodeMouthContext>;
   propose: (input: { request: string; context: CodeMouthContext; diagnostics: readonly ProgramDiagnostic[]; attempt: number }) => Promise<CodeMouthProposal | undefined>;
   apply: (operations: readonly RepairOperation[]) => Promise<() => Promise<void>>;
-  verify: () => Promise<CodeMouthVerification>;
+  verify: (targetPath?: string) => Promise<CodeMouthVerification>;
+  /** Fixes the compiler offered on the last proposal, when it declined to choose between them. */
+  offeredCandidates?: () => Array<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }>;
 }
 
 export interface CodeMouthResult {
-  outcome: "resolved" | "no_proposal" | "stopped" | "budget_exhausted";
+  outcome: "resolved" | "no_proposal" | "awaiting_selection" | "stopped" | "budget_exhausted";
   attempts: number;
   finalDiagnostics: ProgramDiagnostic[];
   appliedOperations: RepairOperation[];
   decision?: DebugLoopDecision;
   reason: string;
+  /** Fixes the compiler owns for this file when more than one answers the request; the caller chooses. */
+  candidates?: Array<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }>;
 }
 
 export async function runCodeMouth(input: {
@@ -70,19 +79,27 @@ export async function runCodeMouth(input: {
   const hasher = createHasher();
   let session: BoundedDebugSession = createBoundedDebugSession({ maxAttempts: input.maxAttempts ?? 3, maxWallClockMs: input.maxWallClockMs ?? 180_000, maxMutatedFiles: 4 }, Date.now());
   const context = await input.ports.retrieve(input.targetPath);
-  let diagnostics: ProgramDiagnostic[] = (await input.ports.verify()).diagnostics;
+  const offered = () => (input.ports.offeredCandidates?.() ?? []);
+  let diagnostics: ProgramDiagnostic[] = (await input.ports.verify(input.targetPath)).diagnostics;
   let applied: RepairOperation[] = [];
   let decision: DebugLoopDecision | undefined;
   for (let attempt = 1; attempt <= session.budget.maxAttempts; attempt++) {
-    const proposal = await input.ports.propose({ request: input.request, context, diagnostics, attempt });
+    // Only this file's diagnostics are this edit's to answer; repo-wide failures elsewhere made the proposer return the file unchanged.
+    const targetDiagnostics = diagnosticsForTarget(diagnostics, input.targetPath);
+    const proposal = await input.ports.propose({ request: input.request, context, diagnostics: targetDiagnostics, attempt });
     if (!proposal || !proposal.operations.length) {
+      const candidates = offered();
+      // The compiler has fixes but more than one answers the request: choosing for the owner would be a guess.
+      if (candidates.length) {
+        return { outcome: "awaiting_selection", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, candidates, reason: `the compiler offers ${candidates.length} fixes for this file; choose one to apply` };
+      }
       return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "no proposer produced a patch; enable a realization provider (constrained decoding or a local model server) or provide a diagnostic-bound request" };
     }
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
     if (!check.permitted) return { outcome: "budget_exhausted", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: check.reason };
     log(`attempt ${attempt}: ${proposal.operations.map(operation => `${operation.kind} ${path.basename(operation.path)}`).join(", ")}`);
     const rollback = await input.ports.apply(proposal.operations);
-    const verification = await input.ports.verify();
+    const verification = await input.ports.verify(input.targetPath);
     const recorded = recordDebugAttempt(session, {
       now: Date.now(),
       diagnosticsBefore: diagnostics,
@@ -95,9 +112,18 @@ export async function runCodeMouth(input: {
     });
     session = recorded.session;
     decision = recorded.decision;
-    if (verification.buildSucceeded && verification.testsSucceeded) {
+    if (patchResolvedTarget({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths: proposal.operations.map(operation => operation.path) }) && verification.testsSucceeded) {
       applied = [...applied, ...proposal.operations];
-      return { outcome: "resolved", attempts: attempt, finalDiagnostics: verification.diagnostics, appliedOperations: applied, decision, reason: "patch compiled and passed the gate" };
+      return {
+        outcome: "resolved",
+        attempts: attempt,
+        finalDiagnostics: verification.diagnostics,
+        appliedOperations: applied,
+        decision,
+        reason: verification.testsRun === false
+          ? "the compiler accepted the patch; no test suite was run"
+          : "the compiler accepted the patch and the tests passed"
+      };
     }
     await rollback();
     diagnostics = verification.diagnostics;
@@ -105,6 +131,56 @@ export async function runCodeMouth(input: {
     if (decision.outcome !== "continue") return { outcome: "stopped", attempts: attempt, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: decision.reason };
   }
   return { outcome: "budget_exhausted", attempts: session.attempts.length, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "attempt budget exhausted" };
+}
+
+/**
+ * The project file that owns a path: the nearest tsconfig walking up from the file to the workspace root.
+ * A workspace-root project in a monorepo usually references packages rather than including their sources,
+ * so typechecking it neither covers the file being edited nor finishes quickly.
+ */
+export function nearestProjectFile(root: string, targetPath?: string): string | undefined {
+  if (!targetPath) return undefined;
+  const absoluteRoot = path.resolve(root);
+  let directory = path.dirname(path.resolve(absoluteRoot, targetPath));
+  for (let depth = 0; depth < 24; depth++) {
+    const candidate = path.join(directory, "tsconfig.json");
+    if (existsSync(candidate)) return candidate;
+    if (path.resolve(directory) === absoluteRoot) return undefined;
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+  return undefined;
+}
+
+/** The diagnostics that belong to the file being edited. Pure. */
+export function diagnosticsForTarget(diagnostics: readonly ProgramDiagnostic[], targetPath: string): ProgramDiagnostic[] {
+  const target = targetPath.replace(/\\/gu, "/").toLocaleLowerCase();
+  return diagnostics.filter(diagnostic => {
+    const file = String(diagnostic.path ?? "").replace(/\\/gu, "/").toLocaleLowerCase();
+    return Boolean(file) && (file.endsWith(target) || target.endsWith(file));
+  });
+}
+
+/**
+ * The gate an edit can actually satisfy: every diagnostic in the files it touched is gone, and it
+ * introduced none anywhere else. Pre-existing failures elsewhere in the project are not this edit's
+ * to fix, and were never evidence against it. Pure.
+ */
+export function patchResolvedTarget(input: {
+  before: readonly ProgramDiagnostic[];
+  after: readonly ProgramDiagnostic[];
+  targetPath: string;
+  mutatedPaths: readonly string[];
+}): boolean {
+  const touched = new Set([input.targetPath, ...input.mutatedPaths].map(value => value.replace(/\\/gu, "/").toLocaleLowerCase()));
+  const inTouched = (diagnostic: ProgramDiagnostic) => {
+    const file = String(diagnostic.path ?? "").replace(/\\/gu, "/").toLocaleLowerCase();
+    return [...touched].some(value => file.endsWith(value) || value.endsWith(file));
+  };
+  if (input.after.some(inTouched)) return false;
+  const beforeIds = new Set(input.before.map(diagnostic => diagnostic.id));
+  return !input.after.some(diagnostic => !beforeIds.has(diagnostic.id));
 }
 
 /** tsc output line -> ProgramDiagnostic. Pure. */
@@ -130,7 +206,9 @@ export function createTypeScriptCodeMouthPorts(input: {
 }): CodeMouthPorts {
   const root = path.resolve(input.workspaceRoot);
   const hasher = createHasher();
+  let offeredCandidates: Array<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }> = [];
   return {
+    offeredCandidates: () => offeredCandidates,
     async retrieve(targetPath) {
       const absolute = path.resolve(root, targetPath);
       const text = await readFile(absolute, "utf8").catch(() => "");
@@ -144,6 +222,24 @@ export function createTypeScriptCodeMouthPorts(input: {
       };
     },
     async propose({ request, context, diagnostics, attempt }) {
+      // Native first: a fix TypeScript itself owns needs no model, and the model lane is optional.
+      const compilerRepair = await proposeCompilerOwnedRepair({
+        workspaceRoot: root,
+        targetPath: context.targetPath,
+        targetText: context.targetText,
+        requestText: request,
+        attempt,
+        imports: context.imports,
+        ...(() => { const project = input.tsconfigPath ?? nearestProjectFile(root, context.targetPath); return project ? { tsconfigPath: project } : {}; })()
+      });
+      if (isCompilerRepairProposal(compilerRepair)) {
+        input.log?.(`attempt ${attempt}: compiler code action ${compilerRepair.fixName} for TS${compilerRepair.diagnosticCode}`);
+        return { operations: compilerRepair.operations, surface: compilerRepair.surface };
+      }
+      if (compilerRepair) {
+        input.log?.(`compiler offers ${compilerRepair.candidates.length} fix(es) for this file; name one (for example its TS code) to apply it`);
+        offeredCandidates = compilerRepair.candidates;
+      }
       if (!input.realizer) return undefined;
       const facts = [
         { subject: "request", predicate: "asks", object: request, evidenceIds: ["request"] },
@@ -177,8 +273,8 @@ export function createTypeScriptCodeMouthPorts(input: {
       }
       return async () => { for (const [file, text] of originals) await writeFile(file, text, "utf8"); };
     },
-    async verify() {
-      const tsconfig = input.tsconfigPath ?? path.join(root, "tsconfig.json");
+    async verify(targetPath?: string) {
+      const tsconfig = input.tsconfigPath ?? nearestProjectFile(root, targetPath) ?? path.join(root, "tsconfig.json");
       const localTsc = path.join(root, "node_modules", "typescript", "bin", "tsc");
       const tsc = existsSync(localTsc) ? localTsc : createRequire(import.meta.url).resolve("typescript/bin/tsc");
       const command = input.tscCommand ?? { command: process.execPath, args: [tsc, "--noEmit", "-p", tsconfig] };
@@ -188,7 +284,8 @@ export function createTypeScriptCodeMouthPorts(input: {
         // The gate itself failed to run: report that as a build failure rather than a clean bill.
         diagnostics.push({ id: "tsc:unavailable", class: "syntax", message: `typecheck did not run: ${(result.stderr || result.stdout || "").trim().slice(0, 300)}`, raw: (result.stderr || result.stdout || "").trim().slice(0, 300), confidence: 1 });
       }
-      return { buildSucceeded: result.code === 0 && diagnostics.length === 0, testsSucceeded: true, diagnostics };
+      // No test command has run here, so nothing about tests is claimed: the typecheck is the whole proof.
+      return { buildSucceeded: result.code === 0 && diagnostics.length === 0, testsSucceeded: true, testsRun: false, diagnostics };
     }
   };
 }

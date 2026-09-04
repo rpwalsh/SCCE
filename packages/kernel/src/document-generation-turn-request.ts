@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { DocumentPlan, DocumentPlanNode, DocumentPlanNodeKind } from "./document-plan.js";
 import type { InitialFact, NarrativeEvent, NarrativeState, NarrativeStateChange } from "./narrative-state.js";
 import type { VoiceSample } from "./voice-profile.js";

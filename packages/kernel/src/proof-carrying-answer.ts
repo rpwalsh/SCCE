@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EpistemicForce, EvidenceId, EvidenceSpan, JsonValue, TruthState } from "./types.js";
 import { truthStateFromProofVerdict } from "./truth-contract.js";
 import type { SemanticProofEngineVerdict } from "./semantic-proof-engine.js";

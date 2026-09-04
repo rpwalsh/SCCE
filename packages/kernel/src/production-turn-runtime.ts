@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createActionGraphBuilder } from "./action-graph.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
 import { composeEvidenceGroundedAnswer } from "./answer-emitter.js";
@@ -2714,9 +2716,28 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       markTiming("planningMs");
       deadlineCheckpoint("runtime.planning.complete", 0);
       const mouthStarted = Date.now();
+      // Faithfulness is judged the same way the turn judges its own claim: put the wording back through
+      // entailment against this turn's evidence. That is what lets the mouth say it in its own words instead
+      // of reciting the source, without loosening what "grounded" means.
+      const meaningVerifier = (text: string): { support: number; contradiction: number } => {
+        try {
+          const verdict = entailment.check({
+            text,
+            evidence: [...selectedEvidence],
+            nodes: graph.nodes,
+            field,
+            createdAt: clock.now(),
+            calibrationModels
+          });
+          return { support: verdict.support, contradiction: verdict.contradiction };
+        } catch {
+          return { support: 0, contradiction: 1 };
+        }
+      };
       const speakInput = {
         requestText: input.text,
         ...(codeRequest && codeSignal.language ? { codeLanguage: codeSignal.language } : {}),
+        meaningVerifier,
         ...(deps.wordingRealizer ? { wordingRealizer: deps.wordingRealizer } : {}),
         construct: spokenConstructGraph,
         field,

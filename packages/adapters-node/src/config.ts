@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { isLoopbackHostname } from "@scce/kernel";
@@ -179,6 +181,8 @@ export interface ScceRuntimeConfig {
       dtype?: "q8" | "q4" | "fp16" | "fp32";
       maxNewTokens?: number;
     };
+    /** How a language proves a generated artifact. Adding an entry teaches SCCE a language it has never seen. */
+    languageChecks?: Record<string, { command: string; args: string[]; extension: string }>;
   };
   metadata?: JsonValue;
 }

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ProgramDiagnostic, RepairOperation } from "./program-repair-kernel.js";
 import type { Hasher } from "./types.js";
 import { canonicalStringify, clamp01, createHasher } from "./primitives.js";

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { scoreGraphEdgeQuality, type GraphEdgeQuality } from "./graph-edge-quality.js";
 import {
   boundedEditDistance,
@@ -977,8 +979,27 @@ export function cognitiveTopicForRequest(text: string): string {
     if (units[0] !== firstWord) return true;
     return words.slice(1).some(word => normalizePriorKey(word) === firstWord && hasPriorAnchorSignal(word));
   });
-  if (named.length) return named[0] ?? "";
   const focuses = relevanceRequestFocuses(text).filter(unit => !genericQuestionSignal(unit)).slice(0, 6);
+  if (named.length) {
+    const top = named[0] ?? "";
+    // A name is often only part of the subject ("Voynich" of "Voynich manuscript"), and a bare token reads
+    // as a broken answer wherever this surfaces. Prefer the request's own phrase that carries the name.
+    if (splitPriorUnits(top).length === 1) {
+      // Request order, not ranking: the phrase must read the way the owner wrote it.
+      const ordered = words.map(word => normalizePriorKey(word));
+      const start = ordered.indexOf(normalizePriorKey(top));
+      if (start >= 0) {
+        const phrase = [ordered[start]!];
+        for (let index = start + 1; index < ordered.length && phrase.length < 3; index++) {
+          const unit = ordered[index] ?? "";
+          if (!unit || genericQuestionSignal(unit)) break;
+          phrase.push(unit);
+        }
+        if (phrase.length > 1) return phrase.join(" ");
+      }
+    }
+    return top;
+  }
   for (let length = Math.min(3, focuses.length); length >= 2; length--) {
     for (let index = 0; index <= focuses.length - length; index++) {
       const phrase = focuses.slice(index, index + length).join(" ");

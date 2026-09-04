@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export function speakableAnswerText(text: string): string {
   let spoken = String(text || "");
   spoken = spoken.replace(/```[\s\S]*?```/g, " Code block. ");

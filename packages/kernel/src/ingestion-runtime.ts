@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createSourceAdmissionController } from "./admission.js";
 import {
   compileCreativeEventCompatibilityCorpus,
@@ -115,6 +117,19 @@ import type {
  */
 export const DEFAULT_EVIDENCE_CHUNK_BYTES = 4096;
 
+/** The alignment bounds compileLanguageTrainingBatch already proved: a corpus is ingested in bounded memory or not at all. */
+const INGEST_MAX_ALIGNMENT_LATTICES = 32;
+const INGEST_MAX_ALIGNMENT_TEXT_BYTES = 16_384;
+const INGEST_MAX_HISTORICAL_ALIGNMENTS = 32;
+
+function ingestAlignmentWindowText(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const buffer = Buffer.from(text, "utf8").subarray(0, maxBytes);
+  let end = buffer.length;
+  while (end > 0 && buffer[end] !== undefined && ((buffer[end] as number) & 0xc0) === 0x80) end--;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
 export function createIngestionRuntime(options: {
   deps: ScceKernelDeps;
   clock: ReturnType<typeof createClock>;
@@ -204,11 +219,24 @@ export function createIngestionRuntime(options: {
           role: "original"
         };
         await deps.storage.evidence.putSourceVersion(originalSource);
-        const derivative = file.evidenceDerivative;
-        const rawSourceText = derivative?.text ?? file.text;
+        const fileDerivative = file.evidenceDerivative;
+        const rawSourceText = fileDerivative?.text ?? file.text;
         // HTML is never language evidence raw: strip scripts/styles/chrome before any
         // lattice/induction sees it (a fetched page carried 100KB of inline JS -> OOM).
         const sourceText = file.mediaType.toLocaleLowerCase().startsWith("text/html") ? sourceTextSurface(rawSourceText, 0) : rawSourceText;
+        // That scrub IS a derivative, and its bytes have to encode the scrubbed text. Leaving the original
+        // bytes here made the identity check below reject every fetched page, so nothing from the web could
+        // ever be learned even after the owner consented to it.
+        const derivative = sourceText === rawSourceText
+          ? fileDerivative
+          : {
+            bytes: Buffer.from(sourceText, "utf8"),
+            text: sourceText,
+            kind: "extracted-text" as const,
+            transformId: fileDerivative?.transformId ?? "scce.html-text-surface.v1",
+            originalCoordinateSpace: "extracted-text-utf8" as const,
+            redactionMap: fileDerivative?.redactionMap ?? []
+          };
         const sourceBytes = derivative?.bytes ?? file.bytes;
         if (!Buffer.from(sourceText, "utf8").equals(Buffer.from(sourceBytes))) {
           throw new Error(`evidence derivative bytes do not encode source text: ${file.uri}`);
@@ -598,9 +626,9 @@ export function createIngestionRuntime(options: {
         const relationEvidenceIds = [...new Set(
           relationCandidates.flatMap(candidate => candidate.evidenceIds.map(String))
         )].sort();
-        const relationEvidence = await deps.storage.evidence.getEvidenceBatch(
-          relationEvidenceIds as EvidenceSpan["id"][]
-        );
+        const relationEvidence = (await deps.storage.evidence.getEvidenceBatch(
+          relationEvidenceIds.slice(0, INGEST_MAX_ALIGNMENT_LATTICES) as EvidenceSpan["id"][]
+        )).slice(0, INGEST_MAX_ALIGNMENT_LATTICES);
         let alignmentCandidateCount = 0;
         let alignmentSurfaceUnitCount = 0;
         let maximumAlignmentDegree = 0;
@@ -620,13 +648,15 @@ export function createIngestionRuntime(options: {
         const alignmentAlternativeSetIds: string[] = [];
         const alignmentAlternativeSets:
           ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
+        const alignmentAlternativeSetsBySeries = new Map<string, ReturnType<typeof compileAlignmentAlternativeSet>[]>();
         const coarseToFineAlignments:
           ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
         const allAlignmentEvidenceAllocations:
           ReturnType<typeof allocateTransportEvidence>[] = [];
+        // Each payload is large; reading a thousand back re-inflated every prior run's alignments.
         const historicalAlignmentPayloads = (await deps.storage.events.readRange({
           typeId: "SparseAlignmentCandidatesCompiled",
-          limit: 1_024
+          limit: INGEST_MAX_HISTORICAL_ALIGNMENTS
         })).map(event => event.payload);
         let retainedAlignmentHypothesisCount = 0;
         let omittedAlignmentSearchBranchCount = 0;
@@ -640,7 +670,7 @@ export function createIngestionRuntime(options: {
           const lattice = buildSurfaceLattice({
             documentId: String(span.id),
             sourceFamilyId: evidenceSourceFamilyId(span),
-            text: span.text,
+            text: ingestAlignmentWindowText(span.text, INGEST_MAX_ALIGNMENT_TEXT_BYTES),
             sourceVersionId: span.sourceVersionId,
             evidenceIds: [span.id],
             hasher
@@ -654,9 +684,10 @@ export function createIngestionRuntime(options: {
           alignmentSupportIds.push(support.id);
           alignmentCandidateCount += support.candidates.length;
           alignmentSurfaceUnitCount += support.rows.length;
-          maximumAlignmentDegree = Math.max(
-            maximumAlignmentDegree,
-            ...support.rows.map(row => row.candidateIds.length)
+          // Spreading a wide support's rows into arguments is its own crash; fold instead.
+          maximumAlignmentDegree = support.rows.reduce(
+            (widest, row) => Math.max(widest, row.candidateIds.length),
+            maximumAlignmentDegree
           );
           alignmentSupports.push(support);
         }
@@ -754,13 +785,14 @@ export function createIngestionRuntime(options: {
                 historicalAlignmentPayloads,
                 seriesId
               ),
-              ...alignmentAlternativeSets.filter(set => set.seriesId === seriesId)
+              ...(alignmentAlternativeSetsBySeries.get(seriesId) ?? [])
             ],
             omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
             hasher
           });
           alignmentAlternativeSetIds.push(alternativeSet.id);
           alignmentAlternativeSets.push(alternativeSet);
+          alignmentAlternativeSetsBySeries.set(alternativeSet.seriesId, [...(alignmentAlternativeSetsBySeries.get(alternativeSet.seriesId) ?? []), alternativeSet]);
           coarseToFineAlignments.push(compileCoarseToFineAlignmentResult({
             routing: alignmentCommunityRoutings[index]!,
             primaryPlan: transport,
@@ -800,7 +832,8 @@ export function createIngestionRuntime(options: {
         });
         const reversibleConstructionCompilation =
           compileReversibleConstructions({
-            alternativeSets: alignmentAlternativeSets,
+            // One set per series: each set already carries its predecessors, so the newest supersedes the rest.
+            alternativeSets: [...alignmentAlternativeSetsBySeries.values()].map(sets => sets[sets.length - 1]!),
             promotionModel: alignmentPromotionModel,
             calibrationModel: alignmentCalibrationModel,
             supports: routedAlignmentSupports,

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { POSTGRES_REQUIRED_TABLES } from "./storage.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";

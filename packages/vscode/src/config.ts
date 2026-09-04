@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export const DEFAULT_SCCE_SERVER_URL = "http://127.0.0.1:3873";
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const MIN_REQUEST_TIMEOUT_MS = 1_000;

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 /**
  * Plan items 137-138. A real, bounded tree decomposition of an arbitrary
  * graph via greedy minimum-degree elimination ordering -- the standard,

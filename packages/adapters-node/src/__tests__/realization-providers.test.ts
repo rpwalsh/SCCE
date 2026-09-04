@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { buildProviderPrompt, createApiKeyProvider, stripCodeFence, createOllamaProvider, providerAsWordingRealizer, verifySurfaceAgainstFacts } from "../realization-providers.js";
 
@@ -107,5 +109,24 @@ describe("invention trimming", () => {
     const provider = createOllamaProvider({ host: "http://x", model: "m", fetchImpl: fakeFetch({ response: "Einstein won. The dragon fle" }) });
     const out = await provider.realize({ ...request, facts: [], invention: true });
     expect(out[0]?.text).toBe("Einstein won.");
+  });
+});
+
+describe("relation pairing", () => {
+  it("rejects a draft that pairs one fact's subject with another fact's object", async () => {
+    const { factRelationsIntact } = await import("../realization-providers.js");
+    const two = [
+      { subject: "Ada Lovelace", predicate: "wrote", object: "the notes on the Analytical Engine", evidenceIds: ["e1"] },
+      { subject: "Charles Babbage", predicate: "designed", object: "the Difference Engine", evidenceIds: ["e2"] }
+    ];
+    expect(factRelationsIntact("Ada Lovelace wrote the notes on the Analytical Engine.", two)).toBe(true);
+    expect(factRelationsIntact("Ada Lovelace designed the Difference Engine.", two)).toBe(false);
+    expect(factRelationsIntact("Ada Lovelace wrote the notes on the Analytical Engine. Charles Babbage designed the Difference Engine.", two)).toBe(true);
+  });
+
+  it("leaves a single-subject draft alone, since there is nothing to confuse it with", async () => {
+    const { factRelationsIntact } = await import("../realization-providers.js");
+    const one = [{ subject: "pump alpha", predicate: "is", object: "stable at 42 psi", evidenceIds: ["e1"] }];
+    expect(factRelationsIntact("It is stable at 42 psi.", one)).toBe(true);
   });
 });

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { mkdirSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 

@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { GraphEdge, GraphNode, Hasher, JsonValue, NodeId } from "./types.js";
 import { canonicalStringify, clamp01, cosineSimilarity, mean, normalizeVector, toJsonValue, variance } from "./primitives.js";
 import { jacobiEigenvaluesSymmetric, zeros } from "./math.js";

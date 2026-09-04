@@ -1,3 +1,5 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export type UiMessageKey = keyof typeof UI_MESSAGES_EN_US | string;
 
 export const UI_MESSAGES_EN_US = {
@@ -57,6 +59,7 @@ export const UI_MESSAGES_EN_US = {
   "cmd.workspace.code": "Edit a file (compile gate)",
   "prompt.code_path": "Which file should SCCE edit?",
   "prompt.code_request": "What should change in it?",
+  "code.choose": "TypeScript offers more than one fix here. Which should SCCE apply?",
   "code.resolved": "Edited {path}. The compiler accepted the change.",
   "code.unchanged": "Left {path} unchanged ({outcome}). Every attempt was rolled back.",
   "side.approvals.refresh": "Refresh",
