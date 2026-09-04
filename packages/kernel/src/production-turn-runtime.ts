@@ -1205,7 +1205,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : {})
       });
       // Quotation recall: the request near-duplicates a remembered sentence, so it is recall whatever the pre-retrieval projection said.
-      if (requestedAuthority === "creative" && !explicitAuthority && localEvidenceAnswerIsQuotationRecall(answerProposal)) {
+      // Memory decides an undecided projection: a covering evidence answer under a thin creative margin is recall too.
+      const memoryDecidesAuthority = Boolean(answerProposal) && authorityProjection.scoreMargin < 0.12;
+      if (requestedAuthority === "creative" && !explicitAuthority && (localEvidenceAnswerIsQuotationRecall(answerProposal) || memoryDecidesAuthority)) {
         requirementField = deriveTurnRequirementField({
           requestText: input.text,
           explicitRequirements: [

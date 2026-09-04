@@ -8,6 +8,8 @@ import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-pl
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
 import { requestSubjectText } from "./turn-requirements.js";
+import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
+import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import type {
@@ -716,7 +718,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...realizerCandidates,
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ].filter(candidate => admissibleMouthSurface(candidate.text)
-        && !((creativeRequested || !groundedSurfaceAvailable) && surfaceEchoesPrompt(candidate.text, mouthEchoQuestionText(input))));
+        // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
+        && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")));
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
         const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
@@ -787,7 +790,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ...semanticAnswerDriftHits(bounded, input, priorPieces),
             ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
             ...languagePriorLeakageHits(bounded, input, priorPieces),
-            ...unanchoredImportedPriorHits(candidate, input)
+            ...unanchoredImportedPriorHits(candidate, input),
+            ...requestCoverageHits(bounded, candidate, input, nearDuplicatePreservation)
           ]);
         const adjustedFit = forbiddenHits.length ? candidate.fit * 0.1 : candidate.fit;
         return { ...candidate, fit: adjustedFit, text: bounded, correction: corrected, preservation, score, forbiddenHits };
@@ -1277,7 +1281,17 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       // than on material already destined to be discarded, is the correct
       // gate -- clipping a surface already within budget is a no-op.
       const clippedDeterministicSurfaces = deterministicSurfaces.map(surface => preserveSurfaceExtent(surface, input.maxLength, plan));
-      const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)) ?? "";
+      const deterministicSequences = requestSentenceSequences(mouthEchoQuestionText(input));
+      const deterministicQuotation = deterministicSequences.length > 0
+        && input.evidence.some(span => spanContainsRequestNearDuplicateSentence(span, deterministicSequences));
+      const deterministicUnits = mouthCoverageUnits(input);
+      const deterministicEvidenceIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
+      const deterministicSpans = input.evidence.filter(span => deterministicEvidenceIds.has(String(span.id)));
+      const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
+        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits));
+      const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
+        && (terminalRuntimeMotionSelected
+          || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
       const normalizedSelectedText = tidySurface(selectedText);
       const readableSelectedText = dominantConstructForce(plan.constructForces) === "ProgramConstruct"
         || hasStructuredSurfaceShape(normalizedSelectedText)
@@ -6418,6 +6432,39 @@ function repairPreservation(input: { text: string; plan: SurfacePlan; preservati
   void input.plan;
   void input.preservation;
   return removeEmptyLines(input.text);
+}
+
+/** The request's content units the mouth holds an answer to: no derived closed-class word, nothing short enough for the fuzzy matcher to confuse. Pure. */
+function mouthCoverageUnits(input: SpeakInput): string[] {
+  if (!input.requestText || sessionAssertionTurn(input)) return [];
+  const closedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
+  return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
+}
+
+/** An owner assertion bound as session evidence is confirmed by restating it; it is not a question to cover or an echo to reject. Pure. */
+function sessionAssertionTurn(input: SpeakInput): boolean {
+  return input.evidence.some(span => String(span.id).startsWith("evidence_session_"));
+}
+
+/** Corpus-oriented truth at the mouth: a sourced surface that shares none of the request's content units (nor its source title) speaks about something else. Pure. */
+function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: SpeakInput, quotation: boolean): string[] {
+  if (quotation) return [];
+  const units = mouthCoverageUnits(input);
+  if (!units.length) return [];
+  const ids = new Set([...candidate.evidenceIds, ...(candidate.id === input.selectedCandidate?.id ? input.selectedCandidate?.evidenceIds ?? [] : [])].map(String));
+  const bound = input.evidence.filter(span => ids.has(String(span.id)));
+  const spans = bound.length ? bound : input.evidence;
+  if (!spans.length) return [];
+  return spans.some(span => answerCoversRequest([text], span, units)) ? [] : ["surface.reject.request_coverage"];
+}
+
+/** A surface repeats the request when it echoes it or when every content unit it carries is already in the request: it adds nothing. Pure. */
+function surfaceRepeatsPrompt(surface: string, prompt: string): boolean {
+  if (!prompt.trim()) return false;
+  if (surfaceEchoesPrompt(surface, prompt)) return true;
+  const promptUnits = new Set(promptSurfaceUnits(collapsePromptWhitespace(prompt).toLocaleLowerCase()).filter(unit => unit.length >= 3));
+  const units = promptSurfaceUnits(collapsePromptWhitespace(surface).toLocaleLowerCase()).filter(unit => unit.length >= 3);
+  return units.length > 0 && units.every(unit => promptUnits.has(unit));
 }
 
 function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {

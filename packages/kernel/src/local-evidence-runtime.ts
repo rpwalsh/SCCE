@@ -601,7 +601,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
-  const selected = rows[0];
+  const coverageUnits = requestContentEvidenceUnits(input.requestText);
+  const selected = rows.find(row => row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits));
   if (!selected) return undefined;
   // Learned response-form sentence budget (lexical-gap fix for
   // enumeration-shaped requests): a request like "list the main characters
@@ -723,6 +724,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
   const sentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
   if (!sentences.length) return undefined;
+  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(sentences, span, requestContentEvidenceUnits(input.requestText)))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
@@ -792,7 +794,18 @@ export function proposeSourceExactEvidenceAnswer(input: {
 }
 
 
- function requestContentEvidenceUnits(requestText: string): string[] {
+/** Corpus-oriented truth: an answer must carry a third of the request's content units, in its sentences or its source title; a passage sharing none of them is a different topic, however well it scores lexically. Pure. */
+export function answerCoversRequest(sentences: readonly string[], span: EvidenceSpan, contentUnits: readonly string[]): boolean {
+  // A request with no subject-bearing unit (a pronoun follow-up, a bare cue) is covered by whatever it was bound to.
+  if (!contentUnits.some(unit => [...unit].length >= 6)) return true;
+  // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
+  const surfaceUnits = memoizedSurfaceUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
+  const covered = contentUnits.filter(unit => surfaceUnits.some(surfaceUnit =>
+    [...unit].length < 5 ? surfaceUnit === unit : requestUnitMatchesSurface(unit, surfaceUnit))).length;
+  return covered >= Math.max(1, Math.ceil(contentUnits.length / 3));
+}
+
+export function requestContentEvidenceUnits(requestText: string): string[] {
   return uniqueKernelStrings(requestContentAnchorUnits(requestText)
     .filter(unit => [...unit].length >= 4 || hasUncasedNonLatinLetter(unit)));
 }
