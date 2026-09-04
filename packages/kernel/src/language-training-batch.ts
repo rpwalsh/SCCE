@@ -407,9 +407,14 @@ export function compileLanguageTrainingBatch(input: {
     ],
     hasher: input.hasher
   });
+  // A series accumulates: each set already carries its predecessors, so the newest supersedes the rest. Handing
+  // the compiler every generation of a series threw on the duplicate key and lost the whole batch's constructions
+  // -- the ingestion lane already collapses them this way.
+  const alignmentAlternativeSetsBySeries = new Map<string, AlignmentAlternativeSet>();
+  for (const set of alignmentAlternativeSets) alignmentAlternativeSetsBySeries.set(set.seriesId, set);
   const reversibleConstructionCompilation = sparseAlignment
     ? compileReversibleConstructions({
-      alternativeSets: alignmentAlternativeSets,
+      alternativeSets: [...alignmentAlternativeSetsBySeries.values()],
       promotionModel: alignmentPromotionModel,
       calibrationModel: alignmentCalibrationModel,
       supports: routedAlignmentSupports,

@@ -56,17 +56,22 @@ UPDATE scce3_runtime.language_profiles lp SET referenced_by_language_memory = TR
 -- checking the other three tables on every delete, and language memory rows
 -- are not deleted in normal operation; a stale TRUE costs one wasted
 -- candidate, while a wrong FALSE loses a profile from retrieval entirely.
+-- plpgsql resolves every field reference in an expression against the row type it is handed, whichever CASE
+-- branch would be taken, so naming model_json and frame_json here made the trigger fail on every insert into
+-- language_units and language_patterns ("record \"new\" has no field \"model_json\""). That silently ended all
+-- language-memory writes the day this shipped. Reading the row as JSON is table-shape independent.
 CREATE OR REPLACE FUNCTION scce3_runtime.mark_language_profile_referenced()
 RETURNS TRIGGER AS $$
 DECLARE
+  row_json JSONB;
   target TEXT;
 BEGIN
-  target := CASE TG_TABLE_NAME
-    WHEN 'language_units' THEN NEW.profile_id
-    WHEN 'language_patterns' THEN NEW.profile_id
-    WHEN 'ngram_models' THEN NEW.model_json->>'profileId'
-    WHEN 'semantic_frames' THEN NEW.frame_json->>'profileId'
-  END;
+  row_json := to_jsonb(NEW);
+  target := COALESCE(
+    row_json->>'profile_id',
+    row_json->'model_json'->>'profileId',
+    row_json->'frame_json'->>'profileId'
+  );
   IF target IS NOT NULL THEN
     UPDATE scce3_runtime.language_profiles
        SET referenced_by_language_memory = TRUE

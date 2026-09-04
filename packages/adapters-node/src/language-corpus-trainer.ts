@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import type { AlignmentCalibrationObservation, AlignmentPromotionObservation, GraphEdge, GraphNode, Hyperedge } from "@scce/kernel";
 import {
   createClock,
   createEventFactory,
@@ -57,6 +58,11 @@ export interface LanguageCorpusTrainingInput {
   languageAliases?: readonly string[];
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   creativeEventCompiler?: CreativeEventConstructionCompiler;
+  /** Source versions this text came from; their promoted evidence is what the batch's graph slice is read from. */
+  graphSnapshotSourceVersionIds?: readonly string[];
+  /** Alignment evidence carried from earlier batches: a construction is promoted on what the corpus shows, not one document. */
+  alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
+  alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
   /**
    * Skip writing n-gram observations and models. For text whose n-gram
    * mass is ALREADY in the store (stored-corpus construction training
@@ -88,6 +94,9 @@ export interface LanguageCorpusTrainingReport {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  /** This batch's own alignment observations, so a caller can carry them into the next batch. */
+  alignmentPromotionObservations: AlignmentPromotionObservation[];
+  alignmentCalibrationObservations: AlignmentCalibrationObservation[];
   constructionCandidates: number;
   languageConstructions: number;
   graphSurfaceAlignments: number;
@@ -95,6 +104,57 @@ export interface LanguageCorpusTrainingReport {
   eventId: string;
   warnings: string[];
 }
+
+/** The promoted spans those source versions own, which is what the graph was projected from. Impure: reads storage. */
+async function promotedEvidenceIdsForSourceVersions(
+  storage: LanguageCorpusTrainingInput["storage"],
+  sourceVersionIds: readonly string[]
+): Promise<EvidenceSpan["id"][]> {
+  const ids: EvidenceSpan["id"][] = [];
+  for (const sourceVersionId of sourceVersionIds.slice(0, TRAINING_SNAPSHOT_SOURCES)) {
+    try {
+      const found = await storage.evidence.searchEvidence({
+        sourceVersionId: sourceVersionId as EvidenceSpan["sourceVersionId"],
+        status: "promoted",
+        limit: TRAINING_SNAPSHOT_EVIDENCE
+      });
+      for (const item of found) ids.push(item.span.id);
+    } catch { /* a lane without this lookup simply trains without a snapshot */ }
+    if (ids.length >= TRAINING_SNAPSHOT_EVIDENCE) break;
+  }
+  return [...new Set(ids)].slice(0, TRAINING_SNAPSHOT_EVIDENCE);
+}
+
+/** This batch's evidence as a graph snapshot, bounded so training stays inside its heap budget. Impure: reads storage. */
+async function graphSnapshotForEvidence(
+  storage: LanguageCorpusTrainingInput["storage"],
+  evidence: readonly EvidenceSpan[],
+  sourceVersionIds?: readonly string[]
+): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] } | undefined> {
+  // A lane that re-chunks stored text mints new spans, and the graph was projected from the original ingestion's
+  // spans, so their ids never meet. When the caller names the source versions the text came from, the slice is
+  // read from those versions' own promoted evidence instead.
+  const evidenceIds = sourceVersionIds?.length
+    ? await promotedEvidenceIdsForSourceVersions(storage, sourceVersionIds)
+    : [...new Set(evidence.map(span => span.id))].slice(0, TRAINING_SNAPSHOT_EVIDENCE);
+  if (!evidenceIds.length) return undefined;
+  try {
+    const slice = await storage.graph.getSlice({
+      evidenceIds,
+      limitNodes: TRAINING_SNAPSHOT_NODES,
+      limitEdges: TRAINING_SNAPSHOT_EDGES
+    });
+    if (!slice.hyperedges.length) return undefined;
+    return { nodes: slice.nodes, edges: slice.edges, hyperedges: slice.hyperedges };
+  } catch {
+    return undefined;
+  }
+}
+
+const TRAINING_SNAPSHOT_EVIDENCE = 64;
+const TRAINING_SNAPSHOT_SOURCES = 8;
+const TRAINING_SNAPSHOT_NODES = 512;
+const TRAINING_SNAPSHOT_EDGES = 1024;
 
 export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
   return input.storage.transaction(() => trainLanguageCorpusTextTransaction(input));
@@ -189,11 +249,18 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   profile = { ...profile, informationLabel };
   await input.storage.model.putLanguageProfile(profile);
 
+  // The construction lane compiles nothing without the graph its surfaces align to: alignment lattices are
+  // built only when the batch carries hyperedges, so with no snapshot every run produced zero reversible
+  // constructions and the mouth had no learned sentence shapes to speak with. The snapshot is this batch's own
+  // evidence, read back from the graph the same evidence was projected into.
+  const batchGraphSnapshot = await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds);
+
   const compiledBatch = compileLanguageTrainingBatch({
     runtime: languageMemory,
     hasher,
     batch: {
       streamId: input.streamUri,
+      ...(batchGraphSnapshot ? { graphSnapshot: batchGraphSnapshot } : {}),
       sourceSystem,
       profile,
       sourceVersionId,
@@ -203,7 +270,9 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       maxOrder: input.ngramMaxOrder,
       maxCountersPerOrder: input.ngramMaxCountersPerOrder,
       vocabularyLimit: input.ngramVocabularyLimit,
-      constructionSets: input.constructionSets
+      constructionSets: input.constructionSets,
+      ...(input.alignmentPromotionObservations?.length ? { alignmentPromotionObservations: input.alignmentPromotionObservations } : {}),
+      ...(input.alignmentCalibrationObservations?.length ? { alignmentCalibrationObservations: input.alignmentCalibrationObservations } : {})
     }
   });
   const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
@@ -292,6 +361,8 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     languageUnits: units.length,
     languagePatterns: patterns.length,
     semanticFrames: frames.length,
+    alignmentPromotionObservations: [...compiledBatch.alignmentHeldoutEvaluation.promotionObservations],
+    alignmentCalibrationObservations: [...compiledBatch.alignmentHeldoutEvaluation.calibrationObservations],
     constructionCandidates: compiledBatch.constructionCandidates,
     languageConstructions: compiledConstructionPatterns.length,
     graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
