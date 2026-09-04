@@ -60,6 +60,8 @@ export interface LanguageCorpusTrainingInput {
   creativeEventCompiler?: CreativeEventConstructionCompiler;
   /** Source versions this text came from; their promoted evidence is what the batch's graph slice is read from. */
   graphSnapshotSourceVersionIds?: readonly string[];
+  /** Character ranges of the concatenated text and the source family each belongs to. */
+  sourceFamilyRanges?: readonly { start: number; end: number; sourceFamilyId: string }[];
   /** Alignment evidence carried from earlier batches: a construction is promoted on what the corpus shows, not one document. */
   alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
   alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
@@ -228,7 +230,8 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       exactSourceText: true
     });
     evidence = stampEvidence(extracted.spans, sourceSystem, sourceSystemId, metadata)
-      .map(span => ({ ...span, informationLabel: sourceInformationLabel }));
+      .map(span => ({ ...span, informationLabel: sourceInformationLabel }))
+      .map(span => withSourceFamily(span, input.sourceFamilyRanges));
     for (const span of evidence) {
       await input.storage.blobs.put(Buffer.from(span.text, "utf8"), mediaType);
     }
@@ -370,6 +373,21 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     eventId: String(learned.id),
     warnings: [...new Set(constructionWarnings)].sort()
   };
+}
+
+/** Independence is measured over source families, so a span keeps the family of the document it came from
+ *  rather than the batch that happened to carry it. Pure. */
+function withSourceFamily(
+  span: EvidenceSpan,
+  ranges: readonly { start: number; end: number; sourceFamilyId: string }[] | undefined
+): EvidenceSpan {
+  if (!ranges?.length) return span;
+  const found = ranges.find(range => span.charStart >= range.start && span.charStart < range.end);
+  if (!found) return span;
+  const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance)
+    ? span.provenance as Record<string, JsonValue>
+    : {};
+  return { ...span, provenance: { ...provenance, sourceFamilyId: found.sourceFamilyId } };
 }
 
 function stampEvidence(spans: readonly EvidenceSpan[], sourceSystem: string, sourceSystemId: string, metadata: JsonValue): EvidenceSpan[] {
