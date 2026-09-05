@@ -55,11 +55,14 @@ export function validateTranslationRoundTrip(input: {
   sourceProfile: MultilingualLanguageProfile;
   targetProfile: MultilingualLanguageProfile;
   lexicalAlignments: readonly LexicalAlignmentRecord[];
+  /** Another translator's output to gate. Without it the round trip validates this lane's own realization. */
+  realizedTargetText?: string;
   hasher?: Hasher;
 }): TranslationRoundTripValidation {
   const forwardPlan = buildTranslationPlan(input.sourceText, input.sourceProfile, input.targetProfile, [...input.lexicalAlignments]);
+  const realizedText = input.realizedTargetText ?? forwardPlan.targetText;
   const reverseAlignments = input.lexicalAlignments.map(reverseLexicalAlignment);
-  const interpretedPlan = buildTranslationPlan(forwardPlan.targetText, input.targetProfile, input.sourceProfile, reverseAlignments);
+  const interpretedPlan = buildTranslationPlan(realizedText, input.targetProfile, input.sourceProfile, reverseAlignments);
   const gate = factualRoundTripGate({
     intendedText: input.sourceText,
     realizedText: interpretedPlan.targetText,
@@ -67,7 +70,7 @@ export function validateTranslationRoundTrip(input: {
   });
   return {
     sourceText: input.sourceText,
-    targetText: forwardPlan.targetText,
+    targetText: realizedText,
     backTranslatedText: interpretedPlan.targetText,
     forwardPlan,
     interpretedPlan,
