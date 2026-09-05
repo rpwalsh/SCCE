@@ -123,6 +123,37 @@ describe("recursive generative derivation (ceiling break)", () => {
     expect(composite.depth).toBe(1);
   });
 
+  it("realizes a discontinuous operator in its own reading order, not the order its spans sit in", () => {
+    // "SOMEEVENT aside, the tower fell" cut as two spans whose logical order is the reverse of their byte order:
+    // the construction reads "the tower fell" first, then the slotted span.
+    const base = construction({
+      id: "aside",
+      relationId: "relation.cause",
+      surface: "SOMEEVENT aside the tower fell",
+      argument: { roleId: "relation.event", start: 0, end: 9 },
+      evidenceIds: ["evidence.aside.1", "evidence.aside.2"]
+    });
+    const discontinuous = {
+      ...base,
+      surface: {
+        ...base.surface,
+        discontinuous: {
+          id: "aside.discontinuous",
+          spans: [
+            { id: "aside.span.slot", order: 1, utf16Start: 0, utf16End: 15, portIds: ["aside.port.arg"] },
+            { id: "aside.span.tail", order: 0, utf16Start: 16, utf16End: 30, portIds: [] }
+          ]
+        }
+      }
+    } as unknown as ReversibleConstruction;
+
+    const algebra = buildConstructionAlgebra({ constructions: [discontinuous, discoverConstruction], maxRecursionDepth: 3 });
+    const composite = algebra.composed[0]!;
+    const realized = realizeDerivation({ constructionId: composite.id, algebra });
+
+    expect(realized).toBe("the tower fell the scientist discovered the flaw aside");
+  });
+
   it("refuses to compose a type that no construction produces", () => {
     const mismatched = construction({
       id: "mismatch",
