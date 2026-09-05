@@ -7,7 +7,7 @@ import { ChatViewProvider } from "./chat-view.js";
 import { ScceClient } from "./client.js";
 import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from "./config.js";
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
-import type { ScceEndpoint } from "./protocol.js";
+import { EXTENSION_PROTOCOL_SCHEMA, parseExtensionMessage, type ExtensionMessage, type ExtensionTaskState, type ScceEndpoint } from "./protocol.js";
 import {
   assertSameWorkspacePhysicalBinding,
   assertWorkspacePathAbsent,
@@ -78,12 +78,27 @@ class TaskTimelineProvider implements vscode.TreeDataProvider<ExtensionTaskRecor
   }
 }
 
+/** The status stream the extension publishes: every readiness change, task transition and result is validated against the
+ *  declared protocol before it is written, so the log is the protocol rather than a parallel description of it. */
+interface ExtensionSession {
+  output: vscode.OutputChannel;
+  publish: (message: ExtensionMessage) => void;
+}
+
+let session: ExtensionSession | undefined;
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel("SCCE");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = "scce.checkReadiness";
   status.text = "$(pulse) SCCE: checking";
   status.show();
+
+  const publish = (message: ExtensionMessage): void => {
+    const validated = parseExtensionMessage(message);
+    output.appendLine(`[protocol] ${JSON.stringify(validated)}`);
+  };
+  session = { output, publish };
 
   const timeline = new TaskTimeline(context.globalState);
   const provider = new TaskTimelineProvider(timeline);
@@ -117,6 +132,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     approvalNotice?: { message: string; detail: string }
   ): Promise<T | undefined> => {
     const task = await timeline.start(endpoint, label, mutates);
+    const announce = (state: ExtensionTaskState): void =>
+      publish({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "task", taskId: task.id, state, observedAt: Date.now() });
+    announce(task.state);
     provider.refresh();
     if (mutates) {
       const approved = await vscode.window.showWarningMessage(
@@ -126,15 +144,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (approved !== "Approve once") {
         await timeline.transition(task.id, "cancelled", "User did not approve the mutation.");
+        announce("cancelled");
         provider.refresh();
         return undefined;
       }
       await timeline.transition(task.id, "running");
+      announce("running");
       provider.refresh();
     }
     try {
       const result = await action(await client());
       await timeline.transition(task.id, "succeeded");
+      announce("succeeded");
+      publish({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "result", taskId: task.id, endpoint, payload: result, observedAt: Date.now() });
       output.appendLine(`[${new Date().toISOString()}] ${label}`);
       output.appendLine(formatOutput(result));
       output.show(true);
@@ -143,6 +165,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await timeline.transition(task.id, "failed", message);
+      announce("failed");
       provider.refresh();
       output.appendLine(`[${new Date().toISOString()}] ${label} failed: ${message}`);
       void vscode.window.showErrorMessage(`SCCE: ${message}`);
@@ -154,12 +177,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("scce.checkReadiness", async () => {
       status.text = "$(pulse) SCCE: checking";
       const result = await run("ready", "Check readiness", false, activeClient => activeClient.ready());
-      if (result && typeof result === "object" && "ok" in result && result.ok === true) {
+      const ready = Boolean(result && typeof result === "object" && "ok" in result && result.ok === true);
+      if (ready) {
         status.text = "$(check) SCCE: ready";
         status.tooltip = `Ready at ${configuredServerUrl()}`;
       } else {
         status.text = "$(error) SCCE: unavailable";
       }
+      publish({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "readiness", ready, serverUrl: configuredServerUrl(), observedAt: Date.now() });
     }),
     vscode.commands.registerCommand("scce.setServerToken", async () => {
       const token = await vscode.window.showInputBox({ title: "SCCE local server token", password: true, prompt: "Leave empty to remove the stored token", ignoreFocusOut: true });
@@ -492,7 +517,11 @@ async function autoIngestOpenWorkspace(client: () => Promise<ScceClient>, output
   }
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  // The host is going away: publish the closing readiness record so the status stream ends where the extension does.
+  session?.publish({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "readiness", ready: false, serverUrl: configuredServerUrl(), observedAt: Date.now() });
+  session = undefined;
+}
 
 function configuredServerUrl(): string {
   return normalizeLocalServerUrl(vscode.workspace.getConfiguration("scce").get<string>("serverUrl"));
