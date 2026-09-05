@@ -520,14 +520,30 @@ export function createIngestionRuntime(options: {
           }
         });
         const sourceSystem = kernelString(jsonRecord(file.metadata).sourceSystem) ?? "workspace";
-        await observeLanguageTrainingSegmentation({
+        const spacingEvidence = await observeLanguageTrainingSegmentation({
           storage: deps.storage,
           batch: { text: languageTrainingText, createdAt: now },
           tenantId: informationLabel.tenantId,
           corpusRole: corpusRoleIdForSourceSystem(sourceSystem),
           activeImportVersion: kernelString(jsonRecord(file.metadata).activeImportVersion) ?? file.namespace,
-          hasher
+          hasher,
+          principals: informationLabel.principals
         });
+        // What the corpus itself has now observed about this script's word spacing, recorded where the rest of the
+        // batch's learning is recorded.
+        if (spacingEvidence) {
+          events.push(await append(eventFactory.create({
+            episodeId,
+            typeId: "SegmentationSpacingObserved",
+            payload: toJsonValue({
+              keyId: spacingEvidence.keyId,
+              languageCluster: spacingEvidence.languageCluster,
+              spacedRatio: spacingEvidence.spacedRatio,
+              boundaryObservations: spacingEvidence.boundaryObservations,
+              label: spacingEvidence.label
+            })
+          })));
+        }
         const observations = labelRecords(compiledBatch.observations, informationLabel);
         const models = labelRecords(compiledBatch.models, informationLabel);
         const units = labelRecords(compiledBatch.units, informationLabel);
