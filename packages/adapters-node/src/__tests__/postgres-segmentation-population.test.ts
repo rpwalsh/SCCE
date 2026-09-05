@@ -44,6 +44,7 @@ function model(id: string): SegmentationPopulationModel {
       mdlGainNats: 0,
       finalEvaluationNats: 0
     },
+    collapseGuard: [],
     audit: {}
   };
 }

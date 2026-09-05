@@ -9,6 +9,7 @@ import {
   type BoundaryEstimatorModel,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
+import { evaluatePopulationCollapseGuard } from "./population-collapse-guard.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 
@@ -77,6 +78,15 @@ export interface SegmentationPopulationModel {
     mdlGainNats: number;
     finalEvaluationNats: number;
   };
+  /** Pairwise Jensen-Shannon check that two retained populations are genuinely distinct rather than one split in name. */
+  collapseGuard: Array<{
+    leftPopulationId: string;
+    rightPopulationId: string;
+    divergence: number;
+    distance: number;
+    distinct: boolean;
+    minimumDivergence: number;
+  }>;
   audit: JsonValue;
 }
 
@@ -214,6 +224,22 @@ export function learnSegmentationPopulations(input: {
   const canonical = {
     schema: SEGMENTATION_POPULATION_SCHEMA,
     rootPopulationId: input.rootPopulationId,
+    // Two populations that survived selection but carry the same boundary distribution have collapsed into one in
+    // everything but name; the guard measures that directly (item 104) rather than trusting the description length.
+    collapseGuard: populations.flatMap((left, index) => populations.slice(index + 1).map(right => {
+      const guard = evaluatePopulationCollapseGuard(
+        boundaryDistribution(left.statistics),
+        boundaryDistribution(right.statistics)
+      );
+      return {
+        leftPopulationId: left.id,
+        rightPopulationId: right.id,
+        divergence: guard.divergence,
+        distance: guard.distance,
+        distinct: guard.distinct,
+        minimumDivergence: guard.minimumDivergence
+      };
+    })),
     populations: populations.map(population => ({
       id: population.id,
       prior: population.prior,
@@ -734,4 +760,12 @@ function emptyCandidate(): CandidateFit {
 
 function quantize(value: number): number {
   return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+/** A population's boundary behaviour as one distribution over its own feature rows, so two populations are comparable. */
+function boundaryDistribution(statistics: { rows: ReadonlyArray<{ key: string; positiveMass: number; negativeMass: number }> }): number[] {
+  const rows = [...statistics.rows].sort((left, right) => left.key.localeCompare(right.key));
+  const total = rows.reduce((sum, row) => sum + row.positiveMass + row.negativeMass, 0);
+  if (total <= 0) return rows.map(() => 0);
+  return rows.map(row => (row.positiveMass + row.negativeMass) / total);
 }
