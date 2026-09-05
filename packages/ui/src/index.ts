@@ -3,7 +3,6 @@
 export * from "./workbench-model.js";
 export * from "./developer-surface.js";
 export * from "./locales.js";
-export * as codexSurface from "./codex-surface.js";
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
