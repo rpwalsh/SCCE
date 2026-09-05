@@ -49,6 +49,14 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   answered with live web results. Enforcement now lives in the
   evaluation adapter, which disables every connector before constructing
   the runtime. Every number above was produced under the fix.
+- **Implemented-but-unreached exports** (2026-09-05): a reachability pass
+  from the real entry points (server routes and startup, CLI, production
+  turn runtime, kernel, adapters, VS Code, workbench) counts 1,696 exports,
+  of which 1,121 are reached and 469 are module-internal helpers. The
+  remaining 97 are implemented, tested capabilities nothing calls yet;
+  they are being wired rather than deleted, and the count is tracked as it
+  falls (183 at the start of this pass). This is a completeness measure of
+  the wiring, not of the architecture.
 - **Test suite**: unit tests run per package (`pnpm test:unit`), including
   live-database tests against a real PostgreSQL instance when
   `SCCE_TEST_DATABASE_URL` is set; the counts printed by that run are the
@@ -246,6 +254,12 @@ Commands:
   pnpm scce inspect last
   pnpm scce inspect brain
 ```
+
+Two commands added since that capture: `scce eval gate <objective.jsonl>`
+applies the release gate to a sealed run's own objective records (metrics
+read from the run, paired against its baseline, exit 1 when the gate
+fails), and `scce hydrate inspect <path>` answers for one hydration
+record, replays a trace end to end, or reports the plan's trace coverage.
 
 ### Learning with consent
 
