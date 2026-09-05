@@ -218,6 +218,10 @@ async function main(): Promise<void> {
             }
           });
           process.stdout.write(`${result.answer}\n`);
+          // The turn asks before it learns; the plan id is what `scce learn pursue <planId>` needs. Data, not prose.
+          const motion = result.runtimeMotion && typeof result.runtimeMotion === "object" && !Array.isArray(result.runtimeMotion) ? result.runtimeMotion as Record<string, unknown> : undefined;
+          const consent = motion && motion.status === "awaiting_consent" && motion.consent && typeof motion.consent === "object" ? motion.consent as Record<string, unknown> : undefined;
+          if (consent && typeof consent.planId === "string") process.stdout.write(`awaiting_consent ${String(consent.capabilityId ?? "")} ${consent.planId}\n`);
           if (result.emissionGraph.artifacts.length) {
             process.stdout.write("\nArtifacts persisted in PostgreSQL:\n");
             for (const artifact of result.emissionGraph.artifacts) process.stdout.write(`- ${artifact.path} ${artifact.contentHash}\n`);

@@ -1448,15 +1448,40 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            -- stopword belongs. Selective terms have shorter posting lists
            -- than the cap and are unaffected, so the terms that decide the
            -- ranking are the ones carried in full.
-           feature_hits AS (
-             SELECT postings.evidence_id AS id, requested.feature, requested.feature_ord
+           -- A feature over the cap must not decide which spans exist as candidates: LIMIT without ORDER BY
+           -- picked an arbitrary slice of "born"'s postings, so the lead sentence of the very article asked
+           -- about lost its "born" match while unrelated biographies kept theirs, and it fell out of the top
+           -- of "When was Ada Lovelace born?". Candidates are seeded by the selective features (their postings
+           -- fit under the cap); a common feature then scores against those candidates only, for every one
+           -- of them that carries it. Its IDF is still driven toward zero by the cap, as the ranking intends.
+           feature_postings AS (
+             SELECT requested.feature, requested.feature_ord,
+                    (SELECT COUNT(*) FROM (
+                       SELECT 1 FROM ${storage.table("evidence_anchor_index")} probe
+                       WHERE probe.features @> ARRAY[requested.feature]::text[]
+                       LIMIT ${EVIDENCE_FEATURE_POSTING_CAP + 1}
+                     ) bounded) AS posting_count
              FROM requested_features requested
-             CROSS JOIN LATERAL (
-               SELECT anchor_index.evidence_id
-               FROM ${storage.table("evidence_anchor_index")} anchor_index
-               WHERE anchor_index.features @> ARRAY[requested.feature]::text[]
-               LIMIT ${EVIDENCE_FEATURE_POSTING_CAP}
-             ) postings
+           ),
+           seed_hits AS (
+             SELECT anchor_index.evidence_id AS id, postings.feature, postings.feature_ord
+             FROM feature_postings postings
+             JOIN ${storage.table("evidence_anchor_index")} anchor_index
+               ON anchor_index.features @> ARRAY[postings.feature]::text[]
+             WHERE postings.posting_count <= ${EVIDENCE_FEATURE_POSTING_CAP}
+           ),
+           common_hits AS (
+             SELECT seeds.id, postings.feature, postings.feature_ord
+             FROM (SELECT DISTINCT id FROM seed_hits) seeds
+             JOIN ${storage.table("evidence_anchor_index")} anchor_index ON anchor_index.evidence_id = seeds.id
+             JOIN feature_postings postings
+               ON postings.posting_count > ${EVIDENCE_FEATURE_POSTING_CAP}
+              AND anchor_index.features @> ARRAY[postings.feature]::text[]
+           ),
+           feature_hits AS (
+             SELECT * FROM seed_hits
+             UNION ALL
+             SELECT * FROM common_hits
            ),
            candidate_count AS (SELECT GREATEST(1, COUNT(DISTINCT id))::float8 AS n FROM feature_hits),
            feature_df AS (SELECT feature, COUNT(DISTINCT id)::float8 AS df FROM feature_hits GROUP BY feature),

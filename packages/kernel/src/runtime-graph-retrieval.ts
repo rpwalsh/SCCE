@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { codeRequestRecognized, codeRequestSignal } from "./code-request.js";
 import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
@@ -554,7 +555,16 @@ export function createRuntimeGraphRetrieval(options: {
     return `sha256_${hasher.digestHex(text)}`;
   }
 
-  async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
+  /** A span whose media type or origin is source code; structural, no language rules. Pure. */
+function spanIsSourceCode(span: EvidenceSpan): boolean {
+  const media = String(span.mediaType ?? "").toLocaleLowerCase();
+  if (media.startsWith("text/x-") || media.includes("javascript") || media.includes("typescript") || media.includes("python")) return true;
+  const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
+  const uri = String(provenance.uri ?? provenance.canonicalUri ?? "");
+  return uri.startsWith("file://") && /.(ts|tsx|js|mjs|cjs|py|rs|go|java|cs|cpp|c|h|rb|php|kt|swift)$/iu.test(uri);
+}
+
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
     const anchorFeatureGroups = sourceAnchorRetrievalFeatureGroups(text);
     const anchorFeatures = uniqueKernelStrings(anchorFeatureGroups.flat());
     // Source-bound retrieval should rank on the subject anchors themselves. Mixing
@@ -582,7 +592,16 @@ export function createRuntimeGraphRetrieval(options: {
       : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48 });
     // Late-interaction visual prefilter (Phase 3): one more candidate group upstream of
     // admission and graph activation; it narrows, it never decides.
-    const evidenceResults = [...anchoredEvidenceResults, ...(await visualEvidenceResults(text))];
+    const gatheredResults = [...anchoredEvidenceResults, ...(await visualEvidenceResults(text))];
+    // 38,232 of the corpus's promoted spans are the owner's own source files, and four of them carry the
+    // Lovelace birth date in a comment; for "When was Ada Lovelace born?" those outranked Wikipedia. A request
+    // that is not about code is answered from prose while any prose remains; a code request keeps everything.
+    const evidenceResults = codeRequestRecognized(codeRequestSignal(text))
+      ? gatheredResults
+      : (() => {
+        const prose = gatheredResults.filter(item => !spanIsSourceCode(item.span));
+        return prose.length ? prose : gatheredResults;
+      })();
     kernelTrace({
       stage: "graph.resolve.anchor_evidence_search",
       label: "kernel.sourceAnchoredEvidenceForText",
