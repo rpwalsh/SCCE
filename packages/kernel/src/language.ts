@@ -337,7 +337,17 @@ function scriptMass(chars: string[]): Map<string, number> {
   return new Map([...counts.entries()].sort((a, b) => b[1] - a[1]).map(([script, count]) => [script, count / total]));
 }
 
+const scriptIdByCharacter = new Map<string, string>();
+
 export function learnedScriptIdForCharacter(char: string): string {
+  const cached = scriptIdByCharacter.get(char);
+  if (cached !== undefined) return cached;
+  const script = classifyScriptOfCharacter(char);
+  if (scriptIdByCharacter.size < 65536) scriptIdByCharacter.set(char, script);
+  return script;
+}
+
+function classifyScriptOfCharacter(char: string): string {
   if (/\p{Script=Latin}/u.test(char)) return "script:Latn";
   if (/\p{Script=Arabic}/u.test(char)) return "script:Arab";
   if (/\p{Script=Hebrew}/u.test(char)) return "script:Hebr";
@@ -358,9 +368,17 @@ export function learnedScriptIdForCharacter(char: string): string {
   return "script:Zxxx";
 }
 
+const RTL_SCRIPT_IDS = new Set(["script:Arab", "script:Hebr"]);
+const LTR_SCRIPT_IDS = new Set(["script:Latn", "script:Cyrl", "script:Hani", "script:Hang", "script:Hira", "script:Kana"]);
+
 function directionFrom(chars: string[]): LanguageProfile["direction"] {
-  const rtl = chars.filter(char => /\p{Script=Arabic}|\p{Script=Hebrew}/u.test(char)).length;
-  const ltr = chars.filter(char => /\p{Script=Latin}|\p{Script=Cyrillic}|\p{Script=Han}|\p{Script=Hangul}|\p{Script=Hiragana}|\p{Script=Katakana}/u.test(char)).length;
+  let rtl = 0;
+  let ltr = 0;
+  for (const char of chars) {
+    const script = learnedScriptIdForCharacter(char);
+    if (RTL_SCRIPT_IDS.has(script)) rtl += 1;
+    else if (LTR_SCRIPT_IDS.has(script)) ltr += 1;
+  }
   if (rtl > 0 && ltr > 0) return "mixed";
   if (rtl > 0) return "rtl";
   if (ltr > 0) return "ltr";
