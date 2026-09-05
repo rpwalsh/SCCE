@@ -1,15 +1,15 @@
 {
- "generatedAt": "2026-09-05T22:53:59.342Z",
+ "generatedAt": "2026-09-05T23:00:31.796Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1651,
-  "reached": 1115,
+  "reached": 1116,
   "internalHelpersOnly": 450,
-  "orphans": 86,
+  "orphans": 85,
   "declaredConstants": 7,
   "compatibilityAliases": 9,
   "legacyMigration": 2,
-  "implementedButUncalled": 68
+  "implementedButUncalled": 67
  },
  "orphans": [
   {
@@ -263,13 +263,6 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": true
-  },
-  {
-   "name": "scopeLanguageMemoryStateToProfile",
-   "file": "packages/kernel/src/language-memory-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
   },
   {
    "name": "createLatentConceptLearner",
