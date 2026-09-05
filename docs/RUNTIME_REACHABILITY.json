@@ -1,14 +1,15 @@
 {
- "generatedAt": "2026-09-05T22:42:15.074Z",
+ "generatedAt": "2026-09-05T22:43:41.895Z",
+ "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1696,
-  "reached": 1142,
-  "internalHelpersOnly": 459,
-  "orphans": 95,
+  "exports": 1651,
+  "reached": 1112,
+  "internalHelpersOnly": 450,
+  "orphans": 89,
   "declaredConstants": 7,
   "compatibilityAliases": 9,
   "legacyMigration": 2,
-  "implementedButUncalled": 77
+  "implementedButUncalled": 71
  },
  "orphans": [
   {
@@ -49,13 +50,6 @@
   {
    "name": "verifyTypeScriptCommandLaneSourceBinding",
    "file": "packages/adapters-node/src/typescript-command-lane.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "workspaceFixtureFileList",
-   "file": "packages/adapters-node/src/workspace-runtime.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
@@ -327,27 +321,6 @@
    "alias": false
   },
   {
-   "name": "trainLexicalAlignment",
-   "file": "packages/kernel/src/multilingual-translation.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "applyUserCorrection",
-   "file": "packages/kernel/src/multilingual-translation.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "validateRoundTrip",
-   "file": "packages/kernel/src/multilingual-translation.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
    "name": "compilePairedAntiUnifiedPattern",
    "file": "packages/kernel/src/paired-anti-unification.ts",
    "caller": "",
@@ -413,20 +386,6 @@
   {
    "name": "featureSetMemoStats",
    "file": "packages/kernel/src/primitives.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "parseLogText",
-   "file": "packages/kernel/src/program-planner.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "generatedArtifactSelfCheck",
-   "file": "packages/kernel/src/program-planner.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
