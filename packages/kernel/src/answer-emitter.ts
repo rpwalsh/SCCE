@@ -253,6 +253,14 @@ function usableAnswerSurface(text: string): string {
   return ensureSentence(clean);
 }
 
+/** A citation line names the subject and scores like an answer while stating only where something was
+ *  published: "When was Ada Lovelace born?" returned the 8 March 2018 date of a cited article. A URL in the
+ *  sentence is what marks it, and that reads the same in every language. Pure. */
+function citationSurfaceSignal(text: string): number {
+  const folded = text.toLocaleLowerCase();
+  return folded.includes("http://") || folded.includes("https://") || folded.includes("www.") ? 1 : 0;
+}
+
 function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceSpan[], maxSentences: number): string {
   const requestFeatures = featureSet(requestText, 256);
   const sentences = evidence
@@ -262,7 +270,7 @@ function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceS
       evidenceId: String(span.id),
       compactMemberList: compactMemberListSignal(text),
       anchorSignal: requestAnchorSignal(requestText, text),
-      score: weightedJaccard(requestFeatures, featureSet(text, 128)) + span.alpha * 0.14 + namedSurfaceMass(text) * 0.26 + collectionListSignal(text) * 0.42 + compactMemberListSignal(text) * 0.36 + requestAnchorSignal(requestText, text) * 0.48 - longSentencePenalty(text)
+      score: weightedJaccard(requestFeatures, featureSet(text, 128)) + span.alpha * 0.14 + namedSurfaceMass(text) * 0.26 + collectionListSignal(text) * 0.42 + compactMemberListSignal(text) * 0.36 + requestAnchorSignal(requestText, text) * 0.48 - longSentencePenalty(text) - citationSurfaceSignal(text) * 0.9
     })))
     .filter(row => cleanSentence(row.text))
     .sort((a, b) => b.score - a.score || a.evidenceId.localeCompare(b.evidenceId));

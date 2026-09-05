@@ -156,6 +156,18 @@ function renderAnswer(input: {
   return lines.join("\n").replace(/\n{3,}/gu, "\n\n").trim();
 }
 
+/** A citation line states where something was published, not what was asked. A URL marks it, in any script. Pure. */
+function carriesCitationUrl(text: string): boolean {
+  const folded = text.toLocaleLowerCase();
+  return folded.includes("http://") || folded.includes("https://") || folded.includes("www.");
+}
+
+/** Citation lines stand aside while any real sentence remains; if they are all there is, they still speak. Pure. */
+function withoutCitationLines(candidates: SurfaceRealizerCandidate[]): SurfaceRealizerCandidate[] {
+  const prose = candidates.filter(candidate => !carriesCitationUrl(candidate.text));
+  return prose.length ? prose : candidates;
+}
+
 function chooseDiverseSurfaces(
   candidates: SurfaceRealizerCandidate[],
   contextFeatures: readonly string[],
@@ -164,7 +176,7 @@ function chooseDiverseSurfaces(
   contextText: string,
   limit: number
 ): SurfaceRealizerCandidate[] {
-  const sorted = candidates
+  const sorted = withoutCitationLines(candidates)
     .map(item => ({ item, score: scoreSurface(item, contextFeatures, languageRuntime, languageMemory, contextText) }))
     .sort((a, b) => b.score.total - a.score.total || a.item.text.localeCompare(b.item.text));
   const selected: SurfaceRealizerCandidate[] = [];
@@ -185,7 +197,7 @@ function chooseSurface(
   contextText: string,
   locale?: string
 ): SurfaceRealizerCandidate {
-  return candidates
+  return withoutCitationLines(candidates)
     .map(item => ({ item, score: scoreSurface(item, contextFeatures, languageRuntime, languageMemory, contextText) }))
     .sort((a, b) => b.score.total - a.score.total || a.item.text.localeCompare(b.item.text))[0]?.item ?? candidates[0] ?? candidate(surfaceRecord({ kind: "surface.empty", locale: locale ?? null }), "unknown", [], "surface.profile_absence", 0);
 }
