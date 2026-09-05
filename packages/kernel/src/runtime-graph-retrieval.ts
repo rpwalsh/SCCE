@@ -585,11 +585,14 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // in alongside "ada lovelace"). Searching per-group and unioning
     // results lets sourceIdentityAdmissibleEvidenceForRequest's real
     // exact-title-match ranking see every candidate document at all.
+    // A question that is not about code draws its candidates from prose lanes only; the exclusion is applied in the
+    // search itself, before ranking, so the owner's repository cannot crowd the article out of the candidate set.
+    const proseSourceKinds = codeRequestRecognized(codeRequestSignal(text)) ? {} : { excludeSourceKinds: ["developer_intelligence"] };
     const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(group =>
-        deps.storage.evidence.searchEvidence({ features: group, limit: 32 })
+        deps.storage.evidence.searchEvidence({ features: group, limit: 32, ...proseSourceKinds })
       )).then(groupResults => groupResults.flat())
-      : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48 });
+      : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48, ...proseSourceKinds });
     // Late-interaction visual prefilter (Phase 3): one more candidate group upstream of
     // admission and graph activation; it narrows, it never decides.
     const gatheredResults = [...anchoredEvidenceResults, ...(await visualEvidenceResults(text))];
