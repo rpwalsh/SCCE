@@ -4,6 +4,11 @@ import path from "node:path";
 import {
   createSourceCompletionContract,
   planHydration,
+  validateSourceCompletionRecord,
+  inspectRecord,
+  replayTrace,
+  summarizeTraceCoverage,
+  type SourceCompletionInspectStore,
   toJsonValue,
   type BrainShardImportOptions,
   type BrainShardProvenanceClass,
@@ -79,6 +84,12 @@ export async function createHydrationPlan(rootPath: string, options: HydrationPl
   const index = await buildScce2BrainShardIndex(root, options);
   const evidenceCoverage = await inspectProfileEvidence(index);
   const records = hydrationRecordsFromIndex(index, evidenceCoverage);
+  // Each record is checked against its own family's declared shape before the plan counts it, so a malformed record is
+  // named here rather than discovered mid-import.
+  const invalidRecords = records.flatMap(record => {
+    const validation = validateSourceCompletionRecord(record.familyId as SourceCompletionFamilyId, record.record);
+    return validation.valid ? [] : [{ familyId: String(record.familyId), diagnostics: validation.diagnostics }];
+  });
   const sourceCompletionPlan = planHydration({ records, contract: createSourceCompletionContract() });
   const recordCountsByFamily = countBy(records.map(record => String(record.familyId)));
   const missingRequiredFields = sourceCompletionPlan.rejectedRecords.map(record => ({
@@ -92,12 +103,13 @@ export async function createHydrationPlan(rootPath: string, options: HydrationPl
     ...index.unsupportedSections.map(section => `unsupported section ${section.id}: ${section.reason}`),
     ...index.unknownSections.map(section => `unknown section ${section.id}: ${section.reason}`),
     ...sourceCompletionPlan.warnings,
-    ...sourceCompletionPlan.unsafeReasons
+    ...sourceCompletionPlan.unsafeReasons,
+    ...invalidRecords.map(row => `invalid ${row.familyId} record: ${row.diagnostics.join("; ")}`)
   ];
   const importableCount = index.importableSections.length;
   if (importableCount === 0) warnings.push("hydrate plan found zero importable SCCE2 sections");
   const directMissing = sourceCompletionPlan.rejectedRecords.filter(record => record.reasonIds.includes("source_completion.hydration.direct_evidence_requires_exact_source_span")).length;
-  const safeToHydrate = sourceCompletionPlan.safeToHydrate && importableCount > 0 && directMissing === 0;
+  const safeToHydrate = sourceCompletionPlan.safeToHydrate && importableCount > 0 && directMissing === 0 && invalidRecords.length === 0;
   return {
     schema: "scce.hydration.plan.v1",
     planId: sourceCompletionPlan.id,
@@ -221,6 +233,52 @@ async function inspectProfileEvidence(index: Scce2BrainShardIndex): Promise<{
     }
   }
   return { directEvidenceSpans, directEvidenceWithExactSourceSpan, profileExcerptEvidenceSpans, explicitDirectEvidenceMissingSourceSpan };
+}
+
+/** Operator inspection over the records a hydration plan builds: one record by id, one trace replayed end to end, or
+ *  the whole plan's trace coverage. Reads the same records the plan is built from, so it answers about what would
+ *  actually be written rather than about a separate description of it. */
+export async function inspectHydrationRecords(rootPath: string, options: HydrationPlanOptions & {
+  kind?: string;
+  id?: string;
+  traceId?: string;
+} = {}): Promise<{
+  schema: "scce.hydration.inspect.v1";
+  rootPath: string;
+  recordCount: number;
+  coverage: ReturnType<typeof summarizeTraceCoverage>;
+  record?: ReturnType<typeof inspectRecord>;
+  replay?: ReturnType<typeof replayTrace>;
+}> {
+  const root = path.resolve(rootPath);
+  const index = await buildScce2BrainShardIndex(root, options);
+  const evidenceCoverage = await inspectProfileEvidence(index);
+  const records = hydrationRecordsFromIndex(index, evidenceCoverage);
+  const store = inspectStoreFromHydrationRecords(records);
+  return {
+    schema: "scce.hydration.inspect.v1",
+    rootPath: root,
+    recordCount: store.records.length,
+    coverage: summarizeTraceCoverage(store),
+    ...(options.kind && options.id ? { record: inspectRecord(options.kind, options.id, store) } : {}),
+    ...(options.traceId ? { replay: replayTrace(options.traceId, store) } : {})
+  };
+}
+
+function inspectStoreFromHydrationRecords(records: readonly SourceCompletionHydrationRecord[]): SourceCompletionInspectStore {
+  return {
+    records: records.map((row, index) => {
+      const value = row.record && typeof row.record === "object" && !Array.isArray(row.record)
+        ? row.record as Record<string, unknown>
+        : {};
+      return {
+        kind: String(row.familyId),
+        id: typeof value.id === "string" ? value.id : `${String(row.familyId)}:${index}`,
+        ...(row.traceIds?.length ? { traceIds: [...row.traceIds] } : {}),
+        value: row.record
+      };
+    })
+  };
 }
 
 function hydrationRecordsFromIndex(index: Scce2BrainShardIndex, coverage: Awaited<ReturnType<typeof inspectProfileEvidence>>): SourceCompletionHydrationRecord[] {

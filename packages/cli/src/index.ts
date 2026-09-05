@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -632,7 +632,20 @@ async function hydrate(runtime: ReturnType<typeof createNodeRuntime>, args: stri
     printJson(await inspectHydrationStatus(runtime.storage, options));
     return;
   }
-  if ((sub !== "plan" && sub !== "import") || !target) return usage("scce hydrate <plan|import|status> <path> [--plan=<planId>] [limits]");
+  if (sub === "inspect") {
+    if (!target) return usage("scce hydrate inspect <path> [--kind=<family> --id=<recordId>] [--trace=<traceId>]");
+    const rest = args.slice(2);
+    const flag = (name: string): string | undefined => rest.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+    const inspectFlags = new Set(["--kind=", "--id=", "--trace="]);
+    printJson(await inspectHydrationRecords(path.resolve(target), {
+      ...parseScce2InspectOptions(rest.filter(arg => ![...inspectFlags].some(prefix => arg.startsWith(prefix)))),
+      ...(flag("kind") ? { kind: flag("kind")! } : {}),
+      ...(flag("id") ? { id: flag("id")! } : {}),
+      ...(flag("trace") ? { traceId: flag("trace")! } : {})
+    }));
+    return;
+  }
+  if ((sub !== "plan" && sub !== "import") || !target) return usage("scce hydrate <plan|import|status|inspect> <path> [--plan=<planId>] [limits]");
   if (sub === "plan") {
     printJson(await createHydrationPlan(path.resolve(target), parseScce2InspectOptions(args.slice(2))));
     return;
@@ -1568,6 +1581,7 @@ function usage(error?: string): void {
     "  pnpm scce hydrate plan <scce2-fixture-path>",
     "  pnpm scce hydrate import <scce2-fixture-path> --plan=<planId>",
     "  pnpm scce hydrate status [--status=<path>]",
+    "  pnpm scce hydrate inspect <scce2-fixture-path> [--kind=<family> --id=<recordId>] [--trace=<traceId>]",
     "  pnpm scce ingest <path-or-uri>",
     "  pnpm scce workspace init <path>",
     "  pnpm scce workspace ingest [path]",
