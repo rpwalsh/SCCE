@@ -13,15 +13,14 @@ import {
   type BoundedDebugSession,
   type DebugLoopDecision,
   type ProgramDiagnostic,
-  type RepairOperation,
-  type WordingRealizerPort
+  type RepairOperation
 } from "@scce/kernel";
 import { extractNodeSourceCodeFacts } from "./code-graph.js";
 import { runProcess } from "./document.js";
 
 /**
- * The code mouth: retrieve (code-graph facts) -> propose (a realizer constrained to the
- * workspace's own symbols) -> apply -> compile/typecheck gate -> bounded retry loop
+ * The code mouth: retrieve (code-graph facts) -> propose (compiler-owned code actions)
+ * -> apply -> compile/typecheck gate -> bounded retry loop
  * (bounded-autonomous-debugging decides continue/stop). Only a patch that passes the
  * gate survives; anything else is rolled back: it compiles, or it refuses.
  */
@@ -93,7 +92,7 @@ export async function runCodeMouth(input: {
       if (candidates.length) {
         return { outcome: "awaiting_selection", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, candidates, reason: `the compiler offers ${candidates.length} fixes for this file; choose one to apply` };
       }
-      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "no proposer produced a patch; enable a realization provider (constrained decoding or a local model server) or provide a diagnostic-bound request" };
+      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "no proposer produced a patch; name a diagnostic or fix the compiler owns for this file" };
     }
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
     if (!check.permitted) return { outcome: "budget_exhausted", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: check.reason };
@@ -196,11 +195,10 @@ export function parseTscDiagnostics(output: string, root: string): ProgramDiagno
   return out;
 }
 
-/** Real ports for a TypeScript workspace: code-graph retrieval, realizer-backed proposals masked to workspace symbols, file apply with rollback, tsc gate. */
+/** Real ports for a TypeScript workspace: code-graph retrieval, compiler-owned proposals, file apply with rollback, tsc gate. */
 export function createTypeScriptCodeMouthPorts(input: {
   workspaceRoot: string;
   tsconfigPath?: string;
-  realizer?: WordingRealizerPort;
   tscCommand?: { command: string; args: string[] };
   log?: (message: string) => void;
 }): CodeMouthPorts {
@@ -221,8 +219,7 @@ export function createTypeScriptCodeMouthPorts(input: {
         language: "typescript"
       };
     },
-    async propose({ request, context, diagnostics, attempt }) {
-      // Native first: a fix TypeScript itself owns needs no model, and the model lane is optional.
+    async propose({ request, context, attempt }) {
       const compilerRepair = await proposeCompilerOwnedRepair({
         workspaceRoot: root,
         targetPath: context.targetPath,
@@ -240,19 +237,7 @@ export function createTypeScriptCodeMouthPorts(input: {
         input.log?.(`compiler offers ${compilerRepair.candidates.length} fix(es) for this file; name one (for example its TS code) to apply it`);
         offeredCandidates = compilerRepair.candidates;
       }
-      if (!input.realizer) return undefined;
-      const facts = [
-        { subject: "request", predicate: "asks", object: request, evidenceIds: ["request"] },
-        { subject: path.basename(context.targetPath), predicate: "contains", object: context.targetText.slice(0, 24_000), evidenceIds: ["source"] },
-        { subject: path.basename(context.targetPath), predicate: "exports", object: context.symbols.slice(0, 64).join(" "), evidenceIds: ["code-graph"] },
-        ...diagnostics.slice(0, 6).map((diagnostic, index) => ({ subject: `diagnostic ${index + 1}`, predicate: "says", object: `${diagnostic.message} (line ${diagnostic.line ?? "?"})`, evidenceIds: [diagnostic.id] }))
-      ];
-      const surfaces = await input.realizer.realize({ requestText: request, facts, targetLanguage: "typescript", targetScript: "Latn", maxSentences: 40, closedClassWords: TYPESCRIPT_CLOSED_CLASS });
-      const code = surfaces.map(surface => surface.replace(/\s+$/u, "")).filter(surface => surface.trim())[0];
-      if (!code || code === context.targetText.replace(/\s+$/u, "")) return undefined;
-      const lineCount = context.targetText.split("\n").length;
-      const operation: RepairOperation = { id: `op:${attempt}:rewrite`, risk: 0.5, kind: "replace", path: context.targetPath, startLine: 1, endLine: lineCount, content: code, reason: `attempt ${attempt}: whole-file rewrite from the realizer` };
-      return { operations: [operation], surface: code };
+      return undefined;
     },
     async apply(operations) {
       const originals = new Map<string, string>();
@@ -289,6 +274,3 @@ export function createTypeScriptCodeMouthPorts(input: {
     }
   };
 }
-
-/** TypeScript's own closed class -- keywords and punctuation the decoder may emit besides workspace symbols. Not natural language. */
-const TYPESCRIPT_CLOSED_CLASS = ["export", "function", "const", "let", "return", "if", "else", "for", "of", "while", "new", "class", "interface", "type", "import", "from", "async", "await", "string", "number", "boolean", "void", "undefined", "null", "true", "false", "=>", "=", "===", "!==", "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "&&", "||", "!", "?", ":", ";", ",", ".", "(", ")", "{", "}", "[", "]", "readonly", "this", "throw", "try", "catch", "map", "filter", "length", "push", "join", "split", "slice", "reverse"];

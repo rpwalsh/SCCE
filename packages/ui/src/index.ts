@@ -475,7 +475,7 @@ export function renderWorkbench(serverUrl: string): string {
         for (const model of view.models) {
           const row = document.createElement('div'); row.className = 'model';
           row.appendChild(Object.assign(document.createElement('span'), { textContent: (model.active ? '* ' : '') + model.id + '  ' + model.size + (model.active ? '  (' + uiMsg('side.models.active') + ')' : '') }));
-          for (const [label, action] of [[uiMsg('side.models.use_decoding'), () => Promise.all([post('/api/settings', { key: 'realization.constrainedDecoding.modelId', value: model.id }), post('/api/settings', { key: 'realization.constrainedDecoding.modelDir', value: view.modelDir })])], [uiMsg('side.models.use_visual'), () => Promise.all([post('/api/settings', { key: 'ingestion.visual.embeddings.modelId', value: model.id }), post('/api/settings', { key: 'ingestion.visual.embeddings.modelDir', value: view.modelDir })])], [uiMsg('side.models.remove'), () => post('/api/models/remove', { modelId: model.id })]]) {
+          for (const [label, action] of [[uiMsg('side.models.use_visual'), () => Promise.all([post('/api/settings', { key: 'ingestion.visual.embeddings.modelId', value: model.id }), post('/api/settings', { key: 'ingestion.visual.embeddings.modelDir', value: view.modelDir })])], [uiMsg('side.models.remove'), () => post('/api/models/remove', { modelId: model.id })]]) {
             const button = document.createElement('button'); button.className = 'small-btn'; button.textContent = label;
             button.addEventListener('click', async () => { try { await action(); await loadModels(); await loadSettings(); } catch (error) { row.appendChild(Object.assign(document.createElement('em'), { textContent: String(error.message || error).slice(0, 120) })); } });
             row.appendChild(button);
@@ -489,7 +489,7 @@ export function renderWorkbench(serverUrl: string): string {
     if (modelDownload) modelDownload.addEventListener('click', async () => {
       const modelId = window.prompt(uiMsg('side.models.download_prompt')); if (!modelId) return;
       modelDownload.disabled = true;
-      try { await post('/api/models/download', { modelId, kind: /clip/i.test(modelId) ? 'clip' : 'causal-lm' }); await loadModels(); }
+      try { await post('/api/models/download', { modelId, kind: 'clip' }); await loadModels(); }
       catch (error) { window.alert(String(error.message || error).slice(0, 200)); }
       finally { modelDownload.disabled = false; }
     });

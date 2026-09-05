@@ -302,8 +302,8 @@ export class ScceClient {
     return this.request("GET", "/api/models", undefined, value => value as ModelsView);
   }
 
-  async downloadModel(modelId: string, kind: "causal-lm" | "clip"): Promise<unknown> {
-    return this.request("POST", "/api/models/download", { modelId, kind }, identity);
+  async downloadModel(modelId: string): Promise<unknown> {
+    return this.request("POST", "/api/models/download", { modelId, kind: "clip" }, identity);
   }
 
   async removeModel(modelId: string): Promise<{ removed: boolean }> {

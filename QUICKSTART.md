@@ -82,15 +82,11 @@ true or not true; only confirmed material is promoted to evidence, and the
 question is answered again from it. `pnpm scce learn curriculum` lists what
 SCCE itself wants to learn next; `pnpm scce learn pursue <planId>` consents.
 
-## 7. Assist mode (optional)
+## 7. Coding
 
-With a local model server running on loopback, set
-`realization.provider` to `ollama` and `realization.ollama.model` to a pulled
-model (`pnpm scce settings set realization.provider ollama`). The model
-drafts wording from the turn's evidence facts; every draft is verified
-against those facts before it can be emitted. The same setting lets
-`pnpm scce code --path=src/file.ts "<request>"` propose a patch that must
-pass the TypeScript compiler before it is kept.
+`pnpm scce code --path=src/file.ts "<request>"` applies a code action the
+TypeScript compiler owns for that file (name the diagnostic or fix) and keeps
+it only if the project still typechecks. There is no model anywhere in SCCE.
 
 ## Verification
 

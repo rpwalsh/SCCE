@@ -2741,7 +2741,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requestText: input.text,
         ...(codeRequest && codeSignal.language ? { codeLanguage: codeSignal.language } : {}),
         meaningVerifier,
-        ...(deps.wordingRealizer ? { wordingRealizer: deps.wordingRealizer } : {}),
         construct: spokenConstructGraph,
         field,
         languageProfile: translationTarget

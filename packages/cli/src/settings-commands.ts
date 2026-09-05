@@ -65,7 +65,7 @@ export async function runSettingsCommand(configPath: string, args: string[]): Pr
 }
 
 export function modelDirectoryFor(config: ScceRuntimeConfig): string {
-  return config.realization?.constrainedDecoding?.modelDir ?? config.ingestion?.visual?.embeddings?.modelDir ?? path.resolve("models");
+  return config.ingestion?.visual?.embeddings?.modelDir ?? path.resolve("models");
 }
 
 export async function runModelCommand(config: ScceRuntimeConfig, args: string[]): Promise<void> {
@@ -74,20 +74,18 @@ export async function runModelCommand(config: ScceRuntimeConfig, args: string[])
   if (sub === "list" || !sub) {
     const models = await listLocalModels(modelDir);
     if (!models.length) { process.stdout.write(`no local models in ${modelDir}\n`); return; }
-    const active = [config.realization?.constrainedDecoding?.modelId, config.ingestion?.visual?.embeddings?.modelId].filter(Boolean);
+    const active = [config.ingestion?.visual?.embeddings?.modelId].filter(Boolean);
     for (const model of models) process.stdout.write(`${active.includes(model.id) ? "*" : " "} ${model.id}  ${formatBytes(model.bytes)}  ${model.files} files\n`);
     process.stdout.write(`total ${formatBytes(models.reduce((sum, model) => sum + model.bytes, 0))} in ${modelDir}\n`);
     return;
   }
   if (sub === "download" && args[1]) {
-    const kind = args.includes("--clip") ? "clip" : "causal-lm";
-    process.stdout.write(`downloading ${args[1]} (${kind}) into ${modelDir} -- the only network access for models, and you asked for it\n`);
+    process.stdout.write(`downloading ${args[1]} (clip) into ${modelDir} -- the only network access for models, and you asked for it\n`);
     let lastLine = "";
     const record = await downloadModel({
       modelDir,
       modelId: args[1],
-      kind,
-      dtype: (args.find(arg => arg.startsWith("--dtype="))?.slice(8) as "q8" | "q4" | "fp16" | "fp32" | undefined) ?? "q8",
+      kind: "clip",
       onProgress: progress => {
         const line = `${progress.status} ${progress.file} ${progress.progress ? `${progress.progress.toFixed(0)}%` : ""}`;
         if (line !== lastLine) { process.stdout.write(`\r${line.padEnd(100)}`); lastLine = line; }

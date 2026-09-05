@@ -1622,6 +1622,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         params.push(`${prefix}%`);
         where.push(`s.canonical_uri NOT LIKE $${params.length}`);
       }
+      if (query.sourceVersionIds?.length) { params.push([...query.sourceVersionIds]); where.push(`sv.id = ANY($${params.length}::text[])`); }
       if (query.minByteLength !== undefined) { params.push(Math.floor(query.minByteLength)); where.push(`sv.byte_length >= $${params.length}`); }
       if (query.maxByteLength !== undefined) { params.push(Math.floor(query.maxByteLength)); where.push(`sv.byte_length <= $${params.length}`); }
       const versionAccess = storage.informationAccessPredicate("sv", params.length + 1);

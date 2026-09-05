@@ -72,6 +72,10 @@ import {
   type PairedAntiUnifiedConstruction
 } from "./paired-anti-unification.js";
 import {
+  selectConstructionGrammarByDescriptionLength,
+  type ConstructionGrammarSelection
+} from "./construction-grammar-selection.js";
+import {
   admittedPairedAntiUnifiedConstructions,
   compileGraphCorrelatedVariabilityModel,
   type GraphCorrelatedVariabilityModel
@@ -199,6 +203,7 @@ export interface CompiledLanguageTrainingBatch {
   reversibleConstructionRejections: ReversibleConstructionRejection[];
   pairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
   admittedPairedAntiUnifiedConstructions: PairedAntiUnifiedConstruction[];
+  constructionGrammarSelection: ConstructionGrammarSelection;
   graphCorrelatedVariabilityModel: GraphCorrelatedVariabilityModel;
   optionalNullRealizationModel: OptionalNullRealizationModel;
   pairedAntiUnifiedConstructionRejections:
@@ -374,6 +379,7 @@ export function compileLanguageTrainingBatch(input: {
     ? compileAutomaticAlignmentEvaluation({
       alternativeSets: alignmentAlternativeSets,
       supports: routedAlignmentSupports,
+      lattices: alignmentLattices,
       referencePlans: sparseTransportPlans,
       evidenceAllocations: retainedAlternatives.flatMap(item =>
         item.evidenceAllocations),
@@ -458,8 +464,13 @@ export function compileLanguageTrainingBatch(input: {
       constructions: pairedAntiUnifiedCompilation.constructions,
       model: graphCorrelatedVariabilityModel
     });
+  const constructionGrammar = selectConstructionGrammarByDescriptionLength({
+    constructions: admittedPairedConstructions.map(row => row.construction)
+  });
+  const retainedPairedConstructions = admittedPairedConstructions.filter(row =>
+    constructionGrammar.selection.retainedConstructionIds.includes(row.construction.id));
   const pairedAntiUnifiedConstructionPatterns =
-    admittedPairedConstructions.flatMap(({ construction, admission }) =>
+    retainedPairedConstructions.flatMap(({ construction, admission }) =>
       compilePairedAntiUnifiedPatterns(construction, admission));
   const optionalNullRealizationModel =
     compileOptionalNullRealizationModel({
@@ -544,7 +555,8 @@ export function compileLanguageTrainingBatch(input: {
     pairedAntiUnifiedConstructions:
       pairedAntiUnifiedCompilation.constructions,
     admittedPairedAntiUnifiedConstructions:
-      admittedPairedConstructions.map(row => row.construction),
+      retainedPairedConstructions.map(row => row.construction),
+    constructionGrammarSelection: constructionGrammar.selection,
     graphCorrelatedVariabilityModel,
     optionalNullRealizationModel,
     pairedAntiUnifiedConstructionRejections:

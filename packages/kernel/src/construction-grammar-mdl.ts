@@ -48,7 +48,7 @@ function log2(value: number): number {
 }
 
 /** log2(256) bits per UTF-16 code unit for an unmodeled literal string -- a real, standard MDL convention (a byte-range alphabet), not an arbitrary constant. */
-function literalBits(surface: string): number {
+export function literalBits(surface: string): number {
   return surface.length * log2(256);
 }
 

@@ -222,16 +222,13 @@ export function alignmentAlternativeSeriesId(input: {
   hasher?: Hasher;
 }): string {
   const hasher = input.hasher ?? createHasher();
-  // A series is the construction shape an alignment covers, so that the same shape learned from two documents
-  // is the same series and can corroborate itself. Identifying it by the source family and by this document's
-  // own hyperedge and node instances made every document mint a series of its own, so a series was observed
-  // once and never again -- and promotion, which asks for the shape to hold in independent held-out families,
-  // could never be satisfied by any corpus. graphOrderKey is the type-level identity the candidate compiler
-  // already computes (relation, kind, port, role, value kind, realization), and it does recur across documents.
+  // Source family plus the canonical typed graph-port region, never the batch-local support.
   const graphOrderKeys = [...new Set(input.support.candidates.map(candidate => candidate.graphOrderKey))].sort();
-  return `alignment_series.${hasher.digestHex(canonicalStringify({ graphOrderKeys })).slice(0, 40)}`;
+  return `alignment_series.${hasher.digestHex(canonicalStringify({
+    sourceFamilyId: input.support.sourceFamilyId,
+    graphOrderKeys
+  })).slice(0, 40)}`;
 }
-
 
 export function alignmentAlternativeSetsFromEventPayloads(
   payloads: readonly JsonValue[],

@@ -20,7 +20,7 @@ import {
   type TableObservation,
   type TimeSeriesObservation
 } from "./ingestion-lanes.js";
-import { clamp01, featureSet, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, featureSet, toJsonValue } from "./primitives.js";
 import { extensionOf, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, splitLines } from "./source-code-graph.js";
 import { createEngineeringCorpusProjection, engineeringCorpusProjectionFromJson } from "./engineering-corpus.js";
 import { bayesUpdate, shannonEntropy } from "./equation-operators.js";
@@ -976,7 +976,10 @@ export function graphFromStructuredSemanticCandidates(input: {
         id: input.ids.hyperedgeId({
           relationId,
           members: memberNodeIds,
-          provenanceHash: input.hasher.digestHex(candidate.id)
+          provenanceHash: input.hasher.digestHex(canonicalStringify({
+            ports: participantPorts.map(port => [port.portId, port.nodeId, port.valueKind, port.realization]),
+            qualifiers: candidate.qualifiers
+          }))
         }),
         relationId,
         participantPorts,
@@ -1007,7 +1010,42 @@ export function graphFromStructuredSemanticCandidates(input: {
       hyperedges.push(hyperedge);
     }
   }
-  return { nodes, edges, hyperedges };
+  return { nodes: mergeGraphNodes(nodes), edges, hyperedges: mergeHyperedges(hyperedges) };
+}
+
+function mergeGraphNodes(nodes: readonly GraphNode[]): GraphNode[] {
+  const byId = new Map<string, GraphNode>();
+  for (const node of nodes) {
+    const existing = byId.get(String(node.id));
+    byId.set(String(node.id), existing
+      ? {
+        ...existing,
+        alpha: Math.max(existing.alpha, node.alpha),
+        evidenceIds: [...new Set([...existing.evidenceIds, ...node.evidenceIds])],
+        features: [...new Set([...existing.features, ...node.features])]
+      }
+      : node);
+  }
+  return [...byId.values()];
+}
+
+function mergeHyperedges(hyperedges: readonly Hyperedge[]): Hyperedge[] {
+  const byId = new Map<string, Hyperedge>();
+  for (const edge of hyperedges) {
+    const existing = byId.get(String(edge.id));
+    byId.set(String(edge.id), existing
+      ? {
+        ...existing,
+        participantPorts: existing.participantPorts.map((port, index) => ({
+          ...port,
+          evidenceIds: [...new Set([...port.evidenceIds, ...(edge.participantPorts[index]?.evidenceIds ?? [])])]
+        })),
+        evidenceIds: [...new Set([...existing.evidenceIds, ...edge.evidenceIds])],
+        provenanceRefs: [...new Set([...existing.provenanceRefs, ...edge.provenanceRefs])]
+      }
+      : edge);
+  }
+  return [...byId.values()];
 }
 
 function directlyAdmissibleZeroArity(candidate: StructuredSemanticCandidate): boolean {

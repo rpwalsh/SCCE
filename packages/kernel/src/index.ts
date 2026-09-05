@@ -81,6 +81,7 @@ export * from "./alignment-promotion.js";
 export * from "./alignment-heldout-evaluation.js";
 export * from "./reversible-construction.js";
 export * from "./paired-anti-unification.js";
+export * from "./construction-grammar-selection.js";
 export * from "./graph-correlated-variability.js";
 export * from "./optional-null-realization.js";
 export * from "./sparse-fused-transport.js";

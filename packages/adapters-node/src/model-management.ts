@@ -11,7 +11,7 @@ import path from "node:path";
  * access is allowed, and it is an explicit user action.
  */
 
-export type ModelKind = "causal-lm" | "clip";
+export type ModelKind = "clip";
 
 export interface LocalModelRecord {
   id: string;
@@ -78,7 +78,6 @@ export async function downloadModel(input: {
   modelDir: string;
   modelId: string;
   kind: ModelKind;
-  dtype?: "q8" | "q4" | "fp16" | "fp32";
   onProgress?: (progress: ModelDownloadProgress) => void;
 }): Promise<LocalModelRecord> {
   await mkdir(input.modelDir, { recursive: true });
@@ -90,15 +89,10 @@ export async function downloadModel(input: {
   transformers.env.localModelPath = input.modelDir;
   const progress_callback = (event: { file?: string; progress?: number; status?: string }) =>
     input.onProgress?.({ file: event.file ?? "", progress: Number(event.progress ?? 0), status: event.status ?? "" });
-  if (input.kind === "causal-lm") {
-    await transformers.AutoTokenizer.from_pretrained(input.modelId, { progress_callback });
-    await transformers.AutoModelForCausalLM.from_pretrained(input.modelId, { progress_callback, dtype: input.dtype ?? "q8", device: "cpu" });
-  } else {
-    await transformers.AutoProcessor.from_pretrained(input.modelId, { progress_callback });
-    await transformers.AutoTokenizer.from_pretrained(input.modelId, { progress_callback });
-    await transformers.CLIPVisionModelWithProjection.from_pretrained(input.modelId, { progress_callback, device: "cpu" });
-    await transformers.CLIPTextModelWithProjection.from_pretrained(input.modelId, { progress_callback, device: "cpu" });
-  }
+  await transformers.AutoProcessor.from_pretrained(input.modelId, { progress_callback });
+  await transformers.AutoTokenizer.from_pretrained(input.modelId, { progress_callback });
+  await transformers.CLIPVisionModelWithProjection.from_pretrained(input.modelId, { progress_callback, device: "cpu" });
+  await transformers.CLIPTextModelWithProjection.from_pretrained(input.modelId, { progress_callback, device: "cpu" });
   transformers.env.allowRemoteModels = false;
   const modelPath = path.join(input.modelDir, ...input.modelId.split("/"));
   const usage = await directoryUsage(modelPath);

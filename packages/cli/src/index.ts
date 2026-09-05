@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
-import { createTypeScriptCodeMouthPorts, runCodeMouth, selectRealizationPort } from "@scce/adapters-node";
+import { createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -84,13 +84,12 @@ async function main(): Promise<void> {
         const target = parsed.args.find(arg => arg.startsWith("--path="))?.slice(7);
         const request = parsed.args.filter(arg => !arg.startsWith("--")).join(" ").trim();
         if (!target || !request) return usage("scce code --path=<workspace-file> <request>");
-        const realizer = selectRealizationPort(config);
         const result = await runCodeMouth({
           request,
           targetPath: target,
           maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3),
           log: message => process.stderr.write(`[code-mouth] ${message}\n`),
-          ports: createTypeScriptCodeMouthPorts({ workspaceRoot: config.runtime.workspaceRoot, realizer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
+          ports: createTypeScriptCodeMouthPorts({ workspaceRoot: config.runtime.workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
         });
         printJson(result);
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
@@ -420,6 +419,7 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
         startBatchIndex: options.startFileIndex,
         maxTotalBytes: options.maxFileBytes,
         heapCheckpointMb: options.heapCheckpointMb,
+        ...(options.sourceVersionIds ? { sourceVersionIds: options.sourceVersionIds } : {}),
         creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
       }));
       return;
@@ -1363,6 +1363,7 @@ function parseCorpusTrainOptions(args: string[]): {
   ngramVocabularyLimit?: number;
   languageAliases?: string[];
   heapCheckpointMb?: number;
+  sourceVersionIds?: string[];
 } {
   const out: {
     maxFiles?: number;
@@ -1376,6 +1377,7 @@ function parseCorpusTrainOptions(args: string[]): {
     ngramVocabularyLimit?: number;
     languageAliases?: string[];
     heapCheckpointMb?: number;
+    sourceVersionIds?: string[];
   } = {};
   for (const arg of args) {
     const [flag, raw] = arg.split("=", 2);
@@ -1390,6 +1392,9 @@ function parseCorpusTrainOptions(args: string[]): {
     else if (flag === "--heap-checkpoint-mb" && Number.isFinite(num)) out.heapCheckpointMb = Math.max(1, Math.floor(num));
     else if (flag === "--language" && raw?.trim()) {
       out.languageAliases = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
+    }
+    else if (flag === "--source-version-ids" && raw?.trim()) {
+      out.sourceVersionIds = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
     }
     else if (arg === "--docs-only") {
       out.includeDocs = true;

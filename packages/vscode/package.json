@@ -121,26 +121,6 @@
           "maximum": 600000,
           "description": "Maximum duration for one SCCE HTTP request."
         },
-        "scce.realization.provider": {
-          "type": "string",
-          "enum": [
-            "native",
-            "ollama",
-            "api"
-          ],
-          "default": "native",
-          "description": "Realization provider. native = SCCE's own mouth (default). ollama = local Ollama (loopback only). api = remote API; requires the server-side acknowledgement that evidence leaves this device."
-        },
-        "scce.realization.ollamaHost": {
-          "type": "string",
-          "default": "http://localhost:11434",
-          "description": "Ollama host. Only loopback hosts are accepted."
-        },
-        "scce.realization.ollamaModel": {
-          "type": "string",
-          "default": "",
-          "description": "Ollama model name used when the provider is ollama."
-        },
         "scce.ingestion.imageEmbeddings": {
           "type": "boolean",
           "default": false,

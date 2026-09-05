@@ -19,10 +19,10 @@ async function startFixture(): Promise<{ url: string; configPath: string; modelD
   dirs.push(dir);
   const configPath = path.join(dir, "scce.config.json");
   const modelDir = path.join(dir, "models");
-  await writeFile(configPath, JSON.stringify({ server: { url: "http://127.0.0.1:0" }, realization: { provider: "native", constrainedDecoding: { enabled: false, modelId: "", modelDir } } }, null, 2));
+  await writeFile(configPath, JSON.stringify({ server: { url: "http://127.0.0.1:0" }, ingestion: { visual: { embeddings: { enabled: false, modelId: "", modelDir } } } }, null, 2));
   const context = {
     runtime: {},
-    config: { server: { url: "http://127.0.0.1:0" }, realization: { constrainedDecoding: { enabled: false, modelId: "", modelDir } } },
+    config: { server: { url: "http://127.0.0.1:0" }, ingestion: { visual: { embeddings: { enabled: false, modelId: "", modelDir } } } },
     configPath,
     maxBodyBytes: 1_000_000,
     startupReadiness: { snapshot: () => ({ phase: "ready" as const, complete: true }) }
@@ -47,19 +47,17 @@ describe("settings and models API", () => {
     const response = await call(`${url}/api/settings`, "GET");
     expect(response.status).toBe(200);
     const fields = response.body.fields as Array<{ key: string; value: unknown; label: string }>;
-    expect(fields.find(field => field.key === "realization.provider")?.value).toBe("native");
-    expect(fields.some(field => /apiKey$/u.test(field.key))).toBe(false);
+    expect(fields.find(field => field.key === "ingestion.visual.embeddings.enabled")?.value).toBe(false);
+    expect(fields.some(field => /realization|apiKey|ollama/u.test(field.key))).toBe(false);
   });
 
   it("writes a validated setting back to the config file and flags a restart", async () => {
     const { url, configPath } = await startFixture();
-    const ok = await call(`${url}/api/settings`, "POST", { key: "realization.ollama.host", value: "http://127.0.0.1:11434" });
+    const ok = await call(`${url}/api/settings`, "POST", { key: "ingestion.observation.screen", value: "true" });
     expect(ok.status).toBe(200);
     expect(ok.body.restartRequired).toBe(true);
-    const written = JSON.parse(await readFile(configPath, "utf8")) as { realization: { ollama: { host: string } } };
-    expect(written.realization.ollama.host).toBe("http://127.0.0.1:11434");
-    const rejected = await call(`${url}/api/settings`, "POST", { key: "realization.ollama.host", value: "http://example.com:11434" });
-    expect(rejected.status).toBeGreaterThanOrEqual(400);
+    const written = JSON.parse(await readFile(configPath, "utf8")) as { ingestion: { observation: { screen: boolean } } };
+    expect(written.ingestion.observation.screen).toBe(true);
     const unknown = await call(`${url}/api/settings`, "POST", { key: "security.apiBearerToken", value: "x" });
     expect(unknown.status).toBeGreaterThanOrEqual(400);
   });
