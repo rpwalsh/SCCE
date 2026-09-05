@@ -104,6 +104,7 @@ import {
 import { realizeReversibleConstruction } from "./reversible-construction.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
 import {
+  interpretAntiUnifiedConstruction,
   realizeAntiUnifiedConstruction,
   type AntiUnifiedBinding
 } from "./paired-anti-unification.js";
@@ -2367,6 +2368,16 @@ function semanticAntiUnifiedConstructionCandidate(
           input.languageProfile,
           realized.text
         )) return [];
+      // A generalized construction speaks only if reading its own surface back returns the fragment it was given:
+      // the reversible lane is round-tripped at compile time, this one is generalized and can only be checked here.
+      const interpreted = interpretAntiUnifiedConstruction({
+        construction,
+        surface: realized.text,
+        bindingCandidates: bindings
+      });
+      if (interpreted.status !== "interpreted"
+        || canonicalStringify([...interpreted.graphTargetIds].sort())
+          !== canonicalStringify([...new Set(realized.graphTargetIds)].sort())) return [];
       return [{
         id: `candidate:generated:paired-anti-unified-construction:${
           hasher.digestHex(construction.id).slice(0, 20)
