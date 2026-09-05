@@ -22,6 +22,7 @@ import {
 } from "./kernel-answer-primitives.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { graphEdgePriorClass, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
+import { graphTemporalScope } from "./typed-incidence-graph.js";
 import {
   buildQuestionCognitiveFabric,
   normalizeRawGraphEdgeToCognitiveEdges,
@@ -48,6 +49,7 @@ import type {
   EvidenceSpan,
   GraphEdge,
   GraphNode,
+  Hyperedge,
   JsonValue,
   TurnResult
 } from "./types.js";
@@ -293,7 +295,7 @@ import type {
 export function attachLearnedGraphPriorConstruct(input: {
   construct: ConstructGraph;
   requestText: string;
-  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] };
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; hyperedges?: readonly Hyperedge[] };
   field: TurnResult["field"];
   selectedEvidence: readonly EvidenceSpan[];
   brainMarker: JsonValue;
@@ -369,7 +371,7 @@ export function attachLearnedGraphPriorConstruct(input: {
 
  function learnedGraphPriorConstructState(input: {
   requestText: string;
-  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] };
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; hyperedges?: readonly Hyperedge[] };
   field: TurnResult["field"];
   selectedEvidence: readonly EvidenceSpan[];
   brainMarker: JsonValue;
@@ -806,7 +808,7 @@ export function attachLearnedGraphPriorConstruct(input: {
 
  function rankedLearnedGraphPriorFacts(input: {
   requestText: string;
-  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] };
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; hyperedges?: readonly Hyperedge[] };
   field: TurnResult["field"];
 }): LearnedGraphPriorFact[] {
   const requestFeatures = featureSet(input.requestText, 512);
@@ -818,7 +820,7 @@ export function attachLearnedGraphPriorConstruct(input: {
   const activationByNodeId = new Map(input.field.active.map(row => [String(row.nodeId), row.activation]));
   const ppfMassByNodeId = new Map(input.field.ppf.map(row => [String(row.nodeId), row.mass]));
   const facts: LearnedGraphPriorFact[] = [];
-  for (const edge of input.graph.edges) {
+  for (const edge of [...structuredHyperedgeEdges(input.graph.hyperedges ?? [], nodeById), ...input.graph.edges]) {
     const sourceNode = nodeById.get(String(edge.source));
     const targetNode = nodeById.get(String(edge.target));
     const edgeClass = graphEdgePriorClass(edge);
@@ -1027,7 +1029,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
 
  function insufficientSupportConstructState(input: {
   requestText: string;
-  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] };
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; hyperedges?: readonly Hyperedge[] };
   field: TurnResult["field"];
   selectedEvidence: readonly EvidenceSpan[];
   brainMarker: JsonValue;
@@ -1088,7 +1090,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
 
  function graphNodeAnswerConstructState(input: {
   requestText: string;
-  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] };
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; hyperedges?: readonly Hyperedge[] };
   field: TurnResult["field"];
   selectedEvidence: readonly EvidenceSpan[];
   brainMarker: JsonValue;
@@ -1127,7 +1129,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
 
  function rankedGraphNodeAnswerRows(input: {
   requestText: string;
-  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] };
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[]; hyperedges?: readonly Hyperedge[] };
   field: TurnResult["field"];
 }): GraphNodeAnswerRow[] {
   const requestFeatures = new Set(featureSet(input.requestText, 512));
@@ -2176,6 +2178,48 @@ export function relevanceRequestFocuses(text: string): string[] {
   return digits > 0 && (letters === 0 || digits >= letters);
 }
 
+
+/** A promoted structured relation is an answer fact between its observed participants, keyed on the hyperedge's own relation. */
+export function structuredHyperedgeEdges(hyperedges: readonly Hyperedge[], nodeById: ReadonlyMap<string, GraphNode>): GraphEdge[] {
+  const out: GraphEdge[] = [];
+  for (const hyperedge of hyperedges) {
+    const modality = jsonRecord(hyperedge.modality);
+    if (typeof modality.extractionChannel !== "string") continue;
+    const ports = hyperedge.participantPorts.filter(port =>
+      port.realization === "observed" && port.nodeId && nodeById.has(String(port.nodeId)));
+    if (ports.length < 2) continue;
+    const alpha = kernelClamp01(kernelNumber(jsonRecord(hyperedge.weightVector).alpha, 0.5));
+    const head = ports[0]!;
+    const subject = nodeById.get(String(head.nodeId))!;
+    for (const port of ports.slice(1)) {
+      const object = nodeById.get(String(port.nodeId))!;
+      out.push({
+        id: `edge.structured.${String(hyperedge.id)}.${head.portId}.${port.portId}` as GraphEdge["id"],
+        source: subject.id,
+        target: object.id,
+        relationId: hyperedge.relationId,
+        alpha,
+        weight: alpha,
+        temporalScope: graphTemporalScope(hyperedge),
+        evidenceIds: [...hyperedge.evidenceIds],
+        createdAt: hyperedge.createdAt,
+        updatedAt: hyperedge.updatedAt,
+        metadata: toJsonValue({
+          schema: "scce.structured_relation_fact.v1",
+          hyperedgeId: String(hyperedge.id),
+          relation: {
+            subject: graphNodeSurface(subject),
+            predicate: kernelString(modality.candidateKind) ?? String(hyperedge.relationId),
+            object: graphNodeSurface(object),
+            confidence: alpha
+          }
+        }),
+        ...(hyperedge.informationLabel ? { informationLabel: hyperedge.informationLabel } : {})
+      });
+    }
+  }
+  return out;
+}
 
  function graphNodeSurface(node: GraphNode | undefined): string {
   if (!node) return "";
