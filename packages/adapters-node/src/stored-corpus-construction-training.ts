@@ -28,6 +28,8 @@ export interface StoredCorpusConstructionTrainingOptions {
   heapCheckpointMb?: number;
   /** Sources to exclude (local files re-train through their own lanes). */
   excludeUriPrefixes?: readonly string[];
+  /** Train only these source versions (a re-ingested slice, for instance). */
+  sourceVersionIds?: readonly string[];
   minArticleBytes?: number;
   maxArticleBytes?: number;
   creativeEventCompiler?: CreativeEventConstructionCompiler;
@@ -78,6 +80,7 @@ export async function trainStoredCorpusConstructions(
 
   const versions = await list.call(input.storage.evidence, {
     excludeUriPrefixes: input.excludeUriPrefixes ?? ["file://"],
+    ...(input.sourceVersionIds?.length ? { sourceVersionIds: input.sourceVersionIds } : {}),
     minByteLength: Math.max(0, Math.floor(input.minArticleBytes ?? 2000)),
     maxByteLength: Math.max(1, Math.floor(input.maxArticleBytes ?? 400000)),
     limit: 100000

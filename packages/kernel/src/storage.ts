@@ -623,39 +623,10 @@ export interface GraphStore {
   materializeAlphaGraph(query: GraphSliceQuery): Promise<AlphaTrace>;
 }
 
-export interface WordingRealizerFact {
-  subject: string;
-  predicate: string;
-  object: string;
-  evidenceIds: readonly string[];
-}
-
 export interface EvidenceVisualSearchResult {
   span: EvidenceSpan;
   score: number;
   regions: readonly (readonly number[])[];
-}
-
-export interface WordingRealizerRequest {
-  requestText: string;
-  facts: readonly WordingRealizerFact[];
-  targetLanguage: string;
-  targetScript: string;
-  maxSentences: number;
-  /** Closed-class vocabulary of the active language (derived, never hardcoded) a wording realizer may use besides fact tokens. */
-  closedClassWords?: readonly string[];
-  /** An invention may say more than the facts; it is labelled invented, never sourced. */
-  invention?: boolean;
-  /** Formal language of a requested artifact; its compiler, not word licensing, verifies the result. */
-  codeLanguage?: string;
-  /** The caller checks the draft's meaning against the evidence, so the provider must not gate on vocabulary. */
-  meaningVerifiedDownstream?: boolean;
-}
-
-/** See ScceKernelDeps.wordingRealizer for the doctrine this port lives under. */
-export interface WordingRealizerPort {
-  id: string;
-  realize(request: WordingRealizerRequest): Promise<readonly string[]> | readonly string[];
 }
 
 export interface EvidenceStore {
@@ -694,6 +665,7 @@ export interface EvidenceStore {
    */
   listEvidenceBackedSourceVersions?(query?: {
     excludeUriPrefixes?: readonly string[];
+    sourceVersionIds?: readonly string[];
     minByteLength?: number;
     maxByteLength?: number;
     limit?: number;
@@ -1267,32 +1239,6 @@ export interface ScceKernelDeps {
    * execution).
    */
   functionalCognitionAuthorizeCapabilities?: boolean;
-  /**
-   * The wording realizer port: an optional, compact, corpus-trained
-   * learned function that chooses WORDING for facts the evidence layer
-   * already licensed. Its outputs enter the mouth's candidate pool
-   * subject to every existing gate (admissibility, structural
-   * completeness, argument integrity, entailment, citation binding); its
-   * failure mode is awkward wording, never a new assertion.
-   *
-   * Admissibility conditions, stated here rather than in a separate
-   * document so they cannot drift from the code they govern:
-   *   1. Wording-only authority. Facts arrive already evidence-licensed;
-   *      the realizer never contributes a claim, only phrasing.
-   *   2. Corpus-bound training -- no knowledge from outside the corpus.
-   *   3. Small and task-specific, not a general model.
-   *   4. CPU-local inference; no hosted inference endpoint.
-   *   5. Per-language cluster routing rather than one global model.
-   *
-   * Foundation-model and LLM-style runtimes remain banned as the seat of
-   * knowledge or claim authority; this port must never be backed by one.
-   * `tools/no-hidden-model-check.mjs` enforces that statically, failing
-   * the build on the known hosted/local model packages and endpoints.
-   *
-   * Unset by default: absent a port, `generate()` in
-   * language-memory-runtime remains the only realization engine.
-   */
-  wordingRealizer?: WordingRealizerPort;
   /** Adapter-provided text->visual-space query embedding (Phase 3); absent when the visual model is off. The kernel stays model-free. */
   visualQueryEmbedder?: (text: string) => Promise<readonly number[] | undefined>;
   /**

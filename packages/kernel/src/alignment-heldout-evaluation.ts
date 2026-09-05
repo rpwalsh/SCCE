@@ -6,7 +6,9 @@ import {
   type AlignmentCalibrationObservation
 } from "./alignment-calibration.js";
 import type { AlignmentPromotionObservation } from "./alignment-promotion.js";
+import { normalizeCanonicalSurface } from "./normalization-contract.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import type { SurfaceLattice } from "./surface-lattice.js";
 import type {
   SparseAlignmentCandidateSupport,
   SparseAlignmentTargetIndex
@@ -29,6 +31,8 @@ export interface AlignmentHeldoutFamilyResult {
   finalRecall: number;
   exactAnchorsPreserved: boolean;
   unsupportedAdditionCount: number;
+  /** Required ports this family's surface never mentions: present-but-unrealized meaning, not a miss. */
+  unrealizedGraphTargetIds: string[];
   outcome: boolean;
 }
 
@@ -73,10 +77,12 @@ export function compileAutomaticAlignmentEvaluation(input: {
   referencePlans: readonly SparseFusedTransportPlan[];
   evidenceAllocations: readonly TransportEvidenceAllocation[];
   targetIndex: SparseAlignmentTargetIndex;
+  lattices?: readonly SurfaceLattice[];
   hasher?: Hasher;
 }): AutomaticAlignmentEvaluation {
   const hasher = input.hasher ?? createHasher();
   const supportById = uniqueMap(input.supports, row => row.id);
+  const latticeById = uniqueMap(input.lattices ?? [], row => row.id);
   const referenceBySupportId = uniqueMap(
     input.referencePlans,
     row => row.supportId
@@ -112,18 +118,25 @@ export function compileAutomaticAlignmentEvaluation(input: {
         if (!referencePlan) continue;
         const candidateTargets = new Set(support.candidates.map(candidate =>
           candidate.graphTargetId));
+        const lattice = latticeById.get(support.latticeId);
+        const expressible = lattice
+          ? expressibleTargetIds(requiredGraphTargetIds, targetById, candidateTargets, latticeSurfaces(lattice))
+          : requiredGraphTargetIds;
+        if (!expressible.length) continue;
+        const expressibleSet = new Set(expressible);
+        const unrealizedGraphTargetIds = requiredGraphTargetIds.filter(id => !expressibleSet.has(id));
         const selectedTargets = new Set(selectedGraphTargetIds(referencePlan));
-        const candidateRecoveredGraphTargetCount = requiredGraphTargetIds.filter(id =>
+        const candidateRecoveredGraphTargetCount = expressible.filter(id =>
           candidateTargets.has(id)).length;
-        const finalRecoveredGraphTargetCount = requiredGraphTargetIds.filter(id =>
+        const finalRecoveredGraphTargetCount = expressible.filter(id =>
           selectedTargets.has(id)).length;
         const candidateRecall =
-          candidateRecoveredGraphTargetCount / requiredGraphTargetIds.length;
+          candidateRecoveredGraphTargetCount / expressible.length;
         const finalRecall =
-          finalRecoveredGraphTargetCount / requiredGraphTargetIds.length;
+          finalRecoveredGraphTargetCount / expressible.length;
         const heldoutExactAnchors = support.candidates.filter(candidate =>
           candidate.supportKinds.includes("exact_observable_anchor")
-          && required.has(candidate.graphTargetId));
+          && expressibleSet.has(candidate.graphTargetId));
         const selectedCandidateIds = new Set(referencePlan.cells
           .filter(cell => cell.mass > 1e-12)
           .map(cell => cell.candidateId));
@@ -138,13 +151,14 @@ export function compileAutomaticAlignmentEvaluation(input: {
           sourceFamilyId: support.sourceFamilyId,
           supportId: support.id,
           referencePlanId: referencePlan.id,
-          requiredGraphTargetCount: requiredGraphTargetIds.length,
+          requiredGraphTargetCount: expressible.length,
           candidateRecoveredGraphTargetCount,
           finalRecoveredGraphTargetCount,
           candidateRecall,
           finalRecall,
           exactAnchorsPreserved,
           unsupportedAdditionCount,
+          unrealizedGraphTargetIds,
           outcome: candidateRecall === 1
             && finalRecall >= 0.98
             && exactAnchorsPreserved
@@ -274,6 +288,35 @@ function selectedGraphTargetIds(plan: SparseFusedTransportPlan): string[] {
       && cell.mass >= maximum - 1e-12)
       .map(cell => cell.graphTargetId);
   }).filter((id, index, values) => values.indexOf(id) === index).sort();
+}
+
+function latticeSurfaces(lattice: SurfaceLattice): string[] {
+  return [...new Set(lattice.units.map(unit =>
+    normalizeCanonicalSurface(unit.normalized, lattice.normalizationContract)))];
+}
+
+/** A required port counts only when the held-out surface could express it: it has a candidate, or its participant surface occurs there. */
+function expressibleTargetIds(
+  required: readonly string[],
+  targetById: ReadonlyMap<string, SparseAlignmentTargetIndex["targets"][number]>,
+  candidateTargets: ReadonlySet<string>,
+  surfaces: readonly string[]
+): string[] {
+  const mentioned = (keys: readonly string[]) => keys.some(key =>
+    key.length > 0 && surfaces.some(surface => surface === key || (surface.length > key.length && surface.includes(key))));
+  const expressible = new Set(required.filter(id => {
+    if (candidateTargets.has(id)) return true;
+    const target = targetById.get(id);
+    return target?.kind === "incidence" && mentioned(target.observableSurfaceKeys);
+  }));
+  for (const id of required) {
+    const target = targetById.get(id);
+    if (target?.kind === "relation" && required.some(other =>
+      other !== id && expressible.has(other) && targetById.get(other)?.hyperedgeId === target.hyperedgeId)) {
+      expressible.add(id);
+    }
+  }
+  return required.filter(id => expressible.has(id));
 }
 
 function representativeSupports(

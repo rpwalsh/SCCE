@@ -267,17 +267,14 @@ chat buttons, or `scce learn confirm <id>`). The learning loop's own
 proposals ("wants to learn: …") take the same path through
 `scce learn curriculum` and `scce learn pursue`.
 
-### Assist mode
+### No model lane
 
-`realization.provider` selects who words the answer: `native` (default,
-no model), `ollama` (a local model server on loopback), or `api` (a
-remote provider, which refuses to start until
-`realization.apiProvider.acknowledgeRemoteDataExposure` is set). A model
-never decides what is true: it drafts a sentence from the turn's evidence
-facts, the draft is verified word by word against those facts and the
-question, and it competes in the mouth's energy ranking like any other
-candidate. The same provider backs `scce code`, where the verifier is the
-compiler: a patch that does not typecheck is rolled back.
+SCCE contains no language model: no local model server, no remote API,
+no constrained decoder. Wording comes from the mouth's learned
+constructions and language memory over the admitted corpus, and
+`scce code` applies only code actions the TypeScript compiler itself
+owns, rolled back unless they typecheck. `tools/no-hidden-model-check.mjs`
+fails the build on any model endpoint or generation call.
 
 There is no CLI screenshot. A previous one was removed on 2026-08-17
 because the image was an HTML re-rendering styled to look like a

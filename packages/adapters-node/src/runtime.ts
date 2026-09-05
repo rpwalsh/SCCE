@@ -17,7 +17,6 @@ import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./pos
 import { NodeFileIngestAdapter } from "./files.js";
 import { NodeBuildTestAdapter } from "./process.js";
 import { ConfiguredConnectorAdapter } from "./connectors.js";
-import { selectRealizationPort } from "./realization-providers.js";
 import { createClipVisualEmbedder, registerVisualEmbedder } from "./visual-ingest.js";
 import { createApprovalSession, type ApprovalSession } from "./approval-session.js";
 import { createNodePostgresGovernanceProbe } from "./governance-probe.js";
@@ -77,8 +76,6 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     journal: createExecutiveEventJournal(storage),
     maxConflictRetries: 5
   });
-  // Declared, config-gated fourth realization strategy (see models.declared.json). Absent
-  // unless enabled; weights load from a local directory only.
   // Declared, config-gated visual embedder (Phase 3): registered for document extraction and
   // handed to the kernel only as a text->visual-space query function.
   const visualEmbeddings = config.ingestion?.visual?.embeddings;
@@ -86,9 +83,6 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     ? createClipVisualEmbedder({ modelId: visualEmbeddings.modelId, modelDir: visualEmbeddings.modelDir, log: message => console.error(`[scce] ${message}`) })
     : undefined;
   registerVisualEmbedder(visualEmbedder);
-  // Provider selection (Phase 5): native (default; Phase 2 decoder when enabled), a local model server, or a remote API
-  // behind its sovereignty gate. Any provider error yields no surfaces -> native mouth.
-  const wordingRealizer = selectRealizationPort(config);
   const kernel = createScceKernel({
     storage,
     files,
@@ -96,7 +90,6 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     governance,
     connectors,
     approvals,
-    ...(wordingRealizer ? { wordingRealizer } : {}),
     ...(visualEmbedder ? { visualQueryEmbedder: (text: string) => visualEmbedder.embedText(text) } : {}),
     policy: config.policy,
     maxChunkBytes: config.runtime.maxChunkBytes,

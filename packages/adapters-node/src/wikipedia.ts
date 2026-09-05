@@ -89,8 +89,8 @@ export function resolveWikipediaCorpusTarget(config: ScceRuntimeConfig, absolute
 }
 
 function wikipediaDumpCode(fileName: string): string | undefined {
-  const match = fileName.match(/^([a-z][a-z0-9_-]*wiki)-latest-pages-articles-multistream(?:-index\.txt)?(?:\.xml)?(?:\.bz2)?$/i)
-    ?? fileName.match(/^([a-z][a-z0-9_-]*wiki)-\d{8}-pages-articles-multistream(?:-index\.txt)?(?:\.xml)?(?:\.bz2)?$/i);
+  // Whole dumps, dated dumps, and numbered multistream parts (…multistream1.xml-p1p41242.bz2) all name their wiki.
+  const match = fileName.match(/^([a-z][a-z0-9_-]*wiki)-(?:latest|\d{8})-pages-articles(?:-multistream\d*)?(?:-index\d*\.txt)?(?:\.xml)?(?:-p\d+p\d+)?(?:\.bz2)?$/i);
   return match?.[1]?.toLocaleLowerCase();
 }
 
@@ -432,7 +432,7 @@ function decodeXml(value: string): string {
     .replaceAll("&#039;", "'");
 }
 
-function normalizeWikiText(value: string): string {
+export function normalizeWikiText(value: string): string {
   let text = removeDelimited(value, "<!--", "-->");
   text = removeRefTags(text);
   text = removeTemplates(text);
@@ -532,14 +532,11 @@ function removeTemplates(input: string): string {
 /** A removed template leaves the separator that followed it: "({{IPAc-en|...}}; {{nee|Byron}}; 10 December 1815"
  *  became "( ; 10 December 1815" in 1,426 promoted spans. Punctuation only, so it reads the same in any script. Pure. */
 function closeSeparatorsLeftByTemplates(text: string): string {
-  const open = "[(\[{\u3010\uff08]";
-  const close = "[)\]}\u3011\uff09]";
-  const separator = "[;,:\u3001\uff0c\uff1b\uff1a]";
   return text
-    .replace(new RegExp(`(${open})\s*${separator}+\s*`, "gu"), "$1")
-    .replace(new RegExp(`${separator}\s*(?=${separator})`, "gu"), "")
-    .replace(new RegExp(`\s+(${separator}|[.\u3002])`, "gu"), "$1")
-    .replace(new RegExp(`${open}\s*${close}`, "gu"), "");
+    .replace(/([(\[{\u3010\uff08])\s*[;,:\u3001\uff0c\uff1b\uff1a]+\s*/gu, "$1")
+    .replace(/[;,:\u3001\uff0c\uff1b\uff1a]\s*(?=[;,:\u3001\uff0c\uff1b\uff1a])/gu, "")
+    .replace(/\s+([;,:\u3001\uff0c\uff1b\uff1a]|[.\u3002])/gu, "$1")
+    .replace(/[(\[{\u3010\uff08]\s*[)\]}\u3011\uff09]/gu, "");
 }
 
 function renderWikiLinks(input: string): string {

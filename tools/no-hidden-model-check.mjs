@@ -25,7 +25,16 @@ const FORBIDDEN_ENDPOINTS = [
   "api.openai.com",
   "api.anthropic.com",
   "huggingface.co/api/inference",
-  "localhost:11434/api"
+  "localhost:11434",
+  "127.0.0.1:11434"
+];
+// Language-model generation has no declared form: any of these in source is a violation.
+const FORBIDDEN_SOURCE_PATTERNS = [
+  "automodelforcausallm",
+  "text-generation",
+  "causal-lm",
+  "chat/completions",
+  "num_predict"
 ];
 
 // "Hidden" is the operative word: a runtime or endpoint declared in models.declared.json
@@ -44,6 +53,7 @@ const report = {
   scannedFiles: scannedFiles.length,
   forbiddenPackages: FORBIDDEN_PACKAGES,
   forbiddenEndpoints: FORBIDDEN_ENDPOINTS,
+  forbiddenSourcePatterns: FORBIDDEN_SOURCE_PATTERNS,
   declaredPackages: declared.packages,
   declaredEndpoints: declared.endpoints,
   violations,
@@ -98,6 +108,7 @@ async function scanSource(file) {
   }
   const lower = source.toLowerCase();
   for (const endpoint of FORBIDDEN_ENDPOINTS) if (lower.includes(endpoint) && !declared.endpoints.includes(endpoint)) add(file, `contains forbidden external-model endpoint ${endpoint}`);
+  for (const pattern of FORBIDDEN_SOURCE_PATTERNS) if (lower.includes(pattern)) add(file, `contains language-model generation pattern ${pattern}`);
 }
 
 function add(file, reason) {

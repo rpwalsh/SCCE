@@ -8,8 +8,10 @@ import {
   type SparseAlignmentCandidateSupport,
   type SparseAlignmentTargetIndex,
   type SparseFusedTransportPlan,
+  type SurfaceLattice,
   type TransportEvidenceAllocation
 } from "../index.js";
+import { canonicalNormalizationContract } from "../normalization-contract.js";
 
 describe("automatic source-family held-out alignment evaluation", () => {
   it("measures candidate recall before recovery and graduates only complete plans", () => {
@@ -85,9 +87,51 @@ describe("automatic source-family held-out alignment evaluation", () => {
       reasons: expect.arrayContaining(["heldout_coverage_low", "cycle_recall_low"])
     });
   });
+
+  it("treats a port the held-out surface never mentions as unrealized meaning, not a recovery miss", () => {
+    const complete = support("support.a", "family.a", ["target.1", "target.2"]);
+    const partial = support("support.b", "family.b", ["target.1"]);
+    const third = support("support.c", "family.c", ["target.1"]);
+    const supports = [complete, partial, third];
+    const plans = [
+      plan("plan.a", complete, ["target.1", "target.2"]),
+      plan("plan.b", partial, ["target.1"]),
+      plan("plan.c", third, ["target.1"])
+    ];
+    const sets = plans.map((row, index) =>
+      alternativeSet(`series.${index}`, row));
+    const evaluation = compileAutomaticAlignmentEvaluation({
+      alternativeSets: sets,
+      supports,
+      referencePlans: plans,
+      evidenceAllocations: plans.map(allocation),
+      targetIndex: targetIndex({ "target.1": ["ada"], "target.2": ["1815"] }),
+      lattices: [lattice("lattice.a", "Ada 1815"), lattice("lattice.b", "Ada"), lattice("lattice.c", "Ada")]
+    });
+    const artifact = evaluation.artifacts.find(row => row.planId === "plan.a")!;
+    expect(artifact.heldout.map(row => row.unrealizedGraphTargetIds)).toEqual([["target.2"], ["target.2"]]);
+    expect(artifact.heldout.every(row => row.candidateRecall === 1 && row.finalRecall === 1)).toBe(true);
+    const promotion = compileAlignmentPromotionModel({
+      alternativeSets: sets,
+      observations: evaluation.promotionObservations
+    });
+    expect(promotion.decisions.find(row => row.planId === "plan.a")?.promoted).toBe(true);
+    // A surface that mentions the port but grew no candidate is still a generator miss.
+    const missed = compileAutomaticAlignmentEvaluation({
+      alternativeSets: sets,
+      supports,
+      referencePlans: plans,
+      evidenceAllocations: plans.map(allocation),
+      targetIndex: targetIndex({ "target.1": ["ada"], "target.2": ["1815"] }),
+      lattices: [lattice("lattice.a", "Ada 1815"), lattice("lattice.b", "Ada 1815"), lattice("lattice.c", "Ada")]
+    });
+    const missedRow = missed.artifacts.find(row => row.planId === "plan.a")!.heldout.find(row => row.sourceFamilyId === "family.b")!;
+    expect(missedRow.unrealizedGraphTargetIds).toEqual([]);
+    expect(missedRow.candidateRecall).toBe(0.5);
+  });
 });
 
-function targetIndex(): SparseAlignmentTargetIndex {
+function targetIndex(surfaceKeys: Record<string, string[]> = {}): SparseAlignmentTargetIndex {
   return {
     id: "target-index.1",
     targets: ["target.1", "target.2"].map(id => ({
@@ -96,9 +140,17 @@ function targetIndex(): SparseAlignmentTargetIndex {
       relationNodeId: "relation.1",
       hyperedgeId: "hyperedge.1",
       evidenceIds: ["evidence.1"],
-      observableSurfaceKeys: []
+      observableSurfaceKeys: surfaceKeys[id] ?? []
     }))
   } as unknown as SparseAlignmentTargetIndex;
+}
+
+function lattice(id: string, text: string): SurfaceLattice {
+  return {
+    id,
+    normalizationContract: canonicalNormalizationContract(),
+    units: text.split(" ").map((word, index) => ({ id: `${id}.unit.${index}`, normalized: word }))
+  } as unknown as SurfaceLattice;
 }
 
 function support(
@@ -109,6 +161,7 @@ function support(
   return {
     id,
     sourceFamilyId,
+    latticeId: id.replace("support", "lattice"),
     targetIndexId: "target-index.1",
     candidates: targetIds.map((graphTargetId, index) => ({
       id: `${id}.candidate.${index}`,

@@ -42,6 +42,7 @@ import {
   solveSparseFusedUnbalancedTransport,
   allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
+  relationObservationsFromCandidates,
   buildSurfaceLattice,
   evidenceSourceFamilyId,
   liftHyperedgesToTypedIncidenceGraph,
@@ -920,10 +921,27 @@ export class WikipediaV3Ingestor {
       episodeId
     });
     const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
+    // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.
+    const priorRelationObservations = this.storage.relationObservations
+      ? await this.storage.relationObservations.list({}).catch(() => [])
+      : [];
     const relationPromotionModel = compileRelationPromotionModel({
       candidates: semanticCandidates,
+      priorObservations: priorRelationObservations.map(row => ({
+        candidateId: row.candidateId,
+        relationSeedId: row.relationSeedId,
+        channel: row.channel as StructuredSemanticCandidate["channel"],
+        sourceId: row.sourceId,
+        sourceFamilyId: row.sourceFamilyId,
+        signature: row.signature
+      })),
       hasher: this.hasher
     });
+    if (this.storage.relationObservations && semanticCandidates.length) {
+      await this.storage.relationObservations.put(
+        relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
+      );
+    }
     const opaqueRoleModel = compileOpaqueRoleModel({
       candidates: semanticCandidates,
       promotionModel: relationPromotionModel,

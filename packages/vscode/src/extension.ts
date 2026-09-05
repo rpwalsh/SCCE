@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat-view.js";
 import { ScceClient } from "./client.js";
-import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken, isLoopbackHostname } from "./config.js";
+import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken } from "./config.js";
 import { TaskTimeline, type ExtensionTaskRecord } from "./task-timeline.js";
 import type { ScceEndpoint } from "./protocol.js";
 import {
@@ -438,17 +438,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const picked = await vscode.window.showQuickPick(items, { title: `SCCE local models (${view.modelDir})` });
         if (!picked) return;
         if (picked.label.startsWith("$(cloud-download)")) {
-          const modelId = await vscode.window.showInputBox({ prompt: "Model id (org/name), e.g. onnx-community/Qwen2.5-1.5B-Instruct or Xenova/clip-vit-base-patch32" });
+          const modelId = await vscode.window.showInputBox({ prompt: "Model id (org/name), e.g. Xenova/clip-vit-base-patch32" });
           if (!modelId) return;
-          const kind = modelId.toLowerCase().includes("clip") ? "clip" : "causal-lm";
-          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `SCCE: downloading ${modelId}` }, () => activeClient.downloadModel(modelId, kind));
+          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `SCCE: downloading ${modelId}` }, () => activeClient.downloadModel(modelId));
           void vscode.window.showInformationMessage(`SCCE: downloaded ${modelId}`);
           return;
         }
         const modelId = picked.label.replace(/^\$\(check\) /u, "");
-        const action = await vscode.window.showQuickPick(["Use for constrained decoding", "Use for visual embeddings", "Remove"], { title: modelId });
+        const action = await vscode.window.showQuickPick(["Use for visual embeddings", "Remove"], { title: modelId });
         if (action === "Remove") { await activeClient.removeModel(modelId); void vscode.window.showInformationMessage(`SCCE: removed ${modelId}`); }
-        else if (action === "Use for constrained decoding") { await activeClient.putSetting("realization.constrainedDecoding.modelId", modelId); await activeClient.putSetting("realization.constrainedDecoding.modelDir", view.modelDir); }
         else if (action === "Use for visual embeddings") { await activeClient.putSetting("ingestion.visual.embeddings.modelId", modelId); await activeClient.putSetting("ingestion.visual.embeddings.modelDir", view.modelDir); }
       } catch (error) {
         void vscode.window.showErrorMessage(`SCCE models: ${error instanceof Error ? error.message : String(error)}`);
@@ -466,14 +464,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 function readSurfaceSettings(): { values: Record<string, string | boolean>; problems: string[] } {
   const settings = vscode.workspace.getConfiguration("scce");
   const problems: string[] = [];
-  const ollamaHost = settings.get<string>("realization.ollamaHost", "http://localhost:11434");
-  try { if (!isLoopbackHostname(new URL(ollamaHost).hostname)) problems.push("realization.ollamaHost must be a loopback host"); } catch { problems.push("realization.ollamaHost must be a URL"); }
   return {
     problems,
     values: {
-      "realization.provider": settings.get<string>("realization.provider", "native"),
-      "realization.ollama.host": ollamaHost,
-      "realization.ollama.model": settings.get<string>("realization.ollamaModel", ""),
       "ingestion.visual.embeddings.enabled": settings.get<boolean>("ingestion.imageEmbeddings", false),
       "ingestion.observation.workspaceAutoIngest": settings.get<boolean>("workspace.autoIngest", true),
       "ingestion.observation.screen": settings.get<boolean>("observation.screen", false),
