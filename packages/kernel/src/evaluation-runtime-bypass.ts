@@ -207,6 +207,7 @@ export function emptyPowerWalkResult(): PowerWalkResult {
     embeddings: [],
     typePairWalkLengths: [],
     transitionAudit: [],
+    transitionLikelihood: { observations: 0, meanNegativeLogLikelihood: 0, meanSelectedProbability: 0 },
     cooccurrence: [],
     cooccurrenceState: {
       version: "powerwalk.cooccurrence.v3",

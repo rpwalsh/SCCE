@@ -139,6 +139,29 @@ describe("typed temporal second-order walk contract", () => {
       .every(id => id.startsWith("evidence.runtime-fit."))).toBe(true);
   });
 
+  it("scores its own executed transitions and reports the first-order bound beside the heuristic length", () => {
+    const engine = createTypedTemporalWalkEngine({ hasher });
+    const graphNodes = Array.from({ length: 6 }, (_, index) => node(`likelihood-${index}`));
+    const graphEdges = graphNodes.flatMap((source, sourceIndex) => [1, 2, 3].map(offset => {
+      const target = graphNodes[(sourceIndex + offset) % graphNodes.length]!;
+      return edge(source, target, 1_000, `evidence.likelihood.${sourceIndex}.${offset}`);
+    }));
+    const result = engine.run(graphNodes, graphEdges, undefined, { now: 1_000, seed: "likelihood", walksPerNode: 4 });
+
+    expect(result.transitionLikelihood.observations).toBeGreaterThan(0);
+    expect(result.transitionLikelihood.meanSelectedProbability).toBeGreaterThan(0);
+    expect(result.transitionLikelihood.meanSelectedProbability).toBeLessThanOrEqual(1);
+    expect(result.transitionLikelihood.meanNegativeLogLikelihood).toBeGreaterThanOrEqual(0);
+    // The executed walk is second order, so the first-order gap is reported for comparison and never as its bound.
+    for (const diagnostic of result.typePairWalkLengths) {
+      expect(diagnostic.boundKind).toBe("exploration_heuristic");
+      if (diagnostic.firstOrderMixing) {
+        expect(diagnostic.firstOrderMixing.minimumLength).toBeGreaterThanOrEqual(0);
+        expect(diagnostic.spectralGap).toBe(0);
+      }
+    }
+  });
+
   it("is invariant to database row order for the same graph and seed", () => {
     const engine = createTypedTemporalWalkEngine({ hasher });
     const ac = edge(a, c, 1_000);
