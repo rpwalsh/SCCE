@@ -110,6 +110,7 @@ export const EVENT_TYPES = [
   "LanguagePatternLearned",
   "SymbolPatternLearned",
   "SegmentationSpacingObserved",
+  "TaskNodeCompleted",
   "FieldSeeded",
   "FieldActivated",
   "FieldPropagated",
@@ -1015,6 +1016,8 @@ export interface TurnResult {
   taskSchedule?: JsonValue;
   /** Plan items 180-181: real replanning triggered by this turn's own build/test failure (a genuine meaningful observation), reusing every completed task-decomposition node whose own claims that failure doesn't touch rather than restarting the plan. Absent when this turn had no task decomposition or its build/test passed (or never ran). */
   taskReplanning?: JsonValue;
+  /** Task nodes a passing build proved complete this turn, and the ones that could not be completed with the reason. */
+  taskCompletion?: JsonValue;
   /** Plan items 219-220: the real, provenance-aware user-model store (metadata.userModelStore in, updated store out), with every real correction detected this turn recorded as a real explicit_instruction claim -- always present (an empty claim list when nothing was supplied or detected), never fabricated. */
   userModelStore?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
