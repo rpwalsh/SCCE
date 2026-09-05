@@ -12,7 +12,7 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { renderWorkbench } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -88,6 +88,7 @@ export const ROUTES = [
   { method: "GET", path: "/api/ready", label: "readiness", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/db/init", label: "database initialize", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/db/migrate", label: "database migrate", mutates: true, requiresDb: true },
+  { method: "GET", path: "/api/executive/resume", label: "executive resume plan", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/db/verify", label: "database verify", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/db/stats", label: "database stats", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/tools", label: "tool diagnostics", mutates: false, requiresDb: false },
@@ -298,6 +299,16 @@ async function dispatch(
   if (req.method === "POST" && url.pathname === "/api/db/migrate") {
     await context.runtime.storage.migrate();
     return json({ ok: true });
+  }
+  if (req.method === "GET" && url.pathname === "/api/executive/resume") {
+    // What a restart would have to pick up for one episode: invocations still in flight, attempts awaiting an
+    // outcome, tasks ready to run, and tasks whose rollback is ready. Reporting only; nothing is dispatched here.
+    const episodeId = url.searchParams.get("episodeId")?.trim();
+    if (!episodeId) throw new HttpError(400, "episodeId is required");
+    const executive = context.runtime.executive;
+    if (!executive) throw new HttpError(409, "no durable executive episode store is configured");
+    const state = await executive.load(episodeId as Parameters<DurableExecutiveEpisode["load"]>[0]);
+    return json({ episodeId, ...executiveResumePlan(state) });
   }
   if (req.method === "GET" && url.pathname === "/api/db/verify") return json(await context.runtime.storage.verify());
   if (req.method === "GET" && url.pathname === "/api/db/stats") return json(await context.runtime.storage.stats());
