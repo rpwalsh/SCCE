@@ -111,3 +111,20 @@ export function wallEnergyJoules(usage: MeasuredResourceUsage, model: PowerModel
   if (!Number.isFinite(total)) throw new RangeError("wall energy computation overflowed");
   return total;
 }
+
+/** The host's own process accounting, or nothing when the host does not expose it. Never synthesized. */
+export function captureResourceUsageSnapshot(): ResourceUsageSnapshot | undefined {
+  const runtime = (globalThis as { process?: { cpuUsage?: () => { user: number; system: number }; memoryUsage?: () => { rss: number }; hrtime?: { bigint?: () => bigint } } }).process;
+  const cpu = runtime?.cpuUsage?.();
+  const memory = runtime?.memoryUsage?.();
+  const wallClockNanos = runtime?.hrtime?.bigint?.();
+  if (!cpu || !memory || wallClockNanos === undefined) return undefined;
+  return {
+    cpuUserMicros: cpu.user,
+    cpuSystemMicros: cpu.system,
+    residentSetBytes: memory.rss,
+    wallClockNanos,
+    diskBytesRead: 0,
+    diskBytesWritten: 0
+  };
+}
