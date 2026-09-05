@@ -9,6 +9,7 @@ import {
 } from "./dialogue-pragmatics.js";
 import type { CalibrationModelSet } from "./calibration-spine.js";
 import { planStreamRhythm, type StreamRhythmPlan } from "./stream-rhythm.js";
+import { verifyProofPreservingParaphrases, type ProofPreservingParaphraseReport } from "./proof-preserving-paraphrase.js";
 import type { EvidenceSpan, JsonValue, TurnResult } from "./types.js";
 
 const TURN_DIALOGUE_STATUS_IDS = {
@@ -34,6 +35,8 @@ export interface TurnDialogueBridge {
   answerGraph: DialogueAnswerGraphLike;
   pragmatics: DialoguePragmaticsResult;
   streamPlan: StreamRhythmPlan;
+  /** Whether the reworded answer still carries the protected spans, negation, uncertainty and contradiction it licensed. */
+  paraphrasePreservation: ProofPreservingParaphraseReport;
   trace: JsonValue;
 }
 
@@ -62,8 +65,15 @@ export function buildTurnDialogueBridge(input: {
     statePatch: input.userStyleProfile ? { userStyleProfile: input.userStyleProfile } : undefined
   });
   const streamPlan = planStreamRhythm({ policyDecision: pragmatics.policyDecision, answerGraph, finalText: pragmatics.finalText });
+  // Pragmatics may reword the answer; the reworded text still has to carry the protected spans, the negation, the
+  // uncertainty and the contradiction the answer graph licensed. A variant that drops one is reported, not shipped quietly.
+  const paraphrasePreservation = verifyProofPreservingParaphrases({
+    answerGraph,
+    variants: [...new Set([pragmatics.finalText, input.result.answer].filter(Boolean))]
+  });
   return {
     schema: "scce.turn_dialogue_bridge.v1",
+    paraphrasePreservation,
     conversationId: input.conversationId,
     turnId,
     answerGraphHash,
