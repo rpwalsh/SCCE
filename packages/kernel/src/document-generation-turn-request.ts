@@ -6,11 +6,13 @@ import type { VoiceSample } from "./voice-profile.js";
 import type { DocumentGenerationSessionStore } from "./storage.js";
 import type { JsonValue } from "./types.js";
 import { toJsonValue } from "./primitives.js";
+import { applyDocumentRevisionPatch, invertDocumentRevisionPatch, type DocumentRevisionPatch } from "./document-revision.js";
 import {
   completeDocumentSection,
   createDocumentGenerationSession,
   narrativeConditioningForSession,
   nextDocumentGenerationWork,
+  reviseDocumentSession,
   type CompleteDocumentSectionInput,
   type DocumentGenerationSession,
   type NarrativeConditioning
@@ -183,10 +185,18 @@ function completeSectionInputFromJson(value: JsonValue | undefined): CompleteDoc
   return { nodeId: input.nodeId, content: input.content, satisfiedCoverageIds, ...(narrativeEvent ? { narrativeEvent } : {}) };
 }
 
+/** One revision of a document plan the owner asks for mid-session. Every kind is delegated to document-revision.ts. */
+export type DocumentRevisionRequest =
+  | { kind: "rewrite"; nodeId: string; content: string }
+  | { kind: "delete"; nodeId: string }
+  | { kind: "move"; nodeId: string; parentId?: string; order: number };
+
 export type DocumentGenerationTurnRequest =
   | { sessionId: string; action: { type: "start"; session: JsonValue } }
   | { sessionId: string; action: { type: "next_work" } }
-  | { sessionId: string; action: { type: "complete_section"; input: CompleteDocumentSectionInput } };
+  | { sessionId: string; action: { type: "complete_section"; input: CompleteDocumentSectionInput } }
+  | { sessionId: string; action: { type: "revise"; revision: DocumentRevisionRequest } }
+  | { sessionId: string; action: { type: "undo"; patch: DocumentRevisionPatch } };
 
 /**
  * Real per-turn metadata parse, with a real distinction between two
@@ -220,10 +230,22 @@ export function documentGenerationRequestFromMetadata(metadata: JsonValue | unde
     if (!completeInput) return { status: "malformed" };
     return { status: "ok", request: { sessionId, action: { type: "complete_section", input: completeInput } } };
   }
+  if (action.type === "revise") {
+    const revision = revisionRequestFromJson(action.revision);
+    return revision ? { status: "ok", request: { sessionId, action: { type: "revise", revision } } } : { status: "malformed" };
+  }
+  if (action.type === "undo") {
+    const patch = revisionPatchFromJson(action.patch);
+    return patch ? { status: "ok", request: { sessionId, action: { type: "undo", patch } } } : { status: "malformed" };
+  }
   return { status: "malformed" };
 }
 
 export type DocumentGenerationTurnResult =
+  | { action: "revise"; accepted: true; patch: DocumentRevisionPatch; undoPatch: DocumentRevisionPatch }
+  | { action: "revise"; accepted: false; reason: string }
+  | { action: "undo"; accepted: true }
+  | { action: "undo"; accepted: false; reason: string }
   | { action: "start"; sessionId: string; pendingSections: Array<{ id: string; goal: string }>; narrativeConditioning: NarrativeConditioning }
   | { action: "next_work"; pendingSections: Array<{ id: string; goal: string }>; narrativeConditioning: NarrativeConditioning }
   | { action: "complete_section"; accepted: true }
@@ -265,6 +287,54 @@ export type DocumentGenerationTurnResult =
  *   completion to a last-write-wins race; the loser gets a real conflict
  *   result instead.
  */
+
+function applyRevisionRequest(session: DocumentGenerationSession, revision: DocumentRevisionRequest) {
+  if (revision.kind === "rewrite") return reviseDocumentSession.rewrite(session, revision.nodeId, revision.content);
+  if (revision.kind === "delete") return reviseDocumentSession.delete(session, revision.nodeId);
+  return reviseDocumentSession.move(session, revision.nodeId, {
+    ...(revision.parentId === undefined ? {} : { parentId: revision.parentId }),
+    order: revision.order
+  });
+}
+
+function revisionRequestFromJson(value: JsonValue | undefined): DocumentRevisionRequest | undefined {
+  const input = record(value);
+  if (!input || typeof input.nodeId !== "string" || !input.nodeId.trim()) return undefined;
+  if (input.kind === "rewrite") return typeof input.content === "string" ? { kind: "rewrite", nodeId: input.nodeId, content: input.content } : undefined;
+  if (input.kind === "delete") return { kind: "delete", nodeId: input.nodeId };
+  if (input.kind === "move" && typeof input.order === "number" && Number.isFinite(input.order)) {
+    return {
+      kind: "move",
+      nodeId: input.nodeId,
+      order: input.order,
+      ...(typeof input.parentId === "string" ? { parentId: input.parentId } : {})
+    };
+  }
+  return undefined;
+}
+
+function revisionPatchFromJson(value: JsonValue | undefined): DocumentRevisionPatch | undefined {
+  const input = record(value);
+  if (!input) return undefined;
+  const nodes = (raw: JsonValue | undefined): DocumentPlanNode[] | undefined => {
+    if (!Array.isArray(raw)) return undefined;
+    const parsed = raw.map(item => documentPlanNodeFromJson(item));
+    return parsed.every((node): node is DocumentPlanNode => Boolean(node)) ? parsed : undefined;
+  };
+  const removed = nodes(input.removed);
+  const added = nodes(input.added);
+  if (!removed || !added || !Array.isArray(input.changed)) return undefined;
+  const changed: DocumentRevisionPatch["changed"] = [];
+  for (const raw of input.changed) {
+    const pair = record(raw);
+    const before = documentPlanNodeFromJson(pair?.before);
+    const after = documentPlanNodeFromJson(pair?.after);
+    if (!before || !after) return undefined;
+    changed.push({ before, after });
+  }
+  return { removed, added, changed };
+}
+
 export async function syncDocumentGenerationRequestForTurn(
   store: DocumentGenerationSessionStore,
   request: DocumentGenerationTurnRequest,
@@ -322,6 +392,33 @@ export async function syncDocumentGenerationRequestForTurn(
       pendingSections: pending.map(node => ({ id: node.id, goal: node.goal })),
       narrativeConditioning: narrativeConditioningForSession(session)
     };
+  }
+
+  if (request.action.type === "revise") {
+    // The revision is applied by document-revision.ts and returned with its own inverse, so the owner can undo exactly
+    // what was done rather than approximating it.
+    let revised;
+    try {
+      revised = applyRevisionRequest(session, request.action.revision);
+    } catch (error) {
+      return { action: "revise", accepted: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+    const cas = await store.compareAndPutSession(
+      { id: request.sessionId, conversationId, sessionJson: toJsonValue(revised.session), updatedAt: now },
+      record_.updatedAt
+    );
+    if (!cas.stored) return { accepted: false, reason: "concurrent write conflict; retry" };
+    return { action: "revise", accepted: true, patch: revised.patch, undoPatch: invertDocumentRevisionPatch(revised.patch) };
+  }
+
+  if (request.action.type === "undo") {
+    const plan = applyDocumentRevisionPatch(session.plan, request.action.patch);
+    const cas = await store.compareAndPutSession(
+      { id: request.sessionId, conversationId, sessionJson: toJsonValue({ ...session, plan }), updatedAt: now },
+      record_.updatedAt
+    );
+    if (!cas.stored) return { accepted: false, reason: "concurrent write conflict; retry" };
+    return { action: "undo", accepted: true };
   }
 
   // Real idempotency guard: production-turn-runtime.ts has a genuine,
