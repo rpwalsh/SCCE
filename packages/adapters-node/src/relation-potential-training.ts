@@ -33,7 +33,8 @@ export async function fitRelationPotentialFromGraph(input: {
   const hasher = createHasher();
   const limit = Math.max(1, Math.min(200_000, Math.floor(input.maxEdges ?? 20_000)));
   const minimum = Math.max(2, Math.floor(input.minimumExamplesPerDataset ?? 8));
-  const slice = await input.storage.graph.getSlice({ limitEdges: limit, limitNodes: limit, allowLatestFallback: true });
+  // Fitting reads edges only; unbounded node representations are what exhausted the heap on a real brain.
+  const slice = await input.storage.graph.getSlice({ limitEdges: limit, limitNodes: 1, maxRepresentationBytes: 512, allowLatestFallback: true });
   const edges = slice.edges.filter(edge => Number.isFinite(edge.alpha) && Number.isFinite(edge.weight));
   const skipped: string[] = [];
   if (!edges.length) return { model: null, edgeCount: 0, labelledCount: 0, positiveCount: 0, datasetCounts: { coefficientTraining: 0, calibrationFit: 0, evaluationHoldout: 0 }, skipped: ["no graph edges"] };
