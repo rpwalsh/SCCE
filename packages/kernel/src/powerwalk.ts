@@ -256,6 +256,12 @@ export interface PowerWalkResult {
     decay: number;
     alphaWeight: number;
   }>;
+  /** How well the active parameters predicted the walk's own executed choices; empty when the audit carried no usable observation. */
+  transitionLikelihood: {
+    observations: number;
+    meanNegativeLogLikelihood: number;
+    meanSelectedProbability: number;
+  };
   cooccurrence: Array<{ nodeId: NodeId; contextNodeId: NodeId; count: number; distanceMean: number; weight: number }>;
   cooccurrenceState: SparseCooccurrenceState;
   representation: SparsePpmiDiagnostics & {
@@ -305,6 +311,13 @@ export interface PowerWalkLengthDiagnostic {
   typePair: string;
   spectralGap: number;
   length: number;
+  /** The first-order chain's own mixing bound, reported for comparison. The executed walk is second-order, so this
+   *  is never the bound for the length above; it is omitted when the graph is too large to assess. */
+  firstOrderMixing?: {
+    spectralGap: number;
+    minimumLength: number;
+    boundKind: "reversible_absolute_spectral_bound" | "unavailable";
+  };
   boundKind: "reversible_absolute_spectral_bound" | "exploration_heuristic";
   rationale: "bound_assumptions_not_established" | "second_order_transition_bound_not_established";
   assumptions: {
@@ -363,7 +376,7 @@ export function createTypedTemporalWalkEngine(options: { hasher: Hasher }) {
         neighbor.get(edge.source)?.push(edge);
       }
       const transition = transitionMatrix(canonicalNodes, canonicalEdges, cfg, now);
-      const typePairWalkLengths = walkLengthsByType(canonicalNodes, canonicalEdges, transition, cfg.epsilon);
+      const typePairWalkLengths = walkLengthsByType(canonicalNodes, canonicalEdges, transition, cfg.epsilon, cfg);
       const transitionAudit: PowerWalkResult["transitionAudit"] = [];
       const walks: NodeId[][] = [];
       for (const node of canonicalNodes.slice(0, 500)) {
@@ -407,6 +420,7 @@ export function createTypedTemporalWalkEngine(options: { hasher: Hasher }) {
         embeddings: fit.embeddings,
         typePairWalkLengths,
         transitionAudit,
+        transitionLikelihood: executedTransitionLikelihood(transitionAudit, cfg, options.hasher),
         cooccurrence: cooccurrence.slice(0, 2048),
         cooccurrenceState: fit.state,
         representation: {
@@ -1429,8 +1443,44 @@ function deterministicWeightedChoice(items: Array<{ edge: GraphEdge; weight: num
   return items[items.length - 1]?.edge;
 }
 
-function walkLengthsByType(nodes: readonly GraphNode[], edges: readonly GraphEdge[], transition: number[][], epsilon: number): PowerWalkLengthDiagnostic[] {
+/** Scores the walk's own executed choices under the parameters that produced them: the model's surprise at itself. */
+function executedTransitionLikelihood(
+  audit: PowerWalkResult["transitionAudit"],
+  params: PowerWalkParams,
+  hasher: Hasher
+): PowerWalkResult["transitionLikelihood"] {
+  const observations = powerWalkTransitionObservationsFromAudit(audit, hasher);
+  if (!observations.length) return { observations: 0, meanNegativeLogLikelihood: 0, meanSelectedProbability: 0 };
+  let nll = 0;
+  let selected = 0;
+  for (const observation of observations) {
+    const distribution = powerWalkTransitionDistribution(observation, params);
+    nll += distribution.negativeLogLikelihood;
+    selected += distribution.selectedProbability;
+  }
+  return {
+    observations: observations.length,
+    meanNegativeLogLikelihood: nll / observations.length,
+    meanSelectedProbability: selected / observations.length
+  };
+}
+
+/** Above this many nodes the per-type-pair transition matrices are not built; the comparison bound is reported as unavailable rather than estimated. */
+const FIRST_ORDER_MIXING_NODE_LIMIT = 192;
+
+function walkLengthsByType(
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
+  transition: number[][],
+  epsilon: number,
+  params?: PowerWalkParams
+): PowerWalkLengthDiagnostic[] {
   const types = [...new Set(nodes.map(node => String(node.typeId)))].sort();
+  const firstOrder = new Map(
+    params && nodes.length <= FIRST_ORDER_MIXING_NODE_LIMIT
+      ? typePairSpectralGaps(nodes, edges, params).map(row => [row.typePair, row] as const)
+      : []
+  );
   const out: PowerWalkLengthDiagnostic[] = [];
   for (const a of types) {
     for (const b of types) {
@@ -1444,12 +1494,24 @@ function walkLengthsByType(nodes: readonly GraphNode[], edges: readonly GraphEdg
       const assessment = assessTransitionForMixingBound(sub);
       const assumptionsHold = pairEdges.length > 0 && assessment.valid;
       const heuristicLength = Math.max(8, Math.min(96, Math.ceil(Math.log(1 / Math.max(1e-9, epsilon)) * Math.sqrt(Math.max(1, sub.length)))));
+      const pairGap = firstOrder.get(`${a}->${b}`);
       out.push({
         typePair: `${a}->${b}`,
         // The executed node2vec walk is second-order over (previous,current)
         // states. A first-order node-chain gap is not a bound for that process.
         spectralGap: 0,
         length: heuristicLength,
+        ...(pairGap
+          ? {
+            firstOrderMixing: {
+              spectralGap: pairGap.spectralGap,
+              minimumLength: pairGap.boundKind === "reversible_absolute_spectral_bound"
+                ? minimumPowerWalkLength(pairGap.spectralGap, epsilon)
+                : 0,
+              boundKind: pairGap.boundKind
+            }
+          }
+          : {}),
         boundKind: "exploration_heuristic",
         rationale: assumptionsHold ? "second_order_transition_bound_not_established" : "bound_assumptions_not_established",
         assumptions: assessment.assumptions
