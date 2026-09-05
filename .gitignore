@@ -136,3 +136,4 @@ demo-workspace/
 /tools/sealed-eval/artifacts/
 DECISIONS.md
 docs/UNUSED_EXPORTS_INVENTORY.md
+docs/RUNTIME_REACHABILITY.json
