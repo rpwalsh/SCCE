@@ -137,6 +137,7 @@ import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
 import { exactComputationForText, verifyExactResultMatchesClaim } from "./exact-computation.js";
+import { invariantScore } from "./scoring/score-trace.js";
 import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -945,7 +946,25 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           documentGeneration,
           timing,
           ...evaluationTraceResult(),
-          ...turnContract({ entailment, evidence: [], assistantForce: emission.assistantForce, unsupportedContentBlocked: false }),
+          ...turnContract({
+            entailment,
+            evidence: [],
+            assistantForce: emission.assistantForce,
+            unsupportedContentBlocked: false,
+            // The spoken quantity and the computed quantity are the same number: an algebraic invariant, not an estimate.
+            ...(exactComputationVerified
+              ? {
+                scoreTraces: [invariantScore({
+                  value: exactComputationVerified.matches ? 1 : 0,
+                  range: [0, 1],
+                  meaning: "exact computation result equals the quantity in the spoken answer",
+                  inputs: [exactComputation!.expression, exactComputationVerified.expected],
+                  provenance: ["exact-computation.verifyExactResultMatchesClaim"],
+                  idSeed: `exact:${exactComputation!.expression}:${exactComputationVerified.expected}`
+                })]
+              }
+              : {})
+          }),
           events
         };
       }
@@ -3469,7 +3488,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             entailment: answerEntailment,
             evidence: selectedEvidence,
             assistantForce: emission.assistantForce,
-            scoreTraces: [...candidateField.scoreTrace, ...(judged.selected.scoreTrace ?? [])],
+            scoreTraces: [...candidateField.scoreTrace, ...(judged.selected.scoreTrace ?? []), ...judged.guardTrace],
             retrievalRoles,
             preservationChecked: true,
             unsupportedContentBlocked: emission.assistantForce === "insufficient_support" || runtimeCoherence.demotionRequired
@@ -3620,7 +3639,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           entailment: answerEntailment,
           evidence: selectedEvidence,
           assistantForce: emission.assistantForce,
-          scoreTraces: [...candidateField.scoreTrace, ...(judged.selected.scoreTrace ?? [])],
+          scoreTraces: [...candidateField.scoreTrace, ...(judged.selected.scoreTrace ?? []), ...judged.guardTrace],
           retrievalRoles,
           preservationChecked: true,
           unsupportedContentBlocked: emission.assistantForce === "insufficient_support" || runtimeCoherence.demotionRequired

@@ -9,12 +9,26 @@ import {
   functionalCandidateGateFailures,
   type FunctionalSelectionGate
 } from "./functional-cognition.js";
+import { guardScore, type ScoreTrace } from "./scoring/score-trace.js";
 
 export interface JudgeDecision {
   selected: CandidateSurface;
   rejected: Array<{ candidate: CandidateSurface; score: number; reasons: string[] }>;
   scores: Array<{ candidateId: string; score: number; reasons: string[] }>;
+  /** The hard gate as a typed score: 1 where a candidate cleared it, 0 with the named failures where it did not. */
+  guardTrace: ScoreTrace[];
   audit: JsonValue;
+}
+
+function candidateGuardTrace(candidateId: string, failures: readonly string[], boundary: string): ScoreTrace {
+  return guardScore({
+    value: failures.length ? 0 : 1,
+    range: [0, 1],
+    meaning: "functional selection gate",
+    inputs: [candidateId, ...failures],
+    provenance: [boundary],
+    idSeed: `${boundary}:${candidateId}:${[...failures].join("|")}`
+  });
 }
 
 export interface JudgeOptions {
@@ -53,6 +67,7 @@ export function createJudge(options: JudgeOptions = {}) {
         selected: selected.candidate,
         rejected: scored.filter(row => row !== selected),
         scores: scored.map(item => ({ candidateId: item.candidate.id, score: item.score, reasons: item.reasons })),
+        guardTrace: scored.map(item => candidateGuardTrace(item.candidate.id, item.functionalFailures, "judge.select")),
         audit: toJsonValue({
           requestedAuthority: input.requestedAuthority ?? null,
           selected: selected.candidate.id,
@@ -176,6 +191,7 @@ function selectForRequirementField(input: {
     selected: selected.candidate,
     rejected: ranked.filter(row => row !== selected).map(row => ({ candidate: row.candidate, score: row.score, reasons: row.reasons })),
     scores: ranked.map(row => ({ candidateId: row.candidate.id, score: row.score, reasons: row.reasons })),
+    guardTrace: ranked.map(row => candidateGuardTrace(row.candidate.id, row.hardFailures, "judge.requirementField")),
     audit: toJsonValue({
       schema: "scce.requirement_aware_judge.v1",
       coefficientModel: "judge.requirement.bootstrap.2026-07-12.v1",

@@ -17,7 +17,7 @@ import {
 } from "./patch-transaction.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { promotedSessionEvidence } from "./local-evidence-runtime.js";
-import { estimatorScore, featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
+import { estimatorScore, fallbackScore, featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import { proseGistSurface } from "./evidence-gist.js";
 import { type CalibrationModel, calibratedScoreTrace } from "./scoring/calibration.js";
 import {
@@ -489,6 +489,18 @@ function dialogueStateCandidate(input: CandidateGenerationInput): CandidateSurfa
     satisfiedRequirementIds: [],
     missedRequirementIds: unresolvedSlots,
     boundaries: ["dialogue-state-unresolved"],
+    // This tier speaks a continuation because the turn could not answer, so it is scored as the fallback it is.
+    scoreTrace: [
+      fallbackScore({
+        value: quality.dialogueContinuity,
+        range: [0, 1],
+        meaning: "dialogue continuation offered in place of an answer",
+        inputs: [turnId, ...unresolvedSlots],
+        provenance: ["candidate.ts:dialogueStateCandidate"],
+        failureModes: ["continues the dialogue instead of answering when a real answer existed"],
+        idSeed: `dialogue-plan:${turnId}:${unresolvedSlots.join("|")}`
+      })
+    ],
     audit: toJsonValue({
       source: "dialogue.state",
       turnId,
