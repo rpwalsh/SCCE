@@ -5094,7 +5094,7 @@ function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: num
   // Repository spans ingested as text/plain carry no sourceKind, only a repo-relative path; prose lanes name
   // themselves (wikimedia_dump) or arrive from the web (https://). Anything else unlabelled is the owner's workspace, file:// included.
   return `(COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[])
-    AND NOT (COALESCE(${alias}.provenance_json->>'sourceKind', '') = '' AND COALESCE(${alias}.provenance_json->>'uri', '') !~* '^https?://'))`;
+    AND NOT (COALESCE(${alias}.provenance_json->>'sourceKind', '') = '' AND COALESCE(${alias}.provenance_json->>'uri', '') !~* '^https?://' AND ${alias}.media_type NOT LIKE 'text/x-wiki%'))`;
 }
 
 function evidenceStatusCondition(
