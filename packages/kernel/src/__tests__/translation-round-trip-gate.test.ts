@@ -88,4 +88,41 @@ describe("validateTranslationRoundTrip (plan items 124-125)", () => {
     expect(result.gate.cycleTrace.atomsA.length).toBeGreaterThan(0);
     expect(result.gate.cycleTrace.atomsAhat.length).toBeGreaterThan(0);
   });
+
+  it("reads another lane's realized text back rather than its own realization when one is supplied", () => {
+    const sourceText = "pump alpha is stable";
+    const sourceProfile = buildLanguageProfile(sourceText, "source");
+    const targetProfile = buildLanguageProfile("bomba alfa es estable", "target");
+    const alignments: LexicalAlignmentRecord[] = [{
+      id: "alignment.other-lane",
+      kind: "lexical",
+      sourceText,
+      targetText: "bomba alfa es estable",
+      sourceProfileId: sourceProfile.id,
+      targetProfileId: targetProfile.id,
+      evidenceIds: [],
+      score: 1,
+      alpha: 1,
+      createdAt: 0,
+      lexicalPairs: [
+        { source: "pump", target: "bomba", score: 1 },
+        { source: "alpha", target: "alfa", score: 1 },
+        { source: "is", target: "es", score: 1 },
+        { source: "stable", target: "estable", score: 1 }
+      ]
+    }];
+
+    const realized = "bomba alfa es estable";
+    const result = validateTranslationRoundTrip({
+      sourceText,
+      sourceProfile,
+      targetProfile,
+      lexicalAlignments: alignments,
+      realizedTargetText: realized
+    });
+
+    expect(result.targetText).toBe(realized);
+    expect(result.backTranslatedText.toLocaleLowerCase()).toContain("pump");
+    expect(result.gate.accepted).toBe(true);
+  });
 });

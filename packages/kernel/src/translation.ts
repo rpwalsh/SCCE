@@ -12,6 +12,8 @@ import {
   type LanguageProfileCluster
 } from "./language.js";
 import { createLanguageInductionEngine, type TranslationSeed } from "./language-induction.js";
+import { buildLanguageProfile } from "./multilingual-translation.js";
+import { validateTranslationRoundTrip } from "./translation-round-trip-gate.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { surfaceEntityRuns } from "./kernel-answer-primitives.js";
@@ -104,6 +106,15 @@ export interface TranslationPlan {
     text: string;
     units: Array<{ sourceFrameId: string; targetFrameId?: string; force: TranslationForce; text: string }>;
     preservation: number;
+  };
+  /** The reverse reading of the realized text: whether it was applied, how much it covered, and what it found. */
+  roundTrip: {
+    applied: boolean;
+    accepted: boolean;
+    coverage: number;
+    injectivity: number;
+    reason: string;
+    backTranslatedText: string;
   };
   construct: TranslationConstruct;
   records: {
@@ -306,11 +317,21 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       // preservationValidation record (which terms, which classes) is
       // still returned unchanged either way for the caller to inspect.
       const preservationValid = rawConstruct.preservationValidation.valid;
-      const construct = preservationValid
+      // The preservation gate catches content dropped from a translation. The round trip catches the opposite: content
+      // the translation introduced, found by reading the realized text back through the same pairs reversed. It can only
+      // speak when the reversed reading actually covers the text, so a sparse alignment reports rather than rejects.
+      const roundTrip = translationRoundTripDecision({
+        sourceText: input.text,
+        targetText: emission.text,
+        seeds: [...(input.durableSeeds ?? []), ...inducedSeeds],
+        hasher: options.hasher
+      });
+      const gatesValid = preservationValid && roundTrip.valid;
+      const construct = gatesValid
         ? rawConstruct
         : { ...rawConstruct, force: "unknown" as TranslationForce, translatedText: "" };
-      const effectiveForce: TranslationForce = preservationValid ? force : "unknown";
-      const effectiveEmission = preservationValid ? emission : { ...emission, text: "" };
+      const effectiveForce: TranslationForce = gatesValid ? force : "unknown";
+      const effectiveEmission = gatesValid ? emission : { ...emission, text: "" };
       const semanticFrames = [...sourceFrames, ...targetFrames].map(frame => ({
         id: frame.id,
         frameJson: frame.frameJson,
@@ -360,6 +381,14 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         lossVector,
         targetConstruct,
         emission: effectiveEmission,
+        roundTrip: {
+          applied: roundTrip.applied,
+          accepted: roundTrip.accepted,
+          coverage: roundTrip.coverage,
+          injectivity: roundTrip.injectivity,
+          reason: roundTrip.reason,
+          backTranslatedText: roundTrip.backTranslatedText
+        },
         construct,
         records: { semanticFrames, translationAlignments },
         inducedSeeds,
@@ -864,6 +893,110 @@ function renderUnit(source: TranslationSemanticFrame, target: TranslationSemanti
   if (target && force === "gloss") return `${target.text} [${seeded ?? source.text}]`;
   if (force === "gloss") return `[${seeded ?? source.text}]`;
   return "";
+}
+
+
+/** Minimum share of the back-read text that the reversed pairs must actually cover before the round trip may reject. */
+const ROUND_TRIP_MINIMUM_COVERAGE = 0.6;
+/** Pairs that collapse many source symbols onto one target cannot be read backwards; measured on a sparse corpus they
+ *  turn a faithful translation into a wall of the single most frequent symbol. */
+const ROUND_TRIP_MINIMUM_INJECTIVITY = 0.8;
+
+interface TranslationRoundTripDecision {
+  valid: boolean;
+  applied: boolean;
+  coverage: number;
+  accepted: boolean;
+  backTranslatedText: string;
+  injectivity: number;
+  reason: "no_target_text" | "no_lexical_pairs" | "pairs_not_reversible" | "coverage_below_minimum" | "back_reading_degenerate" | "accepted" | "introduced_content";
+}
+
+/** Type-token ratio of the back reading against the source's own: a collapsed reading loses most of its distinct symbols. */
+function backReadingDegenerate(sourceText: string, backText: string): boolean {
+  const tokens = (text: string): string[] => text.toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+  const ratio = (text: string): number => {
+    const list = tokens(text);
+    return list.length ? new Set(list).size / list.length : 0;
+  };
+  const back = ratio(backText);
+  const source = ratio(sourceText);
+  return back < source * 0.6;
+}
+
+function translationRoundTripDecision(input: {
+  sourceText: string;
+  targetText: string;
+  seeds: readonly TranslationSeed[];
+  hasher: Hasher;
+}): TranslationRoundTripDecision {
+  const empty = (reason: TranslationRoundTripDecision["reason"], injectivity = 0): TranslationRoundTripDecision =>
+    ({ valid: true, applied: false, coverage: 0, injectivity, accepted: true, backTranslatedText: "", reason });
+  if (!input.targetText.trim()) return empty("no_target_text");
+  const lexicalPairs = input.seeds
+    .filter(seed => seed.sourceSymbol && seed.targetSymbol)
+    .map(seed => ({ source: seed.sourceSymbol, target: seed.targetSymbol, score: clamp01(seed.score) }));
+  if (!lexicalPairs.length) return empty("no_lexical_pairs");
+  const distinctSources = new Set(lexicalPairs.map(pair => pair.source)).size;
+  const distinctTargets = new Set(lexicalPairs.map(pair => pair.target)).size;
+  const injectivity = distinctSources ? distinctTargets / distinctSources : 0;
+  if (injectivity < ROUND_TRIP_MINIMUM_INJECTIVITY) return empty("pairs_not_reversible", injectivity);
+  const sourceProfile = buildLanguageProfile(input.sourceText);
+  const targetProfile = buildLanguageProfile(input.targetText);
+  const validation = validateTranslationRoundTrip({
+    sourceText: input.sourceText,
+    sourceProfile,
+    targetProfile,
+    realizedTargetText: input.targetText,
+    lexicalAlignments: [{
+      id: "translation.roundtrip.lexical",
+      kind: "lexical",
+      sourceText: input.sourceText,
+      targetText: input.targetText,
+      sourceProfileId: sourceProfile.id,
+      targetProfileId: targetProfile.id,
+      evidenceIds: [],
+      score: 1,
+      alpha: 1,
+      createdAt: 0,
+      lexicalPairs
+    }],
+    hasher: input.hasher
+  });
+  const coverage = validation.interpretedPlan.alignmentCoverage;
+  // The instrument checks itself first: a back reading that collapses to one repeated symbol is not a reading of
+  // anything, and must not be allowed to reject a translation.
+  if (backReadingDegenerate(input.sourceText, validation.backTranslatedText)) {
+    return {
+      valid: true,
+      applied: false,
+      coverage,
+      injectivity,
+      accepted: validation.gate.accepted,
+      backTranslatedText: validation.backTranslatedText,
+      reason: "back_reading_degenerate"
+    };
+  }
+  if (coverage < ROUND_TRIP_MINIMUM_COVERAGE) {
+    return {
+      valid: true,
+      applied: false,
+      coverage,
+      injectivity,
+      accepted: validation.gate.accepted,
+      backTranslatedText: validation.backTranslatedText,
+      reason: "coverage_below_minimum"
+    };
+  }
+  return {
+    valid: validation.gate.accepted,
+    applied: true,
+    coverage,
+    injectivity,
+    accepted: validation.gate.accepted,
+    backTranslatedText: validation.backTranslatedText,
+    reason: validation.gate.accepted ? "accepted" : "introduced_content"
+  };
 }
 
 function renderEmission(units: readonly { text: string }[], force: TranslationForce): string {
