@@ -4,6 +4,7 @@ import type { CorrectionRuleRecord } from "./storage.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
 import { isEntitySaladSurface } from "./evidence-gist.js";
+import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncertainty.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
@@ -7448,11 +7449,22 @@ function clarificationSurfaceFromFacts(facts: readonly SemanticAnswerFact[]): { 
   const usable = facts.filter(fact => (fact.evidenceIds ?? []).length > 0 && (fact.subject || fact.object));
   if (!usable.length) return undefined;
   const keys = usable.map(fact => semanticAnswerFactKey(fact));
+  // Fact supports are masses over competing readings, not independent scores: normalized here so the unallocated
+  // mass is explicit, and the leading reading is the fallback when no question separates them.
+  const hypothesisSet = normalizeHypothesisSet(usable.map((fact, index) => ({
+    id: `hypothesis:${index}`,
+    mass: Math.max(0.01, Number((fact as { support?: number }).support ?? 0.5))
+  })));
   const result = selectClarificationQuestion({
-    hypotheses: usable.map((fact, index) => ({ id: `hypothesis:${index}`, weight: Math.max(0.01, Number((fact as { support?: number }).support ?? 0.5)), trueFactIds: new Set([keys[index]!]) })),
+    hypotheses: hypothesisSet.hypotheses.map((hypothesis, index) => ({
+      id: hypothesis.id,
+      weight: Math.max(0.01, hypothesis.mass),
+      trueFactIds: new Set([keys[index]!])
+    })),
     candidateFactIds: keys
   });
-  const selectedKey = result.selected?.factId ?? keys[0]!;
+  const leadingIndex = Number(mostLikelyHypothesis(hypothesisSet)?.id.split(":")[1] ?? 0);
+  const selectedKey = result.selected?.factId ?? keys[leadingIndex] ?? keys[0]!;
   const fact = usable[Math.max(0, keys.indexOf(selectedKey))]!;
   const surface = [fact.subject, fact.predicate, fact.object].map(part => String(part ?? "").trim()).filter(Boolean).join(" ");
   return surface ? { surface, selectedKey, evidenceIds: (fact.evidenceIds ?? []).map(String) } : undefined;
