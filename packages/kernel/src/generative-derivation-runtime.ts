@@ -15,6 +15,7 @@ import {
   type ProofLicenseCarrier,
   type ProofLicenseSemiring
 } from "./proof-license-semiring.js";
+import { reassembleLogicalSurface, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import type { ReversibleConstruction } from "./reversible-construction.js";
 import { renderJoinedSurface, type JoinProgramMixture } from "./join-program.js";
 import type { GraphSlice, Hyperedge } from "./types.js";
@@ -70,6 +71,8 @@ export interface ConstructionOperator {
     text: string;
     slots: Array<{ portId: string; start: number; end: number }>;
   };
+  /** Logical reading order when the construction is discontinuous; realization follows it instead of byte order. */
+  discontinuous?: DiscontinuousConstruction;
 }
 
 /** Read a `ReversibleConstruction` as a typed operator. Boundary ports are the open arguments; non-boundary ports are already saturated inside the construction. */
@@ -91,6 +94,7 @@ export function constructionOperator(construction: ReversibleConstruction): Cons
   return {
     constructionId: construction.id,
     resultType: relationId,
+    ...(construction.surface.discontinuous ? { discontinuous: construction.surface.discontinuous } : {}),
     argumentTypes: argumentPorts.map(port => ({ portId: port.id, type: portArgumentType(port) })),
     evidenceIds: [...new Set(construction.graph.ports.flatMap(port => port.evidenceIds))],
     surface: {
@@ -247,7 +251,11 @@ export function realizeDerivation(input: {
   const baseId = composite?.baseConstructionId ?? input.constructionId;
   const operator = input.algebra.operators.get(baseId);
   if (!operator) return "";
-  if (!composite || !operator.surface.slots.length) return operator.surface.text.trim();
+  // A discontinuous construction reads in its own logical order, not the order its spans happen to sit in.
+  const surfaceText = operator.discontinuous
+    ? reassembleLogicalSurface(operator.discontinuous, operator.surface.text)
+    : operator.surface.text;
+  if (!composite || !operator.surface.slots.length) return surfaceText.trim();
 
   const childByPort = new Map(composite.ports.map(port => [port.portId, port.childConstructionId]));
   let out = "";
