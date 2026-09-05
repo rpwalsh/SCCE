@@ -140,7 +140,7 @@ import { nodeCanExecute, replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
 import { exactComputationForText, verifyExactResultMatchesClaim } from "./exact-computation.js";
 import { invariantScore } from "./scoring/score-trace.js";
-import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
+import { syncUserModelStoreForTurn, userModelStoreProvenanceSummary, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
 import { conflictingGraphEdgeIntervals } from "./graph-temporal.js";
@@ -160,7 +160,7 @@ import { codeRequestRecognized, codeRequestRequirements, codeRequestSignal } fro
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
-import { estimateKneserNeyGenerationCostMs } from "./runtime-cost-estimate.js";
+import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -977,6 +977,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           mouth: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           corrections: correctionMemory.summarize(detectedCorrections),
           userModelStore: userModelStoreToJson(userModelStore),
+          userModelProvenance: userModelStoreProvenanceSummary(userModelStore),
           learningLoop: toJsonValue({ maintenanceDeferred: true, deterministicArithmetic: true }),
           episodeConsolidation,
           relevantPastEpisodes: undefined,
@@ -1147,6 +1148,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidence: admissibleEvidence,
         nodes: graph.nodes
       });
+      // The deadline is asked about retrieval with retrieval's own measured cost, priced for this pool, not a literal.
+      deadlineCheckpoint("retrieval.learned-semantics", estimateRetrievalCostMs(admissibleEvidence.length));
       const semanticRetrieval = evaluationComponent(
         "learned-semantics",
         "retrieval.learned-semantics",
@@ -3523,6 +3526,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           discourseObject: discourseObjectTrace,
           corrections: correctionMemory.summarize(correctionRules),
           userModelStore: userModelStoreToJson(userModelStore),
+          userModelProvenance: userModelStoreProvenanceSummary(userModelStore),
           brain,
           selfState,
           selfDistillation: selfDistillationAudit,
