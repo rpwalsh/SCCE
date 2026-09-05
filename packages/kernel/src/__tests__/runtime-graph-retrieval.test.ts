@@ -259,9 +259,10 @@ describe("runtime hot graph retrieval", () => {
     // phrase as its own query instead of blending them into one
     // overlap-ranked search (see runtime-graph-retrieval.ts's
     // sourceAnchorRetrievalFeatureGroups) -- "Charles Babbage" yields
-    // three specific multi-word anchor candidates here, so three
-    // independent searchEvidence calls are expected, not one.
-    expect(fixture.searchEvidence).toHaveBeenCalledTimes(3);
+    // three specific multi-word anchor candidates here; each bigram that
+    // matches nothing is retried by its own symbols (searchAnchorGroup), so
+    // an empty store sees two searches per anchor, six in all.
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(6);
   });
 
   it("rejects cross-title mention evidence before hydrating a factual graph slice", async () => {
