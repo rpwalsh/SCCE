@@ -32,7 +32,6 @@ function fakeModel(id: string): InducedLanguageModel {
       latentMass: 0,
       sourceDocumentIds: [],
       id: "boundary_statistics.fixture",
-      collapseGuard: [],
       audit: {}
     },
     boundaryEstimator: {
