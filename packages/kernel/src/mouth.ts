@@ -1044,6 +1044,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? recomposedFromSource(outputSurfaceText, input)
         : undefined;
       if (recomposed) outputSurfaceText = recomposed;
+      // Stripping a template leaves the separator that belonged to it: 1,426 promoted spans in this corpus read
+      // "Countess of Lovelace' ( ; 10 December 1815". Surface repair already collapses that, but a source-grounded
+      // excerpt is emitted without passing through it, so the debris reached the answer. Punctuation only.
+      if (!input.codeLanguage) outputSurfaceText = collapseEmptyBracketLead(outputSurfaceText);
       let outputSurfacePreservation = outputSurfaceText === protectedSurfaceText ? protectedSurfacePreservation : semanticPreservation({ text: outputSurfaceText, plan, entailment: input.entailment });
       let emittedSurfaceEnergy = scoreSurfaceEnergy({
         id: selected?.id ?? "candidate:generated:emitted-surface",
