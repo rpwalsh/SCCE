@@ -21,12 +21,12 @@ const client = new pg.Client({ connectionString: url });
 await client.connect();
 try {
   const superseded = (await client.query(
-    `select sv.id, sv.source_id, sv.observed_at,
+    `select sv.id, s.canonical_uri, sv.observed_at,
             (select count(*)::int from ${schema}.evidence_spans e where e.source_version_id = sv.id and e.status = 'promoted') as promoted
-     from ${schema}.source_versions sv
+     from ${schema}.source_versions sv join ${schema}.sources s on s.id = sv.source_id
      where sv.media_type like $1
-       and exists (select 1 from ${schema}.source_versions newer
-                   where newer.source_id = sv.source_id and newer.media_type like $1 and newer.observed_at > sv.observed_at)`,
+       and exists (select 1 from ${schema}.source_versions newer join ${schema}.sources ns on ns.id = newer.source_id
+                   where ns.canonical_uri = s.canonical_uri and newer.media_type like $1 and newer.observed_at > sv.observed_at)`,
     [`${media}%`]
   )).rows;
   const targets = superseded.filter(row => row.promoted > 0);

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { normalizeWikiText } from "../wikipedia.js";
+import { normalizeWikiText, wikiPageStructure } from "../wikipedia.js";
 
 describe("wikitext normalization", () => {
   it("closes the separators a stripped template leaves behind", () => {
@@ -14,5 +14,16 @@ describe("wikitext normalization", () => {
     const normalized = normalizeWikiText(text);
     expect(normalized).toContain("She wrote notes in 1843.");
     expect(normalized).not.toContain("Another book");
+  });
+
+  it("keeps article links and headings as declared structure before the markup is stripped", () => {
+    const raw = "[[ada Lovelace|her]] met [[Charles Babbage]] ([[File:Babbage.jpg|thumb]]).\n== Early life ==\nText.\n[[Category:1815 births]]\n[[Star Trek: The Next Generation]]";
+    const structure = wikiPageStructure(raw);
+    expect(structure.links).toEqual([
+      { target: "Ada Lovelace", label: "her" },
+      { target: "Charles Babbage", label: "Charles Babbage" },
+      { target: "Star Trek: The Next Generation", label: "Star Trek: The Next Generation" }
+    ]);
+    expect(structure.headings).toEqual([{ text: "Early life", level: 2, charStart: raw.indexOf("== Early") }]);
   });
 });
