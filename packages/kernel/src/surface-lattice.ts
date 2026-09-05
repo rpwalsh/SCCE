@@ -9,6 +9,7 @@ import {
 } from "./boundary-estimator.js";
 import {
   buildSegmentationForest,
+  resumeSegmentationForest,
   SEGMENTATION_FOREST_SCHEMA,
   type SegmentationForestLimits,
   type SurfaceSegmentationForest
@@ -139,6 +140,8 @@ export interface SurfaceLatticeBuildOptions {
   maxUnits?: number;
   maxEdges?: number;
   segmentationPathLimit?: number;
+  /** Continue a forest that stopped on its budget instead of accepting the truncated one. */
+  segmentationResumeToken?: string;
   segmentationForestLimits?: Partial<SegmentationForestLimits>;
   boundaryEstimator?: BoundaryEstimatorState;
   boundaryFeatureContext?: CompiledBoundaryFeatureContext;
@@ -367,7 +370,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
 
   const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);
   const edges = latticeEdges(units, hasher, effectiveMaxEdges);
-  const segmentationForest = buildSegmentationForest({
+  const segmentationForestBuild = {
     latticeId,
     estimatorId,
     units,
@@ -375,7 +378,19 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     limits: options.segmentationForestLimits,
     normalizationContractId: normalizationContract.id,
     hasher
-  });
+  };
+  const initialSegmentationForest = buildSegmentationForest(segmentationForestBuild);
+  // A forest that stopped on its budget carries the state to continue; a caller that supplies the token gets the
+  // continuation rather than a truncated forest silently standing in for a complete one.
+  const segmentationForest = initialSegmentationForest.completion === "resumable"
+    && initialSegmentationForest.resumeState
+    && options.segmentationResumeToken === initialSegmentationForest.resumeState.token
+    ? resumeSegmentationForest({
+      previous: initialSegmentationForest,
+      resumeToken: options.segmentationResumeToken,
+      build: segmentationForestBuild
+    })
+    : initialSegmentationForest;
   const countsByKind = new Map<SurfaceLatticeUnitKind, number>();
   for (const unit of units) countsByKind.set(unit.kind, (countsByKind.get(unit.kind) ?? 0) + 1);
   const populationPosterior = latticePopulationPosterior(options.boundaryEstimator);
