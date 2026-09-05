@@ -255,8 +255,10 @@ describe("kernel training", () => {
     // sourceAnchoredEvidenceForText now searches each candidate anchor
     // phrase as its own query instead of blending them into one
     // overlap-ranked search, so this request's four top-ranked multi-word
-    // anchor candidates produce four independent searchEvidence calls.
-    expect(fixture.evidenceSearchCalls).toBe(4);
+    // anchor candidates produce four independent searchEvidence calls; each
+    // bigram that matches nothing is retried by its own symbols, so an empty
+    // store sees eight.
+    expect(fixture.evidenceSearchCalls).toBe(8);
 
     evidence.push(evidenceSpan({
       id: "evidence:zephyr",
