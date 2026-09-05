@@ -146,9 +146,10 @@ export function retrieveRelevantEpisodes(
  * checks that invariant against a real event set -- the plan's explicit
  * "exact source events remain recoverable via the stored links" property.
  */
+/** Only event identity is needed, so an id-and-type skeleton read is enough; the caller need not load payloads. */
 export function verifyConsolidatedEpisodeRecoverable(
   consolidated: ConsolidatedEpisode,
-  events: readonly ScceEvent[]
+  events: readonly { id: ScceEvent["id"] | string }[]
 ): boolean {
   const byId = new Set(events.map(event => String(event.id)));
   const referenced = [

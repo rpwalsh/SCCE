@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EventLedger } from "./storage.js";
-import type { ConsolidatedEpisode } from "./episodic-memory-consolidation.js";
+import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "./episodic-memory-consolidation.js";
 import type { EpisodeId, Hasher } from "./types.js";
 import { createHasher } from "./primitives.js";
 import {
@@ -70,6 +70,9 @@ export async function episodeActionTypeTraces(events: EventLedger, limit = 256):
   const traces: EpisodeTrace[] = [];
   for (const [episodeId, consolidated] of consolidatedByEpisode) {
     const episodeEvents = skeletons.get(episodeId) ?? [];
+    // A consolidation that references events the ledger no longer holds cannot be replayed, so it cannot teach an
+    // operator either: the summary is dropped rather than trusted against a ledger that has moved on.
+    if (!verifyConsolidatedEpisodeRecoverable(consolidated, episodeEvents)) continue;
     const eventsById = new Map(episodeEvents.map(event => [event.id, event]));
     const actionTypeSequence = (consolidated.actionEventIds ?? [])
       .map(id => eventsById.get(String(id))?.typeId)
