@@ -81,7 +81,9 @@ import {
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { activeJoinProgram, createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
-  selectLanguageProfileClusterForSourceVersions
+  selectLanguageProfileClusterForSourceVersions,
+  languageHintFromProfile,
+  selectLanguageProfileForSurface
 } from "./language.js";
 import { launchContractForTurn, retrievalRoleTracesFromHybridRecall } from "./launch-contract.js";
 import { learningAcquisitionCapabilityPlans, learningNeedsFor } from "./learning-acquisition-runtime.js";
@@ -687,11 +689,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           residentOnly: fastRuntimeBudget,
           durableProfileScanAllowed: !fastRuntimeBudget,
           sourceLanguageAlias: sourceLanguageAlias ?? null,
-          sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null
+          sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null,
+          selectedProfileHint: selectedSurfaceCluster
+            ? languageHintFromProfile(selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]!)
+            : null
         }
       });
       deadlineCheckpoint("runtime.seed.surface_cluster.complete", 0);
-      const selectedSurfaceProfile = selectedSurfaceCluster?.members[0];
+      // The cluster's member that actually matches this request's surface, chosen deterministically rather than by array order.
+      const selectedSurfaceProfile = selectedSurfaceCluster
+        ? selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]
+        : undefined;
       const authorityLanguageStarted = Date.now();
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
