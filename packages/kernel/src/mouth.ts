@@ -102,6 +102,7 @@ import {
   type JoinRenderContext
 } from "./join-program.js";
 import { realizeReversibleConstruction } from "./reversible-construction.js";
+import { factualRoundTripGate } from "./semantic-round-trip.js";
 import {
   realizeAntiUnifiedConstruction,
   type AntiUnifiedBinding
@@ -5529,6 +5530,9 @@ function recomposedFromSource(text: string, input: SpeakInput): string | undefin
 function meaningSurvives(surface: string, facts: readonly SemanticAnswerFact[], input: SpeakInput): boolean {
   const verifier = input.meaningVerifier;
   if (!verifier) return true;
+  // Interpret the wording back into atoms: anything it asserts that the source never did rejects it outright.
+  const intendedText = facts.map(fact => fact.object ?? "").filter(Boolean).join(" ");
+  if (intendedText && !factualRoundTripGate({ intendedText, realizedText: surface }).accepted) return false;
   // Leaving a date out is not a falsehood; putting in one the evidence never carried is. So a wording is
   // checked for symbols it invents, not for symbols it declines to repeat.
   const licensed = new Set(

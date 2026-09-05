@@ -232,7 +232,7 @@ function hyperedgeAlpha(hyperedge: Hyperedge): number {
     : 0.5;
 }
 
-function graphTemporalScope(hyperedge: Hyperedge): GraphEdge["temporalScope"] {
+export function graphTemporalScope(hyperedge: Hyperedge): GraphEdge["temporalScope"] {
   const value = hyperedge.temporalScope
     && typeof hyperedge.temporalScope === "object"
     && !Array.isArray(hyperedge.temporalScope)
