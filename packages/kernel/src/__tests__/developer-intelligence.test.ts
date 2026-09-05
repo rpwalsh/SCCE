@@ -58,6 +58,25 @@ describe("Developer Intelligence kernel runtime", () => {
     expect(snapshot.hydration.dependencies.length).toBe(snapshot.dependencyGraph.dependencies.length);
   });
 
+  it("proves every repo relation that carries a source span and names the ones resting on a prior", () => {
+    const fixture = repoFixture();
+    const snapshot = createRepoSnapshot({
+      rootUri: "repo://phase9-fixture",
+      repositoryFacts: fixture.repositoryFacts,
+      fileFacts: fixture.fileFacts,
+      hasher
+    });
+
+    const proof = snapshot.codeFactProof;
+    expect(proof.claims).toBe(snapshot.codeFacts.length);
+    expect(proof.directEvidence).toBe(snapshot.codeFacts.filter(fact => fact.forceClass === "direct_evidence").length);
+    expect(proof.certifiedClaimIds.length).toBe(proof.directEvidence);
+    expect(proof.certifiedClaimIds.length + proof.uncertifiedClaimIds.length).toBe(proof.claims);
+    // A relation held only on a learned prior is reported as unproven, never counted among the certified.
+    const priorFact = snapshot.codeFacts.find(fact => fact.forceClass !== "direct_evidence");
+    if (priorFact) expect(proof.uncertifiedClaimIds).toContain(priorFact.id);
+  });
+
   it("certifies direct source-span code facts and blocks learned program priors", () => {
     const snapshot = snapshotFixture();
     const exportedFact = required(snapshot.codeFacts.find(fact => fact.relationId === "repo.fact.file_exports_symbol" && fact.objectId.endsWith("#normalizeRecord") && fact.forceClass === "direct_evidence"));

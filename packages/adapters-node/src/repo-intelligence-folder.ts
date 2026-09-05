@@ -193,6 +193,12 @@ export async function inspectDeveloperRepo(rootPath: string, options: RepoIntell
     buildCommands: analysis.snapshot.buildGraph.buildCommands.map(command => ({ id: command.id, name: command.scriptName, command: command.command, sourcePath: command.sourcePath, evidenceSpanId: command.evidenceSpan?.id })),
     testCommands: analysis.snapshot.testGraph.testCommands.map(command => ({ id: command.id, name: command.scriptName, command: command.command, sourcePath: command.sourcePath, evidenceSpanId: command.evidenceSpan?.id })),
     dependencies: analysis.snapshot.dependencyGraph.dependencies.map(dep => ({ id: dep.id, name: dep.name, scope: dep.scope, version: dep.version, declaredBy: dep.declaredBy, importedBy: dep.importedBy })),
+    codeFactProof: {
+      claims: analysis.snapshot.codeFactProof.claims,
+      directEvidence: analysis.snapshot.codeFactProof.directEvidence,
+      certified: analysis.snapshot.codeFactProof.certifiedClaimIds.length,
+      uncertified: analysis.snapshot.codeFactProof.uncertifiedClaimIds.length
+    },
     unsupportedFiles: analysis.unsupportedFiles,
     warnings: analysis.warnings,
     hydration: { valid: analysis.snapshot.hydration.valid, diagnostics: analysis.snapshot.hydration.diagnosticsText }
