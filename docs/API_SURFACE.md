@@ -46,8 +46,11 @@ The five-second contract applies to the first visible frame, not total answer co
 ```text
 GET  /api/turn/task/:id
 GET  /api/turn/task/:id/stream?after=<sequence>
+GET  /api/turn/task/:id/surface
 POST /api/turn/task/:id/cancel
 ```
+
+`GET /api/turn/task/:id/surface` returns the task's result rendered as developer-surface state: panes, editors, terminal lines, trace rows and a status line, derived from the turn the task already produced. It is a projection for clients that draw a workbench rather than a chat bubble; a task with no result frame answers 409 instead of an empty surface.
 
 Accepted, phase-change, terminal, and cancellation frames are appended to the existing durable event ledger. Heartbeats are intentionally ephemeral. The initial frame reports persistence as pending until the append completes; the status endpoint reports whether all current frames are durable. After a server restart, completed tasks remain replayable. A task that had no terminal ledger frame is reported as interrupted rather than pretending execution resumed. Plain `POST /api/turn` remains a single JSON compatibility response and has no five-second completion claim.
 

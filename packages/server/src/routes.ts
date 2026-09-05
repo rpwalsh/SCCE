@@ -13,7 +13,7 @@ import {
   learningConsentInput,
   listHeldSources,
   reviewHeldSource, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
-import { renderWorkbench, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
+import { createDeveloperSurfaceState, hydrateSurfaceFromTurn, renderWorkbench, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 
@@ -140,6 +140,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/turn/outcome", label: "turn dialogue outcome", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/task/:id", label: "long-running turn status", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/turn/task/:id/stream", label: "long-running turn stream", mutates: false, requiresDb: true },
+  { method: "GET", path: "/api/turn/task/:id/surface", label: "turn surface projection", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/turn/task/:id/cancel", label: "cancel long-running turn", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/:id", label: "turn lookup", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/brain", label: "inspect brain", mutates: false, requiresDb: true },
@@ -870,6 +871,13 @@ async function dispatch(
     const task = await turnTaskRegistryFor(context.runtime.storage).get(taskRoute.taskId);
     if (!task) throw new HttpError(404, "turn task not found");
     return json(task);
+  }
+  if (taskRoute && req.method === "GET" && taskRoute.action === "surface") {
+    const task = await turnTaskRegistryFor(context.runtime.storage).get(taskRoute.taskId);
+    if (!task) throw new HttpError(404, "turn task not found");
+    const result = [...task.frames].reverse().find(frame => frame.type === "result")?.value;
+    if (result === undefined) throw new HttpError(409, "turn task has produced no result frame yet");
+    return json(hydrateSurfaceFromTurn(createDeveloperSurfaceState(context.config.server.url), result));
   }
   if (taskRoute && req.method === "POST" && taskRoute.action === "cancel") {
     const task = turnTaskRegistryFor(context.runtime.storage).cancel(taskRoute.taskId);
@@ -3607,12 +3615,12 @@ function turnTaskWireFrame(
   };
 }
 
-function turnTaskRoute(pathname: string): { taskId: string; action: "status" | "stream" | "cancel" } | undefined {
-  const match = /^\/api\/turn\/task\/([^/]+)(?:\/(stream|cancel))?$/u.exec(pathname);
+function turnTaskRoute(pathname: string): { taskId: string; action: "status" | "stream" | "cancel" | "surface" } | undefined {
+  const match = /^\/api\/turn\/task\/([^/]+)(?:\/(stream|cancel|surface))?$/u.exec(pathname);
   if (!match?.[1]) return undefined;
   return {
     taskId: decodeURIComponent(match[1]),
-    action: match[2] === "stream" ? "stream" : match[2] === "cancel" ? "cancel" : "status"
+    action: match[2] === "stream" ? "stream" : match[2] === "cancel" ? "cancel" : match[2] === "surface" ? "surface" : "status"
   };
 }
 
