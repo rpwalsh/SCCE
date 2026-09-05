@@ -34,11 +34,12 @@ import type {
   TrainInput,
   TrainResult
 } from "./types.js";
+import { redactTraceValue, summarizeForTrace } from "./debug/trace.js";
 
 function groupProbe(phase: string, extra: Record<string, unknown> = {}): void {
   if (!process.env.SCCE_TRAIN_PROBE) return;
   const m = process.memoryUsage();
-  process.stderr.write(`GRP ${phase} heap=${Math.round(m.heapUsed / 1048576)} rss=${Math.round(m.rss / 1048576)} ${JSON.stringify(extra)}
+  process.stderr.write(`GRP ${phase} heap=${Math.round(m.heapUsed / 1048576)} rss=${Math.round(m.rss / 1048576)} ${JSON.stringify(summarizeForTrace(redactTraceValue(extra), 400))}
 `);
 }
 
