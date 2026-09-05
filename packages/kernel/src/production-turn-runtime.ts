@@ -150,6 +150,7 @@ import {
   requestOperatorGraphSupport
 } from "./request-authority.js";
 import { hybridRecall } from "./retrieval.js";
+import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer } from "./local-evidence-runtime.js";
 import { codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
@@ -528,6 +529,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // record that acquisition was attempted and came back empty.
       let performedRuntimeMotion: RuntimeReplanMotion | undefined;
       const timingParts: Record<string, number> = {};
+      // Measured rather than estimated, and only where the host exposes it; a runtime without process accounting
+      // simply reports no usage instead of a fabricated figure.
+      const resourceStart = captureResourceUsageSnapshot();
       let timingStageStarted = turnStarted;
       const markTiming = (stage: "seedMs" | "graphSliceMs" | "proofMs" | "candidateMs" | "planningMs" | "mouthMs" | "validationMs" | "forecastMs" | "maintenanceMs"): void => {
         const now = Date.now();
@@ -556,7 +560,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           maintenanceMs: timingParts.maintenanceMs,
           persistenceMode,
           budgetsMs,
-          budgetExceeded
+          budgetExceeded,
+          ...(measuredTurnResourceUsage(resourceStart) ?? {})
         };
       };
       const turnContract = (args: Omit<Parameters<typeof launchContractForTurn>[0], "now">) =>
@@ -3810,4 +3815,15 @@ export function typedSemanticInputForMouth(input: {
       >[number]["evidenceIds"]
     }]
   };
+}
+
+/** Undefined when the host exposed no accounting, or when the two snapshots cannot be differenced. */
+function measuredTurnResourceUsage(start: ReturnType<typeof captureResourceUsageSnapshot>): { resourceUsage: NonNullable<TurnResult["timing"]>["resourceUsage"] } | undefined {
+  const end = captureResourceUsageSnapshot();
+  if (!start || !end) return undefined;
+  try {
+    return { resourceUsage: measureResourceUsageDelta(start, end) };
+  } catch {
+    return undefined;
+  }
 }

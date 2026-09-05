@@ -1083,6 +1083,15 @@ export interface TurnTiming {
     total: number;
   };
   budgetExceeded: string[];
+  /** Measured, not estimated: what this turn actually consumed. */
+  resourceUsage?: {
+    cpuUserMs: number;
+    cpuSystemMs: number;
+    peakResidentSetBytes: number;
+    wallClockMs: number;
+    diskBytesRead: number;
+    diskBytesWritten: number;
+  };
 }
 
 export interface SourceAdmissionContext {
