@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, fitRelationPotentialFromGraph, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, fitRelationPotentialFromGraph, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -71,6 +71,9 @@ async function main(): Promise<void> {
         return;
       case "relation-potential":
         await relationPotential(parsed.configPath, runtime, parsed.args);
+        return;
+      case "self-rewrite":
+        await selfRewrite(config, runtime, parsed.args);
         return;
       case "hydrate":
         await hydrate(runtime, parsed.args);
@@ -382,6 +385,28 @@ async function scce2(runtime: ReturnType<typeof createNodeRuntime>, args: string
     return;
   }
   return usage("scce scce2 <inspect|import> <path> [limits]");
+}
+
+/** Proposes changes to SCCE's own source. Proposals persist as `proposed` and are never applied here: approval and the
+ *  patch transaction stay separate, governed steps. */
+async function selfRewrite(config: Awaited<ReturnType<typeof readScceRuntimeConfig>>, runtime: ReturnType<typeof createNodeRuntime>, args: string[]): Promise<void> {
+  if (args[0] !== "propose") return usage("scce self-rewrite propose --target=<goal> [--capability=<id>]... [--path=<root>] [--max-files=N]");
+  const flag = (name: string): string | undefined => args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const target = flag("target");
+  if (!target) return usage("scce self-rewrite propose --target=<goal>");
+  const capabilities = args.filter(arg => arg.startsWith("--capability=")).map(arg => arg.slice("--capability=".length));
+  const maxFiles = Number(flag("max-files"));
+  printJson(await proposeSelfRewrite({
+    storage: runtime.storage,
+    rootPath: path.resolve(flag("path") ?? config.runtime.workspaceRoot),
+    goal: {
+      target,
+      requiredCapabilities: capabilities,
+      approvalMode: "manual",
+      ...(args.some(arg => arg.startsWith("--file=")) ? { preferredFiles: args.filter(arg => arg.startsWith("--file=")).map(arg => arg.slice("--file=".length)) } : {})
+    },
+    ...(Number.isFinite(maxFiles) && maxFiles > 0 ? { maxFiles } : {})
+  }));
 }
 
 /** Fits the relation-potential model the field engine reads, from the live graph's own corroboration. The model is
@@ -1508,6 +1533,7 @@ function usage(error?: string): void {
     "  pnpm scce corpus route --fixture <path>",
     "  pnpm scce corpus train gutenberg <path>",
     "  pnpm scce relation-potential fit [--apply] [--max-edges=N]",
+    "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
     "  pnpm scce corpus train oss <path>",
     "  pnpm scce repo inspect <path>",
     "  pnpm scce repo graph <path>",

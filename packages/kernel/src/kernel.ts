@@ -165,17 +165,13 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     cacheMs: surfaceLanguageMemoryCacheMs,
     profileLimit: Math.min(2048, positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_PROFILE_LIMIT", 512))
   });
+  // Only what this module itself calls: the turn runtime receives `surfaceLanguageRuntime` whole and destructures its own.
   const {
     languageMemorySummary,
     hydrateSurfaceLanguageMemoryCached,
     surfaceLanguageProfilesCached,
-    sourceOwnedLanguageProfilesCached,
-    sourceOwnedLanguageClusterForAlias,
     sourceOwnedLanguageClustersForWarmup,
-    surfaceLanguageClusterCached,
-    requestSemanticFrames,
-    sourceAnchorSemanticFramesCached,
-    uniqueRecordsById
+    sourceAnchorSemanticFramesCached
   } = surfaceLanguageRuntime;
   function kernelTrace(event: Parameters<typeof traceEvent>[1]): void {
     traceEvent((globalThis as any).__sccTrace, event);
@@ -188,11 +184,6 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     }
     await deps.storage.events.append(event);
     return event;
-  }
-
-  async function appendBatch(events: ScceEvent[]): Promise<ScceEvent[]> {
-    await deps.storage.events.appendBatch(events);
-    return events;
   }
 
   const graphRetrieval = createRuntimeGraphRetrieval({
@@ -208,23 +199,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const {
     sourceAnchorEvidenceCacheMaxEntries,
     hotNeighborhoodCached,
-    sourceAnchorEvidenceBatchCached,
-    graphForText,
-    graphForEvidenceIds,
-    graphForEvidenceIdsUnrouted,
-    graphForTextUncached,
-    evidenceOnlyForText,
-    evidenceOnlyForIds,
-    retrievalTextForTurn,
-    evidenceFromTurnMetadata,
-    runtimeEvidenceIdsFromMetadata,
-    sessionEvidenceFromMetadata,
-    currentOwnerSessionEvidence,
-    mergeEvidenceSpans,
-    graphRetrievalFeatures
+    sourceAnchorEvidenceBatchCached
   } = graphRetrieval;
   const runtimeMemory = createRuntimeMemoryControl({ deps, clock });
-  const { activeBrainMarker, correctionRulesCached, calibrationModelsCached } = runtimeMemory;
+  const { activeBrainMarker, correctionRulesCached } = runtimeMemory;
   function invalidateRuntimeCaches(): void {
     graphRetrieval.invalidate();
     surfaceLanguageRuntime.invalidate();

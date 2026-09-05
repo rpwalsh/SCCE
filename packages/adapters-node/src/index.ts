@@ -11,6 +11,7 @@ export * from "./language-corpus-trainer.js";
 export * from "./gutenberg-corpus.js";
 export * from "./oss-corpus.js";
 export * from "./relation-potential-training.js";
+export * from "./self-rewrite-runtime.js";
 export * from "./stored-corpus-construction-training.js";
 export * from "./process.js";
 export * from "./program-repair.js";
