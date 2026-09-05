@@ -74,8 +74,13 @@ export const UI_MESSAGES_EN_US = {
   "terminal.turn_result": "Episode {episodeId} force {force}",
   "status.pending_approvals": "{count} pending approvals",
   "status.product": "SCCE v3",
+  "status.runtime.idle": "idle",
+  "status.runtime.busy": "request in flight",
+  "status.runtime.ready": "ready",
+  "status.runtime.unknown": "readiness unchecked",
   "status.postgres": "PostgreSQL required",
   "status.math": "Alpha / PPF / Proof / ProgramGraph",
+  "prompt.ingest_target": "Path or URI to ingest",
   "palette.aria": "Command",
   "cmd.runtime.ready": "Runtime: Check Readiness",
   "cmd.ingest.source": "Ingest: Source",
@@ -150,6 +155,11 @@ export function uiText(key: UiMessageKey): string {
 
 export function uiMessageScript(): string {
   return escapeJsonForScript(JSON.stringify(UI_MESSAGES_EN_US));
+}
+
+/** Embeds a value in a <script> body: JSON, with every character that could close the element neutralised. */
+export function scriptLiteral(value: unknown): string {
+  return escapeJsonForScript(JSON.stringify(value ?? null));
 }
 
 function escapeJsonForScript(json: string): string {

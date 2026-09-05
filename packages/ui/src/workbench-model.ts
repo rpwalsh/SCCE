@@ -88,6 +88,7 @@ export const DEFAULT_COMMANDS: CommandPaletteEntry[] = [
   { id: "connectors.quota", label: "i18n:cmd.connectors.quota", detail: "GET /api/connectors/quota", group: "tools" },
   { id: "kernel.ingest", label: "i18n:cmd.ingest.source", detail: "POST /api/ingest", group: "runtime" },
   { id: "kernel.codebase_ingest", label: "i18n:cmd.ingest.codebase", detail: "POST /api/codebase/ingest", group: "runtime" },
+  { id: "workspace.code", label: "i18n:cmd.workspace.code", detail: "POST /api/workspace/code", group: "program" },
   { id: "workspace.init", label: "i18n:cmd.workspace.init", detail: "POST /api/workspace/init", group: "runtime" },
   { id: "workspace.ingest", label: "i18n:cmd.workspace.ingest", detail: "POST /api/workspace/ingest", group: "runtime" },
   { id: "workspace.ask", label: "i18n:cmd.workspace.ask", detail: "POST /api/workspace/ask", group: "runtime" },

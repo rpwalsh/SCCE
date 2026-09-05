@@ -12,8 +12,8 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
-import { renderWorkbench } from "@scce/ui";
+  reviewHeldSource, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+import { renderWorkbench, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 
@@ -264,7 +264,10 @@ async function dispatch(
   requestTiming: RequestTiming,
   preloadedBody?: unknown
 ): Promise<{ status: number; body: string; contentType: string }> {
-  if (req.method === "GET" && url.pathname === "/") return html(renderWorkbench(context.config.server.url));
+  if (req.method === "GET" && url.pathname === "/") {
+    return html(renderWorkbench(context.config.server.url, { benchmarkSuiteId: FRONTIER_BROAD_CAPABILITY_SUITE_ID }));
+  }
+  if (req.method === "GET" && url.pathname === WORKBENCH_MODEL_ROUTE) return await workbenchModelModule();
   if (req.method === "GET" && url.pathname === "/health") {
     const status = { verify: await context.runtime.storage.verify() };
     const ok = healthOk(status);
@@ -1686,6 +1689,11 @@ function webLearningRequested(value: unknown): boolean {
 
 function validateBenchmark(value: unknown): BenchmarkInput {
   if (!isRecord(value)) throw new HttpError(400, "benchmark body must be an object");
+  // A named suite is the server's own preregistered task set, so it is built here rather than accepted from the caller.
+  if (value.suite !== undefined) {
+    if (value.suite !== FRONTIER_BROAD_CAPABILITY_SUITE_ID) throw new HttpError(400, "suite is not a known benchmark suite");
+    return { tasks: createFrontierBroadCapabilityTasks() };
+  }
   const tasks = value.tasks === undefined ? undefined : validateBenchmarkTasks(value.tasks, "tasks");
   const config = value.config === undefined ? undefined : validateBenchmarkConfig(value.config);
   if (!tasks && !config) throw new HttpError(400, "benchmark requires tasks or config");
@@ -3377,6 +3385,13 @@ function splitContactList(value: string): string[] {
   }
   out.push(current);
   return out;
+}
+
+/** The workbench page imports its state model as a module; it is served from the built UI package beside the page itself. */
+async function workbenchModelModule(): Promise<{ status: number; body: string; contentType: string }> {
+  const source = await readFile(workbenchModelModulePath(), "utf8").catch(() => undefined);
+  if (source === undefined) return json({ error: "workbench model module is not built" }, 503);
+  return { status: 200, body: source, contentType: "text/javascript; charset=utf-8" };
 }
 
 function html(body: string): { status: number; body: string; contentType: string } {
