@@ -11,10 +11,10 @@ import {
 function memoryStore(initial: { id: string; conversationId: string; sessionJson: JsonValue; updatedAt: number }): DocumentGenerationSessionStore {
   let row = { ...initial };
   return {
-    async getSession(id, conversationId) {
+    async getSession(id: string, conversationId: string) {
       return id === row.id && conversationId === row.conversationId ? { ...row } : null;
     },
-    async compareAndPutSession(next, expectedUpdatedAt) {
+    async compareAndPutSession(next: { id: string; conversationId: string; sessionJson: JsonValue; updatedAt: number }, expectedUpdatedAt: number | null) {
       if (expectedUpdatedAt !== null && expectedUpdatedAt !== row.updatedAt) return { stored: false };
       row = { ...row, sessionJson: next.sessionJson, updatedAt: next.updatedAt };
       return { stored: true };
