@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, fitRelationPotentialFromGraph, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -74,6 +74,9 @@ async function main(): Promise<void> {
         return;
       case "self-rewrite":
         await selfRewrite(config, runtime, parsed.args);
+        return;
+      case "eval":
+        await evaluationGate(parsed.args);
         return;
       case "hydrate":
         await hydrate(runtime, parsed.args);
@@ -407,6 +410,39 @@ async function selfRewrite(config: Awaited<ReturnType<typeof readScceRuntimeConf
     },
     ...(Number.isFinite(maxFiles) && maxFiles > 0 ? { maxFiles } : {})
   }));
+}
+
+/** Applies the kernel's release gate to a sealed run's own objective records, so the ship/no-ship decision is read
+ *  from measured answers rather than asserted. */
+async function evaluationGate(args: string[]): Promise<void> {
+  if (args[0] !== "gate" || !args[1]) {
+    return usage("scce eval gate <objective.jsonl> [--system=<id>] [--reference=<id>] [--max-unsupported=R] [--min-anchor=R] [--min-cycle=R] [--questions=<questions.jsonl>] [--alpha=R] [--bootstrap=N]");
+  }
+  const flag = (name: string): number | undefined => {
+    const raw = args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) throw new Error(`--${name} must be a number`);
+    return value;
+  };
+  const text = (name: string): string | undefined => args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const alpha = flag("alpha");
+  const report = await runEvaluationReleaseGate({
+    objectivePath: path.resolve(args[1]),
+    ...(text("system") ? { system: text("system")! } : {}),
+    ...(text("reference") ? { reference: text("reference")! } : {}),
+    ...(text("questions") ? { questionsPath: path.resolve(text("questions")!) } : {}),
+    thresholds: {
+      ...(flag("max-unsupported") !== undefined ? { maxUnsupportedRate: flag("max-unsupported")! } : {}),
+      ...(flag("min-anchor") !== undefined ? { minExactAnchorAccuracy: flag("min-anchor")! } : {}),
+      ...(flag("min-cycle") !== undefined ? { minCycleAccuracy: flag("min-cycle")! } : {}),
+      ...(alpha !== undefined
+        ? { classEffect: { alpha, lcbOptions: { confidenceLevel: 1 - alpha, bootstrapSamples: flag("bootstrap") ?? 2000 } } }
+        : {})
+    }
+  });
+  printJson(report);
+  if (!report.gate.passed) process.exitCode = 1;
 }
 
 /** Fits the relation-potential model the field engine reads, from the live graph's own corroboration. The model is
@@ -1539,6 +1575,7 @@ function usage(error?: string): void {
     "  pnpm scce code --path=<workspace-file> [--attempts=3] <request>   (compile-gated patch loop; needs a realization provider)",
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
+    "  pnpm scce eval gate <objective.jsonl> [--system=<id>] [--reference=<id>]   (release gate over a sealed run's objective records; exits 1 when the gate fails)",
     "  pnpm scce project summary [path]",
     "  pnpm scce project map [path]",
     "  pnpm scce project symbols [path]",

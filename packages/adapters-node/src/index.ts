@@ -10,6 +10,7 @@ export * from "./wikipedia-v3-ingestor.js";
 export * from "./language-corpus-trainer.js";
 export * from "./gutenberg-corpus.js";
 export * from "./oss-corpus.js";
+export * from "./evaluation-gate-runner.js";
 export * from "./relation-potential-training.js";
 export * from "./self-rewrite-runtime.js";
 export * from "./stored-corpus-construction-training.js";
