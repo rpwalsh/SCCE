@@ -339,25 +339,19 @@ SCCE2 n-gram and compatible graph material stream within byte/count/heap budgets
 checkpoint, stop, resume, and lifecycle state. Representative large-corpus behavior,
 clean-machine reproduction, and production isolation remain deployment-specific work.
 
-## Realization providers (2026-08-20)
+## Realization (2026-09-05)
 
 The mouth realizes answers from three native strategies — extractive splicing
 (`join-program.ts`), learned-construction instantiation (`language-construction.ts`,
 `reversible-construction.ts`, `paired-anti-unification.ts`) and bounded Kneser-Ney
 continuation (`kneser-ney.ts`) — all scored by `scoreSurfaceEnergy`
-(`walsh-surface-energy.ts`). A fourth, optional strategy plugs into the kernel's existing
-`WordingRealizerPort`: **lexically-constrained decoding** with a small local ONNX model
-(`packages/adapters-node/src/constrained-realizer.ts`, via the declared local ONNX runtime).
+(`walsh-surface-energy.ts`). There is no language model in any lane: the earlier local
+model server, remote API and constrained-decoding realizers were removed on 2026-09-05, and
+`tools/no-hidden-model-check.mjs` fails the build on any model endpoint or generation call.
+The only declared model runtime is the visual embedder for image evidence.
 
-Doctrine, unchanged: the reasoning/evidence core decides *what* may be said. The constrained
-decoder only arranges wording. At every decode step its logits are masked to tokens that occur
-in the evidence-licensed facts plus the active language's closed-class vocabulary
-(`closed-class-words.ts`, derived from resident Kneser-Ney unigrams — never a hardcoded list),
-so it cannot introduce a content token the evidence did not license. Its surfaces enter the
-candidate pool as `surface.path.generated.wording_realizer` and compete through every existing
-gate; degenerate output falls back to the native three.
-
-It is off by default (`realization.constrainedDecoding.enabled`), declared in
-`models.declared.json`, and loads weights only from a local directory — inference never
-downloads or calls out. `tools/no-hidden-model-check.mjs` forbids any runtime or endpoint not
-declared there.
+A reworded factual surface must round-trip: the wording is interpreted back into atoms
+(`semantic-round-trip.ts`) and refused if it asserts anything the source did not. Promoted
+structured relations become answer facts between their participants
+(`learned-graph-prior-runtime.ts`), which is what the reversible and anti-unified construction
+candidates key on.
