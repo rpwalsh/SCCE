@@ -137,3 +137,5 @@ demo-workspace/
 DECISIONS.md
 docs/UNUSED_EXPORTS_INVENTORY.md
 docs/RUNTIME_REACHABILITY.json
+scce.config.local.json
+*.config.local.json

@@ -5,8 +5,19 @@ import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+function merge(base, overlay) {
+  if (overlay === null || typeof overlay !== "object" || Array.isArray(overlay)) return overlay ?? base;
+  const out = { ...(base ?? {}) };
+  for (const [key, value] of Object.entries(overlay)) out[key] = merge(out[key], value);
+  return out;
+}
+
 export function readRuntimeConfig(configPath = process.env.SCCE_CONFIG ?? path.join(repoRoot, "scce.config.json")) {
-  const config = JSON.parse(fs.readFileSync(path.resolve(configPath), "utf8"));
+  const absolute = path.resolve(configPath);
+  let config = JSON.parse(fs.readFileSync(absolute, "utf8"));
+  // Credentials live in the untracked overlay beside the config, never in the tracked file or the environment.
+  const overlay = absolute.replace(/(\.json)?$/i, "") + ".local.json";
+  if (fs.existsSync(overlay)) config = merge(config, JSON.parse(fs.readFileSync(overlay, "utf8")));
   const override = process.env.SCCE_DATABASE_URL?.trim();
   return override ? { ...config, database: { ...config.database, url: override } } : config;
 }
