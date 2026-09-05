@@ -394,7 +394,9 @@ function stampEvidence(spans: readonly EvidenceSpan[], sourceSystem: string, sou
   return spans.map(span => ({
     ...span,
     status: "promoted",
-    provenance: toJsonValue({ ...jsonRecord(span.provenance), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "profile_excerpt_evidence" }),
+    // A training batch is a concatenation minted for the construction lane, not a document a person wrote; it names
+    // its lane so a prose question never draws candidates from it.
+    provenance: toJsonValue({ ...jsonRecord(span.provenance), ...jsonRecord(metadata), sourceSystem, sourceSystemId, sourceKind: "construction_training", forceClass: "profile_excerpt_evidence" }),
     trustVector: toJsonValue({ ...jsonRecord(span.trustVector), sourceSystem, sourceSystemId, forceClass: "profile_excerpt_evidence", sourceTrust: corpusSourceTrust(sourceSystemId) })
   }));
 }
