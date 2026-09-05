@@ -18,6 +18,7 @@ import {
   compileRoleSurfaceOrderModel,
   compileSparseAlignmentTargetIndex,
   generateSparseAlignmentCandidates,
+  rankEvidenceForAlignment,
   compileTypedNullCostModel,
   compilePopulationOrderingModel,
   compileCrossDocumentAlignmentModel,
@@ -974,13 +975,27 @@ export class WikipediaV3Ingestor {
       else for (const edge of promotedEdges) await this.storage.graph.upsertEdge(edge);
       if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(promotedHyperedges);
       else for (const hyperedge of promotedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+      // Alignment runs over the spans that carry the most corroborated targets and the graph region those spans evidence.
+      const alignmentEvidence = rankEvidenceForAlignment({
+        evidence,
+        targetIndex: compileSparseAlignmentTargetIndex({
+          incidenceGraph: liftHyperedgesToTypedIncidenceGraph({ hyperedges: promotedGraph.hyperedges, hasher: this.hasher }),
+          nodes: promotedGraph.nodes,
+          hasher: this.hasher
+        }),
+        limit: this.config.runtime.corpora?.wikipedia?.alignmentLatticesPerShard ?? 48
+      });
+      const alignmentEvidenceIds = new Set(alignmentEvidence.map(span => String(span.id)));
+      const alignmentHyperedges = promotedGraph.hyperedges.filter(hyperedge =>
+        hyperedge.evidenceIds.some(evidenceId => alignmentEvidenceIds.has(String(evidenceId))));
+      const alignmentNodeIds = new Set(alignmentHyperedges.flatMap(hyperedge => hyperedge.memberNodeIds.map(String)));
       const incidenceGraph = liftHyperedgesToTypedIncidenceGraph({
-        hyperedges: promotedGraph.hyperedges,
+        hyperedges: alignmentHyperedges,
         hasher: this.hasher
       });
       const alignmentTargetIndex = compileSparseAlignmentTargetIndex({
         incidenceGraph,
-        nodes: promotedGraph.nodes,
+        nodes: promotedGraph.nodes.filter(node => alignmentNodeIds.has(String(node.id))),
         hasher: this.hasher
       });
       let alignmentCandidateCount = 0;
@@ -1018,7 +1033,7 @@ export class WikipediaV3Ingestor {
         ReturnType<typeof generateSparseAlignmentCandidates>[] = [];
       const alignmentLattices:
         ReturnType<typeof buildSurfaceLattice>[] = [];
-      for (const span of evidence) {
+      for (const span of alignmentEvidence) {
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
           sourceFamilyId: evidenceSourceFamilyId(span),
@@ -1169,6 +1184,7 @@ export class WikipediaV3Ingestor {
           referencePlans: finalTransportPlans,
           evidenceAllocations: allAlignmentEvidenceAllocations,
           targetIndex: alignmentTargetIndex,
+          lattices: alignmentLattices,
           hasher: this.hasher
         });
       const alignmentCalibrationModel = compileAlignmentCalibrationModel({

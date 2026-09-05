@@ -64,6 +64,7 @@ interface FittedCandidate {
 
 const FEATURE_ALPHA = 0.5;
 const MIN_SOURCES_PER_ROLE = 2;
+const MEDOID_SAMPLE = 128;
 
 export function compileOpaqueRoleModel(input: {
   candidates: readonly StructuredSemanticCandidate[];
@@ -174,14 +175,20 @@ export function compileOpaqueRoleModel(input: {
   };
 }
 
+const roleIndexByModel = new WeakMap<OpaqueRoleModel, Map<string, string>>();
+
 export function opaqueRoleId(
   model: OpaqueRoleModel | undefined,
   candidateId: string,
   provisionalPortId: string
 ): string | undefined {
-  return model?.assignments.find(assignment =>
-    assignment.candidateId === candidateId
-    && assignment.provisionalPortId === provisionalPortId)?.roleId;
+  if (!model) return undefined;
+  let index = roleIndexByModel.get(model);
+  if (!index) {
+    index = new Map(model.assignments.map(assignment => [`${assignment.candidateId}${assignment.provisionalPortId}`, assignment.roleId]));
+    roleIndexByModel.set(model, index);
+  }
+  return index.get(`${candidateId}${provisionalPortId}`);
 }
 
 function roleOccurrences(candidates: readonly StructuredSemanticCandidate[]): RoleOccurrence[] {
@@ -288,19 +295,26 @@ function assignToMedoids(rows: readonly RoleOccurrence[], medoids: readonly Role
   return groups;
 }
 
+// Exact medoid up to the sample bound; beyond it a deterministic stride sample stands in for the group (CLARA).
 function medoid(rows: readonly RoleOccurrence[]): RoleOccurrence {
-  return [...rows].sort((left, right) =>
-    rows.reduce((sum, row) => sum + jaccard(right.features, row.features), 0)
-    - rows.reduce((sum, row) => sum + jaccard(left.features, row.features), 0)
-    || left.id.localeCompare(right.id))[0]!;
+  const ordered = [...rows].sort((left, right) => left.id.localeCompare(right.id));
+  const stride = Math.max(1, Math.ceil(ordered.length / MEDOID_SAMPLE));
+  const sample = stride === 1 ? ordered : ordered.filter((_, index) => index % stride === 0);
+  const sampleSets = sample.map(row => new Set(row.features));
+  return sample
+    .map(candidate => {
+      const features = new Set(candidate.features);
+      return { candidate, total: sampleSets.reduce((sum, other) => sum + jaccardSets(features, other), 0) };
+    })
+    .sort((left, right) => right.total - left.total || left.candidate.id.localeCompare(right.candidate.id))[0]!.candidate;
 }
 
 function featureProbabilities(rows: readonly RoleOccurrence[]): Array<{ feature: string; probability: number }> {
-  const features = [...new Set(rows.flatMap(row => row.features))].sort();
-  return features.map(feature => ({
+  const counts = new Map<string, number>();
+  for (const row of rows) for (const feature of new Set(row.features)) counts.set(feature, (counts.get(feature) ?? 0) + 1);
+  return [...counts.keys()].sort().map(feature => ({
     feature,
-    probability: quantize((rows.filter(row => row.features.includes(feature)).length + FEATURE_ALPHA)
-      / (rows.length + 2 * FEATURE_ALPHA))
+    probability: quantize((counts.get(feature)! + FEATURE_ALPHA) / (rows.length + 2 * FEATURE_ALPHA))
   }));
 }
 
@@ -362,8 +376,10 @@ function jsonKeys(value: JsonValue, prefix = ""): string[] {
 }
 
 function jaccard(left: readonly string[], right: readonly string[]): number {
-  const a = new Set(left);
-  const b = new Set(right);
+  return jaccardSets(new Set(left), new Set(right));
+}
+
+function jaccardSets(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
   if (!a.size && !b.size) return 1;
   let intersection = 0;
   for (const item of a) if (b.has(item)) intersection += 1;

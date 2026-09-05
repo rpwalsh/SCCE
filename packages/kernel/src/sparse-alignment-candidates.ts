@@ -278,7 +278,9 @@ export function generateSparseAlignmentCandidates(input: {
         String(evidenceId),
         normalizedSurfaceKey
       )) ?? []));
-    for (const targetId of exactTargetIds) {
+    // Sub-lexical units (graphemes, raw segments) align only when they anchor a target exactly; every unit still gets a row.
+    const alignable = exactTargetIds.length > 0 || unit.proposalSources.some(kind => ALIGNABLE_UNIT_KINDS.has(kind));
+    if (alignable) for (const targetId of exactTargetIds) {
       addSupport(supportByTarget, targetId, "exact_observable_anchor");
       const target = targetById.get(targetId);
       if (target?.kind === "incidence") {
@@ -291,20 +293,23 @@ export function generateSparseAlignmentCandidates(input: {
         }
       }
     }
-    for (const targetId of surfacePostings.get(normalizedSurfaceKey) ?? []) {
-      if (!exactTargetIds.includes(targetId)) {
-        addSupport(supportByTarget, targetId, "surface_context");
+    if (alignable) {
+      const exactTargetSet = new Set(exactTargetIds);
+      for (const targetId of surfacePostings.get(normalizedSurfaceKey) ?? []) {
+        if (!exactTargetSet.has(targetId)) {
+          addSupport(supportByTarget, targetId, "surface_context");
+        }
       }
-    }
-    for (const evidenceId of unit.evidenceIds) {
-      for (const targetId of evidencePostings.get(String(evidenceId)) ?? []) {
-        addSupport(supportByTarget, targetId, "shared_exact_evidence");
+      for (const evidenceId of unit.evidenceIds) {
+        for (const targetId of evidencePostings.get(String(evidenceId)) ?? []) {
+          addSupport(supportByTarget, targetId, "shared_exact_evidence");
+        }
       }
-    }
-    for (const context of [...unit.leftContextSketch, ...unit.rightContextSketch]) {
-      const key = surfaceKey(context, input.lattice.normalizationContract);
-      for (const targetId of surfacePostings.get(key) ?? []) {
-        addSupport(supportByTarget, targetId, "surface_context");
+      for (const context of [...unit.leftContextSketch, ...unit.rightContextSketch]) {
+        const key = surfaceKey(context, input.lattice.normalizationContract);
+        for (const targetId of surfacePostings.get(key) ?? []) {
+          addSupport(supportByTarget, targetId, "surface_context");
+        }
       }
     }
 
@@ -593,6 +598,33 @@ function surfaceUnitOrder(left: SurfaceLatticeUnit, right: SurfaceLatticeUnit): 
 
 function targetKindOrder(kind: SparseAlignmentTargetKind): number {
   return kind === "incidence" ? 0 : 1;
+}
+
+const ALIGNABLE_UNIT_KINDS: ReadonlySet<string> = new Set(["lexical", "phrase_candidate", "quote", "table_cell", "repeated_sequence"]);
+
+/** Evidence spans ranked by how many corroborated targets (evidence from 2+ source versions) they carry; the top `limit` in original order. */
+export function rankEvidenceForAlignment<T extends { id: unknown; sourceVersionId: unknown }>(input: {
+  evidence: readonly T[];
+  targetIndex: SparseAlignmentTargetIndex;
+  limit: number;
+}): T[] {
+  if (input.evidence.length <= input.limit) return [...input.evidence];
+  const sourceByEvidenceId = new Map(input.evidence.map(span => [String(span.id), String(span.sourceVersionId)]));
+  const corroboratedByEvidenceId = new Map<string, number>();
+  for (const target of input.targetIndex.targets) {
+    const sources = new Set(target.evidenceIds.map(id => sourceByEvidenceId.get(String(id)) ?? `unknown:${String(id)}`));
+    if (sources.size < 2) continue;
+    for (const evidenceId of target.evidenceIds) {
+      const key = String(evidenceId);
+      corroboratedByEvidenceId.set(key, (corroboratedByEvidenceId.get(key) ?? 0) + 1);
+    }
+  }
+  const ranked = input.evidence
+    .map((span, index) => ({ span, index, score: corroboratedByEvidenceId.get(String(span.id)) ?? 0 }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, Math.max(0, Math.floor(input.limit)))
+    .sort((left, right) => left.index - right.index);
+  return ranked.map(row => row.span);
 }
 
 function boundedPostingLimit(value?: number): number {

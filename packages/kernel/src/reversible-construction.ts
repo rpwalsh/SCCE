@@ -193,7 +193,8 @@ export function compileReversibleConstructions(input: {
   hasher?: Hasher;
 }): ReversibleConstructionCompilation {
   const hasher = input.hasher ?? createHasher();
-  const setBySeriesId = uniqueMap(input.alternativeSets, set => set.seriesId);
+  // A series' latest alternative set supersedes its predecessors (they are carried inside it).
+  const setBySeriesId = new Map(input.alternativeSets.map(set => [set.seriesId, set]));
   const supportById = uniqueMap(input.supports, support => support.id);
   const latticeById = uniqueMap(input.lattices, lattice => lattice.id);
   const targetById = uniqueMap(input.targetIndex.targets, target => target.id);
