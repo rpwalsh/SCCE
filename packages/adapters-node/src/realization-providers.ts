@@ -176,7 +176,10 @@ export function createOllamaProvider(options: OllamaProviderOptions): Realizatio
       const language = String(request.codeLanguage ?? request.targetLanguage ?? "").toLocaleLowerCase();
       const generate = async (diagnostics: readonly string[]): Promise<string> => {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : invention ? 20_000 : 8_000));
+        // A prose draft's budget now follows the source (up to 512 tokens); an 8s wall aborted every full-length draft
+    // on a 3B model, and assist mode fell back to the native excerpt unnoticed. The wall follows the budget, capped.
+    const proseWallMs = Math.min(16_000, 6_000 + 30 * prosePredictBudget(facts));
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (code ? 120_000 : invention ? 20_000 : proseWallMs));
         try {
           const built = buildProviderPrompt({ ...request, facts });
           // A failed compile is the only instruction a repair attempt needs: the compiler said what is wrong.
