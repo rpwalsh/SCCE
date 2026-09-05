@@ -20,6 +20,7 @@ import {
   type TableObservation,
   type TimeSeriesObservation
 } from "./ingestion-lanes.js";
+import { assertProductionGraphTemporalScope, graphTemporalScopeFromCanonical } from "./graph-temporal.js";
 import { canonicalStringify, clamp01, featureSet, toJsonValue } from "./primitives.js";
 import { extensionOf, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, splitLines } from "./source-code-graph.js";
 import { createEngineeringCorpusProjection, engineeringCorpusProjectionFromJson } from "./engineering-corpus.js";
@@ -1087,10 +1088,14 @@ function evidenceSourceDependencyGroups(
   return [...new Set(groups.length ? groups : [String(fallbackSourceId)])].sort();
 }
 
+/** A compiled production hyperedge carries a scope the temporal algebra can read; a legacy or malformed one is rejected
+ *  here rather than becoming a fact whose validity nothing can evaluate. */
 function temporalScopeForCandidate(
   candidate: StructuredSemanticCandidate,
   _observedAt: number
 ): JsonValue {
+  const scope = graphTemporalScopeFromCanonical(candidate.temporalCoordinates);
+  if (scope) assertProductionGraphTemporalScope(scope);
   return toJsonValue(candidate.temporalCoordinates);
 }
 
