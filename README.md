@@ -54,10 +54,10 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   turn runtime, kernel, adapters, VS Code, workbench, and the maintenance
   and evaluation tools) and writes
   [`docs/RUNTIME_REACHABILITY.json`](docs/RUNTIME_REACHABILITY.json). It
-  counts 1,651 exports: 1,112 reached, 450 module-internal helpers, and 89
+  counts 1,651 exports: 1,115 reached, 450 module-internal helpers, and 86
   unreached, of which 7 are declared constants, 9 are compatibility
   aliases for a wired implementation, and 2 belong to the legacy migration
-  path. That leaves 71 implemented, tested capabilities nothing calls yet;
+  path. That leaves 68 implemented, tested capabilities nothing calls yet;
   they are being wired rather than deleted, and the count is tracked as it
   falls (183 at the start of this pass). The tool matches names as words
   rather than through the type system, so the unreached figure is a lower

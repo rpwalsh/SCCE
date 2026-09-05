@@ -1,15 +1,15 @@
 {
- "generatedAt": "2026-09-05T22:43:41.895Z",
+ "generatedAt": "2026-09-05T22:53:59.342Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1651,
-  "reached": 1112,
+  "reached": 1115,
   "internalHelpersOnly": 450,
-  "orphans": 89,
+  "orphans": 86,
   "declaredConstants": 7,
   "compatibilityAliases": 9,
   "legacyMigration": 2,
-  "implementedButUncalled": 71
+  "implementedButUncalled": 68
  },
  "orphans": [
   {
@@ -482,13 +482,6 @@
    "alias": false
   },
   {
-   "name": "restoreFtrlProximalRanker",
-   "file": "packages/kernel/src/sparse-ranking.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
    "name": "woldForecastCovariance",
    "file": "packages/kernel/src/spectral-forecast.ts",
    "caller": "",
@@ -539,20 +532,6 @@
   },
   {
    "name": "createCorrectionEngine",
-   "file": "packages/kernel/src/translation-correction-engine.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "decayCorrectionAlpha",
-   "file": "packages/kernel/src/translation-correction-engine.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "detectConflictingCorrections",
    "file": "packages/kernel/src/translation-correction-engine.ts",
    "caller": "",
    "usedInOwnFile": false,
