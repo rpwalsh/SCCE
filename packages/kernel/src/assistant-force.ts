@@ -3,7 +3,7 @@
 import type { ClaimBasis } from "./cognitive-planner.js";
 import type { AssistantForceClass, EpistemicForce, EvidenceId, JsonValue, RequestedAuthority, TruthState } from "./types.js";
 import { clamp01, toJsonValue } from "./primitives.js";
-import { isUnsupportedTruthState } from "./truth-contract.js";
+import { isSourceBackedTruthState, isUnsupportedTruthState } from "./truth-contract.js";
 
 export interface AssistantForceClaim {
   readonly id: string;
@@ -96,7 +96,11 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
   const translation = input.requestedAuthority === "translation" || input.targetLanguageChanged || input.outputForce === "translation" || constructForces.has("TranslationConstruct");
   const creative = input.requestedAuthority === "creative" || input.epistemicForce === "invented" || input.outputForce === "creative" || constructForces.has("CreativeConstruct");
   const contradicted = contradiction >= 0.52 || truthState === "truth.contradicted" || proof === "scce.verdict.001";
-  const underSupported = input.epistemicForce === "unknown" || isUnsupportedTruthState(truthState) || proof === "scce.verdict.004";
+  // A source-backed truth state is the only one that licenses direct assertion, whatever the surrounding scores say.
+  const sourceBacked = isSourceBackedTruthState(truthState);
+  const underSupported = (input.epistemicForce === "unknown" && !sourceBacked)
+    || isUnsupportedTruthState(truthState)
+    || proof === "scce.verdict.004";
   const proposalClaims = input.selectedProposal?.claims ?? [];
   if (proposalClaims.length > 0) {
     return proposalForceDecision({
