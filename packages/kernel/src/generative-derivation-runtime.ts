@@ -8,7 +8,7 @@ import {
   type ConstructionCompositionRegistry
 } from "./construction-composition.js";
 import { decodeBounded, type BoundedDecodingAtom, type BoundedDecodingEdge } from "./bounded-chart-decoding.js";
-import { chartKeyId, type ChartKey, type DerivationChart } from "./derivation-chart.js";
+import { chartKeyId, extractDerivations, type ChartKey, type DerivationChart } from "./derivation-chart.js";
 import {
   createProofLicenseSemiring,
   viterbiLogSemiring,
@@ -347,6 +347,8 @@ export interface DerivationSearchResult {
   bestScore: number;
   text: string;
   evidenceIds: string[];
+  /** k-best rivals of the selected derivation, walked from the packed chart with shared subderivations. */
+  alternatives: Array<{ constructionId: string; ruleIds: string[]; text: string }>;
   chart: DerivationChart<DerivationLicense>;
   treewidth: number;
   audit: JsonValue;
@@ -436,11 +438,29 @@ export function searchBestDerivation(input: {
     ? realizeDerivation({ constructionId: bestConstructionId, algebra: input.algebra })
     : "";
 
+  // The chart holds every licensed derivation, not just the argmax; the rivals are what a caller needs to see that a
+  // choice was made rather than forced.
+  const bestCell = [...decoded.chart.cells.values()].find(cell => cell.key.coverage.includes(bestConstructionId ?? " "));
+  const alternatives = bestCell
+    ? extractDerivations(decoded.chart, bestCell.key, 8)
+      .flatMap(derivation => {
+        const coverage = derivation.leafKeyIds
+          .flatMap(leafKeyId => (decoded.chart.cells.get(leafKeyId)?.key.coverage ?? "").split(","))
+          .filter(Boolean);
+        const constructionId = [...new Set(coverage)].sort((left, right) =>
+          (input.algebra.registry.depths[right] ?? 0) - (input.algebra.registry.depths[left] ?? 0))[0];
+        if (!constructionId || constructionId === bestConstructionId) return [];
+        return [{ constructionId, ruleIds: derivation.ruleIds, text: realizeDerivation({ constructionId, algebra: input.algebra }) }];
+      })
+      .filter(row => row.text)
+    : [];
+
   return {
     ...(bestConstructionId ? { bestConstructionId } : {}),
     bestScore,
     text,
     evidenceIds: bestEvidence,
+    alternatives,
     chart: decoded.chart,
     treewidth: decoded.treewidth,
     audit: toJsonValue({
@@ -555,10 +575,27 @@ export function searchTargetConditionedDerivation(input: {
   }
   const joined = renderJoinedSurface(units, input.joinMixture);
 
+  // Each covered part's rival operators, from the same packed chart the coverage was chosen in.
+  const alternatives = bestCoverage.flatMap(partId => {
+    const atom = atoms.find(row => row.key.coverage === partId);
+    const selected = atom ? atomOperator.get(atom.id) : undefined;
+    if (!atom) return [];
+    return extractDerivations(decoded.chart, atom.key, 4).flatMap(derivation => {
+      const constructionId = derivation.leafKeyIds
+        .flatMap(leafKeyId => (decoded.chart.cells.get(leafKeyId)?.key.coverage ?? "").split(","))
+        .map(coverage => atomOperator.get(coverage))
+        .find(operatorId => operatorId && operatorId !== selected);
+      if (!constructionId) return [];
+      const text = realizeDerivation({ constructionId, algebra: input.algebra });
+      return text ? [{ constructionId, ruleIds: derivation.ruleIds, text }] : [];
+    });
+  });
+
   return {
     bestScore,
     text: joined.text,
     evidenceIds: bestEvidence,
+    alternatives,
     chart: decoded.chart,
     treewidth: decoded.treewidth,
     coveredPartIds: bestCoverage,
