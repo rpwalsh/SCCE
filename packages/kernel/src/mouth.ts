@@ -699,7 +699,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // returned "Mongolia" -- both HTTP 200, both zero-evidence
       // runtime-motion candidates, both fabricated successes on
       // questions this corpus cannot answer.
-      const groundedSurfaceAvailable = input.evidence.some(span => span.status === "promoted");
+      const groundedSurfaceAvailable = input.evidence.some(span => span.status === "promoted")
+        || input.entailment.evidenceIds.length > 0
+        || (semanticAnswerConstructState(input.construct)?.selectedFacts.length ?? 0) > 0;
       const rawCandidates = [
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
@@ -716,7 +718,17 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ].filter(candidate => (candidate.id.startsWith("candidate:generated:code:") ? candidate.text.trim().length > 0 : admissibleMouthSurface(candidate.text))
         // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
-        && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && !candidate.id.startsWith("candidate:generated:code:") && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")));
+        && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && !candidate.id.startsWith("candidate:generated:code:") && surfaceRepeatsPrompt(candidate.text, input.requestText ?? ""))
+        // A candidate that cites nothing, in a turn that promoted nothing, asserts on air: only surfaces that do not
+        // assert survive it (the proof boundary, a clarification, compiler-owned code, this session's own memory).
+        && (groundedSurfaceAvailable
+          || candidate.evidenceIds.length > 0
+          || candidate.id === supportBoundary?.id
+          || candidate.id.startsWith("candidate:generated:code:")
+          || candidate.id.startsWith("candidate:generated:clarification")
+          || candidate.id === "candidate:generated:conversation-memory"
+          || candidate.claimBasis === "invented"
+          || creativeRequested));
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
         const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
@@ -4459,11 +4471,19 @@ function supportBoundaryCandidate(
   };
 }
 
+/** An unsupported turn still names what it was about: the runtime's own boundary, else the request's focus, else the
+ *  claim's own anchors. Returning nothing here is what produced a bare refusal with no subject. */
 function supportBoundarySurfaceFromRuntime(input: SpeakInput, verdict: ProofGateVerdict): string {
   const claimText = normalizeEvidenceSentence(input.entailment.claim.text);
   const runtimeBoundary = boundarySurfaceFromRuntime(input.entailment, input.evidence, verdict);
-  if (runtimeBoundary && !containsSurface(runtimeBoundary, claimText) && !looksLikeInternalDiagnosticCode(runtimeBoundary.toLocaleLowerCase())) return runtimeBoundary;
-  return "";
+  const admissible = (value: string): boolean =>
+    Boolean(value) && !containsSurface(value, claimText) && !looksLikeInternalDiagnosticCode(value.toLocaleLowerCase());
+  if (admissible(runtimeBoundary)) return runtimeBoundary;
+  const supportState = insufficientSupportConstructState(input.construct);
+  const focus = supportState ? ensureSurfaceSentence(insufficientSupportFocus(supportState)) : "";
+  if (admissible(focus)) return focus;
+  const anchor = claimAnchorBoundarySurface(claimText);
+  return admissible(anchor) ? anchor : "";
 }
 
 function claimAnchorBoundarySurface(claimText: string): string {
@@ -7391,6 +7411,25 @@ function clarificationCandidate(
   generation: SurfaceCandidate["generation"],
   discoursePlan: DiscoursePlan
 ): SurfaceCandidate | undefined {
+  const selected = clarificationSurfaceFromFacts(facts);
+  if (!selected) return undefined;
+  const { surface, selectedKey, evidenceIds } = selected;
+  return {
+    id: `candidate:generated:clarification:${selectedKey}`,
+    style: "surface.path.generated.clarification",
+    path: "generated",
+    text: `${surface}?`,
+    evidenceIds: evidenceIds.slice(0, 5) as EvidenceSpan["id"][],
+    fit: 0.5,
+    importedPieceIds: [],
+    generation,
+    discoursePlan,
+    boundaryDecisions: []
+  };
+}
+
+/** One expected-information-gain selection, shared by the candidate above and by any caller that needs only the surface. */
+function clarificationSurfaceFromFacts(facts: readonly SemanticAnswerFact[]): { surface: string; selectedKey: string; evidenceIds: readonly string[] } | undefined {
   const usable = facts.filter(fact => (fact.evidenceIds ?? []).length > 0 && (fact.subject || fact.object));
   if (!usable.length) return undefined;
   const keys = usable.map(fact => semanticAnswerFactKey(fact));
@@ -7401,31 +7440,5 @@ function clarificationCandidate(
   const selectedKey = result.selected?.factId ?? keys[0]!;
   const fact = usable[Math.max(0, keys.indexOf(selectedKey))]!;
   const surface = [fact.subject, fact.predicate, fact.object].map(part => String(part ?? "").trim()).filter(Boolean).join(" ");
-  if (!surface) return undefined;
-  return {
-    id: `candidate:generated:clarification:${selectedKey}`,
-    style: "surface.path.generated.clarification",
-    path: "generated",
-    text: `${surface}?`,
-    evidenceIds: (fact.evidenceIds ?? []).slice(0, 5) as EvidenceSpan["id"][],
-    fit: 0.5,
-    importedPieceIds: [],
-    generation,
-    discoursePlan,
-    boundaryDecisions: []
-  };
-}
-
-function clarificationSurfaceFromFacts(facts: readonly SemanticAnswerFact[]): string {
-  const usable = facts.filter(fact => (fact.evidenceIds ?? []).length > 0 && (fact.subject || fact.object));
-  if (!usable.length) return "";
-  const keys = usable.map(fact => semanticAnswerFactKey(fact));
-  const result = selectClarificationQuestion({
-    hypotheses: usable.map((fact, index) => ({ id: `hypothesis:${index}`, weight: Math.max(0.01, Number((fact as { support?: number }).support ?? 0.5)), trueFactIds: new Set([keys[index]!]) })),
-    candidateFactIds: keys
-  });
-  const selectedKey = result.selected?.factId ?? keys[0]!;
-  const fact = usable[Math.max(0, keys.indexOf(selectedKey))]!;
-  const surface = [fact.subject, fact.predicate, fact.object].map(part => String(part ?? "").trim()).filter(Boolean).join(" ");
-  return surface ? `${surface}?` : "";
+  return surface ? { surface, selectedKey, evidenceIds: (fact.evidenceIds ?? []).map(String) } : undefined;
 }
