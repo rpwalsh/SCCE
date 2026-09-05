@@ -5104,11 +5104,15 @@ function sourceTrustFromJson(value: JsonValue): SourceTrust {
  *  repository, and for "When was Ada Lovelace born?" every top BM25 row was a test file mentioning her. The
  *  provenance sourceKind names the lane, so exclusion happens before ranking, not after. Pure. */
 function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: number): string {
-  if (!query.excludeSourceKinds?.length) return "TRUE";
+  void query;
+  // The parameter is always bound, so it must always be referenced with its type: returning a bare TRUE for an
+  // empty list left $n unreferenced, Postgres refused the statement ("could not determine data type of
+  // parameter"), and every search by source version failed silently -- which starved the construction lane of
+  // its graph. An empty list is a no-op through the cardinality guard.
   // Repository spans ingested as text/plain carry no sourceKind, only a repo-relative path; prose lanes name
   // themselves (wikimedia_dump) or arrive from the web (https://). Anything else unlabelled is the owner's workspace, file:// included.
-  return `(COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[])
-    AND NOT (COALESCE(${alias}.provenance_json->>'sourceKind', '') = '' AND COALESCE(${alias}.provenance_json->>'uri', '') !~* '^https?://' AND ${alias}.media_type NOT LIKE 'text/x-wiki%'))`;
+  return `(cardinality($${parameter}::text[]) = 0 OR (COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[])
+    AND NOT (COALESCE(${alias}.provenance_json->>'sourceKind', '') = '' AND COALESCE(${alias}.provenance_json->>'uri', '') !~* '^https?://' AND ${alias}.media_type NOT LIKE 'text/x-wiki%')))`;
 }
 
 function evidenceStatusCondition(
