@@ -118,7 +118,10 @@ export async function trainStoredCorpusConstructions(
         text,
         mediaType: "text/plain",
         namespace: `corpus:${sourceSystem}`,
-        maxEvidenceChunkBytes: 64 * 1024,
+        // Held-out evaluation draws on the other alignment supports in the same compile, and there is one support
+        // per evidence span. A 64KB chunk swallowed the whole batch into a single span, so there was one family
+        // and never anything to hold out. Chunking near article size gives each source its own support.
+        maxEvidenceChunkBytes: 8 * 1024,
         // These articles' n-gram mass is already in the store from the
         // original ingestion: re-inserting it would double-count the
         // corpus and dominate wall time (~700K observation rows per MB).

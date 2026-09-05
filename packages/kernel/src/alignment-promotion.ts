@@ -64,10 +64,17 @@ export function compileAlignmentPromotionModel(input: {
   );
   const observations = canonicalObservations(input.observations);
   const decisions = input.alternativeSets.flatMap(set => set.hypotheses.map(hypothesis => {
-    const rows = observations.filter(row =>
-      row.seriesId === set.seriesId && row.planId === hypothesis.plan.id);
+    // Evidence pools over the construction shape, not over one document's transport solution. A plan id hashes
+    // that document's support, target index and cells, so requiring the same plan id made the held-out test ask
+    // whether an individual solution recurred in another source -- which it cannot, leaving the gate vacuous and
+    // unpassable. The per-row checks below still apply to every pooled held-out row, so a shape is promoted only
+    // when its realizations on unseen sources were themselves faithful.
+    const rows = observations.filter(row => row.seriesId === set.seriesId);
+    // Induction is the family this hypothesis was fitted on; held-out is every other family that observed the
+    // same shape. Taking induction from the whole pool made every family an induction family somewhere, which
+    // left nothing to hold out once evidence accumulated across batches.
     const inductionFamilies = new Set(rows
-      .filter(row => row.partition === "induction")
+      .filter(row => row.partition === "induction" && row.planId === hypothesis.plan.id)
       .map(row => row.sourceFamilyId));
     const independentHeldoutRows = rows.filter(row =>
       row.partition === "heldout" && !inductionFamilies.has(row.sourceFamilyId));
