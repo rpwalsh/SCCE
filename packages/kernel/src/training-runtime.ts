@@ -35,6 +35,7 @@ import type {
   TrainResult
 } from "./types.js";
 import { redactTraceValue, summarizeForTrace } from "./debug/trace.js";
+import { estimateAlignmentCostMs } from "./runtime-cost-estimate.js";
 
 function groupProbe(phase: string, extra: Record<string, unknown> = {}): void {
   if (!process.env.SCCE_TRAIN_PROBE) return;
@@ -115,6 +116,7 @@ export function createTrainingRuntime(options: {
     let patterns = 0;
     let semanticFrames = 0;
     let graphSurfaceAlignments = 0;
+    let estimatedAlignmentCostMs = 0;
     let sparseAlignmentCandidateSupports = 0;
     let sparseAlignmentCandidates = 0;
     let sparseTransportPlans = 0;
@@ -218,7 +220,10 @@ export function createTrainingRuntime(options: {
           ...(groupSnapshot ? { graphSnapshot: groupSnapshot } : {})
         }
       });
-      groupProbe("compiled", { g: groupsProcessed });
+      // What this group's alignment work is expected to cost, priced by the same measured estimator the turn deadline
+      // uses, so a slow training pass is visible as a number rather than a stall.
+      estimatedAlignmentCostMs += estimateAlignmentCostMs(text.length);
+      groupProbe("compiled", { g: groupsProcessed, estimatedAlignmentCostMs: Math.round(estimatedAlignmentCostMs) });
       await observeLanguageTrainingSegmentation({
         storage: deps.storage,
         batch: { text, createdAt: trainedAt },
@@ -312,6 +317,7 @@ export function createTrainingRuntime(options: {
         patterns,
         semanticFrames,
         graphSurfaceAlignments,
+        estimatedAlignmentCostMs: Math.round(estimatedAlignmentCostMs),
         sparseAlignmentCandidateSupports,
         sparseAlignmentCandidates,
         sparseTransportPlans,
