@@ -301,6 +301,34 @@ const DEATH_QUESTION_PATTERN = /\bdied?\b|\bdeath\b|\bdeceased\b|\bdying\b|\bpas
  * for everything else, including when no temporal item exists at all --
  * never invents a date.
  */
+/** The request's own content units, folded; used to tell a subject's date from a citation's. Pure. */
+function temporalSubjectUnits(claimText: string): string[] {
+  return [...new Set(claimText.toLocaleLowerCase().split(/[^p{Letter}p{Number}]+/u))]
+    .filter(unit => unit.length >= 3);
+}
+
+/** The window a date sits in, bounded. Pure. */
+function temporalContext(text: string, value: string): string {
+  const index = text.indexOf(value);
+  if (index < 0) return "";
+  return text.slice(Math.max(0, index - TEMPORAL_CONTEXT_WINDOW), index + value.length + TEMPORAL_CONTEXT_WINDOW);
+}
+
+/** A URL beside a date makes it the citation's date, not the subject's. Pure. */
+function temporalContextIsCitation(text: string, value: string): boolean {
+  const context = temporalContext(text, value).toLocaleLowerCase();
+  return context.includes("http://") || context.includes("https://") || context.includes("www.");
+}
+
+/** A date beside the words the request itself used is a date about what was asked. Pure. */
+function temporalContextCarriesSubject(text: string, value: string, subjectUnits: readonly string[]): boolean {
+  if (!subjectUnits.length) return false;
+  const context = temporalContext(text, value).toLocaleLowerCase();
+  return subjectUnits.some(unit => context.includes(unit));
+}
+
+const TEMPORAL_CONTEXT_WINDOW = 120;
+
 export function extractTemporalAnswerFromEvidence(claimText: string, evidence: readonly EvidenceSpan[]): string | undefined {
   if (!TEMPORAL_QUESTION_PATTERN.test(claimText)) return undefined;
   // A near-duplicate request already names its answer sentence; a date
@@ -312,7 +340,15 @@ export function extractTemporalAnswerFromEvidence(claimText: string, evidence: r
   for (const span of evidence) {
     const text = span.textPreview || span.text || "";
     if (!text) continue;
-    const items = extractSemanticItems(text, "evidence", span).filter(item => item.kind === "temporal");
+    const all = extractSemanticItems(text, "evidence", span).filter(item => item.kind === "temporal");
+    // A reference list carries dates that belong to the citation, not to the subject: this corpus answered
+    // "when was Ada Lovelace born" with 8 March 2018, the publication date of a cited New York Times piece.
+    // A date sitting beside a URL is the citation's; a date sitting beside the request's own words is the
+    // subject's. Both tests read the same in any script.
+    const subjectUnits = temporalSubjectUnits(claimText);
+    const nearSubject = all.filter(item => temporalContextCarriesSubject(text, item.value, subjectUnits));
+    const items = (nearSubject.length ? nearSubject : all)
+      .filter(item => !temporalContextIsCitation(text, item.value));
     if (!items.length) continue;
     // Common biographical-lead-sentence convention this corpus actually
     // uses: "Name (BIRTH_DATE - DEATH_DATE) was ...". When exactly two
