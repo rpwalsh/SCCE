@@ -2958,7 +2958,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       // This builder keeps verbatim substrings and so bypasses fastAnswerSentences; the same rule applies here.
       // A reference line names the subject and carries years, which is how a cited article's publication date
       // answered "When was Ada Lovelace born?". Citations stand aside while any prose remains.
-      const proseSentences = sentences.filter(sentence => !fastAnswerSentenceIsCitation(sentence));
+      const citationFlags = citationSentenceFlags(sentences);
+      const proseSentences = sentences.filter((_, index) => !citationFlags[index]);
       if (proseSentences.length) sentences = proseSentences;
       // Splitter mismatch guard: the near-duplicate GATE segments with
       // fastAnswerSentences; in table-heavy chunks this splitter glues the
@@ -3337,6 +3338,18 @@ function fastAnswerSentenceIsCitation(sentence: string): boolean {
   return pageRange && year;
 }
 
+/** A reference often splits into two short sentences at its own period; each is judged with its neighbour. Pure. */
+function citationSentenceFlags(sentences: readonly string[]): boolean[] {
+  return sentences.map((sentence, index) => {
+    if (fastAnswerSentenceIsCitation(sentence)) return true;
+    if (sentence.length >= 80) return false;
+    const next = sentences[index + 1];
+    const previous = sentences[index - 1];
+    return (next !== undefined && next.length < 80 && fastAnswerSentenceIsCitation(sentence + " " + next))
+      || (previous !== undefined && previous.length < 80 && fastAnswerSentenceIsCitation(previous + " " + sentence));
+  });
+}
+
 function fastAnswerSentences(text: string): string[] {
   const cached = fastAnswerSentencesMemo.get(text);
   if (cached) return cached;
@@ -3344,7 +3357,8 @@ function fastAnswerSentences(text: string): string[] {
   // A reference line names the subject and carries years, so it beat real prose on both the lexical and the
   // date-seeking paths: "When was Ada Lovelace born?" answered with a cited article's 8 March 2018 publication
   // date. Citation lines stand aside while any prose remains, and still speak when they are all there is.
-  const prose = all.filter(sentence => !fastAnswerSentenceIsCitation(sentence));
+  const citation = citationSentenceFlags(all);
+  const prose = all.filter((_, index) => !citation[index]);
   const value = prose.length ? prose : all;
   if (fastAnswerSentencesMemo.size >= FAST_ANSWER_SENTENCES_MEMO_MAX) fastAnswerSentencesMemo.clear();
   fastAnswerSentencesMemo.set(text, value);
