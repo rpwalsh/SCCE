@@ -80,7 +80,7 @@ import {
   translationTargetFromMetadata
 } from "./kernel-input-controls.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import { activeJoinProgram, createLanguageMemoryRuntime } from "./language-memory-runtime.js";
+import { activeJoinProgram, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
 import {
   selectLanguageProfileClusterForSourceVersions,
   languageHintFromProfile,
@@ -1787,7 +1787,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
       }
       const surfaceLanguageModels = surfaceLanguage.models;
-      const surfaceLanguageMemory = surfaceLanguage.state;
+      // A translation speaks the target language, so its language memory is scoped to the target profile rather than to
+      // the cluster the request surface selected.
+      const surfaceLanguageMemory = translationTarget && productionTranslationPlan?.targetProfile
+        ? scopeLanguageMemoryStateToProfile(surfaceLanguage.state, productionTranslationPlan.targetProfile)
+        : surfaceLanguage.state;
       if (requestedAuthority === "creative") {
         creativeRequestFrame = compileCreativeRequestFrameFromCompatibilityModels({
           requestText: input.text,
