@@ -170,7 +170,10 @@ export function sourceTextSurface(text: string, maxChars = 1200): string {
   out = out.replace(/<div\b[^>]*(?:class|id)=["'][^"']*(?:toc|vector-|mw-navigation|mw-sidebar|navbox|sidebar|metadata|ambox|catlinks|printfooter|hatnote|shortdescription|searchaux|noprint)[^"']*["'][\s\S]*?<\/div>/giu, " ");
   out = out.replace(/<br\s*\/?>/giu, "\n");
   out = out.replace(/<\/(?:p|div|section|article|header|footer|h[1-6]|li|tr|td|th|table|ul|ol)>/giu, "\n");
-  out = out.replace(/<[^>]+>/gu, " ");
+  // An attribute value may itself contain ">" -- Parsoid's data-mw JSON does -- and a stripper that stops at the
+  // first ">" then leaks the rest of the tag as text: "Who was Ada Lovelace?" answered with '{"wt":"10 December
+  // 2014"} ...'. Quoted attribute values are skipped as units.
+  out = out.replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/gu, " ");
   out = decodeHtmlEntities(out);
   out = out.replace(/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/gu, " ");
   out = out.replace(/\s+/gu, " ").trim();

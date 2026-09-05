@@ -2955,6 +2955,11 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       const boundedChars = [...tidySpanText].slice(0, 24000);
       const allSentences = splitSurfaceSentences(boundedChars.join(""));
       let sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+      // This builder keeps verbatim substrings and so bypasses fastAnswerSentences; the same rule applies here.
+      // A reference line names the subject and carries years, which is how a cited article's publication date
+      // answered "When was Ada Lovelace born?". Citations stand aside while any prose remains.
+      const proseSentences = sentences.filter(sentence => !fastAnswerSentenceIsCitation(sentence));
+      if (proseSentences.length) sentences = proseSentences;
       // Splitter mismatch guard: the near-duplicate GATE segments with
       // fastAnswerSentences; in table-heavy chunks this splitter glues the
       // duplicated sentence into a blob no row can match. Inject the
@@ -3323,7 +3328,13 @@ const FAST_ANSWER_SENTENCES_MEMO_MAX = 4096;
  /** A citation says where something was published, not what was asked; a URL marks it in any script. Pure. */
 function fastAnswerSentenceIsCitation(sentence: string): boolean {
   const folded = sentence.toLocaleLowerCase();
-  return folded.includes("http://") || folded.includes("https://") || folded.includes("www.");
+  if (folded.includes("http://") || folded.includes("https://") || folded.includes("www.")) return true;
+  // A reference without a link still shows its shape: a short page range (both sides at most three digits, so a
+  // life span like "1815 - 27 November 1852" is not one) together with a year. "Edinburgh Review: 263- 327.
+  // Retrieved 11 October 2022." answered a birth question that way. Punctuation and digits only.
+  const pageRange = /(?<![\p{Nd}])[\p{Nd}]{1,3}\s*[\u2013\u2014-]\s*[\p{Nd}]{1,3}(?![\p{Nd}])/u.test(sentence);
+  const year = /(?<![\p{Nd}])[\p{Nd}]{4}(?![\p{Nd}])/u.test(sentence);
+  return pageRange && year;
 }
 
 function fastAnswerSentences(text: string): string[] {

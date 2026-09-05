@@ -4,7 +4,6 @@
 // Two retrieval-hygiene demotions, both reversible (status -> quarantined, previous status recorded):
 //   default:    pages runtime acquisition fetched and promoted automatically before the consent gate existed (raw HTML)
 //   --parents:  whole-article spans that fully contain two or more sentence-aligned sibling spans of the same source version
-//   --references: link-dense spans (bibliographies), whose citation dates were answering questions about the subject
 //   node tools/demote-runtime-acquired-html.mjs [--apply] [--parents] [--schema=scce3_runtime]
 // Without --apply it only reports. Reads the database URL from SCCE_DATABASE_URL.
 import path from "node:path";
@@ -14,8 +13,6 @@ import { fileURLToPath } from "node:url";
 const pg = createRequire(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "packages", "adapters-node", "package.json"))("pg");
 
 const apply = process.argv.includes("--apply");
-const minimumUrls = Number(process.argv.find(arg => arg.startsWith("--min-urls="))?.slice(11) ?? 3);
-const charsPerUrl = Number(process.argv.find(arg => arg.startsWith("--chars-per-url="))?.slice(16) ?? 400);
 const schema = process.argv.find(arg => arg.startsWith("--schema="))?.slice(9) ?? "scce3_runtime";
 if (!/^[a-z0-9_]+$/u.test(schema)) throw new Error("schema must be a plain identifier");
 const url = process.env.SCCE_DATABASE_URL;
@@ -45,24 +42,21 @@ if (process.argv.includes("--parents")) {
   } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { await client.end(); }
   process.exit(0);
 }
-if (process.argv.includes("--references")) {
-  // A reference list is not an answer. "When was Ada Lovelace born?" answered 8 March 2018 -- the publication
-  // date of a New York Times piece cited in the bibliography -- while the lead sentence carrying 10 December
-  // 1815 sat promoted in the same corpus and lost the ranking. Link density is what separates them, and it
-  // reads the same in every language.
+if (process.argv.includes("--markup")) {
+  // Raw HTML that was promoted as evidence: "<figure class=..." and "<p id=\"mwEw\">" spans outrank the prose
+  // lead of their own article once other pollution is cleared. A span that opens with a tag and is at least a
+  // third markup by characters is markup, in any language; prose is near zero.
   try {
-    const dense = (await client.query(
-      `select id, source_version_id, (length(text_content) - length(replace(text_content, 'http', ''))) / 4 as urls,
-              greatest(1, length(text_content)) as chars
-       from ${schema}.evidence_spans
+    const rows = (await client.query(
+      `select id from ${schema}.evidence_spans
        where status = 'promoted'
-         and (length(text_content) - length(replace(text_content, 'http', ''))) / 4 >= $1
-         and (length(text_content) - length(replace(text_content, 'http', ''))) / 4 >= greatest(1, length(text_content)) / $2`,
-      [minimumUrls, charsPerUrl]
+         and ((left(ltrim(text_content), 1) = '<'
+              and length(regexp_replace(text_content, '<[^>]*>', '', 'g')) <= greatest(1, length(text_content)) * 0.67)
+              or text_content like '%data-mw=%' or text_content like '%"wt":%' or text_content like '%typeof="mw:%')`
     )).rows;
-    console.log(`${dense.length} promoted spans are link-dense enough to be reference lists (>= ${minimumUrls} URLs, one per <= ${charsPerUrl} chars)`);
-    if (!apply || !dense.length) {
-      if (!apply && dense.length) console.log("dry run: re-run with --apply --references to demote them");
+    console.log(`${rows.length} promoted spans open with a tag and are at least a third markup`);
+    if (!apply || !rows.length) {
+      if (!apply && rows.length) console.log("dry run: re-run with --apply --markup to demote them");
       await client.end();
       process.exit(0);
     }
@@ -70,10 +64,10 @@ if (process.argv.includes("--references")) {
     const demoted = await client.query(
       `update ${schema}.evidence_spans set status = 'quarantined', provenance_json = provenance_json || $1::jsonb
        where id = any($2) and status = 'promoted' returning id`,
-      [JSON.stringify({ demotion: { reason: "link-dense reference list, not answer evidence", previousStatus: "promoted", demotedAt: new Date().toISOString() } }), dense.map(row => row.id)]
+      [JSON.stringify({ demotion: { reason: "raw markup promoted as evidence", previousStatus: "promoted", demotedAt: new Date().toISOString() } }), rows.map(row => row.id)]
     );
     await client.query("commit");
-    console.log(`demoted ${demoted.rows.length} reference-list spans`);
+    console.log(`demoted ${demoted.rows.length} markup spans`);
   } catch (error) { await client.query("rollback").catch(() => undefined); throw error; } finally { await client.end(); }
   process.exit(0);
 }

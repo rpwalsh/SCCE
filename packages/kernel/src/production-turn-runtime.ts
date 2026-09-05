@@ -3050,6 +3050,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       answer = spoken.text;
       if (!answer.trim()) answer = "";
       answer = withCitation(answer, spoken);
+      if (performedRuntimeMotion?.status === "awaiting_consent" && spoken.text.trim().split(/s+/u).length < 4) answer = "";
       const mouthAssistantForce = assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,
@@ -3541,6 +3542,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         emissionGraph: emission,
         forecast,
         learningNeeds,
+        // The turn already decided to ask before it fetches anything, and every surface already renders that
+        // decision from runtimeMotion; the result just never carried it, so the question was swallowed and a
+        // one-word stub went out instead. The stub is withheld while consent is pending: the surface shows its
+        // own controls, and nothing is asserted.
+        ...(performedRuntimeMotion ? { runtimeMotion: toJsonValue(performedRuntimeMotion) } : {}),
         candidateField: authorityCandidateField.audit,
         selectedCandidate: toJsonValue(judged.selected),
         judge: judged.audit,
