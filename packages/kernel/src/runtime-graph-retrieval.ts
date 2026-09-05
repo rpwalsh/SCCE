@@ -587,7 +587,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // exact-title-match ranking see every candidate document at all.
     // A question that is not about code draws its candidates from prose lanes only; the exclusion is applied in the
     // search itself, before ranking, so the owner's repository cannot crowd the article out of the candidate set.
-    const proseSourceKinds = codeRequestRecognized(codeRequestSignal(text)) ? {} : { excludeSourceKinds: ["developer_intelligence"] };
+    const proseSourceKinds = codeRequestRecognized(codeRequestSignal(text)) ? {} : { excludeSourceKinds: ["developer_intelligence", "construction_training"] };
     const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(group =>
         deps.storage.evidence.searchEvidence({ features: group, limit: 32, ...proseSourceKinds })
