@@ -418,6 +418,8 @@ export interface FieldState {
   alphaTrace: AlphaTrace;
   greenPotential?: JsonValue;
   causalMass: Array<{ nodeId: NodeId; mass: number; reason: string }>;
+  /** Second activation channel: mass reaching a node through temporally conflicting edges, kept separate from support. */
+  contradictionMass?: Array<{ nodeId: NodeId; mass: number; reserved: boolean }>;
 }
 
 export interface Claim {

@@ -5,6 +5,8 @@ import { clamp01, createClock, featureSet, toJsonValue, weightedJaccard } from "
 import { createAlphaLayer } from "./alpha.js";
 import { personalizedRandomWalkWithRestartDetailed, type RelationTransitionPolicy } from "./ppf.js";
 import { decomposedEffectiveEdgeWeight } from "./edge-weight-decomposition.js";
+import { computeDualChannelActivation, rankWithReservations } from "./dual-channel-activation.js";
+import { conflictingGraphEdgeIntervals } from "./graph-temporal.js";
 import { createCausalDiscoveryEngine } from "./causal.js";
 import { graphEdgePriorClass, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import { scoreGraphEdgeQuality } from "./graph-edge-quality.js";
@@ -124,7 +126,25 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
       const causalMass = causal.discover({ nodes, edges: diffusionEdges, activeNodeIds: active.map(item => item.nodeId) });
       const greenPotential = solveGreenPotentialField({ nodes, edges: diffusionEdges, requestFeatures, seeds, activeNodeIds, ppf, alphaTrace });
       const importedPriorTrace = importedGraphPriorTrace(nodes, diffusionEdges, active, ppf);
-      return { requestFeatures, seeds, active, ppf, ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, fieldOperators }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
+      // Support and contradiction are separate channels, not one blended score: an edge whose validity interval
+      // conflicts with a sibling carries mass in the contradiction channel, and exact anchors keep their slot.
+      const conflicting = new Set(conflictingGraphEdgeIntervals(diffusionEdges).flatMap(pair => pair.map(edge => String(edge.id))));
+      const contradictionMass = conflicting.size && seeds.length
+        ? rankWithReservations(
+          computeDualChannelActivation({
+            nodes,
+            positiveEdges: diffusionEdges.filter(edge => !conflicting.has(String(edge.id))),
+            contradictionEdges: diffusionEdges.filter(edge => conflicting.has(String(edge.id))),
+            personalization: seeds.map(seed => ({ nodeId: seed.nodeId, weight: seed.weight })),
+            relationPolicies,
+            restartProbability: 0.15
+          }),
+          { exactAnchorIds: activeNodeIds.slice(0, 16), budget: 64 }
+        )
+          .filter(row => row.contradictionMass > 0)
+          .map(row => ({ nodeId: row.nodeId as GraphNode["id"], mass: row.contradictionMass, reserved: row.reserved }))
+        : [];
+      return { requestFeatures, seeds, active, ppf, ...(contradictionMass.length ? { contradictionMass } : {}), ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, fieldOperators }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
     }
   };
 }
