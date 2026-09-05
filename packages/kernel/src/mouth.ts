@@ -105,6 +105,7 @@ import {
 } from "./join-program.js";
 import { realizeReversibleConstruction } from "./reversible-construction.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
+import { dominantScriptId, joinLexicalSurfaces } from "./unicode-segmentation-v2.js";
 import {
   interpretAntiUnifiedConstruction,
   realizeAntiUnifiedConstruction,
@@ -3827,6 +3828,11 @@ function usableConversationMemoryText(text: string, question: string): string | 
   return clean;
 }
 
+/** Joins already-selected word tokens with the spacing their own scripts use, so unspaced scripts do not accumulate spurious separators. */
+function joinWordTokens(tokens: readonly string[]): string {
+  return joinLexicalSurfaces(tokens.map(text => ({ text, scriptId: dominantScriptId(text) })));
+}
+
 function conversationContextSurface(text: string, generationExtent: number): string | undefined {
   const clean = tidySurface(text);
   if (!clean || /[?？؟]/u.test(clean)) return undefined;
@@ -3835,7 +3841,7 @@ function conversationContextSurface(text: string, generationExtent: number): str
     .filter(token => [...token].some(char => isLetterChar(char) || isDigitChar(char)));
   if (tokens.length < 4) return undefined;
   const selected = tokens.slice(tokens.length > 5 ? 1 : 0, Math.max(tokens.length, 1)).slice(0, Math.max(4, Math.min(24, generationExtent)));
-  const surface = ensureSurfaceSentence(selected.join(" "));
+  const surface = ensureSurfaceSentence(joinWordTokens(selected));
   if (!surface || questionEchoHits(surface, text).includes("surface.reject.echo.exact")) return undefined;
   return surface;
 }
@@ -3958,7 +3964,7 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
   // hardcoded Latin default.
   const observedBoundary = observedTerminalBoundary([supportSurface, predicate]);
   const conclusion = admissibleJoinedCandidateText(conclusionJoin)
-    || ensureSurfaceSentence(conclusionTokens.join(" "), observedBoundary);
+    || ensureSurfaceSentence(joinWordTokens(conclusionTokens), observedBoundary);
   if (!conclusion || containsInternalSurfaceArtifact(conclusion) || conclusion.includes("¬")) return undefined;
   const text = joinSurfaceSentences(
     [conclusion, supportSurface],
@@ -4520,7 +4526,7 @@ function claimAnchorBoundarySurface(claimText: string): string {
   const selected = spans
     .filter(span => span.join("").length >= 3)
     .sort((left, right) => right.length - left.length || right.join(" ").length - left.join(" ").length)[0];
-  return selected ? ensureSurfaceSentence(selected.join(" ")) : "";
+  return selected ? ensureSurfaceSentence(joinWordTokens(selected)) : "";
 }
 
 function orthographicAnchorUnit(unit: string): boolean {

@@ -97,7 +97,9 @@ import type {
   SemanticFrameRecord
 } from "./storage.js";
 import type { ScceStorage } from "./storage.js";
-import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import { dominantScriptId, reconstructFromSegmentationModel, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import type { InformationLabel } from "./types.js";
+import { segmentationAggregateInformationLabel, segmentationAggregateKeyId, segmentationAggregateSpacedRatio } from "./segmentation-aggregate.js";
 import type {
   EvidenceSpan,
   GraphSnapshot,
@@ -704,6 +706,15 @@ export function compileLanguageTrainingBatch(input: {
   };
 }
 
+/** What a corpus has actually observed about one script's word spacing, once enough boundaries exist to say. */
+export interface SegmentationSpacingEvidence {
+  keyId: string;
+  languageCluster: string;
+  spacedRatio: number;
+  boundaryObservations: number;
+  label: InformationLabel;
+}
+
 export async function observeLanguageTrainingSegmentation(input: {
   storage: ScceStorage;
   batch: Pick<LanguageTrainingBatch, "text" | "createdAt">;
@@ -711,21 +722,39 @@ export async function observeLanguageTrainingSegmentation(input: {
   corpusRole: string;
   activeImportVersion: string;
   hasher: Hasher;
-}): Promise<void> {
-  if (!input.storage.segmentationAggregates || !input.batch.text.trim()) return;
+  principals?: readonly string[];
+}): Promise<SegmentationSpacingEvidence | undefined> {
+  if (!input.storage.segmentationAggregates || !input.batch.text.trim()) return undefined;
   const model = segmentUnicodeSurfaceV2(input.batch.text, input.hasher);
-  await input.storage.segmentationAggregates.observeDocument({
-    key: {
-      segmentationVersion: model.schemaVersion,
-      languageCluster: dominantScriptId(input.batch.text),
-      tenantId: input.tenantId,
-      corpusRole: input.corpusRole,
-      activeImportVersion: input.activeImportVersion
-    },
+  // A segmentation that cannot rebuild its own input is not evidence about anything; it never reaches the aggregate.
+  if (input.hasher.digestHex(reconstructFromSegmentationModel(model)) !== model.reconstructionHash) {
+    throw new Error("segmentation model does not reconstruct its own surface; refusing to fold it into the corpus aggregate");
+  }
+  const key = {
+    segmentationVersion: model.schemaVersion,
+    languageCluster: dominantScriptId(input.batch.text),
+    tenantId: input.tenantId,
+    corpusRole: input.corpusRole,
+    activeImportVersion: input.activeImportVersion
+  };
+  const aggregate = await input.storage.segmentationAggregates.observeDocument({
+    key,
     model,
     observedAt: input.batch.createdAt
   });
+  const spacedRatio = segmentationAggregateSpacedRatio(aggregate);
+  // Below this many observed boundaries the ratio is noise, not the corpus telling us how this script spaces words.
+  if (spacedRatio === undefined || aggregate.totalBoundaryObservations < MINIMUM_SPACING_EVIDENCE_OBSERVATIONS) return undefined;
+  return {
+    keyId: segmentationAggregateKeyId(key),
+    languageCluster: key.languageCluster,
+    spacedRatio,
+    boundaryObservations: aggregate.totalBoundaryObservations,
+    label: segmentationAggregateInformationLabel(key, input.principals ?? [])
+  };
 }
+
+const MINIMUM_SPACING_EVIDENCE_OBSERVATIONS = 64;
 
 function uniqueConstructionSets(
   sets: readonly SourceBoundLanguageConstructionTrainingSet[]
