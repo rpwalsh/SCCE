@@ -12,7 +12,7 @@ import {
   type SourceRepositoryFacts
 } from "./source-code-graph.js";
 import { createEngineeringCorpusProjection, type EngineeringCorpusProjection } from "./engineering-corpus.js";
-import type { ProofClaim, ProofEvidenceRecord, ProofForceClass } from "./semantic-proof-engine.js";
+import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type ProofForceClass } from "./semantic-proof-engine.js";
 
 export type CodeProofEligibility = "code.proof.direct_source_span" | "code.proof.source_bound_only" | "code.proof.learned_prior_only" | "code.proof.ineligible";
 export type CodeGraphIntent = "graph.node" | "graph.edge" | "graph.evidence_span" | "graph.diagnostic" | "graph.trace";
@@ -236,6 +236,8 @@ export interface RepoSnapshot {
   diagnosticsGraph: DiagnosticsGraph;
   evidenceSpans: CodeEvidenceSpan[];
   codeFacts: CodeFact[];
+  /** Which asserted repo relations are actually backed by a source span, and which rest on a learned prior alone. */
+  codeFactProof: ReturnType<typeof proveRepoCodeFacts>;
   traces: CodeIntelligenceTrace[];
   engineeringContext: EngineeringCorpusProjection;
   summary: {
@@ -504,6 +506,7 @@ export function createRepoSnapshot(input: RepoSnapshotInput): RepoSnapshot {
     diagnosticsGraph,
     evidenceSpans,
     codeFacts,
+    codeFactProof: proveRepoCodeFacts(codeFacts),
     traces: [trace],
     engineeringContext,
     summary,
@@ -515,6 +518,52 @@ export function createRepoSnapshot(input: RepoSnapshotInput): RepoSnapshot {
 
 export function repoSnapshotToEngineeringContext(snapshot: RepoSnapshot): EngineeringCorpusProjection {
   return snapshot.engineeringContext;
+}
+
+/** Every fact the repo graph asserts, put to the proof engine as a claim and answered only by the facts that carry a
+ *  real source span. A relation held on a learned prior alone is reported uncertified rather than counted as known. */
+export function proveRepoCodeFacts(facts: readonly CodeFact[]): {
+  claims: number;
+  directEvidence: number;
+  certifiedClaimIds: string[];
+  uncertifiedClaimIds: string[];
+} {
+  const claims = facts.map(fact => codeClaimToProofClaim({
+    id: fact.id,
+    subjectId: fact.subjectId,
+    relationId: fact.relationId,
+    objectId: fact.objectId,
+    sourcePath: fact.sourcePath,
+    ...(fact.sourceHash ? { sourceHash: fact.sourceHash } : {}),
+    languageId: "code",
+    requiredSourceBinding: fact.forceClass === "direct_evidence"
+  }));
+  // Evidence is scoped to the exact relation the claim makes. These relations are multi-valued -- one file exports
+  // many symbols -- so a span about a different symbol is not evidence about this claim in either direction.
+  const key = (subjectId: string, relationId: string, objectId: string): string => `${subjectId}${relationId}${objectId}`;
+  const evidenceByTriple = new Map<string, ProofEvidenceRecord[]>();
+  let evidenceCount = 0;
+  for (const fact of facts) {
+    if (fact.forceClass !== "direct_evidence") continue;
+    const bucketKey = key(fact.subjectId, fact.relationId, fact.objectId);
+    const bucket = evidenceByTriple.get(bucketKey) ?? [];
+    bucket.push(codeFactToProofEvidence(fact));
+    evidenceByTriple.set(bucketKey, bucket);
+    evidenceCount++;
+  }
+  const certified: string[] = [];
+  const uncertified: string[] = [];
+  for (const [index, claim] of claims.entries()) {
+    const fact = facts[index]!;
+    const result = proveClaim({ claim, candidateEvidence: evidenceByTriple.get(key(fact.subjectId, fact.relationId, fact.objectId)) ?? [] });
+    (result.verdict === "certified" ? certified : uncertified).push(claim.id);
+  }
+  return {
+    claims: claims.length,
+    directEvidence: evidenceCount,
+    certifiedClaimIds: certified.sort(),
+    uncertifiedClaimIds: uncertified.sort()
+  };
 }
 
 export function codeClaimToProofClaim(claim: CodeClaim): ProofClaim {
