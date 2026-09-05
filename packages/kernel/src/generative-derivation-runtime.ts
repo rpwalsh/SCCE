@@ -258,6 +258,28 @@ export function realizeDerivation(input: {
   if (!composite || !operator.surface.slots.length) return surfaceText.trim();
 
   const childByPort = new Map(composite.ports.map(port => [port.portId, port.childConstructionId]));
+  const realizeChild = (childId: string): string =>
+    realizeDerivation({ constructionId: childId, algebra: input.algebra, depth: depth + 1, maxDepth });
+  // A discontinuous operator with slots must be filled span by span in its own reading order; filling it in byte order
+  // would silently discard the logical order the construction exists to carry.
+  if (operator.discontinuous) {
+    const spans = [...operator.discontinuous.spans].sort((left, right) => left.order - right.order);
+    const pieces = spans.map(span => {
+      let piece = "";
+      let cursor = span.utf16Start;
+      for (const slot of operator.surface.slots) {
+        if (slot.start < span.utf16Start || slot.end > span.utf16End) continue;
+        const childId = childByPort.get(slot.portId);
+        if (childId === undefined) continue;
+        const start = Math.max(cursor, slot.start);
+        piece += operator.surface.text.slice(cursor, start);
+        piece += realizeChild(childId);
+        cursor = Math.max(start, slot.end);
+      }
+      return piece + operator.surface.text.slice(cursor, span.utf16End);
+    });
+    return pieces.join(" ").replace(/\s+/gu, " ").trim();
+  }
   let out = "";
   let cursor = 0;
   for (const slot of operator.surface.slots) {
@@ -266,7 +288,7 @@ export function realizeDerivation(input: {
     const start = Math.max(cursor, Math.min(slot.start, operator.surface.text.length));
     const end = Math.max(start, Math.min(slot.end, operator.surface.text.length));
     out += operator.surface.text.slice(cursor, start);
-    out += realizeDerivation({ constructionId: childId, algebra: input.algebra, depth: depth + 1, maxDepth });
+    out += realizeChild(childId);
     cursor = end;
   }
   out += operator.surface.text.slice(cursor);
