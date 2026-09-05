@@ -51,12 +51,13 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   the runtime. Every number above was produced under the fix.
 - **Implemented-but-unreached exports** (2026-09-05): a reachability pass
   from the real entry points (server routes and startup, CLI, production
-  turn runtime, kernel, adapters, VS Code, workbench) counts 1,696 exports,
-  of which 1,121 are reached and 469 are module-internal helpers. The
-  remaining 97 are implemented, tested capabilities nothing calls yet;
-  they are being wired rather than deleted, and the count is tracked as it
-  falls (183 at the start of this pass). This is a completeness measure of
-  the wiring, not of the architecture.
+  turn runtime, kernel, adapters, VS Code, workbench, and the maintenance
+  and evaluation tools) counts 1,696 exports, of which 1,137 are reached
+  and 459 are module-internal helpers. The remaining 91 are implemented,
+  tested capabilities nothing calls yet; they are being wired rather than
+  deleted, and the count is tracked as it falls (183 at the start of this
+  pass). This is a completeness measure of the wiring, not of the
+  architecture.
 - **Test suite**: unit tests run per package (`pnpm test:unit`), including
   live-database tests against a real PostgreSQL instance when
   `SCCE_TEST_DATABASE_URL` is set; the counts printed by that run are the
