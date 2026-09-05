@@ -22,7 +22,7 @@ describe("workbench settings and models surfaces", () => {
     }
     // Field labels are looked up as settings.<key> at runtime from the same table.
     const fieldKeys = Object.keys(UI_MESSAGES_EN_US).filter(key => key.startsWith("settings."));
-    expect(fieldKeys.length).toBeGreaterThanOrEqual(16);
+    expect(fieldKeys.length).toBeGreaterThanOrEqual(6);
     expect(html).toContain("I18N['settings.' + field.key]");
   });
 });

@@ -146,8 +146,14 @@ async function graphSnapshotForEvidence(
       limitNodes: TRAINING_SNAPSHOT_NODES,
       limitEdges: TRAINING_SNAPSHOT_EDGES
     });
-    if (!slice.hyperedges.length) return undefined;
-    return { nodes: slice.nodes, edges: slice.edges, hyperedges: slice.hyperedges };
+    // Constructions align surfaces to promoted structured relations, never to chunk feature bags.
+    const hyperedges = slice.hyperedges.filter(edge => {
+      const modality = edge.modality;
+      return typeof modality === "object" && modality !== null && !Array.isArray(modality)
+        && typeof (modality as Record<string, unknown>).extractionChannel === "string";
+    });
+    if (!hyperedges.length) return undefined;
+    return { nodes: slice.nodes, edges: slice.edges, hyperedges };
   } catch {
     return undefined;
   }

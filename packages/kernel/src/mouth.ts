@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { CorrectionRuleRecord, WordingRealizerPort } from "./storage.js";
+import type { CorrectionRuleRecord } from "./storage.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
@@ -382,14 +382,6 @@ export interface SpeakInput {
    * old behavior) so existing callers that don't supply it are unaffected.
    */
   requestText?: string;
-  /**
-   * Wording realizer port: when present, its surfaces join the candidate
-   * pool as generated candidates subject to every existing gate. Wording-
-   * only authority -- facts are passed in already evidence-licensed, and
-   * argument integrity plus structural completeness are enforced on the
-   * way in. See ScceKernelDeps.wordingRealizer for what may back it.
-   */
-  wordingRealizer?: WordingRealizerPort;
   construct: ConstructGraph;
   field: FieldState;
   requirementField?: TurnRequirementField;
@@ -697,7 +689,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("candidate_setup");
       const creativeRequested = isCreativeRequested(input, plan);
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
-      const realizerCandidates = await wordingRealizerCandidates(input, discoursePlan, creativeRequested, input.codeLanguage);
       // An echo of the request is never an answer. For a creative turn
       // that holds unconditionally; elsewhere it holds whenever nothing
       // grounds the surface, because a candidate with no promoted
@@ -721,7 +712,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(learnedConstructionCandidate ? [learnedConstructionCandidate] : []),
         ...(constructAnchored ? [constructAnchored] : []),
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
-        ...realizerCandidates,
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ].filter(candidate => (candidate.id.startsWith("candidate:generated:code:") ? candidate.text.trim().length > 0 : admissibleMouthSurface(candidate.text))
         // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
@@ -2960,21 +2950,6 @@ function factArgumentsIntactInSurface(
     .map(argument => tidySurface(argument ?? "").toLocaleLowerCase())
     .filter(argument => argument.length >= 2)
     .every(argument => surface.includes(argument)));
-}
-
-/** Realizer surfaces paraphrase: a clause-sized fact argument counts as intact when one of its name or number spans survives (the verifier already licenses every content word). */
-function realizerFactArgumentsIntact(text: string, facts: ReadonlyArray<{ subject: string; object: string }>): boolean {
-  const surface = tidySurface(text).toLocaleLowerCase();
-  if (!surface) return false;
-  return facts.every(fact => [fact.subject, fact.object]
-    .map(argument => tidySurface(argument ?? ""))
-    .filter(argument => argument.length >= 2)
-    .every(argument => {
-      if (surface.includes(argument.toLocaleLowerCase())) return true;
-      if (argument.split(/s+/u).length < 6) return false;
-      const spans = argument.match(/(?:\p{Lu}[\p{L}\p{M}\p{N}'’-]*(?:\s+\p{Lu}[\p{L}\p{M}\p{N}'’-]*)*|\p{N}[\p{N}.,:]*)/gu) ?? [];
-      return spans.some(span => span.length >= 2 && surface.includes(span.toLocaleLowerCase()));
-    }));
 }
 
 function kernelCandidateParticipatingEvidenceIds(candidate: CandidateSurface, input: SpeakInput): Set<string> {
@@ -5569,23 +5544,11 @@ function meaningSurvives(surface: string, facts: readonly SemanticAnswerFact[], 
 const MEANING_SUPPORT_FLOOR = 0.3;
 const MEANING_CONTRADICTION_CEILING = 0.45;
 
-/** An identifier is not a surface: opaque ids carry no wording a sentence can be built from. Pure. */
-function factHasSpeakableSurface(fact: SemanticAnswerFact): boolean {
-  const speakable = (value: string | undefined) => {
-    const text = String(value ?? "").trim();
-    if (!text) return false;
-    return !/^[\p{L}_]+_[0-9a-f]{12,}$/u.test(text);
-  };
-  return speakable(fact.subject) && speakable(fact.object) && speakable(fact.predicate);
-}
-
 function sourceExcerptFacts(input: SpeakInput): SemanticAnswerFact[] {
   const candidate = input.selectedCandidate;
   const excerpt = String(candidate?.answer ?? "").trim();
   if (!candidate || !excerpt || !candidate.evidenceIds.length) return [];
-  // Licensing permits only the excerpt's own words, so there is nothing to gain on a short, already clean
-  // sentence and the model call would cost seconds to return the same text. A long excerpt can still be
-  // shortened within its own vocabulary, which is worth asking for.
+  // A short excerpt has nothing to shorten; a long one can be restated within its own vocabulary.
   if (excerpt.length < EXCERPT_PARAPHRASE_FLOOR) return [];
   const span = input.evidence.find(item => candidate.evidenceIds.map(String).includes(String(item.id)));
   if (!span || span.status !== "promoted") return [];
@@ -5601,88 +5564,6 @@ function sourceExcerptFacts(input: SpeakInput): SemanticAnswerFact[] {
   } as SemanticAnswerFact];
 }
 
-async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: DiscoursePlan, invention = false, codeLanguage?: string): Promise<SurfaceCandidate[]> {
-  const realizer = input.wordingRealizer;
-  if (!realizer) return [];
-  const state = semanticAnswerConstructState(input.construct);
-  const requestText = mouthEchoQuestionText(input);
-  // An invention draws only on facts about the request's own subject; the same realizer speaks both lanes.
-  const facts = (state?.selectedFacts ?? [])
-    .filter(fact => (fact.evidenceIds ?? []).length > 0)
-    .filter(fact => !invention || (Boolean(fact.subject) && containsSurface(requestText, fact.subject ?? "")))
-    .slice(0, 6);
-  // An artifact request stands on its compiler, so it needs no facts to be answerable.
-  // A grounded answer that came from a source excerpt has no fact triples, which used to leave the realizer
-  // with nothing and make assist mode identical to native on ordinary questions. The excerpt itself is the
-  // fact: paraphrasing it stays licensed, because every word it may use comes from that sentence.
-  // A fact whose predicate or object is an internal identifier says nothing a sentence can be built from.
-  // Handing those to a realizer produced fluent nonsense (a Lovelace question answered in Indonesian), so a
-  // fact only counts when its parts are surfaces; otherwise the grounded sentence is the fact.
-  const speakableFacts = facts.filter(factHasSpeakableSurface);
-  const groundedFacts = speakableFacts.length ? speakableFacts : sourceExcerptFacts(input);
-  // A whole sentence is not a clause-sized argument: the argument check belongs to short fact triples, and a
-  // rewording of an excerpt is judged by whether it still means the same thing.
-  const wordedFromExcerpt = speakableFacts.length === 0 && groundedFacts.length > 0;
-  if (!groundedFacts.length && !invention && !codeLanguage) return [];
-  let surfaces: readonly string[];
-  try {
-    surfaces = await realizer.realize({
-      requestText,
-      facts: groundedFacts.map(fact => ({
-        subject: fact.subject ?? "",
-        predicate: fact.predicate ?? "",
-        object: fact.object ?? "",
-        evidenceIds: (fact.evidenceIds ?? []).map(String)
-      })),
-      targetLanguage: codeLanguage ?? input.targetLanguage ?? "",
-      targetScript: input.targetScript ?? "",
-      maxSentences: invention ? 8 : 4,
-      closedClassWords: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })],
-      ...(invention ? { invention: true } : {}),
-      ...(codeLanguage ? { codeLanguage } : {}),
-      ...(input.meaningVerifier && !invention && !codeLanguage ? { meaningVerifiedDownstream: true } : {})
-    });
-  } catch {
-    // A realizer failure must never cost the turn -- the pool simply
-    // proceeds without realizer candidates.
-    return [];
-  }
-  const evidenceIds = [...new Set(groundedFacts.flatMap(fact => (fact.evidenceIds ?? []).map(String)))] as EvidenceSpan["id"][];
-  return surfaces
-    .filter((surface): surface is string => typeof surface === "string" && surface.trim().length > 0)
-    .slice(0, 3)
-    .filter(surface =>
-      codeLanguage
-        ? surface.trim().length > 0
-        : structurallyCompleteSurface(surface)
-          // With a meaning verifier on the turn, faithfulness is entailment against the evidence; the argument
-          // check is the vocabulary rule from before it existed and it vetoed a verified paraphrase ("Ada Lovelace
-          // was an English mathematician and writer...") for not repeating every graph-fact argument.
-          && (invention || wordedFromExcerpt || input.meaningVerifier !== undefined || realizerFactArgumentsIntact(surface, groundedFacts))
-          && (invention || codeLanguage !== undefined || meaningSurvives(surface, groundedFacts, input)))
-    .map((surface, index) => ({
-      id: codeLanguage
-        ? `candidate:generated:code:realizer:${realizer.id}:${index}`
-        : invention ? `candidate:generated:creative:realizer:${realizer.id}:${index}` : `candidate:generated:realizer:${realizer.id}:${index}`,
-      style: codeLanguage ? "surface.path.generated.code_realizer" : invention ? "surface.path.generated.invention_realizer" : "surface.path.generated.wording_realizer",
-      path: "generated" as const,
-      ...(invention ? { claimBasis: "invented" as const } : {}),
-      text: surface,
-      evidenceIds,
-      fit: 0.86,
-      importedPieceIds: [],
-      discoursePlan,
-      boundaryDecisions: [],
-      audit: toJsonValue({
-        schema: "scce.mouth.wording_realizer.v1",
-        realizerId: realizer.id,
-        factKeys: groundedFacts.map(fact => semanticAnswerFactKey(fact)),
-        evidenceIds: evidenceIds.map(String),
-        externalFactCertification: !invention,
-        invention
-      })
-    }));
-}
 
 function semanticAnswerConstructState(construct: ConstructGraph): SemanticAnswerConstructState | undefined {
   const rows = construct.nodes.map(node => ({ node, metadata: jsonRecord(node.metadata) }));

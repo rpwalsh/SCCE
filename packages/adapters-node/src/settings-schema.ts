@@ -1,7 +1,5 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { isLoopbackHostname } from "@scce/kernel";
-
 /**
  * The one settings schema every surface (CLI, VS Code, workbench, server) reads and
  * writes through, so keys, labels and validation never drift between copies.
@@ -17,16 +15,6 @@ export interface SettingsField {
 }
 
 export const SETTINGS_FIELDS: readonly SettingsField[] = [
-  { key: "realization.provider", label: "Realization provider", kind: "choice", choices: ["native", "ollama", "api"] },
-  { key: "realization.ollama.host", label: "Ollama host (loopback only)", kind: "string", validate: value => { try { return isLoopbackHostname(new URL(value).hostname) ? undefined : "must be a loopback host"; } catch { return "must be a URL"; } } },
-  { key: "realization.ollama.model", label: "Ollama model", kind: "string" },
-  { key: "realization.apiProvider.endpoint", label: "API endpoint (https)", kind: "string", validate: value => value.toLocaleLowerCase().startsWith("https://") ? undefined : "must be https" },
-  { key: "realization.apiProvider.model", label: "API model", kind: "string" },
-  { key: "realization.apiProvider.apiKeyEnv", label: "Env var holding the API key (never stored in config; must start with SCCE_)", kind: "string", validate: value => /^SCCE_[A-Z0-9_]+$/u.test(value) ? undefined : "must be an env var name starting with SCCE_" },
-  { key: "realization.apiProvider.acknowledgeRemoteDataExposure", label: "Acknowledge that evidence leaves this device when the API provider is used", kind: "boolean" },
-  { key: "realization.constrainedDecoding.enabled", label: "Enable local constrained-decoding realizer", kind: "boolean" },
-  { key: "realization.constrainedDecoding.modelId", label: "Constrained-decoding model id", kind: "string" },
-  { key: "realization.constrainedDecoding.modelDir", label: "Local model directory", kind: "string" },
   { key: "ingestion.visual.embeddings.enabled", label: "Enable image / PDF-page visual embeddings", kind: "boolean" },
   { key: "ingestion.visual.embeddings.modelId", label: "Visual embedding model id", kind: "string" },
   { key: "ingestion.visual.embeddings.modelDir", label: "Visual model directory", kind: "string" },

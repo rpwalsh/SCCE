@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createTypeScriptCodeMouthPorts, runCodeMouth, selectRealizationPort, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   curriculumItemFromPlan,
@@ -443,8 +443,7 @@ async function dispatch(
       targetPath,
       maxAttempts: attempts,
       ports: createTypeScriptCodeMouthPorts({
-        workspaceRoot: context.config.runtime.workspaceRoot,
-        realizer: selectRealizationPort(context.config)
+        workspaceRoot: context.config.runtime.workspaceRoot
       })
     });
     // A repair that is forgotten cannot be learned from: every accepted patch enters the ledger with what
@@ -573,15 +572,14 @@ async function dispatch(
   if (url.pathname === "/api/models" && req.method === "GET") {
     const modelDir = modelDirectoryForConfig(context.config);
     const models = await listLocalModels(modelDir);
-    const active = [context.config.realization?.constrainedDecoding?.modelId, context.config.ingestion?.visual?.embeddings?.modelId].filter(Boolean);
+    const active = [context.config.ingestion?.visual?.embeddings?.modelId].filter(Boolean);
     return json({ schema: "scce.models.list.v1", modelDir, models: models.map(model => ({ ...model, active: active.includes(model.id), size: formatBytes(model.bytes) })), totalBytes: models.reduce((sum, model) => sum + model.bytes, 0) });
   }
   if (url.pathname === "/api/models/download" && req.method === "POST") {
     const body = jsonRecord(await readBody(req, context.maxBodyBytes));
     const modelId = typeof body.modelId === "string" ? body.modelId : "";
     if (!isModelId(modelId)) throw new HttpError(400, "modelId must be org/name");
-    const kind = body.kind === "clip" ? "clip" : "causal-lm";
-    const record = await downloadModel({ modelDir: modelDirectoryForConfig(context.config), modelId, kind, dtype: typeof body.dtype === "string" ? body.dtype as "q8" : "q8" });
+    const record = await downloadModel({ modelDir: modelDirectoryForConfig(context.config), modelId, kind: "clip" });
     return json({ schema: "scce.models.download.v1", model: { ...record, size: formatBytes(record.bytes) } });
   }
   if (url.pathname === "/api/models/remove" && req.method === "POST") {
@@ -3632,7 +3630,7 @@ class HttpError extends Error {
 }
 
 function modelDirectoryForConfig(config: ApiContext["config"]): string {
-  return path.resolve(config.realization?.constrainedDecoding?.modelDir ?? config.ingestion?.visual?.embeddings?.modelDir ?? "models");
+  return path.resolve(config.ingestion?.visual?.embeddings?.modelDir ?? "models");
 }
 
 function isModelId(value: string): boolean {
