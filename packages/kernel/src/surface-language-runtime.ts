@@ -11,6 +11,7 @@ import {
   languageSurfaceTrigrams,
   languageProfileClusterCacheKey,
   normalizeSourceLanguageAlias,
+  selectDominantLanguageProfileCluster,
   selectLanguageProfileClusterForSurface,
   type LanguageProfileCluster
 } from "./language.js";
@@ -722,9 +723,10 @@ export function createSurfaceLanguageRuntime(options: {
   ): Promise<LanguageProfileCluster | undefined> {
     const { clusters } = await sourceOwnedLanguageProfilesCached([alias], cacheOptions);
     if (clusters.length === 1) return clusters[0];
-    return surface.trim()
-      ? selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
-      : undefined;
+    // A named source alias with no surface to judge by still resolves: the alias's own best-supported cluster.
+    if (!surface.trim()) return selectDominantLanguageProfileCluster(clusters);
+    return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
+      ?? selectDominantLanguageProfileCluster(clusters);
   }
 
 
