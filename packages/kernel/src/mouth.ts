@@ -723,6 +723,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && !candidate.id.startsWith("candidate:generated:code:") && surfaceRepeatsPrompt(candidate.text, input.requestText ?? ""))
         // A candidate that cites nothing, in a turn that promoted nothing, asserts on air: only surfaces that do not
         // assert survive it (the proof boundary, a clarification, compiler-owned code, this session's own memory).
+        // A run of proper nouns with almost no lowercase between them, citing nothing, is the entity roster this guard
+        // was written for. A cited sentence about people and works is not, however many capitals it carries.
+        && !(candidate.evidenceIds.length === 0 && isEntitySaladSurface(candidate.text))
         && (groundedSurfaceAvailable
           || candidate.evidenceIds.length > 0
           || candidate.id === supportBoundary?.id
@@ -6055,8 +6058,6 @@ function admissibleMouthSurface(text: string): boolean {
   if (isDegenerateBareSurface(clean)) return false;
   if (containsUnresolvedSurfaceKey(clean)) return false;
   if (containsSurfaceRealizerTelemetry(clean) || containsInternalSurfaceArtifact(clean) || containsStructuredCandidateTelemetry(clean)) return false;
-  // A run of proper nouns with almost no lowercase between them is a roster, not a sentence.
-  if (isEntitySaladSurface(clean)) return false;
   return detectCannedAnswerSpeech(clean).length === 0;
 }
 

@@ -857,7 +857,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // The exact result and the text SCCE is about to speak must be the same number: a formatter that drifts from
       // the computed quantity turns an exact answer into a claim nothing checked.
       const exactComputationVerified = exactComputation
-        ? verifyExactResultMatchesClaim(exactComputation.result, exactComputation.answer)
+        ? verifyExactResultMatchesClaim(exactComputation.result, exactComputation.resultText)
         : undefined;
       if (exactComputation && exactComputationVerified && !exactComputationVerified.matches) {
         failures.push(`exact computation answer does not match its own quantity: expected ${exactComputationVerified.expected}, answer ${exactComputation.answer}`);

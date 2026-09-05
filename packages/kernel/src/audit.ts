@@ -18,6 +18,8 @@ import type {
   ValidationGraph
 } from "./types.js";
 import { canonicalStringify, createHasher, mean, toJsonValue } from "./primitives.js";
+import { evidenceAuditRecord } from "./evidence.js";
+import { informationLabelAudit } from "./information-flow.js";
 import { hashEvent } from "./events.js";
 
 export interface EventChainVerification {
@@ -53,6 +55,9 @@ export interface EvidenceAuditSummary {
   meanSpanBytes: number;
   topFeatures: Array<{ feature: string; count: number }>;
   spans: Array<{ id: EvidenceId; sourceVersionId: string; byteRange: [number, number]; alpha: number; status: string; preview: string }>;
+  /** Canonical per-span audit records, and the distinct information labels the evidence carries. */
+  records: JsonValue[];
+  informationLabels: JsonValue[];
 }
 
 export interface ProofAuditSummary {
@@ -155,7 +160,13 @@ export function createAuditEngine() {
           alpha: span.alpha,
           status: span.status,
           preview: span.textPreview
-        }))
+        })),
+        // The canonical per-span record an auditor needs to re-derive the span: content hash, both coordinate systems
+        // and the provenance, rather than the preview shape above.
+        records: evidence.slice(0, 128).map(evidenceAuditRecord),
+        informationLabels: [...new Map(evidence
+          .flatMap(span => span.informationLabel ? [span.informationLabel] : [])
+          .map(label => [canonicalStringify(informationLabelAudit(label)), informationLabelAudit(label)])).values()]
       };
     },
 
