@@ -25,7 +25,7 @@ import { updateDialogueState } from "./dialogue-pragmatics.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { consolidateEpisode } from "./episodic-memory-consolidation.js";
-import { EVALUATION_COMPONENT_IDS, type EvaluationComponentId } from "./evaluation-flags.js";
+import { EVALUATION_COMPONENT_IDS, disabledComponentsForCondition, type EvaluationComponentId } from "./evaluation-flags.js";
 import {
   createAblatedSupportEntailment,
   disabledLearnedSemanticRetrieval,
@@ -36,7 +36,7 @@ import {
   queryConditionedSemanticSeedAnchors,
   surfaceLanguageMemoryProfile
 } from "./evaluation-runtime-bypass.js";
-import { createEvaluationTrace, executeEvaluationComponent } from "./evaluation-trace.js";
+import { createEvaluationTrace, executeEvaluationComponent, verifyEvaluationTrace } from "./evaluation-trace.js";
 import { createEventFactory } from "./events.js";
 import { type ConsolidatedEpisode, retrieveRelevantEpisodes } from "./episodic-memory-consolidation.js";
 import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js";
@@ -585,7 +585,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const fieldEvaluation = deps.evaluationCondition && evaluationTrace
         ? { condition: deps.evaluationCondition, trace: evaluationTrace }
         : undefined;
-      const evaluationTraceResult = (): Pick<TurnResult, "evaluationTrace"> => {
+      const evaluationTraceResult = (): Pick<TurnResult, "evaluationTrace" | "evaluationTraceVerification"> => {
         if (!evaluationTrace || !deps.evaluationCondition) return {};
         const observed = new Set(evaluationTrace.events().map(event => event.component));
         for (const component of EVALUATION_COMPONENT_IDS) {
@@ -597,7 +597,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             conditionDisabled ? "condition-disabled" : "not-applicable"
           );
         }
-        return { evaluationTrace: toJsonValue(evaluationTrace.events()) };
+        // The runtime checks its own ablation trace before reporting it; an external auditor still verifies it separately.
+        const verification = verifyEvaluationTrace(deps.evaluationCondition, evaluationTrace.events());
+        return {
+          evaluationTrace: toJsonValue(evaluationTrace.events()),
+          evaluationTraceVerification: toJsonValue({
+            ...verification,
+            disabledComponents: disabledComponentsForCondition(deps.evaluationCondition)
+          })
+        };
       };
       const events: ScceEvent[] = [];
       // Plan item 211: consolidates this turn's own event history into a

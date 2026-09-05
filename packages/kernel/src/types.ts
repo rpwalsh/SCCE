@@ -1050,6 +1050,8 @@ export interface TurnResult {
   brain?: JsonValue;
   learningLoop?: JsonValue;
   evaluationTrace?: JsonValue;
+  /** The runtime's own verification of that trace: violations, bypassed components, and the condition's disabled set. */
+  evaluationTraceVerification?: JsonValue;
   timing?: TurnTiming;
   buildTest?: BuildTestResult;
   scoreTraces: RuntimeScoreTrace[];
