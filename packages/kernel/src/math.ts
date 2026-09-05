@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { csrToDense, graphLaplacian, symmetricAlphaAdjacency } from "./alpha-layer/sparse.js";
 import { clamp01, mean } from "./primitives.js";
 import type { MatrixSnapshot } from "./types.js";
 
@@ -68,34 +69,20 @@ export function laplacian(nodes: string[], weightedEdges: Array<{ source: string
   laplacian: MatrixSnapshot;
   normalizedLaplacian: MatrixSnapshot;
 } {
+  // One Laplacian implementation for the whole system: the sparse alpha layer's, read back as the dense snapshots
+  // the field and its callers already carry.
   const index = new Map(nodes.map((id, i) => [id, i]));
-  const n = nodes.length;
-  const a = zeros(n, n);
-  for (const edge of weightedEdges) {
-    const i = index.get(edge.source);
-    const j = index.get(edge.target);
-    if (i === undefined || j === undefined || i === j) continue;
-    const w = clamp01(edge.weight);
-    a[i]![j] = (a[i]![j] ?? 0) + w;
-    a[j]![i] = (a[j]![i] ?? 0) + w;
-  }
-  const d = a.map(row => row.reduce((sum, value) => sum + value, 0));
-  const l = zeros(n, n);
-  const nl = zeros(n, n);
-  for (let i = 0; i < n; i++) {
-    l[i]![i] = d[i] ?? 0;
-    nl[i]![i] = d[i] ? 1 : 0;
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
-      const adjacency = a[i]![j] ?? 0;
-      l[i]![j] = -adjacency;
-      if ((d[i] ?? 0) > 0 && (d[j] ?? 0) > 0) nl[i]![j] = -adjacency / Math.sqrt((d[i] ?? 1) * (d[j] ?? 1));
-    }
-  }
+  const edges = weightedEdges.flatMap(edge => {
+    const source = index.get(edge.source);
+    const target = index.get(edge.target);
+    return source === undefined || target === undefined ? [] : [{ source, target, weight: clamp01(edge.weight) }];
+  });
+  const adjacency = symmetricAlphaAdjacency(nodes.length, edges);
+  const induced = graphLaplacian(adjacency);
   return {
-    adjacency: { nodes, values: a },
-    laplacian: { nodes, values: l },
-    normalizedLaplacian: { nodes, values: nl }
+    adjacency: { nodes, values: csrToDense(adjacency) },
+    laplacian: { nodes, values: csrToDense(induced.laplacian) },
+    normalizedLaplacian: { nodes, values: csrToDense(induced.normalized) }
   };
 }
 

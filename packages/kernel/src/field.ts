@@ -3,6 +3,7 @@
 import type { Clock, FieldState, GraphEdge, GraphNode, Hyperedge, InformationAccessContext } from "./types.js";
 import { clamp01, createClock, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createAlphaLayer } from "./alpha.js";
+import { csrToDense, denseToCsr, graphLaplacian } from "./alpha-layer/sparse.js";
 import { personalizedRandomWalkWithRestartDetailed, type RelationTransitionPolicy } from "./ppf.js";
 import { decomposedEffectiveEdgeWeight } from "./edge-weight-decomposition.js";
 import { computeDualChannelActivation, rankWithReservations } from "./dual-channel-activation.js";
@@ -314,27 +315,10 @@ function laplaciansFromAdjacency(adjacency: readonly (readonly number[])[]): {
   laplacian: number[][];
   normalizedLaplacian: number[][];
 } {
-  const size = adjacency.length;
-  const degrees = adjacency.map((row, rowIndex) => row.reduce((sum, raw, columnIndex) => (
-    rowIndex === columnIndex ? sum : sum + raw
-  ), 0));
-  const laplacian = Array.from({ length: size }, () => new Array<number>(size).fill(0));
-  const normalizedLaplacian = Array.from({ length: size }, () => new Array<number>(size).fill(0));
-  for (let row = 0; row < size; row++) {
-    const rowDegree = degrees[row] ?? 0;
-    laplacian[row]![row] = rowDegree;
-    normalizedLaplacian[row]![row] = rowDegree > 0 ? 1 : 0;
-    for (let column = 0; column < size; column++) {
-      if (row === column) continue;
-      const weight = adjacency[row]?.[column] ?? 0;
-      laplacian[row]![column] = -weight;
-      const columnDegree = degrees[column] ?? 0;
-      normalizedLaplacian[row]![column] = rowDegree > 0 && columnDegree > 0
-        ? -weight / Math.sqrt(rowDegree * columnDegree)
-        : 0;
-    }
-  }
-  return { laplacian, normalizedLaplacian };
+  // Self-loops are not degree here, so they are dropped before the shared Laplacian sees the induced block.
+  const offDiagonal = adjacency.map((row, rowIndex) => row.map((value, columnIndex) => (rowIndex === columnIndex ? 0 : value)));
+  const induced = graphLaplacian(denseToCsr(offDiagonal));
+  return { laplacian: csrToDense(induced.laplacian), normalizedLaplacian: csrToDense(induced.normalized) };
 }
 
 function submatrix(matrix: readonly (readonly number[])[], indices: readonly number[]): number[][] {
