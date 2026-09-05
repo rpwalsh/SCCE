@@ -149,7 +149,8 @@ function lattice(id: string, text: string): SurfaceLattice {
   return {
     id,
     normalizationContract: canonicalNormalizationContract(),
-    units: text.split(" ").map((word, index) => ({ id: `${id}.unit.${index}`, normalized: word }))
+    evidenceIds: ["evidence.1"],
+    units: text.split(" ").map((word, index) => ({ id: `${id}.unit.${index}`, normalized: word, evidenceIds: ["evidence.1"] }))
   } as unknown as SurfaceLattice;
 }
 

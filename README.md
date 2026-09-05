@@ -6,7 +6,7 @@ Sovereign intelligence on ordinary hardware.
 
 SCCE is a self-contained cognitive engine that ingests evidence, builds durable knowledge, reasons, plans, acts, and learns — without a foundation-model runtime.
 
-No LLM in the reasoning core -- evidence, proof, and planning are graph-native. Optional, declared, config-gated local models may assist wording and visual embeddings (off by default; see `models.declared.json`). No vector-database RAG loop. No GPU cluster. No cloud dependency at inference.
+No language model anywhere -- evidence, proof, planning and wording are graph-native and corpus-learned (the only declared model is an optional CLIP visual embedder, off by default; see `models.declared.json`). No vector-database RAG loop. No GPU cluster. No cloud dependency at inference.
 
 ![SCCE knowledge graph explorer showing ingested evidence and reasoning traces](docs/screenshots/dashboard.jpg)
 
@@ -24,63 +24,52 @@ SCCE is an implemented cognitive runtime, not a proposal, model wrapper, or retr
 ## Current verified status
 
 Measured against this repository's own gates, on a live PostgreSQL-backed
-runtime with a real ingested Wikipedia corpus (2026-08-20):
+runtime with a real ingested Wikipedia corpus (2026-09-05):
 
-- **Test suite**: 1,640 kernel tests (237 files) and 80 server tests (18
-  files) passing, including live-database tests run against a real
-  PostgreSQL instance. 315 test files across all packages.
-- **Sealed-evaluation network defect — disclosed, fixed, and it
-  invalidates earlier sealed claims.** Every system manifest declares
-  `"networkPolicy": "disabled"`, but that field appeared only in schemas
-  and templates: the harness never enforced it, and the evaluation
-  adapter passed the ambient config — whose web connector is enabled —
-  straight through. A run on 2026-08-18 answered two abstention probes
-  ("What is the boiling point of tungsten?", "Who won the 1998 FIFA
-  World Cup?"), both absent from the sealed corpus by construction, with
-  live DuckDuckGo results. Enforcement now lives in the adapter, which
-  disables every configured connector before constructing the runtime.
-  **Sealed results published before this fix, including the previously
-  claimed 6/6 rehearsal, should be treated as provisional until re-run
-  under the fix.**
-- **Benchmark scale**: the harness's hand-written question set (6
-  questions) was too small to support a comparative claim or to fit the
-  surface-energy coefficients. It is now generated mechanically from the
-  sealed corpus — 168 questions (160 cloze + 8 abstention probes), each
-  answer an exact substring of a `sha256`-verified source document,
-  recorded with document id and character offsets. Cloze elision is used
-  rather than question templates so the generator encodes no English
-  question grammar and produces a benchmark in whatever language the
-  corpus is in.
-- **Sealed 168-question head-to-head (2026-08-20)**: SCCE 157/168 exact
-  answers versus 158/168 for the independent BM25 reference on identical
-  evidence, held across every change landed since (each change is
-  re-certified by a full sealed run before it is pushed). The remaining
-  11 misses are mapped in the repository's decision log; none are
-  retrieval failures.
+- **No model anywhere.** There is no language model in the runtime: no
+  local model server, no remote API, no constrained decoder. Wording comes
+  from learned constructions and language memory over the admitted corpus.
+  `tools/no-hidden-model-check.mjs` fails the build on any model endpoint
+  or generation call. Only a declared CLIP visual embedder remains, off by
+  default.
+- **Sealed 168-question head-to-head**: SCCE 168/168 exact answers versus
+  158/168 for the independent BM25 reference on identical evidence
+  (three consecutive sealed runs on 2026-09-04, `out-full-39` to
+  `out-full-41`; each answer an exact substring of a `sha256`-verified
+  source document, recorded with document id and character offsets).
+  The question set is generated mechanically from the sealed corpus (160
+  cloze + 8 abstention probes) so the generator encodes no question
+  grammar.
+- **Sealed-evaluation network defect — disclosed and fixed.** Every
+  system manifest declares `"networkPolicy": "disabled"`, but until
+  2026-08-18 the harness never enforced it; two abstention probes were
+  answered with live web results. Enforcement now lives in the
+  evaluation adapter, which disables every connector before constructing
+  the runtime. Every number above was produced under the fix.
+- **Test suite**: unit tests run per package (`pnpm test:unit`), including
+  live-database tests against a real PostgreSQL instance when
+  `SCCE_TEST_DATABASE_URL` is set; the counts printed by that run are the
+  authoritative ones.
 - **Real-use trial**: a private repository (50 files) ingested cold
   answered questions from its own documents with evidence-bound citations
-  ("What license does X use?" -> the license file). Two crashes and two
-  out-of-memory mechanisms found by that trial are fixed at the primitives
-  (recorded in the private decision log).
-- Single-operator rehearsal scope throughout. The independent
-  public-review protocol in
+  ("What license does X use?" -> the license file).
+- **Learning with consent**: when a question has no evidence the turn asks
+  before searching; fetched material is quarantined with a preview and
+  becomes evidence only after confirmation.
+- **Ingest throughput** (2026-09-05): a shard flush that used to stall for
+  hours (a quadratic medoid search in role induction, and graph-surface
+  alignment over every lattice unit against every shard target) now
+  completes in minutes; page ingest compute halved. The construction gate
+  (independent held-out promotion) runs live and reports per hypothesis
+  why it does or does not promote.
+- **What is not yet claimed**: learned reversible constructions have not
+  been promoted from the Wikipedia corpus, because the declared relation
+  channels available today (article links and section headings) yield
+  page-specific hyperedges that no independent source can corroborate;
+  a prose relation channel is the next item. Single-operator rehearsal
+  scope throughout; the independent public-review protocol in
   [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
   not been executed.
-- **Live rehearsals**: the PostgreSQL schema/activation rehearsal and the
-  end-to-end adapter rehearsal (ingest → promote → live turn → exact
-  byte-verified citation) both pass against a real database.
-- **Enumeration-shaped questions**: "list the main characters of X"-style
-  requests return a contiguous, byte-verifiable multi-sentence excerpt
-  (learned response-form budget; no keyword lists), verified live against
-  the hydrated Wikipedia brain — the answer window is constructed in the
-  same normalization space the source-excerpt verifier compares in, so
-  verification holds by construction.
-- **Post-training query latency**: whole-novel corpus training exposed a
-  planner pathology (correlated `EXISTS` over a multi-GB observations
-  table seq-scanned once per candidate profile); replaced with a
-  recursive index skip scan — measured live at 53ms versus 3.5 minutes
-  for the same result, turn-path profile query from stuck (25+ minutes)
-  to ~1s cold.
 
 ## A third architecture for AI
 

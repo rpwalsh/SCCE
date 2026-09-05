@@ -355,3 +355,14 @@ A reworded factual surface must round-trip: the wording is interpreted back into
 structured relations become answer facts between their participants
 (`learned-graph-prior-runtime.ts`), which is what the reversible and anti-unified construction
 candidates key on.
+
+## Ingest bounds (2026-09-05)
+
+A Wikipedia block flush trains language memory on at most 1.2M characters
+and 2,048 spans, promotes structured relations across the whole block, and
+then aligns only the `alignmentLatticesPerShard` (default 48) spans that
+carry the most corroborated targets against the graph region those spans
+evidence. Sub-lexical lattice units align only through exact anchors; every
+unit keeps a transport row so the marginals still account for all of them.
+The independent held-out promotion gate runs on every flush and records,
+per hypothesis, the families it found and why it did or did not promote.

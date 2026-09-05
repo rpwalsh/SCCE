@@ -41,6 +41,11 @@ Wikipedia ingestion from a standard multistream dump is also supported:
 pnpm scce --config scce.corpus-dev.config.json ingest wiki <pages-articles-multistream.xml.bz2> --index=<index.txt.bz2>
 ```
 
+A single part file (`...multistream1.xml-p1p41242.bz2`) works without an
+index; the streamer locates its blocks itself. `--max-pages=N` bounds a
+run, and `runtime.corpora.wikipedia.alignmentLatticesPerShard` (default 48)
+bounds how many evidence spans each block flush aligns to the graph.
+
 ## 4. Start the server
 
 ```sh

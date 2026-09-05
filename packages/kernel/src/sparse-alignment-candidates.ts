@@ -600,7 +600,7 @@ function targetKindOrder(kind: SparseAlignmentTargetKind): number {
   return kind === "incidence" ? 0 : 1;
 }
 
-const ALIGNABLE_UNIT_KINDS: ReadonlySet<string> = new Set(["lexical", "phrase_candidate", "quote", "table_cell", "repeated_sequence"]);
+export const ALIGNABLE_UNIT_KINDS: ReadonlySet<string> = new Set(["lexical", "phrase_candidate", "quote", "table_cell", "repeated_sequence"]);
 
 /** Evidence spans ranked by how many corroborated targets (evidence from 2+ source versions) they carry; the top `limit` in original order. */
 export function rankEvidenceForAlignment<T extends { id: unknown; sourceVersionId: unknown }>(input: {
