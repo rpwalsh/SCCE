@@ -32,14 +32,17 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   `tools/no-hidden-model-check.mjs` fails the build on any model endpoint
   or generation call. Only a declared CLIP visual embedder remains, off by
   default.
-- **Sealed 168-question head-to-head**: SCCE 168/168 exact answers versus
+- **Sealed 168-question head-to-head**: SCCE 157/168 exact answers versus
   158/168 for the independent BM25 reference on identical evidence
-  (three consecutive sealed runs on 2026-09-04, `out-full-39` to
-  `out-full-41`; each answer an exact substring of a `sha256`-verified
-  source document, recorded with document id and character offsets).
-  The question set is generated mechanically from the sealed corpus (160
-  cloze + 8 abstention probes) so the generator encodes no question
-  grammar.
+  (2026-08-20). Each answer is an exact substring of a `sha256`-verified
+  source document, recorded with document id and character offsets. The
+  question set is generated mechanically from the sealed corpus (160 cloze
+  + 8 abstention probes) so the generator encodes no question grammar.
+  Three later local runs (2026-09-04, `out-full-39` to `out-full-41`)
+  scored 168/168, but that result is **not claimed here**: it has not been
+  reproduced since, and a rerun on 2026-09-05 scored 153/168 after the
+  operator's own corpus work altered the live brain. The published number
+  stays at the last figure that reproduces.
 - **Sealed-evaluation network defect — disclosed and fixed.** Every
   system manifest declares `"networkPolicy": "disabled"`, but until
   2026-08-18 the harness never enforced it; two abstention probes were
