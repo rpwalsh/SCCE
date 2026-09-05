@@ -5,6 +5,7 @@ import type { CorrectionRuleKind, CorrectionRuleRecord } from "./storage.js";
 import type { EpisodeId, EventId, EvidenceId, Hasher, JsonValue } from "./types.js";
 import { clamp01, toJsonValue } from "./primitives.js";
 import { detailProfileFromVector } from "./control-plane-profiles.js";
+import { decayCorrectionAlpha } from "./translation-correction-engine.js";
 
 type CorrectionLanguageId = string;
 type CorrectionScriptId = string;
@@ -83,6 +84,11 @@ export interface CorrectionMemory {
   summarize(rules: readonly CorrectionRuleRecord[]): JsonValue;
 }
 
+/** A correction's weight as it stands now: its recorded weight, decayed by how long ago it was given. */
+function decayedWeight(rule: CorrectionRuleRecord, now: number): number {
+  return decayCorrectionAlpha({ alpha: rule.weight, createdAt: rule.updatedAt }, now);
+}
+
 export interface CorrectionApplication {
   ruleId: string;
   ruleKind: CorrectionRuleKind;
@@ -154,6 +160,7 @@ export function createCorrectionMemory(options: { idFactory: IdFactory; hasher: 
     },
 
     retrieve(input) {
+      const now = Date.now();
       const contextLanguage = input.context?.targetLanguageId;
       const contextScript = input.context?.targetScriptId;
       return input.rules
@@ -163,7 +170,9 @@ export function createCorrectionMemory(options: { idFactory: IdFactory; hasher: 
           const scriptOk = !contextScript || !context.scriptId || context.scriptId === contextScript;
           return languageOk && scriptOk;
         })
-        .sort((a, b) => b.weight - a.weight || b.updatedAt - a.updatedAt)
+        // Ranked by present weight, not the weight the correction had when it was given: an instruction from months ago
+        // no longer outranks a recent one purely because it was emphatic at the time.
+        .sort((a, b) => decayedWeight(b, now) - decayedWeight(a, now) || b.updatedAt - a.updatedAt)
         .slice(0, input.limit ?? 128);
     },
 

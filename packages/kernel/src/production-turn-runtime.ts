@@ -18,6 +18,7 @@ import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
+import { detectConflictingCorrections } from "./translation-correction-engine.js";
 import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
@@ -1833,12 +1834,28 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         context: { targetLanguageId: translationTarget ?? locale, targetScriptId: undefined },
         limit: 96
       });
+      // Two instructions telling SCCE to render the same term differently is the owner contradicting themselves; it is
+      // reported rather than silently resolved by whichever rule sorted first.
+      const correctionConflicts = detectConflictingCorrections(correctionRules.map(rule => ({
+        id: rule.id,
+        changedTerms: rule.replacement ? [{ original: rule.pattern, corrected: rule.replacement, reason: rule.ruleKind }] : []
+      })));
       kernelTrace({
         stage: "candidate.prior.bind",
         label: "kernel.turn",
         durationMs: Date.now() - candidatePriorStarted,
-        counts: { correctionRules: correctionRules.length }
+        counts: { correctionRules: correctionRules.length, correctionConflicts: correctionConflicts.length },
+        ...(correctionConflicts.length
+          ? { warnings: correctionConflicts.map(conflict => `conflicting correction for "${conflict.term}": ${conflict.targetA} vs ${conflict.targetB}`) }
+          : {})
       });
+      if (correctionConflicts.length) {
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "CorrectionConflictDetected",
+          payload: toJsonValue({ conflicts: correctionConflicts })
+        })));
+      }
       const answerSurface = longPathBasisAnswer
         ? {
           answer: longPathBasisAnswer.answer || localEvidenceAnswerClaimSurface(longPathBasisAnswer),
