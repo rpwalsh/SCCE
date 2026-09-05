@@ -54,6 +54,8 @@ import {
   toJsonValue,
   validateBrainManifestContract,
   compileBrainReplayManifest,
+  compileCanonicalReplayManifest,
+  verifyCanonicalReplayManifest,
   assertBrainManifestReplayForActivation,
   validationDisposition,
   type BrainLifecycleRecord,
@@ -1203,6 +1205,26 @@ export class WikipediaV3Ingestor {
           allocation.conservationResidual
         );
       }
+      // Everything this flush admitted, hashed into one replay manifest and verified before it is recorded: the shard
+      // can be re-derived from its own inputs, or the mismatch is named here rather than discovered later.
+      let canonicalReplay: { id: string; byteHash: string; verified: boolean; reason?: string } | undefined;
+      try {
+        const manifest = compileCanonicalReplayManifest({
+          corpusManifestId: shardUri,
+          codeCommit: String(profile.id),
+          configuration: toJsonValue({ ngramMaxOrder, ngramMaxCounters, vocabularyLimit, alignmentLattices: alignmentLattices.length }),
+          randomSeed: shardUri,
+          surfaceLattices: alignmentLattices,
+          boundaryStatistics: [],
+          candidates: semanticCandidates,
+          admittedGraph: promotedGraph,
+          hasher: this.hasher
+        });
+        verifyCanonicalReplayManifest(manifest, this.hasher);
+        canonicalReplay = { id: manifest.id, byteHash: manifest.byteHash, verified: true };
+      } catch (error) {
+        canonicalReplay = { id: "", byteHash: "", verified: false, reason: messageOf(error) };
+      }
       const alignmentHeldoutEvaluation =
         compileAutomaticAlignmentEvaluation({
           alternativeSets: alignmentAlternativeSets,
@@ -1410,6 +1432,7 @@ export class WikipediaV3Ingestor {
           cycleRejectedConstructionIds: cycleRejectedConstructionIds.slice(0, 64),
           cycleRejectedConstructionCount: cycleRejectedConstructionIds.length,
           calibratedPlanCount: calibrationProbabilityByPlanId.size,
+          canonicalReplay: canonicalReplay ?? null,
           transportResourceUsage,
           pairedAntiUnifiedConstructions:
             pairedAntiUnifiedCompilation.constructions,
