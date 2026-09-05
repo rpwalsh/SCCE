@@ -12,6 +12,7 @@ import {
   languageProfileClusterCacheKey,
   normalizeSourceLanguageAlias,
   selectDominantLanguageProfileCluster,
+  selectLanguageProfileForSurface,
   selectLanguageProfileClusterForSurface,
   type LanguageProfileCluster
 } from "./language.js";
@@ -422,7 +423,10 @@ export function createSurfaceLanguageRuntime(options: {
         state: effectiveCluster
           ? scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster)
           : markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
-        surfaceProfile: effectiveCluster?.members[0] as LanguageProfile | undefined
+        // The member whose own distribution matches this surface, not whichever member sorted first.
+        surfaceProfile: (effectiveCluster
+          ? selectLanguageProfileForSurface(effectiveCluster.members, surface) ?? effectiveCluster.members[0]
+          : undefined) as LanguageProfile | undefined
       };
     };
     const scoped = scopeForSurface(preferredSurface);
