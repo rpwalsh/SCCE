@@ -1507,6 +1507,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
            WHERE ${evidenceStatusCondition("evidence", query.status)}
              AND ${access.sql}
+             AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
            ORDER BY hits.score DESC,
                     hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
@@ -1514,7 +1515,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                     evidence.alpha DESC,
                     evidence.observed_at DESC
            LIMIT $2`,
-          [features, query.limit ?? 80, ...access.params]
+          [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
@@ -1540,13 +1541,14 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            JOIN ${storage.table("evidence_spans")} ev ON ev.id=hits.id
            WHERE ${evidenceStatusCondition("ev", query.status)}
              AND ${access.sql}
+             AND ${sourceKindExclusion("ev", query, limitIndex + 1 + access.params.length)}
            ORDER BY hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
                     CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC,
                     ev.alpha DESC,
                     ev.observed_at DESC
            LIMIT $${limitIndex}`,
-          [...features, query.limit ?? 80, ...access.params]
+          [...features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres GIN feature-hit evidence search" }));
       }
@@ -1565,6 +1567,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const access = storage.informationAccessPredicate("ev", params.length + 1);
       where.push(access.sql);
       params.push(...access.params);
+      params.push(query.excludeSourceKinds ?? []);
+      where.push(sourceKindExclusion("ev", query, params.length));
       params.push(query.limit ?? 80);
       // A bare integer literal in ORDER BY is a positional column reference
       // in Postgres, not a constant -- "ORDER BY 0" is invalid (positions
@@ -5080,6 +5084,17 @@ function sourceTrustFromJson(value: JsonValue): SourceTrust {
     accessScope: text("accessScope"),
     licenseStatus: text("licenseStatus")
   };
+}
+
+/** A prose question must not draw its candidates from source code: 38,232 promoted spans are the owner's own
+ *  repository, and for "When was Ada Lovelace born?" every top BM25 row was a test file mentioning her. The
+ *  provenance sourceKind names the lane, so exclusion happens before ranking, not after. Pure. */
+function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: number): string {
+  if (!query.excludeSourceKinds?.length) return "TRUE";
+  // Repository spans ingested as text/plain carry no sourceKind, only a repo-relative path; prose lanes name
+  // themselves (wikimedia_dump) or arrive from the web (https://). Anything else unlabelled is the owner's workspace, file:// included.
+  return `(COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[])
+    AND NOT (COALESCE(${alias}.provenance_json->>'sourceKind', '') = '' AND COALESCE(${alias}.provenance_json->>'uri', '') !~* '^https?://'))`;
 }
 
 function evidenceStatusCondition(

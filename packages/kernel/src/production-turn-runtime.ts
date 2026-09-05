@@ -3050,7 +3050,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       answer = spoken.text;
       if (!answer.trim()) answer = "";
       answer = withCitation(answer, spoken);
-      if (performedRuntimeMotion?.status === "awaiting_consent" && spoken.text.trim().split(/s+/u).length < 4) answer = "";
+      // Withheld only when the corpus genuinely could not answer: a three-word answer like "10 December 1815" is not a stub.
+      if (performedRuntimeMotion?.status === "awaiting_consent" && emptyAuthoritySurface && !spoken.evidenceRefs.length) answer = "";
       const mouthAssistantForce = assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,

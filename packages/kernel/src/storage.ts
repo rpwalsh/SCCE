@@ -64,6 +64,8 @@ export interface EvidenceQuery {
    * available only to explicit admission/training inspection.
    */
   status?: "promoted" | "quarantined" | "any";
+  /** Provenance sourceKind values to leave out of the candidate set, e.g. developer_intelligence for a prose question. */
+  excludeSourceKinds?: string[];
   limit?: number;
 }
 
