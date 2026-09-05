@@ -5,9 +5,24 @@ export * from "./developer-surface.js";
 export * from "./locales.js";
 export * as codexSurface from "./codex-surface.js";
 
-import { uiMessageScript, uiText } from "./locales.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { scriptLiteral, uiMessageScript, uiText } from "./locales.js";
+import { DEFAULT_COMMANDS } from "./workbench-model.js";
 
-export function renderWorkbench(serverUrl: string): string {
+/** The page loads the workbench model as a module, so the browser runs the same reducer the tests cover. */
+export const WORKBENCH_MODEL_ROUTE = "/ui/workbench-model.js";
+
+export function workbenchModelModulePath(): string {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "workbench-model.js");
+}
+
+export interface WorkbenchRenderOptions {
+  /** The benchmark suite the page's run command posts; the server owns the id, the page only names it. */
+  benchmarkSuiteId?: string;
+}
+
+export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptions = {}): string {
   return `<!doctype html>
 <html lang="${escapeHtml(uiText("app.lang"))}">
 <head>
@@ -159,9 +174,7 @@ export function renderWorkbench(serverUrl: string): string {
         <div class="devpanel-body">
           <div class="dev-section">
             <h3>${escapeHtml(uiText("side.explorer"))}</h3>
-            <div class="tree">
-              <div>scce.config.json</div><div>packages/kernel</div><div>packages/adapters-node</div><div>packages/server</div><div>packages/ui</div>
-            </div>
+            <div class="tree" id="explorer-tree"></div>
           </div>
           <div class="dev-section">
             <h3>${escapeHtml(uiText("side.evidence"))}</h3>
@@ -205,12 +218,18 @@ export function renderWorkbench(serverUrl: string): string {
       <span class="pill">${escapeHtml(uiText("status.product"))}</span>
       <span class="pill">${escapeHtml(uiText("status.postgres"))}</span>
       <span class="pill">${escapeHtml(uiText("status.math"))}</span>
+      <span class="pill" id="status-runtime"></span>
     </div>
   </div>
   <div class="palette" id="palette"><input id="palette-input" aria-label="${escapeHtml(uiText("palette.aria"))}" /><div class="palette-list" id="palette-list"></div></div>
-  <script>
+  <script type="module">
+    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn } from '${WORKBENCH_MODEL_ROUTE}';
     const I18N = ${uiMessageScript()};
     const t = key => I18N[key] || key;
+    let workbench = createInitialWorkbenchState(${scriptLiteral(serverUrl)});
+    const apply = action => { workbench = reduceWorkbench(workbench, action); return workbench; };
+    const FRONTIER_SUITE_ID = ${scriptLiteral(options.benchmarkSuiteId ?? "")};
+    const commandLabel = command => command.label.startsWith('i18n:') ? t(command.label.slice(5)) : command.label;
     const messages = document.getElementById('messages');
     const messagesInner = document.getElementById('messages-inner');
     const emptyState = document.getElementById('empty-state');
@@ -306,10 +325,11 @@ export function renderWorkbench(serverUrl: string): string {
     function showAnswerPreview(answer) {
       showTyping('');
       const node = typingRow && typingRow.querySelector('#typing-phase');
-      if (node) node.textContent = String(answer).replace(/\s+/g, ' ').slice(0, 160);
+      if (node) node.textContent = String(answer).replace(/\\s+/g, ' ').slice(0, 160);
     }
     function setSending(next) {
       sending = next;
+      setRuntimeStatus({ requestInFlight: next });
       sendButton.textContent = sending ? t('button.stop') : t('button.send');
       sendButton.classList.toggle('stop', sending);
     }
@@ -330,7 +350,7 @@ export function renderWorkbench(serverUrl: string): string {
           id: String(span && span.id || ''),
           title: String(provenance.title || provenance.uri || span && span.sourceVersionId || ''),
           uri: String(provenance.uri || provenance.canonicalUri || ''),
-          excerpt: String(span && (span.textPreview || span.text) || '').replace(/\s+/g, ' ').slice(0, 240)
+          excerpt: String(span && (span.textPreview || span.text) || '').replace(/\\s+/g, ' ').slice(0, 240)
         };
       });
     }
@@ -338,8 +358,14 @@ export function renderWorkbench(serverUrl: string): string {
       const tree = document.getElementById('evidence-tree');
       if (!tree) return;
       const rows = evidenceRows(r);
+      const derived = evidenceTreeFromTurn(r);
+      apply({ type: 'evidence.replace', evidence: derived });
       tree.innerHTML = '';
-      if (!rows.length) { tree.textContent = t('side.evidence.empty'); return; }
+      if (!rows.length) {
+        if (!derived.length) { tree.textContent = t('side.evidence.empty'); return; }
+        for (const item of derived) { const row = document.createElement('div'); row.textContent = item.label; tree.appendChild(row); }
+        return;
+      }
       for (const row of rows) {
         const item = document.createElement('div');
         item.className = 'evidence-item';
@@ -366,7 +392,7 @@ export function renderWorkbench(serverUrl: string): string {
         const body = { status, conversationId: dialogue.conversationId, turnId: dialogue.turnId, promptText };
         if (correctionText) body.correctionText = correctionText;
         const r = await post('/api/turn/outcome', body);
-        inspector.textContent = JSON.stringify({ dialogue, outcome: r }, null, 2);
+        setInspector({ dialogue, outcome: r });
         row.remove();
       };
       const accept = document.createElement('button'); accept.className = 'accept'; accept.title = 'Accept'; accept.textContent = '\\u2713'; accept.onclick = () => sendOutcome('accepted');
@@ -376,7 +402,36 @@ export function renderWorkbench(serverUrl: string): string {
       messagesInner.appendChild(row);
       messages.scrollTop = messages.scrollHeight;
     }
-    function log(text) { terminal.textContent += "\\n$ " + text; terminal.scrollTop = terminal.scrollHeight; }
+    function renderTerminal() {
+      terminal.textContent = workbench.terminal.map(line => '$ ' + line.text).join('\\n');
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+    function log(text, stream) { apply({ type: 'terminal.append', line: { stream: stream || 'request', text } }); renderTerminal(); }
+    function renderTrace() {
+      trace.textContent = workbench.trace.map(event => event.typeId + ' ' + event.id + (event.summary ? ' ' + event.summary : '')).join('\\n');
+    }
+    function renderTree() {
+      const host = document.getElementById('explorer-tree');
+      if (!host) return;
+      host.innerHTML = '';
+      for (const item of workbench.tree) {
+        const row = document.createElement('div');
+        row.textContent = item.label;
+        row.title = item.kind;
+        host.appendChild(row);
+      }
+    }
+    function setInspector(value) {
+      apply({ type: 'inspector.set', value });
+      setInspector(workbench.inspector);
+    }
+    function renderRuntimeStatus() {
+      const pill = document.getElementById('status-runtime');
+      if (!pill) return;
+      const readiness = workbench.status.ready ? t('status.runtime.ready') : t('status.runtime.unknown');
+      pill.textContent = readiness + ' - ' + (workbench.status.requestInFlight ? t('status.runtime.busy') : t('status.runtime.idle'));
+    }
+    function setRuntimeStatus(status) { apply({ type: 'status.patch', status }); renderRuntimeStatus(); }
     async function postTurnStream(url, body, onFrame) {
       const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify(body) });
       return continueTurnStream(response, { reconnectUrl: '', latestSequence: 0, promptText: String(body.text || '') }, onFrame);
@@ -435,7 +490,7 @@ export function renderWorkbench(serverUrl: string): string {
         hideTyping(); setSending(false);
         add('scce', turnSurface(result), turnDetail(result));
         addFeedbackControls(result.dialogue, String(state.promptText || ''));
-        inspector.textContent = JSON.stringify({ dialogue: result.dialogue, proof: result.entailment?.proof, actionGraph: result.actionGraph }, null, 2);
+        setInspector({ dialogue: result.dialogue, proof: result.entailment?.proof, actionGraph: result.actionGraph });
       } catch (error) {
         hideTyping(); setSending(false);
         add('error', t('error.prefix') + ' ' + error.message);
@@ -503,7 +558,7 @@ export function renderWorkbench(serverUrl: string): string {
       const preview = document.createElement('div'); preview.className = 'hint'; preview.textContent = item.preview || item.snippet || ''; box.appendChild(preview);
       for (const decision of ['promoted', 'rejected']) {
         const button = document.createElement('button'); button.textContent = uiMsg(decision === 'promoted' ? 'side.learning.confirm' : 'side.learning.reject');
-        button.onclick = async () => { log('POST /api/learning/review ' + decision); try { const r = await post('/api/learning/review', { id: item.id, decision }); inspector.textContent = JSON.stringify(r, null, 2); box.remove(); if (onDone) await onDone(decision); } catch (e) { preview.textContent = uiMsg('side.learning.error') + ': ' + e.message; } };
+        button.onclick = async () => { log('POST /api/learning/review ' + decision); try { const r = await post('/api/learning/review', { id: item.id, decision }); setInspector(r); box.remove(); if (onDone) await onDone(decision); } catch (e) { preview.textContent = uiMsg('side.learning.error') + ': ' + e.message; } };
         box.appendChild(button);
       }
       return box;
@@ -549,51 +604,34 @@ export function renderWorkbench(serverUrl: string): string {
           const title = document.createElement('strong'); title.textContent = uiMsg('learn.curriculum.title') + ': ' + curriculum.query; box.appendChild(title);
           const why = document.createElement('code'); why.textContent = curriculum.rationale || item.reason || ''; box.appendChild(why);
           const button = document.createElement('button'); button.textContent = uiMsg('learn.curriculum.pursue');
-          button.onclick = async () => { log('POST /api/learning/pursue ' + item.planId); button.disabled = true; try { const r = await post('/api/learning/pursue', { planId: item.planId }); inspector.textContent = JSON.stringify(r, null, 2); add('scce', r.answer || uiMsg('learn.held'), r.runtimeMotion); addLearningControls(r, curriculum.query); await refreshLearning(); await refreshApprovals(); } catch (e) { why.textContent = t('error.prefix') + ' ' + e.message; button.disabled = false; } };
+          button.onclick = async () => { log('POST /api/learning/pursue ' + item.planId); button.disabled = true; try { const r = await post('/api/learning/pursue', { planId: item.planId }); setInspector(r); add('scce', r.answer || uiMsg('learn.held'), r.runtimeMotion); addLearningControls(r, curriculum.query); await refreshLearning(); await refreshApprovals(); } catch (e) { why.textContent = t('error.prefix') + ' ' + e.message; button.disabled = false; } };
           box.appendChild(button); list.appendChild(box); return;
         }
         const title = document.createElement('strong'); title.textContent = item.capabilityId; box.appendChild(title);
         const code = document.createElement('code'); code.textContent = item.planId; box.appendChild(code);
         const reason = document.createElement('code'); reason.textContent = item.reason || t('approval.required'); box.appendChild(reason);
-        const button = document.createElement('button'); button.textContent = t('side.approvals.approve'); button.onclick = async () => { log('POST /api/session/approve ' + item.planId); const r = await post('/api/session/approve', { planId: item.planId }); inspector.textContent = JSON.stringify(r, null, 2); renderApprovals(r.session); };
+        const button = document.createElement('button'); button.textContent = t('side.approvals.approve'); button.onclick = async () => { log('POST /api/session/approve ' + item.planId); const r = await post('/api/session/approve', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
         box.appendChild(button); list.appendChild(box);
       });
     }
-    function openPalette() { palette.classList.add('open'); paletteInput.value = ''; renderPalette(''); paletteInput.focus(); }
-    function closePalette() { palette.classList.remove('open'); }
-    const commands = [
-      ['runtime.ready', t('cmd.runtime.ready'), 'GET /api/ready'],
-      ['db.verify', t('cmd.db.verify'), 'GET /api/db/verify'],
-      ['db.stats', t('cmd.db.stats'), 'GET /api/db/stats'],
-      ['tools.inspect', t('cmd.tools.inspect'), 'GET /api/tools'],
-      ['session.approvals', t('cmd.session.approvals'), 'GET /api/session/approvals'],
-      ['session.operator_grant', t('cmd.session.operator_grant'), 'POST /api/session/operator-grant'],
-      ['connectors.quota', t('cmd.connectors.quota'), 'GET /api/connectors/quota'],
-      ['kernel.codebase_ingest', t('cmd.ingest.codebase'), 'POST /api/codebase/ingest'],
-      ['workspace.code', t('cmd.workspace.code'), 'POST /api/workspace/code'],
-      ['workspace.init', t('cmd.workspace.init'), 'POST /api/workspace/init'],
-      ['workspace.ingest', t('cmd.workspace.ingest'), 'POST /api/workspace/ingest'],
-      ['workspace.ask', t('cmd.workspace.ask'), 'POST /api/workspace/ask'],
-      ['project.summary', t('cmd.project.summary'), 'GET /api/project/summary'],
-      ['project.map', t('cmd.project.map'), 'GET /api/project/map'],
-      ['project.symbols', t('cmd.project.symbols'), 'GET /api/project/symbols'],
-      ['project.gaps', t('cmd.project.gaps'), 'GET /api/project/gaps'],
-      ['project.contradictions', t('cmd.project.contradictions'), 'GET /api/project/contradictions'],
-      ['project.tasks', t('cmd.project.tasks'), 'GET /api/project/tasks'],
-      ['report.brief', t('cmd.report.brief'), 'GET /api/reports/brief'],
-      ['report.patch_plan', t('cmd.report.patch_plan'), 'GET /api/reports/patch-plan'],
-      ['report.handoff', t('cmd.report.handoff'), 'GET /api/reports/handoff'],
-      ['report.review', t('cmd.report.review'), 'GET /api/reports/review'],
-      ['inspect.snapshot', t('cmd.inspect.snapshot'), 'GET /api/inspect?target=snapshot'],
-      ['inspect.math_spine', t('cmd.inspect.math_spine'), 'GET /api/inspect?target=math-spine'],
-      ['inspect.graph', t('cmd.inspect.graph'), 'GET /api/inspect?target=graph'],
-      ['inspect.ingestion', t('cmd.inspect.ingestion'), 'GET /api/inspect?target=ingestion'],
-      ['inspect.codebase', t('cmd.inspect.codebase'), 'GET /api/inspect?target=codebase'],
-      ['inspect.self', t('cmd.inspect.self'), 'GET /api/inspect?target=self'],
-      ['inspect.proofs', t('cmd.inspect.proofs'), 'GET /api/inspect?target=proofs'],
-      ['kernel.turn', t('cmd.kernel.turn'), 'POST /api/turn']
-    ];
-    function renderPalette(q) { const needle = q.toLowerCase(); paletteList.innerHTML = ''; commands.filter(c => (c[1] + ' ' + c[2]).toLowerCase().includes(needle)).forEach((c, i) => { const d = document.createElement('div'); d.className = 'cmd' + (i === 0 ? ' active' : ''); d.innerHTML = '<strong></strong><span></span>'; d.querySelector('strong').textContent = c[1]; d.querySelector('span').textContent = c[2]; d.onclick = () => runCommand(c[0]); paletteList.appendChild(d); }); }
+    function openPalette() { apply({ type: 'palette.toggle', open: true }); palette.classList.add('open'); paletteInput.value = ''; renderPalette(''); paletteInput.focus(); }
+    function closePalette() { apply({ type: 'palette.toggle', open: false }); palette.classList.remove('open'); }
+    const commands = workbench.commands;
+    function renderPalette(q) {
+      const needle = q.toLowerCase();
+      paletteList.innerHTML = '';
+      commands
+        .filter(c => (commandLabel(c) + ' ' + c.detail + ' ' + c.group).toLowerCase().includes(needle))
+        .forEach((c, i) => {
+          const d = document.createElement('div');
+          d.className = 'cmd' + (i === 0 ? ' active' : '');
+          d.innerHTML = '<strong></strong><span></span>';
+          d.querySelector('strong').textContent = commandLabel(c);
+          d.querySelector('span').textContent = c.detail + (c.accelerator ? '  ' + c.accelerator : '');
+          d.onclick = () => runCommand(c.id);
+          paletteList.appendChild(d);
+        });
+    }
     async function editCode() {
       const targetPath = window.prompt(t('prompt.code_path'));
       if (!targetPath || !targetPath.trim()) return;
@@ -603,14 +641,14 @@ export function renderWorkbench(serverUrl: string): string {
       let result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() });
       // The compiler owns several fixes here; the owner chooses rather than SCCE guessing.
       if (result && result.outcome === 'awaiting_selection' && Array.isArray(result.candidates) && result.candidates.length) {
-        const menu = result.candidates.map((candidate, index) => (index + 1) + ') TS' + candidate.diagnosticCode + ' ' + candidate.fixName).join('\n');
-        const choice = window.prompt(t('code.choose') + '\n' + menu, '1');
+        const menu = result.candidates.map((candidate, index) => (index + 1) + ') TS' + candidate.diagnosticCode + ' ' + candidate.fixName).join('\\n');
+        const choice = window.prompt(t('code.choose') + '\\n' + menu, '1');
         const index = Number(choice) - 1;
         const candidate = result.candidates[index];
-        if (!candidate) { inspector.textContent = JSON.stringify(result, null, 2); toggleDevPanel(true); return; }
+        if (!candidate) { setInspector(result); toggleDevPanel(true); return; }
         result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() + ' codeFixIdentity:' + candidate.codeFixIdentity });
       }
-      inspector.textContent = JSON.stringify(result, null, 2);
+      setInspector(result);
       toggleDevPanel(true);
       add('scce', (result && result.outcome === 'resolved' ? t('code.resolved') : t('code.unchanged'))
         .replace('{path}', targetPath.trim())
@@ -621,14 +659,24 @@ export function renderWorkbench(serverUrl: string): string {
       try {
         if (id === 'kernel.turn') return sendButton.click();
         if (id === 'workspace.code') return editCode();
-        if (id === 'kernel.codebase_ingest') { const p = window.prompt(t('prompt.codebase_path')); if (!p || !p.trim()) return; log('POST /api/codebase/ingest'); const r = await post('/api/codebase/ingest', { path: p.trim() }); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
-        if (id === 'workspace.init') { const p = window.prompt(t('prompt.workspace_path')); if (!p || !p.trim()) return; log('POST /api/workspace/init'); const r = await post('/api/workspace/init', { path: p.trim() }); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
-        if (id === 'workspace.ingest') { const p = window.prompt(t('prompt.workspace_path')); log('POST /api/workspace/ingest'); const r = await post('/api/workspace/ingest', p && p.trim() ? { path: p.trim() } : {}); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
-        if (id === 'workspace.ask') { const q = window.prompt(t('prompt.workspace_question')); if (!q || !q.trim()) return; log('POST /api/workspace/ask'); const r = await post('/api/workspace/ask', { question: q.trim() }); inspector.textContent = JSON.stringify(r, null, 2); add('scce', r.answer || JSON.stringify(r)); return; }
-        if (id === 'session.approvals') { log('GET /api/session/approvals'); const r = await refreshApprovals(); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
-        if (id === 'session.operator_grant') { const next = !document.getElementById('operator-grant-toggle').checked; log('POST /api/session/operator-grant ' + next); const r = await post('/api/session/operator-grant', { enabled: next }); renderApprovals(r); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true); return; }
-        const map = { 'runtime.ready': '/api/ready', 'db.verify': '/api/db/verify', 'db.stats': '/api/db/stats', 'tools.inspect': '/api/tools', 'connectors.quota': '/api/connectors/quota', 'project.summary': '/api/project/summary', 'project.map': '/api/project/map', 'project.symbols': '/api/project/symbols', 'project.gaps': '/api/project/gaps', 'project.contradictions': '/api/project/contradictions', 'project.tasks': '/api/project/tasks', 'report.brief': '/api/reports/brief', 'report.patch_plan': '/api/reports/patch-plan', 'report.handoff': '/api/reports/handoff', 'report.review': '/api/reports/review', 'inspect.snapshot': '/api/inspect?target=snapshot', 'inspect.math_spine': '/api/inspect?target=math-spine', 'inspect.graph': '/api/inspect?target=graph', 'inspect.ingestion': '/api/inspect?target=ingestion', 'inspect.codebase': '/api/inspect?target=codebase', 'inspect.self': '/api/inspect?target=self', 'inspect.proofs': '/api/inspect?target=proofs' };
-        log('GET ' + map[id]); const r = await get(map[id]); inspector.textContent = JSON.stringify(r, null, 2); toggleDevPanel(true);
+        if (id === 'kernel.codebase_ingest') { const p = window.prompt(t('prompt.codebase_path')); if (!p || !p.trim()) return; log('POST /api/codebase/ingest'); const r = await post('/api/codebase/ingest', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'workspace.init') { const p = window.prompt(t('prompt.workspace_path')); if (!p || !p.trim()) return; log('POST /api/workspace/init'); const r = await post('/api/workspace/init', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'workspace.ingest') { const p = window.prompt(t('prompt.workspace_path')); log('POST /api/workspace/ingest'); const r = await post('/api/workspace/ingest', p && p.trim() ? { path: p.trim() } : {}); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'workspace.ask') { const q = window.prompt(t('prompt.workspace_question')); if (!q || !q.trim()) return; log('POST /api/workspace/ask'); const r = await post('/api/workspace/ask', { question: q.trim() }); setInspector(r); add('scce', r.answer || JSON.stringify(r)); return; }
+        if (id === 'session.approvals') { log('GET /api/session/approvals'); const r = await refreshApprovals(); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'session.operator_grant') { const next = !document.getElementById('operator-grant-toggle').checked; log('POST /api/session/operator-grant ' + next); const r = await post('/api/session/operator-grant', { enabled: next }); renderApprovals(r); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'kernel.ingest') { const target = window.prompt(t('prompt.ingest_target')); if (!target || !target.trim()) return; log('POST /api/ingest'); const r = await post('/api/ingest', target.trim().includes('://') ? { uri: target.trim() } : { path: target.trim() }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'kernel.train') { log('POST /api/train'); const r = await post('/api/train', { config: {} }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'benchmark.run') { if (!FRONTIER_SUITE_ID) { log('no benchmark suite is configured on this server', 'error'); return; } log('POST /api/benchmark'); const r = await post('/api/benchmark', { suite: FRONTIER_SUITE_ID }); setInspector(r); toggleDevPanel(true); return; }
+        const command = commands.find(c => c.id === id);
+        const endpoint = command && command.detail.startsWith('GET ') ? command.detail.slice(4) : '';
+        if (!endpoint) { log('unhandled command ' + id, 'error'); return; }
+        log('GET ' + endpoint);
+        const r = await get(endpoint);
+        setInspector(r);
+        if (id === 'inspect.snapshot') { apply({ type: 'tree.replace', tree: treeFromSnapshot(r) }); renderTree(); }
+        if (id === 'runtime.ready') setRuntimeStatus({ ready: Boolean(r && r.ok) });
+        toggleDevPanel(true);
       } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; toggleDevPanel(true); }
     }
     paletteInput.oninput = () => renderPalette(paletteInput.value);
@@ -666,18 +714,23 @@ export function renderWorkbench(serverUrl: string): string {
         renderEvidence(r);
         addLearningControls(r, text);
         addFeedbackControls(r.dialogue, text);
-        inspector.textContent = JSON.stringify({ dialogue: r.dialogue, proof: r.entailment?.proof, pca: r.proofCarryingAnswer, pface: r.pface, language: r.languageAcquisition, actionGraph: r.actionGraph, functionalCognition: r.functionalCognition }, null, 2);
-        trace.textContent = (r.events || []).map(e => e.typeId + ' ' + e.id).join('\\n');
+        setInspector({ dialogue: r.dialogue, proof: r.entailment?.proof, pca: r.proofCarryingAnswer, pface: r.pface, language: r.languageAcquisition, actionGraph: r.actionGraph, functionalCognition: r.functionalCognition });
+        apply({ type: 'trace.replace', events: traceFromEvents(r.events || []) });
+        renderTrace();
         await refreshApprovals();
       } catch (e) {
         hideTyping(); setSending(false); runningTaskId = '';
         add('error', t('error.prefix') + ' ' + e.message);
       }
     };
-    document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); inspector.textContent = JSON.stringify(r, null, 2); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
-    document.getElementById('refresh-learning').onclick = async () => { log('GET /api/learning/held'); try { const r = await refreshLearning(); inspector.textContent = JSON.stringify(r, null, 2); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
-    document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r = await refreshApprovals(); inspector.textContent = JSON.stringify(r, null, 2); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
-    document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant ' + e.target.checked); try { const r = await post('/api/session/operator-grant', { enabled: e.target.checked }); renderApprovals(r); inspector.textContent = JSON.stringify(r, null, 2); } catch (err) { inspector.textContent = t('error.prefix') + ' ' + err.message; e.target.checked = !e.target.checked; } };
+    document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
+    document.getElementById('refresh-learning').onclick = async () => { log('GET /api/learning/held'); try { const r = await refreshLearning(); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
+    document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r = await refreshApprovals(); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
+    document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant ' + e.target.checked); try { const r = await post('/api/session/operator-grant', { enabled: e.target.checked }); renderApprovals(r); setInspector(r); } catch (err) { inspector.textContent = t('error.prefix') + ' ' + err.message; e.target.checked = !e.target.checked; } };
+    renderTree();
+    renderTerminal();
+    renderTrace();
+    renderRuntimeStatus();
     refreshApprovals().catch(() => {});
     resumeStoredTurn().catch(() => {});
     prompt.focus();

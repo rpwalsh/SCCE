@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { renderWorkbench } from "../index.js";
+import { renderWorkbench, WORKBENCH_MODEL_ROUTE } from "../index.js";
+import { DEFAULT_COMMANDS } from "../workbench-model.js";
 import { UI_MESSAGES_EN_US } from "../locales.js";
 
 describe("renderWorkbench", () => {
@@ -35,6 +36,30 @@ describe("renderWorkbench", () => {
     ]) {
       expect(html, `missing id="${id}"`).toContain(`id="${id}"`);
     }
+  });
+
+  it("emits a page script the JavaScript engine can actually parse", () => {
+    const html = renderWorkbench("http://127.0.0.1:3873", { benchmarkSuiteId: "scce.eval.frontier_broad_capability.v1" });
+    const opening = '<script type="module">';
+    const body = html.slice(html.indexOf(opening) + opening.length, html.indexOf("</script>"));
+    // The page is one module: strip its single import so the body can be parsed as a plain function body here.
+    const withoutImport = body.replace(/^\s*import\s+\{[^}]*\}\s+from\s+'[^']*';/m, "");
+    expect(() => new Function(withoutImport)).not.toThrow();
+  });
+
+  it("loads the workbench model as a module rather than restating it in the page", () => {
+    const html = renderWorkbench("http://127.0.0.1:3873");
+    expect(html).toContain(`from '${WORKBENCH_MODEL_ROUTE}'`);
+    expect(html).toContain("createInitialWorkbenchState(");
+    expect(html).toContain("const commands = workbench.commands;");
+    expect(html).not.toContain("const map = {");
+    for (const command of DEFAULT_COMMANDS) expect(html).not.toContain(`'${command.id}': '/api`);
+  });
+
+  it("keeps a hostile server origin inside the script string it is embedded in", () => {
+    const html = renderWorkbench('http://127.0.0.1:3873"></script><script>alert(1)</script>');
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect((html.match(/<script/g) ?? []).length).toBe(1);
   });
 
   it("escapes the server origin so it cannot break out of HTML attribute/text context", () => {
