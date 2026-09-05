@@ -109,6 +109,7 @@ export const EVENT_TYPES = [
   "GraphUpdated",
   "LanguagePatternLearned",
   "SymbolPatternLearned",
+  "SegmentationSpacingObserved",
   "FieldSeeded",
   "FieldActivated",
   "FieldPropagated",
