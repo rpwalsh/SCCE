@@ -228,7 +228,10 @@ export function compileReversibleConstructions(input: {
       continue;
     }
 
-    const positiveCells = plan.cells.filter(cell => cell.mass > 1e-12);
+    // Selected cells are each unit's row maximum, the same reading of a plan the held-out evaluator uses; entropic residue is not alignment.
+    const rowMaximum = new Map<string, number>();
+    for (const cell of plan.cells) rowMaximum.set(cell.surfaceUnitId, Math.max(rowMaximum.get(cell.surfaceUnitId) ?? 0, cell.mass));
+    const positiveCells = plan.cells.filter(cell => cell.mass > 1e-12 && cell.mass >= (rowMaximum.get(cell.surfaceUnitId) ?? 0) - 1e-12);
     if (!positiveCells.length) {
       rejections.push(rejection(decision, ["positive_transport_missing"]));
       continue;
@@ -258,8 +261,10 @@ export function compileReversibleConstructions(input: {
       continue;
     }
 
+    // One construction per aligned relation instance (r:(H_r,dH_r)<=>(P_r,dP_r)), never the whole span.
+    for (const [hyperedgeId, groupCells] of cellsByHyperedge(positiveCells, targetById)) {
     const boundUnits = uniqueBy(
-      positiveCells.map(cell => unitById.get(
+      groupCells.map(cell => unitById.get(
         candidateById.get(cell.candidateId)!.surfaceUnitId
       )!),
       unit => unit.id
@@ -271,15 +276,16 @@ export function compileReversibleConstructions(input: {
     if (!sourceSurface || boundUnits.some(unit =>
       sourceText.slice(unit.utf16Start, unit.utf16End) !== unit.surface)) {
       rejections.push(rejection(decision, ["source_surface_reconstruction_failed"]));
-      continue;
+      break;
     }
 
     const implicitTargetIds = uniqueStrings((plan.columnMarginals ?? [])
       .filter(column => column.graphImplicitMass > 1e-12)
       .map(column => column.graphTargetId)
-      .filter(targetId => targetById.get(targetId)?.realization === "omitted"));
+      .filter(targetId => targetById.get(targetId)?.realization === "omitted"
+        && targetById.get(targetId)?.hyperedgeId === hyperedgeId));
     const constructionTargetIds = uniqueStrings([
-      ...positiveCells.map(cell => cell.graphTargetId),
+      ...groupCells.map(cell => cell.graphTargetId),
       ...implicitTargetIds
     ]);
     const portIdByTargetId = new Map<string, string>();
@@ -295,12 +301,13 @@ export function compileReversibleConstructions(input: {
       slotIdByUnitId.set(unit.id, stableId(hasher, "reversible_surface_slot", [
         decision.seriesId,
         decision.planId,
+        hyperedgeId,
         unit.occurrenceId
       ]));
     }
 
     const slots = boundUnits.map(unit => {
-      const cells = positiveCells.filter(cell =>
+      const cells = groupCells.filter(cell =>
         candidateById.get(cell.candidateId)!.surfaceUnitId === unit.id);
       return {
         id: slotIdByUnitId.get(unit.id)!,
@@ -319,7 +326,7 @@ export function compileReversibleConstructions(input: {
     const ports = constructionTargetIds
       .map(targetId => {
         const target = targetById.get(targetId)!;
-        const surfaceSlotIds = uniqueStrings(positiveCells
+        const surfaceSlotIds = uniqueStrings(groupCells
           .filter(cell => cell.graphTargetId === targetId)
           .map(cell => slotIdByUnitId.get(
             candidateById.get(cell.candidateId)!.surfaceUnitId
@@ -377,7 +384,7 @@ export function compileReversibleConstructions(input: {
         cycleRecall: decision.cycleRecall,
         exactAnchorsPreserved: true as const,
         unsupportedAdditionCount: 0 as const,
-        transportMass: sum(positiveCells.map(cell => cell.mass))
+        transportMass: sum(groupCells.map(cell => cell.mass))
       },
       provenance: {
         supportId: support.id,
@@ -412,6 +419,7 @@ export function compileReversibleConstructions(input: {
         realizationExecutable: true
       })
     });
+    }
   }
 
   return {
@@ -618,6 +626,19 @@ export function reversibleConstructionsFromPatterns(
     byId.set(parsed.id, parsed);
   }
   return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function cellsByHyperedge<T extends { graphTargetId: string }>(
+  cells: readonly T[],
+  targetById: ReadonlyMap<string, SparseAlignmentTarget>
+): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const cell of cells) {
+    const hyperedgeId = targetById.get(cell.graphTargetId)?.hyperedgeId;
+    if (!hyperedgeId) continue;
+    groups.set(hyperedgeId, [...(groups.get(hyperedgeId) ?? []), cell]);
+  }
+  return new Map([...groups.entries()].sort((left, right) => left[0].localeCompare(right[0])));
 }
 
 function graphPort(

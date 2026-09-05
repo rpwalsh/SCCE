@@ -33,6 +33,10 @@ import {
   compileAutomaticAlignmentEvaluation,
   compileReversibleConstructionPattern,
   compileReversibleConstructions,
+  reversibleConstructionCycle,
+  alignmentCalibrationFeatures,
+  calibratedAlignmentProbability,
+  solveSparseFusedUnbalancedTransportWithResourceBudget,
   compilePairedAntiUnifiedConstructions,
   compilePairedAntiUnifiedPatterns,
   compileGraphCorrelatedVariabilityModel,
@@ -438,7 +442,7 @@ export class WikipediaV3Ingestor {
     }
     result.stopReason = stopReason;
 
-    if (result.sources > 0) await this.registerActiveWikipediaImport({ result, rootUri, corpus, importedAt: nowMs() });
+    if (result.sources > 0) await this.registerActiveWikipediaImport({ result, rootUri, corpus, importedAt: nowMs(), fullTrainingComplete: fullTrainingRequested && streamReachedEnd && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner });
     await this.storage.events.append(this.events.create({
       episodeId,
       typeId: "EpisodeClosed",
@@ -455,7 +459,7 @@ export class WikipediaV3Ingestor {
     return result;
   }
 
-  private async registerActiveWikipediaImport(input: { result: WikipediaV3IngestResult; rootUri: string; corpus: ResolvedWikipediaCorpus; importedAt: number }): Promise<void> {
+  private async registerActiveWikipediaImport(input: { result: WikipediaV3IngestResult; rootUri: string; corpus: ResolvedWikipediaCorpus; importedAt: number; fullTrainingComplete: boolean }): Promise<void> {
     const versionSeed = {
       rootUri: input.rootUri,
       dumpPath: input.corpus.dumpPath,
@@ -541,6 +545,7 @@ export class WikipediaV3Ingestor {
     let lifecycle = await this.ensureWikipediaLifecycle(manifest, input.importedAt);
     if (lifecycle.state === "ACTIVE") return;
     if (lifecycle.state === "READY") {
+      if (!(await this.mayActivateOver(brainVersion, input))) return;
       assertBrainManifestReplayForActivation(manifest, this.hasher);
       await this.storage.brainImports.activateReady({ brainVersion, importRunId, updatedAt: input.importedAt });
       return;
@@ -636,6 +641,14 @@ export class WikipediaV3Ingestor {
     if (lifecycle.state !== "READY") throw new Error(`Wikipedia brain ${importRunId} is not activatable from ${lifecycle.state}`);
     assertBrainManifestReplayForActivation(manifest, this.hasher);
     await this.storage.brainImports.activateReady({ brainVersion, importRunId, updatedAt: input.importedAt });
+  }
+
+  /** A bounded run (--max-pages, a stop) must not replace a different brain that is already active; only a complete run may. */
+  private async mayActivateOver(brainVersion: string, input: { result: WikipediaV3IngestResult; fullTrainingComplete: boolean }): Promise<boolean> {
+    const active = await this.storage.brainImports.active();
+    if (!active.activeBrainVersion || active.activeBrainVersion === brainVersion || input.fullTrainingComplete) return true;
+    input.result.warnings.push(`import left READY: ${active.activeBrainVersion} stays active until a complete run replaces it`);
+    return false;
   }
 
   private async ensureWikipediaLifecycle(manifest: BrainManifestContract, updatedAt: number): Promise<BrainLifecycleRecord> {
@@ -1078,8 +1091,20 @@ export class WikipediaV3Ingestor {
         supports: routedAlignmentSupports,
         hasher: this.hasher
       });
+      const transportResourceUsage = { elapsedMs: 0, outerIterations: 0, cellCount: 0, rowCount: 0, columnCount: 0, estimatedWorkingBytes: 0, plans: 0 };
+      const solveBudgeted = (solverInput: Parameters<typeof solveSparseFusedUnbalancedTransport>[0]) => {
+        const solved = solveSparseFusedUnbalancedTransportWithResourceBudget(solverInput);
+        transportResourceUsage.elapsedMs += solved.resourceUsage.elapsedMs;
+        transportResourceUsage.outerIterations += solved.resourceUsage.outerIterations;
+        transportResourceUsage.cellCount += solved.resourceUsage.cellCount;
+        transportResourceUsage.rowCount += solved.resourceUsage.rowCount;
+        transportResourceUsage.columnCount += solved.resourceUsage.columnCount;
+        transportResourceUsage.estimatedWorkingBytes = Math.max(transportResourceUsage.estimatedWorkingBytes, solved.resourceUsage.estimatedWorkingBytes);
+        transportResourceUsage.plans += 1;
+        return solved.plan;
+      };
       const initialTransportPlans = routedAlignmentSupports.map(support =>
-        solveSparseFusedUnbalancedTransport({
+        solveBudgeted({
           support,
           targetIndex: alignmentTargetIndex,
           typedNullCostModel,
@@ -1093,7 +1118,7 @@ export class WikipediaV3Ingestor {
         hasher: this.hasher
       });
       const finalTransportPlans = routedAlignmentSupports.map(support =>
-        solveSparseFusedUnbalancedTransport({
+        solveBudgeted({
           support,
           targetIndex: alignmentTargetIndex,
           typedNullCostModel,
@@ -1200,6 +1225,22 @@ export class WikipediaV3Ingestor {
       const promotedSeriesIds = new Set(alignmentPromotionModel.decisions
         .filter(decision => decision.promoted)
         .map(decision => decision.seriesId));
+      const planById = new Map(alignmentAlternativeSets.flatMap(set => set.hypotheses.map(hypothesis => [hypothesis.plan.id, hypothesis.plan] as const)));
+      const calibrationProbabilityByPlanId = new Map<string, number>();
+      for (const decision of alignmentPromotionModel.decisions) {
+        const plan = planById.get(decision.planId);
+        if (!plan || !plan.iterations.length) continue;
+        const probability = calibratedAlignmentProbability({
+          model: alignmentCalibrationModel,
+          features: alignmentCalibrationFeatures({
+            plan,
+            independentAnchorSourceFamilies: decision.independentHeldoutSourceFamilyIds.length,
+            cycleRecall: decision.cycleRecall,
+            unsupportedAdditionRate: decision.unsupportedAdditionCount > 0 ? 1 : 0
+          })
+        });
+        if (probability !== null) calibrationProbabilityByPlanId.set(decision.planId, probability);
+      }
       const reversibleConstructionCompilation =
         compileReversibleConstructions({
           alternativeSets: alignmentAlternativeSets,
@@ -1219,8 +1260,17 @@ export class WikipediaV3Ingestor {
             hasher: this.hasher
           }),
           createdAt,
+          calibrationProbabilityByPlanId,
           hasher: this.hasher
         });
+      // Round trip before anything persists: realize, interpret back, and require both the surface and the fragment to return.
+      const cycleRejectedConstructionIds: string[] = [];
+      reversibleConstructionCompilation.constructions = reversibleConstructionCompilation.constructions.filter(construction => {
+        const cycle = reversibleConstructionCycle({ construction, profileId: construction.profileId });
+        if (cycle.exactSurfaceRecovered && cycle.exactGraphFragmentRecovered) return true;
+        cycleRejectedConstructionIds.push(construction.id);
+        return false;
+      });
       const reversibleConstructionPatterns =
         reversibleConstructionCompilation.constructions.map(construction => ({
           ...compileReversibleConstructionPattern(construction),
@@ -1357,6 +1407,10 @@ export class WikipediaV3Ingestor {
             reversibleConstructionCompilation.constructions,
           reversibleConstructionRejections:
             reversibleConstructionCompilation.rejections.slice(0, 64),
+          cycleRejectedConstructionIds: cycleRejectedConstructionIds.slice(0, 64),
+          cycleRejectedConstructionCount: cycleRejectedConstructionIds.length,
+          calibratedPlanCount: calibrationProbabilityByPlanId.size,
+          transportResourceUsage,
           pairedAntiUnifiedConstructions:
             pairedAntiUnifiedCompilation.constructions,
           pairedAntiUnifiedConstructionRejections:

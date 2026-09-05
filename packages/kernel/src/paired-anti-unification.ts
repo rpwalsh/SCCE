@@ -714,7 +714,8 @@ function pairedSlotValuesByFamily(
   for (const row of rows) {
     const slot = row.slots[slotIndex];
     if (!slot) continue;
-    const familyId = row.construction.surface.sourceFamilyId;
+    // One fact read two ways inside one family is ambiguous; many facts per family are not.
+    const familyId = row.construction.surface.sourceFamilyId + String.fromCharCode(31) + row.construction.graph.hyperedgeIds.join(",");
     const portTargets = slot.structuralPortKeys.map(key =>
       row.portByStructuralKey.get(key)!.graphTargetId);
     const signature = canonicalStringify([
