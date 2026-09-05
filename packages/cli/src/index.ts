@@ -13,7 +13,7 @@ import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationP
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
-import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createTrace, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, renderPostgresContractSql, createTrace, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
 import {
   createFtrlProximalRanker,
   evaluateFtrlHeldOut,
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     traceEvent(trace, { stage: 'cli.command.start', label: parsed.command });
     switch (parsed.command) {
       case "db":
-        await db(runtime, parsed.args);
+        await db(runtime, parsed.args, config);
         return;
       case "corpus":
         await corpus(runtime, parsed.args);
@@ -1050,7 +1050,7 @@ async function readJson<T>(filePath: string): Promise<T | null> {
   }
 }
 
-async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[]): Promise<void> {
+async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[], config: Awaited<ReturnType<typeof readScceRuntimeConfig>>): Promise<void> {
   const sub = args[0];
   if (sub === "init" || sub === "migrate") {
     await runtime.storage.migrate();
@@ -1067,8 +1067,36 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[])
     printJson(await runtime.storage.resetLocalDevOnly({ confirmLocalDevOnly: true }));
     return;
   }
-  if (sub === "verify") return printJson(await runtime.storage.verify());
+  if (sub === "verify") {
+    // The live schema check and the declared storage contract are one command: a schema that verifies against a
+    // contract that is itself inconsistent proves nothing.
+    const contract = createPostgresContract({ schema: config.database.schema });
+    const contractChecks = verifyPostgresContract(contract);
+    return printJson({
+      ...await runtime.storage.verify(),
+      contract: {
+        schema: contract.schema,
+        tables: contract.tables.length,
+        failed: contractChecks.filter(check => !check.passed),
+        passed: contractChecks.filter(check => check.passed).length
+      }
+    });
+  }
   if (sub === "stats") return printJson(await runtime.storage.stats());
+  if (sub === "contract") {
+    // The declared schema, printable as the SQL it stands for, so an operator can diff the contract against the database.
+    const contract = createPostgresContract({ schema: config.database.schema });
+    if (args.includes("--sql")) {
+      for (const statement of renderPostgresContractSql(contract)) process.stdout.write(`${statement}\n`);
+      return;
+    }
+    return printJson({
+      schema: contract.schema,
+      extensions: contract.extensions,
+      tables: contract.tables.map(table => ({ name: table.name, columns: table.columns.length, indexes: table.indexes?.length ?? 0 })),
+      checks: verifyPostgresContract(contract)
+    });
+  }
   if (sub === "audit") {
     // Plan items 66/68: the periodic full-audit maintenance command --
     // deliberately ignores any in-process governance checkpoint and
@@ -1499,6 +1527,7 @@ function usage(error?: string): void {
     "  pnpm scce db migrate",
     "  pnpm scce db reset --confirm-local-dev-only",
     "  pnpm scce db verify",
+    "  pnpm scce db contract [--sql]",
     "  pnpm scce db stats",
     "  pnpm scce hydrate plan <scce2-fixture-path>",
     "  pnpm scce hydrate import <scce2-fixture-path> --plan=<planId>",

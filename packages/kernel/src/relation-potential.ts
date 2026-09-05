@@ -236,17 +236,36 @@ export function freezeRelationPotentialModel(model: RelationPotentialModel): Rel
  * relation signals. It never reads node labels, answer text, or evaluation
  * questions. Missing modality/contradiction signals remain explicit zeros.
  */
+const projectionIndexByEdges = new WeakMap<readonly GraphEdge[], Map<string, GraphEdge[]>>();
+
+function projectionPeerKey(edge: GraphEdge): string {
+  return `${String(edge.source)}${String(edge.target)}${String(edge.relationId)}`;
+}
+
+function projectionIndex(edges: readonly GraphEdge[]): Map<string, GraphEdge[]> {
+  const cached = projectionIndexByEdges.get(edges);
+  if (cached) return cached;
+  const index = new Map<string, GraphEdge[]>();
+  for (const candidate of edges) {
+    validateProjectionEdge(candidate);
+    const key = projectionPeerKey(candidate);
+    index.set(key, [...(index.get(key) ?? []), candidate]);
+  }
+  projectionIndexByEdges.set(edges, index);
+  return index;
+}
+
 export function projectGraphEdgeRelationPotential(
   edge: GraphEdge,
   context: { readonly edges: readonly GraphEdge[]; readonly snapshotTime?: number }
 ): RelationPotentialProjectionAudit {
   validateProjectionEdge(edge);
-  context.edges.forEach(validateProjectionEdge);
+  // Validating and scanning the whole slice once per edge made a per-edge scoring pass quadratic: 20k edges exhausted
+  // a 4 GB heap. The same work, memoized per context array, is linear and identical in result.
+  const peersByEndpoint = projectionIndex(context.edges);
   const snapshotTime = context.snapshotTime ?? graphSnapshotTime(context.edges);
   finite(snapshotTime, "relation-potential projection snapshotTime");
-  const peers = context.edges.filter(candidate =>
-    candidate.source === edge.source && candidate.target === edge.target && candidate.relationId === edge.relationId
-  );
+  const peers = peersByEndpoint.get(projectionPeerKey(edge)) ?? [];
   const distinctEvidence = new Set(peers.flatMap(candidate => candidate.evidenceIds.map(String))).size;
   const typedSignals = relationPotentialSignals(edge);
   const features = Object.freeze({
