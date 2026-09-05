@@ -6,14 +6,15 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const pg = createRequire(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "packages", "adapters-node", "package.json"))("pg");
+const { databaseUrl, databaseSchema } = await import("./lib/runtime-config.mjs");
 const args = process.argv.slice(2);
 const importRunId = args.find(arg => !arg.startsWith("--"));
 const apply = args.includes("--apply");
-const schema = (args.find(arg => arg.startsWith("--schema=")) ?? "--schema=scce3_runtime").slice("--schema=".length);
+const schema = args.find(arg => arg.startsWith("--schema="))?.slice("--schema=".length) ?? databaseSchema();
 if (!importRunId) throw new Error("usage: node tools/activate-brain-import.mjs <importRunId> [--apply] [--schema=...]");
 if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) throw new Error(`unsafe schema ${schema}`);
-const url = process.env.SCCE_DATABASE_URL;
-if (!url) throw new Error("SCCE_DATABASE_URL is required");
+// database.url from scce.config.json; SCCE_DATABASE_URL still overrides it.
+const url = databaseUrl();
 
 const client = new pg.Client({ connectionString: url });
 await client.connect();
