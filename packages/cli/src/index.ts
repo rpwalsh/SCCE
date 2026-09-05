@@ -13,7 +13,7 @@ import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationP
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
-import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, renderPostgresContractSql, createTrace, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
 import {
   createFtrlProximalRanker,
   evaluateFtrlHeldOut,
@@ -1397,14 +1397,10 @@ function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; s
       continue;
     }
     if (arg.startsWith("--detail=")) {
+      // The signal-to-profile table lives with the profiles themselves, so a new detail signal is added in one place.
       const detail = requiredStringFlag(arg, "--detail=").toLocaleLowerCase();
-      const profile = {
-        brief: "surface.detail.profile.0",
-        normal: "surface.detail.profile.1",
-        detailed: "surface.detail.profile.2",
-        stepwise: "surface.detail.profile.3"
-      }[detail];
-      if (!profile) throw new Error("turn detail must be brief, normal, detailed, or stepwise");
+      const profile = detailProfileIdFromSignal(detail);
+      if (!profile) throw new Error(`turn detail must be one of the ${detailSignalCount()} declared detail signals`);
       detailProfileId = profile;
       continue;
     }
