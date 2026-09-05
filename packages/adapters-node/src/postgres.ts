@@ -1502,19 +1502,33 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              JOIN candidate_length ON candidate_length.id = feature_hits.id
              GROUP BY feature_hits.id, candidate_length.len
            )
+           -- Rank and filter on the narrow columns first, then read the wide rows for the winners only: joining
+           -- evidence.* for every candidate detoasted ~250 spans of text to return 17 (measured 530ms of a 745ms
+           -- query on this corpus).
            SELECT evidence.*
-           FROM candidate_hits hits
-           JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
-           WHERE ${evidenceStatusCondition("evidence", query.status)}
-             AND ${access.sql}
-             AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
-           ORDER BY hits.score DESC,
-                    hits.overlap_count DESC,
-                    hits.first_feature_ord ASC,
-                    CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
-                    evidence.alpha DESC,
-                    evidence.observed_at DESC
-           LIMIT $2`,
+           FROM (
+             SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at
+             FROM candidate_hits hits
+             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
+             CROSS JOIN LATERAL (SELECT evidence.status, evidence.alpha, evidence.observed_at) narrow
+             WHERE ${evidenceStatusCondition("evidence", query.status)}
+               AND ${access.sql}
+               AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
+             ORDER BY hits.score DESC,
+                      hits.overlap_count DESC,
+                      hits.first_feature_ord ASC,
+                      CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
+                      evidence.alpha DESC,
+                      evidence.observed_at DESC
+             LIMIT $2
+           ) top
+           JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=top.id
+           ORDER BY top.score DESC,
+                    top.overlap_count DESC,
+                    top.first_feature_ord ASC,
+                    CASE WHEN top.status='promoted' THEN 0 WHEN top.status='pending' THEN 1 ELSE 2 END ASC,
+                    top.alpha DESC,
+                    top.observed_at DESC`,
           [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
