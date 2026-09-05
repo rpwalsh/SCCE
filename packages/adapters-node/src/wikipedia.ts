@@ -54,6 +54,42 @@ interface ParsedWikiPage {
   namespace: number;
   redirect: boolean;
   text: string;
+  links: WikiPageLink[];
+  headings: WikiPageHeading[];
+}
+
+export interface WikiPageLink {
+  target: string;
+  label: string;
+}
+
+export interface WikiPageHeading {
+  text: string;
+  level: number;
+  charStart: number;
+}
+
+/** Declared structure the normalizer would otherwise strip: article links (label → title) and section headings. */
+export function wikiPageStructure(raw: string): { links: WikiPageLink[]; headings: WikiPageHeading[] } {
+  const links = new Map<string, WikiPageLink>();
+  for (const match of raw.matchAll(/\[\[([^[\]|#]{1,200}?)(?:#[^\]|]*)?(?:\|([^\]]{0,200}))?\]\]/gu)) {
+    const rawTarget = collapseWhitespace((match[1] ?? "").replace(/_/gu, " "));
+    // A single-word prefix before a colon is a namespace (file, category, project), not an article.
+    if (!rawTarget || /^\p{L}{2,20}:\S/u.test(rawTarget)) continue;
+    const target = rawTarget.charAt(0).toLocaleUpperCase() + rawTarget.slice(1);
+    const label = collapseWhitespace(match[2] ?? "") || target;
+    const key = `${target}${label}`;
+    if (!links.has(key)) links.set(key, { target, label });
+    if (links.size >= 400) break;
+  }
+  const headings: WikiPageHeading[] = [];
+  for (const match of raw.matchAll(/^(={2,6})[ \t]*(.+?)[ \t]*\1[ \t]*$/gmu)) {
+    const text = collapseWhitespace((match[2] ?? "").replace(/'{2,}/gu, ""));
+    if (!text) continue;
+    headings.push({ text, level: match[1]!.length, charStart: match.index ?? 0 });
+    if (headings.length >= 128) break;
+  }
+  return { links: [...links.values()], headings };
 }
 
 const BZIP2_MAGIC_BYTES = 10;
@@ -337,8 +373,10 @@ function parseWikiPage(block: string, maxArticleChars: number): ParsedWikiPage |
   const revisionId = tagText(revision, "id");
   const rawText = tagTextWithAttributes(block, "text");
   if (!title || !pageId || !rawText) return null;
-  const text = normalizeWikiText(decodeXml(rawText)).slice(0, maxArticleChars);
-  return { title: decodeXml(title), namespace, pageId, revisionId, redirect: block.includes("<redirect"), text };
+  const raw = decodeXml(rawText);
+  const text = normalizeWikiText(raw).slice(0, maxArticleChars);
+  const structure = wikiPageStructure(raw);
+  return { title: decodeXml(title), namespace, pageId, revisionId, redirect: block.includes("<redirect"), text, links: structure.links, headings: structure.headings };
 }
 
 function shouldSkip(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus): boolean {
@@ -374,7 +412,9 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
       pageId: page.pageId,
       revisionId: page.revisionId,
       namespace: page.namespace,
-      redirect: page.redirect
+      redirect: page.redirect,
+      links: page.links.map(link => ({ target: link.target, label: link.label })),
+      structure: { headings: page.headings.map(heading => ({ text: heading.text, level: heading.level, charStart: heading.charStart })) }
     }
   };
 }
