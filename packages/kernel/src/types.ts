@@ -1020,6 +1020,8 @@ export interface TurnResult {
   taskCompletion?: JsonValue;
   /** Plan items 219-220: the real, provenance-aware user-model store (metadata.userModelStore in, updated store out), with every real correction detected this turn recorded as a real explicit_instruction claim -- always present (an empty claim list when nothing was supplied or detected), never fabricated. */
   userModelStore?: JsonValue;
+  /** How the stored claims were learned: explicit owner instructions counted apart from anything inferred. */
+  userModelProvenance?: JsonValue;
   /** Plan item 211: this turn's own event history, consolidated into a bounded goal/context/actions/outcomes/corrections/lessons summary with every claim traceable back to a real event id. */
   episodeConsolidation?: JsonValue;
   /** Plan item 212 (read-back): past consolidated episodes (episodic-memory-consolidation.ts's retrieveRelevantEpisodes) whose request genuinely overlaps this turn's, ranked by real feature-overlap similarity -- never a fabricated match. Their lessons feed this turn's learningNeeds, genuinely influencing candidate generation and functional-cognition goal signals, not just reported here for show. Absent (not empty) when no past episode clears the similarity floor. */

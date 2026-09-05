@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorrectionRuleRecord, CorrectionRuleKind, UserModelClaimRecord, UserModelClaimStore } from "./storage.js";
 import type { RecordUserModelClaimInput, UserModelClaim, UserModelClaimKind, UserModelStore } from "./user-model-store.js";
-import { recordUserModelClaim } from "./user-model-store.js";
+import { isExplicit, recordUserModelClaim } from "./user-model-store.js";
 import type { JsonValue } from "./types.js";
 
 /**
@@ -143,4 +143,16 @@ export async function syncUserModelStoreForTurn(
 
 export function userModelStoreToJson(store: UserModelStore): JsonValue {
   return [...store.claims.values()].sort((left, right) => left.id.localeCompare(right.id)) as unknown as JsonValue;
+}
+
+/** What the store holds, split by how it was learned: an instruction the owner gave is never counted with something inferred. */
+export function userModelStoreProvenanceSummary(store: UserModelStore): JsonValue {
+  const claims = [...store.claims.values()];
+  const explicit = claims.filter(isExplicit);
+  return {
+    total: claims.length,
+    explicitInstructions: explicit.length,
+    notExplicit: claims.length - explicit.length,
+    explicitSubjects: [...new Set(explicit.map(claim => claim.subject))].sort().slice(0, 32)
+  };
 }
