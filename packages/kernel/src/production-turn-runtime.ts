@@ -134,9 +134,9 @@ import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtend
 import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
-import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
+import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
-import { replan } from "./task-replanning.js";
+import { nodeCanExecute, replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
 import { exactComputationForText, verifyExactResultMatchesClaim } from "./exact-computation.js";
 import { invariantScore } from "./scoring/score-trace.js";
@@ -348,6 +348,36 @@ function semanticClaimObservationsFromConstruct(
     });
   });
   return observations;
+}
+
+/** A passing build proves the code-task conditions the plan claimed; the nodes that claimed them are completed, and any
+ *  node that cannot execute yet is reported with the reason instead of being force-completed. */
+function completeConditionsProvenByBuild(graph: TaskDecompositionGraph): {
+  graph: TaskDecompositionGraph;
+  completed: string[];
+  blocked: Array<{ id: string; reason: string }>;
+} {
+  const proven = new Set<string>([CODE_CONSTRAINT.TEST_BEHAVIOR, CODE_CONSTRAINT.BUILD_NOT_PRECLAIMED]);
+  let next = graph;
+  const completed: string[] = [];
+  const blocked: Array<{ id: string; reason: string }> = [];
+  for (const node of Object.values(graph.nodes)) {
+    if (node.completed || !node.postconditions.some(condition => proven.has(condition))) continue;
+    const held = new Set(Object.values(next.nodes).filter(row => row.completed).flatMap(row => row.postconditions));
+    for (const condition of proven) held.add(condition);
+    const gate = nodeCanExecute(next, node.id, held);
+    if (!gate.allowed) {
+      blocked.push({ id: node.id, reason: gate.reason ?? "not executable" });
+      continue;
+    }
+    try {
+      next = completeTaskDecompositionNode(next, { nodeId: node.id, satisfiedConditionIds: [...proven] });
+      completed.push(node.id);
+    } catch (error) {
+      blocked.push({ id: node.id, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { graph: next, completed: completed.sort(), blocked: blocked.sort((left, right) => left.id.localeCompare(right.id)) };
 }
 
 export function createProductionTurnRuntime(options: {
@@ -2535,7 +2565,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // keyed by the real, stable conversationId (not the per-turn
       // episodeId) so a later turn with no fresh task decomposition of
       // its own still recovers the conversation's real last snapshot.
-      const taskResumptionSnapshot = await syncTaskResumptionSnapshotForTurn(deps.storage.taskResumption, {
+      let taskResumptionSnapshot = await syncTaskResumptionSnapshotForTurn(deps.storage.taskResumption, {
         goalId: authorityDialogueState.conversationId,
         taskDecomposition: construct.program?.taskDecomposition,
         workingMemory: candidateWorkingMemory,
@@ -2604,6 +2634,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       let buildTest: BuildTestResult | undefined;
       let taskReplanning: ReturnType<typeof replan> | undefined;
+      let taskCompletion: ReturnType<typeof completeConditionsProvenByBuild> | undefined;
       if (construct.program) {
         const registry = createCapabilityRegistry({ process: true, network: Boolean(deps.connectors) });
         const capability = registry.get("process.build_test");
@@ -2671,6 +2702,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               taskReplanning = replan(taskResumptionSnapshot.taskGraph, {
                 invalidatedConditionIds: [CODE_CONSTRAINT.TEST_BEHAVIOR, CODE_CONSTRAINT.BUILD_NOT_PRECLAIMED]
               });
+            }
+            // The mirror of the replan above: a passing build is the evidence those same claimed conditions now hold,
+            // so the nodes that claimed them are completed here rather than left open forever.
+            if (buildTest.passed && taskResumptionSnapshot) {
+              taskCompletion = completeConditionsProvenByBuild(taskResumptionSnapshot.taskGraph);
+              if (taskCompletion.completed.length) {
+                taskResumptionSnapshot = { ...taskResumptionSnapshot, taskGraph: taskCompletion.graph };
+                events.push(await append(eventFactory.create({
+                  episodeId,
+                  typeId: "TaskNodeCompleted",
+                  payload: toJsonValue({ completed: taskCompletion.completed, blocked: taskCompletion.blocked })
+                })));
+              }
             }
             if (proceduralSkillExecution) {
               events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillExecuted", payload: proceduralSkillExecution })));
@@ -3456,6 +3500,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
           taskSchedule: taskSchedule ? toJsonValue(taskSchedule) : undefined,
           taskReplanning: taskReplanning ? toJsonValue(taskReplanning) : undefined,
+          taskCompletion: taskCompletion ? toJsonValue({ completed: taskCompletion.completed, blocked: taskCompletion.blocked }) : undefined,
           episodeConsolidation,
           relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
           semanticConsolidation,
@@ -3606,6 +3651,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
         taskSchedule: taskSchedule ? toJsonValue(taskSchedule) : undefined,
         taskReplanning: taskReplanning ? toJsonValue(taskReplanning) : undefined,
+        taskCompletion: taskCompletion ? toJsonValue({ completed: taskCompletion.completed, blocked: taskCompletion.blocked }) : undefined,
         episodeConsolidation,
         relevantPastEpisodes: relevantPastEpisodes.length ? toJsonValue(relevantPastEpisodes) : undefined,
         semanticConsolidation,
