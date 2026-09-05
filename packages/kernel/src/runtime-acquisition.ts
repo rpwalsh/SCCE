@@ -3,6 +3,7 @@
 import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor, type CapabilityDispatchDisposition } from "./capability-dispatcher.js";
 import { createEventFactory } from "./events.js";
 import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { assertSearchLeadIsNotEvidence, searchLeadToFetchPlan, type SearchResultLead } from "./ingestion-lanes.js";
 import { canonicalStringify, createHasher, redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
 import { POLICY_OBJECTIVE_SCHEMA_ID, policyFingerprint, policyObjectiveVector, type PolicyEvaluation } from "./policy-evolution.js";
 import { type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -240,6 +241,7 @@ export function createRuntimeAcquisition(options: {
     const queryHash = hasher.digestHex(input.ownerInput.text);
     const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}`).slice(0, 32)}`;
     const motionFailures: string[] = [];
+    const fetchPlans: JsonValue[] = [];
     let searchResultCount = 0;
     let fetchedSourceCount = 0;
     let ingestedSourceCount = 0;
@@ -300,10 +302,37 @@ export function createRuntimeAcquisition(options: {
         motionFailures.push(runtimeMotionFailure("search", error));
       }
       const seenUris = new Set<string>();
+      const fetchPlans: JsonValue[] = [];
       for (const searchRow of searchRows.slice(0, 3)) {
         const searchUri = searchRow.uri.trim();
         if (!searchUri || seenUris.has(searchUri)) continue;
         seenUris.add(searchUri);
+        // A result row is a lead, never evidence: it is asserted unfetched here and carries an explicit plan whose
+        // next step is the source snapshot, quarantined before use. A snippet can never shortcut into the corpus.
+        const lead: SearchResultLead = {
+          id: `search_lead.${hasher.digestHex(searchUri).slice(0, 32)}`,
+          provider: "local_index",
+          title: searchRow.title,
+          uri: searchUri,
+          snippet: searchRow.snippet,
+          rank: seenUris.size,
+          evidenceStatus: "lead_only",
+          fetched: false,
+          metadata: toJsonValue({ queryHash })
+        };
+        try {
+          assertSearchLeadIsNotEvidence(lead);
+        } catch (error) {
+          motionFailures.push(runtimeMotionFailure("search-lead", error));
+          continue;
+        }
+        fetchPlans.push(searchLeadToFetchPlan(lead, {
+          id: `learning_need.${queryHash}`,
+          gapKind: "source_discovery",
+          objective: input.ownerInput.text.slice(0, 200),
+          constraints: toJsonValue({ readOnly: true, quarantineBeforeUse: true }),
+          createdAt: Date.now()
+        }));
         try {
           const fetched = await deps.connectors.fetch(searchUri);
           if (fetched.bytes.byteLength === 0) {
@@ -413,6 +442,8 @@ export function createRuntimeAcquisition(options: {
       ...(consent ? { consent } : {}),
       ...(heldSources.length ? { heldSources } : {}),
       searchResultCount,
+      // Each lead's explicit plan: the snippet is not evidence, the next step is a source snapshot, quarantined first.
+      ...(fetchPlans.length ? { searchLeadFetchPlans: fetchPlans.slice(0, 3) } : {}),
       fetchedSourceCount,
       ingestedSourceCount,
       ingestedEvidenceCount,
