@@ -272,10 +272,18 @@ export function runtimeEvidenceWindowsForRequest(text: string, evidence: readonl
   return evidence.slice(0, 8).map(span => {
     const source = sourceTextSurface(evidenceWindowText(span), 12000);
     if (source.length <= 6000) return span;
-    const sentences = source
+    let sentences = source
       .split(/(?<=[.!?。！？])\s+|\n+/u)
       .map(item => item.replace(/\s+/gu, " ").trim())
       .filter(Boolean);
+    // A citation states where something was published, not what was asked. It names the subject and carries
+    // years, so it wins both the lexical and the date-seeking paths: "When was Ada Lovelace born?" answered with
+    // the 8 March 2018 publication date of a cited article. Citation lines stand aside while real prose remains.
+    const prose = sentences.filter(sentence => {
+      const folded = sentence.toLocaleLowerCase();
+      return !folded.includes("http://") && !folded.includes("https://") && !folded.includes("www.");
+    });
+    if (prose.length) sentences = prose;
     const leadRows = sentences.slice(0, 6).map((sentence, index) => ({
       sentence,
       index,
@@ -3312,10 +3320,21 @@ export function surfaceRequestOrderedAdjacentPairFraction(surface: string, reque
 const fastAnswerSentencesMemo = new Map<string, string[]>();
 const FAST_ANSWER_SENTENCES_MEMO_MAX = 4096;
 
- function fastAnswerSentences(text: string): string[] {
+ /** A citation says where something was published, not what was asked; a URL marks it in any script. Pure. */
+function fastAnswerSentenceIsCitation(sentence: string): boolean {
+  const folded = sentence.toLocaleLowerCase();
+  return folded.includes("http://") || folded.includes("https://") || folded.includes("www.");
+}
+
+function fastAnswerSentences(text: string): string[] {
   const cached = fastAnswerSentencesMemo.get(text);
   if (cached) return cached;
-  const value = fastAnswerSentencesUncached(text);
+  const all = fastAnswerSentencesUncached(text);
+  // A reference line names the subject and carries years, so it beat real prose on both the lexical and the
+  // date-seeking paths: "When was Ada Lovelace born?" answered with a cited article's 8 March 2018 publication
+  // date. Citation lines stand aside while any prose remains, and still speak when they are all there is.
+  const prose = all.filter(sentence => !fastAnswerSentenceIsCitation(sentence));
+  const value = prose.length ? prose : all;
   if (fastAnswerSentencesMemo.size >= FAST_ANSWER_SENTENCES_MEMO_MAX) fastAnswerSentencesMemo.clear();
   fastAnswerSentencesMemo.set(text, value);
   return value;
