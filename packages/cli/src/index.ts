@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, fitRelationPotentialFromGraph, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -68,6 +68,9 @@ async function main(): Promise<void> {
         return;
       case "corpus":
         await corpus(runtime, parsed.args);
+        return;
+      case "relation-potential":
+        await relationPotential(parsed.configPath, runtime, parsed.args);
         return;
       case "hydrate":
         await hydrate(runtime, parsed.args);
@@ -379,6 +382,41 @@ async function scce2(runtime: ReturnType<typeof createNodeRuntime>, args: string
     return;
   }
   return usage("scce scce2 <inspect|import> <path> [limits]");
+}
+
+/** Fits the relation-potential model the field engine reads, from the live graph's own corroboration. The model is
+ *  configuration, so `--apply` writes it into the runtime config the engine already loads. */
+async function relationPotential(configPath: string, runtime: ReturnType<typeof createNodeRuntime>, args: string[]): Promise<void> {
+  if (args[0] !== "fit") return usage("scce relation-potential fit [--apply] [--max-edges=N]");
+  const apply = args.includes("--apply");
+  const maxEdges = Number(args.find(arg => arg.startsWith("--max-edges="))?.slice("--max-edges=".length));
+  const report = await fitRelationPotentialFromGraph({
+    storage: runtime.storage,
+    ...(Number.isFinite(maxEdges) && maxEdges > 0 ? { maxEdges } : {})
+  });
+  if (!report.model) {
+    printJson({ status: "not_fitted", ...report });
+    return;
+  }
+  if (apply) {
+    const absolute = path.resolve(configPath);
+    const stored = JSON.parse(await readFile(absolute, "utf8")) as { runtime?: Record<string, unknown> };
+    stored.runtime = { ...stored.runtime, relationPotentialModel: report.model };
+    await writeJsonReplacing(absolute, stored);
+  }
+  printJson({
+    status: apply ? "applied" : "fitted",
+    configPath: apply ? path.resolve(configPath) : null,
+    modelId: report.model.modelId,
+    datasetHash: report.model.datasetHash,
+    sampleCounts: report.model.sampleCounts,
+    calibration: report.model.calibration,
+    edgeCount: report.edgeCount,
+    labelledCount: report.labelledCount,
+    positiveCount: report.positiveCount,
+    datasetCounts: report.datasetCounts,
+    skipped: report.skipped
+  });
 }
 
 async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined, args: string[]): Promise<void> {
@@ -1469,6 +1507,7 @@ function usage(error?: string): void {
     "  pnpm scce corpus ingest --dry-run <path>",
     "  pnpm scce corpus route --fixture <path>",
     "  pnpm scce corpus train gutenberg <path>",
+    "  pnpm scce relation-potential fit [--apply] [--max-edges=N]",
     "  pnpm scce corpus train oss <path>",
     "  pnpm scce repo inspect <path>",
     "  pnpm scce repo graph <path>",
