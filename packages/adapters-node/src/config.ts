@@ -26,6 +26,7 @@ export interface CorpusNgramRuntimeConfig {
 
 export interface WikipediaCorpusConfig extends CorpusNgramRuntimeConfig {
   enabled: boolean;
+  alignmentLatticesPerShard?: number;
   dumpPath: string;
   indexPath?: string;
   namespace?: string;

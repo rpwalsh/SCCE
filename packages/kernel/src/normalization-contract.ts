@@ -48,11 +48,16 @@ export function normalizeCanonicalSurface(
   return simpleCaseFold(normalized);
 }
 
+const validatedContracts = new WeakSet<NormalizationContract>();
+const DEFAULT_CONTRACT_CANONICAL = canonicalStringify(DEFAULT_CONTRACT);
+
 export function assertNormalizationContract(contract: NormalizationContract): void {
-  if (canonicalStringify(contract) !== canonicalStringify(DEFAULT_CONTRACT)) {
+  if (validatedContracts.has(contract)) return;
+  if (canonicalStringify(contract) !== DEFAULT_CONTRACT_CANONICAL) {
     throw new Error(`unsupported normalization contract ${contract.id}`);
   }
   assertRuntimeNormalizationBehavior();
+  validatedContracts.add(contract);
 }
 
 const REQUIRED_ICU_MAJOR = 78;

@@ -302,8 +302,9 @@ function expressibleTargetIds(
   candidateTargets: ReadonlySet<string>,
   surfaces: readonly string[]
 ): string[] {
-  const mentioned = (keys: readonly string[]) => keys.some(key =>
-    key.length > 0 && surfaces.some(surface => surface === key || (surface.length > key.length && surface.includes(key))));
+  // Same rule the candidate postings use: a unit surface equal to an observable surface key.
+  const surfaceSet = new Set(surfaces);
+  const mentioned = (keys: readonly string[]) => keys.some(key => key.length > 0 && surfaceSet.has(key));
   const expressible = new Set(required.filter(id => {
     if (candidateTargets.has(id)) return true;
     const target = targetById.get(id);

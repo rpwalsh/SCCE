@@ -388,7 +388,7 @@ function sourceBoundObservationForOccurrence(input: {
     hasher: input.hasher
   });
   if (!selected) return undefined;
-  const surface = [...input.span.text].slice(selected.surfaceStartCodePoint, selected.surfaceEndCodePoint).join("");
+  const surface = codePointsOf(input.span).slice(selected.surfaceStartCodePoint, selected.surfaceEndCodePoint).join("");
   if (surface !== surface.normalize("NFC")) return undefined;
 
   return {
@@ -614,7 +614,7 @@ function candidateCellsForSlot(input: {
   expectedSide: "before" | "after" | "same" | "either";
   hasher: Hasher;
 }): Array<{ segment: LexicalSegment; segmentIndex: number; cell: GraphSurfaceTransportCell }> {
-  const fillerSet = new Set(input.observedFillers.map(normalizeSurfaceKey));
+  const fillerSet = normalizedFillerSet(input.observedFillers);
   if (!fillerSet.size) return [];
   const maxWindow = 8;
   const candidates: Array<{ segment: LexicalSegment; segmentIndex: number; cell: GraphSurfaceTransportCell }> = [];
@@ -659,9 +659,8 @@ function transportCell(input: {
   selected: boolean;
   hasher?: Hasher;
 }): GraphSurfaceTransportCell {
-  const observed = input.observedFillers.map(normalizeSurfaceKey);
   const normalized = normalizeSurfaceKey(input.segment.normalized);
-  const exactAnchor = observed.includes(normalized);
+  const exactAnchor = normalizedFillerSet(input.observedFillers).has(normalized);
   const distance = Math.abs(input.segmentIndex - input.predicateIndex);
   const featureCost = exactAnchor ? 0.04 : 0.72;
   const structuralCost = input.expectedSide === "same"
@@ -698,12 +697,17 @@ function transportCell(input: {
   };
 }
 
+const lexicalUnitMapByLattice = new WeakMap<SurfaceLattice, Map<string, SurfaceLatticeUnit>>();
+
 function lexicalLatticeUnitMap(lattice: SurfaceLattice): Map<string, SurfaceLatticeUnit> {
+  const cached = lexicalUnitMapByLattice.get(lattice);
+  if (cached) return cached;
   const out = new Map<string, SurfaceLatticeUnit>();
   for (const unit of lattice.units) {
     if (!unit.proposalSources.includes("lexical")) continue;
     out.set(`${unit.codePointStart}\u0001${unit.codePointEnd}\u0001${unit.normalized}`, unit);
   }
+  lexicalUnitMapByLattice.set(lattice, out);
   return out;
 }
 
@@ -713,6 +717,26 @@ function lexicalKey(segment: LexicalSegment): string {
 
 function normalizeSurfaceKey(value: string): string {
   return value.normalize("NFC").toLowerCase();
+}
+
+const codePointsBySpan = new WeakMap<EvidenceSpan, string[]>();
+
+function codePointsOf(span: EvidenceSpan): string[] {
+  const cached = codePointsBySpan.get(span);
+  if (cached) return cached;
+  const points = [...span.text];
+  codePointsBySpan.set(span, points);
+  return points;
+}
+
+const normalizedFillerSetByArray = new WeakMap<readonly string[], Set<string>>();
+
+function normalizedFillerSet(fillers: readonly string[]): Set<string> {
+  const cached = normalizedFillerSetByArray.get(fillers);
+  if (cached) return cached;
+  const set = new Set(fillers.map(normalizeSurfaceKey));
+  normalizedFillerSetByArray.set(fillers, set);
+  return set;
 }
 
 function syntheticUnitId(hasher: Hasher, segment: LexicalSegment): string {
