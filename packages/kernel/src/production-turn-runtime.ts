@@ -103,7 +103,7 @@ import {
   requestSentenceSequences,
   runtimeEvidenceWindowsForRequest,
   sessionContextEvidenceEnabled,
-  sourceAnchoredEvidenceForRequest,
+  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest,
   evidenceSpanProvenanceTitle,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected
@@ -1039,7 +1039,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const calibrationModels = await calibrationModelsCached();
       const sourceAnchorAudit = discourseEvidenceBound
         ? { required: false, anchors: [] as string[], evidence }
-        : sourceAnchoredEvidenceForRequest(requestedAuthority === "creative" ? subjectRetrievalText : input.text, evidence, semanticFrameBoundEvidenceIds);
+        // The single admission authority the answer proposers already use, so the pool the turn keeps is the pool
+        // the answer may draw from. The stricter title-only audit kept the Deep Space Nine article out of
+        // "Who played Sisko?" while the proposers would have admitted it on its binding sentence.
+        : sourceIdentityAdmissibleEvidenceForRequest(requestedAuthority === "creative" ? subjectRetrievalText : input.text, evidence, semanticFrameBoundEvidenceIds);
       // Empty audit over a titleless pool: identity admission can never bind
       // workspace-file spans, so fall back to the titleless spans the graph
       // slice already content-admitted; titled corpora keep strict abstention.
