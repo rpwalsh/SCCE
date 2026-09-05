@@ -167,9 +167,24 @@ export interface ScceRuntimeConfig {
   metadata?: JsonValue;
 }
 
+/** Operator credentials and machine-local paths live beside the config in an untracked `<config>.local.json`, which
+ *  wins over the tracked file. Nothing that belongs to one machine has to reach the repository or the environment. */
+export function localConfigOverlayPath(configPath: string): string {
+  return path.resolve(configPath).replace(/(\.json)?$/i, "") + ".local.json";
+}
+
+function mergeConfigOverlay<T>(base: T, overlay: unknown): T {
+  if (overlay === null || typeof overlay !== "object" || Array.isArray(overlay)) return (overlay ?? base) as T;
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown> ?? {}) };
+  for (const [key, value] of Object.entries(overlay as Record<string, unknown>)) out[key] = mergeConfigOverlay(out[key], value);
+  return out as T;
+}
+
 export async function readScceRuntimeConfig(configPath = "scce.config.json"): Promise<ScceRuntimeConfig> {
   const absolute = path.resolve(configPath);
-  const parsed = JSON.parse(await readFile(absolute, "utf8")) as ScceRuntimeConfig;
+  let parsed = JSON.parse(await readFile(absolute, "utf8")) as ScceRuntimeConfig;
+  const overlay = await readFile(localConfigOverlayPath(absolute), "utf8").catch(() => undefined);
+  if (overlay !== undefined) parsed = mergeConfigOverlay(parsed, JSON.parse(overlay));
   const databaseUrlOverride = process.env.SCCE_DATABASE_URL?.trim();
   if (databaseUrlOverride) {
     parsed.database = { ...parsed.database, url: databaseUrlOverride };

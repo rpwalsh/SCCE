@@ -282,13 +282,20 @@ pnpm install
 pnpm validate
 ```
 
-Configure the database:
+Configure the database. Credentials belong in `scce.config.local.json`, an
+untracked overlay merged over `scce.config.json`, so nothing machine-specific
+reaches the repository:
+
+```json
+{ "database": { "url": "postgresql://<user>:<password>@<host>:<port>/<database>" } }
+```
 
 ```powershell
-$env:SCCE_DATABASE_URL="postgresql://<user>:<password>@<host>:<port>/<database>"
 pnpm scce db migrate
 pnpm scce db verify
 ```
+
+`SCCE_DATABASE_URL` still overrides the file when one is set.
 
 Start the server or CLI:
 
