@@ -256,6 +256,7 @@ function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemor
         mdlGainNats: 0,
         finalEvaluationNats: 0
       },
+      collapseGuard: [],
       audit: {}
     },
     trainingPlanId: "training.fixture",
