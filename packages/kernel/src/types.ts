@@ -111,6 +111,7 @@ export const EVENT_TYPES = [
   "SymbolPatternLearned",
   "SegmentationSpacingObserved",
   "TaskNodeCompleted",
+  "CorrectionConflictDetected",
   "FieldSeeded",
   "FieldActivated",
   "FieldPropagated",
