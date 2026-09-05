@@ -6,6 +6,7 @@ import type {
   AlignmentPromotionDecision,
   AlignmentPromotionModel
 } from "./alignment-promotion.js";
+import { validateDiscontinuousConstruction, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type {
   SparseAlignmentCandidateSupport,
@@ -88,6 +89,8 @@ export interface ReversibleConstruction {
     sourceSurface: string;
     slots: ReversibleConstructionSurfaceSlot[];
     boundarySlotIds: string[];
+    /** Present only when the slots leave material between them; logical reading order, independent of byte position. */
+    discontinuous?: DiscontinuousConstruction;
   };
   discourseConditions: {
     status: "unconditioned";
@@ -368,7 +371,10 @@ export function compileReversibleConstructions(input: {
         sourceUtf16End,
         sourceSurface,
         slots,
-        boundarySlotIds: slots.map(slot => slot.id)
+        boundarySlotIds: slots.map(slot => slot.id),
+        // A construction whose slots leave material between them is discontinuous; its logical reading order is
+        // recorded separately from byte position so the spans stay movable and the port bindings survive.
+        ...(discontinuousSurface(decision, slots) ?? {})
       },
       discourseConditions: {
         status: "unconditioned" as const,
@@ -626,6 +632,27 @@ export function reversibleConstructionsFromPatterns(
     byId.set(parsed.id, parsed);
   }
   return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** Only when the slots genuinely leave a gap: a contiguous construction has nothing discontinuous to record. */
+function discontinuousSurface(
+  decision: AlignmentPromotionDecision,
+  slots: readonly ReversibleConstructionSurfaceSlot[]
+): { discontinuous: DiscontinuousConstruction } | undefined {
+  const ordered = [...slots].sort((left, right) => left.relativeUtf16Start - right.relativeUtf16Start);
+  const gapped = ordered.some((slot, index) => index > 0 && slot.relativeUtf16Start > ordered[index - 1]!.relativeUtf16End);
+  if (!gapped) return undefined;
+  const construction: DiscontinuousConstruction = {
+    id: `discontinuous_construction.${decision.seriesId}.${decision.planId}`,
+    spans: ordered.map((slot, index) => ({
+      id: slot.id,
+      order: index,
+      utf16Start: slot.relativeUtf16Start,
+      utf16End: slot.relativeUtf16End,
+      portIds: [...slot.graphPortIds]
+    }))
+  };
+  return validateDiscontinuousConstruction(construction).valid ? { discontinuous: construction } : undefined;
 }
 
 function cellsByHyperedge<T extends { graphTargetId: string }>(
