@@ -5655,7 +5655,10 @@ async function wordingRealizerCandidates(input: SpeakInput, discoursePlan: Disco
       codeLanguage
         ? surface.trim().length > 0
         : structurallyCompleteSurface(surface)
-          && (invention || wordedFromExcerpt || realizerFactArgumentsIntact(surface, groundedFacts))
+          // With a meaning verifier on the turn, faithfulness is entailment against the evidence; the argument
+          // check is the vocabulary rule from before it existed and it vetoed a verified paraphrase ("Ada Lovelace
+          // was an English mathematician and writer...") for not repeating every graph-fact argument.
+          && (invention || wordedFromExcerpt || input.meaningVerifier !== undefined || realizerFactArgumentsIntact(surface, groundedFacts))
           && (invention || codeLanguage !== undefined || meaningSurvives(surface, groundedFacts, input)))
     .map((surface, index) => ({
       id: codeLanguage
