@@ -13,7 +13,7 @@ import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationP
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
-import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, summarizeForTrace, traceSpan, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
 import {
   createFtrlProximalRanker,
   evaluateFtrlHeldOut,
@@ -184,7 +184,11 @@ async function main(): Promise<void> {
               ...(turnArgs.detailProfileId ? { detailProfileId: turnArgs.detailProfileId } : {})
             }
           };
-          const result = await negotiateLearning(runtime, () => runtime.kernel.turn(turnInput), await runtime.kernel.turn(turnInput));
+          const result = await negotiateLearning(
+            runtime,
+            () => traceSpan(trace, "turn.kernel", "cli.turn", () => runtime.kernel.turn(turnInput)),
+            await traceSpan(trace, "turn.kernel", "cli.turn", () => runtime.kernel.turn(turnInput))
+          );
           const calibrationModels = await loadCalibrationModelSet({
             store: runtime.storage.dialogueMemory,
             minPoints: 2,
@@ -1638,7 +1642,7 @@ function printJson(value: unknown): void {
 }
 
 function previewText(value: string, maxChars = 600): string {
-  return value.length <= maxChars ? value : `${value.slice(0, maxChars)}...`;
+  return String(summarizeForTrace(value, maxChars));
 }
 
 main().catch(error => {
