@@ -439,7 +439,37 @@ function normalizeWikiText(value: string): string {
   text = renderWikiLinks(text);
   text = removeXmlTags(text);
   text = stripRepeatedApostrophes(text);
+  text = dropCitationListSections(text);
   return collapseWhitespace(text).trim();
+}
+
+/** A section whose lines are citation bullets is a reference list, whatever its heading is called in whatever
+ *  language: "When was Ada Lovelace born?" was answered from one with a cited article's publication date. The
+ *  shape decides -- bullet lines carrying a year or a URL -- so no heading name is assumed. Pure. */
+function dropCitationListSections(text: string): string {
+  const newline = String.fromCharCode(10);
+  const lines = text.split(newline);
+  const heading = /^={2,}\s*[^=].*?\s*={2,}\s*$/u;
+  const citationLine = /^\s*[*#]+\s.*?(?:\b\d{4}\b|https?:\/\/|www\.)/u;
+  const out: string[] = [];
+  let section: string[] = [];
+  let headingLine: string | null = null;
+  const flush = () => {
+    const body = section.filter(line => line.trim().length > 0);
+    const citations = body.filter(line => citationLine.test(line)).length;
+    const isCitationList = body.length >= 2 && citations >= 2 && citations / body.length >= 0.6;
+    if (!isCitationList) {
+      if (headingLine !== null) out.push(headingLine);
+      out.push(...section);
+    }
+    section = [];
+  };
+  for (const line of lines) {
+    if (heading.test(line)) { flush(); headingLine = line; continue; }
+    section.push(line);
+  }
+  flush();
+  return out.join(newline);
 }
 
 function removeDelimited(input: string, startNeedle: string, endNeedle: string): string {
@@ -496,7 +526,20 @@ function removeTemplates(input: string): string {
     if (depth === 0) out += input[cursor] ?? "";
     cursor++;
   }
-  return out;
+  return closeSeparatorsLeftByTemplates(out);
+}
+
+/** A removed template leaves the separator that followed it: "({{IPAc-en|...}}; {{nee|Byron}}; 10 December 1815"
+ *  became "( ; 10 December 1815" in 1,426 promoted spans. Punctuation only, so it reads the same in any script. Pure. */
+function closeSeparatorsLeftByTemplates(text: string): string {
+  const open = "[(\[{\u3010\uff08]";
+  const close = "[)\]}\u3011\uff09]";
+  const separator = "[;,:\u3001\uff0c\uff1b\uff1a]";
+  return text
+    .replace(new RegExp(`(${open})\s*${separator}+\s*`, "gu"), "$1")
+    .replace(new RegExp(`${separator}\s*(?=${separator})`, "gu"), "")
+    .replace(new RegExp(`\s+(${separator}|[.\u3002])`, "gu"), "$1")
+    .replace(new RegExp(`${open}\s*${close}`, "gu"), "");
 }
 
 function renderWikiLinks(input: string): string {
