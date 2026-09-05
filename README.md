@@ -49,14 +49,17 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   answered with live web results. Enforcement now lives in the
   evaluation adapter, which disables every connector before constructing
   the runtime. Every number above was produced under the fix.
-- **Implemented-but-unreached exports** (2026-09-05): a reachability pass
-  from the real entry points (server routes and startup, CLI, production
+- **Implemented-but-unreached exports** (2026-09-05): `pnpm reachability`
+  walks the real entry points (server routes and startup, CLI, production
   turn runtime, kernel, adapters, VS Code, workbench, and the maintenance
-  and evaluation tools) counts 1,696 exports, of which 1,137 are reached
-  and 459 are module-internal helpers. The remaining 91 are implemented,
-  tested capabilities nothing calls yet; they are being wired rather than
-  deleted, and the count is tracked as it falls (183 at the start of this
-  pass). This is a completeness measure of the wiring, not of the
+  and evaluation tools) and writes
+  [`docs/RUNTIME_REACHABILITY.json`](docs/RUNTIME_REACHABILITY.json). It
+  counts 1,696 exports: 1,142 reached, 459 module-internal helpers, and 95
+  unreached, of which 7 are declared constants, 9 are compatibility
+  aliases for a wired implementation, and 2 belong to the legacy migration
+  path. That leaves 77 implemented, tested capabilities nothing calls yet;
+  they are being wired rather than deleted, and the count is tracked as it
+  falls (183 at the start of this pass). This measures the wiring, not the
   architecture.
 - **Test suite**: unit tests run per package (`pnpm test:unit`), including
   live-database tests against a real PostgreSQL instance when
