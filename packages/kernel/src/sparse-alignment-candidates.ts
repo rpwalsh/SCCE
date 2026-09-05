@@ -7,6 +7,7 @@ import {
   type NormalizationContract
 } from "./normalization-contract.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import { surfaceUnits } from "./surface-linguistics.js";
 import type { SurfaceLattice, SurfaceLatticeUnit } from "./surface-lattice.js";
 import {
   liftHyperedgesToTypedIncidenceGraph,
@@ -46,6 +47,8 @@ export interface SparseAlignmentTarget {
   realization?: "observed" | "omitted";
   evidenceIds: string[];
   observableSurfaceKeys: string[];
+  /** The words of a multi-unit observable surface; context postings only, never exact anchors. */
+  observableSurfaceUnitKeys?: string[];
 }
 
 export interface SparseAlignmentPosting {
@@ -170,7 +173,10 @@ export function compileSparseAlignmentTargetIndex(input: {
       evidenceIds: canonicalStrings(incidence.evidenceIds),
       observableSurfaceKeys: participant
         ? observableSurfaceKeys(participant.representation, normalizationContract)
-        : []
+        : [],
+      ...(participant
+        ? { observableSurfaceUnitKeys: observableSurfaceUnitKeys(observableSurfaceKeys(participant.representation, normalizationContract), normalizationContract) }
+        : {})
     });
   }
   targets.sort((left, right) => left.id.localeCompare(right.id));
@@ -182,6 +188,7 @@ export function compileSparseAlignmentTargetIndex(input: {
   for (const target of targets) {
     for (const evidenceId of target.evidenceIds) appendPosting(evidence, evidenceId, target.id);
     for (const key of target.observableSurfaceKeys) appendPosting(surfaces, key, target.id);
+    for (const key of target.observableSurfaceUnitKeys ?? []) appendPosting(surfaces, key, target.id);
     for (const evidenceId of target.evidenceIds) {
       for (const key of target.observableSurfaceKeys) {
         appendPosting(exactAnchors, exactAnchorKey(evidenceId, key), target.id);
@@ -492,6 +499,20 @@ function surfaceKey(value: string, contract: NormalizationContract): string {
   return normalizeCanonicalSurface(value, contract);
 }
 
+/** A multi-unit surface ("united states") is also reachable through each of its units; single-unit surfaces add nothing. */
+function observableSurfaceUnitKeys(keys: readonly string[], contract: NormalizationContract): string[] {
+  const out = new Set<string>();
+  for (const key of keys) {
+    const units = surfaceUnits(key);
+    if (units.length < 2) continue;
+    for (const unit of units) {
+      const unitKey = surfaceKey(unit, contract);
+      if (unitKey && !keys.includes(unitKey)) out.add(unitKey);
+    }
+  }
+  return [...out].sort();
+}
+
 function appendPosting(map: Map<string, string[]>, key: string, targetId: string): void {
   const values = map.get(key) ?? [];
   values.push(targetId);
@@ -602,29 +623,69 @@ function targetKindOrder(kind: SparseAlignmentTargetKind): number {
 
 export const ALIGNABLE_UNIT_KINDS: ReadonlySet<string> = new Set(["lexical", "phrase_candidate", "quote", "table_cell", "repeated_sequence"]);
 
-/** Evidence spans ranked by how many corroborated targets (evidence from 2+ source versions) they carry; the top `limit` in original order. */
+/** Evidence spans chosen so that hyperedges evidenced by 2+ source versions are covered from two versions among the
+ *  chosen spans (greedy by marginal pairing gain); the top `limit` in original order. An independent held-out family
+ *  can only recover a fact it also carries, so span density alone (one page's spans) would leave nothing to promote. */
 export function rankEvidenceForAlignment<T extends { id: unknown; sourceVersionId: unknown }>(input: {
   evidence: readonly T[];
   targetIndex: SparseAlignmentTargetIndex;
   limit: number;
 }): T[] {
-  if (input.evidence.length <= input.limit) return [...input.evidence];
+  const limit = Math.max(0, Math.floor(input.limit));
+  if (input.evidence.length <= limit) return [...input.evidence];
   const sourceByEvidenceId = new Map(input.evidence.map(span => [String(span.id), String(span.sourceVersionId)]));
-  const corroboratedByEvidenceId = new Map<string, number>();
+  const versionsByHyperedge = new Map<string, Map<string, Set<string>>>();
   for (const target of input.targetIndex.targets) {
-    const sources = new Set(target.evidenceIds.map(id => sourceByEvidenceId.get(String(id)) ?? `unknown:${String(id)}`));
-    if (sources.size < 2) continue;
+    const byVersion = versionsByHyperedge.get(target.hyperedgeId) ?? new Map<string, Set<string>>();
     for (const evidenceId of target.evidenceIds) {
       const key = String(evidenceId);
-      corroboratedByEvidenceId.set(key, (corroboratedByEvidenceId.get(key) ?? 0) + 1);
+      const version = sourceByEvidenceId.get(key);
+      if (!version) continue;
+      const spans = byVersion.get(version) ?? new Set<string>();
+      spans.add(key);
+      byVersion.set(version, spans);
+    }
+    versionsByHyperedge.set(target.hyperedgeId, byVersion);
+  }
+  const hyperedgesBySpan = new Map<string, string[]>();
+  for (const [hyperedgeId, byVersion] of versionsByHyperedge) {
+    if (byVersion.size < 2) continue;
+    for (const spans of byVersion.values()) {
+      for (const spanId of spans) hyperedgesBySpan.set(spanId, [...(hyperedgesBySpan.get(spanId) ?? []), hyperedgeId]);
     }
   }
-  const ranked = input.evidence
-    .map((span, index) => ({ span, index, score: corroboratedByEvidenceId.get(String(span.id)) ?? 0 }))
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, Math.max(0, Math.floor(input.limit)))
-    .sort((left, right) => left.index - right.index);
-  return ranked.map(row => row.span);
+  const coveredVersions = new Map<string, Set<string>>();
+  const selected = new Set<string>();
+  const gain = (spanId: string, version: string): number => {
+    let total = 0;
+    for (const hyperedgeId of hyperedgesBySpan.get(spanId) ?? []) {
+      const covered = coveredVersions.get(hyperedgeId);
+      if (!covered) total += 1;
+      else if (!covered.has(version)) total += covered.size === 1 ? 4 : 1;
+    }
+    return total;
+  };
+  const rows = input.evidence.map((span, index) => ({ span, index, id: String(span.id), version: String(span.sourceVersionId) }));
+  while (selected.size < limit) {
+    let best: { row: typeof rows[number]; gain: number } | undefined;
+    for (const row of rows) {
+      if (selected.has(row.id)) continue;
+      const value = gain(row.id, row.version);
+      if (value > 0 && (!best || value > best.gain)) best = { row, gain: value };
+    }
+    if (!best) break;
+    selected.add(best.row.id);
+    for (const hyperedgeId of hyperedgesBySpan.get(best.row.id) ?? []) {
+      const covered = coveredVersions.get(hyperedgeId) ?? new Set<string>();
+      covered.add(best.row.version);
+      coveredVersions.set(hyperedgeId, covered);
+    }
+  }
+  for (const row of rows) {
+    if (selected.size >= limit) break;
+    if (!selected.has(row.id)) selected.add(row.id);
+  }
+  return rows.filter(row => selected.has(row.id)).map(row => row.span);
 }
 
 function boundedPostingLimit(value?: number): number {

@@ -26,6 +26,8 @@ export interface AlignmentPromotionDecision {
   promoted: boolean;
   inductionSourceFamilyIds: string[];
   independentHeldoutSourceFamilyIds: string[];
+  /** Families that met every floor on their own; promotion needs the minimum of these and a majority of the expressing families. */
+  passingHeldoutSourceFamilyIds: string[];
   heldoutCoverage: number;
   cycleRecall: number;
   exactAnchorsPreserved: boolean;
@@ -73,37 +75,55 @@ export function compileAlignmentPromotionModel(input: {
       row.partition === "heldout" && !inductionFamilies.has(row.sourceFamilyId));
     const heldout = collapseHeldoutFamilies(independentHeldoutRows);
     const inductionSourceFamilyIds = [...inductionFamilies].sort();
+    // The floors hold per family; a family that expresses the hypothesis either recovers it whole or is a counter-signal.
+    const passingFamilies = heldout.filter(row => {
+      const requiredCount = Math.max(0, Math.floor(row.requiredGraphTargetCount));
+      return requiredCount > 0
+        && Math.max(0, Math.floor(row.recoveredGraphTargetCount)) >= requiredCount * minimumHeldoutCoverage
+        && unit(row.cycleRecall) >= minimumCycleRecall
+        && row.exactAnchorsPreserved
+        && Math.max(0, Math.floor(row.unsupportedAdditionCount)) === 0;
+    });
     const independentHeldoutSourceFamilyIds = heldout.map(row =>
       row.sourceFamilyId).sort();
-    const required = heldout.reduce((sum, row) =>
+    const passingHeldoutSourceFamilyIds = passingFamilies.map(row =>
+      row.sourceFamilyId).sort();
+    // The reported floors describe the families the decision rests on: the passing ones once enough exist, otherwise all.
+    const scored = passingFamilies.length >= minimumIndependentHeldoutFamilies ? passingFamilies : heldout;
+    const required = scored.reduce((sum, row) =>
       sum + Math.max(0, Math.floor(row.requiredGraphTargetCount)), 0);
-    const recovered = heldout.reduce((sum, row) =>
+    const recovered = scored.reduce((sum, row) =>
       sum + Math.min(
         Math.max(0, Math.floor(row.requiredGraphTargetCount)),
         Math.max(0, Math.floor(row.recoveredGraphTargetCount))
       ), 0);
     const heldoutCoverage = required > 0 ? recovered / required : 0;
-    const cycleRecall = heldout.length
-      ? Math.min(...heldout.map(row => unit(row.cycleRecall)))
+    const cycleRecall = scored.length
+      ? Math.min(...scored.map(row => unit(row.cycleRecall)))
       : 0;
-    const exactAnchorsPreserved = heldout.length > 0
-      && heldout.every(row => row.exactAnchorsPreserved);
-    const unsupportedAdditionCount = heldout.reduce((sum, row) =>
+    const exactAnchorsPreserved = scored.length > 0
+      && scored.every(row => row.exactAnchorsPreserved);
+    const unsupportedAdditionCount = scored.reduce((sum, row) =>
       sum + Math.max(0, Math.floor(row.unsupportedAdditionCount)), 0);
     const reasons: string[] = [];
     if (!inductionSourceFamilyIds.length) reasons.push("induction_family_missing");
-    if (independentHeldoutSourceFamilyIds.length
-      < minimumIndependentHeldoutFamilies) reasons.push("independent_heldout_families_low");
-    if (heldoutCoverage < minimumHeldoutCoverage) reasons.push("heldout_coverage_low");
-    if (cycleRecall < minimumCycleRecall) reasons.push("cycle_recall_low");
-    if (!exactAnchorsPreserved) reasons.push("exact_anchor_not_preserved");
-    if (unsupportedAdditionCount !== 0) reasons.push("unsupported_additions_present");
+    if (passingFamilies.length < minimumIndependentHeldoutFamilies) {
+      reasons.push("independent_heldout_families_low");
+      if (heldout.length && heldoutCoverage < minimumHeldoutCoverage) reasons.push("heldout_coverage_low");
+      if (heldout.length && cycleRecall < minimumCycleRecall) reasons.push("cycle_recall_low");
+      if (heldout.length && !exactAnchorsPreserved) reasons.push("exact_anchor_not_preserved");
+      if (unsupportedAdditionCount !== 0) reasons.push("unsupported_additions_present");
+    }
+    // Passing families must also be the majority of the families that express the hypothesis.
+    if (passingFamilies.length >= minimumIndependentHeldoutFamilies
+      && passingFamilies.length * 2 < heldout.length) reasons.push("heldout_majority_low");
     return {
       seriesId: set.seriesId,
       planId: hypothesis.plan.id,
       promoted: reasons.length === 0,
       inductionSourceFamilyIds,
       independentHeldoutSourceFamilyIds,
+      passingHeldoutSourceFamilyIds,
       heldoutCoverage,
       cycleRecall,
       exactAnchorsPreserved,

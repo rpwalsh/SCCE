@@ -933,15 +933,16 @@ export function graphFromStructuredSemanticCandidates(input: {
       })
     });
     const participantPorts: Hyperedge["participantPorts"] = [];
-    for (const participant of candidate.participants) {
+    // Identity is the canonical value and the relation's port, never the occurrence: the same fact from two sources meets.
+    for (const [index, participant] of candidate.participants.entries()) {
       const participantNodeId = input.ids.nodeId({
         kind: "structured_semantic_participant",
-        candidateId: candidate.id,
-        portId: participant.portId,
-        value: participant.value
+        valueKind: participant.valueKind,
+        identity: candidate.provenance.participantIdentityIds[index] ?? canonicalStringify(participant.value)
       });
+      const graphPortId = `port.${input.hasher.digestHex(canonicalStringify([candidate.relationSeedId, index, participant.valueKind])).slice(0, 32)}`;
       participantPorts.push({
-        portId: participant.portId,
+        portId: graphPortId,
         roleId: opaqueRoleId(input.opaqueRoleModel, candidate.id, participant.portId)
           ?? `role.unresolved.${input.hasher.digestHex(`${candidate.relationSeedId}\u001f${participant.valueKind}`).slice(0, 24)}`,
         nodeId: participant.realization === "omitted" ? null : participantNodeId,
@@ -956,7 +957,7 @@ export function graphFromStructuredSemanticCandidates(input: {
           representation: participant.value,
           alpha: candidate.support,
           evidenceIds: candidate.evidenceIds,
-          features: [`participant:${participant.valueKind}`, `port:${participant.portId}`],
+          features: [`participant:${participant.valueKind}`, `port:${graphPortId}`],
           createdAt: input.observedAt,
           updatedAt: input.observedAt,
           metadata: toJsonValue({ candidateId: candidate.id, portId: participant.portId })
