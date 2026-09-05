@@ -2836,7 +2836,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                   composites: algebra.composed.length,
                   targetParts: semanticTarget.parts.length,
                   coveredParts: generativeDerivation.coveredPartIds.length,
-                  derivedChars: generativeDerivation.text.length
+                  derivedChars: generativeDerivation.text.length,
+                  alternatives: generativeDerivation.alternatives.length
                 },
                 support: { algebra: algebra.audit, target: semanticTarget.audit, search: generativeDerivation.audit }
               });
