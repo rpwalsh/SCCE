@@ -525,6 +525,18 @@ export function createRuntimeGraphRetrieval(options: {
   // not ask for: measured 9.1s of a 11.4s turn spent awaiting a warm-up started by the previous turn, most of it
   // idle on the connection. The load still runs, and the turn that started it still benefits; a turn that only
   // wanted to peek takes the durable path instead of paying for someone else's cache.
+  /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
+   *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
+   *  order the asker chose never decides whether the article is found. */
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+    const rows = await deps.storage.evidence.searchEvidence({ features: [...group], limit: 32, ...sourceKinds });
+    if (rows.length) return rows;
+    const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
+      ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
+      : []));
+    return symbols.length ? deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds }) : rows;
+  }
+
   async function hotNeighborhoodIfResident(): Promise<HotGraphNeighborhood | undefined> {
     return hotNeighborhood;
   }
@@ -590,7 +602,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const proseSourceKinds = codeRequestRecognized(codeRequestSignal(text)) ? {} : { excludeSourceKinds: ["developer_intelligence", "construction_training"] };
     const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(group =>
-        deps.storage.evidence.searchEvidence({ features: group, limit: 32, ...proseSourceKinds })
+        searchAnchorGroup(group, proseSourceKinds)
       )).then(groupResults => groupResults.flat())
       : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48, ...proseSourceKinds });
     // Late-interaction visual prefilter (Phase 3): one more candidate group upstream of

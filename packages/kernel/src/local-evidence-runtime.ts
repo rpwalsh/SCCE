@@ -103,6 +103,14 @@ export function evidenceBatchFromSlice(evidence: readonly EvidenceSpan[], eviden
 }
 
 
+/** Every content unit of the request's anchors inside one sentence of the span: a binding mention, not a passing one. Pure. */
+function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly string[]): boolean {
+  const units = uniqueKernelStrings(anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))).filter(unit => [...unit].length >= 3);
+  if (!units.length) return false;
+  return splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""))
+    .some(sentence => { const folded = normalizePriorKey(sentence); return units.every(unit => folded.includes(unit)); });
+}
+
 export function evidenceForRequest(
   text: string,
   evidence: readonly EvidenceSpan[],
@@ -124,11 +132,16 @@ export function evidenceForRequest(
       const sessionSpan = String(span.id).startsWith("evidence_session_");
       const contentOverlap = evidenceRequestContentOverlap(span, contentUnits);
       const contentAnchorAligned = anchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, text));
+      // The same binding-sentence rule admission uses: a span whose one sentence carries every content anchor
+      // ("Sisko, played by Avery Brooks" for "Who played Sisko?") is about the subject, whatever its title says.
+      // Without it the article was admitted and then dropped here on a 0.007 lexical overlap.
+      const bindingSentenceAligned = anchorBindingSentenceAligned(span, anchors);
       const anchorAligned = anchors.length > 0 && (
         evidenceExactSourceAnchorMatches(span, anchors) ||
         evidenceTitleDistinctAnchorMatches(span, anchors) ||
         evidenceSourceMatchesAnchors(span, anchors) ||
-        contentAnchorAligned
+        contentAnchorAligned ||
+        bindingSentenceAligned
       );
       const initialismAligned = evidenceTitleInitialismMatches(span, initialismTokens);
       // A whole-article span must not lose to a dense passage on size alone: an anchor-aligned oversized span is also scored by its best sentence window.
@@ -147,7 +160,16 @@ export function evidenceForRequest(
       const initialismBoost = initialismAligned ? 0.6 : 0;
       const alphaBoost = lexical >= 0.025 || semanticFrameBoundAligned || priorityAligned || anchorAligned || initialismAligned ? span.alpha * 0.18 : 0;
       const sessionBoost = sessionSpan && (lexical >= 0.045 || priorityAligned) ? 0.08 : 0;
-      return { span, score: rankedLexical + alphaBoost + sessionBoost + priorityBoost + initialismBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, initialismAligned, sessionSpan, contentOverlap };
+      // A request that names only the subject ("Who was Ada Lovelace?") leaves every chunk of the article tied on
+      // lexical overlap, and the tie fell to alpha and id: chunk 16370 beat the opening sentence. The article's
+      // opening is the definitional sentence; among anchor-aligned chunks it leads unless content outscores it.
+      // The opening chunk is the definition of the article's own subject; when the request names a subject the
+      // title does not ("Who played Sisko?" against Star Trek: Deep Space Nine), the chunk whose sentence binds
+      // that subject is the one that answers, and the opening must not outrank it.
+      const titleAligned = anchors.length > 0 && (evidenceExactSourceAnchorMatches(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors) || evidenceSourceMatchesAnchors(span, anchors));
+      const openingBoost = titleAligned && span.charStart === 0 ? 0.03 : 0;
+      const bindingBoost = bindingSentenceAligned ? 0.06 : 0;
+      return { span, score: rankedLexical + alphaBoost + sessionBoost + priorityBoost + initialismBoost + openingBoost + bindingBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, initialismAligned, sessionSpan, contentOverlap };
     })
     .filter(row => {
       if (row.explicitContextAligned || row.semanticFrameBoundAligned || row.priorityAligned || row.anchorAligned || row.initialismAligned) return true;
@@ -639,7 +661,14 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // span (see the ranking block above), so the single-sentence answer
   // needs no remapping and the multi-sentence window below verifies by
   // construction.
-  let answerSentences = [selected.sentence];
+  // A subject the span's title does not name is answered by the clause that binds it: "Who played Sisko?" was
+  // answered with the whole 346-character sentence whose last clause is "Benjamin Sisko (played by Avery
+  // Brooks)". The focused clause is a slice of the sentence, so every verbatim-substring guarantee still holds.
+  const titleAnswersRequest = anchored.anchors.length > 0 && evidenceTitleDistinctAnchorMatches(selected.span, anchored.anchors);
+  const focusedSentence = !selected.nearDuplicate && anchored.anchors.length > 0 && !titleAnswersRequest
+    ? anchorFocusedAnswerSurface(selected.sentence, anchored.anchors, evidenceTitle(selected.span))
+    : selected.sentence;
+  let answerSentences = [focusedSentence && focusedSentence.length >= 24 && selected.sentence.includes(focusedSentence) ? focusedSentence : selected.sentence];
   if (sentenceBudget > 1) {
     // The window is built in tidySurfaceText space -- the exact space
     // mouth.ts's source-excerpt verification compares answers to evidence
@@ -737,7 +766,19 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (!answerEvidence.length) return undefined;
   const contradiction = Math.max(input.entailment?.contradiction ?? 0, input.semanticProof?.contradiction ?? 0);
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
-  const sentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
+  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
+  // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
+  // in: "Who played Sisko?" was answered with a 443-character sentence about Roddenberry and space stations whose
+  // final clause was "Benjamin Sisko (played by Avery Brooks)". anchorFocusedAnswerSurface existed for exactly this
+  // and was called from nowhere. It applies only when no span's title matches the anchors, so definitional
+  // answers about an article's own subject keep their full lead sentence.
+  const titleAnswersRequest = anchored.anchors.length > 0 && answerEvidence.some(span => evidenceTitleDistinctAnchorMatches(span, anchored.anchors));
+  const sentences = planNearDuplicate || titleAnswersRequest || !anchored.anchors.length
+    ? rankedSentences
+    : rankedSentences.map(sentence => {
+      const focused = anchorFocusedAnswerSurface(sentence, anchored.anchors, evidenceTitle(answerEvidence[0]!));
+      return focused && focused.length >= 24 ? focused : sentence;
+    });
   if (!sentences.length) return undefined;
   if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(sentences, span, requestContentEvidenceUnits(input.requestText), input.requestText))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
@@ -1870,6 +1911,24 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
       .filter(row => row.hits >= requiredHits)
       .sort((left, right) => right.hits - left.hits);
     admitted.push(...scored.slice(0, 12).map(row => row.span));
+    // A titled article can still be the only source that binds the subject asked about: "Who played Sisko?"
+    // names a character, and the article that answers is titled Star Trek: Deep Space Nine. Title identity
+    // admits nothing, so the choice is between this article and answering nothing at all. It is admitted when
+    // every content anchor sits inside one of its sentences -- a binding mention, not a passing one -- and
+    // only when no title-identified span exists, so cross-title abstention holds whenever a title does match.
+    if (!admitted.length && contentAnchors.length) {
+      const titled = evidence.filter(span => evidenceTitle(span));
+      const bound = titled
+        .map(span => {
+          const hits = splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""))
+            .map(sentence => normalizePriorKey(sentence))
+            .reduce((best, sentence) => Math.max(best, contentAnchors.filter(anchor => sentence.includes(anchor)).length), 0);
+          return { span, hits };
+        })
+        .filter(row => row.hits >= Math.max(1, contentAnchors.length))
+        .sort((left, right) => right.hits - left.hits);
+      admitted.push(...bound.slice(0, 12).map(row => row.span));
+    }
   }
   // Post-rechunk, 4KB children carry the same content; parents are graph linkage only.
   const passages = admitted.filter(span => [...String(span.text ?? "")].length <= 4096);
@@ -3130,7 +3189,10 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 
  function sourceBoundaryAlignedClauseStart(surface: string, beforeIndex: number): number {
   const prefix = surface.slice(0, Math.max(0, beforeIndex));
-  const boundary = [...prefix.matchAll(/[\p{Sentence_Terminal}\u3002\uff01\uff1f]\s*/gu)].at(-1);
+  // A clause boundary, not only a sentence terminal: the clause that binds the subject may open at a colon,
+  // semicolon or comma inside one long sentence ("...central character: Starfleet Commander, later Captain,
+  // Benjamin Sisko (played by Avery Brooks)"). Punctuation only, so it reads the same in any script.
+  const boundary = [...prefix.matchAll(/[\p{Sentence_Terminal}\u3002\uff01\uff1f:;,\u3001\uff0c\uff1b\uff1a\u2013\u2014]\s*/gu)].at(-1);
   if (!boundary || boundary.index === undefined) return 0;
   const start = boundary.index + boundary[0].length;
   const interveningWords = localSurfaceWordSpans(surface.slice(start, beforeIndex));
