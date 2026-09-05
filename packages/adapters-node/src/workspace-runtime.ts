@@ -21,11 +21,14 @@ import {
   selectWorkspaceTransformationFamily,
   workspaceTaskConstraintEvidenceSpanId,
   generateWorkspacePatchPlan,
+  generateWorkspacePatchPlanFromProgramGraph,
   type DialoguePragmaticsResult,
   type FileArtifact,
   type IngestResult,
   type JsonValue,
   type PatchTransactionPlan,
+  type ProgramGraph,
+  type WorkspaceProgramPatchPlanGenerationResult,
   type RepoSnapshot,
   type WorkspaceCorePromotionResult,
   type WorkspaceKernelAnswerResult,
@@ -251,6 +254,9 @@ export interface WorkspaceCodingPatchPlanningInput {
   requestText: string;
   requestedPaths: string[];
   diagnosticCodes?: number[];
+  /** The hydrated program graph the turn already planned; without it only the compiler-diagnostic lane can run. */
+  program?: ProgramGraph;
+  evidenceIds?: readonly string[];
   validationPlan: WorkspacePatchValidationPlan;
 }
 
@@ -302,7 +308,8 @@ export interface WorkspaceCompilerPatchUnresolvedResult {
 export type WorkspaceCodingPatchPlanningResult =
   | WorkspaceCompilerPatchPlanGenerationResult
   | WorkspaceCompilerPatchUnresolvedResult
-  | WorkspaceTransformationFamilySelection;
+  | WorkspaceTransformationFamilySelection
+  | WorkspaceProgramPatchPlanGenerationResult;
 
 /**
  * Converts only the server-owned compiler-planning success state into the
@@ -311,6 +318,19 @@ export type WorkspaceCodingPatchPlanningResult =
 export function verifiedCompilerPlansForTurn(
   result: WorkspaceCodingPatchPlanningResult
 ): readonly PatchTransactionPlan[] {
+  // The program-graph lane hands off under the same rule as the compiler lane: authority absent, plan unexecuted.
+  if ("programProposalTrace" in result) {
+    if (result.authorization.required !== true
+      || result.authorization.granted !== false
+      || result.authorization.capabilityId !== "workspace.patch.apply") {
+      throw new Error("workspace program plan handoff requires absent execution authority");
+    }
+    if (result.execution.state !== "not_executed" || result.execution.receipt !== null) {
+      throw new Error("workspace program plan handoff requires an unexecuted plan");
+    }
+    verifyPatchTransactionPlan(result.plan);
+    return Object.freeze([result.plan]);
+  }
   if (!("statusId" in result) || result.statusId !== "scce.workspace.compiler_patch.selected.v1") return [];
   if (result.authorization.required !== true
     || result.authorization.granted !== false
@@ -1672,6 +1692,28 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
 }): Promise<WorkspaceCodingPatchPlanningResult> {
   const initial = await loadDurableWorkspaceRevision(args);
   const requestedPaths = uniqueWorkspacePaths(args.input.requestedPaths);
+  // A hydrated program graph is a complete proposal on its own; the compiler-diagnostic lane below repairs an existing
+  // file instead. Neither is executed here: the returned plan carries absent authority and an unexecuted state.
+  if (args.input.program) {
+    const program = args.input.program;
+    const artifactPaths = program.files.map(file => normalizePath(file.path));
+    const existingDirectoryPaths = ["", ...new Set(initial.snapshot.files.map(file => path.posix.dirname(normalizePath(file.path))).filter(value => value && value !== "."))];
+    return generateWorkspacePatchPlanFromProgramGraph({
+      snapshot: initial.snapshot,
+      expectedRevisionId: initial.snapshot.revisionId,
+      expectedRevisionHash: initial.snapshot.revisionHash,
+      request: {
+        requestId: args.input.requestId,
+        text: args.input.requestText,
+        requestedPaths,
+        evidenceIds: [...new Set(args.input.evidenceIds ?? [])]
+      },
+      program,
+      existingDirectoryPaths,
+      verifiedAbsentPaths: await verifiedProgramArtifactAbsences(args.root, artifactPaths, initial.snapshot),
+      validationPlan: args.input.validationPlan
+    });
+  }
   if (!args.input.diagnosticCodes?.length) {
     return {
       schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
