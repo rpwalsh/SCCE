@@ -13,7 +13,7 @@ import {
   learningConsentInput,
   listHeldSources,
   reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
-import { createDeveloperSurfaceState, hydrateSurfaceFromTurn, renderWorkbench, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
+import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 
@@ -877,7 +877,19 @@ async function dispatch(
     if (!task) throw new HttpError(404, "turn task not found");
     const result = [...task.frames].reverse().find(frame => frame.type === "result")?.value;
     if (result === undefined) throw new HttpError(409, "turn task has produced no result frame yet");
-    return json(hydrateSurfaceFromTurn(createDeveloperSurfaceState(context.config.server.url), result));
+    const hydrated = hydrateSurfaceFromTurn(createDeveloperSurfaceState(context.config.server.url), result);
+    // The same projection carries what still needs a decision and where each command actually goes, so a client
+    // renders approvals and routes commands without a second copy of either table.
+    const approvals = hydrateApprovals(context.runtime.approvals.snapshot());
+    return json({
+      ...hydrated,
+      approvals: approvals.approvals,
+      status: { ...hydrated.status, operatorGrant: approvals.operatorGrant },
+      commandRoutes: hydrated.commands.flatMap(command => {
+        const route = routeForCommand(command);
+        return route ? [{ id: command.id, method: route.method, path: route.path }] : [];
+      })
+    });
   }
   if (taskRoute && req.method === "POST" && taskRoute.action === "cancel") {
     const task = turnTaskRegistryFor(context.runtime.storage).cancel(taskRoute.taskId);
