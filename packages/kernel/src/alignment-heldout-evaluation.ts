@@ -143,10 +143,18 @@ export function compileAutomaticAlignmentEvaluation(input: {
           .map(cell => cell.candidateId));
         const exactAnchorsPreserved = heldoutExactAnchors.every(candidate =>
           selectedCandidateIds.has(candidate.id));
+        // A sibling port of a required hyperedge that shows the same surface is the same alignment seen twice, not an addition.
         const unsupportedAdditionCount = [...selectedTargets].filter(id => {
           if (required.has(id)) return false;
-          const hyperedgeId = targetById.get(id)?.hyperedgeId;
-          return hyperedgeId ? requiredHyperedges.has(hyperedgeId) : false;
+          const target = targetById.get(id);
+          const hyperedgeId = target?.hyperedgeId;
+          if (!hyperedgeId || !requiredHyperedges.has(hyperedgeId)) return false;
+          const surfaces = new Set([...(target?.observableSurfaceKeys ?? []), ...(target?.observableSurfaceUnitKeys ?? [])]);
+          return !requiredGraphTargetIds.some(requiredId => {
+            const other = targetById.get(requiredId);
+            return other?.hyperedgeId === hyperedgeId
+              && [...(other.observableSurfaceKeys ?? []), ...(other.observableSurfaceUnitKeys ?? [])].some(key => surfaces.has(key));
+          });
         }).length;
         heldout.push({
           sourceFamilyId: support.sourceFamilyId,
@@ -321,7 +329,7 @@ function expressibleTargetIds(
     const target = targetById.get(id);
     // A port is expressible only where its own fact is evidenced and its surface occurs; a bare mention of the surface asserts nothing.
     return target?.kind === "incidence"
-      && mentioned(target.observableSurfaceKeys)
+      && mentioned([...target.observableSurfaceKeys, ...(target.observableSurfaceUnitKeys ?? [])])
       && target.evidenceIds.some(evidenceId => evidenceIds.has(String(evidenceId)));
   }));
   for (const id of required) {

@@ -5,7 +5,9 @@ import {
   buildSurfaceLattice,
   compileSparseAlignmentCandidateSupports,
   createHasher,
+  rankEvidenceForAlignment,
   sparseAlignmentCandidatesForUnit,
+  type SparseAlignmentTargetIndex,
   type EvidenceId,
   type GraphNode,
   type Hyperedge,
@@ -295,3 +297,24 @@ function port(
     evidenceIds: ["evidence.ada" as EvidenceId]
   };
 }
+
+describe("alignment span selection", () => {
+  it("covers a corroborated hyperedge from two source versions before spending the budget on one dense page", () => {
+    const span = (id: string, sourceVersionId: string) => ({ id, sourceVersionId });
+    const evidence = [span("e1", "v1"), span("e2", "v1"), span("e3", "v1"), span("e4", "v2"), span("e5", "v3")];
+    const targets = [
+      { hyperedgeId: "h.shared", evidenceIds: ["e1", "e4"] },
+      { hyperedgeId: "h.other", evidenceIds: ["e2", "e5"] },
+      { hyperedgeId: "h.dense.1", evidenceIds: ["e3", "e2"] },
+      { hyperedgeId: "h.dense.2", evidenceIds: ["e3", "e1"] },
+      { hyperedgeId: "h.dense.3", evidenceIds: ["e3", "e2"] }
+    ];
+    const index = { targets } as unknown as SparseAlignmentTargetIndex;
+    const chosen = rankEvidenceForAlignment({ evidence, targetIndex: index, limit: 2 }).map(row => row.id);
+    expect(new Set(chosen.map(id => evidence.find(row => row.id === id)!.sourceVersionId)).size).toBe(2);
+    expect(chosen).toContain("e4");
+    const four = rankEvidenceForAlignment({ evidence, targetIndex: index, limit: 4 }).map(row => row.id);
+    expect(four).toEqual(expect.arrayContaining(["e1", "e4", "e2", "e5"]));
+    expect(rankEvidenceForAlignment({ evidence, targetIndex: index, limit: 9 })).toHaveLength(5);
+  });
+});
