@@ -16,6 +16,7 @@ import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWork
 import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, summarizeForTrace, traceSpan, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
 import {
   createFtrlProximalRanker,
+  restoreFtrlProximalRanker,
   evaluateFtrlHeldOut,
   fitFtrlCalibration,
   FTRL_GRAPH_NODE_RANK_TASK_CLASS,
@@ -1287,7 +1288,87 @@ async function ranker(runtime: ReturnType<typeof createNodeRuntime>, args: strin
     return;
   }
 
-  return usage("scce ranker <init|evaluate|promote> [--task-class=graph.node_rank.v1] [--holdout=0.2] [--examples=2000] [--min-recall-at-1=0.6] [--min-pairwise-accuracy=0.6]");
+  if (sub === "export") {
+    const checkpoint = await store.readActive(taskClass, featureSchemaId);
+    if (!checkpoint) return usage(`no active checkpoint for task class ${taskClass}`);
+    const target = rest.find(arg => !arg.startsWith("--"));
+    // Serialized by the ranker itself, so what leaves here is exactly what restore reads back.
+    const serialized = createFtrlProximalRanker({
+      modelId: checkpoint.modelId,
+      featureSchemaId,
+      state: checkpoint.state
+    }).serialize();
+    if (target) await writeFile(path.resolve(target), serialized, "utf8");
+    else process.stdout.write(`${serialized}
+`);
+    printJson({ status: "exported", modelId: checkpoint.modelId, examplesSeen: checkpoint.examplesSeen, ...(target ? { path: path.resolve(target) } : {}) });
+    return;
+  }
+
+  if (sub === "import") {
+    const source = rest.find(arg => !arg.startsWith("--"));
+    if (!source) return usage("scce ranker import <state.json> [--task-class=<id>]");
+    const serialized = await readFile(path.resolve(source), "utf8");
+    // The state is restored through the ranker before anything is stored: a malformed or foreign-schema state is
+    // rejected here rather than written into the checkpoint store and discovered at ranking time.
+    // A trained model keeps its own identity across machines; the import stores it under the id it was trained as.
+    const declaredModelId = ((): string | undefined => {
+      try {
+        const parsed = JSON.parse(serialized) as { modelId?: unknown };
+        return typeof parsed.modelId === "string" && parsed.modelId.trim() ? parsed.modelId : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    if (!declaredModelId) {
+      printJson({ status: "refused", reason: "serialized ranker state does not name its own modelId" });
+      process.exitCode = 1;
+      return;
+    }
+    const modelId = declaredModelId;
+    let restored;
+    try {
+      restored = restoreFtrlProximalRanker(serialized, { modelId, featureSchemaId });
+    } catch (error) {
+      printJson({ status: "refused", reason: error instanceof Error ? error.message : String(error) });
+      process.exitCode = 1;
+      return;
+    }
+    const state = restored.snapshot();
+    const now = Date.now();
+    // Importing must never quietly demote a model that is already approved or active for this task class.
+    const existing = await store.readActive(taskClass, featureSchemaId);
+    if (existing && existing.modelId === modelId && !rest.includes("--replace")) {
+      printJson({
+        status: "refused",
+        reason: `${modelId} is the active checkpoint for ${taskClass} (lifecycle "${existing.lifecycle}"); pass --replace to overwrite it`
+      });
+      process.exitCode = 1;
+      return;
+    }
+    await store.putCheckpoint({
+      modelId,
+      taskClass,
+      featureSchemaId,
+      lifecycle: "candidate",
+      state,
+      trainingWindow: { firstExampleAt: state.createdAt, lastExampleAt: state.updatedAt },
+      examplesSeen: state.examplesSeen,
+      informationLabel: { tenantId: "scce.local", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" },
+      createdAt: now
+    });
+    printJson({
+      status: "imported",
+      modelId,
+      lifecycle: "candidate",
+      examplesSeen: state.examplesSeen,
+      coordinates: state.coordinates.length,
+      note: "stored as a candidate; it must pass scce ranker evaluate before it can be promoted"
+    });
+    return;
+  }
+
+  return usage("scce ranker <init|evaluate|promote|export|import> [--task-class=graph.node_rank.v1] [--holdout=0.2] [--examples=2000] [--min-recall-at-1=0.6] [--min-pairwise-accuracy=0.6]");
 }
 
 async function inspect(runtime: ReturnType<typeof createNodeRuntime>, config: Awaited<ReturnType<typeof readScceRuntimeConfig>>, args: string[]): Promise<void> {
@@ -1594,6 +1675,7 @@ function usage(error?: string): void {
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
     "  pnpm scce eval gate <objective.jsonl> [--system=<id>] [--reference=<id>]   (release gate over a sealed run's objective records; exits 1 when the gate fails)",
+    "  pnpm scce ranker init | evaluate | promote | export [file] | import <file> [--replace]",
     "  pnpm scce project summary [path]",
     "  pnpm scce project map [path]",
     "  pnpm scce project symbols [path]",
