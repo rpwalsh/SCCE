@@ -3,6 +3,10 @@
 // Which exported symbols the running system actually reaches, walked from the real entry points: server routes and
 // startup, the CLI, the production turn runtime, the kernel, the adapters, the VS Code extension, the workbench, and
 // the maintenance and evaluation tools. Writes docs/RUNTIME_REACHABILITY.json and prints the counts.
+//
+// It matches names as words in reachable source, not through the type system, so it is a lower bound on what is
+// unreached: a symbol whose name also appears as a method or local elsewhere reads as reached. Treat the orphan list as
+// a work queue to verify one by one, never as a delete list.
 import fs from "node:fs";
 import path from "node:path";
 const repo = process.cwd().split(String.fromCharCode(92)).join("/");
@@ -24,7 +28,20 @@ for (const f of src) {
   importsOf.set(f, out);
 }
 const exportRe = /^export\s+(?:async\s+)?(?:function\*?|const|let|class|enum)\s+([A-Za-z_$][\w$]*)/gm;
-const exportsOf = new Map(src.map(f => [f, [...text.get(f).matchAll(exportRe)].map(m => m[1])]));
+// An `export function` inside a template literal is generated code this repo emits, not a symbol this repo exports.
+const insideTemplateLiteral = (body, index) => {
+  let backticks = 0;
+  for (let i = 0; i < index; i++) {
+    if (body[i] !== "`") continue;
+    if (i > 0 && body[i - 1] === String.fromCharCode(92)) continue;
+    backticks++;
+  }
+  return backticks % 2 === 1;
+};
+const exportsOf = new Map(src.map(f => [
+  f,
+  [...text.get(f).matchAll(exportRe)].filter(m => !insideTemplateLiteral(text.get(f), m.index ?? 0)).map(m => m[1])
+]));
 const definedIn = new Map();
 for (const f of src) for (const name of exportsOf.get(f)) if (!definedIn.has(name)) definedIn.set(name, f);
 
@@ -93,6 +110,7 @@ const legacy = orphans.filter(o => /scce2|\/v2-/i.test(o.file)).length;
 console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "remaining", orphans.length - contracts - legacy - aliases);
 fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
  generatedAt: new Date().toISOString(),
+ method: "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  totals: {
   exports: rows.length,
   reached: rows.length - orphans.length - internalOnly.length,
