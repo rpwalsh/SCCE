@@ -55,7 +55,15 @@ describe("turn surface projection", () => {
     });
 
     const origin = await listeningServer({
-      runtime: { storage },
+      runtime: {
+        storage,
+        approvals: {
+          snapshot: () => ({
+            operatorGrant: true,
+            pending: [{ id: "approval.1", planId: "plan.1", capabilityId: "network.search", reason: "consent required", risk: 0.4, createdAt: 5 }]
+          })
+        }
+      },
       config: { server: { url: "http://127.0.0.1:8787" } },
       startupReadiness: { snapshot: () => ({ phase: "running", ok: true, complete: true }) }
     } as unknown as ApiContext);
@@ -66,7 +74,9 @@ describe("turn surface projection", () => {
       serverUrl: string;
       trace: unknown[];
       panes: { id: string; items: { label: string }[] }[];
-      status: { episodeId?: string; force?: string; requestInFlight: boolean };
+      approvals: Array<{ planId: string; capabilityId: string }>;
+      commandRoutes: Array<{ id: string; method: string; path: string }>;
+      status: { episodeId?: string; force?: string; requestInFlight: boolean; operatorGrant: boolean };
     };
     expect(surface.serverUrl).toBe("http://127.0.0.1:8787");
     expect(surface.trace).toHaveLength(1);
@@ -75,6 +85,13 @@ describe("turn surface projection", () => {
     expect(surface.status.requestInFlight).toBe(false);
     const source = surface.panes.find(pane => pane.id === "source");
     expect(source?.items.some(item => item.label.includes("the first published algorithm"))).toBe(true);
+    expect(surface.approvals).toEqual([expect.objectContaining({ planId: "plan.1", capabilityId: "network.search" })]);
+    expect(surface.status.operatorGrant).toBe(true);
+    expect(surface.commandRoutes.find(route => route.id === "approvals.approve")).toEqual({
+      id: "approvals.approve",
+      method: "POST",
+      path: "/api/session/approve"
+    });
   });
 
   it("reports a task with no result frame rather than inventing an empty surface", async () => {
@@ -84,7 +101,7 @@ describe("turn surface projection", () => {
     registry.append(task.taskId, { type: "error", error: "turn failed" });
 
     const origin = await listeningServer({
-      runtime: { storage },
+      runtime: { storage, approvals: { snapshot: () => ({ operatorGrant: false, pending: [] }) } },
       config: { server: { url: "http://127.0.0.1:8787" } },
       startupReadiness: { snapshot: () => ({ phase: "running", ok: true, complete: true }) }
     } as unknown as ApiContext);
