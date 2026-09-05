@@ -3,6 +3,7 @@
 import type { CorrectionRuleRecord } from "./storage.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
+import { isEntitySaladSurface } from "./evidence-gist.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
@@ -6054,6 +6055,8 @@ function admissibleMouthSurface(text: string): boolean {
   if (isDegenerateBareSurface(clean)) return false;
   if (containsUnresolvedSurfaceKey(clean)) return false;
   if (containsSurfaceRealizerTelemetry(clean) || containsInternalSurfaceArtifact(clean) || containsStructuredCandidateTelemetry(clean)) return false;
+  // A run of proper nouns with almost no lowercase between them is a roster, not a sentence.
+  if (isEntitySaladSurface(clean)) return false;
   return detectCannedAnswerSpeech(clean).length === 0;
 }
 

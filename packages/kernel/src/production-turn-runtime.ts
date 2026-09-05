@@ -136,7 +136,7 @@ import { schedulableSubtasks } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
-import { exactComputationForText } from "./exact-computation.js";
+import { exactComputationForText, verifyExactResultMatchesClaim } from "./exact-computation.js";
 import { syncUserModelStoreForTurn, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -854,7 +854,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // lost in what the user is ever shown, even for a value this float
       // conversion itself could not represent exactly.
       const exactComputation = exactComputationForText(input.text);
-      const arithmetic = exactComputation
+      // The exact result and the text SCCE is about to speak must be the same number: a formatter that drifts from
+      // the computed quantity turns an exact answer into a claim nothing checked.
+      const exactComputationVerified = exactComputation
+        ? verifyExactResultMatchesClaim(exactComputation.result, exactComputation.answer)
+        : undefined;
+      if (exactComputation && exactComputationVerified && !exactComputationVerified.matches) {
+        failures.push(`exact computation answer does not match its own quantity: expected ${exactComputationVerified.expected}, answer ${exactComputation.answer}`);
+      }
+      const arithmetic = exactComputation && exactComputationVerified?.matches
         ? {
           expression: exactComputation.expression,
           normalizedExpression: exactComputation.expression,
