@@ -996,6 +996,7 @@ export class WikipediaV3Ingestor {
       const alignmentTargetIndex = compileSparseAlignmentTargetIndex({
         incidenceGraph,
         nodes: promotedGraph.nodes.filter(node => alignmentNodeIds.has(String(node.id))),
+        maxTargetsPerPosting: 512,
         hasher: this.hasher
       });
       let alignmentCandidateCount = 0;
@@ -1196,6 +1197,9 @@ export class WikipediaV3Ingestor {
         observations: alignmentHeldoutEvaluation.promotionObservations,
         hasher: this.hasher
       });
+      const promotedSeriesIds = new Set(alignmentPromotionModel.decisions
+        .filter(decision => decision.promoted)
+        .map(decision => decision.seriesId));
       const reversibleConstructionCompilation =
         compileReversibleConstructions({
           alternativeSets: alignmentAlternativeSets,
@@ -1338,19 +1342,25 @@ export class WikipediaV3Ingestor {
           crossDocumentAlignmentModelIds:
             [...crossDocumentAlignmentModelIds].sort(),
           alignmentAlternativeSetIds,
-          alignmentAlternativeSets,
-          coarseToFineAlignments,
+          // The event stays bounded: plan-bearing sets persist only for promoted series; the rest is summarized.
+          alignmentAlternativeSets: alignmentAlternativeSets.filter(set => promotedSeriesIds.has(set.seriesId)),
+          coarseToFineAlignmentIds: coarseToFineAlignments.map(row => row.id),
           alignmentCalibrationModel,
           alignmentPromotionModel,
-          alignmentHeldoutEvaluation,
+          alignmentHeldoutEvaluation: {
+            artifactCount: alignmentHeldoutEvaluation.artifacts.length,
+            promotionObservationCount: alignmentHeldoutEvaluation.promotionObservations.length,
+            calibrationObservationCount: alignmentHeldoutEvaluation.calibrationObservations.length,
+            candidateRecall: alignmentHeldoutEvaluation.candidateRecall
+          },
           reversibleConstructions:
             reversibleConstructionCompilation.constructions,
           reversibleConstructionRejections:
-            reversibleConstructionCompilation.rejections,
+            reversibleConstructionCompilation.rejections.slice(0, 64),
           pairedAntiUnifiedConstructions:
             pairedAntiUnifiedCompilation.constructions,
           pairedAntiUnifiedConstructionRejections:
-            pairedAntiUnifiedCompilation.rejections,
+            pairedAntiUnifiedCompilation.rejections.slice(0, 64),
             graphCorrelatedVariabilityModel:
               pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
             optionalNullRealizationModel,

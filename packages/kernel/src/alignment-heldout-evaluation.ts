@@ -7,6 +7,7 @@ import {
 } from "./alignment-calibration.js";
 import type { AlignmentPromotionObservation } from "./alignment-promotion.js";
 import { normalizeCanonicalSurface } from "./normalization-contract.js";
+import { ALIGNABLE_UNIT_KINDS } from "./sparse-alignment-candidates.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type { SurfaceLattice } from "./surface-lattice.js";
 import type {
@@ -120,7 +121,7 @@ export function compileAutomaticAlignmentEvaluation(input: {
           candidate.graphTargetId));
         const lattice = latticeById.get(support.latticeId);
         const expressible = lattice
-          ? expressibleTargetIds(requiredGraphTargetIds, targetById, candidateTargets, latticeSurfaces(lattice))
+          ? expressibleTargetIds(requiredGraphTargetIds, targetById, candidateTargets, latticeSurfaces(lattice), latticeEvidenceIds(lattice))
           : requiredGraphTargetIds;
         if (!expressible.length) continue;
         const expressibleSet = new Set(expressible);
@@ -290,17 +291,27 @@ function selectedGraphTargetIds(plan: SparseFusedTransportPlan): string[] {
   }).filter((id, index, values) => values.indexOf(id) === index).sort();
 }
 
-function latticeSurfaces(lattice: SurfaceLattice): string[] {
-  return [...new Set(lattice.units.map(unit =>
-    normalizeCanonicalSurface(unit.normalized, lattice.normalizationContract)))];
+// Only units the candidate generator can align; sub-lexical units align solely through exact anchors, which are candidates already.
+function latticeEvidenceIds(lattice: SurfaceLattice): Set<string> {
+  return new Set([...(lattice.evidenceIds ?? []), ...lattice.units.flatMap(unit => unit.evidenceIds ?? [])].map(String));
 }
 
-/** A required port counts only when the held-out surface could express it: it has a candidate, or its participant surface occurs there. */
+function latticeSurfaces(lattice: SurfaceLattice): string[] {
+  return [...new Set(lattice.units
+    .filter(unit => {
+      const kinds = unit.proposalSources ?? (unit.kind ? [unit.kind] : undefined);
+      return !kinds || kinds.some(kind => ALIGNABLE_UNIT_KINDS.has(kind));
+    })
+    .map(unit => normalizeCanonicalSurface(unit.normalized, lattice.normalizationContract)))];
+}
+
+/** A required port counts only when the held-out surface could express it: it has a candidate, or its own fact is evidenced there and its surface occurs. */
 function expressibleTargetIds(
   required: readonly string[],
   targetById: ReadonlyMap<string, SparseAlignmentTargetIndex["targets"][number]>,
   candidateTargets: ReadonlySet<string>,
-  surfaces: readonly string[]
+  surfaces: readonly string[],
+  evidenceIds: ReadonlySet<string>
 ): string[] {
   // Same rule the candidate postings use: a unit surface equal to an observable surface key.
   const surfaceSet = new Set(surfaces);
@@ -308,7 +319,10 @@ function expressibleTargetIds(
   const expressible = new Set(required.filter(id => {
     if (candidateTargets.has(id)) return true;
     const target = targetById.get(id);
-    return target?.kind === "incidence" && mentioned(target.observableSurfaceKeys);
+    // A port is expressible only where its own fact is evidenced and its surface occurs; a bare mention of the surface asserts nothing.
+    return target?.kind === "incidence"
+      && mentioned(target.observableSurfaceKeys)
+      && target.evidenceIds.some(evidenceId => evidenceIds.has(String(evidenceId)));
   }));
   for (const id of required) {
     const target = targetById.get(id);
