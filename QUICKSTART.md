@@ -87,6 +87,20 @@ true or not true; only confirmed material is promoted to evidence, and the
 question is answered again from it. `pnpm scce learn curriculum` lists what
 SCCE itself wants to learn next; `pnpm scce learn pursue <planId>` consents.
 
+What it has learned *about you* is inspectable and reversible in the same way:
+
+```sh
+curl "http://127.0.0.1:3873/api/learning/about-me?conversationId=<id>"
+curl -X POST http://127.0.0.1:3873/api/learning/forget \
+  -H 'content-type: application/json' \
+  -d '{"conversationId":"<id>","claimId":"<id>"}'
+```
+
+The first returns every recorded claim with how it was learned — an explicit
+instruction, a demonstrated behaviour, or an inference — and which one currently
+governs each subject. The second deletes one for good; it is a real removal, not
+a superseding tombstone.
+
 ## 7. Coding
 
 `pnpm scce code --path=src/file.ts "<request>"` applies a code action the
