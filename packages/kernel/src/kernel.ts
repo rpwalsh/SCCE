@@ -451,6 +451,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     async analyzeCausalEffect(request) {
       return causalAnalysisRuntime.analyze(request);
     },
+    async discoverCausalStructure(request) {
+      return causalAnalysisRuntime.discover(request);
+    },
     async turn(input: OwnerInput): Promise<TurnResult> {
       return productionTurnRuntime.turn(input);
     },
