@@ -1,15 +1,19 @@
 {
- "generatedAt": "2026-09-06T07:34:12.044Z",
+ "generatedAt": "2026-09-06T07:40:40.295Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1665,
-  "reached": 1138,
+  "exports": 1664,
+  "reached": 1139,
   "internalHelpersOnly": 454,
-  "orphans": 73,
+  "orphans": 71,
   "declaredConstants": 6,
   "compatibilityAliases": 6,
   "legacyMigration": 2,
-  "implementedButUncalled": 59
+  "hostContracts": 0,
+  "testOnlyHelpers": 39,
+  "implementedButUncalled": 57,
+  "ofWhichCoveredByTestsOnly": 39,
+  "ofWhichNoCallerAnywhere": 18
  },
  "orphans": [
   {
@@ -17,511 +21,639 @@
    "file": "packages/adapters-node/src/code-verification.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "summarizeScce2NgramState",
    "file": "packages/adapters-node/src/scce2/brain-shard-reader.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": true
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "iterateScce2NgramCounts",
    "file": "packages/adapters-node/src/scce2/brain-shard-reader.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "encryptSecret",
    "file": "packages/adapters-node/src/secrets.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "parseWorkbookBytes",
    "file": "packages/adapters-node/src/spreadsheet-parser.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "verifyTypeScriptCommandLaneSourceBinding",
    "file": "packages/adapters-node/src/typescript-command-lane.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "alphaTraceMatrixSnapshot",
    "file": "packages/kernel/src/alpha-field-persistence.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "csrScale",
    "file": "packages/kernel/src/alpha-layer/sparse.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "DEFAULT_ALPHA",
    "file": "packages/kernel/src/alpha.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "isBrainLifecycleState",
    "file": "packages/kernel/src/brain-lifecycle.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "structuredSurface",
    "file": "packages/kernel/src/candidate.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createTemporalCausalDiscoveryEngine",
    "file": "packages/kernel/src/causal-discovery.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createCausalMath",
    "file": "packages/kernel/src/causal-math.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "buildCognitiveSubstrate",
    "file": "packages/kernel/src/cognitive-substrate.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "profileOrderIndex",
    "file": "packages/kernel/src/control-plane-profiles.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "corpusNgramSettings",
    "file": "packages/kernel/src/corpus-registry.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "chartCell",
    "file": "packages/kernel/src/derivation-chart.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "TARGET_PROFILE_PATTERN_FAMILY_IDS",
    "file": "packages/kernel/src/dialogue-learning.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "targetProfilePatternRecord",
    "file": "packages/kernel/src/dialogue-learning.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "replayDialogueOutcomeMemory",
    "file": "packages/kernel/src/dialogue-learning.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "createInMemoryDialogueMemoryStore",
    "file": "packages/kernel/src/dialogue-learning.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "moveSpan",
    "file": "packages/kernel/src/discontinuous-construction.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "interleaveConstructions",
    "file": "packages/kernel/src/discontinuous-construction.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "discourseEvidenceIdsFromMetadata",
    "file": "packages/kernel/src/discourse-state.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": true
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "deriveDiscourseTurnObservationIdV2",
    "file": "packages/kernel/src/discourse-state.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createEvaluationCacheKey",
    "file": "packages/kernel/src/evaluation-flags.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "currentEvaluationCacheOwner",
    "file": "packages/kernel/src/evaluation-trace.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "exactQuantitiesEqual",
    "file": "packages/kernel/src/exact-computation.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "deriveGenerativeStructure",
    "file": "packages/kernel/src/generative-derivation-runtime.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "requestedAuthorityBootstrapModel",
    "file": "packages/kernel/src/invention-planner.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "INDUCED_LANGUAGE_MODEL_SCHEMA_V1",
    "file": "packages/kernel/src/language-induction-persistence.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "languageGenerationDiscourseCoversRequiredContent",
    "file": "packages/kernel/src/language-memory-runtime.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": true
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "createLatentConceptLearner",
    "file": "packages/kernel/src/latent.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "validateLearningLoopHydrationContract",
    "file": "packages/kernel/src/learning-loop.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "registerMessageBundle",
    "file": "packages/kernel/src/localization.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "addMatrix",
    "file": "packages/kernel/src/math.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "scaleMatrix",
    "file": "packages/kernel/src/math.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createAlignmentEngine",
    "file": "packages/kernel/src/multilingual-alignment.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "clusterLanguageProfiles",
    "file": "packages/kernel/src/multilingual-translation.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "compilePairedAntiUnifiedPattern",
    "file": "packages/kernel/src/paired-anti-unification.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": true
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "jensenShannonDistance",
    "file": "packages/kernel/src/population-collapse-guard.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "createBulkIngestBatches",
    "file": "packages/kernel/src/postgres-contract.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "calibratePowerWalkParameters",
    "file": "packages/kernel/src/powerwalk.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": true
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "createPersonalizedPerronFrobenius",
    "file": "packages/kernel/src/ppf.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createPredictionConstruct",
    "file": "packages/kernel/src/prediction.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "predictionConstructNode",
    "file": "packages/kernel/src/prediction.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "createCanonicalJson",
    "file": "packages/kernel/src/primitives.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "featureSetMemoStats",
    "file": "packages/kernel/src/primitives.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "programPlanFingerprint",
    "file": "packages/kernel/src/program-planner.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": true
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "SUPPORTED_PROGRAM_REPAIR_FAMILIES",
    "file": "packages/kernel/src/program-repair-kernel.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "materializeTypeScriptCodeActionRepair",
    "file": "packages/kernel/src/program-repair-kernel.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "scoreRelationPotential",
    "file": "packages/kernel/src/relation-potential.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "validateRepositorySyntaxNodes",
    "file": "packages/kernel/src/repo-syntax-graph.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "evaluateCalibration",
    "file": "packages/kernel/src/scoring/evaluation.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "SEGMENTATION_AGGREGATE_SCHEMA_V1",
    "file": "packages/kernel/src/segmentation-aggregate.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "semanticTransformRules",
    "file": "packages/kernel/src/semantic-transform-registry.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "sparseAlignmentCandidatesForUnit",
    "file": "packages/kernel/src/sparse-alignment-candidates.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "sparseDot",
    "file": "packages/kernel/src/sparse-ranking.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "woldForecastCovariance",
    "file": "packages/kernel/src/spectral-forecast.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "validateSurfaceLattice",
    "file": "packages/kernel/src/surface-lattice.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "tidySurfaceTextMemoStats",
    "file": "packages/kernel/src/surface-linguistics.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createTemporalCausalDiscovery",
    "file": "packages/kernel/src/temporal-causal.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "yearsInText",
-   "file": "packages/kernel/src/temporal-subject-comparison.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "createCorrectionEngine",
    "file": "packages/kernel/src/translation-correction-engine.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "validateTreeDecomposition",
    "file": "packages/kernel/src/tree-decomposition.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "EMPTY_USER_MODEL_STORE",
    "file": "packages/kernel/src/user-model-store.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "deleteUserModelClaim",
    "file": "packages/kernel/src/user-model-store.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "workingMemoryEntriesForTask",
    "file": "packages/kernel/src/working-memory.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "createWorkspaceCoreFusion",
    "file": "packages/kernel/src/workspace-core-fusion.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "dialoguePersistenceTailsSizeForTest",
    "file": "packages/server/src/routes.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "dispatchOutlookCalendarEventRollback",
    "file": "packages/server/src/routes.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "resizeLayout",
    "file": "packages/ui/src/developer-surface.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "deactivate",
-   "file": "packages/vscode/src/extension.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
   }
  ]
 }
