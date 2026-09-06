@@ -1364,4 +1364,6 @@ export interface ScceKernel {
    * evidence-bound request (HTTP endpoint or CLI JSON input), not prose.
    */
   analyzeCausalEffect(request: import("./causal-analysis-runtime.js").CausalAnalysisRequest): Promise<import("./causal-analysis-runtime.js").CausalAnalysisResult>;
+  /** Temporal causal discovery over caller-supplied series. Typed input only, never inferred from prose. */
+  discoverCausalStructure(request: import("./causal-analysis-runtime.js").CausalDiscoveryRequest): Promise<import("./causal-analysis-runtime.js").CausalDiscoveryResult>;
 }
