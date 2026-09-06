@@ -119,7 +119,11 @@ for (const orphan of orphans) {
 // An entry earns a place in this list only when wiring it would be wrong or when it waits on capability that does
 // not exist yet -- never because finding its caller was inconvenient.
 const DELIBERATELY_UNWIRED = {
-  structuredSurface: "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank."
+  structuredSurface: "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank.",
+  sparseDot: "The only scorer over a SparseVector is the FTRL ranker, which already walks the entries to build the per-entry contribution breakdown its audit records, then sums that. Routing the sum through sparseDot would recompute every weight and throw the breakdown away, so the call site that looks right is strictly worse than what is there.",
+  addMatrix: "Dense matrix arithmetic with no dense consumer left. The kernel's Laplacian path is sparse (graphLaplacian over CsrMatrix), and the heat/diffusion operators step vector-wise, so the natural-looking uses would materialise a dense matrix per step to replace an O(nnz) vector update.",
+  scaleMatrix: "Same as addMatrix: the diffusion operators apply eta to the vector delta each step rather than scaling a matrix, and scaling one per step to match would allocate n^2 per iteration for no gain.",
+  csrScale: "graphLaplacian builds the normalized and random-walk forms directly from the adjacency rather than by scaling an existing CSR, so nothing in the sparse path needs a scaled copy; adding one would mean building a matrix to hand to a function that already computes what it needs."
 };
 for (const orphan of orphans) {
   const reason = DELIBERATELY_UNWIRED[orphan.name];
