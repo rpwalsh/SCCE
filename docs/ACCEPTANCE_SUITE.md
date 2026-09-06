@@ -8,10 +8,11 @@ This document is the specification, and coverage is recorded against it rather t
 
 ## Why a retrieval benchmark is not the finish gate
 
-A retrieval baseline is a component-level comparison. SCCE's sealed result is 166/168 against 158/168, with the two
-systems tied at 158 on cloze recall and all eight points of margin coming from declining questions the corpus cannot
-answer. That is one property, measured cleanly, and it is the property that makes the system usable where fabrication
-is unacceptable. It is not a measurement of the architecture as an architecture. These twenty behaviours are.
+A retrieval baseline is a component-level comparison. SCCE's sealed result is 161/168 against 158/168 (2026-09-06,
+revision 663afa2): the baseline is ahead on cloze recall, 158 to 153, and every point of SCCE's margin comes from
+declining the eight questions the corpus cannot answer. That is one property, measured cleanly, and it is the property
+that makes the system usable where fabrication is unacceptable. It is not a measurement of the architecture as an
+architecture. These twenty behaviours are.
 
 ## The three gates
 
