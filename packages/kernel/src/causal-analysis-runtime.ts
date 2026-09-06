@@ -5,6 +5,7 @@ import { toJsonValue } from "./primitives.js";
 import { createIdentifiedCausalGraphEngine, type IdentifiedCausalEstimateInput, type IdentifiedCausalEstimateResult } from "./identified-causal-graph.js";
 import { createTemporalCausalDiscoveryEngine, type CausalDiscoveryReport } from "./causal-discovery.js";
 import { createTemporalCausalDiscovery, type TemporalSeries } from "./temporal-causal.js";
+import { createCausalMath } from "./causal-math.js";
 import type { createEventFactory } from "./events.js";
 import type { IdFactory } from "./ids.js";
 
@@ -55,6 +56,15 @@ export interface CausalDiscoveryResult {
   eventId: string;
   report: CausalDiscoveryReport;
   stationarity: ReturnType<ReturnType<typeof createTemporalCausalDiscovery>["discover"]>["stationarity"];
+  /**
+   * The same PCMCI links under family-wise error control, alongside the report's own false-discovery control.
+   *
+   * Benjamini-Hochberg bounds the expected proportion of false edges among those reported; Holm-Bonferroni bounds the
+   * probability of reporting even one. They answer different questions and a reader deciding whether to act on a
+   * single edge needs the second. `causal-math.ts` implements the step-down and nothing called it, so every discovery
+   * report published FDR-controlled edges alone.
+   */
+  familyWiseSurvivors: { alpha: number; survivors: string[]; rejected: string[] };
 }
 
 export function createCausalAnalysisRuntime(deps: {
@@ -67,6 +77,8 @@ export function createCausalAnalysisRuntime(deps: {
   const engine = createIdentifiedCausalGraphEngine({ clock: deps.clock, hasher: deps.hasher });
   const discoveryEngine = createTemporalCausalDiscoveryEngine();
   const stationarityReporter = createTemporalCausalDiscovery();
+  // The audited estimator set, taken as one surface rather than reached into: every member carries its own stated failure modes.
+  const causalMath = createCausalMath();
   return {
     async analyze(request: CausalAnalysisRequest): Promise<CausalAnalysisResult> {
       if (request.schema !== CAUSAL_ANALYSIS_REQUEST_SCHEMA) {
@@ -101,6 +113,12 @@ export function createCausalAnalysisRuntime(deps: {
         ...(request.maxLag === undefined ? {} : { maxLag: request.maxLag }),
         ...(request.minSamples === undefined ? {} : { minSamples: request.minSamples })
       }).stationarity;
+      const alpha = request.fdrQ ?? 0.05;
+      const familyWise = causalMath.holmStepDown(
+        report.pcmciLinks.map(link => ({ id: `${link.source}->${link.target}@${link.lag}`, p: link.pValue })),
+        alpha
+      );
+      const familyWiseSurvivors = { alpha, survivors: familyWise.survivors, rejected: familyWise.rejected };
       const event = await deps.append(deps.eventFactory.create({
         episodeId,
         typeId: "CausalStructureDiscovered",
@@ -112,10 +130,12 @@ export function createCausalAnalysisRuntime(deps: {
           pcmciLinks: report.pcmciLinks.length,
           fused: report.fused.length,
           stationarity: stationarity.length,
+          familyWiseSurvivors: familyWiseSurvivors.survivors.length,
+          familyWiseAlpha: alpha,
           audit: report.audit
         })
       }));
-      return { episodeId, eventId: String(event.id), report, stationarity };
+      return { episodeId, eventId: String(event.id), report, stationarity, familyWiseSurvivors };
     }
   };
 }

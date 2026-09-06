@@ -252,13 +252,12 @@ describe("kernel training", () => {
     });
 
     await kernel.turn({ text: "Zephyr valve pressure stabilizes after calibration." });
-    // sourceAnchoredEvidenceForText now searches each candidate anchor
-    // phrase as its own query instead of blending them into one
-    // overlap-ranked search, so this request's four top-ranked multi-word
-    // anchor candidates produce four independent searchEvidence calls; each
-    // bigram that matches nothing is retried by its own symbols, so an empty
-    // store sees eight.
-    expect(fixture.evidenceSearchCalls).toBe(8);
+    // sourceAnchoredEvidenceForText searches each candidate anchor phrase as its own query instead of blending them
+    // into one overlap-ranked search, and each bigram that matches nothing is retried by its own symbols, so an empty
+    // store sees two calls per group. Five groups, not four: a one-unit subject that every multi-word anchor contains
+    // is restored as its own group, because dropping it searched only phrases like "did einstein" while `einstein` --
+    // the request's actual subject -- was never searched at all. The group budget still caps this at five.
+    expect(fixture.evidenceSearchCalls).toBe(10);
 
     evidence.push(evidenceSpan({
       id: "evidence:zephyr",
