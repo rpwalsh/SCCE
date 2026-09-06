@@ -130,6 +130,7 @@ export * from "./entailment.js";
 export * from "./truth-contract.js";
 export * from "./launch-contract.js";
 export * from "./semantic-graph.js";
+export * from "./prose-relation-channel.js";
 export * from "./semantic-proof-system.js";
 export {
   DEFAULT_PROOF_POLICY,

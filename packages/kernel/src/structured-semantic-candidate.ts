@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Observation } from "./ingestion-lanes.js";
-import { createHasher, toJsonValue } from "./primitives.js";
+import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type { EvidenceId, Hasher, JsonValue, SourceId, SourceVersionId } from "./types.js";
 import {
   canonicalNormalizationContract,
@@ -600,13 +600,20 @@ function relationSeedFor(input: {
       input.kind
     ])).slice(0, 24)}`;
   }
+  // The seed is a relation's identity, so it must separate one relation from another. Hashing only the SHAPE of the
+  // structure -- arity, participant types, "the qualifiers are an object" -- gave every arity-2 string-string
+  // relation in the corpus one identity, so "decomposes at", "was born in" and "was designed by" were literally the
+  // same relation to the promotion gate, which then promoted or rejected all prose relations as a single lump and
+  // left the graph unable to state which relation held between two nodes. The observable structure is what the
+  // producer offers as the distinguishing evidence, and it is what the seed must carry. Producers put occurrence-
+  // unique material (the sentence, the offsets) in anchors, which is provenance and correctly stays out of identity.
   const observableSignature = {
     channel: input.channel,
     arity: input.participants.length,
     participantTypes: input.participants.map(participant => jsonType(participant.value)),
-    qualifierShape: jsonType(input.qualifiers)
+    observableStructure: input.qualifiers
   };
-  return `relation_seed.opaque.${input.hasher.digestHex(JSON.stringify(observableSignature)).slice(0, 24)}`;
+  return `relation_seed.opaque.${input.hasher.digestHex(canonicalStringify(observableSignature)).slice(0, 24)}`;
 }
 
 function opaqueParticipants(value: JsonValue | undefined): Array<{
@@ -617,9 +624,18 @@ function opaqueParticipants(value: JsonValue | undefined): Array<{
   return value.map(item => {
     const row = record(item);
     const participantValue = Object.hasOwn(row, "value") ? row.value! : item;
+    // A producer that can observe what kind of thing an argument is says so, and that kind is the only thing
+    // separating one relation's argument profile from another's downstream. Deriving the kind from the JSON type
+    // instead made every prose argument "observable.string", so the promotion model's signature was constant
+    // across the whole channel and its held-out description-length test could not come out positive for any
+    // relation: the variable it conditions on carried no information. Every other channel here already declares
+    // real kinds ("number", "column", "measure_context"); the opaque channels were the ones throwing them away.
+    const declaredKind = typeof row.valueKind === "string" && row.valueKind.trim()
+      ? row.valueKind.trim()
+      : jsonType(participantValue);
     return {
       value: participantValue,
-      valueKind: `observable.${jsonType(participantValue)}`
+      valueKind: `observable.${declaredKind}`
     };
   });
 }
