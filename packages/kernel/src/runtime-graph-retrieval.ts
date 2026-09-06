@@ -8,6 +8,7 @@ import { evidenceProofBoundary } from "./proof-boundary.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import {
+  admissionTierDiagnostics,
   evidenceForRequest,
   evidenceTitleInitialismMatches,
   orderedSequenceUnits,
@@ -675,6 +676,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       },
       support: {
         sourceAnchoringRequired: anchored.required,
+        admissionTier: admissionTierDiagnostics,
         sourceIdentityBoundEvidenceAbsent: promoted.length > 0 && evidence.length === 0,
         // The pool admission saw, not only what it kept: "one wrong span reached admission" and "the right span was
         // never retrieved" look identical without this.
