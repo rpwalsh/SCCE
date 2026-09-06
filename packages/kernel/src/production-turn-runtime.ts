@@ -1247,12 +1247,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const sessionProjection = projectSessionEvidenceWith(typedIngestProjector, sessionEvidence, clock.now());
       if (sessionProjection && (sessionProjection.graphNodes.length || sessionProjection.graphEdges.length)) {
         const existingNodeIds = new Set(graph.nodes.map(node => String(node.id)));
-        const existingEdgeKeys = new Set(graph.edges.map(edge => `${String(edge.source)} ${String(edge.target)} ${String(edge.relationId)}`));
+        const existingEdgeKeys = new Set(graph.edges.map(edge => `${String(edge.source)}\u0000${String(edge.target)}\u0000${String(edge.relationId)}`));
         graph = {
           ...graph,
           nodes: [...graph.nodes, ...sessionProjection.graphNodes.filter(node => !existingNodeIds.has(String(node.id)))],
           edges: [...graph.edges, ...sessionProjection.graphEdges.filter(edge =>
-            !existingEdgeKeys.has(`${String(edge.source)} ${String(edge.target)} ${String(edge.relationId)}`))]
+            !existingEdgeKeys.has(`${String(edge.source)}\u0000${String(edge.target)}\u0000${String(edge.relationId)}`))]
         };
       }
       kernelTrace({
