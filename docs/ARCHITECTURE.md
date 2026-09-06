@@ -233,11 +233,12 @@ bounded hashes and checkpoints, distinguishes learned priors from direct evidenc
 and writes through the v3 storage contract. Learned priors can affect activation and
 language but cannot certify a factual answer.
 
-PostgreSQL schema version 12 is current. Brain lifecycle states are `CREATED`,
+PostgreSQL schema version 25 is current (`POSTGRES_SCHEMA_VERSION`, `packages/kernel/src/storage.ts`).
+Brain lifecycle states are `CREATED`,
 `IMPORTING`, `VALIDATING`, `READY`, `ACTIVE`, `STOPPED`, `FAILED`, `QUARANTINED`, and
 `INCOMPATIBLE`. Activation is transactional and READY-only. A partial unique index
-enforces at most one ACTIVE lifecycle row, and the v12 migration deterministically
-repairs older duplicate-ACTIVE state before installing that constraint.
+enforces at most one ACTIVE lifecycle row, and the migration that introduced it
+deterministically repairs duplicate-ACTIVE state before installing the constraint.
 
 Turn-local retrieval uses one shared compiled memory slice after the durable graph
 retriever has opened an admissible neighborhood. Term and sparse-feature postings,

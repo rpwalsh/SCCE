@@ -1304,7 +1304,18 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           plan.orderedPoints.find(programOrArtifactSurfacePoint)?.proposition ?? "",
           deterministicVerdict
             ? boundarySurfaceFromRuntime(input.entailment, input.evidence, deterministicVerdict)
-            : ""
+            : "",
+          // Last resort, and source-exact: the window of the admitted span that actually carries the request's own
+          // content units.
+          //
+          // Every surface above is built from graph facts, and a chunk's facts cluster around its opening. Asked
+          // "who were the characters in gene rodenberry's Andromeda?", the turn admitted the right chunk -- the one
+          // containing the article's whole cast list -- realized eight facts from its lead paragraph, and then
+          // rejected all of them at the coverage gate because none mentions a character. The answer was inside the
+          // admitted evidence and the turn returned silence. This offers that window instead of nothing: it is cut
+          // from the span verbatim, so it can assert nothing the source does not, and it sits last so it is reached
+          // only when no fact-built surface covers the request.
+          requestWindowSurfaceFromEvidence(input, plan)
         ];
       // Clip each candidate to the length/plan budget before admissibility
       // filtering, not after: a candidate's untrimmed tail (e.g. a
@@ -1314,6 +1325,13 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       // Checking admissibility on what will actually be emitted, rather
       // than on material already destined to be discarded, is the correct
       // gate -- clipping a surface already within budget is a no-op.
+      // Reference apparatus loses to prose, and only to prose.
+      //
+      // Live: "did martha washington invent the concept of using flags to represent nations?" answered with the
+      // article's External links block -- four bare URLs and a bullet list. Surfaces are not scrubbed (scrubbing every
+      // one emptied twenty certified answers, because the sealed gold is cut from raw chunk text) and none is
+      // discarded; a surface that is mostly link, template or table markup simply sorts behind every surface that is
+      // not, so it is still available when nothing else can be said.
       const clippedDeterministicSurfaces = deterministicSurfaces.map(surface => preserveSurfaceExtent(surface, input.maxLength, plan));
       const deterministicSequences = requestSentenceSequences(mouthEchoQuestionText(input));
       const deterministicQuotation = deterministicSequences.length > 0
@@ -7474,4 +7492,97 @@ function clarificationSurfaceFromFacts(facts: readonly SemanticAnswerFact[]): { 
   const fact = usable[Math.max(0, keys.indexOf(selectedKey))]!;
   const surface = [fact.subject, fact.predicate, fact.object].map(part => String(part ?? "").trim()).filter(Boolean).join(" ");
   return surface ? { surface, selectedKey, evidenceIds: (fact.evidenceIds ?? []).map(String) } : undefined;
+}
+
+/**
+ * The window of an admitted span that carries the request's own content units, cut verbatim from the source.
+ *
+ * Sentences are split on terminal punctuation shared across writing systems, never on any language's rules. Windows
+ * are scored by the request units they cover, each weighted by how rare it is *inside this document*: a question about
+ * the characters in a series is distinguished from every other question about that series by the word "characters",
+ * and weighting by local rarity is what makes the window land on the cast list rather than on the lead paragraph that
+ * repeats the title. Nothing is composed -- the words are the source's own, in the source's own order.
+ *
+ * List and heading markers are removed from this window and only this one. The general rule stands: scrubbing every
+ * mouth surface once emptied twenty certified answers, because the sealed gold is cut from raw chunk text. This
+ * surface is new, is reached only after every fact-built candidate has failed, and a window that still carries link,
+ * template or table markup after the markers come off is refused rather than cleaned further.
+ */
+/** Template, wiki-link, table or reference markup: apparatus a prose window must not carry. */
+const windowStructuralMarkup = new RegExp("[{]{2}|[[]{2}|[|]-|<ref|[=]{2,}", "u");
+
+function requestWindowSurfaceFromEvidence(input: SpeakInput, plan: SurfacePlan): string {
+  const units = mouthCoverageUnits(input);
+  if (!units.length) return "";
+  const boundIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
+  const bound = input.evidence.filter(span => boundIds.has(String(span.id)));
+  const searched = bound.length ? bound : input.evidence;
+  if (!searched.length) return "";
+  const budget = Math.min(420, Math.max(240, input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT));
+  const unitSet = new Set(units);
+  let best: { score: number; chars: number; text: string; span: EvidenceSpan } | undefined;
+  for (const span of searched.slice(0, 4)) {
+    const text = String(span.text ?? span.textPreview ?? "");
+    if (!text) continue;
+    const sentences = text.slice(0, 60_000).split(/(?<=[.!?。．！？])\s+/u).map(sentence => sentence.trim()).filter(Boolean);
+    const hits = sentences.map(sentence => {
+      const surface = new Set(promptSurfaceUnits(sentence));
+      return [...unitSet].filter(unit => surface.has(unit));
+    });
+    const documentFrequency = new Map<string, number>();
+    for (const row of hits) for (const unit of row) documentFrequency.set(unit, (documentFrequency.get(unit) ?? 0) + 1);
+    const weight = (unit: string) => 1 / (1 + Math.log1p(documentFrequency.get(unit) ?? 1));
+    for (let start = 0; start < sentences.length; start++) {
+      if (!hits[start]?.length) continue;
+      const seen = new Set<string>();
+      let chars = 0;
+      for (let end = start; end < sentences.length && end < start + 8; end++) {
+        const sentence = sentences[end] ?? "";
+        if (chars + sentence.length + 1 > budget) break;
+        chars += sentence.length + 1;
+        for (const unit of hits[end] ?? []) seen.add(unit);
+        const score = [...seen].reduce((total, unit) => total + weight(unit), 0);
+        if (!best || score > best.score + 1e-9 || (Math.abs(score - best.score) <= 1e-9 && chars > best.chars)) {
+          best = { score, chars, text: sentences.slice(start, end + 1).join(" "), span };
+        }
+      }
+    }
+  }
+  if (!best) return "";
+  const cleaned = withoutListAndHeadingMarkers(best.text);
+  if (!cleaned || surfaceIsSourceApparatus(cleaned) || windowStructuralMarkup.test(cleaned)) return "";
+  const window = preserveSurfaceExtent(tidySurface(cleaned), input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT, plan);
+  if (!window) return "";
+  return answerCoversRequest([window], best.span, units, input.requestText ?? "") ? window : "";
+}
+
+/** Heading and list markers removed; every remaining word is the source's own. Pure. */
+function withoutListAndHeadingMarkers(text: string): string {
+  return text
+    .replace(/={2,}\s*([^=]+?)\s*={2,}/gu, "$1:")
+    .replace(/(^|\s)[*#]+\s+/gu, "$1")
+    .replace(/\s{2,}/gu, " ")
+    // A bracket left opening with a separator is the hole a removed template leaves behind: the Ada Lovelace lead
+    // reads "(; 10 December 1815" because the source is "(; {{IPA|...}} 10 December 1815". Punctuation only; no
+    // word changes. Confined to this window, never to tidySurfaceText -- that function defines the space source
+    // excerpt verification compares in, and changing it there silently invalidated verified answers.
+    .replace(/([([{])\s*[;:,\u060C\u3001]+\s*/gu, "$1")
+    .replace(/\s*[;:,\u060C\u3001]+\s*([)\]}])/gu, "$1")
+    .replace(/\s*[([{]\s*[)\]}]/gu, "")
+    .trim();
+}
+
+
+/**
+ * Whether a surface is source apparatus rather than prose: a citation block, link list, template or table row.
+ *
+ * Two independent markers, or one link occupying a quarter of the surface, is apparatus. One inline citation in an
+ * otherwise prose sentence is not -- a certified answer is often cut from a sentence that carries one. Pure.
+ */
+function surfaceIsSourceApparatus(text: string): boolean {
+  if (!text) return false;
+  const markers = (text.match(/https?:\/\/|\{\{|\[\[|\|-|<ref|\[http/gu) ?? []).length;
+  if (markers >= 2) return true;
+  const linked = (text.match(/https?:\/\/\S+/gu) ?? []).join("").length;
+  return linked / Math.max(1, text.length) >= 0.25;
 }
