@@ -1789,6 +1789,12 @@ export function sourceAnchoredEvidenceForRequest(
     const sessionEvidence = evidence.filter(promotedSessionEvidence);
     if (sessionEvidence.length) return { required: true, anchors, evidence: sessionEvidence };
   }
+  // A prior turn is not a source. `spanContainsRequestNearDuplicateSentence` already says so, and the fallback
+  // above already treats session spans as the no-durable-memory case, but admission still returned them alongside
+  // durable spans and let ranking choose between them. It chose them: asked "Who was Ada Lovelace?" against a
+  // corpus holding her article, the live system answered with the 27-character text of an earlier question in the
+  // same session, because an echo of the request matches the request better than a real sentence does.
+  evidence = evidence.filter(span => !String(span.id).startsWith("evidence_session_"));
   const primaryAnchor = primarySourceAnchorForRequest(requestText, evidence);
   const primaryAnchorUnits = primaryAnchor ? splitPriorUnits(primaryAnchor).filter(Boolean) : [];
   const primaryEvidence = primaryAnchor

@@ -529,12 +529,26 @@ export function createRuntimeGraphRetrieval(options: {
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
   async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
-    const rows = await deps.storage.evidence.searchEvidence({ features: [...group], limit: 32, ...sourceKinds });
+    // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
+    const titleUnits = anchorGroupTitleUnits(group);
+    const rows = await deps.storage.evidence.searchEvidence({ features: [...group], limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) });
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
       : []));
-    return symbols.length ? deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds }) : rows;
+    return symbols.length ? deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }) : rows;
+  }
+
+  /** The units an anchor group is looking for, taken from its own features so the two can never disagree. Pure. */
+  function anchorGroupTitleUnits(group: readonly string[]): string[] {
+    const units = group.flatMap(feature => feature.startsWith("anchor:bi:")
+      ? feature.slice("anchor:bi:".length).split("|")
+      : feature.startsWith("anchor:sym:")
+        ? [feature.slice("anchor:sym:".length)]
+        : []);
+    const distinct = uniqueKernelStrings(units.map(unit => normalizePriorKey(unit)).filter(unit => [...unit].length >= 3));
+    // Every unit must appear in the title, so a group of unrelated units matches nothing rather than everything.
+    return distinct.length && distinct.length <= 4 ? distinct : [];
   }
 
   async function hotNeighborhoodIfResident(): Promise<HotGraphNeighborhood | undefined> {
@@ -563,8 +577,6 @@ export function createRuntimeGraphRetrieval(options: {
     );
   }
 
-  /** Markup media types that share the `text/x-` prefix with source code but are prose sources. */
-const MARKUP_MEDIA_TYPES = ["text/x-wiki", "text/x-markdown", "text/x-rst", "text/x-org"] as const;
 
 function sourceContentHash(text: string): string {
     return `sha256_${hasher.digestHex(text)}`;
@@ -572,16 +584,7 @@ function sourceContentHash(text: string): string {
 
   /** A span whose media type or origin is source code; structural, no language rules. Pure. */
 function spanIsSourceCode(span: EvidenceSpan): boolean {
-  const media = String(span.mediaType ?? "").toLocaleLowerCase();
-  // `text/x-wiki` is markup, not code, and it is the media type of every ingested Wikipedia span. Treating the whole
-  // `text/x-` family as code removed the entire prose corpus from every non-code request's candidate pool, leaving
-  // whatever stray span happened not to carry that media type. The SQL side of this exclusion already carried the
-  // same exception; this predicate did not.
-  if (MARKUP_MEDIA_TYPES.some(markup => media.startsWith(markup))) return false;
-  if (media.startsWith("text/x-") || media.includes("javascript") || media.includes("typescript") || media.includes("python")) return true;
-  const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
-  const uri = String(provenance.uri ?? provenance.canonicalUri ?? "");
-  return uri.startsWith("file://") && /.(ts|tsx|js|mjs|cjs|py|rs|go|java|cs|cpp|c|h|rb|php|kt|swift)$/iu.test(uri);
+  return isCodeEvidenceSpan(span);
 }
 
 async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
@@ -622,8 +625,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const evidenceResults = codeRequestRecognized(codeRequestSignal(text))
       ? gatheredResults
       : (() => {
-        const prose = gatheredResults.filter(item => !spanIsSourceCode(item.span));
-        return prose.length ? prose : gatheredResults;
+        return gatheredResults.filter(item => !spanIsSourceCode(item.span));
       })();
     kernelTrace({
       stage: "graph.resolve.anchor_evidence_search",
@@ -643,7 +645,16 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
       ? await sourceAnchorSemanticFrameEvidence(text)
       : { evidence: [], semanticFrameBoundEvidenceIds: [] };
-    const promoted = dropContainerSpans(mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence])
+    // The frame lane fetches spans by id, so neither the SQL source-kind exclusion nor the prose filter above ever
+    // saw them: a semantic frame built over the repository re-admitted the code those two guards had just removed.
+    // The rule is the request's, not the lane's, so it is applied once to the merged pool.
+    const mergedCandidates = mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence]);
+    const proseCandidates = codeRequestRecognized(codeRequestSignal(text))
+      ? mergedCandidates
+      : (() => {
+        return mergedCandidates.filter(span => !spanIsSourceCode(span));
+      })();
+    const promoted = dropContainerSpans(proseCandidates
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof
         && !isControlCorpusSpan(span)));
@@ -753,7 +764,25 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const anchors = sourceEvidenceAnchorsForRequest(text);
     if (!anchors.length) return [];
     const specificAnchors = anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
-    const candidateAnchors = uniqueKernelStrings(specificAnchors.length ? specificAnchors : anchors).slice(0, 4);
+    // A one-unit subject is dropped whenever any two-unit anchor exists, and the two-unit anchors are often just
+    // that subject plus a neighbouring request word. "What did Einstein discover?" searched `einstein|discover`
+    // and `did|einstein` -- phrases that occur nowhere in the article -- while `einstein` itself, the only real
+    // subject in the request, was never searched at all, and the turn abstained over a corpus holding the article.
+    // Such a subject is restored as its own group: the search is per-group and unioned, so an extra group can only
+    // add candidates, and the group budget still bounds the query count.
+    const subsumedSubjectAnchors = specificAnchors.length
+      ? anchors.filter(anchor => {
+        const units = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+        if (units.length !== 1) return false;
+        const unit = units[0]!;
+        if (genericQuestionSignal(unit) || [...unit].length < 3) return false;
+        return specificAnchors.every(specific =>
+          splitPriorUnits(normalizePriorKey(specific)).filter(Boolean).includes(unit));
+      }).slice(0, 2)
+      : [];
+    const candidateAnchors = uniqueKernelStrings([...specificAnchors, ...subsumedSubjectAnchors].length
+      ? [...specificAnchors, ...subsumedSubjectAnchors]
+      : anchors).slice(0, 5);
     const groups: string[][] = [];
     for (const anchor of candidateAnchors) {
       // A short token trailing this exact anchor phrase (e.g. "tos" after
@@ -2018,12 +2047,37 @@ export function isControlCorpusSpan(span: EvidenceSpan): boolean {
 /** Code evidence: a span whose source is code (media type, code-graph facts, or a code file extension). Program-authority requests answer from code evidence only. */
 const CODE_MEDIA_MARKERS = ["javascript", "typescript", "x-python", "x-rust", "x-go", "x-java", "x-csharp", "x-c++", "source"];
 const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".php", ".rb", ".swift", ".kt"];
+/** Markup media types that share the `text/x-` prefix with source code but are prose sources. */
+const MARKUP_MEDIA_TYPES = ["text/x-wiki", "text/x-markdown", "text/x-rst", "text/x-org"] as const;
+
+/**
+ * The one predicate for "this span is source code", used by both the prose filter and the program-authority rule.
+ *
+ * Two predicates existed and disagreed. The retrieval-side one required a `file://` URI; the repository is ingested
+ * with a bare repo-relative path and `text/plain`, so 6,522 promoted spans of the owner's own TypeScript were invisible
+ * to it, and "Who was Ada Lovelace?" was answered live from a comment in `mouth.ts` that names her as an example.
+ * Declared media type, declared URI and content shape are each checked, because a repository span declares neither.
+ */
 export function isCodeEvidenceSpan(span: EvidenceSpan): boolean {
   const media = String(span.mediaType ?? "").toLocaleLowerCase();
+  // Wiki markup shares the `text/x-` prefix with source media types and is the media type of every ingested
+  // Wikipedia span; treating the family as code once emptied the prose corpus from every non-code request.
+  if (MARKUP_MEDIA_TYPES.some(markup => media.startsWith(markup))) return false;
   if (CODE_MEDIA_MARKERS.some(marker => media.includes(marker))) return true;
   const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
   const metadata = provenance.metadata && typeof provenance.metadata === "object" && !Array.isArray(provenance.metadata) ? provenance.metadata as Record<string, unknown> : {};
   if (metadata.sourceCode && typeof metadata.sourceCode === "object") return true;
-  const uri = String(provenance.uri ?? "").toLocaleLowerCase();
-  return CODE_EXTENSIONS.some(extension => uri.endsWith(extension));
+  const uri = String(provenance.uri ?? provenance.canonicalUri ?? "").toLocaleLowerCase();
+  if (CODE_EXTENSIONS.some(extension => uri.endsWith(extension))) return true;
+  return textShapeIsSourceCode(String(span.text ?? ""));
+}
+
+/** Code shape from punctuation alone, for spans whose media type and URI both fail to declare it. No language rules. Pure. */
+export function textShapeIsSourceCode(text: string): boolean {
+  const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 3) return false;
+  const codeLines = lines.filter(line =>
+    line.startsWith("//") || line.startsWith("/*") || /[;{}]$/u.test(line)
+    || /(=>|::|->|\(\)|\{\}|\[\])/u.test(line)).length;
+  return codeLines / lines.length >= 0.34;
 }
