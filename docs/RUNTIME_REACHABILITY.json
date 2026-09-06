@@ -1,15 +1,15 @@
 {
- "generatedAt": "2026-09-06T01:13:28.233Z",
+ "generatedAt": "2026-09-06T07:13:40.806Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1652,
-  "reached": 1119,
-  "internalHelpersOnly": 449,
-  "orphans": 84,
+  "exports": 1660,
+  "reached": 1127,
+  "internalHelpersOnly": 453,
+  "orphans": 80,
   "declaredConstants": 7,
   "compatibilityAliases": 9,
   "legacyMigration": 2,
-  "implementedButUncalled": 66
+  "implementedButUncalled": 62
  },
  "orphans": [
   {
@@ -50,13 +50,6 @@
   {
    "name": "verifyTypeScriptCommandLaneSourceBinding",
    "file": "packages/adapters-node/src/typescript-command-lane.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "expandAdmissibleCommunity",
-   "file": "packages/kernel/src/admissible-community-expansion.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
@@ -349,13 +342,6 @@
    "alias": false
   },
   {
-   "name": "localPushPersonalizedPageRank",
-   "file": "packages/kernel/src/ppr-local-push.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
    "name": "createPredictionConstruct",
    "file": "packages/kernel/src/prediction.ts",
    "caller": "",
@@ -426,13 +412,6 @@
    "alias": false
   },
   {
-   "name": "createScceRuntime",
-   "file": "packages/kernel/src/scce-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
    "name": "evaluateCalibration",
    "file": "packages/kernel/src/scoring/evaluation.ts",
    "caller": "",
@@ -477,13 +456,6 @@
   {
    "name": "woldForecastCovariance",
    "file": "packages/kernel/src/spectral-forecast.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "assessClaimSupport",
-   "file": "packages/kernel/src/support-assessment.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
