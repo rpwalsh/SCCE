@@ -120,6 +120,43 @@ describe("evaluation release gate runner", () => {
     expect(report.gate.classEffects?.[0]?.meanEffect).toBe(1);
   });
 
+  it("reports energy per answer only against operator-supplied coefficients, from the run's own measurements", async () => {
+    const objectivePath = await sealedRun(
+      [
+        { questionId: "q1", systemId: "scce", exactScore: 1, requiredHits: 1, requiredCount: 1, coherent: true },
+        { questionId: "q1", systemId: "reference.bm25", exactScore: 0 }
+      ],
+      [cloze("q1")],
+      [{
+        questionId: "q1",
+        systemId: "scce",
+        status: "ok",
+        metrics: {
+          timing: {
+            resourceUsage: {
+              cpuUserMs: 1000, cpuSystemMs: 100, peakResidentSetBytes: 100_000_000,
+              wallClockMs: 1200, diskBytesRead: 0, diskBytesWritten: 0
+            }
+          }
+        }
+      }]
+    );
+
+    const withoutModel = await runEvaluationReleaseGate({ objectivePath });
+    expect(withoutModel.energy).toBeUndefined();
+
+    const withModel = await runEvaluationReleaseGate({
+      objectivePath,
+      powerModel: { joulesPerCpuMs: 0.01, joulesPerByteMsResident: 0, joulesPerByteDiskIo: 0 }
+    });
+
+    // 1100 CPU ms at 0.01 J/ms, nothing else charged: the figure is the coefficients, not a built-in default.
+    expect(withModel.energy?.totalJoules).toBeCloseTo(11, 6);
+    expect(withModel.energy?.answersMeasured).toBe(1);
+    expect(withModel.energy?.meanEtaSCCE).toBeCloseTo(1 / 11, 6);
+    expect(withModel.energy?.weights.actionability).toBe(0);
+  });
+
   it("refuses question categories that name no preregistered task class rather than inventing one", async () => {
     const objectivePath = await sealedRun(
       [

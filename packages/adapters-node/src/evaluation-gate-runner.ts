@@ -1,14 +1,23 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFile } from "node:fs/promises";
+
+/** Built without a literal escape so a shell-mangled patch cannot silently break every reader here. */
+const NEWLINE = new RegExp(String.fromCharCode(92) + "r?" + String.fromCharCode(92) + "n");
 import path from "node:path";
 import {
+  computeUsefulnessPerJoule,
   evaluateReleaseGate,
   isPreregisteredTaskClassId,
   isValidPairedResult,
   type PairedResultRecord,
+  wallEnergyJoules,
+  type MeasuredResourceUsage,
+  type PowerModel,
   type ReleaseGateResult,
-  type ReleaseGateThresholds
+  type ReleaseGateThresholds,
+  type UsefulnessPerJouleResult,
+  type UsefulnessRubricWeights
 } from "@scce/kernel";
 
 interface ObjectiveRow {
@@ -40,6 +49,73 @@ interface AnswerRow {
   questionId: string;
   systemId: string;
   status?: string;
+  metrics?: { timing?: { resourceUsage?: MeasuredResourceUsage } };
+}
+
+/**
+ * A recall benchmark measures five of the six usefulness dimensions and cannot measure actionability at all, so that
+ * weight is zero here rather than filled with a number nothing observed. The remaining five share the weight evenly.
+ */
+export const SEALED_RUN_USEFULNESS_WEIGHTS: UsefulnessRubricWeights = Object.freeze({
+  quality: 0.2,
+  correctness: 0.2,
+  actionability: 0,
+  relevance: 0.2,
+  faithfulness: 0.2,
+  harmlessness: 0.2
+});
+
+/** Per-question measured resource usage the run recorded for itself. */
+async function readAnswerResourceUsage(
+  objectivePath: string,
+  system: string,
+  answersPath?: string
+): Promise<Map<string, MeasuredResourceUsage>> {
+  const directory = path.dirname(objectivePath);
+  const candidates = answersPath ? [answersPath] : [path.join(directory, "raw-answers.jsonl")];
+  for (const candidate of candidates) {
+    const text = await readFile(candidate, "utf8").catch(() => undefined);
+    if (text === undefined) continue;
+    const rows = text
+      .split(NEWLINE)
+      .filter(line => line.trim())
+      .map(line => JSON.parse(line) as AnswerRow)
+      .filter(row => row.systemId === system && row.metrics?.timing?.resourceUsage);
+    return new Map(rows.map(row => [row.questionId, row.metrics!.timing!.resourceUsage!]));
+  }
+  return new Map();
+}
+
+/** Energy per answer for a run, computed only from the operator's own calibrated coefficients. */
+function runEnergyReport(
+  measured: readonly ObjectiveRow[],
+  usageByQuestion: ReadonlyMap<string, MeasuredResourceUsage>,
+  powerModel: PowerModel
+): { answersMeasured: number; totalJoules: number; perAnswer: UsefulnessPerJouleResult[] } | undefined {
+  const perAnswer: UsefulnessPerJouleResult[] = [];
+  let totalJoules = 0;
+  for (const row of measured) {
+    const usage = usageByQuestion.get(row.questionId);
+    if (!usage) continue;
+    const joules = wallEnergyJoules(usage, powerModel);
+    if (!(joules > 0)) continue;
+    totalJoules += joules;
+    const requiredCount = Math.max(1, Number(row.requiredCount ?? 1));
+    perAnswer.push(computeUsefulnessPerJoule(
+      {
+        quality: row.coherent === false ? 0 : 1,
+        correctness: Number(row.exactScore ?? 0) >= 1 ? 1 : 0,
+        actionability: 0,
+        relevance: Math.max(0, Math.min(1, Number(row.requiredHits ?? 0) / requiredCount)),
+        faithfulness: (row.forbiddenHits ?? 0) > 0 ? 0 : 1,
+        harmlessness: (row.forbiddenHits ?? 0) > 0 ? 0 : 1
+      },
+      SEALED_RUN_USEFULNESS_WEIGHTS,
+      0,
+      joules
+    ));
+  }
+  return perAnswer.length ? { answersMeasured: perAnswer.length, totalJoules, perAnswer } : undefined;
 }
 
 /** Reads the sealed question set beside a run's objective records, so paired records can carry a real task class. */
@@ -115,6 +191,14 @@ export interface EvaluationGateReport {
   metrics: { unsupportedRate: number; exactAnchorAccuracy: number; cycleAccuracy: number };
   thresholds: ReleaseGateThresholds;
   pairedResults: number;
+  /** Present only when the caller supplied a calibrated power model and the run recorded its own resource usage. */
+  energy?: {
+    answersMeasured: number;
+    totalJoules: number;
+    meanJoulesPerAnswer: number;
+    meanEtaSCCE: number;
+    weights: UsefulnessRubricWeights;
+  };
   gate: ReleaseGateResult;
 }
 
@@ -130,6 +214,8 @@ export async function runEvaluationReleaseGate(input: {
   reference?: string;
   questionsPath?: string;
   answersPath?: string;
+  /** Calibrated joules-per-unit coefficients for the serving hardware. Without them no energy figure is produced. */
+  powerModel?: PowerModel;
   taskClassByCategory?: Readonly<Record<string, string>>;
   thresholds?: Partial<ReleaseGateThresholds>;
 }): Promise<EvaluationGateReport> {
@@ -152,6 +238,10 @@ export async function runEvaluationReleaseGate(input: {
   const categories = await readQuestionCategories(input.objectivePath, input.questionsPath);
   const unanswerable = await readUnanswerableQuestions(input.objectivePath, input.questionsPath);
   const statuses = await readAnswerStatuses(input.objectivePath, system, input.answersPath);
+  const usage = input.powerModel
+    ? await readAnswerResourceUsage(input.objectivePath, system, input.answersPath)
+    : new Map<string, MeasuredResourceUsage>();
+  const energy = input.powerModel ? runEnergyReport(measured, usage, input.powerModel) : undefined;
   const answerable = measured.filter(row => !unanswerable.has(row.questionId));
   const abstentionItems = measured.filter(row => unanswerable.has(row.questionId));
   const asserted = statuses.size ? answerable.filter(row => statuses.get(row.questionId) !== "abstained") : undefined;
@@ -197,6 +287,17 @@ export async function runEvaluationReleaseGate(input: {
     metrics,
     thresholds,
     pairedResults: pairedResults.length,
+    ...(energy
+      ? {
+        energy: {
+          answersMeasured: energy.answersMeasured,
+          totalJoules: energy.totalJoules,
+          meanJoulesPerAnswer: energy.totalJoules / energy.answersMeasured,
+          meanEtaSCCE: energy.perAnswer.reduce((sum: number, row: UsefulnessPerJouleResult) => sum + row.etaSCCE, 0) / energy.perAnswer.length,
+          weights: SEALED_RUN_USEFULNESS_WEIGHTS
+        }
+      }
+      : {}),
     gate: evaluateReleaseGate(metrics, thresholds, pairedResults.length ? pairedResults : undefined)
   };
 }
