@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T08:40:20.893Z",
+ "generatedAt": "2026-09-06T08:43:00.823Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
   "reached": 1162,
-  "internalHelpersOnly": 453,
-  "orphans": 50,
+  "internalHelpersOnly": 454,
+  "orphans": 49,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 25,
-  "implementedButUncalled": 33,
-  "ofWhichCoveredByTestsOnly": 25,
+  "testOnlyHelpers": 24,
+  "implementedButUncalled": 32,
+  "ofWhichCoveredByTestsOnly": 24,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 8
  },
@@ -194,15 +194,6 @@
   {
    "name": "currentEvaluationCacheOwner",
    "file": "packages/kernel/src/evaluation-trace.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "exactQuantitiesEqual",
-   "file": "packages/kernel/src/exact-computation.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
