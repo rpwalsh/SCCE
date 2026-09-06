@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { codeRequestRecognized, codeRequestSignal } from "./code-request.js";
+import { currentEvaluationCacheOwner } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
@@ -110,7 +111,7 @@ const HOT_QUERY_EDGE_BRANCH_LIMIT = 4;
 const HOT_QUERY_HYPEREDGE_BRANCH_LIMIT = 4;
 
 export function createRuntimeGraphRetrieval(options: {
-  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels" | "visualQueryEmbedder">;
+  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels" | "visualQueryEmbedder" | "evaluationCondition">;
   clock: ReturnType<typeof createClock>;
   hasher: ReturnType<typeof createHasher>;
   candidates: ReturnType<typeof createCandidateEngine>;
@@ -301,13 +302,26 @@ export function createRuntimeGraphRetrieval(options: {
       counts: { features: features.length, topicTerms: topicTerms.length },
       support: { sourceAnchoringRequired, residentOnly }
     });
-    const cacheKey = hasher.digestHex(JSON.stringify({
+    // Namespaced by evaluation condition, which it was not.
+    //
+    // A slice cached while answering under `full` was served to `no_graph`, `lexical_only` and every other
+    // condition, because the key described the request and not the runtime that would answer it. Conditions that
+    // are supposed to differ shared results in the same process, which is exactly what an ablation must not do.
+    // `currentEvaluationCacheOwner` is the condition's own cache identity -- namespace, condition id and config
+    // hash -- and had no caller. Without a condition configured the key is unchanged, so ordinary turns keep the
+    // cache they had. Deliberately not `createEvaluationCacheKey`: that key also binds brain, corpus, source and
+    // build hashes, none of which this layer holds, and supplying blanks would weaken a stronger contract.
+    const logicalCacheKey = hasher.digestHex(JSON.stringify({
       features,
       topicTerms,
       allowSemanticFrameEvidence,
       sourceAnchoringRequired,
       residentOnly
     })).slice(0, 32);
+    const cacheOwner = deps.evaluationCondition ? currentEvaluationCacheOwner(deps.evaluationCondition) : undefined;
+    const cacheKey = cacheOwner
+      ? `${cacheOwner.cacheNamespace}:${cacheOwner.conditionId}:${cacheOwner.configHash}:${logicalCacheKey}`
+      : logicalCacheKey;
     const exact = cachedGraphSlice(cacheKey);
     if (exact) return exact;
     if (sourceAnchoringRequired) {

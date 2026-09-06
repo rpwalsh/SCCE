@@ -1,20 +1,20 @@
 {
- "generatedAt": "2026-09-06T08:48:02.247Z",
+ "generatedAt": "2026-09-06T08:52:31.061Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1163,
+  "reached": 1165,
   "internalHelpersOnly": 454,
-  "orphans": 48,
+  "orphans": 46,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 23,
-  "implementedButUncalled": 31,
-  "ofWhichCoveredByTestsOnly": 23,
+  "testOnlyHelpers": 21,
+  "implementedButUncalled": 29,
+  "ofWhichCoveredByTestsOnly": 21,
   "ofWhichNoCallerAnywhere": 0,
-  "ofWhichDeliberatelyUnwired": 10
+  "ofWhichDeliberatelyUnwired": 13
  },
  "orphans": [
   {
@@ -183,24 +183,6 @@
    "testOnly": false
   },
   {
-   "name": "createEvaluationCacheKey",
-   "file": "packages/kernel/src/evaluation-flags.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "currentEvaluationCacheOwner",
-   "file": "packages/kernel/src/evaluation-trace.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "deriveGenerativeStructure",
    "file": "packages/kernel/src/generative-derivation-runtime.ts",
    "caller": "",
@@ -328,6 +310,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Requires a predictedSurface, and nothing in the runtime produces one. The turn computes forecast states and envelopes over the alpha trace, which are numeric, and turning a forecast into a stated surface needs the construction grammar that has never promoted from this corpus. The missing half is generation, not a call site.",
    "hostContract": false,
    "testOnly": true
   },
@@ -337,6 +320,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Projects a PredictionConstruct into a construct graph node, so it cannot be reached before a prediction construct exists; see createPredictionConstruct.",
    "hostContract": false,
    "testOnly": true
   },
@@ -383,6 +367,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Validates the model on every call, which is right for a single score and wrong for the only production use: scoreGraphEdgesWithRelationPotential freezes the model once and scores every edge against it. Routing that loop through here would re-validate per edge. Relation promotion, the other place a potential score would fit, decides by description length rather than by this model.",
    "hostContract": false,
    "testOnly": true
   },
