@@ -90,7 +90,15 @@ export function decideRuntimeCoherence(input: RuntimeCoherenceInput): RuntimeCoh
     repairTargetIds.push(RUNTIME_COHERENCE_REPAIR_TARGET_IDS.proofDemotion);
     pressures.push(counterfactualPressure);
   }
-  const mouthPressure = input.mouthSurfaceValid === false
+  // A turn that admitted evidence and then said nothing is a realization failure, not an abstention: the evidence was
+  // there and the answer was not. A turn with no admitted evidence saying nothing is the abstention this system is
+  // supposed to make, and must not be pushed into regeneration.
+  // A creative turn that cannot realize a surface is a different, already-handled state; this rule is about a
+  // recall turn that had its evidence and still said nothing.
+  const silentDespiteEvidence = input.answerText.trim().length === 0
+    && input.evidence.length > 0
+    && input.assistantForce !== "creative_answer";
+  const mouthPressure = input.mouthSurfaceValid === false || silentDespiteEvidence
     ? 1
     : mouthLeakagePressure(input.answerText, input.mouthAudit);
   if (mouthPressure > 0.01) {

@@ -921,7 +921,9 @@ function isTypeScriptParseable(normalizedPath: string, mediaType: string): boole
 // Bounded INSIDE the primitive: a fetched text/html page with 100KB inline scripts is not
 // source, and garbage-as-JS through the parser produced millions of recovery nodes (live OOM).
 const MAX_SOURCE_FACT_BYTES = 2 * 1024 * 1024;
-const NON_SOURCE_TEXT_MEDIA = ["text/html", "text/markdown", "text/csv", "text/tab-separated-values", "text/xml", "text/calendar", "text/vcard", "text/rtf"];
+// `text/x-wiki` and its markup siblings share the `text/x-` prefix with source media types but are prose: without
+// them here, `isProbablySourceLike` reads an ingested wiki page as source and mines code facts out of an article.
+const NON_SOURCE_TEXT_MEDIA = ["text/html", "text/markdown", "text/csv", "text/tab-separated-values", "text/xml", "text/calendar", "text/vcard", "text/rtf", "text/x-wiki", "text/x-markdown", "text/x-rst", "text/x-org"];
 export function sourceFactsTextAdmissible(mediaType: string, text: string): boolean {
   const lower = mediaType.toLocaleLowerCase();
   if (NON_SOURCE_TEXT_MEDIA.some(media => lower.startsWith(media))) return false;
