@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
 import { createActionGraphBuilder } from "./action-graph.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
 import { composeEvidenceGroundedAnswer } from "./answer-emitter.js";
@@ -1132,6 +1133,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const discourseEvidenceBound = explicitContextEvidenceIds.size > 0;
       const allowSemanticFrameEvidence = deps.evaluationCondition?.flags.disableLanguageMemory !== true
         && deps.evaluationCondition?.flags.disableLearnedSemantics !== true;
+      const typedIngestProjector = createTypedIngestProjector({ idFactory, hasher });
       const graphSliceStarted = Date.now();
       let graphSlice = await evaluationComponent(
         "graph",
@@ -1228,6 +1230,43 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : ftrlShadowRankingForFeatures(graphRetrievalFeatures(retrievalText)).catch(() => undefined);
       const semanticFrameBoundEvidenceIds = new Set(graphSlice.semanticFrameBoundEvidenceIds ?? []);
       let graph = graphSlice.graph;
+      // What the owner taught this session enters the same typed ingestion durable evidence enters.
+      //
+      // Session facts were admitted as evidence and never projected, so the graph was empty for anything learned in
+      // conversation: measured, a durable-corpus question resolved 16 nodes / 32 edges / 64 walks while a
+      // session-taught one resolved 0 / 0 / 0 with 4 of 4 spans admitted. Every graph-native capability was therefore
+      // inert on session input -- contradiction has no competing edges to find, the interval algebra no intervals,
+      // relation composition no path -- which is one cause for four failing capability tracks, not four.
+      //
+      // Deliberately the same `createTypedIngestProjector` the ingest lane and the projection backfill both use, so
+      // a session fact and a corpus fact become the same kind of object. A session-specific graph builder would only
+      // move the seam. Projected per turn from the session's own spans rather than written durably: the spans are
+      // replayed into every turn already, so this is deterministic and adds no storage and no consent question about
+      // writing conversation into the durable brain.
+      const sessionGraphStarted = Date.now();
+      const sessionProjection = projectSessionEvidenceWith(typedIngestProjector, sessionEvidence, clock.now());
+      if (sessionProjection && (sessionProjection.graphNodes.length || sessionProjection.graphEdges.length)) {
+        const existingNodeIds = new Set(graph.nodes.map(node => String(node.id)));
+        const existingEdgeKeys = new Set(graph.edges.map(edge => `${String(edge.source)} ${String(edge.target)} ${String(edge.relationId)}`));
+        graph = {
+          ...graph,
+          nodes: [...graph.nodes, ...sessionProjection.graphNodes.filter(node => !existingNodeIds.has(String(node.id)))],
+          edges: [...graph.edges, ...sessionProjection.graphEdges.filter(edge =>
+            !existingEdgeKeys.has(`${String(edge.source)} ${String(edge.target)} ${String(edge.relationId)}`))]
+        };
+      }
+      kernelTrace({
+        stage: "graph.resolve.session_projection",
+        label: "kernel.turn.graph_slice",
+        durationMs: Date.now() - sessionGraphStarted,
+        counts: {
+          sessionSpans: sessionEvidence.length,
+          nodes: sessionProjection?.graphNodes.length ?? 0,
+          edges: sessionProjection?.graphEdges.length ?? 0,
+          graphNodes: graph.nodes.length,
+          graphEdges: graph.edges.length
+        }
+      });
       const unsealedEvidencePool = discourseEvidenceBound
         ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
         : proseOnlyWhenNotACodeRequest(
@@ -4565,4 +4604,39 @@ function withStageBudget<T>(work: Promise<T>, budgetMs: number, fallback: () => 
       if (typeof timer.unref === "function") timer.unref();
     })
   ]);
+}
+
+/**
+ * Session-taught evidence projected through the ingest lane's own projector, grouped by its session source version.
+ *
+ * The spans of one session share a source id and version, so they are projected together from their concatenated
+ * text, which is what the projection backfill does for a durable document and what keeps a multi-turn session one
+ * document rather than one document per sentence. Returns nothing when there is no session evidence, so a turn
+ * against the durable corpus alone pays only the emptiness check.
+ */
+function projectSessionEvidenceWith(
+  projector: ReturnType<typeof createTypedIngestProjector>,
+  sessionEvidence: readonly EvidenceSpan[],
+  observedAt: number
+): TypedIngestProjection | undefined {
+  const spans = sessionEvidence.filter(span => String(span.id).startsWith("evidence_session_"));
+  if (!spans.length) return undefined;
+  const first = spans[0]!;
+  const text = spans.map(span => String(span.text ?? span.textPreview ?? "")).filter(Boolean).join("\n");
+  if (!text.trim()) return undefined;
+  try {
+    return projector.project({
+      sourceId: first.sourceId,
+      sourceVersionId: first.sourceVersionId,
+      uri: `session://${String(first.sourceId)}`,
+      mediaType: "text/plain",
+      text,
+      metadata: toJsonValue({ sourceKind: "session_turn" }),
+      evidence: [...spans],
+      observedAt
+    });
+  } catch {
+    // A projection that cannot be built must not fail the turn: the evidence path is unchanged and still answers.
+    return undefined;
+  }
 }

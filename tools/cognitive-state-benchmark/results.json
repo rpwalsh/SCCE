@@ -1,7 +1,7 @@
 {
  "schema": "scce.cognitive_state_benchmark.v1",
  "model": "qwen2.5:3b",
- "generatedAt": "2026-09-06T20:09:40.103Z",
+ "generatedAt": "2026-09-06T21:02:46.673Z",
  "records": [
   {
    "taskId": "contradiction.ceo",
@@ -11,37 +11,21 @@
    "question": "When did Alice Renner become chief executive of Halvern Dynamics?",
    "answer": "2019-03-02",
    "refused": false,
-   "elapsedMs": 2616,
+   "elapsedMs": 443,
    "cost": {
-    "wallClockMs": 2355.4358,
-    "cpuUserMs": 2250,
-    "peakResidentBytes": 1672904704,
+    "wallClockMs": 187.9296,
+    "cpuUserMs": 188,
+    "peakResidentBytes": 3405578240,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 4
    },
    "outcome": "wrong_answer",
    "correct": false,
    "contradictionSurfaced": false
-  },
-  {
-   "taskId": "contradiction.ceo",
-   "track": "contradiction",
-   "turnIndex": 2,
-   "system": "llm:qwen2.5:3b",
-   "question": "When did Alice Renner become chief executive of Halvern Dynamics?",
-   "answer": "I don't know. \n\nThe notes provide conflicting information about when Alice Renner became the chief executive of Halvern Dynamics:\n- Source A states it was in 2019.\n- Source B states it was in 2021.\n\nThese dates are different and cannot both be correct, so there is no definitive answer based on the provided sources.",
-   "refused": true,
-   "elapsedMs": 8790,
-   "cost": {
-    "wallClockMs": 8750,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 232,
-    "generatedTokens": 74
-   },
-   "outcome": "incorrect_refusal",
-   "correct": false,
-   "contradictionSurfaced": null
   },
   {
    "taskId": "contradiction.altitude",
@@ -51,33 +35,17 @@
    "question": "How high is the summit of Mount Verrick?",
    "answer": "Survey record K-12: the summit of Mount Verrick is 3,388 metres above sea level.",
    "refused": true,
-   "elapsedMs": 625,
+   "elapsedMs": 421,
    "cost": {
-    "wallClockMs": 314.7687,
-    "cpuUserMs": 219,
-    "peakResidentBytes": 1705197568,
+    "wallClockMs": 169.4178,
+    "cpuUserMs": 109,
+    "peakResidentBytes": 3436019712,
     "inferenceCalls": 0
    },
-   "outcome": "incorrect_refusal",
-   "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "contradiction.altitude",
-   "track": "contradiction",
-   "turnIndex": 2,
-   "system": "llm:qwen2.5:3b",
-   "question": "How high is the summit of Mount Verrick?",
-   "answer": "I don't know. The notes provide conflicting heights for the summit of Mount Verrick (3,412 metres and 3,388 metres), so there is no single correct answer.",
-   "refused": true,
-   "elapsedMs": 1971,
-   "cost": {
-    "wallClockMs": 1953,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 203,
-    "generatedTokens": 42
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
    },
    "outcome": "incorrect_refusal",
    "correct": false,
@@ -91,12 +59,17 @@
    "question": "At what temperature does Xylor-7 decompose?",
    "answer": "The compound Xylor-7 decomposes at 417 degrees Celsius.",
    "refused": false,
-   "elapsedMs": 610,
+   "elapsedMs": 661,
    "cost": {
-    "wallClockMs": 190.9528,
-    "cpuUserMs": 141,
-    "peakResidentBytes": 1688092672,
+    "wallClockMs": 221.562,
+    "cpuUserMs": 484,
+    "peakResidentBytes": 3458011136,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
    },
    "outcome": "correct_answer",
    "correct": true,
@@ -110,12 +83,17 @@
    "question": "What evidence supports the decomposition temperature of Xylor-7?",
    "answer": "Xylor-7",
    "refused": false,
-   "elapsedMs": 5339,
+   "elapsedMs": 426,
    "cost": {
-    "wallClockMs": 4405.8787,
-    "cpuUserMs": 2562,
-    "peakResidentBytes": 1680392192,
+    "wallClockMs": 188.6694,
+    "cpuUserMs": 125,
+    "peakResidentBytes": 3386572800,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 5
    },
    "outcome": "correct_answer",
    "correct": true,
@@ -129,75 +107,17 @@
    "question": "At what temperature does Xylor-7 decompose?",
    "answer": "A second laboratory reports that Xylor-7 decomposes at 431 degrees Celsius.",
    "refused": false,
-   "elapsedMs": 440,
+   "elapsedMs": 441,
    "cost": {
-    "wallClockMs": 132.4218,
-    "cpuUserMs": 125,
-    "peakResidentBytes": 1671475200,
+    "wallClockMs": 207.3157,
+    "cpuUserMs": 93,
+    "peakResidentBytes": 3400867840,
     "inferenceCalls": 0
    },
-   "outcome": "wrong_answer",
-   "correct": false,
-   "contradictionSurfaced": false
-  },
-  {
-   "taskId": "learning.xylor",
-   "track": "learning",
-   "turnIndex": 2,
-   "system": "llm:qwen2.5:3b",
-   "question": "At what temperature does Xylor-7 decompose?",
-   "answer": "417 degrees Celsius",
-   "refused": false,
-   "elapsedMs": 448,
-   "cost": {
-    "wallClockMs": 443,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 170,
-    "generatedTokens": 6
-   },
-   "outcome": "correct_answer",
-   "correct": true,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "learning.xylor",
-   "track": "learning",
-   "turnIndex": 3,
-   "system": "llm:qwen2.5:3b",
-   "question": "What evidence supports the decomposition temperature of Xylor-7?",
-   "answer": "I don't know.",
-   "refused": true,
-   "elapsedMs": 467,
-   "cost": {
-    "wallClockMs": 457,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 171,
-    "generatedTokens": 6
-   },
-   "outcome": "incorrect_refusal",
-   "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "learning.xylor",
-   "track": "learning",
-   "turnIndex": 5,
-   "system": "llm:qwen2.5:3b",
-   "question": "At what temperature does Xylor-7 decompose?",
-   "answer": "431 degrees Celsius",
-   "refused": false,
-   "elapsedMs": 543,
-   "cost": {
-    "wallClockMs": 537,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 192,
-    "generatedTokens": 6
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 7
    },
    "outcome": "wrong_answer",
    "correct": false,
@@ -209,35 +129,19 @@
    "turnIndex": 2,
    "system": "scce",
    "question": "How long is a sample held before centrifugation under the Brennels protocol?",
-   "answer": "a sample is held at 4 degrees Celsius for 90 minutes before centrifugation.",
+   "answer": "Under the Brennels protocol, a sample is held at 4 degrees Celsius for 90 minutes before centrifugation.",
    "refused": false,
-   "elapsedMs": 1969,
+   "elapsedMs": 379,
    "cost": {
-    "wallClockMs": 1702.439,
-    "cpuUserMs": 1625,
-    "peakResidentBytes": 1684393984,
+    "wallClockMs": 187.7288,
+    "cpuUserMs": 156,
+    "peakResidentBytes": 3422154752,
     "inferenceCalls": 0
    },
-   "outcome": "correct_answer",
-   "correct": true,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "learning.protocol",
-   "track": "learning",
-   "turnIndex": 2,
-   "system": "llm:qwen2.5:3b",
-   "question": "How long is a sample held before centrifugation under the Brennels protocol?",
-   "answer": "A sample is held at 4 degrees Celsius for 90 minutes before centrifugation under the Brennels protocol.",
-   "refused": false,
-   "elapsedMs": 1031,
-   "cost": {
-    "wallClockMs": 1026,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 182,
-    "generatedTokens": 25
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
    },
    "outcome": "correct_answer",
    "correct": true,
@@ -251,35 +155,19 @@
    "question": "How many machines does Factory A have on Thursday?",
    "answer": "Two machines were retired from Factory A on Tuesday.",
    "refused": false,
-   "elapsedMs": 1993,
+   "elapsedMs": 478,
    "cost": {
-    "wallClockMs": 1699.6858,
-    "cpuUserMs": 797,
-    "peakResidentBytes": 1755922432,
+    "wallClockMs": 204.4549,
+    "cpuUserMs": 203,
+    "peakResidentBytes": 3386814464,
     "inferenceCalls": 0
    },
-   "outcome": "wrong_answer",
-   "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "temporal.machines",
-   "track": "temporal",
-   "turnIndex": 3,
-   "system": "llm:qwen2.5:3b",
-   "question": "How many machines does Factory A have on Thursday?",
-   "answer": "I don't know.",
-   "refused": true,
-   "elapsedMs": 488,
-   "cost": {
-    "wallClockMs": 483,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 185,
-    "generatedTokens": 6
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 6
    },
-   "outcome": "incorrect_refusal",
+   "outcome": "wrong_answer",
    "correct": false,
    "contradictionSurfaced": null
   },
@@ -291,35 +179,19 @@
    "question": "How many machines does Factory B have on Wednesday?",
    "answer": "Five machines were retired from Factory B on Tuesday.",
    "refused": false,
-   "elapsedMs": 1455,
+   "elapsedMs": 453,
    "cost": {
-    "wallClockMs": 1182.7836,
-    "cpuUserMs": 1000,
-    "peakResidentBytes": 1745457152,
+    "wallClockMs": 189.2101,
+    "cpuUserMs": 141,
+    "peakResidentBytes": 3415027712,
     "inferenceCalls": 0
    },
-   "outcome": "wrong_answer",
-   "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "temporal.revision",
-   "track": "temporal",
-   "turnIndex": 3,
-   "system": "llm:qwen2.5:3b",
-   "question": "How many machines does Factory B have on Wednesday?",
-   "answer": "I don't know. The notes contradict each other regarding the number of machines retired on Tuesday (20 - 5 vs 20 - 4). Without a consistent number of machines retired, it's impossible to determine how many machines Factory B has on Wednesday.",
-   "refused": true,
-   "elapsedMs": 2124,
-   "cost": {
-    "wallClockMs": 2116,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 191,
-    "generatedTokens": 55
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 6
    },
-   "outcome": "incorrect_refusal",
+   "outcome": "wrong_answer",
    "correct": false,
    "contradictionSurfaced": null
   },
@@ -331,36 +203,20 @@
    "question": "In what year did the Kelvern bridge open?",
    "answer": "The Kelvern bridge opened two years after the Ostry tunnel.",
    "refused": false,
-   "elapsedMs": 4666,
+   "elapsedMs": 1585,
    "cost": {
-    "wallClockMs": 3648.4759,
-    "cpuUserMs": 1500,
-    "peakResidentBytes": 1710604288,
+    "wallClockMs": 1250.0804,
+    "cpuUserMs": 2078,
+    "peakResidentBytes": 3429756928,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
    },
    "outcome": "wrong_answer",
    "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "temporal.order",
-   "track": "temporal",
-   "turnIndex": 2,
-   "system": "llm:qwen2.5:3b",
-   "question": "In what year did the Kelvern bridge open?",
-   "answer": "The Kelvern bridge opened in 1976.",
-   "refused": false,
-   "elapsedMs": 1217,
-   "cost": {
-    "wallClockMs": 1207,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 178,
-    "generatedTokens": 13
-   },
-   "outcome": "correct_answer",
-   "correct": true,
    "contradictionSurfaced": null
   },
   {
@@ -371,36 +227,20 @@
    "question": "Why did Napoleon Bonaparte become president of the United States?",
    "answer": "Middlesex 37 | Jennifer Benson | | Democratic | 2008 | | Incumbent resigned January 8, 2020 to become President of Alliance for Business Leadership. New member elected 'June 2, 2020'.\n\nSource: 2020 United States state legislative elections (https://en.wikipedia.org/wiki/2020_United_States_state_legislative_elections)",
    "refused": false,
-   "elapsedMs": 5910,
+   "elapsedMs": 1026,
    "cost": {
-    "wallClockMs": 4853.7777,
-    "cpuUserMs": 4047,
-    "peakResidentBytes": 1658691584,
+    "wallClockMs": 712.5552,
+    "cpuUserMs": 640,
+    "peakResidentBytes": 3398561792,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 16,
+    "edges": 32,
+    "evidence": 2
    },
    "outcome": "fabrication",
    "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "falsepremise.napoleon",
-   "track": "false_premise",
-   "turnIndex": 0,
-   "system": "llm:qwen2.5:3b",
-   "question": "Why did Napoleon Bonaparte become president of the United States?",
-   "answer": "I don't know.",
-   "refused": true,
-   "elapsedMs": 707,
-   "cost": {
-    "wallClockMs": 698,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 150,
-    "generatedTokens": 6
-   },
-   "outcome": "correct_refusal",
-   "correct": true,
    "contradictionSurfaced": null
   },
   {
@@ -409,35 +249,19 @@
    "turnIndex": 1,
    "system": "scce",
    "question": "Why is Mount Verrick the tallest mountain in South America?",
-   "answer": "Survey record K-11: the summit of Mount Verrick is 3,412 metres above sea level.",
+   "answer": "Mount Verrick",
    "refused": true,
-   "elapsedMs": 2552,
+   "elapsedMs": 559,
    "cost": {
-    "wallClockMs": 1555.8399,
-    "cpuUserMs": 782,
-    "peakResidentBytes": 1677926400,
+    "wallClockMs": 218.674,
+    "cpuUserMs": 172,
+    "peakResidentBytes": 3413987328,
     "inferenceCalls": 0
    },
-   "outcome": "correct_refusal",
-   "correct": true,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "falsepremise.verrick",
-   "track": "false_premise",
-   "turnIndex": 1,
-   "system": "llm:qwen2.5:3b",
-   "question": "Why is Mount Verrick the tallest mountain in South America?",
-   "answer": "I don't know. The notes do not provide enough information to determine why Mount Verrick is considered the tallest mountain in South America based solely on its height of 3,412 metres above sea level.",
-   "refused": true,
-   "elapsedMs": 2384,
-   "cost": {
-    "wallClockMs": 2361,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 178,
-    "generatedTokens": 44
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 1
    },
    "outcome": "correct_refusal",
    "correct": true,
@@ -451,36 +275,20 @@
    "question": "Who first synthesised Xylor-7?",
    "answer": "Xylor-7",
    "refused": false,
-   "elapsedMs": 2006,
+   "elapsedMs": 487,
    "cost": {
-    "wallClockMs": 968.2054,
-    "cpuUserMs": 453,
-    "peakResidentBytes": 1691639808,
+    "wallClockMs": 193.9741,
+    "cpuUserMs": 125,
+    "peakResidentBytes": 3436093440,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
    },
    "outcome": "fabrication",
    "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "evidence.absent",
-   "track": "evidence_discipline",
-   "turnIndex": 1,
-   "system": "llm:qwen2.5:3b",
-   "question": "Who first synthesised Xylor-7?",
-   "answer": "I don't know.",
-   "refused": true,
-   "elapsedMs": 711,
-   "cost": {
-    "wallClockMs": 689,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 168,
-    "generatedTokens": 6
-   },
-   "outcome": "correct_refusal",
-   "correct": true,
    "contradictionSurfaced": null
   },
   {
@@ -491,33 +299,17 @@
    "question": "What is the melting point of the compound Drennish-4?",
    "answer": "Drennish-4",
    "refused": true,
-   "elapsedMs": 4693,
+   "elapsedMs": 743,
    "cost": {
-    "wallClockMs": 3805.0122,
-    "cpuUserMs": 2969,
-    "peakResidentBytes": 1705635840,
+    "wallClockMs": 212.0714,
+    "cpuUserMs": 218,
+    "peakResidentBytes": 3444371456,
     "inferenceCalls": 0
    },
-   "outcome": "correct_refusal",
-   "correct": true,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "evidence.unsupplied-entity",
-   "track": "evidence_discipline",
-   "turnIndex": 0,
-   "system": "llm:qwen2.5:3b",
-   "question": "What is the melting point of the compound Drennish-4?",
-   "answer": "I don't know.",
-   "refused": true,
-   "elapsedMs": 601,
-   "cost": {
-    "wallClockMs": 593,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 151,
-    "generatedTokens": 6
+   "graph": {
+    "nodes": 1,
+    "edges": 1,
+    "evidence": 1
    },
    "outcome": "correct_refusal",
    "correct": true,
@@ -531,36 +323,20 @@
    "question": "In which city was the designer of the Ostry tunnel born?",
    "answer": "The Ostry tunnel was designed by the engineer Marda Feln.",
    "refused": false,
-   "elapsedMs": 3222,
+   "elapsedMs": 510,
    "cost": {
-    "wallClockMs": 2754.7678,
-    "cpuUserMs": 2734,
-    "peakResidentBytes": 1765625856,
+    "wallClockMs": 235.9262,
+    "cpuUserMs": 172,
+    "peakResidentBytes": 3394596864,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 4
    },
    "outcome": "wrong_answer",
    "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "multihop.chain",
-   "track": "multi_hop",
-   "turnIndex": 2,
-   "system": "llm:qwen2.5:3b",
-   "question": "In which city was the designer of the Ostry tunnel born?",
-   "answer": "Halvik",
-   "refused": false,
-   "elapsedMs": 485,
-   "cost": {
-    "wallClockMs": 476,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 183,
-    "generatedTokens": 3
-   },
-   "outcome": "correct_answer",
-   "correct": true,
    "contradictionSurfaced": null
   },
   {
@@ -571,36 +347,20 @@
    "question": "In what year was the foundation that funds the operator of the Verrick Observatory established?",
    "answer": "The Verrick Observatory is operated by the Kelvern Institute.",
    "refused": false,
-   "elapsedMs": 4457,
+   "elapsedMs": 653,
    "cost": {
-    "wallClockMs": 3691.8648,
-    "cpuUserMs": 2843,
-    "peakResidentBytes": 1802399744,
+    "wallClockMs": 328.412,
+    "cpuUserMs": 187,
+    "peakResidentBytes": 3423404032,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 6
    },
    "outcome": "wrong_answer",
    "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "multihop.three",
-   "track": "multi_hop",
-   "turnIndex": 3,
-   "system": "llm:qwen2.5:3b",
-   "question": "In what year was the foundation that funds the operator of the Verrick Observatory established?",
-   "answer": "The Ostry Foundation was established in 1962.",
-   "refused": false,
-   "elapsedMs": 938,
-   "cost": {
-    "wallClockMs": 929,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 199,
-    "generatedTokens": 14
-   },
-   "outcome": "correct_answer",
-   "correct": true,
    "contradictionSurfaced": null
   },
   {
@@ -611,36 +371,20 @@
    "question": "When was the Drennish reactor commissioned?",
    "answer": "11 April 1988",
    "refused": true,
-   "elapsedMs": 1963,
+   "elapsedMs": 533,
    "cost": {
-    "wallClockMs": 1641.6876,
-    "cpuUserMs": 1516,
-    "peakResidentBytes": 1815707648,
+    "wallClockMs": 229.0564,
+    "cpuUserMs": 266,
+    "peakResidentBytes": 3404402688,
     "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 3
    },
    "outcome": "incorrect_refusal",
    "correct": false,
-   "contradictionSurfaced": null
-  },
-  {
-   "taskId": "persistence.interleaved",
-   "track": "state_persistence",
-   "turnIndex": 4,
-   "system": "llm:qwen2.5:3b",
-   "question": "When was the Drennish reactor commissioned?",
-   "answer": "The Drennish reactor was commissioned on 11 April 1988.",
-   "refused": false,
-   "elapsedMs": 1017,
-   "cost": {
-    "wallClockMs": 997,
-    "cpuUserMs": null,
-    "peakResidentBytes": null,
-    "inferenceCalls": 1,
-    "promptTokens": 168,
-    "generatedTokens": 19
-   },
-   "outcome": "correct_answer",
-   "correct": true,
    "contradictionSurfaced": null
   }
  ]
