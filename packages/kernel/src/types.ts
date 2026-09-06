@@ -1366,7 +1366,6 @@ export interface ScceKernel {
   analyzeCausalEffect(request: import("./causal-analysis-runtime.js").CausalAnalysisRequest): Promise<import("./causal-analysis-runtime.js").CausalAnalysisResult>;
   /** Temporal causal discovery over caller-supplied series. Typed input only, never inferred from prose. */
   discoverCausalStructure(request: import("./causal-analysis-runtime.js").CausalDiscoveryRequest): Promise<import("./causal-analysis-runtime.js").CausalDiscoveryResult>;
-  /** Read back persisted alpha traces and the named matrix from each, for replay debugging of a turn's field. */
   /** What the learned construction grammar composes with no semantic target. Diagnostic only; never spoken. */
   inspectGenerativeStructure(query?: { constructionLimit?: number; maxRecursionDepth?: number; treewidthBudget?: number }): Promise<{
     schema: "scce.generative_structure_inspection.v1";
@@ -1379,9 +1378,20 @@ export interface ScceKernel {
     alternatives?: number;
     treewidth?: number;
   }>;
+  /** Read back persisted alpha traces and the named matrix from each, for replay debugging of a turn's field. */
   inspectAlphaTraces(query?: { graphHash?: string; limit?: number; kind?: "adjacency" | "laplacian" | "normalizedLaplacian" }): Promise<{
     schema: "scce.alpha_trace_inspection.v1";
     kind: "adjacency" | "laplacian" | "normalizedLaplacian";
     traces: Array<{ id: string; graphHash: string; alpha: number; createdAt: number; matrix?: MatrixSnapshot }>;
   }>;
+  /** Everything the system has recorded about its owner in one conversation, and which claim currently governs each subject. */
+  listUserModelClaims(query: { conversationId: string; limit?: number }): Promise<{
+    schema: "scce.user_model_claims.v1";
+    conversationId: string;
+    claims: import("./user-model-store.js").UserModelClaim[];
+    governing: import("./user-model-store.js").UserModelClaim[];
+    provenance: JsonValue;
+  }>;
+  /** Withdraw one recorded claim for good. Real removal, not supersession -- the claim stops governing and stops being held. */
+  forgetUserModelClaim(query: { conversationId: string; claimId: string }): Promise<import("./user-model-turn-request.js").ForgetUserModelClaimResult>;
 }

@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorrectionRuleRecord, CorrectionRuleKind, UserModelClaimRecord, UserModelClaimStore } from "./storage.js";
 import type { RecordUserModelClaimInput, UserModelClaim, UserModelClaimKind, UserModelStore } from "./user-model-store.js";
-import { isExplicit, recordUserModelClaim } from "./user-model-store.js";
+import { EMPTY_USER_MODEL_STORE, activeClaim, deleteUserModelClaim, isExplicit, recordUserModelClaim } from "./user-model-store.js";
 import type { JsonValue } from "./types.js";
 
 /**
@@ -155,4 +155,58 @@ export function userModelStoreProvenanceSummary(store: UserModelStore): JsonValu
     notExplicit: claims.length - explicit.length,
     explicitSubjects: [...new Set(explicit.map(claim => claim.subject))].sort().slice(0, 32)
   };
+}
+
+/** What a forget request did: the removed claim when it existed, or why nothing was removed. */
+export interface ForgetUserModelClaimResult {
+  removed: boolean;
+  claimId: string;
+  conversationId: string;
+  claim?: UserModelClaim;
+  reason?: "unknown_claim" | "storage_cannot_delete";
+  store: UserModelStore;
+}
+
+/**
+ * Withdrawing one thing the system learned about its owner.
+ *
+ * `deleteUserModelClaim` is the store's real removal -- distinct from correction, which keeps the superseded claim
+ * inspectable -- and nothing called it, so a claim recorded from a misread instruction was permanently binding: every
+ * later turn re-read it, and the only remedy available was to record a second claim superseding the first, which leaves
+ * the original in the history it governs. This is what makes the module's third promise (inspectable, correctable,
+ * deletable) true of the running system rather than of the type alone.
+ */
+export async function forgetUserModelClaim(
+  claimStore: UserModelClaimStore,
+  conversationId: string,
+  claimId: string
+): Promise<ForgetUserModelClaimResult> {
+  const records = await claimStore.listClaims({ conversationId, limit: 500 });
+  const store = userModelStoreFromClaimRecords(records);
+  const claim = store.claims.get(claimId);
+  if (!claim) return { removed: false, claimId, conversationId, reason: "unknown_claim", store };
+  if (!claimStore.deleteClaim) return { removed: false, claimId, conversationId, claim, reason: "storage_cannot_delete", store };
+  // The durable delete is the authority: a caller never sees a claim dropped locally that survived in storage.
+  const removed = await claimStore.deleteClaim({ conversationId, claimId });
+  if (!removed) return { removed: false, claimId, conversationId, claim, reason: "unknown_claim", store };
+  return { removed: true, claimId, conversationId, claim, store: deleteUserModelClaim(store, claimId) };
+}
+
+/** Every claim held for a conversation, newest first, alongside the one claim currently governing each (subject, scope). */
+export async function userModelClaimsForConversation(
+  claimStore: UserModelClaimStore,
+  conversationId: string,
+  limit = 200
+): Promise<{ store: UserModelStore; claims: UserModelClaim[]; governing: UserModelClaim[] }> {
+  const records = await claimStore.listClaims({ conversationId, limit });
+  const store = records.length ? userModelStoreFromClaimRecords(records) : EMPTY_USER_MODEL_STORE;
+  const claims = [...store.claims.values()].sort((left, right) => right.observedAt - left.observedAt);
+  const pairs = new Map<string, { subject: string; scope: string }>();
+  for (const claim of claims) pairs.set(JSON.stringify([claim.subject, claim.scope]), { subject: claim.subject, scope: claim.scope });
+  const governing: UserModelClaim[] = [];
+  for (const pair of pairs.values()) {
+    const active = activeClaim(store, pair.subject, pair.scope);
+    if (active) governing.push(active);
+  }
+  return { store, claims, governing };
 }

@@ -12,7 +12,7 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -82,6 +82,8 @@ export const ROUTES = [
   { method: "POST", path: "/api/learning/review", label: "confirm or reject held material", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/learning/curriculum", label: "self-proposed learning awaiting consent", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/learning/pursue", label: "consent to a curriculum item and learn it", mutates: true, requiresDb: true },
+  { method: "GET", path: "/api/learning/about-me", label: "what the system has recorded about its owner", mutates: false, requiresDb: true },
+  { method: "POST", path: "/api/learning/forget", label: "withdraw one recorded claim for good", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/models/download", label: "model download (explicit)", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/models/remove", label: "model remove", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/brain/status", label: "brain status", mutates: false, requiresDb: true },
@@ -588,6 +590,29 @@ async function dispatch(
       throw new HttpError(/not found/u.test(String(error)) ? 404 : 409, error instanceof Error ? error.message : String(error));
     }
   }
+  if (url.pathname === "/api/learning/about-me" && req.method === "GET") {
+    const conversationId = (url.searchParams.get("conversationId") ?? "").trim();
+    if (!conversationId) throw new HttpError(400, "conversationId is required");
+    const limitParam = url.searchParams.get("limit");
+    const limit = limitParam === null ? undefined : boundedNumber(Number(limitParam), "limit", 1, 500);
+    const [claims, dialogue] = await Promise.all([
+      context.runtime.kernel.listUserModelClaims({ conversationId, ...(limit === undefined ? {} : { limit }) }),
+      // The style profile is learned separately from the claim store and moves on every accepted or rejected turn;
+      // showing one without the other answers half of "what have you learned about me".
+      previewDialogueLearning({ store: context.runtime.storage.dialogueMemory, conversationId, ...(limit === undefined ? {} : { limit }) })
+    ]);
+    return json({ ...claims, dialogue });
+  }
+  if (url.pathname === "/api/learning/forget" && req.method === "POST") {
+    const body = jsonRecord(await readBody(req, context.maxBodyBytes));
+    const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+    const claimId = typeof body.claimId === "string" ? body.claimId.trim() : "";
+    if (!conversationId || !claimId) throw new HttpError(400, "conversationId and claimId are required");
+    const result = await context.runtime.kernel.forgetUserModelClaim({ conversationId, claimId });
+    if (!result.removed && result.reason === "unknown_claim") throw new HttpError(404, `no claim ${claimId} in conversation ${conversationId}`);
+    if (!result.removed) throw new HttpError(501, "this deployment's claim store cannot delete");
+    return json({ schema: "scce.learning.forget.v1", ...result, store: undefined, claims: [...result.store.claims.values()] });
+  }
   if (url.pathname === "/api/models" && req.method === "GET") {
     const modelDir = modelDirectoryForConfig(context.config);
     const models = await listLocalModels(modelDir);
@@ -631,6 +656,7 @@ async function dispatch(
         hydratedRuntime,
         workspaceCoding,
         learnedDialogueProfile,
+        dialogueOutcomeMemory,
         previousDialogue,
         repoCognitionFiles
       ] = await Promise.all([
@@ -646,6 +672,7 @@ async function dispatch(
           })
           : Promise.resolve(undefined),
         latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
+        dialogueOutcomeMemoryForConversation(context.runtime.storage.dialogueMemory, conversationId),
         latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId }),
         // Phase 15: real repo cognition (issue localization, affected-test
         // prediction, tree-sitter-backed symbol/call cross-referencing) for
@@ -738,7 +765,8 @@ async function dispatch(
         targetLanguage: turnTargetLanguage(body),
         userStyleProfile: learnedDialogueProfile,
         calibrationModels,
-        calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome
+        calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+        outcomeMemory: dialogueOutcomeMemory
       });
       const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
         const [, cognitiveShadow, storedSession] = await Promise.all([
