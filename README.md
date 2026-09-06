@@ -49,6 +49,17 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   abstention correctness 100%, and a **failed** class-effect test on cloze
   (p = 0.614), because tying a reference is not beating it.
 
+  **What an ablation says about it.** Running the same set with one
+  component disabled at a time (`docs/ABLATION.md`): removing the graph
+  costs one question, removing relation potential, PowerWalk or query
+  diffusion costs nothing measurable, and removing language memory gains
+  one. A lexical-only condition scores 165 against the full system's 166.
+  The benchmark measures abstention discipline, which is real and is the
+  entire margin over the reference; it does not measure the architecture,
+  because finding a stored sentence and reading a span out of it does not
+  require one. The instrument, not the score, is what needs to improve —
+  see [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md).
+
   Earlier history, kept rather than pruned: 157/168 was the reproducing
   figure from 2026-08-20 to 2026-09-03; three runs on 2026-09-04 scored
   168/168 and never reproduced; a rerun on 2026-09-05 scored 153/168, which
@@ -366,6 +377,7 @@ docs                    architecture, guides, and normative contracts
 - [`docs/README.md`](docs/README.md) — complete documentation index
 - [`docs/SBOM.md`](docs/SBOM.md) — third-party components, versions, and licenses (`pnpm sbom`)
 - [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md) — the finish gate: twenty behaviours the architecture must demonstrate, with honest current coverage
+- [`docs/ABLATION.md`](docs/ABLATION.md) — what each component is worth, measured by disabling it (`tools/ablation-delta.mjs`)
 - [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
 
 ## License
