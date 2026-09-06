@@ -81,6 +81,8 @@ export interface TurnRequirementField {
   responseForm?: ActivatedResponseForm;
   confidence: number;
   trace: JsonValue;
+  /** The activations this derivation actually used, so online calibration can credit them without parsing `trace`. */
+  activationsUsed?: readonly LearnedRequirementActivation[];
 }
 
 export type RequirementActivationKind = "frame" | "pattern" | "phrase_unit" | "dialogue_move" | "construct";
@@ -387,6 +389,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     activatedConstructIds: activatedIds(activations, "construct"),
     ...(responseForm ? { responseForm } : {}),
     confidence,
+    activationsUsed: activations,
     trace: toJsonValue({
       schema: "scce.turn_requirement.field_trace.v1",
       equation: "sigmoid(intercept + frame + pattern + phrase + dialogue + construct + context)",
@@ -488,12 +491,30 @@ function collectActivations(input: DeriveTurnRequirementFieldInput & { requestTe
   return [...byKey.values()].sort((left, right) => right.activation - left.activation || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
 }
 
+/**
+ * Units matched by the request but carrying no coefficients yet are still admitted, bounded, so that online
+ * calibration has something to credit.
+ *
+ * Requiring stored coefficients closed a loop with no entry: a unit could not activate without them, and could not
+ * earn them without activating. Measured on the live brain, 0 of 220,989 stored language units carried
+ * `requirementCoefficients`, so no request in the system's history produced a single activation, every requirement
+ * dimension resolved to its own intercept, and every cognitive reasoning gate was unreachable. A zero-coefficient
+ * activation contributes exactly nothing to the derivation -- the dimension loop skips terms whose coefficient and
+ * contribution are both zero -- until calibration gives it a weight, so this admits candidates for learning without
+ * changing what an uncalibrated model computes.
+ */
+const UNCALIBRATED_ACTIVATION_CANDIDATE_LIMIT = 32;
+
 function collectLanguageActivations(requestText: string, state: LanguageMemoryRuntimeState | undefined, out: LearnedRequirementActivation[]): void {
   if (!state) return;
+  let candidatesAdmitted = 0;
   for (const unit of state.importedUnits) {
     const metadata = jsonRecord(unit.metadata);
     const coefficients = requirementCoefficients(metadata.requirementCoefficients);
-    if (!hasRequirementCoefficients(coefficients)) continue;
+    if (!hasRequirementCoefficients(coefficients)) {
+      if (candidatesAdmitted >= UNCALIBRATED_ACTIVATION_CANDIDATE_LIMIT) continue;
+      candidatesAdmitted++;
+    }
     const kind: RequirementActivationKind = unit.unitKind === "semantic_frame" ? "frame" : unit.unitKind === "syntax_pattern" ? "pattern" : "phrase_unit";
     for (const matchedSpan of learnedSurfaceSpans(requestText, unit.text)) {
       out.push(normalizeActivation(requestText, {
@@ -514,7 +535,10 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
     const surface = jsonString(record.surface);
     const coefficients = requirementCoefficients(record.requirementCoefficients);
     const responseForm = learnedResponseForm(record.responseForm);
-    if (!hasRequirementCoefficients(coefficients) && !responseForm) continue;
+    if (!hasRequirementCoefficients(coefficients) && !responseForm) {
+      if (candidatesAdmitted >= UNCALIBRATED_ACTIVATION_CANDIDATE_LIMIT) continue;
+      candidatesAdmitted++;
+    }
     for (const matchedSpan of surface ? learnedPatternSpans(requestText, surface, jsonString(record.anchor)) : []) {
       out.push(normalizeActivation(requestText, {
         id: pattern.id,
