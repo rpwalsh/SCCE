@@ -68,12 +68,14 @@ import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { createTrainingRuntime } from "./training-runtime.js";
+import { buildCognitiveSubstrate } from "./cognitive-substrate.js";
 import { createTranslationEngine } from "./translation.js";
 import { forgetUserModelClaim, userModelClaimsForConversation, userModelStoreProvenanceSummary } from "./user-model-turn-request.js";
 import type {
   BenchmarkInput,
   BenchmarkResult,
   EpisodeId,
+  EpistemicForce,
   EvidenceSpan,
   IngestInput,
   IngestResult,
@@ -585,6 +587,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
               rolledBack: payloads("ActionRolledBack")
             },
             timing: turnState.lastTurnTiming ?? null,
+            // One scored view of the turn, with the guard flags that were in force and every input to the score
+            // named. The pieces were all in this payload already, spread across five event types; nothing read them
+            // together, so "how strong was this answer, and why" had no single answer.
+            substrate: cognitiveSubstrateForTurn(events, turnState.lastOutput),
             events
           })
         };
@@ -698,4 +704,43 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   };
 
   return kernel;
+}
+/**
+ * The turn's own score and every input to it, read back from the events the turn already wrote.
+ *
+ * `cognitive-substrate.ts` defines the scored typed answer action -- support, recency, source quality, path strength,
+ * contradiction mass, connectivity, spectral connectivity, compression rank and inference bound, under explicit guard
+ * flags -- and nothing built one, so those figures stayed scattered across five event payloads. Diagnostic only:
+ * nothing here feeds a turn, and every number is read, never recomputed from evidence.
+ */
+function cognitiveSubstrateForTurn(events: readonly ScceEvent[], answer: string): JsonValue {
+  const latest = (typeId: string): Record<string, unknown> =>
+    jsonRecord((events.filter(event => event.typeId === typeId).map(event => event.payload).at(-1) ?? null) as JsonValue);
+  const mouth = latest("MouthSpoken");
+  const force = jsonRecord(mouth.assistantForceTrace as JsonValue);
+  const coherence = jsonRecord(mouth.runtimeCoherence as JsonValue);
+  const audit = jsonRecord(coherence.audit as JsonValue);
+  const graphUpdate = latest("GraphUpdated");
+  const field = latest("FieldActivated");
+  const number = (value: unknown, fallback = 0): number => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+  const nodes = Array.isArray(graphUpdate.nodes) ? graphUpdate.nodes.length : number(graphUpdate.nodeCount);
+  const edges = Array.isArray(graphUpdate.edges) ? graphUpdate.edges.length : number(graphUpdate.edgeCount);
+  return toJsonValue(buildCognitiveSubstrate({
+    answer,
+    force: (typeof force.epistemicForce === "string" ? force.epistemicForce : "unknown") as EpistemicForce,
+    support: number(force.support),
+    // No recency signal is recorded per turn; 0.5 is the neutral value, and reporting it as measured would be a lie.
+    recency: 0.5,
+    sourceQuality: number(force.directEvidenceCount) > 0 ? 1 : 0,
+    pathStrength: number(audit.proofPressure) > 0 ? 1 - number(audit.proofPressure) : 0.5,
+    contradictionMass: number(force.contradiction),
+    connectivity: edges > 0 ? Math.min(1, edges / Math.max(1, nodes)) : 0,
+    events: [],
+    graph: { nodes: [], edges: [] },
+    rules: [],
+    spectralConnectivity: number(field.alpha, 0.5),
+    compression: { rank: nodes, factorCount: Math.max(nodes, edges), note: "turn graph slice" },
+    inference: { depth: number(force.evidenceCount), bounded: true, reason: "bounded turn field" },
+    guardFlags: { requireEvidence: true, blockCertifiedFact: force.forceClass !== "direct_evidence" }
+  }));
 }

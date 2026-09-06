@@ -18,7 +18,7 @@ A self-contained cognitive runtime that:
   regulated, and privacy-critical environments where LLM APIs and GPU
   clusters are non-starters.
 - **Is auditable end to end.** Sealed evaluation harness with a
-  cryptographic custody chain, 1,710 kernel tests (2,235 across the
+  cryptographic custody chain, 1,704 kernel tests (2,228 across the
   workspace), and a no-hidden-model gate that fails the build on any model
   endpoint or generation call in 997 scanned source and package files.
 

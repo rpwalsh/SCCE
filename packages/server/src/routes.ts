@@ -12,7 +12,7 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -901,6 +901,19 @@ async function dispatch(
       correctionText: typeof body.correctionText === "string" ? body.correctionText : undefined,
       now: Date.now()
     });
+    // A corrected translation is a different kind of correction and carries a different signal: which terms the owner
+    // changed, and how far the corrected surface moved from the generated one. `createCorrectionEngine` computes that
+    // alignment delta and had no caller, so a corrected translation was recorded only as generic outcome text and the
+    // term-level evidence was discarded. Recorded only when the caller supplies the translation pair; a correction
+    // without one is unchanged.
+    const translation = translationCorrectionInput(body);
+    const alignment = translation
+      ? createCorrectionEngine({ clock: createClock() }).recordFeedback({
+        episodeId: (learned.replay.turnId ?? "") as never,
+        ...translation,
+        evidenceIds: [] as never[]
+      })
+      : undefined;
     return json({
       schema: "scce.turn.dialogue_outcome.v1",
       conversationId: learned.replay.conversationId,
@@ -909,6 +922,7 @@ async function dispatch(
       styleSnapshotId: learned.learning.snapshot.id,
       calibrationObservationIds: learned.calibrationObservations.map(observation => observation.id),
       correctionId: learned.correction?.id,
+      ...(alignment ? { translationAlignment: { id: alignment.id, alpha: alignment.alpha, changedTerms: alignment.changedTerms } } : {}),
       reversible: true
     });
   }
@@ -3781,4 +3795,41 @@ function isModelId(value: string): boolean {
 
 function jsonRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** The translation pair a corrected outcome may carry, or nothing when the correction was not a translation. */
+function translationCorrectionInput(body: Record<string, unknown>): {
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceText: string;
+  generatedTranslation: string;
+  correctedTranslation: string;
+  protectedTerms: string[];
+  changedTerms: Array<{ original: string; corrected: string; reason: string }>;
+  sourceProfileId: string;
+  targetProfileId: string;
+} | undefined {
+  const text = (key: string): string => (typeof body[key] === "string" ? String(body[key]).trim() : "");
+  const sourceLanguage = text("sourceLanguage");
+  const targetLanguage = text("targetLanguage");
+  const sourceText = text("sourceText");
+  const generatedTranslation = text("generatedTranslation");
+  const correctedTranslation = text("correctionText") || text("correctedTranslation");
+  if (!sourceLanguage || !targetLanguage || !sourceText || !generatedTranslation || !correctedTranslation) return undefined;
+  const changed = Array.isArray(body.changedTerms) ? body.changedTerms.filter(isRecord) : [];
+  return {
+    sourceLanguage,
+    targetLanguage,
+    sourceText,
+    generatedTranslation,
+    correctedTranslation,
+    protectedTerms: Array.isArray(body.protectedTerms) ? stringArray(body.protectedTerms) : [],
+    changedTerms: changed.map(row => ({
+      original: typeof row.original === "string" ? row.original : "",
+      corrected: typeof row.corrected === "string" ? row.corrected : "",
+      reason: typeof row.reason === "string" ? row.reason : "owner_correction"
+    })).filter(row => row.original && row.corrected),
+    sourceProfileId: text("sourceProfileId") || `language.profile.${sourceLanguage}`,
+    targetProfileId: text("targetProfileId") || `language.profile.${targetLanguage}`
+  };
 }

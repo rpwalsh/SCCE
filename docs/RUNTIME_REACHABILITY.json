@@ -1,20 +1,20 @@
 {
- "generatedAt": "2026-09-06T09:27:15.979Z",
+ "generatedAt": "2026-09-06T10:21:56.370Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1670,
-  "reached": 1178,
-  "internalHelpersOnly": 461,
-  "orphans": 31,
+  "reached": 1182,
+  "internalHelpersOnly": 460,
+  "orphans": 28,
   "declaredConstants": 3,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 10,
-  "implementedButUncalled": 17,
-  "ofWhichCoveredByTestsOnly": 10,
+  "testOnlyHelpers": 7,
+  "implementedButUncalled": 14,
+  "ofWhichCoveredByTestsOnly": 7,
   "ofWhichNoCallerAnywhere": 0,
-  "ofWhichDeliberatelyUnwired": 13
+  "ofWhichDeliberatelyUnwired": 14
  },
  "orphans": [
   {
@@ -72,24 +72,6 @@
    "deliberatelyUnwired": "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank.",
    "hostContract": false,
    "testOnly": false
-  },
-  {
-   "name": "createCausalMath",
-   "file": "packages/kernel/src/causal-math.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "buildCognitiveSubstrate",
-   "file": "packages/kernel/src/cognitive-substrate.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
   },
   {
    "name": "discourseEvidenceIdsFromMetadata",
@@ -282,15 +264,6 @@
    "testOnly": false
   },
   {
-   "name": "createCorrectionEngine",
-   "file": "packages/kernel/src/translation-correction-engine.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "workingMemoryEntriesForTask",
    "file": "packages/kernel/src/working-memory.ts",
    "caller": "",
@@ -306,6 +279,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Reads the size of the in-flight dialogue-persistence map without exposing the map, so a test can assert the cap is enforced. There is no runtime question it answers -- a caller that wanted the number would already hold the map -- and exporting the map to give it a production caller would hand every route mutable access to persistence state the module owns.",
    "hostContract": false,
    "testOnly": true
   }
