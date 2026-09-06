@@ -126,6 +126,9 @@ export type DeveloperSurfaceAction =
   | { type: "terminal.append"; line: Omit<SurfaceTerminalLine, "id" | "t"> }
   | { type: "trace.replace"; trace: SurfaceTraceNode[] }
   | { type: "layout.patch"; layout: Partial<SurfaceLayout> }
+  /** The host reports its viewport; the reducer decides the layout. `resizeLayout` existed for this and had no
+   *  action to reach it, so a surface could only ever be resized by patching individual widths by hand. */
+  | { type: "layout.viewport"; viewport: { width: number; height: number } }
   | { type: "status.patch"; status: Partial<DeveloperSurfaceState["status"]> };
 
 export const SURFACE_COMMANDS: SurfaceCommand[] = [
@@ -228,6 +231,8 @@ export function reduceDeveloperSurface(state: DeveloperSurfaceState, action: Dev
       return { ...state, trace: action.trace };
     case "layout.patch":
       return { ...state, layout: normalizeLayout({ ...state.layout, ...action.layout }) };
+    case "layout.viewport":
+      return { ...state, layout: resizeLayout(state.layout, action.viewport) };
     case "status.patch":
       return { ...state, status: { ...state.status, ...action.status } };
     default:

@@ -11,7 +11,7 @@ import type {
   SemanticTemporalScope
 } from "./semantic-proof-types.js";
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
-import { evaluateSemanticTransforms } from "./semantic-transform-registry.js";
+import { evaluateSemanticTransforms, semanticTransformRules } from "./semantic-transform-registry.js";
 import { evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import {
   compileRelationHypothesisModel,
@@ -180,6 +180,10 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       const graph = proofGraphFrom(search, claimAtoms, evidenceAtoms, graphAtoms);
       const replay = toJsonValue({
         claimHash: hasher.digestHex(input.claimText),
+        // The transform registry this verdict was reached under. The record already names which transforms fired;
+        // it did not say what the rule set was, so adding, removing or editing a rule changed replayed verdicts
+        // silently and a proof id derived from this record stayed stable while its meaning moved.
+        transformRegistry: transformRegistryFingerprint(hasher),
         claimAtomIds: claimAtoms.map(atom => atom.id),
         evidenceAtomIds: evidenceAtoms.map(atom => atom.id),
         graphAtomIds: graphAtoms.map(atom => atom.id),
@@ -211,6 +215,15 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
         replay
       };
     }
+  };
+}
+
+/** Identity of the semantic transform rule set: its size and the ordered rule ids, hashed. Pure. */
+function transformRegistryFingerprint(hasher: Hasher): { rules: number; digest: string } {
+  const rules = semanticTransformRules();
+  return {
+    rules: rules.length,
+    digest: hasher.digestHex(rules.map(rule => `${rule.id}:${rule.kind}`).join("|")).slice(0, 32)
   };
 }
 
