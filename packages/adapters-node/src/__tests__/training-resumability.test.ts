@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { createHasher, createIdFactory, createClock } from "@scce/kernel";
+import { canonicalStringify, createHasher, createIdFactory, createClock } from "@scce/kernel";
 import type { IngestionCheckpoint } from "@scce/kernel";
 import { verifiedResumeOffset } from "../wikipedia-v3-ingestor.js";
 
@@ -85,5 +85,34 @@ describe("training resumability (plan item 245)", () => {
     const remainder = blocks.slice(2).map(bytes => String(afterResume.sourceVersionId(bytes)));
 
     expect([...partial, ...remainder]).toEqual(uninterrupted);
+  });
+
+  it("reaches the same brain identity after a resume, and a double-counted resume does not", () => {
+    // Plan item 245. The ingestor derives a brain version by canonically hashing its own run summary, so a resumed run
+    // that ends with the same counts is the same brain, and one that re-ingests a block it already had is not.
+    const hasher = createHasher();
+    const brainVersion = (seed: Record<string, unknown>): string =>
+      `wikipedia:${hasher.digestHex(canonicalStringify(seed)).slice(0, 32)}`;
+    const summary = (pages: number, evidence: number, lastCheckpointOffset: number): Record<string, unknown> => ({
+      rootUri: "wikipedia://enwiki",
+      dumpPath: "/dump.xml",
+      indexPath: null,
+      resumedFromOffset: 0,
+      lastCheckpointOffset,
+      pages,
+      evidence,
+      stoppedByHeapSafetyBound: false,
+      stoppedByOwner: false,
+      stopReason: null
+    });
+
+    const straightThrough = brainVersion(summary(120, 8_566, 12_288));
+    // Interrupted after 80 pages, resumed from the verified offset for the remaining 40.
+    const resumed = brainVersion({ ...summary(80 + 40, 5_700 + 2_866, 12_288), resumedFromOffset: 0 });
+    expect(resumed).toBe(straightThrough);
+
+    // A resume that replays a block it had already durably ingested counts it twice: a different brain, correctly.
+    const doubleCounted = brainVersion(summary(120 + 40, 8_566 + 2_866, 12_288));
+    expect(doubleCounted).not.toBe(straightThrough);
   });
 });
