@@ -51,6 +51,7 @@ const tasks = (await readFile(tasksPath, "utf8"))
   .filter(task => !only || task.taskId === only);
 
 const records = [];
+const taughtGraph = [];
 for (const task of tasks) {
   for (const system of systems) {
     const sessionId = `csb-${system}-${task.taskId}-${Date.now()}`;
@@ -63,6 +64,10 @@ for (const task of tasks) {
       const elapsedMs = Date.now() - started;
       if (turn.kind === "teach") {
         context.push(turn.text);
+        // The graph a teaching turn resolves is the earliest place session starvation is visible. Recording it here
+        // means a future change that quietly stops projecting session evidence shows up as zeros in this table
+        // rather than as a mysterious drop in answer quality several subsystems later.
+        if (system === "scce") taughtGraph.push({ taskId: task.taskId, turnIndex: index, ...(response.graph ?? {}) });
         continue;
       }
       // A distractor exists to put turns between teaching and recall. It is not a question either system is being
@@ -79,6 +84,7 @@ for (const task of tasks) {
         refused: response.refused,
         elapsedMs,
         cost: response.cost,
+        graph: response.graph ?? null,
         ...(response.error ? { error: response.error } : {}),
         ...classify(turn.score ?? {}, response)
       });
@@ -93,7 +99,7 @@ report(records);
 /** SCCE through its own HTTP surface, one session per task so state is genuinely carried rather than re-supplied. */
 async function askScce(text, sessionId) {
   try {
-    const response = await fetch(`${scceUrl}/api/turn`, {
+    const response = await fetch(`${scceUrl}/api/turn?full=1`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text, sessionId, conversationId: sessionId })
@@ -115,7 +121,8 @@ async function askScce(text, sessionId) {
         cpuUserMs: body.timing?.resourceUsage?.cpuUserMs ?? null,
         peakResidentBytes: body.timing?.resourceUsage?.peakResidentSetBytes ?? null,
         inferenceCalls: 0
-      }
+      },
+      graph: graphCountsFromTurn(body)
     };
   } catch (error) {
     return { answer: "", refused: false, cost: {}, error: String(error?.message ?? error).slice(0, 160) };
@@ -154,6 +161,19 @@ async function askLlm(text, context, kind) {
   } catch (error) {
     return { answer: "", refused: false, cost: {}, error: String(error?.message ?? error).slice(0, 160) };
   }
+}
+
+/** Graph rows this turn actually resolved, from the plan the runtime recorded. */
+function graphCountsFromTurn(body) {
+  // A turn emits more than one GraphUpdated and only the retrieval-plan one carries row counts; taking the last
+  // event read undefined and reported every turn as starved, which is the same class of measurement error this
+  // assertion exists to catch.
+  const rows = (body.events ?? [])
+    .filter(event => event.typeId === "GraphUpdated")
+    .map(event => event.payload?.plan?.corpusRows)
+    .filter(Boolean)
+    .at(-1) ?? {};
+  return { nodes: rows.nodeRows ?? 0, edges: rows.edgeRows ?? 0, evidence: rows.evidenceRows ?? 0 };
 }
 
 function isDeclination(answer) {
@@ -228,5 +248,8 @@ function report(rows) {
       + `  refused an answerable ${count("incorrect_refusal")}\n`);
     process.stdout.write(`  wall clock ${Math.round(totalMs)}ms total, ${Math.round(totalMs / Math.max(1, mine.length))}ms per question\n`);
   }
+  const starved = taughtGraph.filter(row => (row.nodes ?? 0) === 0);
+  process.stdout.write(`teaching turns: ${taughtGraph.length}, of which resolved an empty graph: ${starved.length}\n`);
+  if (starved.length) process.stdout.write(`  STARVED: ${starved.map(row => `${row.taskId}#${row.turnIndex}`).join(", ")}\n`);
   process.stdout.write("\n");
 }
