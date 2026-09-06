@@ -601,7 +601,9 @@ export function createDiscourseTurnObservationV2(
   const content = discourseTurnObservationContentV2(input);
   return {
     schema: "scce.discourse_turn_observation.v2",
-    id: `disc2.observation.${hasher.digestHex(canonicalJsonV2(content)).slice(0, 32)}`,
+    // Derived by the function that exists for it rather than repeated here: two copies of an identity rule drift,
+    // and an observation id that stops matching what derives it silently breaks every lookup keyed on it.
+    id: deriveDiscourseTurnObservationIdV2(content, hasher),
     ...content
   };
 }

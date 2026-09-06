@@ -1,19 +1,19 @@
 {
- "generatedAt": "2026-09-06T08:00:02.211Z",
+ "generatedAt": "2026-09-06T08:03:20.291Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1664,
-  "reached": 1143,
-  "internalHelpersOnly": 454,
-  "orphans": 67,
+  "reached": 1145,
+  "internalHelpersOnly": 455,
+  "orphans": 64,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 39,
-  "implementedButUncalled": 49,
+  "implementedButUncalled": 46,
   "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 10,
+  "ofWhichNoCallerAnywhere": 7,
   "ofWhichDeliberatelyUnwired": 5
  },
  "orphans": [
@@ -128,24 +128,6 @@
    "testOnly": true
   },
   {
-   "name": "profileOrderIndex",
-   "file": "packages/kernel/src/control-plane-profiles.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "corpusNgramSettings",
-   "file": "packages/kernel/src/corpus-registry.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "chartCell",
    "file": "packages/kernel/src/derivation-chart.ts",
    "caller": "",
@@ -214,15 +196,6 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "deriveDiscourseTurnObservationIdV2",
-   "file": "packages/kernel/src/discourse-state.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
    "hostContract": false,
    "testOnly": false
   },
