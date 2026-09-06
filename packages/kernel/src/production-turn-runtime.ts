@@ -216,7 +216,8 @@ import {
   TURN_REQUIREMENT_DIMENSIONS,
   activateCognitiveOperators,
   deriveTurnRequirementField,
-  requestSubjectText
+  requestSubjectText,
+  type TurnRequirementField
 } from "./turn-requirements.js";
 import {
   EMPTY_WORKING_MEMORY,
@@ -842,12 +843,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ],
         dialogueState: authorityDialogueState,
         languageMemoryState: requestRequirementLanguageState,
-        contextContribution: {
-          ...requirementContextFromMetadata(input.metadata),
-          ...compositionDemandContribution(input.text)
-        }
+        contextContribution: requirementContextFromMetadata(input.metadata)
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
+      // Applied after the projection, deliberately: naming two subjects says the answer must be composed, not that
+      // the request stopped being factual. Folding it in earlier pushed `projectRequestAuthority` from factual to
+      // reasoned on a two-subject question, which is a different claim than the one this signal is making.
+      requirementField = withCompositionDemand(requirementField, input.text);
       let requestedAuthority = authorityProjection.requestedAuthority;
       let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
@@ -4032,16 +4034,17 @@ function measuredTurnResourceUsage(start: ReturnType<typeof captureResourceUsage
  * another are two separate subjects the corpus knows about, and a request naming two of them cannot be answered by
  * reading one span about one of them. No word list, and nothing that assumes a language.
  */
-function compositionDemandContribution(requestText: string): Partial<Record<"inferentialDepth", number>> {
+function withCompositionDemand(field: TurnRequirementField, requestText: string): TurnRequirementField {
   const anchors = sourceEvidenceAnchorsForRequest(requestText).map((anchor: string) => normalizePriorKey(anchor)).filter(Boolean);
   const distinct: string[] = [];
   for (const anchor of anchors) {
     if (distinct.some(kept => kept.includes(anchor) || anchor.includes(kept))) continue;
     distinct.push(anchor);
   }
-  if (distinct.length < 2) return {};
-  // Two distinct subjects clear the 0.55 gate; each further one adds less, and the total stays bounded.
-  return { inferentialDepth: 1.7 + Math.min(0.6, (distinct.length - 2) * 0.3) };
+  if (distinct.length < 2) return field;
+  // Two distinct subjects clear the 0.55 composition gate; each further one adds less, and the total is bounded.
+  const demand = Math.min(0.92, 0.58 + (distinct.length - 2) * 0.09);
+  return { ...field, inferentialDepth: Math.max(field.inferentialDepth, demand) };
 }
 
 /** What the durable retrieval escalation must be able to spend before the deadline guard refuses it. */
