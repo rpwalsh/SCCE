@@ -1,15 +1,15 @@
 {
- "generatedAt": "2026-09-05T23:00:31.796Z",
+ "generatedAt": "2026-09-06T01:13:28.233Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1651,
-  "reached": 1116,
-  "internalHelpersOnly": 450,
-  "orphans": 85,
+  "exports": 1652,
+  "reached": 1119,
+  "internalHelpersOnly": 449,
+  "orphans": 84,
   "declaredConstants": 7,
   "compatibilityAliases": 9,
   "legacyMigration": 2,
-  "implementedButUncalled": 67
+  "implementedButUncalled": 66
  },
  "orphans": [
   {
@@ -540,13 +540,6 @@
   {
    "name": "evidenceForceFromProofForceClass",
    "file": "packages/kernel/src/truth-contract.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "computeUsefulnessPerJoule",
-   "file": "packages/kernel/src/usefulness-per-joule.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
