@@ -12,7 +12,7 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -106,6 +106,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/connectors/outlook/send", label: "outlook send draft", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/connectors/outlook/calendar", label: "outlook read calendar", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/connectors/outlook/calendar/create", label: "outlook create calendar event", mutates: true, requiresDb: false },
+  { method: "POST", path: "/api/connectors/outlook/calendar/rollback", label: "roll back a created calendar event", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/connectors/outlook/contacts", label: "outlook read contacts", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/connectors/youtube/search", label: "youtube search", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/connectors/youtube/video", label: "youtube video metadata", mutates: false, requiresDb: false },
@@ -279,7 +280,11 @@ async function dispatch(
     const ok = healthOk(status);
     return json({ ok, db: status, postgres: status.verify, serverUrl: context.config.server.url }, ok ? 200 : 503);
   }
-  if (req.method === "GET" && url.pathname === "/api/manifest") return json({ routes: ROUTES, serverUrl: context.config.server.url });
+  if (req.method === "GET" && url.pathname === "/api/manifest") {
+    // What code repair this build actually supports, with its own stated limits, is part of the contract a client
+    // needs before it composes a request. The descriptor set existed and was published nowhere.
+    return json({ routes: ROUTES, serverUrl: context.config.server.url, programRepairFamilies: SUPPORTED_PROGRAM_REPAIR_FAMILIES });
+  }
   if (req.method === "GET" && url.pathname === "/api/brain/status") return json(await context.runtime.kernel.inspect("brain"));
   if (req.method === "GET" && url.pathname === "/api/ready") {
     const warmup = context.startupReadiness.snapshot();
@@ -382,6 +387,15 @@ async function dispatch(
       ? await dispatchOutlookCalendarEventCreateThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, event: input, ownerId: calendarOwnerId })
       : await context.runtime.connectors.outlookCreateCalendarEvent({ ...input, approved: true });
     return json(result);
+  }
+  if (req.method === "POST" && url.pathname === "/api/connectors/outlook/calendar/rollback") {
+    // Creating the event was durable and reversible on paper: the executive records the attempt and the rollback
+    // path was written with it. Nothing exposed the rollback, so the one mutating calendar action had no undo.
+    const body = requireFields(await readBody(req, context.maxBodyBytes), ["subject", "start", "end"]);
+    const input = { subject: String(body.subject), start: String(body.start), end: String(body.end), attendees: body.attendees ? stringArray(body.attendees) : undefined, body: body.body ? String(body.body) : undefined };
+    if (!approved(context, "outlook.create_calendar_event", input)) return pendingApproval(context, "outlook.create_calendar_event", input);
+    if (!context.runtime.executive) throw new HttpError(409, "calendar rollback requires the durable executive; this deployment created the event without one");
+    return json(await dispatchOutlookCalendarEventRollback({ executive: context.runtime.executive, connectors: context.runtime.connectors, event: input }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/contacts") {
     const body = await readBody(req, context.maxBodyBytes);
