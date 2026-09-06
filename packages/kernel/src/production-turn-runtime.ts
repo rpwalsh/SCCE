@@ -2283,11 +2283,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         })));
       }
       const cognitiveProposalStarted = Date.now();
+      // The planner reasons across sources, so it is given the evidence the turn admitted rather than the evidence
+      // the source-exact proposal settled on. Those are not the same set and the difference decided every turn:
+      // `evidenceSelectionPool` is derived from the entailment over the single-span verbatim claim, so by the time
+      // the planner ran it saw one span, and every draft producer that composes across sources -- relation,
+      // topology, hypothesis, source synthesis -- had nothing to compose. Measured live on "Was Ada Lovelace alive
+      // at the same time as Charles Babbage?": ten spans admitted, one span at the planner, zero proposals.
+      const proposalEvidence = runtimeEvidenceWindowsForRequest(
+        input.text,
+        mergeEvidenceSpans([...selectedEvidence, ...admissibleEvidence.filter(span => span.status === "promoted")])
+      );
       const cognitiveProposals = planCognitiveProposals({
         requestText: input.text,
         requirements: requirementField,
         operatorActivations,
-        evidence: selectedEvidence,
+        evidence: proposalEvidence,
         graph,
         field,
         construct: candidateConstructSeed,
@@ -2303,7 +2313,25 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         stage: "candidate.cognitive.plan",
         label: "kernel.turn",
         durationMs: Date.now() - cognitiveProposalStarted,
-        counts: { proposals: cognitiveProposals.length }
+        // Zero proposals is the normal live outcome and the trace never said why. Every draft producer reads the
+        // active operators and the selected evidence; a turn with one span and no active operator cannot compose
+        // anything across sources, and that is indistinguishable in the count alone from a planner that ran and
+        // rejected everything.
+        counts: {
+          proposals: cognitiveProposals.length,
+          evidence: proposalEvidence.length,
+          selectedEvidence: selectedEvidence.length,
+          activeOperators: operatorActivations.filter(operator => operator.active && operator.activation > 0).length,
+          inventions: inventionCandidates.length,
+          graphNodes: graph.nodes.length,
+          graphEdges: graph.edges.length
+        },
+        support: {
+          operators: operatorActivations.filter(operator => operator.active && operator.activation > 0).slice(0, 8).map(operator => operator.id),
+          inferentialDepth: requirementField.inferentialDepth,
+          sourceDependence: requirementField.sourceDependence,
+          noveltyDemand: requirementField.noveltyDemand
+        }
       });
       events.push(await append(eventFactory.create({
         episodeId,
