@@ -104,17 +104,22 @@ export function compileRelationPromotionModel(input: {
   const split = sourceDisjointSplit(sourceFamilyIds, hasher);
   const fit = observations.filter(row => split.fit.has(row.sourceFamilyId));
   const holdout = observations.filter(row => split.holdout.has(row.sourceFamilyId));
+  // Everything a decision needs about its channel is the same for every relation in that channel, and there are a
+  // handful of channels against thousands of relations. Deriving it inside the loop meant six full scans of the
+  // observation set per relation: measured on 16 corpus documents, 1,285 relations over 2,068 observations took
+  // 22s, and the cost grew with the square of the corpus, which put a corpus-scale promotion pass out of reach for
+  // the one channel that produces thousands of relations. Same arithmetic, computed once per channel.
+  const channelScope = channelScopes(observations, fit, holdout);
+  const channelOf = new Map<string, SemanticCandidateChannel>();
+  for (const row of observations) if (!channelOf.has(row.relationSeedId)) channelOf.set(row.relationSeedId, row.channel);
   const decisions = relationSeedIds.map(relationSeedId => {
-    const channel = observations.find(row => row.relationSeedId === relationSeedId)!.channel;
-    const channelObservations = observations.filter(row => row.channel === channel);
-    const channelFit = fit.filter(row => row.channel === channel);
-    const channelHoldout = holdout.filter(row => row.channel === channel);
-    const channelRelationSeedIds = [...new Set(
-      channelObservations.map(row => row.relationSeedId)
-    )].sort();
-    const channelSignatureAlphabet = [...new Set(
-      channelObservations.map(row => row.signature)
-    )].sort();
+    const channel = channelOf.get(relationSeedId)!;
+    const scope = channelScope.get(channel)!;
+    const channelObservations = scope.observations;
+    const channelFit = scope.fit;
+    const channelHoldout = scope.holdout;
+    const channelRelationSeedIds = scope.relationSeedIds;
+    const channelSignatureAlphabet = scope.signatureAlphabet;
     const actual = evaluateRelation({
       relationSeedId,
       fit: channelFit,
@@ -441,23 +446,32 @@ function recoveryProbabilities(input: {
   if (!input.holdout.length || !input.fit.length || !input.relationSeedIds.length) {
     return { baseline: 0, relation: 0 };
   }
-  const fitCounts = new Map(input.relationSeedIds.map(relationSeedId => [
-    relationSeedId,
-    input.fit.filter(row => row.relationSeedId === relationSeedId)
-  ]));
+  // Grouping by one pass rather than one filter per relation, and counting each relation's signatures once rather
+  // than once per held-out row. Both were loop-invariant; recomputing them made this the dominant cost of the whole
+  // promotion pass, which grew with the square of the corpus and put a corpus-scale pass out of reach.
+  const fitCounts = new Map<string, RelationObservation[]>(
+    input.relationSeedIds.map(relationSeedId => [relationSeedId, []])
+  );
+  for (const row of input.fit) fitCounts.get(row.relationSeedId)?.push(row);
   const priorDenominator = input.fit.length + DIRICHLET_ALPHA * input.relationSeedIds.length;
+  const priorByRelation = new Map<string, number>();
+  const signatureCountsByRelation = new Map<string, Map<string, number>>();
+  for (const relationSeedId of input.relationSeedIds) {
+    const examples = fitCounts.get(relationSeedId) ?? [];
+    priorByRelation.set(relationSeedId, (examples.length + DIRICHLET_ALPHA) / priorDenominator);
+    signatureCountsByRelation.set(relationSeedId, countsBySignature(examples));
+  }
   let baseline = 0;
   let relation = 0;
   for (const row of input.holdout) {
     const weights = input.relationSeedIds.map(relationSeedId => {
-      const examples = fitCounts.get(relationSeedId) ?? [];
-      const prior = (examples.length + DIRICHLET_ALPHA) / priorDenominator;
+      const prior = priorByRelation.get(relationSeedId)!;
       return {
         relationSeedId,
         prior,
         joint: prior * probability(
           row.signature,
-          countsBySignature(examples),
+          signatureCountsByRelation.get(relationSeedId)!,
           input.signatureAlphabetSize
         )
       };
@@ -523,4 +537,36 @@ function sourceFamilyFor(candidate: StructuredSemanticCandidate): string {
 
 function quantize(value: number): number {
   return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+interface ChannelScope {
+  observations: RelationObservation[];
+  fit: RelationObservation[];
+  holdout: RelationObservation[];
+  relationSeedIds: string[];
+  signatureAlphabet: string[];
+}
+
+/** The per-channel view every relation decision in that channel shares, built in one pass each. Pure. */
+function channelScopes(
+  observations: readonly RelationObservation[],
+  fit: readonly RelationObservation[],
+  holdout: readonly RelationObservation[]
+): Map<SemanticCandidateChannel, ChannelScope> {
+  const scopes = new Map<SemanticCandidateChannel, ChannelScope>();
+  const scopeFor = (channel: SemanticCandidateChannel): ChannelScope => {
+    const existing = scopes.get(channel);
+    if (existing) return existing;
+    const created: ChannelScope = { observations: [], fit: [], holdout: [], relationSeedIds: [], signatureAlphabet: [] };
+    scopes.set(channel, created);
+    return created;
+  };
+  for (const row of observations) scopeFor(row.channel).observations.push(row);
+  for (const row of fit) scopeFor(row.channel).fit.push(row);
+  for (const row of holdout) scopeFor(row.channel).holdout.push(row);
+  for (const scope of scopes.values()) {
+    scope.relationSeedIds = [...new Set(scope.observations.map(row => row.relationSeedId))].sort();
+    scope.signatureAlphabet = [...new Set(scope.observations.map(row => row.signature))].sort();
+  }
+  return scopes;
 }

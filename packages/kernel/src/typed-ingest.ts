@@ -25,6 +25,7 @@ import { canonicalStringify, clamp01, featureSet, toJsonValue } from "./primitiv
 import { extensionOf, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, splitLines } from "./source-code-graph.js";
 import { createEngineeringCorpusProjection, engineeringCorpusProjectionFromJson } from "./engineering-corpus.js";
 import { bayesUpdate, shannonEntropy } from "./equation-operators.js";
+import { proseRelationMetadata } from "./prose-relation-channel.js";
 import {
   semanticCandidatesByChannel,
   type StructuredSemanticCandidate
@@ -126,10 +127,12 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
     const contracts = observations.map(observationContract);
     const languageText = languageTextFromObservations(observations) || (shouldSuppressRawTraining(lane, input.mediaType, input.uri) ? "" : languageBearingDocumentText(input.text, input.mediaType, input.metadata, input.uri));
     const confidenceTrace = observationConfidenceTrace(observations, routes);
+    // Prose finally feeds the weak_free_surface channel that was built for it and never given a producer.
+    const proseMetadata = metadataWithProseRelations(input, languageText);
     const semanticCandidateChannels = semanticCandidatesByChannel({
       sourceId: input.sourceId,
       sourceVersionId: input.sourceVersionId,
-      metadata: input.metadata,
+      metadata: proseMetadata,
       observations,
       evidenceIds,
       observedAt: input.observedAt,
@@ -899,6 +902,12 @@ export function graphFromStructuredSemanticCandidates(input: {
       kind: "structured_semantic_candidate",
       candidateId: candidate.id
     });
+    // The surface travels with the node, because the proof system reads relation nodes back through
+    // graphNodeText -> atomizeText to recover predicate, roles and constraints. A node whose representation
+    // offers no readable text falls through to its feature strings, and the proposition compiler was being
+    // handed things like "bi:appointed|headmistress" to parse. Carrying the observed surface is what lets a
+    // promoted relation be re-derived as a proposition instead of guessed at from a bigram label.
+    const observedSurface = candidateAnchorSurface(candidate);
     nodes.push({
       id: relationNodeId,
       typeId: input.ids.dimensionId({
@@ -906,7 +915,9 @@ export function graphFromStructuredSemanticCandidates(input: {
         channel: candidate.channel,
         candidateKind: candidate.kind
       }),
-      representation: toJsonValue(admittedCandidate),
+      representation: toJsonValue(observedSurface
+        ? { ...admittedCandidate, text: observedSurface }
+        : admittedCandidate),
       alpha: candidate.support,
       evidenceIds: candidate.evidenceIds,
       features: [
@@ -2043,4 +2054,35 @@ function countBy(values: string[]): Record<string, number> {
 
 function observationId(hasher: Hasher, ...parts: unknown[]): string {
   return `observation_${hasher.digestHex(JSON.stringify(parts)).slice(0, 40)}`;
+}
+
+/**
+ * The projector's metadata with prose-derived relations added, unless the ingestor already supplied its own.
+ *
+ * structuredSemanticCandidates has always read metadata.weakFreeSurfaceRelations and turned each entry into an
+ * opaque_induced_relation candidate, but nothing ever wrote that key, so a document's prose contributed no relation
+ * to the graph: 1.68M nodes over 22,259 sources without one subject-predicate-object triple. Reading languageText
+ * rather than input.text is what keeps this to prose -- lane classification has already emptied it for spreadsheets,
+ * code and logs, whose serialized form would otherwise manufacture relations out of cell delimiters.
+ */
+function metadataWithProseRelations(input: TypedIngestProjectorInput, languageText: string): JsonValue {
+  if (!languageText.trim()) return input.metadata;
+  const metadata = input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)
+    ? input.metadata as Record<string, JsonValue>
+    : {};
+  const declared = metadata.weakFreeSurfaceRelations;
+  if (Array.isArray(declared) && declared.length > 0) return input.metadata;
+  const relations = proseRelationMetadata(languageText);
+  if (!Array.isArray(relations) || relations.length === 0) return input.metadata;
+  return toJsonValue({ ...metadata, weakFreeSurfaceRelations: relations });
+}
+
+/** The exact source surface a candidate's anchors record, if any anchor carries one. Pure. */
+function candidateAnchorSurface(candidate: StructuredSemanticCandidate): string {
+  for (const anchor of candidate.provenance.anchors) {
+    if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) continue;
+    const text = (anchor as Record<string, JsonValue>).text;
+    if (typeof text === "string" && text.trim()) return text;
+  }
+  return "";
 }
