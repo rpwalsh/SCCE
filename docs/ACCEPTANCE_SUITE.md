@@ -182,7 +182,7 @@ exercised, the systematic kill-at-every-write-boundary and version-compatibility
 
 | Requirement | Status |
 |---|---|
-| Proprietary boundary stated and enforced | Met — `LICENSE`, `NOTICE`, `pnpm proprietary:check` over 967 tracked files |
+| Proprietary boundary stated and enforced | Met — `LICENSE`, `NOTICE`, `pnpm proprietary:check` over 984 tracked files across 9 packages |
 | Dependency and IP manifest | Met — [`docs/SBOM.md`](SBOM.md), anchored to commit and lockfile, closure-wide license scan |
 | Reproducible build from clean checkout | Partial — `pnpm validate` passes end to end here; never run on a clean machine by another person |
 | Independent operation without the author | Not established |

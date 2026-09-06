@@ -81,7 +81,7 @@ The kernel builds a bounded hydration plan from the corpus registry and asks the
 
 ## Activation and evidence limits
 
-- PostgreSQL schema v23 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.
+- PostgreSQL schema v25 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.
 - Generic lifecycle CAS cannot enter or leave ACTIVE; activation must use the locked READY-only path.
 - Corpus promotion and language-memory eligibility do not certify facts. Exact evidence spans and graph/proof admissibility remain required for source-backed claims.
 
