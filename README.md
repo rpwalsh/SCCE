@@ -32,17 +32,31 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   `tools/no-hidden-model-check.mjs` fails the build on any model endpoint
   or generation call. Only a declared CLIP visual embedder remains, off by
   default.
-- **Sealed 168-question head-to-head**: SCCE 157/168 exact answers versus
-  158/168 for the independent BM25 reference on identical evidence
-  (2026-08-20). Each answer is an exact substring of a `sha256`-verified
-  source document, recorded with document id and character offsets. The
-  question set is generated mechanically from the sealed corpus (160 cloze
-  + 8 abstention probes) so the generator encodes no question grammar.
-  Three later local runs (2026-09-04, `out-full-39` to `out-full-41`)
-  scored 168/168, but that result is **not claimed here**: it has not been
-  reproduced since, and a rerun on 2026-09-05 scored 153/168 after the
-  operator's own corpus work altered the live brain. The published number
-  stays at the last figure that reproduces.
+- **Sealed 168-question head-to-head**: SCCE 166/168 exact answers versus
+  158/168 for the independent BM25 reference on identical evidence, in two
+  back-to-back runs that miss the same two questions (2026-09-05,
+  `out-full-44` and `out-full-45`). Each answer is an exact substring of a
+  `sha256`-verified source document, recorded with document id and
+  character offsets. The question set is generated mechanically from the
+  sealed corpus (160 cloze + 8 abstention probes) so the generator encodes
+  no question grammar.
+
+  **The margin is abstention, not recall.** On the 160 cloze questions the
+  two systems tie at 158. All eight points of difference are the abstention
+  probes: SCCE declines all eight questions the corpus cannot answer, the
+  BM25 reference answers all eight. The release gate says the same thing in
+  its own terms: unsupported rate 0.71%, exact-anchor accuracy 98.75%,
+  abstention correctness 100%, and a **failed** class-effect test on cloze
+  (p = 0.614), because tying a reference is not beating it.
+
+  Earlier history, kept rather than pruned: 157/168 was the reproducing
+  figure from 2026-08-20 to 2026-09-03; three runs on 2026-09-04 scored
+  168/168 and never reproduced; a rerun on 2026-09-05 scored 153/168, which
+  was traced to two real defects (wikitext classified as source code, and a
+  turn that admitted evidence then realized nothing being treated as
+  valid). Both are fixed, and 166/168 is what reproduces now. See
+  [`docs/EVALUATION_PROTOCOL.md`](docs/EVALUATION_PROTOCOL.md) for every
+  run and the gate output.
 - **Sealed-evaluation network defect — disclosed and fixed.** Every
   system manifest declares `"networkPolicy": "disabled"`, but until
   2026-08-18 the harness never enforced it; two abstention probes were
