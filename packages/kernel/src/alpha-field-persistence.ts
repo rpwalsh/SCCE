@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { AlphaTrace, FieldState, GraphSnapshot, Hasher, JsonValue, MatrixSnapshot, NodeId } from "./types.js";
+import { transitionSpectralGap } from "./causal-math.js";
 import { clamp01, cosineSimilarity, createHasher, mean, normalizeVector, toJsonValue, weightedJaccard } from "./primitives.js";
 
 export interface GraphFingerprint {
@@ -289,7 +290,14 @@ function perronFrobeniusDiagnostics(input: {
   }
   const second = secondEigenEstimate(input.matrix, vector, damping);
   const dominantEigenvalue = rayleighQuotient(input.matrix, vector);
-  const spectralGap = clamp01(Math.abs(dominantEigenvalue - second));
+  // The exact transition gap where the matrix admits one, the deflation estimate only as a fallback.
+  //
+  // `transitionSpectralGap` runs a lazy chain so convergence does not depend on the original chain's period, which
+  // is precisely the case the local power-iteration estimate below gets wrong: a periodic chain never settles and
+  // the estimate reports whatever the iteration cap left behind. It was reachable from nothing while this module
+  // carried its own inline approximation of the same quantity.
+  const exactGap = safeTransitionSpectralGap(input.matrix);
+  const spectralGap = exactGap ?? clamp01(Math.abs(dominantEigenvalue - second));
   const stationary = input.graph.nodes
     .map((node, index) => ({ nodeId: node.id, mass: vector[index] ?? 0 }))
     .sort((a, b) => b.mass - a.mass || String(a.nodeId).localeCompare(String(b.nodeId)));
@@ -350,6 +358,17 @@ function cacheKeyFor(input: { fingerprint: GraphFingerprint; requestHash: string
 
 export function alphaTraceMatrixSnapshot(trace: AlphaTrace, kind: "adjacency" | "laplacian" | "normalizedLaplacian" = "adjacency"): MatrixSnapshot {
   return kind === "adjacency" ? trace.adjacency : kind === "laplacian" ? trace.laplacian : trace.normalizedLaplacian;
+}
+
+/** The transition spectral gap, or undefined when the matrix is not a usable transition. Pure. */
+function safeTransitionSpectralGap(matrix: number[][]): number | undefined {
+  if (!matrix.length || matrix.some(row => row.length !== matrix.length)) return undefined;
+  try {
+    const gap = transitionSpectralGap(matrix);
+    return Number.isFinite(gap) ? clamp01(gap) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function secondEigenEstimate(matrix: number[][], dominant: readonly number[], damping: number): number {
