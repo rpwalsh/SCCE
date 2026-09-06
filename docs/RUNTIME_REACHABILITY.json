@@ -1,20 +1,20 @@
 {
- "generatedAt": "2026-09-06T08:43:00.823Z",
+ "generatedAt": "2026-09-06T08:48:02.247Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1162,
+  "reached": 1163,
   "internalHelpersOnly": 454,
-  "orphans": 49,
+  "orphans": 48,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 24,
-  "implementedButUncalled": 32,
-  "ofWhichCoveredByTestsOnly": 24,
+  "testOnlyHelpers": 23,
+  "implementedButUncalled": 31,
+  "ofWhichCoveredByTestsOnly": 23,
   "ofWhichNoCallerAnywhere": 0,
-  "ofWhichDeliberatelyUnwired": 8
+  "ofWhichDeliberatelyUnwired": 10
  },
  "orphans": [
   {
@@ -271,6 +271,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "An IBM Model 1-style lexical aligner that trains from a parallel corpus of sentence pairs, and this system has no parallel corpus to train it on. The production translation lane is translationEngine.plan, which writes its own TranslationAlignmentRecords from each turn (putTranslationAlignment, production-turn-runtime) and reads them back as priorAlignments, so alignments accumulate from the system's own translations rather than from a bilingual corpus. Wiring this engine would add a second, competing alignment trainer fed by nothing.",
    "hostContract": false,
    "testOnly": true
   },
@@ -280,6 +281,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Merges MultilingualLanguageProfile records sharing a sourceClusterId. The production translation lane carries LanguageProfile from language memory, a different type built by a different path, so there is no set of these profiles anywhere in the runtime to cluster -- only translation.ts's own pairwise buildLanguageProfile calls, which produce exactly two and share no cluster.",
    "hostContract": false,
    "testOnly": true
   },
@@ -392,15 +394,6 @@
    "alias": false,
    "hostContract": false,
    "testOnly": false
-  },
-  {
-   "name": "sparseAlignmentCandidatesForUnit",
-   "file": "packages/kernel/src/sparse-alignment-candidates.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
   },
   {
    "name": "sparseDot",
