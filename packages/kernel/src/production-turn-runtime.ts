@@ -1148,7 +1148,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               // session's changes.
               // A thin creative margin still retrieves anchored, so memory can decide the authority (see memoryDecidesAuthority).
               sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
-              residentOnly: fastRuntimeBudget
+              residentOnly: fastRuntimeBudget,
+              // So a slice served from cache records which condition owns the entry, which is what the sealed
+              // verifier's cache-owner check reads.
+              ...(fieldEvaluation ? { evaluation: fieldEvaluation } : {})
             }),
           () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText)
         ),
