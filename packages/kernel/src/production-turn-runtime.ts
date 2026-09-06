@@ -7,7 +7,7 @@ import { revisionAnswerVersion, selectedCandidateRevisionQuality } from "./answe
 import {
   createAnswerRevisionCoordinator
 } from "./answer-revision.js";
-import { assistantForceDecision } from "./assistant-force.js";
+import { assistantForceClass, assistantForceDecision } from "./assistant-force.js";
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
@@ -165,6 +165,10 @@ import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } f
 import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
 import { expandAdmissibleCommunity } from "./admissible-community-expansion.js";
 import { assessClaimSupport } from "./support-assessment.js";
+import { proofPathSemiring } from "./equation-operators.js";
+import { normalizeRawGraphEdgeToCognitiveEdge } from "./question-cognitive-edge.js";
+import { evidenceForceFromProofForceClass, type EvidenceForceClass } from "./truth-contract.js";
+import { evidenceProofBoundary } from "./proof-boundary.js";
 import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId } from "./types.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
@@ -1627,7 +1631,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             failures.push(`ftrl outcome update failed: ${error instanceof Error ? error.message : String(error)}`);
           });
       }
-      const entailmentAssistantForce = assistantForceDecision({
+      // The class alone, through the accessor that exists for it rather than by reaching into the decision.
+      const entailmentForceInput = {
         requestedAuthority,
         epistemicForce: entailmentResult.force,
         proofVerdict: semanticProof.verdict,
@@ -1635,7 +1640,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         directEvidenceIds: promoted.map(span => span.id),
         support: entailmentResult.support,
         contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction)
-      });
+      };
+      const entailmentAssistantForce = assistantForceDecision(entailmentForceInput);
+      const entailmentAssistantForceClass = assistantForceClass(entailmentForceInput);
       // The epistemic category of this answer, computed rather than asserted.
       //
       // `assessClaimSupport` carries the ladder this architecture claims to keep distinct -- retrieval support,
@@ -1648,6 +1655,33 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         semanticAlignmentEstablished: semanticProof.support > 0,
         ruleEntailed: entailmentResult.force === "proved",
         uncertaintyFloor: promoted.length ? 0 : 1
+      });
+      // Each admitted span is one support path, combined over the proof semiring rather than by adding weights.
+      // `proofPathSemiring` reports the best single path (max-product), the combined strength of all of them
+      // (sum-product, which saturates instead of exceeding one), the least-risk path (min-plus) and the
+      // contradiction mass, and it was reachable from nothing. Adding weights would let five weak paths outrank one
+      // strong one, which is the thing a semiring exists to prevent.
+      const proofPaths = proofPathSemiring({
+        paths: supportAssessment.evidenceWeights.map(weight => ({
+          conductances: [weight.weight],
+          contradiction: weight.polarity === "contradiction" ? weight.weight : 0
+        }))
+      });
+      kernelTrace({
+        stage: "proof.path_semiring",
+        label: "kernel.turn",
+        counts: { paths: proofPaths.pathCount },
+        support: {
+          maxProductSupport: proofPaths.maxProductSupport,
+          sumProductSupport: proofPaths.sumProductSupport,
+          contradictionMass: proofPaths.contradictionMass,
+          netAdmissibility: proofPaths.netAdmissibility,
+          // The declared evidence force of each admitted span, from its own proof boundary rather than assumed.
+          evidenceForces: uniqueKernelStrings(promoted.slice(0, 8)
+            .map(span => evidenceProofBoundary(span).forceClass)
+            .filter((forceClass): forceClass is EvidenceForceClass => forceClass !== "none")
+            .map(forceClass => evidenceForceFromProofForceClass(forceClass)))
+        }
       });
       kernelTrace({
         stage: "proof.support_assessment",
@@ -1682,7 +1716,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       entailmentResult.proof.scores = { ...(entailmentResult.proof.scores as Record<string, JsonValue>), ccr: ccrResult.audit, semanticProofSystem: semanticProof.replay };
       if (pfaceEstimate) entailmentResult.proof.scores = { ...(entailmentResult.proof.scores as Record<string, JsonValue>), pface: pfaceEstimate.audit };
       await deps.storage.proofs.putProof(entailmentResult.proof);
-      events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailmentResult.proof.id, force: entailmentResult.force, assistantForce: entailmentAssistantForce.force, assistantForceTrace: entailmentAssistantForce.audit, support: entailmentResult.support, contradiction: entailmentResult.contradiction, lcb: entailmentResult.faithfulnessLcb, boundaries: entailmentResult.boundaries, ccr: ccrResult.audit, semanticProofSystem: { id: semanticProof.id, verdict: semanticProof.verdict, support: semanticProof.support, contradiction: semanticProof.contradiction, obligations: semanticProof.obligations.length, counterexamples: semanticProof.counterexamples.length }, supportAssessment: toJsonValue({ category: supportAssessment.category, belief: supportAssessment.belief, plausibility: supportAssessment.plausibility, contradictionRatio: supportAssessment.contradictionRatio, limitations: [...supportAssessment.limitations] }), pface: pfaceEstimate?.audit ?? null } })));
+      events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailmentResult.proof.id, force: entailmentResult.force, assistantForce: entailmentAssistantForceClass, assistantForceTrace: entailmentAssistantForce.audit, support: entailmentResult.support, contradiction: entailmentResult.contradiction, lcb: entailmentResult.faithfulnessLcb, boundaries: entailmentResult.boundaries, ccr: ccrResult.audit, semanticProofSystem: { id: semanticProof.id, verdict: semanticProof.verdict, support: semanticProof.support, contradiction: semanticProof.contradiction, obligations: semanticProof.obligations.length, counterexamples: semanticProof.counterexamples.length }, supportAssessment: toJsonValue({ category: supportAssessment.category, belief: supportAssessment.belief, plausibility: supportAssessment.plausibility, contradictionRatio: supportAssessment.contradictionRatio, limitations: [...supportAssessment.limitations] }), pface: pfaceEstimate?.audit ?? null } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "EvidenceLinked", payload: { evidenceIds: entailmentResult.evidenceIds } })));
       kernelTrace({
         stage: "proof.attach",
@@ -2524,7 +2558,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // Plan items 169-170: real Allen-relation conflicts among peer edges.
       const temporalConflicts = conflictingGraphEdgeIntervals(graph.edges);
       if (temporalConflicts.length) {
-        events.push(await append(eventFactory.create({ episodeId, typeId: "TemporalConflictDetected", payload: toJsonValue(temporalConflicts.map(([left, right]) => ({ leftEdgeId: String(left.id), rightEdgeId: String(right.id) }))) })));
+        // A conflict reported as two opaque edge ids is not auditable by anyone who was not holding the graph.
+        // `normalizeRawGraphEdgeToCognitiveEdge` resolves one raw edge into its subject, predicate and object under
+        // the request's own question shape, and existed for exactly this and was called by nothing.
+        events.push(await append(eventFactory.create({ episodeId, typeId: "TemporalConflictDetected", payload: toJsonValue(temporalConflicts.map(([left, right]) => ({
+          leftEdgeId: String(left.id),
+          rightEdgeId: String(right.id),
+          left: cognitiveEdgeSummary(left, input.text),
+          right: cognitiveEdgeSummary(right, input.text)
+        }))) })));
       }
       const candidateFieldStarted = Date.now();
       const candidateField = candidates.generate({
@@ -4295,6 +4337,32 @@ function trustComponent(...candidates: readonly (JsonValue | undefined)[]): numb
     if (value !== undefined && Number.isFinite(value) && value > 0) return Math.min(1, value);
   }
   return 0.5;
+}
+
+/** One raw graph edge as its normalized subject/predicate/object, for events a reader must be able to audit. */
+function cognitiveEdgeSummary(edge: GraphEdge, requestText: string): JsonValue {
+  try {
+    const normalized = normalizeRawGraphEdgeToCognitiveEdge({
+      rawEdgeId: String(edge.id),
+      relationId: String(edge.relationId),
+      subject: String(edge.source),
+      predicate: String(edge.relationId),
+      object: String(edge.target),
+      forceClass: "unclassified_exact_evidence",
+      semanticQuality: 0,
+      alphaSupport: 0,
+      ppfSupport: 0,
+      supportMass: Math.max(0, Math.min(1, Number(edge.weight ?? 0))),
+      requestText
+    });
+    return toJsonValue({
+      subject: normalized.cognitiveEdge.subjectRef,
+      predicate: normalized.cognitiveEdge.sourceDerivedLabels.predicate,
+      object: normalized.cognitiveEdge.objectRef
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** Teleport and residual thresholds for subject-community admission. Local push, so cost is bounded by epsilon. */
