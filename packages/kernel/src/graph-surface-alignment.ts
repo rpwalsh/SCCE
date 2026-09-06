@@ -3,7 +3,7 @@
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
 import type { SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
-import { buildSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
+import { buildSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { clamp01, toJsonValue } from "./primitives.js";
@@ -117,6 +117,13 @@ export function induceGraphSurfaceAlignments(input: {
       evidenceIds,
       hasher: input.hasher
     });
+    // A lattice that does not actually cover its own text cannot anchor an alignment: the offsets an aligned
+    // example carries would point through a gap. `validateSurfaceLattice` checks exactly that correspondence and
+    // had no caller, so a lattice with a hole produced alignment observations that looked well-formed and pointed
+    // somewhere else. Skipped rather than thrown, because a lattice truncated at its unit cap is a legitimate
+    // partial and the document simply cannot contribute alignments.
+    const latticeCheck = validateSurfaceLattice(lattice, doc.text);
+    if (!latticeCheck.valid) continue;
     const latticeSummary = summarizeLattice(lattice);
     const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
     for (let index = 0; index < lexical.length; index++) {
