@@ -421,7 +421,7 @@ async function selfRewrite(config: Awaited<ReturnType<typeof readScceRuntimeConf
  *  from measured answers rather than asserted. */
 async function evaluationGate(args: string[]): Promise<void> {
   if (args[0] !== "gate" || !args[1]) {
-    return usage("scce eval gate <objective.jsonl> [--system=<id>] [--reference=<id>] [--max-unsupported=R] [--min-anchor=R] [--min-cycle=R] [--questions=<questions.jsonl>] [--alpha=R] [--bootstrap=N]");
+    return usage("scce eval gate <objective.jsonl> [--system=<id>] [--reference=<id>] [--max-unsupported=R] [--min-anchor=R] [--min-cycle=R] [--questions=<questions.jsonl>] [--answers=<raw-answers.jsonl>] [--alpha=R] [--bootstrap=N]");
   }
   const flag = (name: string): number | undefined => {
     const raw = args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -437,6 +437,7 @@ async function evaluationGate(args: string[]): Promise<void> {
     ...(text("system") ? { system: text("system")! } : {}),
     ...(text("reference") ? { reference: text("reference")! } : {}),
     ...(text("questions") ? { questionsPath: path.resolve(text("questions")!) } : {}),
+    ...(text("answers") ? { answersPath: path.resolve(text("answers")!) } : {}),
     thresholds: {
       ...(flag("max-unsupported") !== undefined ? { maxUnsupportedRate: flag("max-unsupported")! } : {}),
       ...(flag("min-anchor") !== undefined ? { minExactAnchorAccuracy: flag("min-anchor")! } : {}),

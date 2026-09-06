@@ -33,6 +33,13 @@ export const SEALED_CATEGORY_TASK_CLASSES: Readonly<Record<string, string>> = Ob
 interface QuestionRow {
   questionId: string;
   category?: string;
+  gold?: { unanswerable?: boolean };
+}
+
+interface AnswerRow {
+  questionId: string;
+  systemId: string;
+  status?: string;
 }
 
 /** Reads the sealed question set beside a run's objective records, so paired records can carry a real task class. */
@@ -56,10 +63,55 @@ async function readQuestionCategories(objectivePath: string, questionsPath?: str
   return new Map();
 }
 
+/** The questions a sealed run declares unanswerable: the abstention probes the cycle metric is measured on. */
+async function readUnanswerableQuestions(objectivePath: string, questionsPath?: string): Promise<Set<string>> {
+  const directory = path.dirname(objectivePath);
+  const candidates = questionsPath
+    ? [questionsPath]
+    : [path.join(directory, "questions.jsonl"), path.join(directory, "..", "questions.jsonl")];
+  for (const candidate of candidates) {
+    const text = await readFile(candidate, "utf8").catch(() => undefined);
+    if (text === undefined) continue;
+    return new Set(
+      text
+        .split(/\r?\n/)
+        .filter(line => line.trim())
+        .map(line => JSON.parse(line) as QuestionRow)
+        .filter(row => row.gold?.unanswerable === true)
+        .map(row => row.questionId)
+    );
+  }
+  return new Set();
+}
+
+/** Per-question answer status, needed to tell an abstention from a wrong assertion. Absent when no answers file is given. */
+async function readAnswerStatuses(objectivePath: string, system: string, answersPath?: string): Promise<Map<string, string>> {
+  const directory = path.dirname(objectivePath);
+  const candidates = answersPath ? [answersPath] : [path.join(directory, "raw-answers.jsonl")];
+  for (const candidate of candidates) {
+    const text = await readFile(candidate, "utf8").catch(() => undefined);
+    if (text === undefined) continue;
+    return new Map(
+      text
+        .split(/\r?\n/)
+        .filter(line => line.trim())
+        .map(line => JSON.parse(line) as AnswerRow)
+        .filter(row => row.systemId === system && typeof row.status === "string")
+        .map(row => [row.questionId, String(row.status)])
+    );
+  }
+  if (answersPath) throw new Error(`answers file not readable: ${answersPath}`);
+  return new Map();
+}
+
 export interface EvaluationGateReport {
   system: string;
   reference?: string;
   questions: number;
+  answerable: number;
+  abstentionProbes: number;
+  /** Null when no per-question status was available: the unsupported rate is then not computed and the gate fails closed. */
+  assertedAnswers: number | null;
   metrics: { unsupportedRate: number; exactAnchorAccuracy: number; cycleAccuracy: number };
   thresholds: ReleaseGateThresholds;
   pairedResults: number;
@@ -77,6 +129,7 @@ export async function runEvaluationReleaseGate(input: {
   system?: string;
   reference?: string;
   questionsPath?: string;
+  answersPath?: string;
   taskClassByCategory?: Readonly<Record<string, string>>;
   thresholds?: Partial<ReleaseGateThresholds>;
 }): Promise<EvaluationGateReport> {
@@ -93,13 +146,25 @@ export async function runEvaluationReleaseGate(input: {
   const measured = rows.filter(row => row.systemId === system);
   if (!measured.length) throw new Error(`objective records contain no system ${system}`);
 
-  const unsupported = measured.filter(row => (row.forbiddenHits ?? 0) > 0 || row.abstentionCorrect === false).length;
-  const exactAnchor = measured.filter(row => Number(row.exactScore ?? 0) >= 1).length;
-  const coherent = measured.filter(row => row.coherent !== false).length;
+  // The sealed kit's own definitions (harness/paired-release-report.mjs), not a second set: unsupported rate is the
+  // share of ASSERTED answerable items that were wrong, so declining is never charged as an unsupported answer;
+  // exact-anchor accuracy is over answerable items; cycle accuracy is abstention correctness on the unanswerable ones.
+  const categories = await readQuestionCategories(input.objectivePath, input.questionsPath);
+  const unanswerable = await readUnanswerableQuestions(input.objectivePath, input.questionsPath);
+  const statuses = await readAnswerStatuses(input.objectivePath, system, input.answersPath);
+  const answerable = measured.filter(row => !unanswerable.has(row.questionId));
+  const abstentionItems = measured.filter(row => unanswerable.has(row.questionId));
+  const asserted = statuses.size ? answerable.filter(row => statuses.get(row.questionId) !== "abstained") : undefined;
   const metrics = {
-    unsupportedRate: unsupported / measured.length,
-    exactAnchorAccuracy: exactAnchor / measured.length,
-    cycleAccuracy: coherent / measured.length
+    // Without per-question status an abstention is indistinguishable from a wrong assertion, so the rate is not
+    // guessed; the gate below refuses to pass on a metric it could not compute.
+    unsupportedRate: asserted
+      ? (asserted.length ? asserted.filter(row => Number(row.exactScore ?? 0) < 1).length / asserted.length : 0)
+      : 1,
+    exactAnchorAccuracy: answerable.length ? answerable.filter(row => Number(row.exactScore ?? 0) >= 1).length / answerable.length : 0,
+    cycleAccuracy: abstentionItems.length
+      ? abstentionItems.filter(row => Number(row.exactScore ?? 0) >= 1).length / abstentionItems.length
+      : 1
   };
   const thresholds: ReleaseGateThresholds = {
     maxUnsupportedRate: input.thresholds?.maxUnsupportedRate ?? 0.02,
@@ -109,7 +174,6 @@ export async function runEvaluationReleaseGate(input: {
   };
 
   // One paired record per question the reference also answered: +1 where this system won, -1 where it lost, 0 for a tie.
-  const categories = await readQuestionCategories(input.objectivePath, input.questionsPath);
   const taskClasses = input.taskClassByCategory ?? SEALED_CATEGORY_TASK_CLASSES;
   const referenceByQuestion = new Map(rows.filter(row => row.systemId === reference).map(row => [row.questionId, row]));
   const pairedResults: PairedResultRecord[] = reference
@@ -127,6 +191,9 @@ export async function runEvaluationReleaseGate(input: {
     system,
     ...(reference ? { reference } : {}),
     questions: measured.length,
+    answerable: answerable.length,
+    abstentionProbes: abstentionItems.length,
+    assertedAnswers: asserted?.length ?? null,
     metrics,
     thresholds,
     pairedResults: pairedResults.length,
