@@ -1,5 +1,5 @@
 {
- "generatedAt": "2026-09-06T07:50:46.049Z",
+ "generatedAt": "2026-09-06T07:54:52.339Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1664,
@@ -7,13 +7,13 @@
   "internalHelpersOnly": 454,
   "orphans": 69,
   "declaredConstants": 6,
-  "compatibilityAliases": 6,
+  "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 39,
-  "implementedButUncalled": 55,
+  "implementedButUncalled": 51,
   "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 16,
+  "ofWhichNoCallerAnywhere": 12,
   "ofWhichDeliberatelyUnwired": 1
  },
  "orphans": [
@@ -22,7 +22,7 @@
    "file": "packages/adapters-node/src/code-verification.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false,
+   "alias": true,
    "hostContract": false,
    "testOnly": false
   },
@@ -284,7 +284,7 @@
    "file": "packages/kernel/src/invention-planner.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false,
+   "alias": true,
    "hostContract": false,
    "testOnly": false
   },
@@ -311,7 +311,7 @@
    "file": "packages/kernel/src/latent.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false,
+   "alias": true,
    "hostContract": false,
    "testOnly": true
   },
@@ -410,7 +410,7 @@
    "file": "packages/kernel/src/ppf.ts",
    "caller": "",
    "usedInOwnFile": false,
-   "alias": false,
+   "alias": true,
    "hostContract": false,
    "testOnly": false
   },
