@@ -164,7 +164,8 @@ import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
 import { expandAdmissibleCommunity } from "./admissible-community-expansion.js";
-import type { GraphEdge, GraphNode, NodeId } from "./types.js";
+import { assessClaimSupport } from "./support-assessment.js";
+import type { EvidenceId, GraphEdge, GraphNode, NodeId } from "./types.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -1598,6 +1599,32 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         support: entailmentResult.support,
         contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction)
       });
+      // The epistemic category of this answer, computed rather than asserted.
+      //
+      // `assessClaimSupport` carries the ladder this architecture claims to keep distinct -- retrieval support,
+      // semantic support, statistical support, rule entailment, formal proof -- along with belief and plausibility
+      // over the evidence's own trust vector, and it was reachable from nothing. Every weight below comes from the
+      // span's recorded trust rather than a constant, and source diversity is the real independence-group count, so
+      // ten spans from one source cannot masquerade as ten independent supports.
+      const supportAssessment = assessClaimSupport({
+        evidence: claimSupportWeights(promoted, entailmentResult.evidenceIds, semanticProof.verdict),
+        semanticAlignmentEstablished: semanticProof.support > 0,
+        ruleEntailed: entailmentResult.force === "proved",
+        uncertaintyFloor: promoted.length ? 0 : 1
+      });
+      kernelTrace({
+        stage: "proof.support_assessment",
+        label: "kernel.turn",
+        counts: { evidence: supportAssessment.evidenceWeights.length },
+        support: {
+          category: supportAssessment.category,
+          belief: supportAssessment.belief,
+          plausibility: supportAssessment.plausibility,
+          contradictionRatio: supportAssessment.contradictionRatio,
+          limitations: supportAssessment.limitations,
+          weights: supportAssessment.evidenceWeights.slice(0, 3).map(w => ({ polarity: w.polarity, weight: w.weight }))
+        }
+      });
       kernelTrace({
         stage: "contradiction.check",
         label: "kernel.turn",
@@ -1618,7 +1645,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       entailmentResult.proof.scores = { ...(entailmentResult.proof.scores as Record<string, JsonValue>), ccr: ccrResult.audit, semanticProofSystem: semanticProof.replay };
       if (pfaceEstimate) entailmentResult.proof.scores = { ...(entailmentResult.proof.scores as Record<string, JsonValue>), pface: pfaceEstimate.audit };
       await deps.storage.proofs.putProof(entailmentResult.proof);
-      events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailmentResult.proof.id, force: entailmentResult.force, assistantForce: entailmentAssistantForce.force, assistantForceTrace: entailmentAssistantForce.audit, support: entailmentResult.support, contradiction: entailmentResult.contradiction, lcb: entailmentResult.faithfulnessLcb, boundaries: entailmentResult.boundaries, ccr: ccrResult.audit, semanticProofSystem: { id: semanticProof.id, verdict: semanticProof.verdict, support: semanticProof.support, contradiction: semanticProof.contradiction, obligations: semanticProof.obligations.length, counterexamples: semanticProof.counterexamples.length }, pface: pfaceEstimate?.audit ?? null } })));
+      events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailmentResult.proof.id, force: entailmentResult.force, assistantForce: entailmentAssistantForce.force, assistantForceTrace: entailmentAssistantForce.audit, support: entailmentResult.support, contradiction: entailmentResult.contradiction, lcb: entailmentResult.faithfulnessLcb, boundaries: entailmentResult.boundaries, ccr: ccrResult.audit, semanticProofSystem: { id: semanticProof.id, verdict: semanticProof.verdict, support: semanticProof.support, contradiction: semanticProof.contradiction, obligations: semanticProof.obligations.length, counterexamples: semanticProof.counterexamples.length }, supportAssessment: toJsonValue({ category: supportAssessment.category, belief: supportAssessment.belief, plausibility: supportAssessment.plausibility, contradictionRatio: supportAssessment.contradictionRatio, limitations: [...supportAssessment.limitations] }), pface: pfaceEstimate?.audit ?? null } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "EvidenceLinked", payload: { evidenceIds: entailmentResult.evidenceIds } })));
       kernelTrace({
         stage: "proof.attach",
@@ -4177,6 +4204,60 @@ function withCompositionDemand(field: TurnRequirementField, requestText: string)
   }
   if (distinct.length < 2) return field;
   return { ...field, inferentialDepth: Math.max(field.inferentialDepth, compositionDemandTarget(requestText)) };
+}
+
+/**
+ * Evidence weights for support assessment, read off each span's own recorded trust vector.
+ *
+ * Source diversity is the reciprocal of how many admitted spans share an independence group, so a claim supported
+ * ten times by one source scores as one source rather than ten -- the whole point of recording the group at
+ * ingestion. Polarity follows the proof: spans the entailment actually cited support the claim, and when the
+ * semantic verdict is contradicted the remaining admitted spans are what contradicts it.
+ */
+function claimSupportWeights(
+  evidence: readonly EvidenceSpan[],
+  citedEvidenceIds: readonly EvidenceId[],
+  semanticVerdict: string
+): Array<{ evidenceId: string; polarity: "support" | "contradiction" | "unknown"; sourceReliability: number; directness: number; freshness: number; extractionReliability: number; sourceDiversity: number }> {
+  const cited = new Set(citedEvidenceIds.map(String));
+  const groupCounts = new Map<string, number>();
+  for (const span of evidence) {
+    const group = independenceGroupOf(span);
+    groupCounts.set(group, (groupCounts.get(group) ?? 0) + 1);
+  }
+  return evidence.slice(0, 32).map(span => {
+    // The ingestor records these under sourceTrust, not at the top level of the vector.
+    const trust = jsonRecord(jsonRecord(span.trustVector as JsonValue).sourceTrust as JsonValue);
+    const group = independenceGroupOf(span);
+    const polarity = cited.has(String(span.id))
+      ? (semanticVerdict === "contradicted" ? "contradiction" as const : "support" as const)
+      : "unknown" as const;
+    return {
+      evidenceId: String(span.id),
+      polarity,
+      sourceReliability: trustComponent(trust.authority, trust.identity),
+      directness: trustComponent(trust.directness),
+      freshness: trustComponent(trust.freshness),
+      extractionReliability: trustComponent(trust.parserReliability, trust.integrity),
+      sourceDiversity: 1 / Math.max(1, groupCounts.get(group) ?? 1)
+    };
+  });
+}
+
+function independenceGroupOf(span: EvidenceSpan): string {
+  const trust = jsonRecord(jsonRecord(span.trustVector as JsonValue).sourceTrust as JsonValue);
+  return kernelString(trust.independenceGroup) || String(span.sourceId);
+}
+
+/** A recorded trust component, or a neutral 0.5 when the ingestor recorded none -- never an optimistic 1. */
+function trustComponent(...candidates: readonly (JsonValue | undefined)[]): number {
+  for (const candidate of candidates) {
+    const value = kernelNumber(candidate);
+    // A component the ingestor did not record must fall through to the neutral prior, never be read as a recorded
+    // zero: one zero factor collapses the whole product and every weight with it.
+    if (value !== undefined && Number.isFinite(value) && value > 0) return Math.min(1, value);
+  }
+  return 0.5;
 }
 
 /** Teleport and residual thresholds for subject-community admission. Local push, so cost is bounded by epsilon. */
