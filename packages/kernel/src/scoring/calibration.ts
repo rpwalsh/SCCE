@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { clamp01, createClock } from "../primitives.js";
+import { evaluateCalibration, type EvaluationMetrics } from "./evaluation.js";
 import { calibratedScore, type ScoreTrace } from "./score-trace.js";
 import { regularizedCalibrationLoss } from "../equation-operators.js";
 import type { Clock } from "../types.js";
@@ -17,6 +18,9 @@ export interface CalibrationModel {
   taskClass: string;
   bins: CalibrationBin[];
   trainingLoss?: number;
+  /** How well this model actually calibrates its own training points: Brier score, negative log-likelihood, and
+   *  expected calibration error. Without them a model carries a fitted loss and no measure of whether it works. */
+  metrics?: EvaluationMetrics;
   createdAt: number;
 }
 
@@ -45,6 +49,13 @@ export function buildCalibrationModel(input: { id: string; taskClass: string; po
       outcomes: input.points.map(point => point.outcome),
       weights: bins.map(bin => bin.empirical)
     }),
+    // Measured against the calibrated output, not the raw score: a calibration model's job is to make its own
+    // predictions match observed frequency, and `evaluateCalibration` is the function that says whether it did.
+    // It existed with no caller, so every model shipped with a fitted loss and no measure of fit.
+    metrics: evaluateCalibration(
+      input.points.map(point => ({ predicted: point.raw, actual: point.outcome })),
+      binCount
+    ),
     createdAt: input.createdAt ?? (input.clock ?? createClock()).now()
   };
 }

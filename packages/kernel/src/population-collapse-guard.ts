@@ -53,7 +53,8 @@ export function evaluatePopulationCollapseGuard(
   const divergence = jensenShannonDivergence(left, right);
   return {
     divergence,
-    distance: Math.sqrt(divergence),
+    // The metric form of the same divergence, through the function that names it rather than a second square root here.
+    distance: jensenShannonDistance(left, right),
     distinct: divergence >= minimumDivergence,
     minimumDivergence
   };
