@@ -1,19 +1,19 @@
 {
- "generatedAt": "2026-09-06T08:03:20.291Z",
+ "generatedAt": "2026-09-06T08:05:16.243Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1664,
-  "reached": 1145,
-  "internalHelpersOnly": 455,
-  "orphans": 64,
+  "reached": 1146,
+  "internalHelpersOnly": 456,
+  "orphans": 62,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 39,
-  "implementedButUncalled": 46,
+  "implementedButUncalled": 44,
   "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 7,
+  "ofWhichNoCallerAnywhere": 5,
   "ofWhichDeliberatelyUnwired": 5
  },
  "orphans": [
@@ -463,15 +463,6 @@
    "testOnly": false
   },
   {
-   "name": "semanticTransformRules",
-   "file": "packages/kernel/src/semantic-transform-registry.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "sparseAlignmentCandidatesForUnit",
    "file": "packages/kernel/src/sparse-alignment-candidates.ts",
    "caller": "",
@@ -588,15 +579,6 @@
    "alias": false,
    "hostContract": false,
    "testOnly": true
-  },
-  {
-   "name": "resizeLayout",
-   "file": "packages/ui/src/developer-surface.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
   }
  ]
 }
