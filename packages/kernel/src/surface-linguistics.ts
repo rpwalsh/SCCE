@@ -220,11 +220,27 @@ export function surfaceUnits(text: string): string[] {
   return units.filter(Boolean);
 }
 
+/**
+ * A period with a word character on both sides and no space is inside the word; a period followed by a space ends it.
+ *
+ * "letter. " is a boundary. "letter.letter" is a host name, a file name, an identifier or a decimal, and splitting it
+ * invents a token the source never wrote. Measured on the sealed set: the source reads "TrekMovie.com" and the system
+ * answered "TrekMovie", because the name extractor drew words from a tokenizer that split on every period and then
+ * stopped at the first fragment that did not look like a name. The rule needs no word list and no language, because it
+ * is about what surrounds the period rather than what the word means.
+ */
+export function isWordInternalPeriod(chars: readonly string[], index: number): boolean {
+  if ((chars[index] ?? "") !== ".") return false;
+  return isSurfaceUnitChar(chars[index - 1] ?? "") && isSurfaceUnitChar(chars[index + 1] ?? "");
+}
+
 export function surfaceWords(text: string): string[] {
   const words: string[] = [];
+  const chars = [...text.replace(/\u0000/g, " ").normalize("NFKC")];
   let current = "";
-  for (const char of text.replace(/\u0000/g, " ").normalize("NFKC")) {
-    if (isSurfaceUnitChar(char) || char === "'" || char === "\u2019") {
+  for (let index = 0; index < chars.length; index++) {
+    const char = chars[index] ?? "";
+    if (isSurfaceUnitChar(char) || char === "'" || char === "\u2019" || isWordInternalPeriod(chars, index)) {
       current += char;
       continue;
     }

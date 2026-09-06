@@ -69,19 +69,6 @@ export function genericQuestionSignal(unit: string): boolean {
 
  function splitPriorSurfaceWords(text: string): string[] {
   return surfaceWords(text);
-  const out: string[] = [];
-  let current = "";
-  for (const char of text.normalize("NFKC")) {
-    const symbol = char.toLocaleLowerCase() !== char.toLocaleUpperCase() || (char >= "0" && char <= "9") || char === "'" || char === "’";
-    if (symbol) {
-      current += char;
-      continue;
-    }
-    if (current) out.push(current);
-    current = "";
-  }
-  if (current) out.push(current);
-  return out;
 }
 
 
