@@ -211,6 +211,8 @@ export * from "./evaluation-release-gate.js";
 export * from "./evaluation-task-classes.js";
 export * from "./evaluation-trace.js";
 export * from "./paired-evaluation-statistics.js";
+export * from "./resource-usage-accounting.js";
+export * from "./usefulness-per-joule.js";
 export * from "./support-assessment.js";
 export * from "./relation-potential.js";
 export * from "./relation-promotion.js";
