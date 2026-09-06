@@ -93,7 +93,11 @@ for (const f of src) {
   const body = text.get(f);
   for (const name of exportsOf.get(f)) rows.push({ name, file: rel, caller: namedBy.get(f + "#" + name) ?? "", usedInOwnFile: body.split(word(name)).length - 1 > 1 });
 }
-for (const row of rows) if (!row.caller && word(row.name).test(toolSource)) row.caller = "tools/";
+// This file's own deliberately-unwired reasons name the very symbols they explain, and the match below reads any
+// mention in tools/ as a caller -- so recording a reason silently marked the symbol reached. The reason block is
+// cut out of the text being searched, or the report congratulates itself for documenting a gap.
+const toolSourceForMatching = toolSource.replace(/const DELIBERATELY_UNWIRED = [{][^}]*[}];/su, "");
+for (const row of rows) if (!row.caller && word(row.name).test(toolSourceForMatching)) row.caller = "tools/";
 const orphans = rows.filter(r => !r.caller && !r.usedInOwnFile);
 const internalOnly = rows.filter(r => !r.caller && r.usedInOwnFile);
 console.log("exports", rows.length, "reached", rows.length - orphans.length - internalOnly.length, "internal-only", internalOnly.length, "ORPHANS", orphans.length);
@@ -104,6 +108,17 @@ for (const orphan of orphans) {
   const body = text.get(`${repo}/${orphan.file}`) ?? "";
   orphan.alias = new RegExp(aliasPattern.replace("NAME", orphan.name)).test(body);
 }
+// Deliberately unwired, with the reason recorded here rather than a call site invented to satisfy a count.
+// An entry earns a place in this list only when wiring it would be wrong or when it waits on capability that does
+// not exist yet -- never because finding its caller was inconvenient.
+const DELIBERATELY_UNWIRED = {
+  structuredSurface: "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank."
+};
+for (const orphan of orphans) {
+  const reason = DELIBERATELY_UNWIRED[orphan.name];
+  if (reason) orphan.deliberatelyUnwired = reason;
+}
+const deliberate = orphans.filter(o => o.deliberatelyUnwired).length;
 const aliases = orphans.filter(o => o.alias).length;
 const contracts = orphans.filter(o => /^[A-Z][A-Z0-9_]+$/.test(o.name)).length;
 const legacy = orphans.filter(o => /scce2|\/v2-/i.test(o.file)).length;
@@ -121,7 +136,7 @@ const importedByName = (source, name) => new RegExp(
 for (const orphan of orphans) orphan.testOnly = !orphan.hostContract && importedByName(testSources, orphan.name);
 const hostContracts = orphans.filter(o => o.hostContract).length;
 const testOnly = orphans.filter(o => o.testOnly).length;
-console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "host contracts", hostContracts, "test-only", testOnly, "unwired", orphans.length - contracts - legacy - aliases - hostContracts, "of which no caller anywhere", orphans.length - contracts - legacy - aliases - hostContracts - testOnly);
+console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "host contracts", hostContracts, "test-only", testOnly, "unwired", orphans.length - contracts - legacy - aliases - hostContracts, "of which no caller anywhere", orphans.length - contracts - legacy - aliases - hostContracts - testOnly, "deliberately unwired", deliberate);
 fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
  generatedAt: new Date().toISOString(),
  method: "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
@@ -137,7 +152,8 @@ fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
   testOnlyHelpers: testOnly,
   implementedButUncalled: orphans.length - contracts - aliases - legacy - hostContracts,
   ofWhichCoveredByTestsOnly: testOnly,
-  ofWhichNoCallerAnywhere: orphans.length - contracts - aliases - legacy - hostContracts - testOnly
+  ofWhichNoCallerAnywhere: orphans.length - contracts - aliases - legacy - hostContracts - testOnly,
+  ofWhichDeliberatelyUnwired: deliberate
  },
  orphans
 }, null, 1));
