@@ -317,7 +317,7 @@ interface SurfaceRepairResult {
   audit: JsonValue;
 }
 
-const DEFAULT_FACTUAL_SURFACE_EXTENT = 560;
+export const DEFAULT_FACTUAL_SURFACE_EXTENT = 560;
 const MINIMUM_REPEATED_TOKEN_SPAN = 8;
 
 export interface UncertaintyMarker {

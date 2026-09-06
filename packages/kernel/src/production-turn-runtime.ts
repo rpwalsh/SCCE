@@ -113,6 +113,7 @@ import {
 } from "./local-evidence-runtime.js";
 import { formatSurfaceMessage, localeFromMetadata } from "./localization.js";
 import {
+  DEFAULT_FACTUAL_SURFACE_EXTENT,
   createDeterministicMouth,
   createMouth,
   type MouthSemanticInput,
@@ -125,7 +126,7 @@ import {
 } from "./powerwalk.js";
 import { createPredictionLayer } from "./prediction.js";
 import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
-import { collapseSurfaceWhitespace, surfaceUnits } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits, tidySurfaceText } from "./surface-linguistics.js";
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
@@ -3450,23 +3451,49 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // no_language_memory condition scored six questions the full condition did not, and three of those six were
       // turns where the full condition emitted an empty surface while holding the exact source sentence -- "The
       // fourth added Worf (Michael Dorn)..." among them.
-      // A short learned surface is checked against the source-bound realization of the same candidate, because the
-      // other way the learned lane loses an answer is by stopping inside one. Live on the sealed set: "It was
-      // described by ____" realized as "TrekMovie" while the source-bound lane said "TrekMovie.com" -- the learned
-      // units end at a boundary the source does not have. A learned surface that is a strict substring of the
-      // source-bound one, and materially shorter, is a truncation of it rather than a different way of saying it.
-      const learnedSurfaceMayBeTruncated = spoken.text.trim().length > 0 && spoken.text.trim().length <= 96;
-      if (!spoken.text.trim() || learnedSurfaceMayBeTruncated) {
+      // A source-grounded answer is a contiguous excerpt of one admitted span, or it is a stitching failure.
+      //
+      // Two more ways the learned lane loses an answer, both measured on the sealed set under its own source
+      // allowlist. It stops inside one: "It was described by ____" realized as "TrekMovie" where the source reads
+      // "TrekMovie.com", because the learned units end at a boundary the source does not have. And it joins across
+      // one: "...Babbage's work on the analytical engine Lovelace translated an article by the military..." is two
+      // disjoint sentences run together, which reads as prose, passes every structural check, and is not something
+      // any source says. The second is the more serious: this system's entire claim is that a factual answer is the
+      // source's own words, and a surface welded from two places is not.
+      //
+      // So on a factual or reasoned turn bound to direct evidence, the learned surface must be a contiguous excerpt
+      // of an admitted span. When it is not, and the source-bound realization of the same candidate is, the
+      // source-bound one is taken. The second realization only runs for a surface that is empty, short enough to be
+      // a truncation, or already failing the excerpt test, so a well-formed learned answer costs nothing.
+      const excerptGoverned = (requestedAuthority === "factual" || requestedAuthority === "reasoned") && selectedEvidence.length > 0;
+      const admittedSpanText = excerptGoverned
+        ? selectedEvidence.map(span => tidySurfaceText(String(span.text ?? span.textPreview ?? "")))
+        : [];
+      const isContiguousExcerpt = (text: string): boolean => {
+        if (!text) return false;
+        const tidy = tidySurfaceText(text);
+        return admittedSpanText.some(spanText => spanText.includes(tidy));
+      };
+      const learnedSurface = spoken.text.trim();
+      const learnedNotAnExcerpt = excerptGoverned && learnedSurface.length > 0 && !isContiguousExcerpt(learnedSurface);
+      if (!learnedSurface || learnedSurface.length <= 96 || learnedNotAnExcerpt) {
         const deterministic = await deterministicMouth.speak(speakInput);
-        const learned = spoken.text.trim();
         const sourceBound = deterministic.text.trim();
-        const truncated = Boolean(learned) && sourceBound.length > learned.length * 1.5 && sourceBound.includes(learned);
-        if (sourceBound && (!learned || truncated)) {
+        const truncated = Boolean(learnedSurface) && sourceBound.length > learnedSurface.length * 1.5 && sourceBound.includes(learnedSurface);
+        const stitched = learnedNotAnExcerpt && isContiguousExcerpt(sourceBound);
+        if (sourceBound && (!learnedSurface || truncated || stitched)) {
           kernelTrace({
             stage: "mouth.deterministic_fallback",
             label: "kernel.turn",
-            counts: { answerChars: deterministic.text.length, learnedChars: learned.length },
-            support: { selectedCandidateId: judged.selected.id, reason: learned ? "learned-surface-truncates-source-bound" : "learned-lane-realized-nothing" }
+            counts: { answerChars: deterministic.text.length, learnedChars: learnedSurface.length },
+            support: {
+              selectedCandidateId: judged.selected.id,
+              reason: !learnedSurface
+                ? "learned-lane-realized-nothing"
+                : stitched
+                  ? "learned-surface-not-a-contiguous-excerpt"
+                  : "learned-surface-truncates-source-bound"
+            }
           });
           spoken = deterministic;
         }
@@ -3515,7 +3542,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (!rawAnswer || !spokenSurface.evidenceRefs.length || (requestedAuthority !== "factual" && requestedAuthority !== "reasoned")) return rawAnswer;
         const citedSpans = selectedEvidence.filter(span => spokenSurface.evidenceRefs.includes(span.id));
         const citationSuffix = formatCitationSuffix(evidenceCitations(citedSpans));
-        return citationSuffix ? `${rawAnswer}${citationSuffix}` : rawAnswer;
+        if (!citationSuffix) return rawAnswer;
+        // The surface budget bounds the answer; the citation is appended after it and was not counted, so an answer
+        // realized at the budget shipped over it by exactly the citation's length. The citation is never the part
+        // that gets dropped -- an uncited factual answer is worse than a shorter one -- so the answer yields instead,
+        // at a sentence boundary, which keeps it the verbatim excerpt it already was.
+        const budget = DEFAULT_FACTUAL_SURFACE_EXTENT;
+        if (rawAnswer.length + citationSuffix.length <= budget) return `${rawAnswer}${citationSuffix}`;
+        const trimmed = trimToSentenceBoundary(rawAnswer, Math.max(80, budget - citationSuffix.length));
+        return `${trimmed || rawAnswer}${citationSuffix}`;
       };
       answer = spoken.text;
       if (!answer.trim()) answer = "";
@@ -4473,4 +4508,17 @@ function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAu
   // no evidence, and abstaining is the correct outcome. The fallback was not hypothetical -- "Who was Ada
   // Lovelace?" reached a pool of exactly one span, a comment in `mouth.ts`, and answered from it.
   return pool.filter(span => !isCodeEvidenceSpan(span));
+}
+
+/** The longest prefix of `text` ending at a sentence boundary within `limit` characters, or "" when none does. Pure. */
+function trimToSentenceBoundary(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const sentences = splitSurfaceSentences(text);
+  let kept = "";
+  for (const sentence of sentences) {
+    const next = kept ? `${kept} ${sentence}` : sentence;
+    if (next.length > limit) break;
+    kept = next;
+  }
+  return kept;
 }
