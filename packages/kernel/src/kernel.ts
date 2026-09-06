@@ -2,6 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createActionGraphBuilder } from "./action-graph.js";
 import { alphaTraceMatrixSnapshot } from "./alpha-field-persistence.js";
+import { deriveGenerativeStructure } from "./generative-derivation-runtime.js";
+import type { ReversibleConstruction } from "./reversible-construction.js";
 import type { AlphaTrace } from "./types.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
 import {
@@ -455,6 +457,43 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     },
     async discoverCausalStructure(request) {
       return causalAnalysisRuntime.discover(request);
+    },
+    async inspectGenerativeStructure(query: { constructionLimit?: number; maxRecursionDepth?: number; treewidthBudget?: number } = {}) {
+      // What the learned grammar can compose at all, with no semantic target conditioning it.
+      //
+      // The turn runs the target-conditioned search, which answers "can this grammar say this" and yields nothing
+      // when the corpus supplied no composable constructions -- indistinguishable from a grammar that composes
+      // nothing at all. `deriveGenerativeStructure` is the unconditioned form and had no caller, so the open
+      // question behind every unpromoted construction (does the learned grammar derive anything?) had no way to
+      // be asked. This asks it directly, and is diagnostic only: nothing it returns is ever spoken.
+      const limit = Math.max(1, Math.min(256, Math.floor(query.constructionLimit ?? 48)));
+      const memory = await hydrateSurfaceLanguageMemoryCached(limit);
+      const reversible = (memory as { importedReversibleConstructions?: ReversibleConstruction[] }).importedReversibleConstructions ?? [];
+      const constructions = reversible.slice(0, limit);
+      if (constructions.length < 2) {
+        return {
+          schema: "scce.generative_structure_inspection.v1" as const,
+          constructions: constructions.length,
+          composed: 0,
+          derivable: false,
+          reason: "fewer than two composable constructions in language memory"
+        };
+      }
+      const derivation = deriveGenerativeStructure({
+        constructions,
+        ...(query.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: query.maxRecursionDepth }),
+        ...(query.treewidthBudget === undefined ? {} : { treewidthBudget: query.treewidthBudget })
+      });
+      return {
+        schema: "scce.generative_structure_inspection.v1" as const,
+        constructions: constructions.length,
+        composed: derivation.algebra.composed.length,
+        derivable: derivation.text.length > 0,
+        derivedChars: derivation.text.length,
+        bestScore: derivation.bestScore,
+        alternatives: derivation.alternatives.length,
+        treewidth: derivation.treewidth
+      };
     },
     async inspectAlphaTraces(query = {}) {
       // The replay-debugging reader the opt-in alpha persistence was written for.

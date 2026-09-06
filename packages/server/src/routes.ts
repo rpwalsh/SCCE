@@ -146,6 +146,7 @@ export const ROUTES = [
   { method: "GET", path: "/api/turn/:id", label: "turn lookup", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/brain", label: "inspect brain", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/alpha", label: "inspect persisted alpha traces", mutates: false, requiresDb: true },
+  { method: "GET", path: "/api/inspect/grammar", label: "inspect learned construction grammar", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/import/:id", label: "inspect import", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect", label: "inspect", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/replay/:episodeId", label: "replay", mutates: false, requiresDb: true },
@@ -900,6 +901,11 @@ async function dispatch(
     return json(task, 202);
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/turn/")) return json(await context.runtime.kernel.replay(decodeURIComponent(path.basename(url.pathname)) as never));
+  if (req.method === "GET" && url.pathname === "/api/inspect/grammar") {
+    const limitParam = url.searchParams.get("constructionLimit");
+    const limit = limitParam === null ? undefined : boundedNumber(Number(limitParam), "constructionLimit", 1, 256);
+    return json(await context.runtime.kernel.inspectGenerativeStructure(limit === undefined ? {} : { constructionLimit: limit }));
+  }
   if (req.method === "GET" && url.pathname === "/api/inspect/alpha") {
     const kind = url.searchParams.get("kind") as "adjacency" | "laplacian" | "normalizedLaplacian" | null;
     if (kind && kind !== "adjacency" && kind !== "laplacian" && kind !== "normalizedLaplacian") {
