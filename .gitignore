@@ -139,3 +139,7 @@ DECISIONS.md
 docs/UNUSED_EXPORTS_INVENTORY.md
 scce.config.local.json
 *.config.local.json
+
+# Local schema-variant configs for corpus experiments; the tracked variants are the shipped ones.
+scce.fresh.config.json
+scce.realtest.config.json
