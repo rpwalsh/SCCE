@@ -156,7 +156,8 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer } from "./local-evidence-runtime.js";
+import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { normalizePriorKey } from "./kernel-answer-primitives.js";
 import { codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
@@ -841,7 +842,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ],
         dialogueState: authorityDialogueState,
         languageMemoryState: requestRequirementLanguageState,
-        contextContribution: requirementContextFromMetadata(input.metadata)
+        contextContribution: {
+          ...requirementContextFromMetadata(input.metadata),
+          ...compositionDemandContribution(input.text)
+        }
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
       let requestedAuthority = authorityProjection.requestedAuthority;
@@ -4013,6 +4017,33 @@ function measuredTurnResourceUsage(start: ReturnType<typeof captureResourceUsage
  * lexically better than the article does. A pool with no prose in it still answers from what it has, so a genuinely
  * code-only corpus is unaffected.
  */
+/**
+ * Inference demand from the number of distinct subjects a request binds, which no learned activation was supplying.
+ *
+ * Every draft producer that composes across sources gates on `inferentialDepth` at 0.5-0.55, and the turn
+ * requirement model ships as an uncalibrated bootstrap whose `activationWeights` are empty. With no learned frame
+ * or pattern activating -- measured live as `semanticFrames: 0` on every turn against 22,694 stored frames -- the
+ * logit never moved off its -1.4 intercept, so every dimension sat at sigmoid(-1.4) = 0.198 and the reasoning lanes
+ * were unreachable for every request ever asked. "Was Ada Lovelace alive at the same time as Charles Babbage?"
+ * scored 0.215.
+ *
+ * The signal used here is structural and corpus-derived rather than lexical: `sourceEvidenceAnchorsForRequest`
+ * resolves the request against the corpus's own source titles, so two anchors that are not nested inside one
+ * another are two separate subjects the corpus knows about, and a request naming two of them cannot be answered by
+ * reading one span about one of them. No word list, and nothing that assumes a language.
+ */
+function compositionDemandContribution(requestText: string): Partial<Record<"inferentialDepth", number>> {
+  const anchors = sourceEvidenceAnchorsForRequest(requestText).map((anchor: string) => normalizePriorKey(anchor)).filter(Boolean);
+  const distinct: string[] = [];
+  for (const anchor of anchors) {
+    if (distinct.some(kept => kept.includes(anchor) || anchor.includes(kept))) continue;
+    distinct.push(anchor);
+  }
+  if (distinct.length < 2) return {};
+  // Two distinct subjects clear the 0.55 gate; each further one adds less, and the total stays bounded.
+  return { inferentialDepth: 1.7 + Math.min(0.6, (distinct.length - 2) * 0.3) };
+}
+
 /** What the durable retrieval escalation must be able to spend before the deadline guard refuses it. */
 const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
 
