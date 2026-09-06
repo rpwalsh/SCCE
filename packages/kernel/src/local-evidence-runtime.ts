@@ -1755,6 +1755,9 @@ export function evidenceSpanProvenanceTitle(span: EvidenceSpan): string {
 }
 
 
+/** The tier that admitted on the last call, for tracing. Diagnostic only; nothing reads it to make a decision. */
+export let admissionTierDiagnostics: Record<string, unknown> = {};
+
 export function sourceAnchoredEvidenceForRequest(
   requestText: string,
   evidence: readonly EvidenceSpan[],
@@ -1808,9 +1811,23 @@ export function sourceAnchoredEvidenceForRequest(
   const contentBoundEvidence = evidence.filter(span =>
     contentAnchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, requestText))
   );
+  // A mention is admissible when the span is about the subject, not when it merely contains its name.
+  //
+  // Excluding the mention tier outright for name-only requests was wrong in the other direction: a subject that
+  // appears only inside someone else's document -- a dictionary entry, a chapter, an email thread -- would become
+  // permanently unanswerable, and the only reason Ada Lovelace survived it is that this corpus happens to carry an
+  // article titled with her name. Aboutness cannot depend on that; a corpus of chapters has no such titles.
+  //
+  // Prominence is the test, and it needs no title and no grammar: a span about a subject returns to it, while a
+  // span that lists it names it once among others. "Who was Charles Babbage?" bound to a Lovelace span naming him
+  // once beside Noor Inayat Khan, in a paragraph that says "Lovelace" repeatedly -- the subject of that span is
+  // plainly not Babbage, and counting says so.
+  const subjectOnlyRequest = requestContentEvidenceUnits(requestText).length <= 3;
   const contentMentionEvidence = contentBoundEvidence.length
     ? []
-    : evidence.filter(span => contentAnchors.some(anchor => evidenceContentMentionsAnchor(span, anchor)));
+    : evidence.filter(span => contentAnchors.some(anchor =>
+      evidenceContentMentionsAnchor(span, anchor)
+      && (!subjectOnlyRequest || spanIsAboutAnchor(span, anchor))));
   if (primaryAnchor
     && !primaryEvidence.length
     && !contentBoundEvidence.length
@@ -1833,6 +1850,19 @@ export function sourceAnchoredEvidenceForRequest(
     (evidenceSourceMatchesAnchors(span, contentAnchors) || evidenceTitleDistinctAnchorMatches(span, contentAnchors)) &&
     evidenceAnchorFitForRequest(span, requestText)
   ));
+  // Which tier admitted, not just how many: "the wrong span was admitted" and "the right span was never retrieved"
+  // are indistinguishable from a count, and every admission bug this file has had was a question of which rule fired.
+  admissionTierDiagnostics = {
+    primaryAnchor: primaryAnchor ?? null,
+    primaryEvidence: primaryEvidence.length,
+    exact: exact.length,
+    selected: selected.length,
+    contentBound: contentBoundEvidence.length,
+    contentMention: contentMentionEvidence.length,
+    semanticFrameBound: semanticFrameBoundEvidence.length,
+    subjectOnlyRequest,
+    contentAnchors: contentAnchors.slice(0, 6)
+  };
   return {
     required: true,
     anchors: uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
@@ -1882,6 +1912,9 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   evidence: readonly EvidenceSpan[],
   semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set()
 ): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
+  // Reset first: the tiers are written at the final return, so an early return left the previous call's values in
+  // place and a trace read them as this turn's.
+  admissionTierDiagnostics = { earlyReturn: true };
   const anchored = sourceAnchoredEvidenceForRequest(
     requestText,
     evidence,
@@ -1892,7 +1925,14 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   // multi-unit anchors when any exist.
   const specificAnchors = anchored.anchors.filter(anchor =>
     splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
-  const admissionAnchors = specificAnchors.length ? specificAnchors : anchored.anchors;
+  // The same subject-unit rule the retrieval feature builder uses, for the same reason: the two-unit anchors are
+  // often just the subject plus a neighbouring request word, and dropping the one-unit subject leaves only phrases
+  // that occur nowhere. "What did Einstein discover?" admitted against `einstein discover` and `did einstein`,
+  // matched no title, and admitted 0 of 36 spans that had matched `einstein` exactly.
+  const subjectAnchors = anchored.anchors.filter(anchor => anchorIsRequestSubjectUnit(anchor, anchored.anchors));
+  const admissionAnchors = specificAnchors.length || subjectAnchors.length
+    ? uniqueKernelStrings([...specificAnchors, ...subjectAnchors])
+    : anchored.anchors;
   // Content admits only in the near-duplicate regime, so cross-title
   // mentions still stay out for question-shaped requests.
   const admissionSequences = requestSentenceSequences(requestText);
@@ -1983,7 +2023,20 @@ function boundaryJoinedSpan(span: EvidenceSpan): boolean {
 function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, requestText: string): boolean {
   const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
   if (anchorUnits.length < 2) return false;
-  const relationUnits = requestAnchorFitUnits(requestText)
+  // What the request asks *about* its subject, not every word it used to ask.
+  //
+  // Drawing these from `requestAnchorFitUnits` admitted the request's own question words as though they were the
+  // relation being asked for, and one of them landed: "Who was Charles Babbage?" bound to a sentence in the Ada
+  // Lovelace article because the interrogative "who" matched the title "Doctor Who", and the live system answered
+  // a biographical question with a list of television characters. Content units carry the same structural filter
+  // used elsewhere -- four characters, or any uncased non-Latin script -- so short interrogatives drop out without
+  // a word list and without assuming a language.
+  //
+  // A request that asks nothing beyond naming its subject therefore has no relation to bind, and content admission
+  // declines rather than reaching for a sentence that merely contains the name. Title is never consulted here:
+  // aboutness has to work for a dictionary entry, a chapter or an email, none of which are titled with their
+  // subject the way an encyclopedia article is.
+  const relationUnits = requestContentEvidenceUnits(requestText)
     .filter(unit => !anchorUnits.some(anchorUnit => requestUnitMatchesSurface(unit, anchorUnit)));
   if (!relationUnits.length) return false;
   return fastAnswerSentences(evidenceWindowText(span).slice(0, 4000)).some(sentence => {
@@ -1991,6 +2044,38 @@ function evidenceContentAnchorFitsRequest(span: EvidenceSpan, anchor: string, re
     if (!sourceAnchorPhraseContains(sentenceUnits, anchorUnits)) return false;
     return relationUnits.some(unit => sentenceUnits.some(sentenceUnit => requestUnitMatchesSurface(unit, sentenceUnit)));
   });
+}
+
+/**
+ * Whether a span is *about* an anchor rather than merely containing it, by how much of the span returns to it.
+ *
+ * Structural and source-shape neutral: no title, no grammar, no word list. A document about a subject keeps
+ * referring to it; one that lists the subject names it once among other names. So the anchor's own occurrences are
+ * compared against the most frequent competing capitalized-run in the same span, and the anchor has to hold its own.
+ * This is what lets a dictionary entry, a book chapter or a mail thread answer a question about someone the corpus
+ * has no article for, while keeping a passing mention from answering a question about its subject.
+ */
+function spanIsAboutAnchor(span: EvidenceSpan, anchor: string): boolean {
+  const text = evidenceWindowText(span).slice(0, 4000);
+  const anchorUnits = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+  if (!anchorUnits.length) return false;
+  const units = splitPriorUnits(normalizePriorKey(text)).filter(Boolean);
+  if (!units.length) return false;
+  // The anchor's least-common unit bounds how often the whole phrase can occur, without matching the phrase itself
+  // repeatedly across a large window.
+  const anchorOccurrences = Math.min(...anchorUnits.map(unit => units.filter(candidate => candidate === unit).length));
+  if (anchorOccurrences < 1) return false;
+  const competing = new Map<string, number>();
+  for (const run of surfaceEntityRuns(text)) {
+    const runUnits = splitPriorUnits(normalizePriorKey(run)).filter(Boolean);
+    if (!runUnits.length) continue;
+    if (runUnits.some(unit => anchorUnits.includes(unit))) continue;
+    const occurrences = Math.min(...runUnits.map(unit => units.filter(candidate => candidate === unit).length));
+    const key = runUnits.join(" ");
+    competing.set(key, Math.max(competing.get(key) ?? 0, occurrences));
+  }
+  const strongestCompetitor = competing.size ? Math.max(...competing.values()) : 0;
+  return anchorOccurrences >= strongestCompetitor;
 }
 
 function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): boolean {
@@ -2320,7 +2405,15 @@ export function sourceAnchorPhraseContains(sourceUnits: readonly string[], ancho
     if (!anchorUnits.length) continue;
     if (titleAnchorPhraseMatches(coreTitle || title, anchor)) {
       // Count the anchor's raw units here: a short unit ("ada") is still a unit of the phrase.
-      if (splitPriorUnits(anchor).filter(Boolean).length === 1 && rawCoreUnits.length > 1 && !evidenceTitleExactlyMatchesAnchor(span, anchor)) continue;
+      // A one-unit anchor was refused against a multi-unit title unless the title matched it exactly, which made
+      // every surname-only reference unanswerable: "What did Einstein discover?" retrieved 71 promoted spans of
+      // the Albert Einstein article and admitted none of them. The refusal exists to stop a generic word admitting
+      // an article by title, and the subject test below separates the two without a word list -- a unit the
+      // request's own multi-unit anchors are all built around is that request's subject, and a stray word is not.
+      if (splitPriorUnits(anchor).filter(Boolean).length === 1
+        && rawCoreUnits.length > 1
+        && !evidenceTitleExactlyMatchesAnchor(span, anchor)
+        && !anchorIsRequestSubjectUnit(anchor, anchors)) continue;
       return true;
     }
     const matchedTitleUnits = titleUnits.filter(titleUnit => anchorUnits.some(unit => titleAnchorUnitMatches(unit, titleUnit)));
@@ -2332,6 +2425,23 @@ export function sourceAnchorPhraseContains(sourceUnits: readonly string[], ancho
   return false;
 }
 
+
+/**
+ * Whether a one-unit anchor is the subject the request is built around, rather than a word that happens to be one.
+ *
+ * Structural and request-local: the anchors a request produces include both its subject and phrases formed from the
+ * subject plus neighbouring words. A unit that appears in every multi-unit anchor is what those phrases are about;
+ * one that appears in none of them is not. For "What did Einstein discover?" the anchors are einstein, what,
+ * einstein discover and did einstein -- einstein passes and what does not, with no list of words anywhere.
+ */
+function anchorIsRequestSubjectUnit(anchor: string, anchors: readonly string[]): boolean {
+  const unit = normalizePriorKey(anchor);
+  if (!unit) return false;
+  const multiUnitAnchors = anchors.filter(candidate => splitPriorUnits(normalizePriorKey(candidate)).filter(Boolean).length >= 2);
+  if (!multiUnitAnchors.length) return false;
+  return multiUnitAnchors.every(candidate =>
+    splitPriorUnits(normalizePriorKey(candidate)).filter(Boolean).includes(unit));
+}
 
  function evidenceTitleExactlyMatchesAnchor(span: EvidenceSpan, anchor: string): boolean {
   const rawTitle = evidenceTitle(span);
