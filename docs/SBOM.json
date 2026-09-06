@@ -1,6 +1,6 @@
 {
  "schema": "scce.sbom.v1",
- "generatedAt": "2026-09-06T01:47:13.214Z",
+ "generatedAt": "2026-09-06T02:10:24.035Z",
  "generator": "tools/sbom.mjs",
  "coverage": {
   "method": "workspace manifests plus the resolved pnpm store and vendored archives",
@@ -10,23 +10,69 @@
    "declared licenses",
    "vendored archive checksums"
   ],
+  "includesAlso": [
+   "declared-license scan across the full resolved closure",
+   "lockfile integrity hashes for direct dependencies",
+   "source commit and lockfile identity"
+  ],
   "excludes": [
    "license-text analysis",
    "vulnerability matching",
-   "transitive per-package license attribution"
+   "license compatibility analysis",
+   "verification that a declared license matches the shipped license text"
   ],
   "note": "A declaration-and-resolution report. A buyer commissions an SCA scan and a legal license review separately."
+ },
+ "resolution": {
+  "packageManager": "pnpm",
+  "lockfile": "pnpm-lock.yaml",
+  "lockfileSha256": "2a79ee2011be98480028862e1d01bf02d73865a2e1cc108ec26d946a6e49c106",
+  "lockfileVersion": "9.0",
+  "workspaceCommit": "95f8524a78ff4f649c9e9921ff2f3eb3afcea6b8"
  },
  "proprietary": {
   "holder": "Ryan P. Walsh",
   "statement": "SCCE's own source is proprietary and inspection-only; no right to use, copy, modify, distribute, sublicense, sell, or create derivative works is granted except by separate written agreement. See LICENSE.",
-  "correction": "SCCE contains no open-source code of its own, and it does depend on third-party open-source components, listed below. 'Zero open source' is not an accurate description of the delivered system."
+  "thirdPartyDisclosure": "SCCE contains no open-source code of its own and does depend on third-party open-source components, listed below. The delivered system therefore contains open source; SCCE's own source is not open source."
  },
  "counts": {
   "directRuntime": 8,
   "directDevelopment": 14,
   "vendoredArchives": 1,
-  "installedPackagesInStore": 647
+  "resolvedDependencyClosure": 647
+ },
+ "licenseSummary": {
+  "scope": "every package present in the local pnpm store, direct and transitive, development and runtime",
+  "uniquePackagesInspected": 647,
+  "licensesDeclared": {
+   "MIT": 514,
+   "ISC": 40,
+   "BSD-2-Clause": 24,
+   "BSD-3-Clause": 23,
+   "Apache-2.0": 15,
+   "BlueOak-1.0.0": 9,
+   "Artistic-2.0": 5,
+   "SEE LICENSE IN LICENSE.txt": 2,
+   "(MIT OR CC0-1.0)": 2,
+   "WTFPL": 1,
+   "0BSD": 1,
+   "Apache-2.0 AND LGPL-3.0-or-later": 1,
+   "(MIT OR GPL-3.0-or-later)": 1,
+   "Python-2.0": 1,
+   "MPL-2.0": 1,
+   "BSD": 1,
+   "(MIT OR WTFPL)": 1,
+   "(MIT AND Zlib)": 1,
+   "(BSD-2-Clause OR MIT OR Apache-2.0)": 1,
+   "CC0-1.0": 1,
+   "CC-BY-3.0": 1,
+   "Unlicense": 1
+  },
+  "copyleftDependenciesIdentified": [],
+  "strongCopyleftDependenciesIdentified": [],
+  "undeclaredLicensePackages": [],
+  "undeclaredLicenseCount": 0,
+  "verificationStatus": "manifest-declared licenses only; no license-text analysis and not a legal opinion"
  },
  "runtimeDependencies": [
   {
@@ -37,6 +83,7 @@
    "license": "Apache-2.0",
    "repository": "git+https://github.com/huggingface/transformers.js.git",
    "vendored": false,
+   "integrity": "sha512-tsTk4zVjImqdqjS8/AOZg2yNLd1z9S5v+7oUPpXaasDRwEDhB+xnglK1k5cad26lL5/ZIaeREgWWy0bs9y9pPA==",
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -49,6 +96,7 @@
    "license": "MIT",
    "repository": "git+https://github.com/node-unicode/unicode-17.0.0.git",
    "vendored": false,
+   "integrity": "sha512-TcBN39y5g7rmQbjnIDsW+4XlEXk6BnJMlhGyUHqUljp00affwlSLv5v7nB37pbdD/ks1BpptvILVQRMp34wPPw==",
    "requiredBy": [
     "@scce/kernel"
    ]
@@ -61,6 +109,7 @@
    "license": "BSD-2-Clause",
    "repository": "https://github.com/mwilliamson/mammoth.js.git",
    "vendored": false,
+   "integrity": "sha512-cwnK1RIcRdDMi2HRx2EXGYlxqIEh0Oo3bLhorgnsVJi2UkbX1+jKxuBNR9PC5+JaX7EkmJxFPmo6mjLpqShI2w==",
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -73,6 +122,7 @@
    "license": "MIT",
    "repository": "git://github.com/brianc/node-postgres.git",
    "vendored": false,
+   "integrity": "sha512-8wih1vVIBMxoUM2oB4soJsD9tDnDpLv4OXBJ+EJzFsvycD+lfyIreC2gGHq78f8jbLLt+bvlPTFdFZfJkOuzAA==",
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -85,6 +135,7 @@
    "license": "Unlicense",
    "repository": "https://github.com/Gregoor/tree-sitter-wasms",
    "vendored": false,
+   "integrity": "sha512-wT+cR6DwaIz80/vho3AvSF0N4txuNx/5bcRKoXouOfClpxh/qqrF4URNLQXbbt8MaAxeksZcZd1j8gcGjc+QxQ==",
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -97,6 +148,7 @@
    "license": "Apache-2.0",
    "repository": "https://github.com/microsoft/TypeScript.git",
    "vendored": false,
+   "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -109,6 +161,7 @@
    "license": "MIT",
    "repository": "git+https://github.com/tree-sitter/tree-sitter.git",
    "vendored": false,
+   "integrity": "sha512-CdC/TqVFbXqR+C51v38hv6wOPatKEUGxa39scAeFSm98wIhZxAYonhRQPSMmfZ2w7JDI0zQDdzdmgtNk06/krQ==",
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -121,6 +174,7 @@
    "license": "Apache-2.0",
    "repository": "https://git.sheetjs.com/SheetJS/sheetjs",
    "vendored": true,
+   "integrity": null,
    "requiredBy": [
     "@scce/adapters-node"
    ]
@@ -135,6 +189,7 @@
    "license": "MIT",
    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
    "vendored": false,
+   "integrity": "sha512-QWlFW2wf3nTjC13/DqRnBpR4ZO36VJH/JVBkA/vcnmbTBNQIlnObqyqZE1tUR7+Ni23Lda8R1BxMfbXRpCUx5g==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -147,6 +202,7 @@
    "license": "MIT",
    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
    "vendored": false,
+   "integrity": "sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -159,6 +215,7 @@
    "license": "MIT",
    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
    "vendored": false,
+   "integrity": "sha512-0icm/ZQAaism87P0ekHqi4/Ju9du+Tm0RUW+y7vqRsxY2cY0FNRX1nAnaW7nT6npPt2tfHiheZ55Zm9UhqonFA==",
    "requiredBy": [
     "@scce/vscode"
    ]
@@ -171,6 +228,7 @@
    "license": "MIT",
    "repository": "https://github.com/Microsoft/vscode-test.git",
    "vendored": false,
+   "integrity": "sha512-8ukpxv4wYe0iWMRQU18jhzJOHkeGKbnw7xWRX3Zw1WJA4cEKbHcmmLPdPrPtL6rhDcrlCZN+xKRpv09n4gRHYg==",
    "requiredBy": [
     "@scce/vscode"
    ]
@@ -183,6 +241,7 @@
    "license": "MIT",
    "repository": "https://github.com/Microsoft/vsce",
    "vendored": false,
+   "integrity": "sha512-XSxMosEEDO6vLxELAHVkwmhC0qe0ijZni2jB9Rcs8kQsW4lhTDQ/wMzmwFs/buotAWSnpmUp/dRWD2ufG3UYKA==",
    "requiredBy": [
     "@scce/vscode"
    ]
@@ -195,6 +254,7 @@
    "license": "MIT",
    "repository": "git+https://github.com/sverweij/dependency-cruiser.git",
    "vendored": false,
+   "integrity": "sha512-L4GLuAvmXevWnPCIaFfOz6eD92c+yY+pDgVqgufrLDnW3xYA799CSZQlly2r2N13nhAlnZY6VzY7Rx5pHNvk2w==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -207,6 +267,7 @@
    "license": "ISC",
    "repository": "git+https://github.com/webpro-nl/knip.git",
    "vendored": false,
+   "integrity": "sha512-tpy5o7zu1MjawVkLPuahymVJekYY3kYjvzcoInhIchgePxTlo+api90tBv2KfhAIe5uXh+mez1tAfmbv8/TiZg==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -219,6 +280,7 @@
    "license": "MIT",
    "repository": "git://github.com/pahen/madge",
    "vendored": false,
+   "integrity": "sha512-9sSsi3TBPhmkTCIpVQF0SPiChj1L7Rq9kU2KDG1o6v2XH9cCw086MopjVCD+vuoL5v8S77DTbVopTO8OUiQpIw==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -231,6 +293,7 @@
    "license": "MIT",
    "repository": "git@github.com:nadeesha/ts-prune.git",
    "vendored": false,
+   "integrity": "sha512-8wcV+z2GMf20Z/2acLOQftExvM/d1bywCr3AYdD4oSgPzFxdwIuTxJ0xekWHKdASzC1KNxIVWnCTDJbA9BaVmA==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -243,6 +306,7 @@
    "license": "0BSD",
    "repository": "https://github.com/Microsoft/tslib.git",
    "vendored": false,
+   "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
    "requiredBy": [
     "@scce/vscode"
    ]
@@ -255,6 +319,7 @@
    "license": "Apache-2.0",
    "repository": "git://github.com/TypeStrong/TypeDoc.git",
    "vendored": false,
+   "integrity": "sha512-wKh+lhdmMFivMlc6vRRcMGXeGEHGU2g8a2CkPTJjJlwRf1iXbimWIPcFolCqe4E0d/FRtGszpIrsp3WLpDB8Pw==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -267,6 +332,7 @@
    "license": "Apache-2.0",
    "repository": "https://github.com/microsoft/TypeScript.git",
    "vendored": false,
+   "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
    "requiredBy": [
     "scce-v3"
    ]
@@ -279,6 +345,7 @@
    "license": "MIT",
    "repository": "git+https://github.com/vitest-dev/vitest.git",
    "vendored": false,
+   "integrity": "sha512-EbKSKh+bh1E1IFxeO0pg1n4dvoOTt0UDiXMd/qn++r98+jPO1xtJilvXldeuQ8giIB5IkpjCgMleHMNEsGH6pg==",
    "requiredBy": [
     "@scce/kernel"
    ]
@@ -291,6 +358,7 @@
    "license": "MIT",
    "repository": "git+https://github.com/vitest-dev/vitest.git",
    "vendored": false,
+   "integrity": "sha512-xejya+bT/j/+R/AGa1XOfRxLmNUlLtlwjRsFUILF+xHfzElmGcmFydy2gqqIrd62ptIEfwVMofd19uNWD9L7Nw==",
    "requiredBy": [
     "scce-v3"
    ]
