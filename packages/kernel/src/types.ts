@@ -1343,6 +1343,9 @@ export interface RuntimeWarmupResult {
     aliasProfileEntries: number;
     surfaceProfiles: number;
     sourceAnchorFrames: number;
+    /** Memo hit rates for the kernel's hottest derived values. */
+    featureSetMemo?: { entries: number; chars: number; hits: number; misses: number; uncacheable: number };
+    tidySurfaceTextMemo?: { entries: number; chars: number; hits: number; misses: number; uncacheable: number };
   };
   failures: string[];
 }
