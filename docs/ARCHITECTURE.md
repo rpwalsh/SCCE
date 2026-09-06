@@ -205,7 +205,7 @@ source-anchor admissibility. This is an explicit routed binding, not a general b
 match: an unbound content mention cannot bypass source anchoring.
 
 `createSourceOnlyScceRuntime` exposes the in-memory source-only runtime for bounded
-fixture and diagnostic use. The `createScceRuntime` alias was removed on 2026-09-05: a canonical-looking name that returned the source-only runtime read as the production entry point, which is `createNodeRuntime(config)` in `@scce/adapters-node`. Its turn
+fixture and diagnostic use. That is its only name, so it cannot be read as the production entry point, which is `createNodeRuntime(config)` in `@scce/adapters-node`. Its turn
 path derives requirements, projects authority through the shared function, activates
 operators, selects an authority-compatible candidate, and then calls Mouth. It is
 marked simulation/non-hydrated and does not replace the PostgreSQL-backed production

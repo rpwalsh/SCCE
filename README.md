@@ -99,12 +99,11 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
 - **Learning with consent**: when a question has no evidence the turn asks
   before searching; fetched material is quarantined with a preview and
   becomes evidence only after confirmation.
-- **Ingest throughput** (2026-09-05): a shard flush that used to stall for
-  hours (a quadratic medoid search in role induction, and graph-surface
-  alignment over every lattice unit against every shard target) now
-  completes in minutes; page ingest compute halved. The construction gate
-  (independent held-out promotion) runs live and reports per hypothesis
-  why it does or does not promote.
+- **Ingest throughput**: a shard flush completes in minutes. Role induction
+  uses a bounded medoid search and graph-surface alignment is bounded per
+  lattice unit rather than compared against every shard target. The
+  construction gate (independent held-out promotion) runs live and reports
+  per hypothesis why it does or does not promote.
 - **What is not yet claimed**: learned reversible constructions have not
   been promoted from the Wikipedia corpus, because the declared relation
   channels available today (article links and section headings) yield
@@ -314,10 +313,9 @@ constructions and language memory over the admitted corpus, and
 owns, rolled back unless they typecheck. `tools/no-hidden-model-check.mjs`
 fails the build on any model endpoint or generation call.
 
-There is no CLI screenshot. A previous one was removed on 2026-08-17
-because the image was an HTML re-rendering styled to look like a
-terminal — the text was genuine command output, but presenting it as a
-screenshot failed this section's own bar. The block above is the command
+There is no CLI screenshot, deliberately: an image re-rendered from
+command output and styled to look like a terminal would fail this
+section's own bar, however genuine the text inside it. The block above is the command
 output itself rather than a picture of it.
 
 ## Run SCCE
