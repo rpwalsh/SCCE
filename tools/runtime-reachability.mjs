@@ -107,7 +107,21 @@ for (const orphan of orphans) {
 const aliases = orphans.filter(o => o.alias).length;
 const contracts = orphans.filter(o => /^[A-Z][A-Z0-9_]+$/.test(o.name)).length;
 const legacy = orphans.filter(o => /scce2|\/v2-/i.test(o.file)).length;
-console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "remaining", orphans.length - contracts - legacy - aliases);
+// A symbol the host calls, not us: the VS Code extension host owns activate/deactivate and nothing in this
+// repository may call them. Counting them as unfinished capability asks for a call site that would be a bug.
+for (const orphan of orphans) orphan.hostContract = /packages[/]vscode[/]/.test(orphan.file) && /^(activate|deactivate)$/.test(orphan.name);
+// A helper a test imports is reached, just not from a runtime entry point. Verified by finding the import rather
+// than trusting the name, so a ForTest suffix on something no test uses still counts as unfinished.
+const testSources = files.filter(file => /__tests__|[.]test[.]ts$/.test(file)).map(file => fs.readFileSync(file, "utf8")).join(String.fromCharCode(10));
+// Imported by name in a test, not merely mentioned in one. A word-match here would count any test that happens to
+// use the same identifier for a local, which is the exact false positive that makes the orphan count a lower bound
+// everywhere else; understating unfinished work is the more damaging direction of that error.
+const importedByName = (source, name) => new RegExp(
+  "import[^;]*[{,]\\s*" + name + "\\s*[,}][^;]*from", "u").test(source);
+for (const orphan of orphans) orphan.testOnly = !orphan.hostContract && importedByName(testSources, orphan.name);
+const hostContracts = orphans.filter(o => o.hostContract).length;
+const testOnly = orphans.filter(o => o.testOnly).length;
+console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "host contracts", hostContracts, "test-only", testOnly, "unwired", orphans.length - contracts - legacy - aliases - hostContracts, "of which no caller anywhere", orphans.length - contracts - legacy - aliases - hostContracts - testOnly);
 fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
  generatedAt: new Date().toISOString(),
  method: "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
@@ -119,7 +133,11 @@ fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
   declaredConstants: contracts,
   compatibilityAliases: aliases,
   legacyMigration: legacy,
-  implementedButUncalled: orphans.length - contracts - aliases - legacy
+  hostContracts,
+  testOnlyHelpers: testOnly,
+  implementedButUncalled: orphans.length - contracts - aliases - legacy - hostContracts,
+  ofWhichCoveredByTestsOnly: testOnly,
+  ofWhichNoCallerAnywhere: orphans.length - contracts - aliases - legacy - hostContracts - testOnly
  },
  orphans
 }, null, 1));
