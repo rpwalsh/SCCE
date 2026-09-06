@@ -66,6 +66,13 @@ export interface EvidenceQuery {
   status?: "promoted" | "quarantined" | "any";
   /** Provenance sourceKind values to leave out of the candidate set, e.g. developer_intelligence for a prose question. */
   excludeSourceKinds?: string[];
+  /**
+   * Normalized units of the subject the request names. A span whose source is *titled* with the subject is ranked
+   * ahead of one that merely mentions it. Without this, a one-unit subject scores identically on every span that
+   * contains the word and BM25's length normalization then prefers the shortest: "What did Einstein discover?"
+   * ranked 219 Einstein-mentioning spans by brevity and never returned the Albert Einstein article at all.
+   */
+  titleUnits?: string[];
   limit?: number;
 }
 

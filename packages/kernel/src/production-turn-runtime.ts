@@ -1035,7 +1035,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const allowSemanticFrameEvidence = deps.evaluationCondition?.flags.disableLanguageMemory !== true
         && deps.evaluationCondition?.flags.disableLearnedSemantics !== true;
       const graphSliceStarted = Date.now();
-      const graphSlice = await evaluationComponent(
+      let graphSlice = await evaluationComponent(
         "graph",
         "graph.resolve",
         () => evaluationComponent(
@@ -1081,6 +1081,40 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           evidence: graphSlice.evidence.length
         }
       });
+      // The resident slice is a latency optimization, not a corpus. The server sets `fastLocalEvidenceAnswer` on
+      // every API turn, so `residentOnly` was permanently on and the durable corpus was unreachable through the
+      // product's own API: asked "Who was Ada Lovelace?" against a brain holding her article, the HTTP path
+      // abstained while the same kernel answered correctly in-process. A fast budget may skip the durable search
+      // when the resident neighbourhood already carries usable evidence; it may not turn an unsearched corpus into
+      // an abstention. When nothing durable survives, and the deadline still allows it, the search actually runs.
+      const durableSliceEvidence = (slice: typeof graphSlice): number => slice.evidence
+        .filter(span => !String(span.id).startsWith("evidence_session_") && !isCodeEvidenceSpan(span)).length;
+      if (fastRuntimeBudget && !discourseEvidenceBound && durableSliceEvidence(graphSlice) === 0) {
+        const escalationStarted = Date.now();
+        const allowed = deadlineCheckpoint("kernel.turn.durable_retrieval_escalation", DURABLE_RETRIEVAL_ESCALATION_MS)?.allowed !== false;
+        if (allowed) {
+          const durableSlice = await graphForText(subjectRetrievalText, {
+            allowSemanticFrameEvidence,
+            sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
+            residentOnly: false
+          }).catch(() => undefined);
+          if (durableSlice && durableSliceEvidence(durableSlice) > 0) graphSlice = durableSlice;
+          kernelTrace({
+            stage: "graph.resolve.durable_escalation",
+            label: "kernel.turn.graph_slice",
+            durationMs: Date.now() - escalationStarted,
+            counts: { evidence: durableSlice ? durableSlice.evidence.length : 0, durable: durableSlice ? durableSliceEvidence(durableSlice) : 0 },
+            support: { escalated: Boolean(durableSlice && durableSliceEvidence(durableSlice) > 0), deadlineAllowed: allowed }
+          });
+        } else {
+          kernelTrace({
+            stage: "graph.resolve.durable_escalation",
+            label: "kernel.turn.graph_slice",
+            counts: { evidence: 0, durable: 0 },
+            support: { escalated: false, deadlineAllowed: false }
+          });
+        }
+      }
       // Kicked off here (not awaited) so it can resolve concurrently with
       // the rest of turn processing; only awaited later, right where this
       // turn's proof/certification outcome becomes known (Part A finding
@@ -1095,7 +1129,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let graph = graphSlice.graph;
       const unsealedEvidencePool = discourseEvidenceBound
         ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
-        : mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]).filter(span => !isControlCorpusSpan(span) && (requestedAuthority !== "program" || isCodeEvidenceSpan(span)));
+        : proseOnlyWhenNotACodeRequest(
+          mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]).filter(span => !isControlCorpusSpan(span) && (requestedAuthority !== "program" || isCodeEvidenceSpan(span))),
+          requestedAuthority
+        );
       // Sealed-corpus allowlist (trusted in-process runtimeControl, like
       // signal): every downstream evidence consumer -- proof support,
       // answer proposal, mouth realization, citations -- draws from this
@@ -1136,7 +1173,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       kernelTrace({
         stage: "graph.resolve.pool_admission",
         label: "kernel.turn",
-        counts: { pool: evidence.length, admitted: admissibleEvidence.length, fallback: auditFallbackEvidence.length },
+        counts: {
+          pool: evidence.length,
+          admitted: admissibleEvidence.length,
+          fallback: auditFallbackEvidence.length,
+          // A session turn reaching the admitted set is a defect, not a detail: it is how an earlier question
+          // became the answer to a later one. Counted here so the trace shows it without a rerun.
+          sessionAdmitted: admissibleEvidence.filter(span => String(span.id).startsWith("evidence_session_")).length
+        },
         support: {
           required: sourceAnchorAudit.required,
           anchors: sourceAnchorAudit.anchors.slice(0, 8),
@@ -3932,4 +3976,22 @@ function measuredTurnResourceUsage(start: ReturnType<typeof captureResourceUsage
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The program-authority rule ran in one direction only: a code request kept code, and a prose request kept
+ * everything, code included. With the repository ingested alongside the corpus, "Who was Ada Lovelace?" was
+ * answered live from a comment in `mouth.ts` that names her as an example, because the comment matches the request
+ * lexically better than the article does. A pool with no prose in it still answers from what it has, so a genuinely
+ * code-only corpus is unaffected.
+ */
+/** What the durable retrieval escalation must be able to spend before the deadline guard refuses it. */
+const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
+
+function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAuthority: string): EvidenceSpan[] {
+  if (requestedAuthority === "program") return [...pool];
+  // Unconditional, with no keep-what-we-have fallback: a factual request whose only candidate is source code has
+  // no evidence, and abstaining is the correct outcome. The fallback was not hypothetical -- "Who was Ada
+  // Lovelace?" reached a pool of exactly one span, a comment in `mouth.ts`, and answered from it.
+  return pool.filter(span => !isCodeEvidenceSpan(span));
 }
