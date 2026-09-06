@@ -802,16 +802,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]
         : undefined;
       const authorityLanguageStarted = Date.now();
+      // The durable hydration is a full scan and must not run past the turn's own budget.
+      //
+      // The resident language cache is keyed by surface cluster and startup warms the clusters it saw, so the first
+      // request landing on a different cluster misses it and escalates to the durable scan. Measured cold, in three
+      // requests: turn one 2.1s, turn two 30.8s of which 30.3s was this hydration, turn three 1.4s once the durable
+      // result was cached. Every deadline checkpoint after it reported the budget already exceeded -- the runtime
+      // knew, and had no way to say so, because the escalation was inside a single stage. It is a stage boundary now:
+      // when the remaining budget cannot afford the scan the turn proceeds on resident memory alone, which is the
+      // degraded path the deadline contract calls for rather than a turn that silently runs three times over.
+      const unscopedLanguageReason = selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal";
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
-        () => hydrateSurfaceLanguageMemoryResidentOrDurable(
-          12,
-          selectedSurfaceCluster,
-          selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal",
-          undefined,
-          "",
-          { residentOnly: fastRuntimeBudget }
+        () => withStageBudget(
+          hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget }),
+          LANGUAGE_MEMORY_DURABLE_ESCALATION_MS,
+          () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true })
+            .catch(() => emptySurfaceLanguageMemory()),
+          overrun => kernelTrace({
+            stage: "runtime.seed.language.budget_exceeded",
+            label: "kernel.turn",
+            durationMs: overrun,
+            support: { budgetMs: LANGUAGE_MEMORY_DURABLE_ESCALATION_MS, cluster: selectedSurfaceCluster?.id ?? null }
+          })
         ),
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
@@ -4495,6 +4509,8 @@ function evidenceInSubjectCommunity(
 
 /** What the language cluster escalation must be able to spend before the deadline guard refuses it. */
 const LANGUAGE_CLUSTER_ESCALATION_MS = 900;
+/** What a durable language-memory hydration is allowed to cost before the turn proceeds on resident memory instead. */
+const LANGUAGE_MEMORY_DURABLE_ESCALATION_MS = 1_500;
 
 /** Calibration steps to accumulate before one write. Learning is per turn; persistence is not. */
 const TURN_REQUIREMENT_FLUSH_STEPS = 16;
@@ -4523,3 +4539,30 @@ function trimToSentenceBoundary(text: string, limit: number): string {
   return kept;
 }
 
+
+/**
+ * A stage that overruns its budget yields to a bounded alternative; the slow work keeps running and warms its cache.
+ *
+ * The turn deadline is checked between stages, which cannot help when one stage overruns its own estimate by twenty
+ * times: a durable language-memory hydration measured at 30.3s inside a 10s turn, with every checkpoint after it
+ * correctly reporting the budget already exceeded and nothing able to act on that. Racing the stage against its budget
+ * makes it a boundary. The original promise is not cancelled -- there is nothing to cancel a database scan with -- so
+ * it is left to finish and populate the cache the next turn will hit, with its rejection absorbed so a late failure
+ * cannot surface as an unhandled rejection long after the turn returned.
+ */
+function withStageBudget<T>(work: Promise<T>, budgetMs: number, fallback: () => Promise<T>, onOverrun?: (elapsedMs: number) => void): Promise<T> {
+  const started = Date.now();
+  let settled = false;
+  work.then(() => { settled = true; }, () => { settled = true; });
+  return Promise.race([
+    work,
+    new Promise<T>(resolve => {
+      const timer = setTimeout(() => {
+        if (settled) return;
+        onOverrun?.(Date.now() - started);
+        resolve(fallback());
+      }, budgetMs);
+      if (typeof timer.unref === "function") timer.unref();
+    })
+  ]);
+}
