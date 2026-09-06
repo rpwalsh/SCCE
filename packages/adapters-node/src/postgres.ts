@@ -4181,6 +4181,15 @@ function createUserModelClaimStore(storage: PostgresStorageAdapter): UserModelCl
         params
       );
       return rows.map(rowToUserModelClaim);
+    },
+    async deleteClaim(query) {
+      // Real removal, not a superseding tombstone: the module's promise is that a claim is deletable, and a row that
+      // survives deletion under another name keeps governing what the turn believes about its owner.
+      const rows = await storage.query<{ id: string }>(
+        `DELETE FROM ${storage.table("user_model_claims")} WHERE conversation_id=$1 AND id=$2 RETURNING id`,
+        [query.conversationId, query.claimId]
+      );
+      return rows.length > 0;
     }
   };
 }

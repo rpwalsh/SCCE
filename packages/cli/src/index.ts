@@ -13,7 +13,7 @@ import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationP
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
-import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, summarizeForTrace, traceSpan, createUniversalCreativeEventConstructionCompiler, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
+import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, summarizeForTrace, traceSpan, createUniversalCreativeEventConstructionCompiler, dialogueOutcomeMemoryForConversation, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
 import {
   createFtrlProximalRanker,
   restoreFtrlProximalRanker,
@@ -142,7 +142,10 @@ async function main(): Promise<void> {
           const active = await assertHydratedRuntimeReady(runtime.storage);
           traceEvent(trace, { stage: "turn.runtime.start", label: "cli.turn" });
           const conversationId = turnArgs.conversationId ?? turnArgs.sessionId ?? "conversation.cli";
-          const learnedDialogueProfile = await latestDialogueStyleProfile(runtime.storage.dialogueMemory, conversationId);
+          const [learnedDialogueProfile, dialogueOutcomeMemory] = await Promise.all([
+            latestDialogueStyleProfile(runtime.storage.dialogueMemory, conversationId),
+            dialogueOutcomeMemoryForConversation(runtime.storage.dialogueMemory, conversationId)
+          ]);
           const workspaceRuntime = workspaceTurn.codingRequest ? createWorkspaceRuntime({ runtime, config }) : undefined;
           const workspaceProject = workspaceRuntime && workspaceTurn.codingRequest
             ? await workspaceRuntime.project(workspaceTurn.codingRequest.rootPath, parseWorkspaceOptions(workspaceTurn.codingRequest.workspaceOptionArgs))
@@ -203,7 +206,8 @@ async function main(): Promise<void> {
             targetLanguage: turnArgs.targetLanguage,
             userStyleProfile: learnedDialogueProfile,
             calibrationModels,
-            calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome
+            calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+            outcomeMemory: dialogueOutcomeMemory
           });
           await persistDialogueTurn({
             store: runtime.storage.dialogueMemory,

@@ -6,7 +6,7 @@ import type {
   AlignmentPromotionDecision,
   AlignmentPromotionModel
 } from "./alignment-promotion.js";
-import { validateDiscontinuousConstruction, type DiscontinuousConstruction } from "./discontinuous-construction.js";
+import { moveSpan, validateDiscontinuousConstruction, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type {
   SparseAlignmentCandidateSupport,
@@ -374,7 +374,7 @@ export function compileReversibleConstructions(input: {
         boundarySlotIds: slots.map(slot => slot.id),
         // A construction whose slots leave material between them is discontinuous; its logical reading order is
         // recorded separately from byte position so the spans stay movable and the port bindings survive.
-        ...(discontinuousSurface(decision, slots) ?? {})
+        ...(discontinuousSurface(decision, slots, ports.filter(port => port.boundary).map(port => port.id)) ?? {})
       },
       discourseConditions: {
         status: "unconditioned" as const,
@@ -634,15 +634,24 @@ export function reversibleConstructionsFromPatterns(
   return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-/** Only when the slots genuinely leave a gap: a contiguous construction has nothing discontinuous to record. */
+/**
+ * Only when the slots genuinely leave a gap: a contiguous construction has nothing discontinuous to record.
+ *
+ * Reading order comes from the graph's boundary-port order, not from byte position. Assigning it by byte position --
+ * which is what this did -- made the logical order identical to the byte order in every construction ever promoted, so
+ * the whole discontinuous representation carried no information and `reassembleLogicalSurface` was an expensive
+ * identity. Each reposition goes through `moveSpan`, so a reordering that would collide is refused rather than
+ * silently written.
+ */
 function discontinuousSurface(
   decision: AlignmentPromotionDecision,
-  slots: readonly ReversibleConstructionSurfaceSlot[]
+  slots: readonly ReversibleConstructionSurfaceSlot[],
+  boundaryPortIds: readonly string[]
 ): { discontinuous: DiscontinuousConstruction } | undefined {
   const ordered = [...slots].sort((left, right) => left.relativeUtf16Start - right.relativeUtf16Start);
   const gapped = ordered.some((slot, index) => index > 0 && slot.relativeUtf16Start > ordered[index - 1]!.relativeUtf16End);
   if (!gapped) return undefined;
-  const construction: DiscontinuousConstruction = {
+  const byteOrdered: DiscontinuousConstruction = {
     id: `discontinuous_construction.${decision.seriesId}.${decision.planId}`,
     spans: ordered.map((slot, index) => ({
       id: slot.id,
@@ -652,7 +661,31 @@ function discontinuousSurface(
       portIds: [...slot.graphPortIds]
     }))
   };
-  return validateDiscontinuousConstruction(construction).valid ? { discontinuous: construction } : undefined;
+  if (!validateDiscontinuousConstruction(byteOrdered).valid) return undefined;
+  const construction = spansInGraphPortOrder(byteOrdered, boundaryPortIds);
+  return { discontinuous: construction };
+}
+
+/** Reading order as the graph binds it. A span with no boundary port keeps its byte rank, after every bound span. */
+function spansInGraphPortOrder(construction: DiscontinuousConstruction, boundaryPortIds: readonly string[]): DiscontinuousConstruction {
+  const portRank = new Map(boundaryPortIds.map((portId, index) => [portId, index]));
+  const unbound = boundaryPortIds.length;
+  const ranked = [...construction.spans]
+    .map(span => ({
+      span,
+      rank: Math.min(...span.portIds.map(portId => portRank.get(portId) ?? unbound), unbound),
+      byteRank: span.order
+    }))
+    .sort((left, right) => left.rank - right.rank || left.byteRank - right.byteRank);
+  const targetById = new Map(ranked.map((entry, index) => [entry.span.id, index]));
+  if (ranked.every((entry, index) => entry.byteRank === index)) return construction;
+  // Two passes through a parked range above every live order, so no intermediate state collides and every step is
+  // still validated by `moveSpan` rather than assigned around it.
+  const parked = construction.spans.length;
+  let moved = construction;
+  for (const [spanId, target] of targetById) moved = moveSpan(moved, spanId, target + parked);
+  for (const [spanId, target] of targetById) moved = moveSpan(moved, spanId, target);
+  return moved;
 }
 
 function cellsByHyperedge<T extends { graphTargetId: string }>(
