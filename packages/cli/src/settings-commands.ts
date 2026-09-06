@@ -9,6 +9,7 @@ import {
   applySetting,
   createVideoFrameSource,
   downloadModel,
+  encryptSecret,
   formatBytes,
   getSettingPath,
   listLocalModels,
@@ -42,7 +43,27 @@ export async function runSettingsCommand(configPath: string, args: string[]): Pr
     process.stdout.write(`${args[1]} = ${JSON.stringify(value)} written to ${absolute}\n`);
     return;
   }
-  if (sub && sub !== "edit") throw new Error("usage: scce settings show | get <key> | set <key> <value> | edit");
+  if (sub === "encrypt" && args[1]) {
+    // The half that was missing. `config.ts` refuses a plain secret whenever policy.encryptSecretsAtRest is set, and
+    // `resolveSecret` decrypts enc:v1 envelopes on read, but nothing could ever produce one -- so turning the policy
+    // on made the configuration unloadable with no supported way back. Encrypting in place closes that loop.
+    const keyMaterial = getSettingPath(raw, "security.localMasterKey");
+    if (typeof keyMaterial !== "string" || !keyMaterial) {
+      throw new Error("scce settings encrypt needs security.localMasterKey; set it first: scce settings set security.localMasterKey <key>");
+    }
+    const plain = args.slice(2).join(" ") || String(getSettingPath(raw, args[1]) ?? "");
+    if (!plain) throw new Error(`${args[1]} has no value to encrypt; pass one: scce settings encrypt ${args[1]} <value>`);
+    if (plain.startsWith("enc:v1:")) {
+      process.stdout.write(`${args[1]} is already an enc:v1 envelope; nothing to do\n`);
+      return;
+    }
+    applySetting(raw, args[1], encryptSecret(plain, keyMaterial));
+    await writeFile(absolute, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+    // Never the plaintext and never the envelope: the point of the command is that the value stops being printable.
+    process.stdout.write(`${args[1]} encrypted into ${absolute}\n`);
+    return;
+  }
+  if (sub && sub !== "edit") throw new Error("usage: scce settings show | get <key> | set <key> <value> | encrypt <key> [value] | edit");
   if (!stdin.isTTY) throw new Error("scce settings edit needs an interactive terminal; use show, get, or set");
   const rl = createInterface({ input: stdin, output: stdout });
   try {

@@ -1,20 +1,20 @@
 {
- "generatedAt": "2026-09-06T07:54:52.339Z",
+ "generatedAt": "2026-09-06T08:00:02.211Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1664,
-  "reached": 1141,
+  "reached": 1143,
   "internalHelpersOnly": 454,
-  "orphans": 69,
+  "orphans": 67,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 39,
-  "implementedButUncalled": 51,
+  "implementedButUncalled": 49,
   "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 12,
-  "ofWhichDeliberatelyUnwired": 1
+  "ofWhichNoCallerAnywhere": 10,
+  "ofWhichDeliberatelyUnwired": 5
  },
  "orphans": [
   {
@@ -38,15 +38,6 @@
   {
    "name": "iterateScce2NgramCounts",
    "file": "packages/adapters-node/src/scce2/brain-shard-reader.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "encryptSecret",
-   "file": "packages/adapters-node/src/secrets.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
@@ -86,21 +77,13 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "graphLaplacian builds the normalized and random-walk forms directly from the adjacency rather than by scaling an existing CSR, so nothing in the sparse path needs a scaled copy; adding one would mean building a matrix to hand to a function that already computes what it needs.",
    "hostContract": false,
    "testOnly": false
   },
   {
    "name": "DEFAULT_ALPHA",
    "file": "packages/kernel/src/alpha.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "isBrainLifecycleState",
-   "file": "packages/kernel/src/brain-lifecycle.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
@@ -339,6 +322,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Dense matrix arithmetic with no dense consumer left. The kernel's Laplacian path is sparse (graphLaplacian over CsrMatrix), and the heat/diffusion operators step vector-wise, so the natural-looking uses would materialise a dense matrix per step to replace an O(nnz) vector update.",
    "hostContract": false,
    "testOnly": false
   },
@@ -348,6 +332,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Same as addMatrix: the diffusion operators apply eta to the vector delta each step rather than scaling a matrix, and scaling one per step to match would allocate n^2 per iteration for no gain.",
    "hostContract": false,
    "testOnly": false
   },
@@ -528,6 +513,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "The only scorer over a SparseVector is the FTRL ranker, which already walks the entries to build the per-entry contribution breakdown its audit records, then sums that. Routing the sum through sparseDot would recompute every weight and throw the breakdown away, so the call site that looks right is strictly worse than what is there.",
    "hostContract": false,
    "testOnly": false
   },
