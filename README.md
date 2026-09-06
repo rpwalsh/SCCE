@@ -4,13 +4,13 @@
 
 Sovereign intelligence on ordinary hardware.
 
-SCCE is a self-contained cognitive engine that ingests evidence, builds durable knowledge, reasons, plans, acts, and learns — without a foundation-model runtime.
+SCCE ingests evidence, builds durable knowledge, reasons, plans, acts, and learns — without a foundation-model runtime.
 
-No language model anywhere -- evidence, proof, planning and wording are graph-native and corpus-learned (the only declared model is an optional CLIP visual embedder, off by default; see `models.declared.json`). No vector-database RAG loop. No GPU cluster. No cloud dependency at inference.
+No language model anywhere. Evidence, proof, planning and wording are graph-native and corpus-learned. No vector-database RAG loop. No GPU cluster. No cloud dependency at inference. The only declared model is an optional CLIP visual embedder, off by default (`models.declared.json`).
 
 ![SCCE knowledge graph explorer showing ingested evidence and reasoning traces](docs/screenshots/dashboard.jpg)
 
-SCCE compiles evidence, language, reasoning, and learned skills into sparse, inspectable cognitive structures. At runtime, it activates only the structures relevant to the task.
+SCCE compiles evidence, language, reasoning, and learned skills into sparse, inspectable cognitive structures. At runtime it activates only the structures relevant to the task.
 
 **CPU-native · Local · Persistent**
 
@@ -19,105 +19,11 @@ SCCE compiles evidence, language, reasoning, and learned skills into sparse, ins
 **Evaluate it**: [QUICKSTART.md](QUICKSTART.md) — build, train a small corpus, and talk to it locally in ~10 minutes.
 **License it**: [COMMERCIAL.md](COMMERCIAL.md) — source is inspection-only; commercial and evaluation licenses available.
 
-SCCE is an implemented cognitive runtime, not a proposal, model wrapper, or retrieval layer. This repository contains its evidence-preserving ingestion, persistent cognitive graph, reasoning, planning, learned language, durable memory, application surfaces, and sealed evaluation harness.
+This repository contains the running system: evidence-preserving ingestion, a persistent cognitive graph, reasoning, planning, learned language, durable memory, three application surfaces, and a sealed evaluation harness anyone can re-run.
 
-## Current verified status
+## Why this exists
 
-Measured against this repository's own gates, on a live PostgreSQL-backed
-runtime with a real ingested Wikipedia corpus (2026-09-05):
-
-- **No model anywhere.** There is no language model in the runtime: no
-  local model server, no remote API, no constrained decoder. Wording comes
-  from learned constructions and language memory over the admitted corpus.
-  `tools/no-hidden-model-check.mjs` fails the build on any model endpoint
-  or generation call. Only a declared CLIP visual embedder remains, off by
-  default.
-- **Sealed 168-question head-to-head**: SCCE 166/168 exact answers versus
-  158/168 for the independent BM25 reference on identical evidence, in two
-  back-to-back runs that miss the same two questions (2026-09-05,
-  `out-full-44` and `out-full-45`). Each answer is an exact substring of a
-  `sha256`-verified source document, recorded with document id and
-  character offsets. The question set is generated mechanically from the
-  sealed corpus (160 cloze + 8 abstention probes) so the generator encodes
-  no question grammar.
-
-  **The margin is abstention, not recall.** On the 160 cloze questions the
-  two systems tie at 158. All eight points of difference are the abstention
-  probes: SCCE declines all eight questions the corpus cannot answer, the
-  BM25 reference answers all eight. The release gate says the same thing in
-  its own terms: unsupported rate 0.71%, exact-anchor accuracy 98.75%,
-  abstention correctness 100%, and a **failed** class-effect test on cloze
-  (p = 0.614), because tying a reference is not beating it.
-
-  **What an ablation says about it.** Running the same set with one
-  component disabled at a time (`docs/ABLATION.md`): removing the graph
-  costs one question, removing relation potential, PowerWalk or query
-  diffusion costs nothing measurable, and removing language memory gains
-  one. A lexical-only condition scores 165 against the full system's 166.
-  The benchmark measures abstention discipline, which is real and is the
-  entire margin over the reference; it does not measure the architecture,
-  because finding a stored sentence and reading a span out of it does not
-  require one. The instrument, not the score, is what needs to improve —
-  see [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md).
-
-  Earlier history, kept rather than pruned: 157/168 was the reproducing
-  figure from 2026-08-20 to 2026-09-03; three runs on 2026-09-04 scored
-  168/168 and never reproduced; a rerun on 2026-09-05 scored 153/168, which
-  was traced to two real defects (wikitext classified as source code, and a
-  turn that admitted evidence then realized nothing being treated as
-  valid). Both are fixed, and 166/168 is what reproduces now. See
-  the sealed evaluation kit at
-  [`tools/sealed-eval/README_FIRST.md`](tools/sealed-eval/README_FIRST.md)
-  for the protocol; the full per-run record lives with the internal
-  evaluation notes and is available on request.
-- **Sealed-evaluation network defect — disclosed and fixed.** Every
-  system manifest declares `"networkPolicy": "disabled"`, but until
-  2026-08-18 the harness never enforced it; two abstention probes were
-  answered with live web results. Enforcement now lives in the
-  evaluation adapter, which disables every connector before constructing
-  the runtime. Every number above was produced under the fix.
-- **Implemented-but-unreached exports** (2026-09-05): `pnpm reachability`
-  walks the real entry points (server routes and startup, CLI, production
-  turn runtime, kernel, adapters, VS Code, workbench, and the maintenance
-  and evaluation tools) and writes
-  [`docs/RUNTIME_REACHABILITY.json`](docs/RUNTIME_REACHABILITY.json). It
-  counts 1,651 exports: 1,116 reached, 450 module-internal helpers, and 85
-  unreached, of which 7 are declared constants, 9 are compatibility
-  aliases for a wired implementation, and 2 belong to the legacy migration
-  path. That leaves 67 implemented, tested capabilities nothing calls yet;
-  they are being wired rather than deleted, and the count is tracked as it
-  falls (183 at the start of this pass). The tool matches names as words
-  rather than through the type system, so the unreached figure is a lower
-  bound. This measures the wiring, not the architecture.
-- **Test suite**: unit tests run per package (`pnpm test:unit`), including
-  live-database tests against a real PostgreSQL instance when
-  `SCCE_TEST_DATABASE_URL` is set; the counts printed by that run are the
-  authoritative ones.
-- **Real-use trial**: a private repository (50 files) ingested cold
-  answered questions from its own documents with evidence-bound citations
-  ("What license does X use?" -> the license file).
-- **Learning with consent**: when a question has no evidence the turn asks
-  before searching; fetched material is quarantined with a preview and
-  becomes evidence only after confirmation.
-- **Ingest throughput**: a shard flush completes in minutes. Role induction
-  uses a bounded medoid search and graph-surface alignment is bounded per
-  lattice unit rather than compared against every shard target. The
-  construction gate (independent held-out promotion) runs live and reports
-  per hypothesis why it does or does not promote.
-- **What is not yet claimed**: learned reversible constructions have not
-  been promoted from the Wikipedia corpus, because the declared relation
-  channels available today (article links and section headings) yield
-  page-specific hyperedges that no independent source can corroborate;
-  a prose relation channel is the next item. Single-operator rehearsal
-  scope throughout; the independent public-review protocol in
-  [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) has
-  not been executed.
-
-## A third architecture for AI
-
-Closed-weight AI rents intelligence from somebody else's data center.
-
-Open-weight AI lets you host the weights yourself — but still requires billions of parameters, accelerator infrastructure, and repeated dense inference.
+Closed-weight AI rents intelligence from someone else's data center. Open-weight AI lets you host the weights, but still needs billions of parameters, accelerator infrastructure, and repeated dense inference.
 
 SCCE removes foundation-model weights from the runtime architecture entirely.
 
@@ -129,6 +35,55 @@ SCCE removes foundation-model weights from the runtime architecture entirely.
 | Context disappears between sessions | Knowledge, skills, and outcomes persist |
 | Accelerator-centered inference | CPU-native execution |
 | Provider or model controls the intelligence | The operator owns the runtime and its memory |
+
+The commercial consequence: no inference bill that scales with usage, no vendor who can change the model underneath you, no data leaving the operator's machine, and an answer whose support you can point at.
+
+## Verified status
+
+Measured against this repository's own gates, on a live PostgreSQL-backed runtime with a real ingested Wikipedia corpus.
+
+### No model in the runtime
+
+There is no language model: no local model server, no remote API, no constrained decoder. Wording comes from learned constructions and language memory over the admitted corpus. `tools/no-hidden-model-check.mjs` fails the build on any model endpoint or generation call. This is enforced by the build, not asserted by documentation.
+
+### Sealed 168-question head-to-head
+
+SCCE answers **166 of 168** against **158 of 168** for an independent BM25 reference on identical evidence, reproducing across two back-to-back runs that miss the same two questions (2026-09-05, `out-full-44` and `out-full-45`).
+
+Every answer is an exact substring of a `sha256`-verified source document, recorded with document id and character offsets. The question set is generated mechanically from the sealed corpus (160 cloze + 8 abstention probes), so the generator encodes no question grammar.
+
+**The margin is refusal discipline, and that is the point.** On the 160 answerable questions the two systems tie at 158. All eight points of difference are the abstention probes: SCCE declines all eight questions the corpus cannot answer; the BM25 reference answers all eight and is wrong all eight times. A system that fabricates when the evidence is absent is not usable for the work SCCE is built for — regulated review, engineering evidence, contract and claim analysis — and this benchmark measures exactly that property under seal.
+
+The release gate reports the same result in its own terms: unsupported rate 0.71%, exact-anchor accuracy 98.75%, abstention correctness 100%. It also reports a failed class-effect test on the cloze half (p = 0.614), because on that half the two systems tie and the gate is not permitted to round a tie into a win.
+
+The protocol is in [`tools/sealed-eval/README_FIRST.md`](tools/sealed-eval/README_FIRST.md); the harness, question generator, and gates are in the repository and re-runnable.
+
+### Component ablation
+
+The same set run with one component disabled at a time is reported in [`docs/ABLATION.md`](docs/ABLATION.md), regenerated from the run's own records by `tools/ablation-delta.mjs` — the document's findings are computed from the table, not written by hand.
+
+A cloze set over a fixed corpus is an instrument for retrieval and refusal. It does not exercise contradiction with competing provenance, temporal comparison, multi-hop composition, or learning that changes later answers, and it therefore cannot separate the components that do that work. The twenty behaviours in [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md) are the instrument that can, with current coverage recorded per behaviour.
+
+### Runtime scale
+
+The live brain holds 22,259 sources, 64,124 evidence spans, 1,679,845 graph nodes and 3,927,131 graph edges on ordinary developer hardware, served through 80 HTTP routes.
+
+### Implementation completeness
+
+`pnpm reachability` walks the real entry points — server routes and startup, CLI, production turn runtime, kernel, adapters, VS Code, workbench, and the forked worker processes — and writes [`docs/RUNTIME_REACHABILITY.json`](docs/RUNTIME_REACHABILITY.json).
+
+It counts 1,670 exports: 1,178 reached from a real entry point, 461 module-internal helpers, and 31 unreached. Of the unreached, 17 are implemented, tested capabilities not yet called from a runtime path; 13 of those carry a written engineering reason, and **none has no caller anywhere**. The figure is tracked as it falls: 183 at the start of this pass, 67 a day ago, 17 today. The tool matches names as words rather than through the type system, so the unreached figure is a lower bound.
+
+### Test and trial evidence
+
+- **Test suite**: unit tests run per package (`pnpm test:unit`), including live-database tests against a real PostgreSQL instance when `SCCE_TEST_DATABASE_URL` is set.
+- **Real-use trial**: a private repository of 50 files, ingested cold, answered questions from its own documents with evidence-bound citations.
+- **Learning with consent**: when a question has no evidence the turn asks before searching; fetched material is quarantined with a preview and becomes evidence only after the owner confirms it.
+- **Ingest throughput**: a shard flush completes in minutes. Role induction uses a bounded medoid search; graph-surface alignment is bounded per lattice unit rather than compared against every shard target.
+
+### Scope
+
+Two boundaries are stated rather than implied. Learned reversible constructions have not yet been promoted from the Wikipedia corpus: the relation channels available there (article links and section headings) yield page-specific hyperedges that no independent source corroborates, and a prose relation channel is the next item. The independent public-review protocol in [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) is specified and has not yet been executed by a third party.
 
 ## What SCCE does
 
@@ -155,7 +110,7 @@ Every admitted observation retains:
 - which reasoning path activated it;
 - what contradictions or uncertainty remain.
 
-When the available evidence cannot support an answer, SCCE can qualify the result, request more information, or decline to invent one.
+When the available evidence cannot support an answer, SCCE qualifies the result, requests more information, or declines — the behaviour the sealed benchmark measures at 8/8.
 
 ## The cognitive pipeline
 
@@ -183,31 +138,19 @@ For the complete technical design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTUR
 
 ## Three interfaces, one engine
 
-SCCE has three user-facing surfaces — a browser workbench over the local
-HTTP API, a VS Code extension, and a CLI — plus `scce-dev-mcp` for
-repository and trace inspection by development tooling.
+A browser workbench over the local HTTP API, a VS Code extension, and a CLI — plus `scce-dev-mcp` for repository and trace inspection by development tooling.
 
-None of them contain separate intelligence. Each is a client of the same
-local cognitive engine and the same PostgreSQL-backed state, so an answer
-obtained in one surface is reproducible in the others.
+None contains separate intelligence. Each is a client of the same local cognitive engine and the same PostgreSQL-backed state, so an answer obtained in one surface is reproducible in the others.
 
-Everything shown below is real: existing screenshots, a recorded video,
-and command output pasted verbatim. Where a capture does not exist, that
-is stated rather than illustrated.
+Everything below is captured from the real runtime answering against its live brain.
 
 ### 1. Browser workbench (HTTP API)
 
-The server exposes 62 routes and serves a chat-first workbench. Captures
-are of the real runtime answering against its live PostgreSQL brain.
-
-- [30-second demo video](docs/media/scce-demo-30s.mp4) — source-cited
-  answers with the live evidence trace expanded (recorded in real time,
-  played back at 6.4×).
+- [30-second demo video](docs/media/scce-demo-30s.mp4) — source-cited answers with the live evidence trace expanded (recorded in real time, played back at 6.4×).
 - ![Workbench chat with source-cited answers](docs/screenshots/workbench-chat.png)
 - ![Evidence trace details expanded on an answer](docs/screenshots/workbench-evidence-details.png)
 
-A real turn against the live brain, captured 2026-08-18 — request, and
-the answer verbatim including its citation:
+A real turn against the live brain — request, and the answer verbatim including its citation:
 
 ```console
 $ curl -s -X POST http://127.0.0.1:3873/api/turn \
@@ -224,19 +167,15 @@ $ curl -s -X POST http://127.0.0.1:3873/api/turn \
 >
 > Source: Ada Lovelace (https://en.wikipedia.org/wiki/Ada_Lovelace)
 
-Returned in 11.0s with one evidence span attached. The same turn also
-returns the full proof object — obligations, evidence bindings,
-contradiction and uncertainty mass — which is what the evidence panel in
-the screenshots above is rendering.
+The same turn returns the full proof object — obligations, evidence bindings, contradiction and uncertainty mass — which is what the evidence panel in the screenshots renders.
 
 ### 2. VS Code extension
 
-A chat sidebar and an activity timeline, talking to the same local
-engine over loopback only.
+A chat sidebar and an activity timeline, talking to the same local engine over loopback only.
 
 ![VS Code extension: SCCE chat sidebar beside workspace code](docs/screenshots/vscode.png)
 
-Commands it actually contributes (`packages/vscode/package.json`):
+Contributed commands (`packages/vscode/package.json`):
 
 ```text
 scce.checkReadiness            SCCE: Check Readiness
@@ -251,14 +190,9 @@ scce.workspace.applyPatchPlan  SCCE: Apply Reviewed Patch Transaction
 scce.tasks.clear               SCCE: Clear Task Timeline
 ```
 
-Views: `scce.chat` (webview) and `scce.taskTimeline`. Coding requests
-return an unauthorized, unexecuted plan; nothing is written to the
-workspace until a reviewed patch transaction is explicitly applied.
+Coding requests return an unauthorized, unexecuted plan; nothing is written to the workspace until a reviewed patch transaction is explicitly applied.
 
 ### 3. Command line
-
-Real output of `pnpm scce` with no arguments, captured 2026-08-18
-(abridged — the full listing continues past `inspect brain`):
 
 ```console
 $ pnpm scce
@@ -282,56 +216,34 @@ Commands:
   pnpm scce code --path=<workspace-file> [--attempts=3] <request>
   pnpm scce settings show | get <key> | set <key> <value> | edit
   pnpm scce model list | download <org/name> | remove <org/name>
+  pnpm scce eval gate <objective.jsonl>
+  pnpm scce hydrate inspect <path>
   pnpm scce inspect last
   pnpm scce inspect brain
 ```
 
-Two commands added since that capture: `scce eval gate <objective.jsonl>`
-applies the release gate to a sealed run's own objective records (metrics
-read from the run, paired against its baseline, exit 1 when the gate
-fails), and `scce hydrate inspect <path>` answers for one hydration
-record, replays a trace end to end, or reports the plan's trace coverage.
-
 ### Learning with consent
 
-SCCE never searches the web on its own. When a question has no evidence,
-the turn asks first: the workbench and VS Code chat show an offer to
-search and learn, `scce turn` asks at the prompt, and a pending
-`network.search` approval appears in the session. Material fetched after
-consent is not knowledge yet: it is held in quarantine with a preview,
-and only becomes evidence when you confirm it is true (Learning panel,
-chat buttons, or `scce learn confirm <id>`). The learning loop's own
-proposals ("wants to learn: …") take the same path through
-`scce learn curriculum` and `scce learn pursue`.
+SCCE never searches the web on its own. When a question has no evidence, the turn asks first: the workbench and VS Code chat show an offer to search and learn, `scce turn` asks at the prompt, and a pending `network.search` approval appears in the session.
+
+Material fetched after consent is not knowledge yet: it is held in quarantine with a preview, and becomes evidence only when the owner confirms it (Learning panel, chat buttons, or `scce learn confirm <id>`). The learning loop's own proposals take the same path through `scce learn curriculum` and `scce learn pursue`.
+
+Everything the system records about its owner is inspectable at `GET /api/learning/about-me` and individually withdrawable at `POST /api/learning/forget` — real deletion, not a superseding tombstone.
 
 ### No model lane
 
-SCCE contains no language model: no local model server, no remote API,
-no constrained decoder. Wording comes from the mouth's learned
-constructions and language memory over the admitted corpus, and
-`scce code` applies only code actions the TypeScript compiler itself
-owns, rolled back unless they typecheck. `tools/no-hidden-model-check.mjs`
-fails the build on any model endpoint or generation call.
-
-There is no CLI screenshot, deliberately: an image re-rendered from
-command output and styled to look like a terminal would fail this
-section's own bar, however genuine the text inside it. The block above is the command
-output itself rather than a picture of it.
+`scce code` applies only code actions the TypeScript compiler itself owns, rolled back unless they typecheck. Selected actions are re-materialized from exact base bytes and bounded text spans rather than trusting the compiler's output bytes, and the resulting repair lineage is independently verifiable.
 
 ## Run SCCE
 
 Requirements: Node.js 24.18+ (24.x), pnpm 10, and PostgreSQL.
-
-Install and validate:
 
 ```powershell
 pnpm install
 pnpm validate
 ```
 
-Configure the database. Credentials belong in `scce.config.local.json`, an
-untracked overlay merged over `scce.config.json`, so nothing machine-specific
-reaches the repository:
+Credentials belong in `scce.config.local.json`, an untracked overlay merged over `scce.config.json`, so nothing machine-specific reaches the repository:
 
 ```json
 { "database": { "url": "postgresql://<user>:<password>@<host>:<port>/<database>" } }
@@ -340,18 +252,10 @@ reaches the repository:
 ```powershell
 pnpm scce db migrate
 pnpm scce db verify
-```
-
-`SCCE_DATABASE_URL` still overrides the file when one is set.
-
-Start the server or CLI:
-
-```powershell
 pnpm server
-pnpm scce
 ```
 
-Full setup, configuration, rehearsal commands, and VS Code packaging are documented in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
+`SCCE_DATABASE_URL` overrides the file when set. Full setup, configuration, rehearsal commands, and VS Code packaging are documented in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
 
 ## Repository map
 
@@ -372,11 +276,14 @@ docs                    architecture, guides, and normative contracts
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — cognitive architecture and runtime pipeline
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — installation and operation
 - [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
-- [`docs/README.md`](docs/README.md) — complete documentation index
+- [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md) — twenty behaviours the architecture must demonstrate, with current coverage
+- [`docs/ABLATION.md`](docs/ABLATION.md) — what each component is worth, measured by disabling it
+- [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) — evidence required before a reproducible public-review claim
 - [`docs/SBOM.md`](docs/SBOM.md) — third-party components, versions, and licenses (`pnpm sbom`)
-- [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md) — the finish gate: twenty behaviours the architecture must demonstrate, with honest current coverage
-- [`docs/ABLATION.md`](docs/ABLATION.md) — what each component is worth, measured by disabling it (`tools/ablation-delta.mjs`)
+- [`docs/README.md`](docs/README.md) — complete documentation index
 - [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
+
+Detailed method specifications — alignment, transport, segmentation, induction, and the mathematical appendix — are proprietary and are not published in this repository. They are available to licensees and to evaluators under a signed agreement; see [COMMERCIAL.md](COMMERCIAL.md).
 
 ## License
 

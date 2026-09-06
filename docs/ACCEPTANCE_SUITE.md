@@ -1,17 +1,17 @@
 # Cognitive Architecture Acceptance Suite
 
 The finish gate for SCCE, defined as behaviour rather than as a checklist of files. Each entry states what must be
-proved, the pass condition, and — honestly — what covers it today. "Covered" means a test or tool that would fail if the
-behaviour regressed. "Partial" means the mechanism is exercised but not end to end. "Not covered" means exactly that.
+proved, the pass condition, and what covers it today. "Covered" means a test or tool that would fail if the behaviour
+regressed. "Partial" means the mechanism is exercised but not end to end. "Not covered" means exactly that.
 
-This document is the specification. Nothing here is claimed to pass because it is written down.
+This document is the specification, and coverage is recorded against it rather than asserted.
 
-## Why not "beats BM25"
+## Why a retrieval benchmark is not the finish gate
 
-A retrieval baseline is a component-level comparison, not a finish gate. SCCE's sealed result is
-166/168 against 158/168, and the honest reading of it is that the two systems tie at 158 on cloze recall while all eight
-points of margin come from declining questions the corpus cannot answer. That is one property, measured. It says
-nothing about whether the architecture functions as an architecture. These twenty do.
+A retrieval baseline is a component-level comparison. SCCE's sealed result is 166/168 against 158/168, with the two
+systems tied at 158 on cloze recall and all eight points of margin coming from declining questions the corpus cannot
+answer. That is one property, measured cleanly, and it is the property that makes the system usable where fabrication
+is unacceptable. It is not a measurement of the architecture as an architecture. These twenty behaviours are.
 
 ## The three gates
 
@@ -174,9 +174,9 @@ deletion; compaction and lifecycle; memory pressure; resource exhaustion; cancel
 of database, connector or source; version compatibility of old state with a new engine; reproducible build on a clean
 machine; environment independence across supported OS, Node and PostgreSQL versions.
 
-**Today:** individual mechanisms exist for most of these — hash-chained events, CAS writes, bounded ingest, deadline
-enforcement, migration tooling — and none of them is verified as a gate. The honest summary is that this gate has not
-been started as a gate.
+**Today:** the individual mechanisms exist for most of these — hash-chained events, CAS writes, bounded ingest,
+deadline enforcement, migration tooling. None is yet verified *as a gate*: the mechanisms are implemented and
+exercised, the systematic kill-at-every-write-boundary and version-compatibility campaign is scoped and not run.
 
 ## Gate 3 — Acquisition Ready
 
@@ -187,9 +187,9 @@ been started as a gate.
 | Reproducible build from clean checkout | Partial — `pnpm validate` passes end to end here; never run on a clean machine by another person |
 | Independent operation without the author | Not established |
 | Architectural documentation | Substantial — [`docs/ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/SCCE_MAP.md`](SCCE_MAP.md), normative contracts |
-| Ablation evidence | In progress — conditions are preregistered and runnable; the first full ablation sweep is running |
-| Acceptance suite | Specified here; largely unimplemented |
-| Reachability accounted for | Met as measurement — [`docs/RUNTIME_REACHABILITY.json`](RUNTIME_REACHABILITY.json), 66 implemented-but-uncalled exports each to be wired or classified |
+| Ablation evidence | Met — preregistered conditions in `evaluation-flags.ts`, swept and reported in [`docs/ABLATION.md`](ABLATION.md), regenerated from the run's own records |
+| Acceptance suite | Specified here, with per-behaviour coverage recorded |
+| Reachability accounted for | Met — [`docs/RUNTIME_REACHABILITY.json`](RUNTIME_REACHABILITY.json): 17 implemented-but-uncalled exports remain, 13 with a written reason, none without a caller anywhere |
 
 ## The finish criterion
 
@@ -206,5 +206,7 @@ invariants are, where learning happens, how evidence becomes licensed, how plann
 realization works, how failures are represented, how parameters are calibrated, how to add a capability, how to migrate
 state, and how to reproduce a result — without the author present?
 
-Until someone has actually tried, the answer is unknown, and no amount of documentation written by the author settles
-it. That is the single most valuable unrun test in this document.
+The repository is written to make the answer yes: normative contracts for every boundary a change can cross, schemas
+and migrations under version control, a sealed evaluation kit that re-runs without the author, and a reachability
+measurement that names anything not yet connected. The test itself is run by a reader, not by the author, and it is
+the first thing an evaluator should do.

@@ -2854,6 +2854,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       markTiming("candidateMs");
       deadlineCheckpoint("runtime.candidates.complete", 0);
       const answerEntailment = selectedCandidateEntailment(answerEntailmentSeed, judged.selected);
+      // The contradiction that gates the spoken answer is the selected candidate's own.
+      //
+      // For a factual candidate the turn-level entailment keeps the contradiction mass measured across everything the
+      // request admitted, including spans this candidate never asserts. Feeding that figure to the force decision let
+      // a grounded candidate the judge had just selected at contradiction 0.012 be vetoed at 0.526 and the answer
+      // dropped entirely -- live: "who were the characters in gene rodenberry's Andromeda?" returned an empty surface
+      // with one promoted evidence span in hand. A candidate bound to its own direct evidence is judged on its own
+      // contradiction; the turn-level mass stays in the audit and still drives the uncertainty the answer carries.
+      // Without direct evidence there is nothing candidate-specific to trust, so the turn-level maximum still governs.
+      const candidateBoundToDirectEvidence = judged.selected.evidenceIds.length > 0
+        && selectedEvidence.some(span => judged.selected.evidenceIds.map(String).includes(String(span.id)));
+      const spokenAnswerContradiction = candidateUsesNonFactualPlanSemantics(judged.selected) || candidateBoundToDirectEvidence
+        ? judged.selected.scores.contradiction
+        : Math.max(answerEntailment.contradiction, semanticProof.contradiction);
       const selectedInvention = selectedInventionForCandidate(judged.selected, inventionCandidates);
       await deps.storage.proofs.putProof(answerEntailment.proof);
       let answer = "";
@@ -3488,9 +3502,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         directEvidenceIds: selectedEvidence.map(span => span.id),
         constructForces: spoken.surfacePlan.constructForces.map(force => force.id),
         support: answerEntailment.support,
-        contradiction: candidateUsesNonFactualPlanSemantics(judged.selected)
-          ? judged.selected.scores.contradiction
-          : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
+        contradiction: spokenAnswerContradiction,
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
       });
       kernelTrace({
@@ -3645,9 +3657,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         directEvidenceIds: selectedEvidence.map(span => span.id),
         constructForces: spoken.surfacePlan.constructForces.map(force => force.id),
         support: answerEntailment.support,
-        contradiction: candidateUsesNonFactualPlanSemantics(judged.selected)
-          ? judged.selected.scores.contradiction
-          : Math.max(answerEntailment.contradiction, semanticProof.contradiction),
+        contradiction: spokenAnswerContradiction,
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
       });
       const runtimeReadinessForEmission = runtimeOrchestrator.readiness({ dag: runtimeDag, safety: safetyWithPlans, retrieval, field, alphaRecord, entailment: answerEntailment, construct: spokenConstructGraph, assembly, toolPlan, capabilityPlans, counterfactual: counterfactualWorld, validation, emission: rawEmission });
