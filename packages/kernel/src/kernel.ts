@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createActionGraphBuilder } from "./action-graph.js";
+import { alphaTraceMatrixSnapshot } from "./alpha-field-persistence.js";
+import type { AlphaTrace } from "./types.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
 import {
   createAnswerRevisionCoordinator
@@ -453,6 +455,39 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     },
     async discoverCausalStructure(request) {
       return causalAnalysisRuntime.discover(request);
+    },
+    async inspectAlphaTraces(query = {}) {
+      // The replay-debugging reader the opt-in alpha persistence was written for.
+      //
+      // `persistAlphaFlowEnabled` writes multi-MB alpha_traces and ppf_cache rows so a turn's field can be
+      // reconstructed later, and the note at that call site records that nothing read them back: listAlphaTraces
+      // and alphaTraceMatrixSnapshot both existed with no caller, which made the persistence a log nobody could
+      // open. This is the other half. Bounded by the caller's own limit, and the matrix is named rather than
+      // guessed, so a reader asks for the adjacency, Laplacian or normalized Laplacian it actually wants.
+      const limit = Math.max(1, Math.min(100, Math.floor(query.limit ?? 20)));
+      const kind = query.kind ?? "adjacency";
+      const records = await deps.storage.flowCache.listAlphaTraces({
+        ...(query.graphHash ? { graphHash: query.graphHash } : {}),
+        limit
+      });
+      return {
+        schema: "scce.alpha_trace_inspection.v1" as const,
+        kind,
+        traces: records.map(record => {
+          const trace = record.traceJson as unknown as AlphaTrace;
+          const matrix = trace && typeof trace === "object" && "adjacency" in trace
+            ? alphaTraceMatrixSnapshot(trace, kind)
+            : undefined;
+          return {
+            id: record.id,
+            graphHash: record.graphHash,
+            alpha: record.alpha,
+            createdAt: record.createdAt,
+            // Absent, never fabricated, when a persisted v0 trace does not carry the matrices.
+            ...(matrix ? { matrix } : {})
+          };
+        })
+      };
     },
     async turn(input: OwnerInput): Promise<TurnResult> {
       return productionTurnRuntime.turn(input);
