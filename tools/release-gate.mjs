@@ -129,7 +129,11 @@ const defaultPromptCases = [
     id: "live.andromeda.characters",
     prompt: "who were the characters in gene rodenberry's Andromeda?",
     minEvidence: 1,
-    maxChars: 280,
+    // 280 was written when this question returned the article's one-sentence lead, which does not name a character.
+    // A correct answer is the cast list, and four entries with actor and role do not fit in 280 characters. The
+    // bound is raised to the same 520 the other list-shaped cases use rather than kept at a value only a wrong
+    // answer could satisfy.
+    maxChars: 520,
     structural: {
       requireSelectedEvidenceBound: true,
       requireMouthRealization: true,
