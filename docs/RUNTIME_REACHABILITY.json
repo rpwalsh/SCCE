@@ -1,15 +1,15 @@
 {
- "generatedAt": "2026-09-06T07:13:40.806Z",
+ "generatedAt": "2026-09-06T07:29:03.228Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1660,
-  "reached": 1127,
-  "internalHelpersOnly": 453,
-  "orphans": 80,
-  "declaredConstants": 7,
-  "compatibilityAliases": 9,
+  "exports": 1665,
+  "reached": 1136,
+  "internalHelpersOnly": 454,
+  "orphans": 75,
+  "declaredConstants": 6,
+  "compatibilityAliases": 7,
   "legacyMigration": 2,
-  "implementedButUncalled": 62
+  "implementedButUncalled": 60
  },
  "orphans": [
   {
@@ -74,13 +74,6 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
-  },
-  {
-   "name": "assistantForceClass",
-   "file": "packages/kernel/src/assistant-force.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true
   },
   {
    "name": "isBrainLifecycleState",
@@ -197,13 +190,6 @@
   {
    "name": "deriveDiscourseTurnObservationIdV2",
    "file": "packages/kernel/src/discourse-state.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "proofPathSemiring",
-   "file": "packages/kernel/src/equation-operators.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
@@ -391,13 +377,6 @@
    "alias": false
   },
   {
-   "name": "normalizeRawGraphEdgeToCognitiveEdge",
-   "file": "packages/kernel/src/question-cognitive-edge.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true
-  },
-  {
    "name": "scoreRelationPotential",
    "file": "packages/kernel/src/relation-potential.ts",
    "caller": "",
@@ -482,15 +461,8 @@
    "alias": false
   },
   {
-   "name": "ALLEN_RELATION_INVERSE",
-   "file": "packages/kernel/src/temporal-interval-algebra.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "supersedeTimelineFact",
-   "file": "packages/kernel/src/temporal-interval-algebra.ts",
+   "name": "yearsInText",
+   "file": "packages/kernel/src/temporal-subject-comparison.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
@@ -505,13 +477,6 @@
   {
    "name": "validateTreeDecomposition",
    "file": "packages/kernel/src/tree-decomposition.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false
-  },
-  {
-   "name": "evidenceForceFromProofForceClass",
-   "file": "packages/kernel/src/truth-contract.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false
