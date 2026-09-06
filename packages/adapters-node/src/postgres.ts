@@ -125,6 +125,7 @@ import {
   type TaskResumptionSnapshotRecord,
   type TaskResumptionSnapshotStore,
   type DocumentGenerationSessionRecord,
+  isBrainLifecycleState,
   type DocumentGenerationSessionStore,
   type TranslationSeed,
   type TranslationSeedStore,
@@ -5244,6 +5245,13 @@ interface BrainLifecycleRow {
 }
 
 function rowToBrainLifecycle(row: BrainLifecycleRow): BrainLifecycleRecord {
+  // The column's CHECK constraint and this type agree today, and nothing keeps them agreeing: a state added to the
+  // enum without a migration, or a row written by an older build, arrives here as a string the rest of the runtime
+  // will treat as a lifecycle state and switch on. `isBrainLifecycleState` is the guard for exactly that and had no
+  // caller, so the one place untrusted text becomes a typed lifecycle state was the one place not checking.
+  if (!isBrainLifecycleState(row.state)) {
+    throw new Error(`brain_import_lifecycle row ${row.import_run_id} carries unknown state ${JSON.stringify(row.state)}`);
+  }
   return {
     importRunId: row.import_run_id,
     brainVersion: row.brain_version,
