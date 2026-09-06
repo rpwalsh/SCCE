@@ -3,6 +3,7 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import {
+  canonicalStringify,
   createClock,
   createEventFactory,
   createEvidenceExtractor,
@@ -479,7 +480,9 @@ export class WikipediaV3Ingestor {
       stoppedByOwner: input.result.stoppedByOwner,
       stopReason: input.result.stopReason ?? null
     };
-    const brainVersion = `wikipedia:${this.hasher.digestHex(JSON.stringify(versionSeed)).slice(0, 32)}`;
+    // Canonical, not `JSON.stringify`: the brain's identity must not depend on the order this object's keys happened
+    // to be written in, so two runs that assemble the same counts in a different order hash to the same brain.
+    const brainVersion = `wikipedia:${this.hasher.digestHex(canonicalStringify(versionSeed)).slice(0, 32)}`;
     const importRunId = String(this.ids.semanticId("wiki_import_run", versionSeed));
     const base = {
       importRunId,
@@ -487,7 +490,7 @@ export class WikipediaV3Ingestor {
       rootPath: input.corpus.dumpPath,
       sourcePath: input.corpus.dumpPath,
       fileHash: undefined,
-      shardHash: this.hasher.digestHex(JSON.stringify(versionSeed)),
+      shardHash: this.hasher.digestHex(canonicalStringify(versionSeed)),
       sourceVersionId: undefined,
       evidenceIds: [],
       nodeIds: [],
