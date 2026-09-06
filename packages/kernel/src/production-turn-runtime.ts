@@ -3496,26 +3496,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             }
           });
           spoken = deterministic;
-        } else if (learnedNotAnExcerpt
-          && requestedAuthority === "factual"
-          && !isContiguousExcerpt(sourceBound)
-          && replaysRequestVerbatim(learnedSurface, input.text)) {
-          // A surface that quotes no source and replays the request instead is the request wearing a citation.
-          //
-          // Measured on the sealed set: "...on the analytical engine Lovelace translated an article by the military
-          // engineer ____ about Analytic" -- two sentences welded together, carrying a long verbatim run of the
-          // prompt including its own blank, behind a citation to a document that says no such thing. Both conjuncts
-          // are needed: a composed factual answer that draws on more than one span is legitimate and is not an
-          // excerpt of any single one (a temporal counterexample pairs two sources by design), and a cloze answer
-          // legitimately restates most of the request -- but then it IS an excerpt, which the first conjunct
-          // already allows. Only a surface that is neither is withheld.
-          kernelTrace({
-            stage: "mouth.request_replay_withheld",
-            label: "kernel.turn",
-            counts: { learnedChars: learnedSurface.length, sourceBoundChars: sourceBound.length },
-            support: { selectedCandidateId: judged.selected.id, reason: "surface-replays-request-and-quotes-no-source" }
-          });
-          spoken = { ...spoken, text: "" };
         }
       }
       // A candidate that realizes nothing must not outrank one that realizes something.
@@ -4543,16 +4523,3 @@ function trimToSentenceBoundary(text: string, limit: number): string {
   return kept;
 }
 
-/** How long a run of the request has to reappear verbatim in a surface before the surface is replaying it rather than answering. */
-const REQUEST_REPLAY_RUN_CHARS = 48;
-
-/** Whether `surface` contains any contiguous run of `requestText` at least REQUEST_REPLAY_RUN_CHARS long. Pure. */
-function replaysRequestVerbatim(surface: string, requestText: string): boolean {
-  const tidyRequest = tidySurfaceText(requestText);
-  const tidySurface = tidySurfaceText(surface);
-  if (tidyRequest.length < REQUEST_REPLAY_RUN_CHARS || tidySurface.length < REQUEST_REPLAY_RUN_CHARS) return false;
-  for (let start = 0; start + REQUEST_REPLAY_RUN_CHARS <= tidyRequest.length; start += 8) {
-    if (tidySurface.includes(tidyRequest.slice(start, start + REQUEST_REPLAY_RUN_CHARS))) return true;
-  }
-  return false;
-}
