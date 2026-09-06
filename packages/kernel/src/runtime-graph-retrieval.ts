@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { codeRequestRecognized, codeRequestSignal } from "./code-request.js";
-import { currentEvaluationCacheOwner } from "./evaluation-trace.js";
+import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
@@ -283,6 +283,8 @@ export function createRuntimeGraphRetrieval(options: {
     allowSemanticFrameEvidence?: boolean;
     sourceAnchoringRequired?: boolean;
     residentOnly?: boolean;
+    /** This turn's evaluation trace, so a slice served from cache records which condition owns the entry. */
+    evaluation?: { trace: EvaluationTraceRecorder };
   } = {}) {
     const queryPreparationStarted = Date.now();
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
@@ -323,6 +325,19 @@ export function createRuntimeGraphRetrieval(options: {
       ? `${cacheOwner.cacheNamespace}:${cacheOwner.conditionId}:${cacheOwner.configHash}:${logicalCacheKey}`
       : logicalCacheKey;
     const exact = cachedGraphSlice(cacheKey);
+    // The sealed trace verifier checks every cacheRead for CACHE_OWNER_CONDITION_MISMATCH -- a cache entry produced
+    // by another condition -- and the runtime never emitted one, so the check could not fire and the slice cache
+    // shared entries across conditions undetected for as long as it did. `cacheRead` and `currentEvaluationCacheOwner`
+    // both existed with no caller; together they are the evidence that verifier was written to read.
+    if (cacheOwner && options.evaluation) {
+      options.evaluation.trace.cacheRead({
+        component: "graph",
+        boundary: "graph.slice-cache",
+        cacheKey,
+        owner: cacheOwner,
+        hit: Boolean(exact)
+      });
+    }
     if (exact) return exact;
     if (sourceAnchoringRequired) {
       if (residentOnly) {

@@ -1,20 +1,20 @@
 {
- "generatedAt": "2026-09-06T08:56:14.022Z",
+ "generatedAt": "2026-09-06T09:01:55.413Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1166,
+  "reached": 1165,
   "internalHelpersOnly": 454,
-  "orphans": 45,
+  "orphans": 46,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 21,
-  "implementedButUncalled": 28,
-  "ofWhichCoveredByTestsOnly": 21,
+  "testOnlyHelpers": 22,
+  "implementedButUncalled": 29,
+  "ofWhichCoveredByTestsOnly": 22,
   "ofWhichNoCallerAnywhere": 0,
-  "ofWhichDeliberatelyUnwired": 12
+  "ofWhichDeliberatelyUnwired": 13
  },
  "orphans": [
   {
@@ -413,6 +413,16 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "workingMemoryEntriesForTask",
+   "file": "packages/kernel/src/working-memory.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "deliberatelyUnwired": "Filters working memory by taskId, and the two id spaces do not meet. A turn writes entries under a turn-scoped id (task.turn.<episodeId>.candidate_selection) while the task resumption snapshot carries the program decomposition graph, whose node ids come from the program planner. Scoping the snapshot by that graph was tried and dropped every entry, emptying the summary; the caller already passes exactly the working memory it means to summarise.",
    "hostContract": false,
    "testOnly": true
   },
