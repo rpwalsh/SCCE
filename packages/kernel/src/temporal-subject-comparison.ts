@@ -55,16 +55,12 @@ export interface SubjectTemporalComparison {
   sharedYears: readonly number[];
 }
 
-/** Every year in a plausible range, in order of appearance. Digits only, so no writing system is assumed. Pure. */
-export function yearsInText(text: string): number[] {
-  const years: number[] = [];
-  for (const match of text.matchAll(/\b(\d{3,4})\b/gu)) {
-    const year = Number(match[1]);
-    if (!Number.isFinite(year)) continue;
-    if (year < PLAUSIBLE_YEAR_RANGE.min || year > PLAUSIBLE_YEAR_RANGE.max) continue;
-    years.push(year);
-  }
-  return years;
+/** A run of digits read as a year, or undefined when it is out of range and so is a quantity or an identifier. Pure. */
+function plausibleYear(raw: string | undefined): number | undefined {
+  const year = Number(raw);
+  if (!Number.isFinite(year)) return undefined;
+  if (year < PLAUSIBLE_YEAR_RANGE.min || year > PLAUSIBLE_YEAR_RANGE.max) return undefined;
+  return year;
 }
 
 /** Sentences split on terminal punctuation shared across writing systems rather than on any language's rules. */
@@ -151,9 +147,8 @@ function yearsNearSubject(sentence: string, subjectUnits: readonly string[]): nu
   if (!mentions.length) return [];
   const years: number[] = [];
   for (const match of sentence.matchAll(/\b(\d{3,4})\b/gu)) {
-    const year = Number(match[1]);
-    if (!Number.isFinite(year)) continue;
-    if (year < PLAUSIBLE_YEAR_RANGE.min || year > PLAUSIBLE_YEAR_RANGE.max) continue;
+    const year = plausibleYear(match[1]);
+    if (year === undefined) continue;
     const at = match.index ?? 0;
     const distance = Math.min(...mentions.map(mention => Math.abs(mention - at)));
     if (distance <= SUBJECT_YEAR_PROXIMITY_CHARS) years.push(year);
