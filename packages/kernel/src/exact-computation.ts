@@ -138,6 +138,12 @@ export function exactQuantitiesEqual(left: ExactQuantity, right: ExactQuantity):
  */
 export function verifyExactResultMatchesClaim(quantity: ExactQuantity, claimedText: string): { matches: boolean; expected: string } {
   const expected = formatExactQuantity(quantity);
+  // The gate compares the claim against this rendering, so the rendering has to be trustworthy. Parsing it back and
+  // requiring the same quantity checks that `formatExactQuantity` and the parser still agree; if they ever diverge,
+  // every claim would be measured against a string that no longer means the number it came from. The string match
+  // below is unchanged and still required -- this only refuses when the expected text itself cannot be trusted.
+  const roundTrip = parseExactExpression(expected);
+  if (roundTrip && !exactQuantitiesEqual(roundTrip.value, quantity)) return { matches: false, expected };
   return { matches: claimedText.trim() === expected, expected };
 }
 

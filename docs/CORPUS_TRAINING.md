@@ -77,7 +77,7 @@ pnpm scce --config scce.corpus-dev.config.json ingest wiki data/wiki/enwiki-late
 
 ## Mouth Hydration
 
-The kernel no longer hydrates only `scce2` and `wikipedia`. It builds a bounded hydration plan from the corpus registry and asks the language-memory store for each enabled language-eligible source system. Per-corpus limits keep laptop memory bounded, and the runtime language-memory compiler still caps usable models internally.
+The kernel builds a bounded hydration plan from the corpus registry and asks the language-memory store for each enabled language-eligible source system. Per-corpus limits keep laptop memory bounded, and the runtime language-memory compiler still caps usable models internally.
 
 ## Activation and evidence limits
 

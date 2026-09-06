@@ -39,7 +39,8 @@ source records
 No layer should convert raw traces, IDs, snippets, n-grams, or telemetry into final spoken text by itself.
 
 The exported `createSourceOnlyScceRuntime` is a bounded, in-memory source-only runtime
-for fixture and diagnostic work. The `createScceRuntime` alias was removed on 2026-09-05 so the source-only runtime cannot be mistaken for the production one (`createNodeRuntime(config)`, `@scce/adapters-node`). It is marked
+for fixture and diagnostic work. It is the only name for it, so it cannot be mistaken for the production runtime,
+which is `createNodeRuntime(config)` from `@scce/adapters-node`. It is marked
 as simulation/non-hydrated and does not replace the PostgreSQL-backed production lane.
 Both it and `kernel.turn` project request authority through the shared
 `projectRequestAuthority` function after deriving the source-neutral requirement field.
@@ -317,7 +318,8 @@ Key adapter/runtime files:
 - `packages/server/src/index.ts`
 - `packages/vscode/src/extension.ts`
 
-PostgreSQL schema version 12 is current. Its brain lifecycle contract permits
+PostgreSQL schema version 25 is current (`POSTGRES_SCHEMA_VERSION`, `packages/kernel/src/storage.ts`).
+Its brain lifecycle contract permits
 `CREATED`, `IMPORTING`, `VALIDATING`, `READY`, `ACTIVE`, `STOPPED`, `FAILED`,
 `QUARANTINED`, and `INCOMPATIBLE`; activation is READY-only and transactional, and a
 partial unique index enforces at most one ACTIVE lifecycle row.
