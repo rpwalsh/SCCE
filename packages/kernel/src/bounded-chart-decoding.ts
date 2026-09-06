@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { computeTreeDecomposition, type DecompositionGraph, type TreeDecompositionBag } from "./tree-decomposition.js";
-import { emptyDerivationChart, insertDerivation, combineCells, chartKeyId, type ChartKey, type DerivationChart } from "./derivation-chart.js";
+import { computeTreeDecomposition, validateTreeDecomposition, type DecompositionGraph, type TreeDecompositionBag } from "./tree-decomposition.js";
+import { emptyDerivationChart, insertDerivation, combineCells, chartCell, chartKeyId, type ChartKey, type DerivationChart } from "./derivation-chart.js";
 import type { ProofLicenseCarrier, ProofLicenseSemiring } from "./proof-license-semiring.js";
 
 /**
@@ -146,7 +146,9 @@ function findConnectingEdge(left: ChartKey, right: ChartKey, edges: readonly Bou
 }
 
 function chartCellExists<S>(chart: DerivationChart<S>, key: ChartKey): boolean {
-  return chart.cells.has(chartKeyId(key));
+  // Through the chart's own accessor: reaching into `cells` duplicates how a key becomes an id, and the two copies
+  // only have to disagree once for a cell that exists to read as missing.
+  return chartCell(chart, key) !== undefined;
 }
 
 /**
@@ -170,6 +172,14 @@ function decodeWithinBudget<S>(
 ): { chart: DerivationChart<S>; width: number } {
   const graph = buildDecompositionGraph(atomIds, edges);
   const decomposition = computeTreeDecomposition(graph);
+  // A tree decomposition licenses this decode: every edge must sit inside some bag and every node's bags must be
+  // connected, or bag-local results get combined as if they were independent when they are not. The checker for
+  // exactly those properties existed and nothing called it, so a malformed decomposition would have produced a
+  // confidently wrong proof licence rather than an error.
+  const decompositionCheck = validateTreeDecomposition(graph, decomposition);
+  if (!decompositionCheck.valid) {
+    throw new Error(`tree decomposition is invalid for this proof graph: ${decompositionCheck.issues.slice(0, 4).join("; ")}`);
+  }
   let currentChart = chart;
   const children = childrenOf(decomposition.bags);
   const bagResultKey = new Map<string, ChartKey>();

@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T08:14:46.133Z",
+ "generatedAt": "2026-09-06T08:18:43.968Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1156,
+  "reached": 1159,
   "internalHelpersOnly": 451,
-  "orphans": 58,
+  "orphans": 55,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 33,
-  "implementedButUncalled": 41,
-  "ofWhichCoveredByTestsOnly": 33,
+  "testOnlyHelpers": 30,
+  "implementedButUncalled": 38,
+  "ofWhichCoveredByTestsOnly": 30,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 8
  },
@@ -113,15 +113,6 @@
   {
    "name": "buildCognitiveSubstrate",
    "file": "packages/kernel/src/cognitive-substrate.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "chartCell",
-   "file": "packages/kernel/src/derivation-chart.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
@@ -421,15 +412,6 @@
    "testOnly": true
   },
   {
-   "name": "validateRepositorySyntaxNodes",
-   "file": "packages/kernel/src/repo-syntax-graph.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "evaluateCalibration",
    "file": "packages/kernel/src/scoring/evaluation.ts",
    "caller": "",
@@ -487,15 +469,6 @@
   {
    "name": "createCorrectionEngine",
    "file": "packages/kernel/src/translation-correction-engine.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "validateTreeDecomposition",
-   "file": "packages/kernel/src/tree-decomposition.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,

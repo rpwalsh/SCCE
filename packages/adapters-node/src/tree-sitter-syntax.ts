@@ -29,6 +29,7 @@ import type {
   RepositorySyntaxNodeKind,
   RepositorySyntaxParseResult
 } from "@scce/kernel";
+import { validateRepositorySyntaxNodes } from "@scce/kernel";
 
 export type TreeSitterLanguageId = "typescript" | "tsx" | "javascript" | "python";
 
@@ -237,6 +238,18 @@ export async function parseRepositorySyntax(input: {
   const errors: RepositorySyntaxErrorSpan[] = [];
   walk(tree.rootNode, input.fileId, input.languageId, undefined, nodes, errors);
 
+  // Structural problems a grammar integration can produce and nothing downstream would notice: a node ending before
+  // it starts, or naming a parent that is not in the set. `validateRepositorySyntaxNodes` checks exactly those and
+  // had no caller, so a malformed tree became repo cognition -- symbol ranges, call graphs, patch targets -- unchallenged.
+  //
+  // Thrown rather than folded into `errors`, which means something else: that field is parser-recovery spans, the
+  // grammar's report about malformed source, and is kept because malformed code is still evidence. A node set that
+  // contradicts itself is not evidence about the file, it is a defect in this walk, and a caller cannot use it for
+  // a symbol range or a patch target whatever it does with the error list.
+  const structuralProblems = validateRepositorySyntaxNodes(nodes);
+  if (structuralProblems.length) {
+    throw new Error(`syntax parse produced a structurally invalid node set for ${input.fileId}: ${structuralProblems.slice(0, 4).join("; ")}`);
+  }
   const result: RepositorySyntaxParseResult = {
     fileId: input.fileId,
     languageId: input.languageId,
@@ -244,7 +257,7 @@ export async function parseRepositorySyntax(input: {
     grammarId: GRAMMAR_WASM_MODULE_SPECIFIER[input.languageId],
     grammarVersion,
     nodes,
-    errors
+      errors
   };
   parseResultCache.set(key, result);
   return result;
