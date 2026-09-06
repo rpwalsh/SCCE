@@ -1897,7 +1897,7 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
       representation_json: node.representation,
       alpha: node.alpha,
       evidence_ids_json: node.evidenceIds,
-      features_json: node.features,
+      features_json: ginIndexableFeatures(node.features),
       created_at_ms: node.createdAt,
       updated_at_ms: node.updatedAt,
       metadata_json: node.metadata,
@@ -5102,6 +5102,31 @@ function sourceTrustFromJson(value: JsonValue): SourceTrust {
     accessScope: text("accessScope"),
     licenseStatus: text("licenseStatus")
   };
+}
+
+/**
+ * Feature sets bounded to what the GIN index can actually hold.
+ *
+ * Postgres refuses an index row over ~2712 bytes, and the refusal fails the whole insert: a node whose feature set
+ * grew past it is not written at all, and neither is anything batched with it. Found by re-projecting the corpus,
+ * where a single node reached 3304 bytes and stopped a 400-source backfill dead -- which is a plausible reason
+ * those sources carried evidence and no graph nodes in the first place. Truncation loses retrieval signal on one
+ * over-featured node; refusing the write loses the node, its edges and its whole batch.
+ *
+ * Deterministic and stable: original order is preserved, so the same node yields the same kept prefix every time.
+ */
+const GIN_INDEXABLE_FEATURE_BYTES = 2000;
+function ginIndexableFeatures(features: readonly string[]): string[] {
+  const kept: string[] = [];
+  let bytes = 0;
+  for (const feature of features) {
+    const size = Buffer.byteLength(feature, "utf8") + 1;
+    if (size > GIN_INDEXABLE_FEATURE_BYTES) continue;
+    if (bytes + size > GIN_INDEXABLE_FEATURE_BYTES) break;
+    kept.push(feature);
+    bytes += size;
+  }
+  return kept;
 }
 
 /** A source titled with the subject the request names, ranked ahead of one that only mentions it. An empty unit
