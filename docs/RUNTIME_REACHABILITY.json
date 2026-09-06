@@ -1,19 +1,19 @@
 {
- "generatedAt": "2026-09-06T08:09:23.488Z",
+ "generatedAt": "2026-09-06T08:12:18.246Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1154,
+  "reached": 1156,
   "internalHelpersOnly": 451,
-  "orphans": 60,
+  "orphans": 58,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 39,
-  "implementedButUncalled": 42,
+  "implementedButUncalled": 40,
   "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 3,
+  "ofWhichNoCallerAnywhere": 1,
   "ofWhichDeliberatelyUnwired": 5
  },
  "orphans": [
@@ -272,15 +272,6 @@
    "testOnly": true
   },
   {
-   "name": "registerMessageBundle",
-   "file": "packages/kernel/src/localization.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "addMatrix",
    "file": "packages/kernel/src/math.ts",
    "caller": "",
@@ -534,15 +525,6 @@
    "alias": false,
    "hostContract": false,
    "testOnly": true
-  },
-  {
-   "name": "createWorkspaceCoreFusion",
-   "file": "packages/kernel/src/workspace-core-fusion.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
   },
   {
    "name": "dialoguePersistenceTailsSizeForTest",

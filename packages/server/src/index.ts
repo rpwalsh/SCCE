@@ -3,11 +3,26 @@
 import http from "node:http";
 import { createNodeRuntime, readScceRuntimeConfig } from "@scce/adapters-node";
 import { drainDeferredDialoguePersistence, handleRequest, serverPatchValidationRuntime } from "./routes.js";
-import { createTrace, traceEvent } from "@scce/kernel";
+import { registerMessageBundle, createTrace, traceEvent } from "@scce/kernel";
 import { createRuntimeStartupReadiness, startRuntimeSurface } from "./startup.js";
 import { startDreamCycle } from "./dream-cycle.js";
 
+/**
+ * Operator-facing surface messages, registered by the host rather than carried in the kernel.
+ *
+ * `registerMessageBundle` is how a host supplies these and it had no caller, so every bundle stayed empty and
+ * `formatSurfaceMessage` resolved nothing: the three learning-need keys the kernel emits produced empty strings on
+ * every turn. The kernel deliberately ships no wording of its own -- these are operator prose, not linguistic
+ * knowledge the cognition uses -- which is exactly why the registry exists and why the text lives here.
+ */
+const OPERATOR_SURFACE_MESSAGES = {
+  "learning.need.evidence": "Needs more supporting evidence before this can be answered from the corpus: {text}",
+  "learning.need.contradiction": "Sources disagree on this claim and the conflict is unresolved: {claim}",
+  "learning.need.language": "Needs language material for {script} before this surface can be produced: {reason}"
+} as const;
+
 async function main(): Promise<void> {
+  registerMessageBundle("en", OPERATOR_SURFACE_MESSAGES);
   const trace = createTrace('server.start');
   const configPath = parseConfigPath(process.argv.slice(2)) ?? "scce.config.json";
   const config = await readScceRuntimeConfig(configPath);

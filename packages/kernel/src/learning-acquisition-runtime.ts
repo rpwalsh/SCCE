@@ -102,16 +102,20 @@ export function learningNeedsFor(
   evidence: EvidenceSpan[],
   locale?: string
 ): string[] {
+  // An unresolved message key yields an empty string, and pushing that produced needs with no text: a caller
+  // counting them saw work to do and had nothing to show for it. Only messages that actually resolved are needs.
   const needs: string[] = [];
   if (evidence.length < 2 || entailment.faithfulnessLcb < 0.2) {
-    needs.push(formatSurfaceMessage("learning.need.evidence", { text: text.slice(0, 180) }, locale));
+    const need = formatSurfaceMessage("learning.need.evidence", { text: text.slice(0, 180) }, locale);
+    if (need) needs.push(need);
   }
   if (entailment.contradiction > 0.2) {
-    needs.push(formatSurfaceMessage(
+    const need = formatSurfaceMessage(
       "learning.need.contradiction",
       { claim: entailment.claim.normalized.slice(0, 180) },
       locale
-    ));
+    );
+    if (need) needs.push(need);
   }
   return needs;
 }
