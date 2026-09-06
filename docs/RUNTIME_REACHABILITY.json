@@ -1,15 +1,15 @@
 {
- "generatedAt": "2026-09-06T10:21:56.370Z",
+ "generatedAt": "2026-09-06T13:59:07.787Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1670,
+  "exports": 1671,
   "reached": 1182,
   "internalHelpersOnly": 460,
-  "orphans": 28,
+  "orphans": 29,
   "declaredConstants": 3,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
-  "hostContracts": 0,
+  "hostContracts": 1,
   "testOnlyHelpers": 7,
   "implementedButUncalled": 14,
   "ofWhichCoveredByTestsOnly": 7,
@@ -282,6 +282,15 @@
    "deliberatelyUnwired": "Reads the size of the in-flight dialogue-persistence map without exposing the map, so a test can assert the cap is enforced. There is no runtime question it answers -- a caller that wanted the number would already hold the map -- and exporting the map to give it a production caller would hand every route mutable access to persistence state the module owns.",
    "hostContract": false,
    "testOnly": true
+  },
+  {
+   "name": "deactivate",
+   "file": "packages/vscode/src/extension.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": true,
+   "testOnly": false
   }
  ]
 }
