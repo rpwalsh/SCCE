@@ -76,7 +76,7 @@ It counts 1,670 exports: 1,178 reached from a real entry point, 461 module-inter
 
 ### Test and trial evidence
 
-- **Test suite**: unit tests run per package (`pnpm test:unit`), including live-database tests against a real PostgreSQL instance when `SCCE_TEST_DATABASE_URL` is set.
+- **Test suite**: 2,228 tests across 352 files pass (`pnpm test:unit`, 11 skipped — live-database tests that require `SCCE_TEST_DATABASE_URL`); 1,704 of them cover the kernel.
 - **Real-use trial**: a private repository of 50 files, ingested cold, answered questions from its own documents with evidence-bound citations.
 - **Learning with consent**: when a question has no evidence the turn asks before searching; fetched material is quarantined with a preview and becomes evidence only after the owner confirms it.
 - **Ingest throughput**: a shard flush completes in minutes. Role induction uses a bounded medoid search; graph-surface alignment is bounded per lattice unit rather than compared against every shard target.
