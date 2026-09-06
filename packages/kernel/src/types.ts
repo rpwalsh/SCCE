@@ -865,6 +865,8 @@ export interface ModelState {
   learnedProgramPatterns: JsonValue[];
   learningGoals: string[];
   trainingSteps: number;
+  /** Online-calibrated turn requirement coefficients. Absent until the first turn has taught it something. */
+  turnRequirementModel?: JsonValue;
 }
 
 export interface PolicyProfile {

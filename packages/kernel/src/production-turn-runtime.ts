@@ -217,8 +217,15 @@ import {
   activateCognitiveOperators,
   deriveTurnRequirementField,
   requestSubjectText,
+  type TurnRequirementCoefficientModel,
   type TurnRequirementField
 } from "./turn-requirements.js";
+import {
+  calibrateTurnRequirementModel,
+  turnRequirementModelFromState,
+  turnRequirementModelWeightCount,
+  type TurnRequirementObservation
+} from "./turn-requirement-calibration.js";
 import {
   EMPTY_WORKING_MEMORY,
   promoteWorkingMemoryEntry,
@@ -445,6 +452,49 @@ export function createProductionTurnRuntime(options: {
     lifecycle, engines
   } = options;
   const { append, withBufferedEventWrites, kernelTrace } = lifecycle;
+
+  // Online requirement calibration lives for the runtime, not the turn: the model is read once, taught in memory,
+  // and written back on a bounded cadence. A turn may not spend a database round trip on training.
+  let turnRequirementModel: TurnRequirementCoefficientModel | undefined;
+  let turnRequirementModelDirtySteps = 0;
+  let turnRequirementModelFlush: Promise<void> | undefined;
+
+  async function turnRequirementModelCached(): Promise<TurnRequirementCoefficientModel> {
+    if (turnRequirementModel) return turnRequirementModel;
+    const state = await deps.storage.model.readModel().catch(() => undefined);
+    turnRequirementModel = turnRequirementModelFromState(state?.turnRequirementModel);
+    return turnRequirementModel;
+  }
+
+  async function learnTurnRequirementCalibration(observation: TurnRequirementObservation): Promise<void> {
+    try {
+      const before = turnRequirementModel ?? await turnRequirementModelCached();
+      const after = calibrateTurnRequirementModel(before, observation);
+      if (after === before) return;
+      turnRequirementModel = after;
+      turnRequirementModelDirtySteps++;
+      kernelTrace({
+        stage: "requirement.calibration.step",
+        label: "kernel.turn",
+        counts: { weights: turnRequirementModelWeightCount(after), pendingSteps: turnRequirementModelDirtySteps },
+        support: { reliability: after.reliability, version: after.version }
+      });
+      if (turnRequirementModelDirtySteps < TURN_REQUIREMENT_FLUSH_STEPS || turnRequirementModelFlush) return;
+      const flushing = after;
+      turnRequirementModelDirtySteps = 0;
+      turnRequirementModelFlush = (async () => {
+        try {
+          const state = await deps.storage.model.readModel();
+          await deps.storage.model.writeModel({ ...state, turnRequirementModel: toJsonValue(flushing) });
+        } finally {
+          turnRequirementModelFlush = undefined;
+        }
+      })().catch(() => { turnRequirementModelFlush = undefined; });
+    } catch {
+      // Calibration is an improvement to the next turn, never a precondition for this one.
+    }
+  }
+
   const {
     currentOwnerSessionEvidence, evidenceFromTurnMetadata, evidenceOnlyForIds, evidenceOnlyForText,
     graphForEvidenceIds, graphForEvidenceIdsUnrouted, graphForText, graphForTextUncached,
@@ -704,7 +754,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const translationTarget = translationTargetFromMetadata(input.metadata);
       const sourceLanguageAlias = sourceLanguageAliasFromMetadata(input.metadata);
       const surfaceClusterStarted = Date.now();
-      const selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
+      let selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
         : sourceLanguageAlias
           ? await sourceOwnedLanguageClusterForAlias(
@@ -713,6 +763,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             { residentOnly: fastRuntimeBudget }
           )
           : await surfaceLanguageClusterCached(input.text, fastRuntimeBudget);
+      // Same rule as the durable evidence escalation: a fast budget may skip the durable scan when the resident set
+      // already answers, but it may not turn an unsearched memory into an empty one. The server sets
+      // `fastLocalEvidenceAnswer` on every API turn, so the durable profile scan was permanently off and the turn saw
+      // zero language profiles against 22,482 stored -- which starves requirement activation, and through it every
+      // reasoning gate, on every request.
+      if (!selectedSurfaceCluster && fastRuntimeBudget && !sourceLanguageAlias
+        && deadlineCheckpoint("kernel.turn.language_cluster_escalation", LANGUAGE_CLUSTER_ESCALATION_MS)?.allowed !== false) {
+        selectedSurfaceCluster = await surfaceLanguageClusterCached(input.text, false).catch(() => undefined);
+      }
       kernelTrace({
         stage: "runtime.seed.surface_cluster",
         label: "kernel.turn",
@@ -720,7 +779,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: { profiles: selectedSurfaceCluster?.profileIds.length ?? 0 },
         support: {
           residentOnly: fastRuntimeBudget,
-          durableProfileScanAllowed: !fastRuntimeBudget,
+          durableProfileScanAllowed: true,
           sourceLanguageAlias: sourceLanguageAlias ?? null,
           sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null,
           selectedProfileHint: selectedSurfaceCluster
@@ -843,13 +902,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ],
         dialogueState: authorityDialogueState,
         languageMemoryState: requestRequirementLanguageState,
-        contextContribution: requirementContextFromMetadata(input.metadata)
+        contextContribution: requirementContextFromMetadata(input.metadata),
+        model: await turnRequirementModelCached()
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
       // Applied after the projection, deliberately: naming two subjects says the answer must be composed, not that
       // the request stopped being factual. Folding it in earlier pushed `projectRequestAuthority` from factual to
       // reasoned on a two-subject question, which is a different claim than the one this signal is making.
+      const compositionTarget = compositionDemandTarget(input.text);
       requirementField = withCompositionDemand(requirementField, input.text);
+      // One bounded step per turn, off the critical path: the structural target is the teacher and the activations
+      // that fired are the students, so a frame that keeps co-occurring with composition demand learns to predict
+      // it and the structural bootstrap stops being the only thing holding the estimate up.
+      void learnTurnRequirementCalibration({
+        activations: requirementField.activationsUsed ?? [],
+        targets: { inferentialDepth: compositionTarget },
+        predicted: { inferentialDepth: requirementField.inferentialDepth }
+      });
       let requestedAuthority = authorityProjection.requestedAuthority;
       let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
@@ -4034,6 +4103,20 @@ function measuredTurnResourceUsage(start: ReturnType<typeof captureResourceUsage
  * another are two separate subjects the corpus knows about, and a request naming two of them cannot be answered by
  * reading one span about one of them. No word list, and nothing that assumes a language.
  */
+/** The structural inference demand a request carries, used both to raise the field and to supervise calibration. */
+function compositionDemandTarget(requestText: string): number {
+  const anchors = sourceEvidenceAnchorsForRequest(requestText).map((anchor: string) => normalizePriorKey(anchor)).filter(Boolean);
+  const distinct: string[] = [];
+  for (const anchor of anchors) {
+    if (distinct.some(kept => kept.includes(anchor) || anchor.includes(kept))) continue;
+    distinct.push(anchor);
+  }
+  // A one-subject request is supervised too, and toward a low value: without negative examples the weights only
+  // ever climb and every request eventually reads as demanding composition.
+  if (distinct.length < 2) return 0.15;
+  return Math.min(0.92, 0.58 + (distinct.length - 2) * 0.09);
+}
+
 function withCompositionDemand(field: TurnRequirementField, requestText: string): TurnRequirementField {
   const anchors = sourceEvidenceAnchorsForRequest(requestText).map((anchor: string) => normalizePriorKey(anchor)).filter(Boolean);
   const distinct: string[] = [];
@@ -4042,10 +4125,14 @@ function withCompositionDemand(field: TurnRequirementField, requestText: string)
     distinct.push(anchor);
   }
   if (distinct.length < 2) return field;
-  // Two distinct subjects clear the 0.55 composition gate; each further one adds less, and the total is bounded.
-  const demand = Math.min(0.92, 0.58 + (distinct.length - 2) * 0.09);
-  return { ...field, inferentialDepth: Math.max(field.inferentialDepth, demand) };
+  return { ...field, inferentialDepth: Math.max(field.inferentialDepth, compositionDemandTarget(requestText)) };
 }
+
+/** What the language cluster escalation must be able to spend before the deadline guard refuses it. */
+const LANGUAGE_CLUSTER_ESCALATION_MS = 900;
+
+/** Calibration steps to accumulate before one write. Learning is per turn; persistence is not. */
+const TURN_REQUIREMENT_FLUSH_STEPS = 16;
 
 /** What the durable retrieval escalation must be able to spend before the deadline guard refuses it. */
 const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
