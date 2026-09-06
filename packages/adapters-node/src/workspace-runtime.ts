@@ -16,6 +16,9 @@ import {
   planStreamRhythm,
   createWorkspaceCoreFusion,
   verifyPatchTransactionPlan,
+  createHasher,
+  materializeTypeScriptCodeActionRepair,
+  TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY,
   toJsonValue,
   createWorkspaceRevisionSnapshot,
   selectWorkspaceTransformationFamily,
@@ -271,6 +274,8 @@ export interface WorkspaceCompilerPatchPlanGenerationResult {
   readonly constraintGraph: WorkspaceTaskConstraintGraph;
   readonly selection: WorkspaceTransformationFamilySelection;
   readonly plan: NonNullable<WorkspaceTransformationFamilySelection["selected"]>["patchPlan"];
+  /** The kernel repair lineage for the selected action, recomputed from exact base bytes; absent when it cannot be materialized. */
+  readonly repairLineage?: JsonValue;
   readonly validationPlan: WorkspacePatchValidationPlan;
   readonly authorization: {
     readonly required: true;
@@ -1814,10 +1819,132 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
     constraintGraph: graph,
     selection,
     plan: selection.selected.patchPlan,
+    repairLineage: codeActionRepairLineage({
+      snapshot: finalRevision.snapshot,
+      analyzedFiles,
+      compilerLane,
+      family,
+      selectedCodeFixIdentity: selection.selected.codeFixIdentity,
+      requestText: args.input.requestText
+    }),
     validationPlan: args.input.validationPlan,
     authorization: { required: true, granted: false, capabilityId: "workspace.patch.apply" },
     execution: { state: "not_executed", receipt: null }
   };
+}
+
+/**
+ * The repair lineage for the selected compiler action, recomputed from exact base bytes.
+ *
+ * The compiler lane emitted a patch transaction and stopped there, while the program-graph lane's verifier
+ * (`workspace-plan-generator.ts`) checks a `program_repair_full_file_materialization` lineage that only
+ * `materializeTypeScriptCodeActionRepair` produces -- and nothing called it, so one of the two lanes shipped patches
+ * the other lane's verifier could never be pointed at. This closes that: the selected action is materialized through
+ * the kernel's own repair lane, which recomputes complete output bytes from the exact base artifacts and bounded text
+ * spans rather than accepting the compiler's output bytes. Absent, never fabricated, when the action cannot be
+ * materialized -- the patch plan above is unchanged either way.
+ */
+function codeActionRepairLineage(input: {
+  snapshot: WorkspaceRevisionSnapshot;
+  analyzedFiles: readonly { path: string; content: string; contentHash: string }[];
+  compilerLane: SourceObservedCompilerLane;
+  family: TypeScriptCodeActionCandidateSet | undefined;
+  selectedCodeFixIdentity: string;
+  requestText: string;
+}): JsonValue | undefined {
+  const transformation = input.family?.transformations.find(candidate => candidate.codeFixIdentity === input.selectedCodeFixIdentity);
+  if (!transformation) return undefined;
+  const hasher = createHasher();
+  const contentByPath = new Map(input.analyzedFiles.map(file => [file.path, file.content]));
+  const files: FileArtifact[] = input.snapshot.files.flatMap(file => {
+    const content = contentByPath.get(file.path) ?? decodeExactWorkspaceSource(file);
+    return [{
+      artifactId: `artifact_${hasher.digestHex(file.path)}` as FileArtifact["artifactId"],
+      path: file.path,
+      mediaType: file.mediaType,
+      content,
+      contentHash: `sha256_${hasher.digestHex(content)}` as FileArtifact["contentHash"],
+      role: file.role
+    }];
+  });
+  const program: ProgramGraph = {
+    id: `program.workspace.${input.snapshot.revisionId}`,
+    language: "typescript",
+    packageManager: "pnpm",
+    entrypoint: input.compilerLane.command.sourcePath,
+    nodes: [],
+    edges: [],
+    files,
+    build: { command: input.compilerLane.command.executable, args: [...input.compilerLane.command.args], cwd: input.compilerLane.command.cwd },
+    test: { command: input.compilerLane.command.executable, args: [...input.compilerLane.command.args], cwd: input.compilerLane.command.cwd }
+  };
+  const base = files.find(file => file.path === transformation.path);
+  if (!base) return undefined;
+  const artifactIdByPath = new Map(files.map(file => [file.path, String(file.artifactId)]));
+  const contentHashByPath = new Map(files.map(file => [file.path, String(file.contentHash)]));
+  try {
+    const materialized = materializeTypeScriptCodeActionRepair({
+      program,
+      requestText: input.requestText,
+      hasher,
+      transformations: [{
+        path: transformation.path,
+        baseArtifactId: String(base.artifactId),
+        baseContentHash: String(base.contentHash),
+        snapshotHash: input.family?.snapshotHash,
+        diagnostic: { ...transformation.diagnostic, path: transformation.path, diagnosticIdentity: transformation.diagnosticIdentity },
+        codeFix: {
+          fixName: transformation.codeFix.fixName,
+          description: transformation.codeFix.description,
+          ...(transformation.codeFix.fixId ? { fixId: transformation.codeFix.fixId } : {}),
+          codeFixIdentity: transformation.codeFixIdentity,
+          fileChanges: transformation.codeFix.fileChanges.map(change => ({
+            path: change.path,
+            isNewFile: change.isNewFile,
+            baseContentHash: change.isNewFile ? null : contentHashByPath.get(change.path) ?? null,
+            baseArtifactId: change.isNewFile ? null : artifactIdByPath.get(change.path) ?? null,
+            textChanges: change.textChanges.map(edit => ({ start: edit.start, length: edit.length, newText: edit.newText }))
+          }))
+        },
+        compiler: {
+          version: transformation.compiler.version,
+          tsconfigPath: transformation.compiler.tsconfigPath,
+          tsconfigContentHash: transformation.compiler.tsconfigContentHash,
+          compilerOptionsHash: transformation.compiler.compilerOptionsHash,
+          compilerOptionsSource: transformation.compiler.compilerOptionsSource,
+          configDiagnosticCodes: [...transformation.compiler.configDiagnosticCodes],
+          sourceFileBoundary: transformation.compiler.sourceFileBoundary,
+          compilerCommand: {
+            executable: transformation.compiler.compilerCommand.executable,
+            args: [...transformation.compiler.compilerCommand.args],
+            cwd: transformation.compiler.compilerCommand.cwd,
+            sourcePath: transformation.compiler.compilerCommand.sourcePath,
+            sourceContentHash: contentHashByPath.get(transformation.compiler.compilerCommand.sourcePath)
+              ?? transformation.compiler.compilerCommand.sourceContentHash
+          }
+        }
+      }]
+    });
+    return toJsonValue({
+      schema: "scce.workspace.compiler_patch.repair_lineage.v1",
+      programId: materialized.program.id,
+      familyId: TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY,
+      codeFixIdentity: transformation.codeFixIdentity,
+      diagnosticIdentity: transformation.diagnosticIdentity,
+      changedPaths: materialized.changedPaths,
+      lineage: materialized.program.nodes.find((node: { kind: string }) => node.kind === 'program_repair_full_file_materialization')?.metadata ?? null,
+      trace: materialized.trace
+    });
+  } catch (error) {
+    // A materialization that cannot be recomputed from exact bytes is reported as unavailable with its reason, never
+    // as a lineage the verifier would then accept.
+    return toJsonValue({
+      schema: "scce.workspace.compiler_patch.repair_lineage.v1",
+      available: false,
+      codeFixIdentity: transformation.codeFixIdentity,
+      reason: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 interface SourceObservedCompilerLane {

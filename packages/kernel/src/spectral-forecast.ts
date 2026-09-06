@@ -154,7 +154,7 @@ export function forecastFromVarModel(input: {
   const history = input.history.filter(row => row.length === d && row.every(Number.isFinite));
   const impulse = woldImpulseResponses(input.model.coefficients, horizon, d);
   const meanVector = forecastMean(input.model, history.slice(-input.model.order), horizon);
-  const forecastCovariance = woldCovarianceFromImpulse(impulse, input.model.residualCovariance);
+  const forecastCovariance = woldForecastCovariance(input.model.coefficients, input.model.residualCovariance, horizon);
   ensureFiniteVector(meanVector, "VAR forecast mean");
   ensureFiniteMatrix(forecastCovariance, "Wold forecast covariance");
 

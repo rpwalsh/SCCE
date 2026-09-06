@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T09:20:12.663Z",
+ "generatedAt": "2026-09-06T09:27:15.979Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1670,
-  "reached": 1174,
-  "internalHelpersOnly": 459,
-  "orphans": 37,
-  "declaredConstants": 4,
+  "reached": 1178,
+  "internalHelpersOnly": 461,
+  "orphans": 31,
+  "declaredConstants": 3,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 15,
-  "implementedButUncalled": 22,
-  "ofWhichCoveredByTestsOnly": 15,
+  "testOnlyHelpers": 10,
+  "implementedButUncalled": 17,
+  "ofWhichCoveredByTestsOnly": 10,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 13
  },
@@ -43,24 +43,6 @@
    "alias": false,
    "hostContract": false,
    "testOnly": false
-  },
-  {
-   "name": "parseWorkbookBytes",
-   "file": "packages/adapters-node/src/spreadsheet-parser.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "verifyTypeScriptCommandLaneSourceBinding",
-   "file": "packages/adapters-node/src/typescript-command-lane.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
   },
   {
    "name": "csrScale",
@@ -271,24 +253,6 @@
    "testOnly": false
   },
   {
-   "name": "SUPPORTED_PROGRAM_REPAIR_FAMILIES",
-   "file": "packages/kernel/src/program-repair-kernel.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "materializeTypeScriptCodeActionRepair",
-   "file": "packages/kernel/src/program-repair-kernel.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "scoreRelationPotential",
    "file": "packages/kernel/src/relation-potential.ts",
    "caller": "",
@@ -318,15 +282,6 @@
    "testOnly": false
   },
   {
-   "name": "woldForecastCovariance",
-   "file": "packages/kernel/src/spectral-forecast.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "createCorrectionEngine",
    "file": "packages/kernel/src/translation-correction-engine.ts",
    "caller": "",
@@ -347,15 +302,6 @@
   },
   {
    "name": "dialoguePersistenceTailsSizeForTest",
-   "file": "packages/server/src/routes.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "dispatchOutlookCalendarEventRollback",
    "file": "packages/server/src/routes.ts",
    "caller": "",
    "usedInOwnFile": false,
