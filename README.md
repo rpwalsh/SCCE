@@ -365,6 +365,7 @@ docs                    architecture, guides, and normative contracts
 - [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
 - [`docs/README.md`](docs/README.md) — complete documentation index
 - [`docs/SBOM.md`](docs/SBOM.md) — third-party components, versions, and licenses (`pnpm sbom`)
+- [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md) — the finish gate: twenty behaviours the architecture must demonstrate, with honest current coverage
 - [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
 
 ## License
