@@ -39,7 +39,7 @@ source records
 No layer should convert raw traces, IDs, snippets, n-grams, or telemetry into final spoken text by itself.
 
 The exported `createSourceOnlyScceRuntime` is a bounded, in-memory source-only runtime
-for fixture and diagnostic work; `createScceRuntime` currently aliases it. It is marked
+for fixture and diagnostic work. The `createScceRuntime` alias was removed on 2026-09-05 so the source-only runtime cannot be mistaken for the production one (`createNodeRuntime(config)`, `@scce/adapters-node`). It is marked
 as simulation/non-hydrated and does not replace the PostgreSQL-backed production lane.
 Both it and `kernel.turn` project request authority through the shared
 `projectRequestAuthority` function after deriving the source-neutral requirement field.

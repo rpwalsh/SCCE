@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CorrectionRuleRecord } from "../storage.js";
 import type { WorkspaceCoreSourceFileInput, WorkspaceCoreSourceRef } from "../workspace-core-fusion.js";
-import { createScceRuntime, validateScceRuntimeTurnTrace, type ScceRuntimeFixtureFile } from "../scce-runtime.js";
+import { createSourceOnlyScceRuntime, validateScceRuntimeTurnTrace, type ScceRuntimeFixtureFile } from "../scce-runtime.js";
 import { createSourceCompletionContract, validateSourceCompletionContract } from "../source-completion-contract.js";
 
 describe("SCCE source-completion runtime", () => {
@@ -69,7 +69,7 @@ describe("SCCE source-completion runtime", () => {
         await writeFile(absolute, file.text, "utf8");
       }
 
-      const runtime = createScceRuntime();
+      const runtime = createSourceOnlyScceRuntime();
       const ingested = runtime.ingest({ id: "fixture.pump-alpha", rootPath: root, files });
       expect(ingested.typedProjections.flatMap(item => item.observations).length).toBeGreaterThan(0);
       expect(ingested.graphLearning.schema).toBe("scce.runtime.graph_learning_report.v2");

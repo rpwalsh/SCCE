@@ -854,10 +854,14 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
   };
 }
 
-export function createScceRuntime(options: { idFactory?: IdFactory; hasher?: Hasher; now?: () => number } = {}): InMemoryScceRuntime {
-  return createSourceOnlyScceRuntime(options);
-}
-
+/**
+ * The in-memory, source-only runtime: fixtures, diagnostics and simulation. It hydrates nothing and persists nothing.
+ *
+ * The production runtime is `createNodeRuntime(config)` in `@scce/adapters-node`, which is PostgreSQL-backed and is the
+ * only runtime that answers from a hydrated brain. A `createScceRuntime()` alias for this function used to exist and
+ * was removed on 2026-09-05: the canonical-looking name returned the source-only runtime, which reads as the production
+ * entry point to anyone who has not read this file.
+ */
 export function createSourceOnlyScceRuntime(options: { idFactory?: IdFactory; hasher?: Hasher; now?: () => number } = {}): InMemoryScceRuntime {
   return createInMemoryScceRuntime(options);
 }
