@@ -145,6 +145,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/turn/task/:id/cancel", label: "cancel long-running turn", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/:id", label: "turn lookup", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/brain", label: "inspect brain", mutates: false, requiresDb: true },
+  { method: "GET", path: "/api/inspect/alpha", label: "inspect persisted alpha traces", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect/import/:id", label: "inspect import", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/inspect", label: "inspect", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/replay/:episodeId", label: "replay", mutates: false, requiresDb: true },
@@ -899,6 +900,20 @@ async function dispatch(
     return json(task, 202);
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/turn/")) return json(await context.runtime.kernel.replay(decodeURIComponent(path.basename(url.pathname)) as never));
+  if (req.method === "GET" && url.pathname === "/api/inspect/alpha") {
+    const kind = url.searchParams.get("kind") as "adjacency" | "laplacian" | "normalizedLaplacian" | null;
+    if (kind && kind !== "adjacency" && kind !== "laplacian" && kind !== "normalizedLaplacian") {
+      throw new HttpError(400, "kind must be adjacency, laplacian or normalizedLaplacian");
+    }
+    const graphHash = url.searchParams.get("graphHash");
+    const limitParam = url.searchParams.get("limit");
+    const limit = limitParam === null ? undefined : boundedNumber(Number(limitParam), "limit", 1, 100);
+    return json(await context.runtime.kernel.inspectAlphaTraces({
+      ...(graphHash ? { graphHash } : {}),
+      ...(limit === undefined ? {} : { limit }),
+      ...(kind ? { kind } : {})
+    }));
+  }
   if (req.method === "GET" && url.pathname === "/api/inspect/brain") return json(await context.runtime.kernel.inspect("brain"));
   if (req.method === "GET" && url.pathname.startsWith("/api/inspect/import/")) return json(await context.runtime.kernel.inspect({ kind: "brain-import", importRunId: decodeURIComponent(path.basename(url.pathname)) }));
   if (req.method === "GET" && url.pathname === "/api/inspect") return json(await context.runtime.kernel.inspect(parseInspect(url.searchParams.get("target") ?? "last")));

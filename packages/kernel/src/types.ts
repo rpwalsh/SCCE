@@ -1366,4 +1366,10 @@ export interface ScceKernel {
   analyzeCausalEffect(request: import("./causal-analysis-runtime.js").CausalAnalysisRequest): Promise<import("./causal-analysis-runtime.js").CausalAnalysisResult>;
   /** Temporal causal discovery over caller-supplied series. Typed input only, never inferred from prose. */
   discoverCausalStructure(request: import("./causal-analysis-runtime.js").CausalDiscoveryRequest): Promise<import("./causal-analysis-runtime.js").CausalDiscoveryResult>;
+  /** Read back persisted alpha traces and the named matrix from each, for replay debugging of a turn's field. */
+  inspectAlphaTraces(query?: { graphHash?: string; limit?: number; kind?: "adjacency" | "laplacian" | "normalizedLaplacian" }): Promise<{
+    schema: "scce.alpha_trace_inspection.v1";
+    kind: "adjacency" | "laplacian" | "normalizedLaplacian";
+    traces: Array<{ id: string; graphHash: string; alpha: number; createdAt: number; matrix?: MatrixSnapshot }>;
+  }>;
 }

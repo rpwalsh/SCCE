@@ -1,20 +1,20 @@
 {
- "generatedAt": "2026-09-06T08:52:31.061Z",
+ "generatedAt": "2026-09-06T08:56:14.022Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1165,
+  "reached": 1166,
   "internalHelpersOnly": 454,
-  "orphans": 46,
+  "orphans": 45,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 21,
-  "implementedButUncalled": 29,
+  "implementedButUncalled": 28,
   "ofWhichCoveredByTestsOnly": 21,
   "ofWhichNoCallerAnywhere": 0,
-  "ofWhichDeliberatelyUnwired": 13
+  "ofWhichDeliberatelyUnwired": 12
  },
  "orphans": [
   {
@@ -61,16 +61,6 @@
    "alias": false,
    "hostContract": false,
    "testOnly": true
-  },
-  {
-   "name": "alphaTraceMatrixSnapshot",
-   "file": "packages/kernel/src/alpha-field-persistence.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "deliberatelyUnwired": "Reads a named matrix out of a persisted alpha trace, and nothing can read those traces: alpha_traces has an INSERT and no SELECT anywhere in the adapter, and the store interface exposes no accessor. The missing half is a reader, not a call site. Worth noting on its own -- the table is written (opt-in, multi-MB) and cannot currently be read back by anything.",
-   "hostContract": false,
-   "testOnly": false
   },
   {
    "name": "csrScale",
