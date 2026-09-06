@@ -157,12 +157,14 @@ import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
-import { normalizePriorKey } from "./kernel-answer-primitives.js";
+import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
+import { expandAdmissibleCommunity } from "./admissible-community-expansion.js";
+import type { GraphEdge, GraphNode, NodeId } from "./types.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -1241,9 +1243,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const auditFallbackEvidence = sourceAnchorAudit.required && !sourceAnchorAudit.evidence.length
         ? evidence.filter(span => !evidenceSpanProvenanceTitle(span)).slice(0, 24)
         : [];
-      const admissibleEvidence = sourceAnchorAudit.required
+      let admissibleEvidence = sourceAnchorAudit.required
         ? (sourceAnchorAudit.evidence.length ? sourceAnchorAudit.evidence : auditFallbackEvidence)
         : evidence;
+      // Aboutness decided by the subject's own graph community rather than by counting words in the span.
+      //
+      // `expandAdmissibleCommunity` grows a community from a seed by confirmed personalized-PageRank mass while
+      // maintaining a real upper bound on the mass it could still reach, so an early stop is provably safe. It was
+      // fully implemented and called by nothing. It answers exactly the question admission keeps getting wrong: a
+      // span belongs to the subject when its nodes sit in the subject's community, and a span that merely names the
+      // subject in passing does not -- which is why "Who was Charles Babbage?" was answered from a Lovelace span
+      // listing him among Doctor Who characters. This needs no title and no grammar, so it holds for a dictionary
+      // entry, a chapter or a mail thread just as well as for an encyclopedia article.
+      const communityAdmitted = admissibleEvidence.length > 1
+        ? evidenceInSubjectCommunity(graph, admissibleEvidence, sourceAnchorAudit.anchors)
+        : admissibleEvidence;
+      if (communityAdmitted.length && communityAdmitted.length < admissibleEvidence.length) {
+        kernelTrace({
+          stage: "graph.resolve.community_admission",
+          label: "kernel.turn",
+          counts: { before: admissibleEvidence.length, after: communityAdmitted.length },
+          support: { anchors: sourceAnchorAudit.anchors.slice(0, 4) }
+        });
+        admissibleEvidence = communityAdmitted;
+      }
       if (sourceAnchorAudit.required && admissibleEvidence.length) graph = graphFilteredToEvidence(graph, admissibleEvidence);
       kernelTrace({
         stage: "graph.resolve.pool_admission",
@@ -4154,6 +4177,56 @@ function withCompositionDemand(field: TurnRequirementField, requestText: string)
   }
   if (distinct.length < 2) return field;
   return { ...field, inferentialDepth: Math.max(field.inferentialDepth, compositionDemandTarget(requestText)) };
+}
+
+/** Teleport and residual thresholds for subject-community admission. Local push, so cost is bounded by epsilon. */
+const SUBJECT_COMMUNITY_ALPHA = 0.15;
+const SUBJECT_COMMUNITY_EPSILON = 1e-4;
+const SUBJECT_COMMUNITY_MAX_NODES = 64;
+
+/**
+ * The admitted spans whose graph nodes fall inside the requested subject's community.
+ *
+ * Returns the input unchanged whenever the graph cannot decide -- no seed node for the subject, no edges, or every
+ * span outside the community -- because an undecidable graph must not be read as a rejection.
+ */
+function evidenceInSubjectCommunity(
+  graph: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] },
+  evidence: readonly EvidenceSpan[],
+  anchors: readonly string[]
+): EvidenceSpan[] {
+  if (!graph.nodes.length || !graph.edges.length || !anchors.length) return [...evidence];
+  const anchorUnits = uniqueKernelStrings(anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))).filter(Boolean);
+  if (!anchorUnits.length) return [...evidence];
+  const seed = graph.nodes.find(node => {
+    const features = node.features.map((feature: unknown) => String(feature).toLocaleLowerCase());
+    return anchorUnits.every(unit => features.some(feature => feature.includes(unit)));
+  });
+  if (!seed) return [...evidence];
+  const pushEdges = graph.edges
+    .filter(edge => Number.isFinite(edge.alpha) && edge.alpha > 0)
+    .flatMap(edge => [
+      { from: edge.source as NodeId, to: edge.target as NodeId, weight: Number(edge.alpha) },
+      { from: edge.target as NodeId, to: edge.source as NodeId, weight: Number(edge.alpha) }
+    ]);
+  if (!pushEdges.length) return [...evidence];
+  let community: ReadonlySet<string>;
+  try {
+    community = new Set(expandAdmissibleCommunity({
+      graph: { nodes: graph.nodes.map(node => node.id as NodeId), edges: pushEdges },
+      seedNodeId: String(seed.id),
+      alpha: SUBJECT_COMMUNITY_ALPHA,
+      epsilon: SUBJECT_COMMUNITY_EPSILON,
+      maxCommunitySize: SUBJECT_COMMUNITY_MAX_NODES
+    }).includedNodeIds);
+  } catch {
+    return [...evidence];
+  }
+  const evidenceIdsInCommunity = new Set(graph.nodes
+    .filter(node => community.has(String(node.id)))
+    .flatMap(node => node.evidenceIds.map(String)));
+  const inside = evidence.filter(span => evidenceIdsInCommunity.has(String(span.id)));
+  return inside.length ? inside : [...evidence];
 }
 
 /** What the language cluster escalation must be able to spend before the deadline guard refuses it. */
