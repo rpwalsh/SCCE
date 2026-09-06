@@ -1,5 +1,5 @@
 {
- "generatedAt": "2026-09-06T08:12:18.246Z",
+ "generatedAt": "2026-09-06T08:14:46.133Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
@@ -10,11 +10,11 @@
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 39,
-  "implementedButUncalled": 40,
-  "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 1,
-  "ofWhichDeliberatelyUnwired": 5
+  "testOnlyHelpers": 33,
+  "implementedButUncalled": 41,
+  "ofWhichCoveredByTestsOnly": 33,
+  "ofWhichNoCallerAnywhere": 0,
+  "ofWhichDeliberatelyUnwired": 8
  },
  "orphans": [
   {
@@ -68,6 +68,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Reads a named matrix out of a persisted alpha trace, and nothing can read those traces: alpha_traces has an INSERT and no SELECT anywhere in the adapter, and the store interface exposes no accessor. The missing half is a reader, not a call site. Worth noting on its own -- the table is written (opt-in, multi-MB) and cannot currently be read back by anything.",
    "hostContract": false,
    "testOnly": false
   },
@@ -333,6 +334,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Plans byte-range batches for a bulk-copy load path that does not exist: ingestion streams per file and writes per source version inside a transaction, so there is no caller to hand a batch plan to. Building that path is the ingest-throughput work (roughly 400-500 pages/hour today, ~6s per page in writes), a measured performance project rather than a wiring, and inventing a caller here would plan batches nothing executes.",
    "hostContract": false,
    "testOnly": false
   },
@@ -378,6 +380,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "A factory returning { stringify: canonicalStringify } over a pure function every caller imports directly. There is no alternate canonical-JSON implementation to swap in and canonical form is a contract rather than a policy, so introducing an injection port to consume it would add indirection that enables nothing.",
    "hostContract": false,
    "testOnly": false
   },
