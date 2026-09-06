@@ -799,7 +799,16 @@ export function runLearningLoop(input: LearningLoopInput): LearningLoopResult {
       continueDecision: continueDecision.decisionKindId
     })
   };
-  return { ...partial, hydration: createLearningLoopHydrationContract(partial) };
+  // The contract is what a later run rehydrates this loop from, so it is checked where it is built rather than
+  // where it is read: its own validator asserts the schema, that records exist, and that the dry-run plan has one
+  // entry per record. Nothing called it, so a contract whose plan had drifted out of step with its records would
+  // have been persisted and only failed later, during a rehydration, with nothing left to say which run produced it.
+  const hydration = createLearningLoopHydrationContract(partial);
+  const hydrationCheck = validateLearningLoopHydrationContract(hydration);
+  if (!hydrationCheck.valid) {
+    throw new Error(`learning loop produced an invalid hydration contract: ${hydrationCheck.diagnostics.slice(0, 4).join("; ")}`);
+  }
+  return { ...partial, hydration };
 }
 
 export function createLearningLoopHydrationContract(input: Omit<LearningLoopResult, "hydration">): LearningLoopHydrationContract {

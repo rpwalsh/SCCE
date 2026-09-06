@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T08:18:43.968Z",
+ "generatedAt": "2026-09-06T08:22:54.195Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1159,
-  "internalHelpersOnly": 451,
-  "orphans": 55,
+  "reached": 1160,
+  "internalHelpersOnly": 452,
+  "orphans": 53,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 30,
-  "implementedButUncalled": 38,
-  "ofWhichCoveredByTestsOnly": 30,
+  "testOnlyHelpers": 28,
+  "implementedButUncalled": 36,
+  "ofWhichCoveredByTestsOnly": 28,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 8
  },
@@ -255,15 +255,6 @@
    "testOnly": true
   },
   {
-   "name": "validateLearningLoopHydrationContract",
-   "file": "packages/kernel/src/learning-loop.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "addMatrix",
    "file": "packages/kernel/src/math.ts",
    "caller": "",
@@ -487,15 +478,6 @@
   {
    "name": "deleteUserModelClaim",
    "file": "packages/kernel/src/user-model-store.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "workingMemoryEntriesForTask",
-   "file": "packages/kernel/src/working-memory.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
