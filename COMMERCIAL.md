@@ -25,24 +25,22 @@ A self-contained cognitive runtime that:
 ## Verified performance
 
 On this repository's sealed cloze benchmark (168 questions, real Wikipedia
-corpus, 2026-09-05): **166/168** exact answers against 158/168 for an
-independent BM25 reference on identical evidence, reproduced in two
-back-to-back runs that miss the same two questions.
+corpus, 2026-09-06, revision `663afa2`): **161/168** exact answers against
+158/168 for an independent BM25 reference on identical evidence, reproduced
+exactly in two back-to-back standalone runs.
 
-The shape of the result is as important as the total. On the 160 answerable
-questions the two systems tie at 158 — SCCE matches a strong lexical
-baseline on recall. All eight points of margin are the abstention probes:
-**SCCE declines all eight questions the corpus cannot answer; the reference
-answers all eight and is wrong all eight times.** That difference is the
-commercial one. A system that invents an answer when the evidence is absent
+The shape of the result matters more than the total. On the 160 answerable
+questions BM25 scores 158 and SCCE scores 153: on recall alone, the lexical
+baseline is ahead. All of SCCE's margin comes from the eight abstention
+probes — **SCCE declines all eight questions the corpus cannot answer; the
+reference answers all eight and is wrong all eight times.**
+
+That is the commercial difference, and it is the only one this benchmark
+establishes. A system that invents an answer when the evidence is absent
 cannot be deployed into regulated review, engineering evidence, or contract
-analysis, and this benchmark measures the property under seal rather than
-inferring it from architecture.
-
-The release gate reports the same run in its own terms: unsupported rate
-0.71%, exact-anchor accuracy 98.75%, abstention correctness 100%, and a
-failed class-effect test on the cloze half (p = 0.614) — the gate refuses to
-score a tie as a win, which is why its numbers can be relied on.
+analysis. Recall on this set is five questions below the 2026-09-05 figure
+and the cause is under investigation; the earlier number is not quoted as
+current.
 
 Latency, measured in the same run: 2,691 ms median per answer in a
 resident runtime, 4,833 ms at p90. A fresh CLI process pays an additional
