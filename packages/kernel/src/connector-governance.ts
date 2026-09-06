@@ -4,29 +4,17 @@ import type { Capability, CapabilityPlan, Clock, Hasher, JsonValue, PolicyProfil
 import { clamp01, createClock, createHasher, toJsonValue } from "./primitives.js";
 
 /**
- * Status (confirmed by repo-wide reference search): `capabilities()` below is
- * the only method of this module called in production today, feeding
- * capability metadata/risk scores into `tool-cognition.ts`'s (also not yet
- * dispatched) planning surface. `admit()`, `admitResult()`, and
- * `updateQuota()` are fully implemented and unit-tested, but have zero
- * production call sites -- they are not consulted for any live connector
- * call. The gate that actually protects real Outlook/YouTube/Telephone/web
- * calls today is `ConnectorPolicyGate` in
- * `packages/adapters-node/src/connector-policy.ts`, which uses an entirely
- * different config shape (`ScceRuntimeConfig.connectors.*`, not this
- * module's `ConnectorConfig[]`) and a simpler allowlist/mutation/quota rule
- * set. These two gates are intentionally not yet merged: reconciling them
- * requires either mapping `ScceRuntimeConfig.connectors` into
- * `ConnectorConfig` (or vice versa) and threading `ConnectorQuotaState`
- * through the live request path, which touches the only currently-working
- * connector-safety enforcement with no dedicated regression pass yet. The
- * intended long-term shape (per the production-integration plan) is for
- * `admit()` to become the dispatcher's connector-admission checkpoint once
- * real connector executors are registered on the capability dispatcher
- * (`capability-dispatcher.ts`) -- at that point `ConnectorPolicyGate` should
- * either delegate its decision to `admit()` or be retired in its favor. Do
- * not treat `admit()` as authoritative for any live decision until that
- * wiring exists.
+ * The connector admission model, and as of 2026-09-05 it is live: every real Outlook, YouTube, telephone and web call
+ * runs through `admit()` here as well as through the allowlist and mutation rules in
+ * `packages/adapters-node/src/connector-policy.ts`. The bridge that maps the operator's own `connectors.*`
+ * configuration onto this module's `ConnectorConfig` is
+ * `packages/adapters-node/src/connector-governance-bridge.ts`, and the two decisions are combined by conjunction: a
+ * call proceeds only when both admit it, and the decision this module returns -- mode, risk, reasons, approval ticket
+ * -- is recorded on the same connector audit record as the local one.
+ *
+ * Before that wiring there were two governance models and only one of them enforced anything, so a change made here
+ * had no effect on production traffic. That is no longer true: `admit()` can deny a live call. It cannot widen one --
+ * the conjunction means this module can only subtract from what the allowlist already permitted.
  */
 
 export type ConnectorKind = "filesystem" | "process" | "web_search" | "web_fetch" | "outlook" | "youtube" | "telephone";

@@ -2,18 +2,33 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { JsonValue, PolicyProfile } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
+import { admitConnectorCall } from "./connector-governance-bridge.js";
 
 /**
  * This is the live enforcement gate: `ConfiguredConnectorAdapter`
  * (`connectors.ts`) calls `begin()`/`finish()`/`fail()` on every real
  * Outlook/YouTube/Telephone/web connector call, so the rules in `allowed()`
- * below are what actually protects production traffic today. A separate,
- * more elaborate admission model exists in
- * `@scce/kernel`'s `connector-governance.ts` (risk scoring, approval
- * tickets, quota state) but is not consulted here -- see that module's own
- * header comment for the reconciliation plan. Do not assume the two gates
- * agree; only this one is live.
+ * below are what protects production traffic.
+ *
+ * There is now one enforcement point and one audit trail. The kernel's
+ * `connector-governance.ts` model (risk scoring, approval tickets, rate and
+ * spend quotas) used to be implemented and consulted by nothing, so a reader
+ * could harden it and believe production had changed. `allowed()` now
+ * consults it through `connector-governance-bridge.ts` and admits a call only
+ * when both models admit it: the allowlist and mutation rules here, and the
+ * kernel's risk/approval/quota rules there, over the operator's own limits.
+ * The conjunction is deliberate -- this bridge can only deny, never widen --
+ * and the kernel's decision is recorded on the same request record.
  */
+
+/** What the kernel's admission model decided about this call, recorded beside the local decision. */
+export interface ConnectorGovernanceDecision {
+  allowed: boolean;
+  mode: string;
+  risk: number;
+  reasons: string[];
+  approvalTicketId?: string;
+}
 
 export interface ConnectorRequestRecord {
   id: string;
@@ -28,6 +43,7 @@ export interface ConnectorRequestRecord {
   status?: number;
   bytes?: number;
   metadata?: JsonValue;
+  governance?: ConnectorGovernanceDecision;
 }
 
 export interface ConnectorQuotaSnapshot {
@@ -39,6 +55,8 @@ export interface ConnectorQuotaSnapshot {
 
 export class ConnectorPolicyGate {
   private sequence = 0;
+  private lastAllowedAt: number | undefined;
+  private readonly sessionId = `connector_session_${Date.now().toString(36)}`;
   private readonly records: ConnectorRequestRecord[] = [];
 
   constructor(private readonly config: ScceRuntimeConfig, private readonly policyPatch: () => Partial<PolicyProfile> = () => ({})) {}
@@ -55,7 +73,8 @@ export class ConnectorPolicyGate {
       mutates,
       allowed: allowed.ok,
       reason: allowed.reason,
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      ...(allowed.governance ? { governance: allowed.governance } : {})
     };
     this.records.push(record);
     if (!allowed.ok) throw new Error(`connector policy denied ${input.connector}:${input.operation}: ${allowed.reason}`);
@@ -85,8 +104,48 @@ export class ConnectorPolicyGate {
     };
   }
 
-  private allowed(connector: ConnectorRequestRecord["connector"], uri: string, mutates: boolean, approved: boolean): { ok: boolean; reason: string } {
+  private allowed(
+    connector: ConnectorRequestRecord["connector"],
+    uri: string,
+    mutates: boolean,
+    approved: boolean
+  ): { ok: boolean; reason: string; governance?: ConnectorGovernanceDecision } {
     const policy = { ...this.config.policy, ...this.policyPatch() };
+    const local = this.locallyAllowed(connector, uri, mutates, approved, policy);
+    // The kernel's admission model runs on every call, including one the local rules already denied, so the audit
+    // record always says what both models decided rather than only the first one to object.
+    const admission = admitConnectorCall({
+      config: this.config,
+      policy,
+      connector,
+      mutates,
+      approved,
+      sessionId: this.sessionId,
+      requestsUsed: this.records.filter(record => record.allowed).length,
+      ...(this.lastAllowedAt === undefined ? {} : { lastRequestAt: this.lastAllowedAt })
+    });
+    const governance: ConnectorGovernanceDecision = {
+      allowed: admission.allowed,
+      mode: admission.mode,
+      risk: admission.risk,
+      reasons: admission.reasons.slice(0, 4),
+      ...(admission.approvalTicket ? { approvalTicketId: admission.approvalTicket.id } : {})
+    };
+    if (!local.ok) return { ...local, governance };
+    if (!admission.allowed) {
+      return { ok: false, reason: `connector governance ${admission.mode}: ${admission.reasons[0] ?? "not admitted"}`, governance };
+    }
+    this.lastAllowedAt = Date.now();
+    return { ...local, governance };
+  }
+
+  private locallyAllowed(
+    connector: ConnectorRequestRecord["connector"],
+    uri: string,
+    mutates: boolean,
+    approved: boolean,
+    policy: PolicyProfile
+  ): { ok: boolean; reason: string } {
     if (this.records.filter(record => record.allowed).length >= policy.maxNetworkRequests) return { ok: false, reason: "network request quota exhausted" };
     const connectorAllowed = this.connectorAllowed(connector, uri);
     if (!connectorAllowed.ok) return connectorAllowed;
