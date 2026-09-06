@@ -72,7 +72,11 @@ async function runPsql(
 ): Promise<{ ok: true; stdout: string } | { ok: false; error: string }> {
   const tuplesOnly = opts.tuplesOnly ?? true;
   const fieldSep = opts.fieldSep ?? '|';
-  const flags = ['-A', '-F', fieldSep, '-P', 'footer=off'];
+  // -q suppresses psql's per-statement command tags. Without it every setup statement below prints its own "SET"
+  // line into stdout, those lines are non-empty, and the caller parses each stdout line as one JSON row -- so every
+  // query that carried session setup failed on JSON.parse("SET"), which is every query this tool has ever run.
+  // -P footer=off removes the row-count footer and does not touch command tags.
+  const flags = ['-q', '-A', '-F', fieldSep, '-P', 'footer=off'];
   if (tuplesOnly) flags.push('-t');
   // Every setup statement is a separate -c in the SAME psql invocation, so
   // they share one session/connection with the real query -- a SET here
