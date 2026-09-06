@@ -73,11 +73,118 @@ function vendoredArchives() {
     });
 }
 
+/** The lockfile's own integrity hash for one resolved package, so the report ties to what pnpm actually fetched. */
+function lockfileIntegrity(lockfileText, name, version) {
+  if (!lockfileText || !version) return null;
+  const newline = String.fromCharCode(10);
+  const quote = String.fromCharCode(39);
+  // A scoped name is quoted in the lockfile ('@scope/name@1.2.3:'); an unscoped one is not.
+  const candidates = [
+    `${newline}  ${name}@${version}:${newline}`,
+    `${newline}  ${quote}${name}@${version}${quote}:${newline}`
+  ];
+  const at = candidates.map(candidate => lockfileText.indexOf(candidate)).find(index => index >= 0) ?? -1;
+  if (at < 0) return null;
+  const window = lockfileText.slice(at, at + 600);
+  const match = /integrity:\s*([A-Za-z0-9+/=-]+)/.exec(window);
+  return match ? match[1] : null;
+}
+
+/**
+ * License tally across the whole resolved closure, not only the direct dependencies. The copyleft answer is only
+ * reported for packages whose manifest actually declared a license; anything undeclared is counted and named so the
+ * summary can never read as a clean bill of health it did not establish.
+ */
+function closureLicenseSummary() {
+  const store = `${repo}/node_modules/.pnpm`;
+  if (!exists(store)) return undefined;
+  const COPYLEFT = /(GPL|AGPL|LGPL|MPL|EPL|CDDL|CPL|EUPL|OSL|SSPL)/i;
+  const STRONG_COPYLEFT = /(GPL-[23]|AGPL|SSPL)/i;
+  const byLicense = new Map();
+  const copyleft = [];
+  const strongCopyleft = [];
+  const undeclared = [];
+  const seen = new Set();
+  let inspected = 0;
+  for (const entry of fs.readdirSync(store)) {
+    if (entry.startsWith(".")) continue;
+    const base = `${store}/${entry}/node_modules`;
+    if (!exists(base)) continue;
+    const packages = [];
+    for (const item of fs.readdirSync(base)) {
+      if (item.startsWith("@")) {
+        const scoped = `${base}/${item}`;
+        if (!fs.statSync(scoped).isDirectory()) continue;
+        for (const inner of fs.readdirSync(scoped)) packages.push(`${item}/${inner}`);
+      } else packages.push(item);
+    }
+    for (const name of packages) {
+      const file = `${base}/${name}/package.json`;
+      if (!exists(file)) continue;
+      let manifest;
+      try {
+        manifest = readJson(file);
+      } catch {
+        continue;
+      }
+      const identity = `${name}@${manifest.version ?? "?"}`;
+      // The store nests a copy of each dependency under every package that needs it, so the same name@version is read
+      // many times. Count identities, not manifests, or the closure looks several times larger than it is.
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      inspected++;
+      const license = licenseOf(manifest);
+      byLicense.set(license, (byLicense.get(license) ?? 0) + 1);
+      if (license === "undeclared" || license === "unresolved") undeclared.push(identity);
+      else if (STRONG_COPYLEFT.test(license)) strongCopyleft.push(`${identity} (${license})`);
+      else if (COPYLEFT.test(license)) copyleft.push(`${identity} (${license})`);
+    }
+  }
+  const unique = list => [...new Set(list)].sort();
+  return {
+    scope: "every package present in the local pnpm store, direct and transitive, development and runtime",
+    uniquePackagesInspected: inspected,
+    licensesDeclared: Object.fromEntries([...byLicense.entries()].sort((left, right) => right[1] - left[1])),
+    copyleftDependenciesIdentified: unique(copyleft),
+    strongCopyleftDependenciesIdentified: unique(strongCopyleft),
+    undeclaredLicensePackages: unique(undeclared).slice(0, 40),
+    undeclaredLicenseCount: unique(undeclared).length,
+    verificationStatus: "manifest-declared licenses only; no license-text analysis and not a legal opinion"
+  };
+}
+
+/** The commit this SBOM describes, read from git rather than asserted. */
+function sourceCommit() {
+  const head = `${repo}/.git/HEAD`;
+  if (!exists(head)) return null;
+  const pointer = fs.readFileSync(head, "utf8").trim();
+  if (!pointer.startsWith("ref:")) return pointer;
+  const ref = `${repo}/.git/${pointer.slice(4).trim()}`;
+  if (exists(ref)) return fs.readFileSync(ref, "utf8").trim();
+  const packed = `${repo}/.git/packed-refs`;
+  if (!exists(packed)) return null;
+  const name = pointer.slice(4).trim();
+  const match = new RegExp(`^([0-9a-f]{40}) ${name}$`, "m").exec(fs.readFileSync(packed, "utf8"));
+  return match ? match[1] : null;
+}
+
 function transitiveCount() {
   const store = `${repo}/node_modules/.pnpm`;
   if (!exists(store)) return undefined;
   return fs.readdirSync(store).filter(dir => dir.includes("@") && !dir.startsWith(".")).length;
 }
+
+const lockfilePath = `${repo}/pnpm-lock.yaml`;
+const lockfileText = exists(lockfilePath) ? fs.readFileSync(lockfilePath, "utf8") : "";
+const resolution = {
+  packageManager: "pnpm",
+  lockfile: "pnpm-lock.yaml",
+  lockfileSha256: lockfileText ? createHash("sha256").update(lockfileText).digest("hex") : null,
+  lockfileVersion: (/^lockfileVersion:\s*'?([\d.]+)'?/m.exec(lockfileText) ?? [])[1] ?? null,
+  // The commit this manifest describes. A buyer can walk source snapshot -> manifests -> lockfile -> resolved
+  // packages -> vendored archive without taking anyone's word for the chain.
+  workspaceCommit: sourceCommit()
+};
 
 const components = new Map();
 for (const manifest of workspaceManifests()) {
@@ -100,6 +207,7 @@ for (const manifest of workspaceManifests()) {
         license: licenseOf(resolved),
         repository: repositoryOf(resolved),
         vendored: String(range).startsWith("file:"),
+        integrity: lockfileIntegrity(lockfileText, name, resolved?.version),
         requiredBy: [manifest.id]
       });
     }
@@ -112,6 +220,7 @@ const runtime = rows.filter(row => row.scope === "runtime");
 const development = rows.filter(row => row.scope === "development");
 const archives = vendoredArchives();
 const transitive = transitiveCount();
+const licenseSummary = closureLicenseSummary();
 
 const sbom = {
   schema: "scce.sbom.v1",
@@ -120,20 +229,24 @@ const sbom = {
   coverage: {
     method: "workspace manifests plus the resolved pnpm store and vendored archives",
     includes: ["declared direct dependencies", "resolved installed versions", "declared licenses", "vendored archive checksums"],
-    excludes: ["license-text analysis", "vulnerability matching", "transitive per-package license attribution"],
+    includesAlso: ["declared-license scan across the full resolved closure", "lockfile integrity hashes for direct dependencies", "source commit and lockfile identity"],
+    excludes: ["license-text analysis", "vulnerability matching", "license compatibility analysis", "verification that a declared license matches the shipped license text"],
     note: "A declaration-and-resolution report. A buyer commissions an SCA scan and a legal license review separately."
   },
+  resolution,
   proprietary: {
     holder: "Ryan P. Walsh",
     statement: "SCCE's own source is proprietary and inspection-only; no right to use, copy, modify, distribute, sublicense, sell, or create derivative works is granted except by separate written agreement. See LICENSE.",
-    correction: "SCCE contains no open-source code of its own, and it does depend on third-party open-source components, listed below. 'Zero open source' is not an accurate description of the delivered system."
+    thirdPartyDisclosure: "SCCE contains no open-source code of its own and does depend on third-party open-source components, listed below. The delivered system therefore contains open source; SCCE's own source is not open source."
   },
   counts: {
     directRuntime: runtime.length,
     directDevelopment: development.length,
     vendoredArchives: archives.length,
-    installedPackagesInStore: transitive ?? null
+    // The complete pnpm-resolved closure, transitive and development included -- not a count of chosen dependencies.
+    resolvedDependencyClosure: transitive ?? null
   },
+  ...(licenseSummary ? { licenseSummary } : {}),
   runtimeDependencies: runtime,
   developmentDependencies: development,
   vendoredArchives: archives
@@ -141,10 +254,21 @@ const sbom = {
 
 fs.writeFileSync(`${repo}/docs/SBOM.json`, `${JSON.stringify(sbom, null, 1)}\n`, "utf8");
 
+const licenseTable = summary => summary
+  ? [
+    "| Question | Answer | Scope |",
+    "|---|---|---|",
+    `| Copyleft dependencies identified | ${summary.copyleftDependenciesIdentified.length ? summary.copyleftDependenciesIdentified.join(", ") : "none"} | ${summary.uniquePackagesInspected} unique packages |`,
+    `| Strong copyleft (GPL/AGPL/SSPL) identified | ${summary.strongCopyleftDependenciesIdentified.length ? summary.strongCopyleftDependenciesIdentified.join(", ") : "none"} | ${summary.uniquePackagesInspected} unique packages |`,
+    `| Packages with no declared license | ${summary.undeclaredLicenseCount} | ${summary.uniquePackagesInspected} unique packages |`,
+    `| Verification status | ${summary.verificationStatus} | |`
+  ].join(String.fromCharCode(10))
+  : "The pnpm store is not present, so no closure-wide license scan was performed.";
+
 const table = list => [
-  "| Component | Version | License | Scope | Required by |",
+  "| Component | Version | License | Lockfile integrity | Required by |",
   "|---|---|---|---|---|",
-  ...list.map(row => `| \`${row.name}\`${row.vendored ? " (vendored)" : ""} | ${row.resolvedVersion ?? row.declaredRange} | ${row.license} | ${row.scope} | ${row.requiredBy.join(", ")} |`)
+  ...list.map(row => `| \`${row.name}\`${row.vendored ? " (vendored)" : ""} | ${row.resolvedVersion ?? row.declaredRange} | ${row.license} | ${row.integrity ? `\`${row.integrity.slice(0, 24)}...\`` : row.vendored ? "vendored, see checksum below" : "not recorded in lockfile"} | ${row.requiredBy.join(", ")} |`)
 ].join("\n");
 
 const markdown = `# SCCE software bill of materials
@@ -157,11 +281,33 @@ Generated by \`pnpm sbom\` (\`tools/sbom.mjs\`) on ${sbom.generatedAt}. The mach
 ${sbom.coverage.note} It reads the workspace manifests, the versions pnpm actually installed, and the checksums of
 vendored archives. It does **not** analyse license texts, match vulnerabilities, or attribute licenses transitively.
 
+## Source and resolution identity
+
+This manifest describes one exact source state and one exact dependency resolution.
+
+| Field | Value |
+|---|---|
+| Source commit | \`${sbom.resolution.workspaceCommit ?? "unavailable"}\` |
+| Package manager | ${sbom.resolution.packageManager} |
+| Lockfile | \`${sbom.resolution.lockfile}\` (version ${sbom.resolution.lockfileVersion ?? "?"}) |
+| Lockfile sha256 | \`${sbom.resolution.lockfileSha256 ?? "unavailable"}\` |
+
+A reviewer can walk source snapshot to manifests to lockfile to resolved packages to vendored artifact without relying
+on anyone's assertion: each direct dependency below carries the lockfile's own integrity hash, and the vendored archive
+carries its sha256.
+
+## License summary across the resolved closure
+
+${licenseTable(sbom.licenseSummary)}
+
+This scan reads the declared \`license\` field of every unique package in the resolved closure, direct and transitive,
+runtime and development. It is not a license-text analysis and it is not a legal opinion.
+
 ## Proprietary position
 
 ${sbom.proprietary.statement}
 
-**${sbom.proprietary.correction}**
+**${sbom.proprietary.thirdPartyDisclosure}**
 
 ## Direct runtime dependencies (${runtime.length})
 
@@ -180,8 +326,8 @@ ${archives.length
 ## Transitive closure
 
 ${transitive === undefined
-  ? "The pnpm store is not present, so the installed closure could not be counted."
-  : `${transitive} packages are present in the local pnpm store. That number is the development closure, not the shipped runtime closure: the kernel declares one runtime dependency and the root package declares none.`}
+  ? "The pnpm store is not present, so the closure could not be counted."
+  : `${transitive} unique packages make up the complete pnpm-resolved closure: direct and transitive, runtime and development together. That is the number of packages present, not the number chosen -- ${runtime.length} direct runtime and ${development.length} direct development dependencies are declared, and everything else arrived with them. It is also the development closure, not the shipped runtime closure: the kernel declares one runtime dependency and the root package declares none.`}
 
 ## Dependency shape
 
