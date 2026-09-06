@@ -76,6 +76,17 @@ The live brain holds 22,259 sources across 23,512 versions, 64,223 evidence span
 
 It counts 1,670 exports: 1,178 reached from a real entry point, 461 module-internal helpers, and 31 unreached. Of the unreached, 17 are implemented, tested capabilities not yet called from a runtime path; 13 of those carry a written engineering reason, and **none has no caller anywhere**. The figure is tracked as it falls: 183 at the start of this pass, 67 a day ago, 17 today. The tool matches names as words rather than through the type system, so the unreached figure is a lower bound.
 
+### Live release gate
+
+`pnpm release:gate` runs seven prompts against the running server and checks each answer structurally — evidence
+binding, mouth realization, semantic-answer shape, single source version, novel-unit counts, repeated-trigram ratio,
+wiki debris, and a hard 10-second turn deadline. Six of the seven pass. The seventh, a false-premise question, answers
+from its article's external-links block instead of refuting the premise with a dated counterexample; it is a known
+open defect, reproducible with one command.
+
+The turn deadline is enforced at stage boundaries: a stage that overruns its budget yields to a bounded alternative
+and the turn completes degraded rather than running past the contract.
+
 ### Test and trial evidence
 
 - **Test suite**: 2,228 tests across 352 files pass (`pnpm test:unit`, 11 skipped — live-database tests that require `SCCE_TEST_DATABASE_URL`); 1,704 of them cover the kernel.
