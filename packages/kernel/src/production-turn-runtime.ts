@@ -165,6 +165,7 @@ import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } f
 import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
 import { expandAdmissibleCommunity } from "./admissible-community-expansion.js";
 import { assessClaimSupport } from "./support-assessment.js";
+import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId } from "./types.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
@@ -1286,6 +1287,42 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           spans: evidence.slice(0, 8).map(span => ({ id: String(span.id).slice(-12), chars: [...String(span.text ?? "")].length, window: [...String(span.retrievalWindow ?? span.text ?? "")].length, admitted: admissibleEvidence.includes(span) }))
         }
       });
+      // Two subjects named in one request have a temporal relation, and until now nothing computed it.
+      // `temporal-interval-algebra.ts` has carried all thirteen Allen relations, their inverses and a
+      // superseding timeline store since it was written, reachable from nothing, so "was X alive at the same time
+      // as Y" was answered by reading X's biography out. The periods come from digits in the sentence that binds
+      // each subject, so the extraction assumes no calendar and no writing system.
+      const subjectTemporal = sourceAnchorAudit.anchors.length >= 2
+        ? subjectTemporalComparison(sourceAnchorAudit.anchors, admissibleEvidence, clock.now())
+        : { periods: [], facts: [] };
+      if (subjectTemporal.comparison) {
+        const comparison = subjectTemporal.comparison;
+        kernelTrace({
+          stage: "proof.temporal_relation",
+          label: "kernel.turn",
+          counts: { periods: subjectTemporal.periods.length, sharedYears: comparison.sharedYears.length, facts: subjectTemporal.facts.length },
+          support: {
+            left: { subject: comparison.left.subject, interval: comparison.left.interval },
+            right: { subject: comparison.right.subject, interval: comparison.right.interval },
+            relation: comparison.relation,
+            inverseRelation: comparison.inverseRelation,
+            disjoint: comparison.disjoint
+          }
+        });
+        events.push(await append(eventFactory.create({
+          episodeId,
+          typeId: "TemporalRelationDerived",
+          payload: toJsonValue({
+            schema: "scce.temporal_subject_relation.v1",
+            relation: comparison.relation,
+            inverseRelation: comparison.inverseRelation,
+            disjoint: comparison.disjoint,
+            sharedYears: comparison.sharedYears.slice(0, 32),
+            left: { subject: comparison.left.subject, start: comparison.left.interval.start, end: comparison.left.interval.end, evidenceId: comparison.left.evidenceId },
+            right: { subject: comparison.right.subject, start: comparison.right.interval.start, end: comparison.right.interval.end, evidenceId: comparison.right.evidenceId }
+          })
+        })));
+      }
       const retrievalFeatures = graphRetrievalFeatures(retrievalText);
       const semanticRetrievalStarted = Date.now();
       const compiledMemorySlice = semanticMemory.buildSlice({
