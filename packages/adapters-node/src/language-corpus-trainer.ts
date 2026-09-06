@@ -14,8 +14,11 @@ import {
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
   canonicalCorpusSourceSystemId,
+  corpusNgramSettings,
+  createCorpusRegistry,
   corpusRoleIdForSourceSystem,
   corpusSourceAlias,
+  type CorpusRegistryOverride,
   joinInformationLabels,
   normalizeInformationLabel,
   toJsonValue,
@@ -54,6 +57,8 @@ export interface LanguageCorpusTrainingInput {
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
+  /** Registry overrides, so a corpus can state its own n-gram limits instead of inheriting the defaults. */
+  corpusRegistry?: readonly CorpusRegistryOverride[];
   corpusMetadata?: JsonValue;
   languageAliases?: readonly string[];
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
@@ -172,6 +177,13 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   const clock = input.clock ?? createClock();
   const hasher = createHasher();
   const sourceSystemId = canonicalCorpusSourceSystemId(input.sourceSystem);
+  // Per-corpus n-gram limits, from the registry that carries them, whenever the caller did not state its own.
+  //
+  // The registry has held maxOrder, maxCountersPerOrder and vocabularyLimit per source system since it was
+  // written and `corpusNgramSettings` is the accessor for them; nothing called it, so every corpus trained on
+  // whatever global default sat downstream regardless of what the registry said about it. An explicit argument
+  // still wins, so no existing caller changes behaviour.
+  const registryNgram = corpusNgramSettings(createCorpusRegistry(input.corpusRegistry ?? []), sourceSystemId);
   const sourceInformationLabel = normalizeInformationLabel(
     input.informationLabel ?? verifiedPublicCorpusLabel(sourceSystemId)
   );
@@ -276,9 +288,9 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       text,
       evidence,
       createdAt,
-      maxOrder: input.ngramMaxOrder,
-      maxCountersPerOrder: input.ngramMaxCountersPerOrder,
-      vocabularyLimit: input.ngramVocabularyLimit,
+      maxOrder: input.ngramMaxOrder ?? registryNgram.maxOrder,
+      maxCountersPerOrder: input.ngramMaxCountersPerOrder ?? registryNgram.maxCountersPerOrder,
+      vocabularyLimit: input.ngramVocabularyLimit ?? registryNgram.vocabularyLimit,
       constructionSets: input.constructionSets,
       ...(input.alignmentPromotionObservations?.length ? { alignmentPromotionObservations: input.alignmentPromotionObservations } : {}),
       ...(input.alignmentCalibrationObservations?.length ? { alignmentCalibrationObservations: input.alignmentCalibrationObservations } : {})
