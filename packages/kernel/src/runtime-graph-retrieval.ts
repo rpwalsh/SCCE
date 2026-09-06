@@ -36,9 +36,12 @@ import {
 } from "./runtime-graph-cache.js";
 import {
   createBm25SparseIndex,
+  restoreBm25SparseIndex,
   createSparseVector,
   createTypedSparseFeatureId,
-  type Bm25SparseIndex
+  type Bm25SparseIndex,
+  type SparseVector,
+  type Bm25SparseIndexState
 } from "./sparse-ranking.js";
 import { computeFtrlShadowRanking, type FtrlShadowCandidate, type FtrlShadowRanking } from "./sparse-ranking-shadow.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
@@ -1158,6 +1161,9 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   }
 
 
+  /** Bounded snapshot memo for rebuilt hot neighborhoods. Snapshots are plain state, so they hold no live index. */
+  const bm25IndexSnapshots = new Map<string, Bm25SparseIndexState>();
+
   function buildHotNeighborhood(value: RuntimeGraphSliceValue): HotGraphNeighborhood {
     const nodeById = new Map<string, GraphNode>();
     const edgeById = new Map<string, GraphEdge>();
@@ -1247,10 +1253,40 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       evidenceEdgeIds,
       evidenceHyperedgeIds,
       sourceAnchorEvidenceIds,
-      sparseNodeIndex: createBm25SparseIndex(sparseDocuments)
+      sparseNodeIndex: bm25IndexForDocuments(sparseDocuments)
     };
   }
 
+
+  /**
+   * The BM25 index for a document set, restored from a snapshot when this process has indexed the same set before.
+   *
+   * The hot neighborhood is rebuilt whenever the slice cache turns over, and rebuilding re-indexes every node
+   * feature from scratch even when the node set has not changed. `restoreBm25SparseIndex` exists to rehydrate an
+   * index from its own snapshot and had no caller, because nothing ever kept a snapshot to rehydrate from. Keyed by
+   * a hash of the document ids and their features, so a set that differs in any way indexes fresh rather than
+   * silently reusing a stale index.
+   */
+  function bm25IndexForDocuments(documents: readonly { id: string; features: SparseVector }[]): Bm25SparseIndex {
+    const key = hasher.digestHex(documents
+      .map(document => `${document.id}:${document.features.entries.map(entry => String(entry.id)).join(",")}`)
+      .join("|"));
+    const cached = bm25IndexSnapshots.get(key);
+    if (cached) {
+      try {
+        return restoreBm25SparseIndex(cached);
+      } catch {
+        bm25IndexSnapshots.delete(key);
+      }
+    }
+    const index = createBm25SparseIndex(documents);
+    if (bm25IndexSnapshots.size >= BM25_SNAPSHOT_CACHE_LIMIT) {
+      const oldest = bm25IndexSnapshots.keys().next().value;
+      if (oldest !== undefined) bm25IndexSnapshots.delete(oldest);
+    }
+    bm25IndexSnapshots.set(key, index.snapshot());
+    return index;
+  }
 
   function addHotIndexValue(map: Map<string, Set<string>>, key: string, value: string, cap: number): void {
     if (!key || !value) return;
@@ -2050,6 +2086,9 @@ export function isControlCorpusSpan(span: EvidenceSpan): boolean {
 const CODE_MEDIA_MARKERS = ["javascript", "typescript", "x-python", "x-rust", "x-go", "x-java", "x-csharp", "x-c++", "source"];
 const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".php", ".rb", ".swift", ".kt"];
 /** Markup media types that share the `text/x-` prefix with source code but are prose sources. */
+/** How many distinct hot-neighborhood document sets keep a restorable snapshot. */
+const BM25_SNAPSHOT_CACHE_LIMIT = 8;
+
 const MARKUP_MEDIA_TYPES = ["text/x-wiki", "text/x-markdown", "text/x-rst", "text/x-org"] as const;
 
 /**
