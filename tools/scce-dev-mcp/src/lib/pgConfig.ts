@@ -26,22 +26,40 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
   return values.find((value) => value !== undefined && value.trim().length > 0);
 }
 
-function readScceConfig(): ScceConfigFile | undefined {
-  const explicitPath = process.env.SCCE_CONFIG?.trim();
-  const { root } = resolveRepositoryRootDiagnostic();
-  const candidatePath = explicitPath && explicitPath.length > 0 ? explicitPath : join(root, 'scce.config.json');
+function readJsonFile(path: string): ScceConfigFile | undefined {
   try {
-    return JSON.parse(readFileSync(candidatePath, 'utf8')) as ScceConfigFile;
+    return JSON.parse(readFileSync(path, 'utf8')) as ScceConfigFile;
   } catch {
     return undefined;
   }
 }
 
 /**
+ * The checked-in configuration with the untracked local overlay applied, which is the order the runtime loads them
+ * in.
+ *
+ * The overlay is where the database credential lives -- deliberately, so no secret reaches the repository -- and
+ * reading only the tracked file meant every Postgres tool here connected without one and hung until its statement
+ * timeout. That presents as a stale connection rather than a configuration gap, which is what it cost to find. An
+ * explicit SCCE_CONFIG path is taken as given and gets no overlay, since the caller named the file they meant.
+ */
+function readScceConfig(): ScceConfigFile | undefined {
+  const explicitPath = process.env.SCCE_CONFIG?.trim();
+  if (explicitPath && explicitPath.length > 0) return readJsonFile(explicitPath);
+  const { root } = resolveRepositoryRootDiagnostic();
+  const base = readJsonFile(join(root, 'scce.config.json'));
+  const overlay = readJsonFile(join(root, 'scce.config.local.json'));
+  if (!base) return overlay;
+  if (!overlay) return base;
+  return { ...base, ...overlay, database: { ...base.database, ...overlay.database } };
+}
+
+/**
  * Resolve how to reach PostgreSQL for read-only inspection, following the
  * same override order the SCCE runtime itself documents: an explicit
- * SCCE_DATABASE_URL always wins, then the checked-in scce.config.json (or an
- * SCCE_CONFIG override path), then legacy DATABASE_URL/PG_URL/PG* env vars.
+ * SCCE_DATABASE_URL always wins, then scce.config.json with the untracked
+ * scce.config.local.json overlay applied (or an SCCE_CONFIG override path),
+ * then legacy DATABASE_URL/PG_URL/PG* env vars.
  * Never returns credentials in a form a caller could echo back verbatim
  * without them having supplied it themselves.
  */
