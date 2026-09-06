@@ -96,7 +96,14 @@ for (const f of src) {
 // This file's own deliberately-unwired reasons name the very symbols they explain, and the match below reads any
 // mention in tools/ as a caller -- so recording a reason silently marked the symbol reached. The reason block is
 // cut out of the text being searched, or the report congratulates itself for documenting a gap.
-const toolSourceForMatching = toolSource.replace(/const DELIBERATELY_UNWIRED = [{][^}]*[}];/su, "");
+// Comments and the deliberately-unwired reasons name the very symbols they discuss, and a mention in tools/ counts
+// as a caller, so writing about a gap silently closed it -- twice, before this was noticed. Both are stripped.
+const COMMENT_BLOCK = new RegExp("/\\*[\\s\\S]*?\\*/", "gu");
+const COMMENT_LINE = new RegExp("(^|[^:])//.*$", "gmu");
+const toolSourceForMatching = toolSource
+  .replace(/const DELIBERATELY_UNWIRED = [{][^}]*[}];/su, "")
+  .replace(COMMENT_BLOCK, "")
+  .replace(COMMENT_LINE, "$1");
 for (const row of rows) if (!row.caller && word(row.name).test(toolSourceForMatching)) row.caller = "tools/";
 const orphans = rows.filter(r => !r.caller && !r.usedInOwnFile);
 const internalOnly = rows.filter(r => !r.caller && r.usedInOwnFile);
@@ -119,6 +126,16 @@ for (const orphan of orphans) {
   if (reason) orphan.deliberatelyUnwired = reason;
 }
 const deliberate = orphans.filter(o => o.deliberatelyUnwired).length;
+// An export the codebase itself marks @deprecated is a named compatibility surface being kept for callers, not
+// unfinished capability. The structural check above only catches `return otherFunction(`, so it misses the two
+// shapes this repository actually uses -- an object-literal wrapper (createPersonalizedPerronFrobenius returns
+// { rank, rankDetailed }) and a forwarding method. The tag is explicit and deliberate, so it is the better signal.
+for (const orphan of orphans) {
+  if (orphan.alias) continue;
+  const body = text.get(`${repo}/${orphan.file}`) ?? "";
+  const declaration = new RegExp("@deprecated[^*]*(?:[*](?!/)[^*]*)*[*]/[\\s\\S]{0,160}?(?:function|const)\\s+" + orphan.name + "\\b", "u");
+  orphan.alias = declaration.test(body);
+}
 const aliases = orphans.filter(o => o.alias).length;
 const contracts = orphans.filter(o => /^[A-Z][A-Z0-9_]+$/.test(o.name)).length;
 const legacy = orphans.filter(o => /scce2|\/v2-/i.test(o.file)).length;
