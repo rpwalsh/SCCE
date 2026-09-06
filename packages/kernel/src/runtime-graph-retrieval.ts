@@ -563,13 +563,21 @@ export function createRuntimeGraphRetrieval(options: {
     );
   }
 
-  function sourceContentHash(text: string): string {
+  /** Markup media types that share the `text/x-` prefix with source code but are prose sources. */
+const MARKUP_MEDIA_TYPES = ["text/x-wiki", "text/x-markdown", "text/x-rst", "text/x-org"] as const;
+
+function sourceContentHash(text: string): string {
     return `sha256_${hasher.digestHex(text)}`;
   }
 
   /** A span whose media type or origin is source code; structural, no language rules. Pure. */
 function spanIsSourceCode(span: EvidenceSpan): boolean {
   const media = String(span.mediaType ?? "").toLocaleLowerCase();
+  // `text/x-wiki` is markup, not code, and it is the media type of every ingested Wikipedia span. Treating the whole
+  // `text/x-` family as code removed the entire prose corpus from every non-code request's candidate pool, leaving
+  // whatever stray span happened not to carry that media type. The SQL side of this exclusion already carried the
+  // same exception; this predicate did not.
+  if (MARKUP_MEDIA_TYPES.some(markup => media.startsWith(markup))) return false;
   if (media.startsWith("text/x-") || media.includes("javascript") || media.includes("typescript") || media.includes("python")) return true;
   const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
   const uri = String(provenance.uri ?? provenance.canonicalUri ?? "");
@@ -622,7 +630,15 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       label: "kernel.sourceAnchoredEvidenceForText",
       durationMs: Date.now() - evidenceSearchStarted,
       counts: { results: evidenceResults.length, features: anchorFeatures.length, groups: anchorFeatureGroups.length },
-      support: { anchorFeatures }
+      // Which groups were actually searched, not just their flattened union: a request whose groups each return
+      // nothing is a different failure from one whose results are filtered away afterwards, and the union hid that.
+      support: {
+        anchorFeatures,
+        anchorFeatureGroups,
+        gathered: gatheredResults.length,
+        afterProseFilter: evidenceResults.length,
+        gatheredHeads: gatheredResults.slice(0, 6).map(item => String(item.span.id).slice(0, 34))
+      }
     });
     const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
       ? await sourceAnchorSemanticFrameEvidence(text)
@@ -649,6 +665,13 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       support: {
         sourceAnchoringRequired: anchored.required,
         sourceIdentityBoundEvidenceAbsent: promoted.length > 0 && evidence.length === 0,
+        // The pool admission saw, not only what it kept: "one wrong span reached admission" and "the right span was
+        // never retrieved" look identical without this.
+        pool: promoted.slice(0, 8).map(span => ({
+          id: String(span.id).slice(0, 40),
+          chars: [...String(span.text ?? "")].length,
+          head: String(span.text ?? "").replace(/\s+/gu, " ").slice(0, 50)
+        })),
         anchors: anchored.anchors,
         // Which spans actually survived, at a glance: diagnosing why a
         // wrong-topic span kept winning cloze retrieval required exactly
