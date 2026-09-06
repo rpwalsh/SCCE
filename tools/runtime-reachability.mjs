@@ -100,8 +100,17 @@ for (const f of src) {
 // as a caller, so writing about a gap silently closed it -- twice, before this was noticed. Both are stripped.
 const COMMENT_BLOCK = new RegExp("/\\*[\\s\\S]*?\\*/", "gu");
 const COMMENT_LINE = new RegExp("(^|[^:])//.*$", "gmu");
-const toolSourceForMatching = toolSource
-  .replace(/const DELIBERATELY_UNWIRED = [{][^}]*[}];/su, "")
+// Line-based, not a brace-matching regex: the reasons themselves quote code containing braces, so `[^}]*` stopped at
+// the first one and left the symbol names it was meant to remove in the text being searched.
+const stripReasonBlock = source => {
+  const lines = source.split(String.fromCharCode(10));
+  const start = lines.findIndex(line => line.startsWith("const DELIBERATELY_UNWIRED = {"));
+  if (start < 0) return source;
+  const end = lines.findIndex((line, index) => index > start && line === "};");
+  if (end < 0) return source;
+  return [...lines.slice(0, start), ...lines.slice(end + 1)].join(String.fromCharCode(10));
+};
+const toolSourceForMatching = stripReasonBlock(toolSource)
   .replace(COMMENT_BLOCK, "")
   .replace(COMMENT_LINE, "$1");
 for (const row of rows) if (!row.caller && word(row.name).test(toolSourceForMatching)) row.caller = "tools/";
@@ -123,13 +132,15 @@ const DELIBERATELY_UNWIRED = {
   sparseDot: "The only scorer over a SparseVector is the FTRL ranker, which already walks the entries to build the per-entry contribution breakdown its audit records, then sums that. Routing the sum through sparseDot would recompute every weight and throw the breakdown away, so the call site that looks right is strictly worse than what is there.",
   addMatrix: "Dense matrix arithmetic with no dense consumer left. The kernel's Laplacian path is sparse (graphLaplacian over CsrMatrix), and the heat/diffusion operators step vector-wise, so the natural-looking uses would materialise a dense matrix per step to replace an O(nnz) vector update.",
   scaleMatrix: "Same as addMatrix: the diffusion operators apply eta to the vector delta each step rather than scaling a matrix, and scaling one per step to match would allocate n^2 per iteration for no gain.",
-  csrScale: "graphLaplacian builds the normalized and random-walk forms directly from the adjacency rather than by scaling an existing CSR, so nothing in the sparse path needs a scaled copy; adding one would mean building a matrix to hand to a function that already computes what it needs."
+  csrScale: "graphLaplacian builds the normalized and random-walk forms directly from the adjacency rather than by scaling an existing CSR, so nothing in the sparse path needs a scaled copy; adding one would mean building a matrix to hand to a function that already computes what it needs.",
+  createBulkIngestBatches: "Plans byte-range batches for a bulk-copy load path that does not exist: ingestion streams per file and writes per source version inside a transaction, so there is no caller to hand a batch plan to. Building that path is the ingest-throughput work (roughly 400-500 pages/hour today, ~6s per page in writes), a measured performance project rather than a wiring, and inventing a caller here would plan batches nothing executes.",
+  alphaTraceMatrixSnapshot: "Reads a named matrix out of a persisted alpha trace, and nothing can read those traces: alpha_traces has an INSERT and no SELECT anywhere in the adapter, and the store interface exposes no accessor. The missing half is a reader, not a call site. Worth noting on its own -- the table is written (opt-in, multi-MB) and cannot currently be read back by anything.",
+  createCanonicalJson: "A factory returning { stringify: canonicalStringify } over a pure function every caller imports directly. There is no alternate canonical-JSON implementation to swap in and canonical form is a contract rather than a policy, so introducing an injection port to consume it would add indirection that enables nothing."
 };
 for (const orphan of orphans) {
   const reason = DELIBERATELY_UNWIRED[orphan.name];
   if (reason) orphan.deliberatelyUnwired = reason;
 }
-const deliberate = orphans.filter(o => o.deliberatelyUnwired).length;
 // An export the codebase itself marks @deprecated is a named compatibility surface being kept for callers, not
 // unfinished capability. The structural check above only catches `return otherFunction(`, so it misses the two
 // shapes this repository actually uses -- an object-literal wrapper (createPersonalizedPerronFrobenius returns
@@ -156,8 +167,15 @@ const importedByName = (source, name) => new RegExp(
   "import[^;]*[{,]\\s*" + name + "\\s*[,}][^;]*from", "u").test(source);
 for (const orphan of orphans) orphan.testOnly = !orphan.hostContract && importedByName(testSources, orphan.name);
 const hostContracts = orphans.filter(o => o.hostContract).length;
-const testOnly = orphans.filter(o => o.testOnly).length;
-console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "host contracts", hostContracts, "test-only", testOnly, "unwired", orphans.length - contracts - legacy - aliases - hostContracts, "of which no caller anywhere", orphans.length - contracts - legacy - aliases - hostContracts - testOnly, "deliberately unwired", deliberate);
+// Every count below partitions the same set -- the orphans left after contracts, aliases, legacy and host
+// contracts are removed. Counting test-only over all orphans instead double-counted the ones that are also
+// aliases or constants, and the no-caller remainder went negative.
+const classified = orphan => orphan.alias || orphan.hostContract || /^[A-Z][A-Z0-9_]+$/.test(orphan.name) || /scce2|[/]v2-/i.test(orphan.file);
+const unwiredSet = orphans.filter(orphan => !classified(orphan));
+const testOnly = unwiredSet.filter(o => o.testOnly).length;
+const deliberate = unwiredSet.filter(o => o.deliberatelyUnwired).length;
+const noCallerAnywhere = unwiredSet.filter(o => !o.testOnly && !o.deliberatelyUnwired).length;
+console.log("of which contracts", contracts, "aliases", aliases, "legacy/migration", legacy, "host contracts", hostContracts, "test-only", testOnly, "unwired", unwiredSet.length, "of which no caller anywhere", noCallerAnywhere, "deliberately unwired", deliberate);
 fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
  generatedAt: new Date().toISOString(),
  method: "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
@@ -171,9 +189,9 @@ fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
   legacyMigration: legacy,
   hostContracts,
   testOnlyHelpers: testOnly,
-  implementedButUncalled: orphans.length - contracts - aliases - legacy - hostContracts,
+  implementedButUncalled: unwiredSet.length,
   ofWhichCoveredByTestsOnly: testOnly,
-  ofWhichNoCallerAnywhere: orphans.length - contracts - aliases - legacy - hostContracts - testOnly,
+  ofWhichNoCallerAnywhere: noCallerAnywhere,
   ofWhichDeliberatelyUnwired: deliberate
  },
  orphans
