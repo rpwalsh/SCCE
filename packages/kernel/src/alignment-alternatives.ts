@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import { sparseAlignmentCandidatesForUnit } from "./sparse-alignment-candidates.js";
 import type {
   SparseAlignmentCandidateSupport,
   SparseAlignmentTargetIndex
@@ -74,13 +75,21 @@ export function extractAlignmentAlternatives(input: {
   }
   const hasher = input.hasher ?? createHasher();
   const maximum = boundedMaximum(input.maximumRetainedAlternatives);
-  const candidatesByRow = new Map(input.support.rows.map(row => [
-    row.surfaceUnitId,
-    new Set(row.candidateIds)
-  ]));
+  // How many candidates a unit really has, not how many ids its row names. A row that references a candidate absent
+  // from `support.candidates` inflated the inline count, so a cell with one usable option read as a branch point and
+  // the search spent an alternative on it. `sparseAlignmentCandidatesForUnit` resolves ids against the candidate set
+  // and had no caller; memoized per unit, so each one is resolved once however many cells reference it.
+  const candidateCountByUnit = new Map<string, number>();
+  const availableCandidateCount = (surfaceUnitId: string): number => {
+    const cached = candidateCountByUnit.get(surfaceUnitId);
+    if (cached !== undefined) return cached;
+    const count = sparseAlignmentCandidatesForUnit(input.support, surfaceUnitId).length;
+    candidateCountByUnit.set(surfaceUnitId, count);
+    return count;
+  };
   const branchCandidateIds = input.basePlan.cells
     .filter(cell => cell.mass > 0 && !cell.exactAnchor)
-    .filter(cell => (candidatesByRow.get(cell.surfaceUnitId)?.size ?? 0) > 1)
+    .filter(cell => availableCandidateCount(cell.surfaceUnitId) > 1)
     .sort((left, right) =>
       right.mass - left.mass
       || left.surfaceUnitId.localeCompare(right.surfaceUnitId)
