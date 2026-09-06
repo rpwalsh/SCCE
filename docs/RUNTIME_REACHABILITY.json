@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T09:05:04.199Z",
+ "generatedAt": "2026-09-06T09:20:12.663Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1665,
-  "reached": 1166,
-  "internalHelpersOnly": 454,
-  "orphans": 45,
-  "declaredConstants": 6,
+  "exports": 1670,
+  "reached": 1174,
+  "internalHelpersOnly": 459,
+  "orphans": 37,
+  "declaredConstants": 4,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 21,
-  "implementedButUncalled": 28,
-  "ofWhichCoveredByTestsOnly": 21,
+  "testOnlyHelpers": 15,
+  "implementedButUncalled": 22,
+  "ofWhichCoveredByTestsOnly": 15,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 13
  },
@@ -103,60 +103,6 @@
   {
    "name": "buildCognitiveSubstrate",
    "file": "packages/kernel/src/cognitive-substrate.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "TARGET_PROFILE_PATTERN_FAMILY_IDS",
-   "file": "packages/kernel/src/dialogue-learning.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "targetProfilePatternRecord",
-   "file": "packages/kernel/src/dialogue-learning.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "replayDialogueOutcomeMemory",
-   "file": "packages/kernel/src/dialogue-learning.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "createInMemoryDialogueMemoryStore",
-   "file": "packages/kernel/src/dialogue-learning.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "moveSpan",
-   "file": "packages/kernel/src/discontinuous-construction.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "interleaveConstructions",
-   "file": "packages/kernel/src/discontinuous-construction.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
@@ -383,24 +329,6 @@
   {
    "name": "createCorrectionEngine",
    "file": "packages/kernel/src/translation-correction-engine.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "EMPTY_USER_MODEL_STORE",
-   "file": "packages/kernel/src/user-model-store.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "deleteUserModelClaim",
-   "file": "packages/kernel/src/user-model-store.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,

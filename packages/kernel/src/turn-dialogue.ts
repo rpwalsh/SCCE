@@ -8,6 +8,7 @@ import {
   type UserStyleProfile
 } from "./dialogue-pragmatics.js";
 import type { CalibrationModelSet } from "./calibration-spine.js";
+import type { DialogueOutcomeMemoryReplay } from "./dialogue-learning.js";
 import { planStreamRhythm, type StreamRhythmPlan } from "./stream-rhythm.js";
 import { verifyProofPreservingParaphrases, type ProofPreservingParaphraseReport } from "./proof-preserving-paraphrase.js";
 import type { EvidenceSpan, JsonValue, TurnResult } from "./types.js";
@@ -37,6 +38,14 @@ export interface TurnDialogueBridge {
   streamPlan: StreamRhythmPlan;
   /** Whether the reworded answer still carries the protected spans, negation, uncertainty and contradiction it licensed. */
   paraphrasePreservation: ProofPreservingParaphraseReport;
+  /** Present when this conversation's recorded outcomes were consulted: what the owner has already rejected, and whether this answer repeats it. */
+  outcomeMemory?: {
+    repeatsRejectedSurface: boolean;
+    switchedToAlternative: boolean;
+    rejectedSurfaceCount: number;
+    acceptedSurfaceCount: number;
+    openOutcomeIds: string[];
+  };
   trace: JsonValue;
 }
 
@@ -49,6 +58,8 @@ export function buildTurnDialogueBridge(input: {
   userStyleProfile?: UserStyleProfile;
   calibrationModels?: CalibrationModelSet;
   calibrationTaskClass?: string;
+  /** This conversation's recorded outcomes, so an answer the owner already rejected is not handed back unchanged. */
+  outcomeMemory?: DialogueOutcomeMemoryReplay;
 }): TurnDialogueBridge {
   const turnId = input.turnId ?? String(input.result.episodeId);
   const answerGraph = answerGraphFromTurnResult(input.result);
@@ -67,10 +78,20 @@ export function buildTurnDialogueBridge(input: {
   const streamPlan = planStreamRhythm({ policyDecision: pragmatics.policyDecision, answerGraph, finalText: pragmatics.finalText });
   // Pragmatics may reword the answer; the reworded text still has to carry the protected spans, the negation, the
   // uncertainty and the contradiction the answer graph licensed. A variant that drops one is reported, not shipped quietly.
-  const paraphrasePreservation = verifyProofPreservingParaphrases({
-    answerGraph,
-    variants: [...new Set([pragmatics.finalText, input.result.answer].filter(Boolean))]
-  });
+  const variants = [...new Set([pragmatics.finalText, input.result.answer].filter(Boolean))];
+  const paraphrasePreservation = verifyProofPreservingParaphrases({ answerGraph, variants });
+  // What the owner already rejected in this conversation was recorded every turn and read back by nothing, so the
+  // same surface could be handed back verbatim after being rejected. When it would be, a proof-preserving variant
+  // that has not been rejected is used instead; when there is none, the answer still goes out -- silence is never the
+  // better answer -- and the repeat is reported rather than hidden.
+  const rejected = new Set(input.outcomeMemory?.rejectedSurfaceHashes ?? []);
+  const repeatsRejectedSurface = rejected.size > 0 && rejected.has(hashText(pragmatics.finalText));
+  const alternative = repeatsRejectedSurface
+    ? variants.find((variant, index) => variant !== pragmatics.finalText
+      && !rejected.has(hashText(variant))
+      && paraphrasePreservation.checks[index]?.valid === true)
+    : undefined;
+  const spoken = alternative ?? pragmatics.finalText;
   return {
     schema: "scce.turn_dialogue_bridge.v1",
     paraphrasePreservation,
@@ -78,8 +99,19 @@ export function buildTurnDialogueBridge(input: {
     turnId,
     answerGraphHash,
     answerGraph,
-    pragmatics,
+    pragmatics: alternative ? { ...pragmatics, finalText: spoken, selected: { ...pragmatics.selected, textHash: hashText(spoken) } } : pragmatics,
     streamPlan,
+    ...(input.outcomeMemory
+      ? {
+        outcomeMemory: {
+          repeatsRejectedSurface,
+          switchedToAlternative: Boolean(alternative),
+          rejectedSurfaceCount: input.outcomeMemory.rejectedSurfaceHashes.length,
+          acceptedSurfaceCount: input.outcomeMemory.acceptedSurfaceHashes.length,
+          openOutcomeIds: input.outcomeMemory.openOutcomeIds
+        }
+      }
+      : {}),
     trace: toJsonValue({
       source: "turn-dialogue.bridge",
       episodeId: String(input.result.episodeId),

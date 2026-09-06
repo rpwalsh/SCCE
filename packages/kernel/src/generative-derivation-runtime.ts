@@ -15,7 +15,7 @@ import {
   type ProofLicenseCarrier,
   type ProofLicenseSemiring
 } from "./proof-license-semiring.js";
-import { reassembleLogicalSurface, type DiscontinuousConstruction } from "./discontinuous-construction.js";
+import { interleaveConstructions, reassembleLogicalSurface, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import type { ReversibleConstruction } from "./reversible-construction.js";
 import { renderJoinedSurface, type JoinProgramMixture } from "./join-program.js";
 import type { GraphSlice, Hyperedge } from "./types.js";
@@ -107,6 +107,31 @@ export function constructionOperator(construction: ReversibleConstruction): Cons
         .sort((left, right) => left.start - right.start)
     }
   };
+}
+
+/**
+ * A composite of two discontinuous constructions reads in the interleave of their two orders, not the parent's alone.
+ *
+ * Only when both were learned from the same source surface, so their span coordinates are in one space and the union
+ * can be checked for overlap at all; otherwise the composite keeps the parent's reading order, which is what it had
+ * before. `interleaveConstructions` refuses an overlapping union rather than producing a surface that claims the same
+ * source material twice, and a refusal falls back the same way.
+ */
+function composedReadingOrder(
+  parent: ConstructionOperator,
+  record: ComposedConstruction,
+  operators: ReadonlyMap<string, ConstructionOperator>
+): { discontinuous?: DiscontinuousConstruction } {
+  if (!parent.discontinuous) return {};
+  const child = record.ports
+    .map(port => operators.get(port.childConstructionId))
+    .find(candidate => candidate?.discontinuous && candidate.surface.text === parent.surface.text);
+  if (!child?.discontinuous) return { discontinuous: parent.discontinuous };
+  try {
+    return { discontinuous: interleaveConstructions(parent.discontinuous, child.discontinuous, `${parent.discontinuous.id}+${child.discontinuous.id}`) };
+  } catch {
+    return { discontinuous: parent.discontinuous };
+  }
 }
 
 function portArgumentType(port: ReversibleConstruction["graph"]["ports"][number]): string {
@@ -212,7 +237,12 @@ export function buildConstructionAlgebra(input: {
       const parent = operators.get(record.baseConstructionId);
       if (!parent) continue;
       byResultType.set(parent.resultType, [...(byResultType.get(parent.resultType) ?? []), record.id]);
-      operators.set(record.id, { ...parent, constructionId: record.id, argumentTypes: [] });
+      operators.set(record.id, {
+        ...parent,
+        constructionId: record.id,
+        argumentTypes: [],
+        ...composedReadingOrder(parent, record, operators)
+      });
     }
   }
 
@@ -470,7 +500,7 @@ export function searchBestDerivation(input: {
 
   // The chart holds every licensed derivation, not just the argmax; the rivals are what a caller needs to see that a
   // choice was made rather than forced.
-  const bestCell = [...decoded.chart.cells.values()].find(cell => cell.key.coverage.includes(bestConstructionId ?? " "));
+  const bestCell = [...decoded.chart.cells.values()].find(cell => cell.key.coverage.includes(bestConstructionId ?? "\u0000"));
   const alternatives = bestCell
     ? extractDerivations(decoded.chart, bestCell.key, 8)
       .flatMap(derivation => {

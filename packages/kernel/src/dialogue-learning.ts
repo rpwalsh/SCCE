@@ -272,6 +272,46 @@ export function targetProfilePatternRecord(input: {
   };
 }
 
+/**
+ * The learned profile split into its addressable pattern families.
+ *
+ * Each family is one durable, individually queryable record carrying the weights that define it and the evidence that
+ * moved them, so "what has it learned about how I want to be answered" is a lookup by family rather than a diff of two
+ * opaque profile blobs. `alpha` is the family's own strength: how far its weights have moved from the neutral 0.5 the
+ * profile starts at, so a family nothing has taught yet reads as weak instead of as a confident 0.5.
+ */
+export function targetProfilePatternsFromProfile(input: {
+  targetProfileId: string;
+  profile: UserStyleProfile;
+  evidenceIds?: readonly EvidenceId[];
+  now?: number;
+  clock?: Clock;
+}): TargetProfilePatternRecord[] {
+  const now = resolveNow(input.now, input.clock);
+  const weight = (featureId: string): number => clamp01(input.profile.weights[featureId] ?? 0.5);
+  const families: Array<{ familyId: string; featureIds: string[] }> = [
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.rhythm, featureIds: [INTERACTION_FEATURE_IDS.responseLead, INTERACTION_FEATURE_IDS.compactness] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.register, featureIds: [INTERACTION_FEATURE_IDS.hedgeAversion, INTERACTION_FEATURE_IDS.reviewPressure] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.politeness, featureIds: [INTERACTION_FEATURE_IDS.boundaryNeed, INTERACTION_FEATURE_IDS.hedgeAversion] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.caveat, featureIds: [INTERACTION_FEATURE_IDS.caveatTolerance] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.turnShape, featureIds: [INTERACTION_FEATURE_IDS.artifactNeed, INTERACTION_FEATURE_IDS.calculusNeed] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.codeSwitch, featureIds: [INTERACTION_FEATURE_IDS.artifactNeed, INTERACTION_FEATURE_IDS.compactness] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.correctionPreference, featureIds: [INTERACTION_FEATURE_IDS.clarificationCost, INTERACTION_FEATURE_IDS.reviewPressure] }
+  ];
+  return families.map(family => {
+    const weights = Object.fromEntries(family.featureIds.map(featureId => [featureId, weight(featureId)]));
+    const displacement = family.featureIds.reduce((max, featureId) => Math.max(max, Math.abs(weight(featureId) - 0.5)), 0);
+    return targetProfilePatternRecord({
+      targetProfileId: input.targetProfileId,
+      patternFamilyId: family.familyId,
+      patternJson: toJsonValue({ schema: "scce.dialogue.target_profile_pattern.v1", featureIds: family.featureIds, weights }),
+      ...(input.evidenceIds ? { evidenceIds: input.evidenceIds } : {}),
+      alpha: clamp01(displacement * 2),
+      now
+    });
+  });
+}
+
 export function replayDialogueOutcomeMemory(input: {
   conversationId: string;
   outcomes: readonly ConversationOutcomeRecord[];
@@ -286,6 +326,25 @@ export function replayDialogueOutcomeMemory(input: {
     acceptedSurfaceHashes: uniqueStrings(input.outcomes.filter(outcome => outcome.accepted).map(outcome => outcome.responseHash)),
     openOutcomeIds: input.outcomes.filter(outcome => outcome.failedConstraintRefs.length > 0).map(outcome => outcome.id)
   };
+}
+
+/**
+ * This conversation's recorded outcomes and newest profile, read straight from durable memory.
+ *
+ * A store that does not implement outcome listing yields an empty replay -- nothing is known to have been rejected,
+ * which is exactly the behaviour before this memory was consulted at all. A store that implements it and fails still
+ * fails: that is a broken read, not an absent capability.
+ */
+export async function dialogueOutcomeMemoryForConversation(
+  store: DialogueMemoryStore,
+  conversationId: string,
+  limit = 200
+): Promise<DialogueOutcomeMemoryReplay> {
+  const [outcomes, snapshots] = await Promise.all([
+    store.listConversationOutcomes ? store.listConversationOutcomes({ conversationId, limit }) : Promise.resolve([]),
+    store.listStyleSnapshots ? store.listStyleSnapshots({ conversationId, limit: 1 }) : Promise.resolve([])
+  ]);
+  return replayDialogueOutcomeMemory({ conversationId, outcomes, snapshots });
 }
 
 export async function persistDialogueBatch(store: DialogueMemoryStore, batch: DialoguePersistenceBatch): Promise<void> {
@@ -451,6 +510,19 @@ export async function persistDialogueOutcomeAndLearn(input: {
   await input.store.putConversationOutcome(outcome);
   if (correction) await input.store.putUserCorrection(correction);
   await input.store.putStyleSnapshot(learning.snapshot);
+  // The style snapshot is one opaque blob per outcome. The pattern families are the addressable form of the same
+  // learning -- what this profile now believes about rhythm, register, politeness, caveats, turn shape, code
+  // switching and correction handling, each queryable on its own and each carrying the evidence that moved it.
+  // `target_profile_patterns` has had a full store on both sides and no writer at all, so every one of those
+  // questions was answerable only by re-deriving them from a blob.
+  for (const record of targetProfilePatternsFromProfile({
+    targetProfileId: input.result.policyDecision.targetProfileId,
+    profile: learning.nextProfile,
+    evidenceIds: input.result.evidenceIds as unknown as readonly EvidenceId[],
+    now
+  })) {
+    await input.store.putTargetProfilePattern(record);
+  }
   for (const observation of calibrationObservations) await input.store.putCalibrationObservation(observation);
   if (input.creativePreferencePair) {
     const persistedPairs = await input.store.listCalibrationObservations({
@@ -679,6 +751,72 @@ function stringArray(value: JsonValue | undefined): string[] {
 
 function newest<T>(items: T[], limit: number, time: (item: T) => number): T[] {
   return items.sort((left, right) => time(right) - time(left)).slice(0, limit);
+}
+
+export interface DialogueLearningPreview {
+  schema: "scce.dialogue.learning_preview.v1";
+  conversationId: string;
+  replay: DialogueOutcomeMemoryReplay;
+  currentProfile: UserStyleProfile;
+  projectedProfile: UserStyleProfile;
+  changedFeatures: Array<{ featureId: string; from: number; to: number }>;
+  outcomesReplayed: number;
+  patterns: TargetProfilePatternRecord[];
+}
+
+/**
+ * What this conversation's recorded outcomes would make of the style profile, computed without writing anything.
+ *
+ * The profile moves on every accepted, rejected or corrected turn, and the only way to see where it had got to was to
+ * read the newest opaque snapshot -- there was no way to ask what the accumulated history *implies* before it is
+ * committed, which is the same consent question the held-material and curriculum surfaces already answer for
+ * everything else the system learns. The replay runs against `createInMemoryDialogueMemoryStore`, seeded from the
+ * durable records, so every write this makes lands in the sandbox and the durable store is untouched.
+ */
+export async function previewDialogueLearning(input: {
+  store: DialogueMemoryStore;
+  conversationId: string;
+  limit?: number;
+  learningRate?: number;
+  now?: number;
+  clock?: Clock;
+}): Promise<DialogueLearningPreview> {
+  const now = resolveNow(input.now, input.clock);
+  const limit = Math.max(1, Math.min(1_000, Math.floor(input.limit ?? 200)));
+  const [outcomes, snapshots] = await Promise.all([
+    input.store.listConversationOutcomes({ conversationId: input.conversationId, limit }),
+    input.store.listStyleSnapshots({ conversationId: input.conversationId, limit })
+  ]);
+  const replay = replayDialogueOutcomeMemory({ conversationId: input.conversationId, outcomes, snapshots });
+  const sandbox = createInMemoryDialogueMemoryStore({ outcomes, snapshots });
+  const currentProfile = replay.latestProfile ?? DEFAULT_USER_STYLE_PROFILE;
+  let projected = currentProfile;
+  // Oldest first: the profile is a fold over the history in the order it happened, not over the newest-first page.
+  for (const outcome of [...outcomes].sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))) {
+    const update = learnDialoguePolicyWeights({
+      profile: projected,
+      outcome,
+      ...(input.learningRate === undefined ? {} : { learningRate: input.learningRate }),
+      now
+    });
+    projected = update.nextProfile;
+    await sandbox.putStyleSnapshot(update.snapshot);
+  }
+  const patterns = targetProfilePatternsFromProfile({ targetProfileId: `preview.${input.conversationId}`, profile: projected, now });
+  for (const record of patterns) await sandbox.putTargetProfilePattern(record);
+  const featureIds = [...new Set([...Object.keys(currentProfile.weights), ...Object.keys(projected.weights)])].sort();
+  return {
+    schema: "scce.dialogue.learning_preview.v1",
+    conversationId: input.conversationId,
+    replay,
+    currentProfile,
+    projectedProfile: projected,
+    changedFeatures: featureIds
+      .map(featureId => ({ featureId, from: currentProfile.weights[featureId] ?? 0.5, to: projected.weights[featureId] ?? 0.5 }))
+      .filter(row => Math.abs(row.to - row.from) > 1e-9),
+    outcomesReplayed: outcomes.length,
+    patterns
+  };
 }
 
 function uniqueStrings(values: readonly string[]): string[] {

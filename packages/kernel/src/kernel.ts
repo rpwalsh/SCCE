@@ -69,6 +69,7 @@ import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { createTrainingRuntime } from "./training-runtime.js";
 import { createTranslationEngine } from "./translation.js";
+import { forgetUserModelClaim, userModelClaimsForConversation, userModelStoreProvenanceSummary } from "./user-model-turn-request.js";
 import type {
   BenchmarkInput,
   BenchmarkResult,
@@ -527,6 +528,22 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           };
         })
       };
+    },
+    async listUserModelClaims(query: { conversationId: string; limit?: number }) {
+      const limit = Math.max(1, Math.min(500, Math.floor(query.limit ?? 200)));
+      const { store, claims, governing } = await userModelClaimsForConversation(deps.storage.userModelClaims, query.conversationId, limit);
+      return {
+        schema: "scce.user_model_claims.v1" as const,
+        conversationId: query.conversationId,
+        claims,
+        governing,
+        provenance: userModelStoreProvenanceSummary(store)
+      };
+    },
+    async forgetUserModelClaim(query: { conversationId: string; claimId: string }) {
+      // The withdrawal half of the user model. A claim recorded from a misread instruction governed every later turn,
+      // and supersession -- the only remedy that existed -- keeps the original in the history it governs.
+      return forgetUserModelClaim(deps.storage.userModelClaims, query.conversationId, query.claimId);
     },
     async turn(input: OwnerInput): Promise<TurnResult> {
       return productionTurnRuntime.turn(input);

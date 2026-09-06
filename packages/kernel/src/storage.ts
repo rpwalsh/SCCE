@@ -852,6 +852,8 @@ export interface UserModelClaimStore {
   putClaim(claim: UserModelClaimRecord): Promise<void>;
   /** `conversationId` is required (not optional) so a caller can never accidentally issue an unscoped, cross-conversation query. */
   listClaims(query: { conversationId: string; subject?: string; scope?: string; limit?: number }): Promise<UserModelClaimRecord[]>;
+  /** Durable removal, scoped to one conversation. Optional so an existing storage double keeps compiling; absent means the forget surface reports that this deployment cannot forget rather than silently claiming it did. */
+  deleteClaim?(query: { conversationId: string; claimId: string }): Promise<boolean>;
 }
 
 /** Plan items 217-218. Storage-schema shape for a real, durable task-resumption snapshot. `snapshotJson` carries the full real snapshot (`task-resumption-snapshot.ts`'s `TaskResumptionSnapshot` -- already fully JSON-safe); `id`/`goalId`/`capturedAt` are pulled out as real indexed columns for real querying, the same split `ppf_cache`/`alpha_traces` already use for their own JSON-payload-plus-indexed-columns records. */
