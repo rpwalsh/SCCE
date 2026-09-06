@@ -90,28 +90,39 @@ const list = names => names.length === 0
 const questionWord = count => `${Math.abs(count)} question${Math.abs(count) === 1 ? "" : "s"}`;
 
 const findings = [];
-if (loadBearing.length) {
-  findings.push(`**${loadBearing.length} of ${ablations.length} components are load-bearing on this set.** `
-    + loadBearing.map(row => `Removing \`${row.component}\` costs ${questionWord(row.delta)}`).join("; ")
+// A condition that switches off several components at once answers a different question from a single-component
+// condition, and counting it among them would report the composite twice.
+const composite = new Set(["lexical_only"]);
+const singleComponent = ablations.filter(row => !composite.has(row.component));
+const singleLoadBearing = loadBearing.filter(row => !composite.has(row.component));
+const singleNeutral = neutral.filter(row => !composite.has(row.component));
+const singleImproving = improving.filter(row => !composite.has(row.component));
+if (singleLoadBearing.length) {
+  findings.push(`**${singleLoadBearing.length} of ${singleComponent.length} single-component conditions cost the system questions.** `
+    + singleLoadBearing.map(row => `\`${row.component}\` costs ${questionWord(row.delta)}`).join("; ")
     + ".");
 } else {
-  findings.push(`**No single component's removal lowers the score on this set.** Every ablation scores at or above the full condition's ${total(full)}/${questionCount}.`);
+  findings.push(`**No single-component condition lowers the score on this set.** Every one scores at or above the full condition's ${total(full)}/${questionCount}.`);
 }
-if (neutral.length) {
-  findings.push(`Removing ${list(neutral.map(row => row.component))} changes nothing measurable here. `
-    + `That bounds what this instrument can see, not the components' value: a 160-question cloze set over a fixed corpus `
-    + `asks the system to locate a stored sentence and read a span out of it, and lexical retrieval alone solves that task.`);
+if (singleNeutral.length) {
+  findings.push(`${list(singleNeutral.map(row => row.component))} ${singleNeutral.length === 1 ? "changes" : "change"} nothing measurable here. `
+    + `That bounds what this instrument can see, not the components' value: a ${full.clozeTotal}-question cloze set over a fixed `
+    + `corpus asks the system to locate a stored sentence and read a span out of it, and lexical retrieval alone solves that task.`);
 }
-if (improving.length) {
-  findings.push(`Removing ${list(improving.map(row => row.component))} `
-    + `${improving.length === 1 ? "raises" : "raise"} the score by `
-    + `${improving.map(row => questionWord(row.delta)).join(" and ")}. On a set this size that is within noise, and it is `
-    + `recorded rather than rounded away: a component that costs latency and returns nothing measurable on the task under `
-    + `measurement is a real result to carry forward.`);
+for (const row of singleImproving) {
+  // Whether a gain is noise or a finding is decided by its size against this set, not asserted in advance.
+  const noise = Math.abs(row.delta) <= 2;
+  findings.push(noise
+    ? `\`${row.component}\` scores ${questionWord(row.delta)} above the full condition. On a ${questionCount}-item set that is `
+      + `within noise, and it is recorded rather than rounded away: a component that costs latency and returns nothing `
+      + `measurable on the task under measurement is a result to carry forward.`
+    : `**\`${row.component}\` scores ${questionWord(row.delta)} above the full condition.** That is too large for noise on a `
+      + `${questionCount}-item set: on this task the component is not merely unmeasurable, it is costing answers, and the `
+      + `questions it costs are the place to look first.`);
 }
 if (lexicalOnly) {
-  findings.push(`The \`lexical_only\` condition -- no graph, no learned semantics, no relation potential, no diffusion, no `
-    + `PowerWalk -- scores ${lexicalOnly.total}/${questionCount} against the full system's ${total(full)}/${questionCount}. `
+  findings.push(`The composite \`lexical_only\` condition -- no graph, no learned semantics, no relation potential, no diffusion, `
+    + `no PowerWalk -- scores ${lexicalOnly.total}/${questionCount} against the full system's ${total(full)}/${questionCount}. `
     + `The architecture's claims are claims about tasks this instrument does not contain.`);
 }
 if (reference) {
@@ -126,13 +137,19 @@ if (reference) {
 
 // The revision under measurement, so a reader can check the table against the code that produced it. A report that
 // does not name its build cannot be reproduced, and this repository's own review contract requires the revision.
-const revision = (() => {
-  try {
-    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-  } catch {
-    return "unknown";
-  }
-})();
+const revisionFlag = process.argv.find(argument => argument.startsWith("--revision="));
+const revision = revisionFlag
+  ? revisionFlag.slice("--revision=".length)
+  : (() => {
+    try {
+      return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+    } catch {
+      return "unknown";
+    }
+  })();
+// HEAD at report time is not the revision the run used unless the caller says so; a report that silently names the
+// wrong build is worse than one that says it does not know which build it measured.
+const revisionIsAsserted = Boolean(revisionFlag);
 const worktreeDirty = (() => {
   try {
     return execSync("git status --porcelain", { encoding: "utf8" }).trim().length > 0;
@@ -144,7 +161,7 @@ const worktreeDirty = (() => {
 const report = `# Ablation: what each component is worth
 
 Generated by \`node tools/ablation-delta.mjs ${runDirectory}\` on ${new Date().toISOString()},
-against revision \`${revision}\`${worktreeDirty ? " (working tree had uncommitted changes at report time)" : ""}.
+against revision \`${revision}\`${revisionIsAsserted ? "" : " (repository HEAD at report time; pass --revision to name the build the run actually used)"}${worktreeDirty ? ", working tree carrying uncommitted changes" : ""}.
 
 Each row is the same ${questionCount}-question sealed set answered with one component disabled through
 \`evaluation-flags.ts\`, against the same corpus and the same brain. The delta is against the full condition, which
