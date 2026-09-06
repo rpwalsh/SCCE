@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T09:01:55.413Z",
+ "generatedAt": "2026-09-06T09:05:04.199Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1165,
+  "reached": 1166,
   "internalHelpersOnly": 454,
-  "orphans": 46,
+  "orphans": 45,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 22,
-  "implementedButUncalled": 29,
-  "ofWhichCoveredByTestsOnly": 22,
+  "testOnlyHelpers": 21,
+  "implementedButUncalled": 28,
+  "ofWhichCoveredByTestsOnly": 21,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 13
  },
@@ -171,15 +171,6 @@
    "alias": true,
    "hostContract": false,
    "testOnly": false
-  },
-  {
-   "name": "deriveGenerativeStructure",
-   "file": "packages/kernel/src/generative-derivation-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
   },
   {
    "name": "requestedAuthorityBootstrapModel",

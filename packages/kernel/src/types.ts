@@ -1367,6 +1367,18 @@ export interface ScceKernel {
   /** Temporal causal discovery over caller-supplied series. Typed input only, never inferred from prose. */
   discoverCausalStructure(request: import("./causal-analysis-runtime.js").CausalDiscoveryRequest): Promise<import("./causal-analysis-runtime.js").CausalDiscoveryResult>;
   /** Read back persisted alpha traces and the named matrix from each, for replay debugging of a turn's field. */
+  /** What the learned construction grammar composes with no semantic target. Diagnostic only; never spoken. */
+  inspectGenerativeStructure(query?: { constructionLimit?: number; maxRecursionDepth?: number; treewidthBudget?: number }): Promise<{
+    schema: "scce.generative_structure_inspection.v1";
+    constructions: number;
+    composed: number;
+    derivable: boolean;
+    reason?: string;
+    derivedChars?: number;
+    bestScore?: number;
+    alternatives?: number;
+    treewidth?: number;
+  }>;
   inspectAlphaTraces(query?: { graphHash?: string; limit?: number; kind?: "adjacency" | "laplacian" | "normalizedLaplacian" }): Promise<{
     schema: "scce.alpha_trace_inspection.v1";
     kind: "adjacency" | "laplacian" | "normalizedLaplacian";
