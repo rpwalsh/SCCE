@@ -1,7 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
-import { workingMemoryEntriesForTask } from "./working-memory.js";
 import type { WorkingMemoryState } from "./working-memory.js";
 import type { Hasher } from "./types.js";
 import { createHasher } from "./primitives.js";
@@ -75,14 +74,12 @@ export function captureTaskResumptionSnapshot(input: {
   hasher?: Hasher;
 }): TaskResumptionSnapshot {
   const hasher = input.hasher ?? createHasher();
-  // Scoped to this snapshot's own tasks. Summarising every entry in working memory meant a snapshot for one goal
-  // carried entry ids belonging to whatever else the process had been doing, so resuming it restored another task's
-  // memory and changed the snapshot id whenever unrelated work happened to be in flight. `workingMemoryEntriesForTask`
-  // is the per-task accessor and had no caller; the task ids come from this snapshot's own decomposition graph.
-  const taskIds = Object.keys(input.taskGraph.nodes);
-  const entries = taskIds.length
-    ? taskIds.flatMap(taskId => workingMemoryEntriesForTask(input.workingMemory, taskId))
-    : Object.values(input.workingMemory.entries);
+  // Deliberately every entry in the supplied working memory, not the ones whose taskId appears in `taskGraph`.
+  // Those are different id spaces: the graph carries the program's decomposition node ids, while a turn's entries
+  // are written under a turn-scoped id (`task.turn.<episodeId>.candidate_selection`). Filtering by the graph drops
+  // every entry and empties the summary, which is what happened when this was tried. The caller passes the working
+  // memory it wants summarised; scoping is its decision, not this function's.
+  const entries = Object.values(input.workingMemory.entries);
   const promotedEntryIds = entries.filter(entry => entry.promotionStatus === "promoted").map(entry => entry.id).sort();
   const provisionalEntryIds = entries.filter(entry => entry.promotionStatus !== "promoted").map(entry => entry.id).sort();
   const canonical = canonicalSnapshotContent({
