@@ -66,7 +66,7 @@ A cloze set over a fixed corpus is an instrument for retrieval and refusal. It d
 
 ### Runtime scale
 
-The live brain holds 22,259 sources, 64,124 evidence spans, 1,679,845 graph nodes and 3,927,131 graph edges on ordinary developer hardware, served through 80 HTTP routes.
+The live brain holds 22,259 sources across 23,512 versions, 64,223 evidence spans of which 56,712 are promoted, 1,679,845 graph nodes and 3,927,131 graph edges — on ordinary developer hardware, served through 80 HTTP routes.
 
 ### Implementation completeness
 
