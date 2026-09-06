@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-06T08:22:54.195Z",
+ "generatedAt": "2026-09-06T08:40:20.893Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1665,
-  "reached": 1160,
-  "internalHelpersOnly": 452,
-  "orphans": 53,
+  "reached": 1162,
+  "internalHelpersOnly": 453,
+  "orphans": 50,
   "declaredConstants": 6,
   "compatibilityAliases": 10,
   "legacyMigration": 2,
   "hostContracts": 0,
-  "testOnlyHelpers": 28,
-  "implementedButUncalled": 36,
-  "ofWhichCoveredByTestsOnly": 28,
+  "testOnlyHelpers": 25,
+  "implementedButUncalled": 33,
+  "ofWhichCoveredByTestsOnly": 25,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 8
  },
@@ -302,15 +302,6 @@
    "testOnly": false
   },
   {
-   "name": "jensenShannonDistance",
-   "file": "packages/kernel/src/population-collapse-guard.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "createBulkIngestBatches",
    "file": "packages/kernel/src/postgres-contract.ts",
    "caller": "",
@@ -403,15 +394,6 @@
    "testOnly": true
   },
   {
-   "name": "evaluateCalibration",
-   "file": "packages/kernel/src/scoring/evaluation.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "SEGMENTATION_AGGREGATE_SCHEMA_V1",
    "file": "packages/kernel/src/segmentation-aggregate.ts",
    "caller": "",
@@ -442,15 +424,6 @@
   {
    "name": "woldForecastCovariance",
    "file": "packages/kernel/src/spectral-forecast.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "validateSurfaceLattice",
-   "file": "packages/kernel/src/surface-lattice.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
