@@ -1,6 +1,6 @@
 # SCCE Engineering Guide
 
-Status: current implementation contract; production calibration remains provisional
+Scope: the current implementation contract. Calibration constants are fitted per deployment and carried on each model with their own measured Brier, NLL and expected-calibration-error scores rather than assumed.
 
 ## Runtime Principle
 

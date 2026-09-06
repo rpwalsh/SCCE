@@ -1,6 +1,6 @@
 # SCCE Source Map
 
-Status: targeted current-source map; not a generated completeness or readiness claim
+Scope: a maintained map of the current source tree. Package manifests, route manifests and the exported source are authoritative wherever this drifts.
 
 ## Workspace
 

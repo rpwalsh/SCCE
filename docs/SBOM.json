@@ -1,6 +1,6 @@
 {
  "schema": "scce.sbom.v1",
- "generatedAt": "2026-09-06T02:10:24.035Z",
+ "generatedAt": "2026-09-06T10:17:30.811Z",
  "generator": "tools/sbom.mjs",
  "coverage": {
   "method": "workspace manifests plus the resolved pnpm store and vendored archives",
@@ -28,7 +28,7 @@
   "lockfile": "pnpm-lock.yaml",
   "lockfileSha256": "2a79ee2011be98480028862e1d01bf02d73865a2e1cc108ec26d946a6e49c106",
   "lockfileVersion": "9.0",
-  "workspaceCommit": "95f8524a78ff4f649c9e9921ff2f3eb3afcea6b8"
+  "workspaceCommit": "07c1dd7ed7c36692e753b97764ff6b86d2ef0e0e"
  },
  "proprietary": {
   "holder": "Ryan P. Walsh",
