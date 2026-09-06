@@ -40,7 +40,9 @@ with a citation in hand. Whether that is correct behaviour or a miscalibrated co
 Teach A, teach B, ask about A+B, add C that changes the relationship, ask again.
 **Pass:** the later answer depends on durable prior cognitive state, not on replaying the conversation.
 **Today:** partial. Durable cross-turn state is real and tested per subsystem (`task-resumption-turn-request.test.ts`,
-`user-model-turn-request.test.ts`, dialogue memory), but no test drives the five-step accumulation above as one story.
+`user-model-turn-request.test.ts`, dialogue memory), and what accumulates is now inspectable and reversible:
+`GET /api/learning/about-me` returns every claim with its provenance and which one governs, and
+`POST /api/learning/forget` removes one for good. No test drives the five-step accumulation above as one story.
 
 ### 3. Contradiction handling
 Source 1 says X, source 2 says not-X, across equal authority, differing authority, newer versus older, direct versus
@@ -48,7 +50,9 @@ inferred, and subtle incompatibility.
 **Pass:** provenance and contradiction survive into the cognitive state and the answer; the contradiction is not
 silently collapsed.
 **Today:** partial. Contradiction mass, `exposeContradiction` and temporal supersession exist and are unit-tested; the
-five-variant matrix is not.
+five-variant matrix is not. One real defect here was found and fixed on 2026-09-06: contradiction mass measured across
+everything a request admitted was vetoing a grounded candidate that carried none of it, so a turn holding an answer
+returned silence. A candidate bound to its own direct evidence is now judged on its own contradiction.
 
 ### 4. Evidence-bound inference
 A → B, B → C, does A imply C, and on what basis. Then remove B → C.
@@ -73,9 +77,12 @@ Unknown → ingest → known → restart → still known → related material �
 Induce insufficient evidence, a failed candidate, a realization failure, a retrieval miss, contradictory evidence.
 **Pass:** the failure category is diagnosed, the bounded repair path runs, it replans and either succeeds or fails for a
 stated reason. Not "retry everything".
-**Today:** partial, and improved 2026-09-05: a turn that admitted evidence and realized nothing is now a mouth-surface
-failure that triggers the bounded replan, with abstention and creative turns exempt. The other four induced failures
-are not driven as tests.
+**Today:** partial, and improved twice. 2026-09-05: a turn that admitted evidence and realized nothing is a
+mouth-surface failure that triggers the bounded replan, with abstention and creative turns exempt. 2026-09-06: a
+selected candidate that realizes nothing yields to the highest-ranked rejected candidate that does, and a request whose
+content units appear nowhere in any fact-built surface is answered from the window of the admitted span that carries
+them, cut verbatim. Both are diagnosed realization failures with bounded repairs rather than retries. The other four
+induced failures are not driven as tests.
 
 ### 8. Tool-use closed loop
 Need → capability selection → authorization → dispatch → result → interpretation → cognition → answer → durable
