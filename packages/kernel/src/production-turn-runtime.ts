@@ -3441,6 +3441,36 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       if (!spoken.text.trim() && candidateIsSafeNonExecutingPlan(judged.selected)) {
         spoken = await deterministicMouth.speak(speakInput);
       }
+      // The learned lane realizing nothing is not the same as having nothing to say.
+      //
+      // Learned language memory is the primary realization lane, and when it produces no surface the selected
+      // candidate is still the selected candidate: the deterministic Mouth realizes that same candidate from its own
+      // bound evidence, adding no fact. Without this the turn fell straight through to the rejected-candidate
+      // fallback, which cannot help when the answer belongs to the winner. Measured on the sealed set: the
+      // no_language_memory condition scored six questions the full condition did not, and three of those six were
+      // turns where the full condition emitted an empty surface while holding the exact source sentence -- "The
+      // fourth added Worf (Michael Dorn)..." among them.
+      // A short learned surface is checked against the source-bound realization of the same candidate, because the
+      // other way the learned lane loses an answer is by stopping inside one. Live on the sealed set: "It was
+      // described by ____" realized as "TrekMovie" while the source-bound lane said "TrekMovie.com" -- the learned
+      // units end at a boundary the source does not have. A learned surface that is a strict substring of the
+      // source-bound one, and materially shorter, is a truncation of it rather than a different way of saying it.
+      const learnedSurfaceMayBeTruncated = spoken.text.trim().length > 0 && spoken.text.trim().length <= 96;
+      if (!spoken.text.trim() || learnedSurfaceMayBeTruncated) {
+        const deterministic = await deterministicMouth.speak(speakInput);
+        const learned = spoken.text.trim();
+        const sourceBound = deterministic.text.trim();
+        const truncated = Boolean(learned) && sourceBound.length > learned.length * 1.5 && sourceBound.includes(learned);
+        if (sourceBound && (!learned || truncated)) {
+          kernelTrace({
+            stage: "mouth.deterministic_fallback",
+            label: "kernel.turn",
+            counts: { answerChars: deterministic.text.length, learnedChars: learned.length },
+            support: { selectedCandidateId: judged.selected.id, reason: learned ? "learned-surface-truncates-source-bound" : "learned-lane-realized-nothing" }
+          });
+          spoken = deterministic;
+        }
+      }
       // A candidate that realizes nothing must not outrank one that realizes something.
       //
       // Selection ranks on requirement quality, coverage and truth, none of which know whether the winner can
