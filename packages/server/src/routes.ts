@@ -7,12 +7,12 @@ import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createEventFactory, createHasher, createIdFactory, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -136,6 +136,7 @@ export const ROUTES = [
   { method: "GET", path: "/api/reports/review", label: "workspace review", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/train", label: "train", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/causal/analyze", label: "identified causal analysis", mutates: true, requiresDb: true },
+  { method: "POST", path: "/api/causal/discover", label: "temporal causal discovery", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn", label: "turn", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn/outcome", label: "turn dialogue outcome", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/task/:id", label: "long-running turn status", mutates: false, requiresDb: true },
@@ -538,6 +539,7 @@ async function dispatch(
   }
   if (req.method === "POST" && url.pathname === "/api/train") return json(await context.runtime.kernel.train(validateTrain(await readBody(req, context.maxBodyBytes))));
   if (req.method === "POST" && url.pathname === "/api/causal/analyze") return json(await context.runtime.kernel.analyzeCausalEffect(validateCausalAnalysisRequest(await readBody(req, context.maxBodyBytes))));
+  if (req.method === "POST" && url.pathname === "/api/causal/discover") return json(await context.runtime.kernel.discoverCausalStructure(validateCausalDiscoveryRequest(await readBody(req, context.maxBodyBytes))));
   // Phase 6/8: settings and local-model management through the shared schema.
   if (url.pathname === "/api/settings" && (req.method === "GET" || req.method === "POST")) {
     const configPath = path.resolve(context.configPath ?? "scce.config.json");
@@ -1054,6 +1056,36 @@ function validateTrain(value: unknown): TrainInput {
  * field is an explicit `true` attestation from the caller, never injected
  * on their behalf.
  */
+/** Bounded like the analysis validator beside it: a discovery request is caller-supplied data, so it is checked, not trusted. */
+function validateCausalDiscoveryRequest(value: unknown): CausalDiscoveryRequest {
+  if (!isRecord(value)) throw new HttpError(400, "causal discovery request must be an object");
+  if (value.schema !== CAUSAL_DISCOVERY_REQUEST_SCHEMA) {
+    throw new HttpError(400, `schema must be "${CAUSAL_DISCOVERY_REQUEST_SCHEMA}"`);
+  }
+  if (!Array.isArray(value.series) || !value.series.length) throw new HttpError(400, "series must be a non-empty array");
+  if (value.series.length > 256) throw new HttpError(400, "series may contain at most 256 entries");
+  const series = value.series.map((raw, index) => {
+    if (!isRecord(raw)) throw new HttpError(400, `series[${index}] must be an object`);
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) throw new HttpError(400, `series[${index}].id must be a non-empty string`);
+    if (!Array.isArray(raw.values)) throw new HttpError(400, `series[${index}].values must be an array`);
+    if (raw.values.length > 100_000) throw new HttpError(400, `series[${index}].values may contain at most 100000 points`);
+    const values = raw.values.map((point, at) => {
+      if (typeof point !== "number" || !Number.isFinite(point)) throw new HttpError(400, `series[${index}].values[${at}] must be a finite number`);
+      return point;
+    });
+    return { id, values };
+  });
+  return {
+    schema: CAUSAL_DISCOVERY_REQUEST_SCHEMA,
+    series,
+    ...(value.maxLag === undefined ? {} : { maxLag: boundedNumber(value.maxLag, "maxLag", 1, 64) }),
+    ...(value.fdrQ === undefined ? {} : { fdrQ: boundedNumber(value.fdrQ, "fdrQ", 0, 1) }),
+    ...(value.minSamples === undefined ? {} : { minSamples: boundedNumber(value.minSamples, "minSamples", 2, 100_000) }),
+    ...(value.transferEntropyBins === undefined ? {} : { transferEntropyBins: boundedNumber(value.transferEntropyBins, "transferEntropyBins", 2, 64) })
+  };
+}
+
 function validateCausalAnalysisRequest(value: unknown): CausalAnalysisRequest {
   if (!isRecord(value)) throw new HttpError(400, "causal analysis request must be an object");
   if (value.schema !== CAUSAL_ANALYSIS_REQUEST_SCHEMA) {
