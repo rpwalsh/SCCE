@@ -4,7 +4,7 @@ import type { IdFactory } from "./ids.js";
 import type { CorrectionRuleKind, CorrectionRuleRecord } from "./storage.js";
 import type { EpisodeId, EventId, EvidenceId, Hasher, JsonValue } from "./types.js";
 import { clamp01, toJsonValue } from "./primitives.js";
-import { detailProfileFromVector } from "./control-plane-profiles.js";
+import { profileOrderIndex, detailProfileFromVector } from "./control-plane-profiles.js";
 import { decayCorrectionAlpha } from "./translation-correction-engine.js";
 
 type CorrectionLanguageId = string;
@@ -234,7 +234,13 @@ export function createCorrectionMemory(options: { idFactory: IdFactory; hasher: 
         if (context.meterPattern) meterPattern = context.meterPattern;
         if (rule.ruleKind === "style_shift" || rule.ruleKind === "register_shift" || rule.ruleKind === "meter_constraint") styleTags.push(rule.id);
         if (rule.ruleKind === "verbosity_preference") {
-          detailProfileId = detailProfileFromVector(context.styleVector ?? context.registerVector);
+          // Two verbosity rules used to mean whichever came last, which made the outcome depend on rule ordering
+          // rather than on what the rules say. `profileOrderIndex` is the declared order over detail profiles and
+          // had no caller; the more detailed profile wins, deterministically.
+          const candidate = detailProfileFromVector(context.styleVector ?? context.registerVector);
+          if (candidate && (!detailProfileId || profileOrderIndex(candidate) > profileOrderIndex(detailProfileId))) {
+            detailProfileId = candidate;
+          }
         }
       }
       return {
