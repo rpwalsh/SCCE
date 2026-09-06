@@ -3295,6 +3295,34 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       if (!spoken.text.trim() && candidateIsSafeNonExecutingPlan(judged.selected)) {
         spoken = await deterministicMouth.speak(speakInput);
       }
+      // A candidate that realizes nothing must not outrank one that realizes something.
+      //
+      // Selection ranks on requirement quality, coverage and truth, none of which know whether the winner can
+      // actually be said. Once composition demand let graph-inference candidates compete, they began winning turns
+      // and then realizing to an empty surface, because there is no promoted construction to generate from yet --
+      // and the turn returned silence while holding an admitted, evidence-grounded answer. Measured live on "Why is
+      // Ada Lovelace considered important to computing?": two candidates, the grounded one rejected, answerChars 0,
+      // and the server declined a turn whose answer was sitting in the rejected list.
+      //
+      // Realizability is therefore a tiebreak applied after selection rather than a new scoring term: the ranking
+      // stands, and only a winner that produced no surface yields, to the highest-ranked rejected candidate that
+      // does produce one. When none does, the turn abstains exactly as before.
+      if (!spoken.text.trim()) {
+        for (const fallback of judged.rejected) {
+          const candidate = fallback.candidate;
+          if (!candidate || !String(candidate.answer ?? "").trim()) continue;
+          const retried = await deterministicMouth.speak({ ...speakInput, selectedCandidate: candidate });
+          if (!retried.text.trim()) continue;
+          kernelTrace({
+            stage: "mouth.realizable_fallback",
+            label: "kernel.turn",
+            counts: { answerChars: retried.text.length, rejectedConsidered: judged.rejected.length },
+            support: { selectedCandidateId: judged.selected.id, realizedCandidateId: candidate.id, kind: candidate.kind }
+          });
+          spoken = retried;
+          break;
+        }
+      }
       // Real citation, not a stylistic flourish: an evidence-grounded
       // factual/reasoned answer -- quoted or synthesized, doesn't matter
       // which -- must carry a real source name and, when one is
