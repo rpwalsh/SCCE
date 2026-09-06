@@ -73,7 +73,8 @@
     "vscode:test:host": "pnpm --dir packages/vscode test:host",
     "vscode:package": "pnpm --dir packages/vscode package",
     "maintenance:accumulate-relations": "node tools/accumulate-relation-observations.mjs",
-    "reachability": "node tools/runtime-reachability.mjs"
+    "reachability": "node tools/runtime-reachability.mjs",
+    "sbom": "node tools/sbom.mjs"
   },
   "dependencies": {},
   "devDependencies": {

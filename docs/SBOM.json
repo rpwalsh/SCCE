@@ -1,0 +1,306 @@
+{
+ "schema": "scce.sbom.v1",
+ "generatedAt": "2026-09-06T01:47:13.214Z",
+ "generator": "tools/sbom.mjs",
+ "coverage": {
+  "method": "workspace manifests plus the resolved pnpm store and vendored archives",
+  "includes": [
+   "declared direct dependencies",
+   "resolved installed versions",
+   "declared licenses",
+   "vendored archive checksums"
+  ],
+  "excludes": [
+   "license-text analysis",
+   "vulnerability matching",
+   "transitive per-package license attribution"
+  ],
+  "note": "A declaration-and-resolution report. A buyer commissions an SCA scan and a legal license review separately."
+ },
+ "proprietary": {
+  "holder": "Ryan P. Walsh",
+  "statement": "SCCE's own source is proprietary and inspection-only; no right to use, copy, modify, distribute, sublicense, sell, or create derivative works is granted except by separate written agreement. See LICENSE.",
+  "correction": "SCCE contains no open-source code of its own, and it does depend on third-party open-source components, listed below. 'Zero open source' is not an accurate description of the delivered system."
+ },
+ "counts": {
+  "directRuntime": 8,
+  "directDevelopment": 14,
+  "vendoredArchives": 1,
+  "installedPackagesInStore": 647
+ },
+ "runtimeDependencies": [
+  {
+   "name": "@huggingface/transformers",
+   "scope": "runtime",
+   "declaredRange": "^3.8.1",
+   "resolvedVersion": "3.8.1",
+   "license": "Apache-2.0",
+   "repository": "git+https://github.com/huggingface/transformers.js.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  },
+  {
+   "name": "@unicode/unicode-17.0.0",
+   "scope": "runtime",
+   "declaredRange": "1.6.17",
+   "resolvedVersion": "1.6.17",
+   "license": "MIT",
+   "repository": "git+https://github.com/node-unicode/unicode-17.0.0.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/kernel"
+   ]
+  },
+  {
+   "name": "mammoth",
+   "scope": "runtime",
+   "declaredRange": "^1.8.0",
+   "resolvedVersion": "1.12.0",
+   "license": "BSD-2-Clause",
+   "repository": "https://github.com/mwilliamson/mammoth.js.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  },
+  {
+   "name": "pg",
+   "scope": "runtime",
+   "declaredRange": "^8.13.1",
+   "resolvedVersion": "8.22.0",
+   "license": "MIT",
+   "repository": "git://github.com/brianc/node-postgres.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  },
+  {
+   "name": "tree-sitter-wasms",
+   "scope": "runtime",
+   "declaredRange": "^0.1.13",
+   "resolvedVersion": "0.1.13",
+   "license": "Unlicense",
+   "repository": "https://github.com/Gregoor/tree-sitter-wasms",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  },
+  {
+   "name": "typescript",
+   "scope": "runtime",
+   "declaredRange": "^5.8.3",
+   "resolvedVersion": "5.9.3",
+   "license": "Apache-2.0",
+   "repository": "https://github.com/microsoft/TypeScript.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  },
+  {
+   "name": "web-tree-sitter",
+   "scope": "runtime",
+   "declaredRange": "^0.24.7",
+   "resolvedVersion": "0.24.7",
+   "license": "MIT",
+   "repository": "git+https://github.com/tree-sitter/tree-sitter.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  },
+  {
+   "name": "xlsx",
+   "scope": "runtime",
+   "declaredRange": "file:../../vendor/xlsx-0.20.3.tgz",
+   "resolvedVersion": "0.20.3",
+   "license": "Apache-2.0",
+   "repository": "https://git.sheetjs.com/SheetJS/sheetjs",
+   "vendored": true,
+   "requiredBy": [
+    "@scce/adapters-node"
+   ]
+  }
+ ],
+ "developmentDependencies": [
+  {
+   "name": "@types/node",
+   "scope": "development",
+   "declaredRange": "^22.15.3",
+   "resolvedVersion": "22.20.0",
+   "license": "MIT",
+   "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "@types/pg",
+   "scope": "development",
+   "declaredRange": "^8.11.11",
+   "resolvedVersion": "8.20.0",
+   "license": "MIT",
+   "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "@types/vscode",
+   "scope": "development",
+   "declaredRange": "^1.96.0",
+   "resolvedVersion": "1.125.0",
+   "license": "MIT",
+   "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/vscode"
+   ]
+  },
+  {
+   "name": "@vscode/test-electron",
+   "scope": "development",
+   "declaredRange": "^2.5.2",
+   "resolvedVersion": "2.5.2",
+   "license": "MIT",
+   "repository": "https://github.com/Microsoft/vscode-test.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/vscode"
+   ]
+  },
+  {
+   "name": "@vscode/vsce",
+   "scope": "development",
+   "declaredRange": "^3.9.2",
+   "resolvedVersion": "3.9.2",
+   "license": "MIT",
+   "repository": "https://github.com/Microsoft/vsce",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/vscode"
+   ]
+  },
+  {
+   "name": "dependency-cruiser",
+   "scope": "development",
+   "declaredRange": "^17.4.3",
+   "resolvedVersion": "17.4.3",
+   "license": "MIT",
+   "repository": "git+https://github.com/sverweij/dependency-cruiser.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "knip",
+   "scope": "development",
+   "declaredRange": "^5.88.1",
+   "resolvedVersion": "5.88.1",
+   "license": "ISC",
+   "repository": "git+https://github.com/webpro-nl/knip.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "madge",
+   "scope": "development",
+   "declaredRange": "^8.0.0",
+   "resolvedVersion": "8.0.0",
+   "license": "MIT",
+   "repository": "git://github.com/pahen/madge",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "ts-prune",
+   "scope": "development",
+   "declaredRange": "^0.3.5",
+   "resolvedVersion": "0.3.5",
+   "license": "MIT",
+   "repository": "git@github.com:nadeesha/ts-prune.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "tslib",
+   "scope": "development",
+   "declaredRange": "^2.8.1",
+   "resolvedVersion": "2.8.1",
+   "license": "0BSD",
+   "repository": "https://github.com/Microsoft/tslib.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/vscode"
+   ]
+  },
+  {
+   "name": "typedoc",
+   "scope": "development",
+   "declaredRange": "^0.28.19",
+   "resolvedVersion": "0.28.19",
+   "license": "Apache-2.0",
+   "repository": "git://github.com/TypeStrong/TypeDoc.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "typescript",
+   "scope": "development",
+   "declaredRange": "^5.8.3",
+   "resolvedVersion": "5.9.3",
+   "license": "Apache-2.0",
+   "repository": "https://github.com/microsoft/TypeScript.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  },
+  {
+   "name": "vite-node",
+   "scope": "development",
+   "declaredRange": "3.2.4",
+   "resolvedVersion": "3.2.4",
+   "license": "MIT",
+   "repository": "git+https://github.com/vitest-dev/vitest.git",
+   "vendored": false,
+   "requiredBy": [
+    "@scce/kernel"
+   ]
+  },
+  {
+   "name": "vitest",
+   "scope": "development",
+   "declaredRange": "^3.2.6",
+   "resolvedVersion": "3.2.6",
+   "license": "MIT",
+   "repository": "git+https://github.com/vitest-dev/vitest.git",
+   "vendored": false,
+   "requiredBy": [
+    "scce-v3"
+   ]
+  }
+ ],
+ "vendoredArchives": [
+  {
+   "file": "vendor/xlsx-0.20.3.tgz",
+   "bytes": 2409319,
+   "sha256": "8dc73fc3b00203e72d176e85b50938627c7b086e607c682e8d3c22c02bb99fe8"
+  }
+ ]
+}

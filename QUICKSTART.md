@@ -98,4 +98,4 @@ it only if the project still typechecks. There is no model anywhere in SCCE.
 The claims in the README are backed by this repository's own gates:
 `pnpm test` runs the full suite; the sealed evaluation harness and its
 protocol live in [tools/sealed-eval](tools/sealed-eval) and
-[docs/EVALUATION_PROTOCOL.md](docs/EVALUATION_PROTOCOL.md).
+[the sealed evaluation kit](tools/sealed-eval/README_FIRST.md); the per-run record is available on request.
