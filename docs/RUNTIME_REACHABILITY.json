@@ -1,19 +1,20 @@
 {
- "generatedAt": "2026-09-06T07:40:40.295Z",
+ "generatedAt": "2026-09-06T07:50:46.049Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
   "exports": 1664,
-  "reached": 1139,
+  "reached": 1141,
   "internalHelpersOnly": 454,
-  "orphans": 71,
+  "orphans": 69,
   "declaredConstants": 6,
   "compatibilityAliases": 6,
   "legacyMigration": 2,
   "hostContracts": 0,
   "testOnlyHelpers": 39,
-  "implementedButUncalled": 57,
+  "implementedButUncalled": 55,
   "ofWhichCoveredByTestsOnly": 39,
-  "ofWhichNoCallerAnywhere": 18
+  "ofWhichNoCallerAnywhere": 16,
+  "ofWhichDeliberatelyUnwired": 1
  },
  "orphans": [
   {
@@ -112,6 +113,7 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "deliberatelyUnwired": "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank.",
    "hostContract": false,
    "testOnly": false
   },
@@ -440,15 +442,6 @@
    "testOnly": false
   },
   {
-   "name": "featureSetMemoStats",
-   "file": "packages/kernel/src/primitives.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "programPlanFingerprint",
    "file": "packages/kernel/src/program-planner.ts",
    "caller": "",
@@ -555,15 +548,6 @@
    "alias": false,
    "hostContract": false,
    "testOnly": true
-  },
-  {
-   "name": "tidySurfaceTextMemoStats",
-   "file": "packages/kernel/src/surface-linguistics.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
   },
   {
    "name": "createTemporalCausalDiscovery",

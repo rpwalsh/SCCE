@@ -4,6 +4,8 @@ import { traceEvent } from "./debug/trace.js";
 import { createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
+import { featureSetMemoStats } from "./primitives.js";
+import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
 import { isLanguageConstructionPattern } from "./language-construction-memory.js";
 import { createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, scopeLanguageMemoryStateToCluster } from "./language-memory-runtime.js";
 import {
@@ -853,7 +855,11 @@ export function createSurfaceLanguageRuntime(options: {
         candidateProfileEntries: surfaceCandidateProfileCache.size,
         aliasProfileEntries: sourceOwnedAliasProfileCache.size,
         surfaceProfiles: surfaceProfileCache?.value.length ?? 0,
-        sourceAnchorFrames: sourceAnchorSemanticFrameCache?.value.length ?? 0
+        sourceAnchorFrames: sourceAnchorSemanticFrameCache?.value.length ?? 0,
+        // Hit rates for the two memos that sit on the hottest paths in the kernel. Both accessors existed to be
+        // read and nothing read them, so a memo that had stopped hitting looked exactly like one that never ran.
+        featureSetMemo: featureSetMemoStats(),
+        tidySurfaceTextMemo: tidySurfaceTextMemoStats()
       };
     },
     invalidate() {
