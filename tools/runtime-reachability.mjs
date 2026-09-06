@@ -45,7 +45,9 @@ const exportsOf = new Map(src.map(f => [
 const definedIn = new Map();
 for (const f of src) for (const name of exportsOf.get(f)) if (!definedIn.has(name)) definedIn.set(name, f);
 
-const entries = ["packages/server/src/index.ts", "packages/server/src/routes.ts", "packages/server/src/startup.ts", "packages/cli/src/index.ts", "packages/kernel/src/production-turn-runtime.ts", "packages/kernel/src/kernel.ts", "packages/kernel/src/scce-runtime.ts", "packages/adapters-node/src/runtime.ts", "packages/adapters-node/src/workspace-runtime.ts", "packages/vscode/src/extension.ts", "packages/ui/src/index.ts"].map(p => `${repo}/${p}`).filter(p => text.has(p));
+// `spreadsheet-process.ts` is an entry point in its own right: nothing imports it, the parent forks it by path, so
+// walking imports alone reports its whole module tree as unreached. A forked module is running code.
+const entries = ["packages/server/src/index.ts", "packages/server/src/routes.ts", "packages/server/src/startup.ts", "packages/cli/src/index.ts", "packages/kernel/src/production-turn-runtime.ts", "packages/kernel/src/kernel.ts", "packages/kernel/src/scce-runtime.ts", "packages/adapters-node/src/runtime.ts", "packages/adapters-node/src/workspace-runtime.ts", "packages/adapters-node/src/spreadsheet-process.ts", "packages/vscode/src/extension.ts", "packages/ui/src/index.ts"].map(p => `${repo}/${p}`).filter(p => text.has(p));
 const reachable = new Set();
 const stack = [...entries];
 while (stack.length) {

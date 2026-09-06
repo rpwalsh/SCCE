@@ -13,7 +13,7 @@ import {
   type WorkspaceCompilerAnalyzerBinding
 } from "@scce/kernel";
 import ts from "typescript";
-import { resolveTypeScriptCommandLane } from "./typescript-command-lane.js";
+import { resolveTypeScriptCommandLane, verifyTypeScriptCommandLaneSourceBinding } from "./typescript-command-lane.js";
 
 const FAMILY_ID = "repair.family.typescript.code_action.v1" as const;
 const DEFAULT_MAX_EDITS = 32;
@@ -524,6 +524,12 @@ function exactObservedCommandBinding(
     if (!resolved.ok || resolved.lane.wrapper !== "direct" || !resolved.lane.languageServiceCompatible) continue;
     if (executableName(resolved.lane.compilerExecutable) !== executableName(input.executable)
       || stableSerialize(resolved.lane.normalizedTscArgs) !== stableSerialize(input.args)) continue;
+    // The comparison above only asks whether this script's compiler argv matches the supplied command. The binding
+    // verifier asks the harder question the recorded provenance actually asserts: that the whole lane -- selector,
+    // cwd normalization, wrapper, mode and LanguageService compatibility -- re-derives from these exact source bytes
+    // and nothing else in the manifest resolves the same way. It had no caller, so a provenance record claiming a
+    // source binding was only ever checked on executable name and argv.
+    if (!verifyTypeScriptCommandLaneSourceBinding({ lane: resolved.lane, sourceContent: source.content }).ok) continue;
     matches.push({ sourceSelector, rawCommandHash: sha256(rawCommand) });
   }
   if (matches.length !== 1) return undefined;
