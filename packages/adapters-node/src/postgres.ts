@@ -1507,14 +1507,16 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            -- query on this corpus).
            SELECT evidence.*
            FROM (
-             SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at
+             SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
+                    ${titleMatchExpression("evidence", 4 + access.params.length)} AS title_match
              FROM candidate_hits hits
              JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
              CROSS JOIN LATERAL (SELECT evidence.status, evidence.alpha, evidence.observed_at) narrow
              WHERE ${evidenceStatusCondition("evidence", query.status)}
                AND ${access.sql}
                AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
-             ORDER BY hits.score DESC,
+             ORDER BY title_match DESC,
+                      hits.score DESC,
                       hits.overlap_count DESC,
                       hits.first_feature_ord ASC,
                       CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
@@ -1523,13 +1525,14 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              LIMIT $2
            ) top
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=top.id
-           ORDER BY top.score DESC,
+           ORDER BY top.title_match DESC,
+                    top.score DESC,
                     top.overlap_count DESC,
                     top.first_feature_ord ASC,
                     CASE WHEN top.status='promoted' THEN 0 WHEN top.status='pending' THEN 1 ELSE 2 END ASC,
                     top.alpha DESC,
                     top.observed_at DESC`,
-          [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? []]
+          [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? [], query.titleUnits ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
@@ -5099,6 +5102,14 @@ function sourceTrustFromJson(value: JsonValue): SourceTrust {
     accessScope: text("accessScope"),
     licenseStatus: text("licenseStatus")
   };
+}
+
+/** A source titled with the subject the request names, ranked ahead of one that only mentions it. An empty unit
+ *  list is a no-op, so every caller that does not name a subject ranks exactly as before. Pure. */
+function titleMatchExpression(alias: string, parameter: number): string {
+  return `(cardinality($${parameter}::text[]) > 0 AND ${alias}.provenance_json->>'title' IS NOT NULL
+    AND (SELECT bool_and(lower(${alias}.provenance_json->>'title') LIKE '%' || unit || '%')
+         FROM unnest($${parameter}::text[]) AS unit))`;
 }
 
 /** A prose question must not draw its candidates from source code: 38,232 promoted spans are the owner's own
