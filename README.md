@@ -55,8 +55,10 @@ runtime with a real ingested Wikipedia corpus (2026-09-05):
   was traced to two real defects (wikitext classified as source code, and a
   turn that admitted evidence then realized nothing being treated as
   valid). Both are fixed, and 166/168 is what reproduces now. See
-  [`docs/EVALUATION_PROTOCOL.md`](docs/EVALUATION_PROTOCOL.md) for every
-  run and the gate output.
+  the sealed evaluation kit at
+  [`tools/sealed-eval/README_FIRST.md`](tools/sealed-eval/README_FIRST.md)
+  for the protocol; the full per-run record lives with the internal
+  evaluation notes and is available on request.
 - **Sealed-evaluation network defect — disclosed and fixed.** Every
   system manifest declares `"networkPolicy": "disabled"`, but until
   2026-08-18 the harness never enforced it; two abstention probes were
@@ -362,11 +364,14 @@ docs                    architecture, guides, and normative contracts
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — installation and operation
 - [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
 - [`docs/README.md`](docs/README.md) — complete documentation index
+- [`docs/SBOM.md`](docs/SBOM.md) — third-party components, versions, and licenses (`pnpm sbom`)
 - [`SECURITY.md`](SECURITY.md) — security posture and vulnerability reporting
 
 ## License
 
 SCCE is source-available for inspection under a proprietary license. It is not open source, and no license to use, copy, or redistribute the software is granted except as stated in [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+SCCE's own code being proprietary is not the same as the delivered system containing no open source: it has eight direct third-party runtime dependencies, all under permissive licenses, with one vendored archive recorded by checksum. [`docs/SBOM.md`](docs/SBOM.md) lists every one.
 
 ---
 
