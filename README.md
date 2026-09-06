@@ -48,13 +48,15 @@ There is no language model: no local model server, no remote API, no constrained
 
 ### Sealed 168-question head-to-head
 
-SCCE answers **166 of 168** against **158 of 168** for an independent BM25 reference on identical evidence, reproducing across two back-to-back runs that miss the same two questions (2026-09-05, `out-full-44` and `out-full-45`).
+SCCE answers **161 of 168** against **158 of 168** for an independent BM25 reference on identical evidence, reproducing exactly across two back-to-back standalone runs (2026-09-06, revision `663afa2`, `out-full-46` and `out-full-47`) and matching the full condition of the same day's ablation sweep.
 
 Every answer is an exact substring of a `sha256`-verified source document, recorded with document id and character offsets. The question set is generated mechanically from the sealed corpus (160 cloze + 8 abstention probes), so the generator encodes no question grammar.
 
-**The margin is refusal discipline, and that is the point.** On the 160 answerable questions the two systems tie at 158. All eight points of difference are the abstention probes: SCCE declines all eight questions the corpus cannot answer; the BM25 reference answers all eight and is wrong all eight times. A system that fabricates when the evidence is absent is not usable for the work SCCE is built for — regulated review, engineering evidence, contract and claim analysis — and this benchmark measures exactly that property under seal.
+**The entire margin is refusal discipline, and on recall the baseline is ahead.** On the 160 answerable questions BM25 scores 158 and SCCE scores 153. All of SCCE's margin, and more, comes from the eight abstention probes: SCCE declines all eight questions the corpus cannot answer; the BM25 reference answers all eight and is wrong all eight times.
 
-The release gate reports the same result in its own terms: unsupported rate 0.71%, exact-anchor accuracy 98.75%, abstention correctness 100%. It also reports a failed class-effect test on the cloze half (p = 0.614), because on that half the two systems tie and the gate is not permitted to round a tie into a win.
+That is the property the system is built for — a system that fabricates when the evidence is absent cannot be used for regulated review, engineering evidence, or contract analysis — and it is measured under seal rather than argued. It is not a recall win, and this document does not present it as one.
+
+**Recall is down five questions from the 2026-09-05 figure** (166/168, cloze tied at 158) and the cause is not yet established. The leading candidate is the graph-projection backfill run on 2026-09-05, which took the live graph from roughly 1.4M to 1.68M nodes and changes the anchor slice every question retrieves through; a code regression in the same window is not excluded. The five questions are identified by id in the run records. The earlier number is not quoted as current.
 
 The protocol is in [`tools/sealed-eval/README_FIRST.md`](tools/sealed-eval/README_FIRST.md); the harness, question generator, and gates are in the repository and re-runnable.
 
