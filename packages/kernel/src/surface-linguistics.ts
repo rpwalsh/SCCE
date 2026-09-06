@@ -220,17 +220,22 @@ export function surfaceUnits(text: string): string[] {
   return units.filter(Boolean);
 }
 
+/** The characters that join a word when they sit between two word characters, and separate when they do not. */
+const WORD_INTERNAL_JOINERS = new Set([".", "-"]);
+
 /**
- * A period with a word character on both sides and no space is inside the word; a period followed by a space ends it.
+ * A joiner with a word character on both sides and no space is inside the word; the same character followed by a
+ * space ends it.
  *
- * "letter. " is a boundary. "letter.letter" is a host name, a file name, an identifier or a decimal, and splitting it
- * invents a token the source never wrote. Measured on the sealed set: the source reads "TrekMovie.com" and the system
- * answered "TrekMovie", because the name extractor drew words from a tokenizer that split on every period and then
- * stopped at the first fragment that did not look like a name. The rule needs no word list and no language, because it
- * is about what surrounds the period rather than what the word means.
+ * "letter. " is a boundary. "letter.letter" is a host name, a file name, an identifier or a decimal. "letter-letter"
+ * is a compound or a designation. Splitting either invents a token the source never wrote, and both were measured:
+ * the source reads "TrekMovie.com" and the system answered "TrekMovie", and the source reads "Xylor-7" and the system
+ * answered "Xylor", because the name extractor drew words from a tokenizer that split on every one of these and then
+ * stopped at the first fragment that did not look like a name. The rule needs no word list and no language, because
+ * it is about what surrounds the character rather than what the word means.
  */
-export function isWordInternalPeriod(chars: readonly string[], index: number): boolean {
-  if ((chars[index] ?? "") !== ".") return false;
+export function isWordInternalJoiner(chars: readonly string[], index: number): boolean {
+  if (!WORD_INTERNAL_JOINERS.has(chars[index] ?? "")) return false;
   return isSurfaceUnitChar(chars[index - 1] ?? "") && isSurfaceUnitChar(chars[index + 1] ?? "");
 }
 
@@ -240,7 +245,7 @@ export function surfaceWords(text: string): string[] {
   let current = "";
   for (let index = 0; index < chars.length; index++) {
     const char = chars[index] ?? "";
-    if (isSurfaceUnitChar(char) || char === "'" || char === "\u2019" || isWordInternalPeriod(chars, index)) {
+    if (isSurfaceUnitChar(char) || char === "'" || char === "\u2019" || isWordInternalJoiner(chars, index)) {
       current += char;
       continue;
     }
