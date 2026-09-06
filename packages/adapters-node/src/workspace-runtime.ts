@@ -14,7 +14,7 @@ import {
   persistDialogueOutcomeAndLearn,
   persistDialogueTurn,
   planStreamRhythm,
-  promoteWorkspaceAnalysisToCoreRecords,
+  createWorkspaceCoreFusion,
   verifyPatchTransactionPlan,
   toJsonValue,
   createWorkspaceRevisionSnapshot,
@@ -315,6 +315,9 @@ export type WorkspaceCodingPatchPlanningResult =
  * Converts only the server-owned compiler-planning success state into the
  * kernel handoff. This helper never accepts an approval or execution receipt.
  */
+/** One fusion runtime for this module: promotion derives semantic ids from its clock and id factory, so they are stable. */
+const workspaceCoreFusion = createWorkspaceCoreFusion();
+
 export function verifiedCompilerPlansForTurn(
   result: WorkspaceCodingPatchPlanningResult
 ): readonly PatchTransactionPlan[] {
@@ -700,7 +703,10 @@ export async function analyzeWorkspaceProject(rootPath: string, options: Workspa
   const rawTasks = prioritizedTasks([...rawContradictions, ...rawGaps], repo);
   const summary = projectSummary(inspection, repo, commands, routes);
   const map = projectMap(repo);
-  const coreFusion = promoteWorkspaceAnalysisToCoreRecords({
+  // Through the factory, so the clock and id factory the promotion derives semantic ids from are constructed once
+  // for this module rather than rebuilt on every analysis. `createWorkspaceCoreFusion` exists to hold exactly that
+  // pair and had no caller, while the direct call let each analysis mint its own.
+  const coreFusion = workspaceCoreFusion.promote({
     schema: "scce.workspace.project.v1",
     rootPath: root,
     workspace,
