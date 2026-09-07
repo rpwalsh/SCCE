@@ -9,7 +9,20 @@ export type RepairOperationKind = "create" | "insert" | "replace" | "delete" | "
 
 export const UNUSED_TYPE_IMPORT_REPAIR_FAMILY = "repair.family.typescript.unused_type_import.v1" as const;
 export const TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY = "repair.family.typescript.code_action.v1" as const;
-export type ProgramRepairFamilyId = typeof UNUSED_TYPE_IMPORT_REPAIR_FAMILY | typeof TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY;
+/**
+ * A repair the C/C++ compiler itself supplies, on the same terms as the TypeScript families above.
+ *
+ * The repair loop was already language-neutral -- CodeMouthPorts is retrieve/propose/apply/verify over a generic
+ * ProgramDiagnostic, and CodeMouthContext already carries a `language` -- but this union was not, so a second
+ * toolchain had no family to declare itself under. Clang emits its own fixes machine-readably
+ * (-fdiagnostics-parseable-fixits) as an exact source range and replacement text, which is the same contract the
+ * TypeScript code-action family rests on: the compiler owns the fix, the system only applies and verifies it.
+ */
+export const CLANG_FIXIT_REPAIR_FAMILY = "repair.family.clang.compiler_fixit.v1" as const;
+export type ProgramRepairFamilyId =
+  | typeof UNUSED_TYPE_IMPORT_REPAIR_FAMILY
+  | typeof TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY
+  | typeof CLANG_FIXIT_REPAIR_FAMILY;
 export interface SupportedProgramRepairFamilyDescriptor {
   id: ProgramRepairFamilyId;
   requestSyntax: string;
@@ -43,6 +56,19 @@ export const SUPPORTED_PROGRAM_REPAIR_FAMILIES: readonly SupportedProgramRepairF
     "the selected action may replace multiple existing files or create bounded source files as one atomic transaction",
     "ambiguous code actions and command-bearing code actions are unsupported",
     "the output is recomputed from exact text spans and remains unexecuted"
+  ])
+}, {
+  id: CLANG_FIXIT_REPAIR_FAMILY,
+  requestSyntax: "a request selecting one compiler-supplied fix-it for one existing requested translation unit",
+  sourceLanguages: Object.freeze(["c", "cpp", "objective-c"]),
+  mutationClass: "program.mutation.compiler_diagnostic_repair",
+  requiredValidationChecks: Object.freeze(["compiler"] as const),
+  limitations: Object.freeze([
+    "one requested existing translation unit",
+    "one compiler diagnostic carrying exactly one parseable fix-it hint",
+    "the fix-it must name an exact source range on a single line and its replacement text",
+    "diagnostics offering several fix-it hints are unsupported and are reported rather than chosen between",
+    "the edit is recomputed from the exact range and verified by re-running the compiler"
   ])
 }]);
 const UNUSED_TYPE_IMPORT_DIAGNOSTIC_PATTERN_ID = "diagnostic.typescript.unused_type_import.v1";

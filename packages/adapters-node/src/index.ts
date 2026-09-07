@@ -40,6 +40,7 @@ export * from "./scce2/index.js";
 export * from "./visual-ingest.js";
 export * from "./code-verification.js";
 export * from "./code-mouth-compiler-proposer.js";
+export * from "./clang-code-mouth-ports.js";
 export * from "./sensor-ingest.js";
 export * from "./model-management.js";
 export * from "./settings-schema.js";
