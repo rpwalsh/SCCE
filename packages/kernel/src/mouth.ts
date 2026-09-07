@@ -5839,6 +5839,14 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
     const contradictionSurface = boundarySurfaceFromRuntime(entailment, evidence, proofVerdict);
     if (contradictionSurface) return contradictionSurface;
   }
+  // The turn already chose its answer, and "selected-evidence-bound" is the marker saying so. Without this the mouth
+  // re-derives a surface from obligations that were compiled against the ORIGINAL claim, so a turn could select one
+  // sentence and speak another: measured on "Who was Charles Babbage?", the plan selected "Charles Babbage and Ada
+  // Lovelace conceived the first programmable computer" and an obligation carrying unrelated trivia from the same
+  // article won here instead. The bound text is a verified verbatim substring of its evidence, and it still has to
+  // clear the same echo check every other branch does.
+  const boundClaim = entailment.boundaries.includes("selected-evidence-bound") ? tidySurface(entailment.claim.text) : "";
+  if (boundClaim && !questionEchoHits(boundClaim, requestText).length) return boundClaim;
   const satisfiedObligations = entailment.obligations.filter(item =>
     item.status === "satisfied" &&
     (options.allowClaimBoundary || item.evidenceIds.length > 0 || !questionEchoHits(item.claimText, requestText).length)

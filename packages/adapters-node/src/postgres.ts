@@ -1069,6 +1069,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_ngrams ON ${q}.language_profiles USING GIN(ngram_keys)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_source_version ON ${q}.language_profiles(source_version_id,created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profile_alias_lookup ON ${q}.language_profile_aliases(alias_key,confidence DESC,updated_at DESC,profile_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_source_system_rank ON ${q}.language_units((metadata_json->>'sourceSystem'), alpha DESC)`,
@@ -3087,6 +3088,32 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
            ORDER BY alias.confidence DESC,alias.updated_at DESC,lp.id ASC
            LIMIT $2`,
           [aliasKeys, boundedLimit, ...access.params]
+        )).map(row => row.profile_json);
+      }
+      if (typeof query === "object" && query?.sourceVersionIds !== undefined) {
+        const sourceVersionIds = uniquePostgresStrings(query.sourceVersionIds.map(String).filter(Boolean)).slice(0, 512);
+        if (!sourceVersionIds.length) return [];
+        const referencedFilter = query.referencedByLanguageMemory
+          ? (await referencedProfileFlagAvailable(storage))
+            ? "AND lp.referenced_by_language_memory"
+            : `AND (
+               EXISTS (SELECT 1 FROM ${storage.table("language_units")} u WHERE u.profile_id=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("language_patterns")} p WHERE p.profile_id=lp.id OFFSET 0)
+               OR EXISTS (SELECT 1 FROM ${storage.table("ngram_models")} m WHERE m.model_json->>'profileId'=lp.id OFFSET 0)
+               OR ${observationReferencedProfileFilterSql(storage)}
+               OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
+             )`
+          : "";
+        const access = storage.informationAccessPredicate("lp", 3);
+        return (await storage.query<{ profile_json: LanguageProfile }>(
+          `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
+           FROM ${storage.table("language_profiles")} lp
+           WHERE lp.source_version_id=ANY($1::text[])
+             ${referencedFilter}
+             AND ${access.sql}
+           ORDER BY lp.created_at DESC, lp.id ASC
+           LIMIT $2`,
+          [sourceVersionIds, boundedLimit, ...access.params]
         )).map(row => row.profile_json);
       }
       if (typeof query === "object" && query?.referencedByLanguageMemory) {

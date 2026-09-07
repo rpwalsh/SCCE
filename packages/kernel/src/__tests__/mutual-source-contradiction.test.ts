@@ -77,7 +77,12 @@ describe("two admitted sources that refute each other", () => {
 
     expect(result.mutualSourceContradiction).toBe(true);
     expect(result.counterexamples.length).toBeGreaterThan(0);
-    expect(result.contradiction).toBeGreaterThan(PROOF_CONTRADICTION_THRESHOLD);
+    // Reported on its own channel, and NOT charged to the claim: `contradiction` answers "does the evidence refute
+    // this claim", and the first test above established that nothing here does. Folding the mutual finding into that
+    // scalar made two sources disagreeing look like the claim being refuted, which then blocked source excerpts that
+    // nothing contradicted -- measured on "Who was Charles Babbage?", where eight mutual pairs among two admitted
+    // articles set the claim's contradiction to 0.569 and suppressed the answer.
+    expect(result.contradiction).toBeLessThanOrEqual(PROOF_CONTRADICTION_THRESHOLD);
     const cited = new Set(result.counterexamples.flatMap(item => item.evidenceIds.map(String)));
     expect(cited.has(String(filedIn2019.id))).toBe(true);
     expect(cited.has(String(filedIn2021.id))).toBe(true);

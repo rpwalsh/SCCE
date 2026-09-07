@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { SEMANTIC_VERDICT } from "./semantic-codes.js";
+import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
+import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -642,7 +643,21 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const coverageUnits = requestContentEvidenceUnits(input.requestText);
-  const selected = rows.find(row => row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText));
+  const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
+    row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText);
+  // Two sentences can both name the subject while only one says anything about it. Nothing above separates them:
+  // "The character was portrayed by Sylvie Briggs, alongside characterisations of Charles Babbage and Noor Inayat
+  // Khan." beat "Charles Babbage and Ada Lovelace conceived the first programmable computer" by 0.056 for "Who was
+  // Charles Babbage?", entirely on the document-position prior -- a where-it-sits artefact deciding a what-it-says
+  // question. The turn's own proposition compiler already draws the distinction: the subject of a predication lands
+  // in the atom's leading role, a passing mention lands in a trailing one. Preference, not a weight -- when no
+  // candidate predicates about the anchor the original ordering stands, so this can only reorder, never exclude.
+  // Bounded: compiling propositions is turn-time work, and only sentences already near the top can win anyway.
+  const predicating = anchored.anchors.length
+    ? rows.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
+      .filter(row => covers(row) && sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
+    : [];
+  const selected = predicating[0] ?? rows.find(covers);
   if (!selected) return undefined;
   // Learned response-form sentence budget (lexical-gap fix for
   // enumeration-shaped requests): a request like "list the main characters
@@ -783,14 +798,30 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // and was called from nowhere. It applies only when no span's title matches the anchors, so definitional
   // answers about an article's own subject keep their full lead sentence.
   const titleAnswersRequest = anchored.anchors.length > 0 && answerEvidence.some(span => evidenceTitleDistinctAnchorMatches(span, anchored.anchors));
+  // Applied to the WHOLE sentences, before anchorFocusedAnswerSurface below rewrites them into clauses. Focusing
+  // moves the anchor to the front of whatever clause contains it, so "alongside characterisations of Charles Babbage
+  // and Noor Inayat Khan." comes out looking exactly like a sentence predicating about Babbage. Judge the sentence
+  // the corpus actually wrote, then focus whichever survives.
+  const predicatingRanked = anchored.anchors.length && !planNearDuplicate
+    ? rankedSentences.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
+      .filter(sentence => sentencePredicatesAboutAnchors(sentence, anchored.anchors))
+    : [];
+  const preferredRanked = predicatingRanked.length ? predicatingRanked : rankedSentences;
   const sentences = planNearDuplicate || titleAnswersRequest || !anchored.anchors.length
-    ? rankedSentences
-    : rankedSentences.map(sentence => {
+    ? preferredRanked
+    : preferredRanked.map(sentence => {
       const focused = anchorFocusedAnswerSurface(sentence, anchored.anchors, evidenceTitle(answerEvidence[0]!));
       return focused && focused.length >= 24 ? focused : sentence;
     });
   if (!sentences.length) return undefined;
-  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(sentences, span, requestContentEvidenceUnits(input.requestText), input.requestText))) return undefined;
+  // Same rule the exact-sentence plan applies, at the branch that actually wins the priority comparison: among
+  // sentences that name the subject, prefer the ones that say something about it. Measured on "Who was Charles
+  // Babbage?", this plan carried three sentences of Doctor Who trivia from the Ada Lovelace article while the
+  // sentence stating what Babbage did ranked below them -- and this plan, not the exact-sentence proposal, is what
+  // preferredLocalEvidenceAnswer selected and the mouth spoke. Preference, never exclusion: when nothing predicates
+  // about the anchor the ranked order stands unchanged.
+  const answerSurfaceSentences = sentences;
+  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, requestContentEvidenceUnits(input.requestText), input.requestText))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
@@ -801,7 +832,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     kindId: LOCAL_ANSWER_KIND_IDS.evidenceBoundary,
     evidence: answerEvidence,
     slotSurfaces: {
-      [LOCAL_ANSWER_SLOT_IDS.sentence]: sentences
+      [LOCAL_ANSWER_SLOT_IDS.sentence]: answerSurfaceSentences
     },
     maxSentences: evidenceAnswerSentenceLimit(input.requestText, answerEvidence, input.sessionContextEvidence === true),
     audit: toJsonValue({
@@ -2250,6 +2281,30 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
 
 /** An anchor that titles only a few documents is a subject, not an instruction word that happens to sit in many titles. */
 const SUBJECT_ANCHOR_TITLE_MATCH_BOUND = 4;
+
+/** How far down the ranked sentences the predication check runs. Compiling propositions is turn-time work. */
+const ANCHOR_PREDICATION_RERANK_LIMIT = 8;
+
+/**
+ * Whether the sentence says something ABOUT the anchor, rather than merely naming it.
+ *
+ * Decided by the turn's own proposition compiler, not by a new rule: atomizeText puts the material a sentence
+ * predicates over in the atom's leading role and a passing mention in a trailing one. Measured on "Who was Charles
+ * Babbage?" against the Ada Lovelace article -- "Charles Babbage and Ada Lovelace conceived the first programmable
+ * computer" places the anchor in the leading role, while "The character was portrayed by Sylvie Briggs, alongside
+ * characterisations of Charles Babbage and Noor Inayat Khan." places it in a trailing one.
+ */
+function sentencePredicatesAboutAnchors(sentence: string, anchors: readonly string[]): boolean {
+  const normalizedAnchors = anchors.map(anchor => normalizePriorKey(anchor)).filter(Boolean);
+  if (!normalizedAnchors.length) return false;
+  for (const atom of atomizeText({ text: sentence, source: SEMANTIC_SOURCE.CLAIM, maxAtoms: 2 })) {
+    const leading = atom.roles[0];
+    if (!leading) continue;
+    const leadingSurface = normalizePriorKey(leading.normalized || leading.value);
+    if (normalizedAnchors.some(anchor => leadingSurface.includes(anchor))) return true;
+  }
+  return false;
+}
 /**
  * Every request anchor built on a named subject, in the request's own anchor order; the full anchor list
  * when the request names none. This is what keeps an instruction phrase ("short story") from owning a
@@ -3055,7 +3110,18 @@ export function hashTextForLocalProof(text: string): string {
 }
 
 
-export function bindSelectedEvidenceToEntailment(entailment: TurnResult["entailment"], evidence: readonly EvidenceSpan[], audit: JsonValue): TurnResult["entailment"] {
+/**
+ * Binds the selected answer into the entailment the mouth speaks from.
+ *
+ * The evidence was already bound here; the answer TEXT was not, and the mouth does not receive the candidate it is
+ * realizing -- answerFromObligations re-derives a surface from the entailment and evidence on its own. So the turn
+ * could select the right sentence and say a different one: measured on "Who was Charles Babbage?", the plan selected
+ * "Charles Babbage and Ada Lovelace conceived the first programmable computer" and the mouth spoke three sentences of
+ * unrelated trivia from the same article, because entailment.claim.text still held what the graph path seeded.
+ * answerText is a verified verbatim substring of its evidence span (the plan guarantees it), so carrying it here
+ * states what the turn decided rather than letting a second, differently-scored selection overrule the first.
+ */
+export function bindSelectedEvidenceToEntailment(entailment: TurnResult["entailment"], evidence: readonly EvidenceSpan[], audit: JsonValue, answerText?: string): TurnResult["entailment"] {
   const auditRecord = jsonRecord(audit);
   const sourceBoundTemporalInference = kernelString(auditRecord.basisClassId) === "basis.9f1b2c7a";
   const evidenceIds = uniqueKernelStrings([
@@ -3092,8 +3158,10 @@ export function bindSelectedEvidenceToEntailment(entailment: TurnResult["entailm
     supportingEvidence: evidenceIds.length,
     sourceVersions
   };
+  const boundClaimText = answerText?.trim();
   return {
     ...entailment,
+    ...(boundClaimText ? { claim: { ...entailment.claim, text: boundClaimText } } : {}),
     force: sourceBoundTemporalInference ? "inferred" : entailment.force,
     truthState: sourceBoundTemporalInference ? "truth.source_bound_only" : entailment.truthState,
     evidenceIds,
