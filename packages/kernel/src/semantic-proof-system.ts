@@ -304,6 +304,14 @@ export function atomizeText(input: {
 function atomizeGraphNodes(nodes: readonly GraphNode[], hasher: Hasher, dimensions: number): SemanticAtom[] {
   const atoms: SemanticAtom[] = [];
   for (const node of nodes) {
+    // A node that already carries a proposition is read back as that proposition. Re-deriving one from the node's
+    // text would make the stored predicate, roles and constraints advisory, and the answer would then depend on
+    // whichever relation model happened to be in hand at read time rather than on what was established at write.
+    const stored = propositionAtomFromNode(node, hasher, dimensions);
+    if (stored) {
+      atoms.push(stored);
+      continue;
+    }
     const text = graphNodeText(node);
     if (!text) continue;
     const proofClass = graphNodePriorClass(node);
@@ -415,7 +423,7 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
         audit: toJsonValue(obligation)
       });
     }
-    if (strongestCounterexample && strongestCounterexample.contradiction > 0.42) {
+    if (strongestCounterexample && strongestCounterexample.contradiction > PROOF_CONTRADICTION_THRESHOLD) {
       counterexamples.push({
         id: `counterexample_${input.hasher.digestHex(`${claim.id}:${strongestCounterexample.rightAtomId}`).slice(0, 24)}`,
         claimAtomId: claim.id,
@@ -1038,4 +1046,93 @@ function normalizedEditSimilarity(left: string, right: string): number {
   }
   const distance = prev[b.length] ?? Math.max(a.length, b.length);
   return clamp01(1 - distance / Math.max(a.length, b.length, 1));
+}
+
+/** Identifies a graph node whose representation IS a proposition rather than a surface to be parsed. */
+/**
+ * The unification contradiction mass at which a counterexample is admitted as one.
+ *
+ * Named because it is a contract, not a tuning knob: it is the boundary a test asserts a real contradiction
+ * crosses, and a test that hardcodes the number instead pins today's value rather than the system's own boundary.
+ */
+export const PROOF_CONTRADICTION_THRESHOLD = 0.42;
+
+export const PROPOSITION_GRAPH_NODE_SCHEMA = "scce.proposition_node.v1" as const;
+
+/**
+ * The representation a graph node carries so that a proposition survives persistence as a proposition.
+ *
+ * atomizeText already derives predicate, bound roles and typed constraints from a sentence, and the proof search
+ * already contradicts atoms; both ran only at turn time, so every proposition the engine compiled was discarded
+ * when the turn ended. Writing the atom itself -- not a sentence to be re-read -- is what lets it cross into the
+ * graph and come back the same proposition. `text` stays alongside so citation and retrieval still have the
+ * source surface, and so a reader that predates this schema degrades to parsing it rather than to nothing.
+ */
+export function propositionNodeRepresentation(atom: SemanticAtom): JsonValue {
+  return toJsonValue({
+    schema: PROPOSITION_GRAPH_NODE_SCHEMA,
+    predicate: atom.predicate,
+    predicateFeatures: atom.predicateFeatures,
+    roles: atom.roles as unknown as JsonValue,
+    constraints: atom.constraints as unknown as JsonValue,
+    polarity: atom.polarity,
+    modality: atom.modality,
+    alpha: atom.alpha,
+    proofClass: atom.proofClass,
+    certifiesFactualProof: atom.certifiesFactualProof,
+    proofBoundaryReason: atom.proofBoundaryReason ?? null,
+    text: atom.sourceText
+  });
+}
+
+/** The proposition a node carries, rehydrated, or undefined when the node carries a surface instead. Pure. */
+function propositionAtomFromNode(node: GraphNode, hasher: Hasher, dimensions: number): SemanticAtom | undefined {
+  const representation = node.representation;
+  if (!representation || typeof representation !== "object" || Array.isArray(representation)) return undefined;
+  const record = representation as Record<string, JsonValue>;
+  if (record.schema !== PROPOSITION_GRAPH_NODE_SCHEMA) return undefined;
+  const predicate = typeof record.predicate === "string" ? record.predicate : "";
+  if (!predicate) return undefined;
+  const roles = (Array.isArray(record.roles) ? record.roles : []) as unknown as SemanticRoleBinding[];
+  const constraints = (Array.isArray(record.constraints) ? record.constraints : []) as unknown as SemanticConstraint[];
+  const predicateFeatures = Array.isArray(record.predicateFeatures)
+    ? record.predicateFeatures.filter((feature): feature is string => typeof feature === "string")
+    : [];
+  const sourceText = typeof record.text === "string" ? record.text : "";
+  const polarity: SemanticAtomPolarity = record.polarity === -1 ? -1 : 1;
+  // The same vector the atom had when it was written: stableVector is deterministic in these features, so it is
+  // recomputed rather than stored, and a node cannot carry a vector that disagrees with its own proposition.
+  const vector = stableVector([
+    ...predicateFeatures,
+    ...roles.flatMap(role => role.features),
+    ...constraints.map(constraint =>
+      `${constraint.kind}:${constraint.subject}:${constraint.operator}:${JSON.stringify(constraint.value)}`)
+  ], hasher, dimensions);
+  const proofClass = typeof record.proofClass === "string" ? record.proofClass : "none";
+  return {
+    id: semanticAtomId(hasher, {
+      graphNode: node.id,
+      predicate,
+      roles: roles.map(role => [role.name, role.normalized]),
+      constraints: constraints.map(constraint =>
+        [constraint.kind, constraint.subject, constraint.operator, constraint.value]),
+      polarity,
+      evidenceIds: node.evidenceIds
+    }),
+    predicate,
+    predicateFeatures,
+    roles,
+    constraints,
+    polarity,
+    alpha: typeof record.alpha === "number" ? clamp01(record.alpha) : node.alpha,
+    modality: typeof record.modality === "string" ? record.modality : SEMANTIC_SOURCE.GRAPH,
+    source: SEMANTIC_SOURCE.GRAPH,
+    sourceText,
+    evidenceIds: node.evidenceIds,
+    nodeIds: [node.id],
+    vector,
+    proofClass,
+    certifiesFactualProof: record.certifiesFactualProof === true,
+    ...(typeof record.proofBoundaryReason === "string" ? { proofBoundaryReason: record.proofBoundaryReason } : {})
+  };
 }
