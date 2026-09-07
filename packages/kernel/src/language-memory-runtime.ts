@@ -3518,6 +3518,27 @@ function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationE
 // "fragment heavy" phrase salad.
 const DISCOURSE_FRAGMENT_BOUNDARY = /(?<=^|\s)[\p{Punctuation}\p{Symbol}]+|[\p{Punctuation}\p{Symbol}]+(?=\s|$)/gu;
 
+/**
+ * How many pieces of text a fragment carries, counting across word-internal punctuation.
+ *
+ * This is a fluency statistic, not an identity: "src/cli.ts" is ONE referent and must stay one symbol everywhere
+ * meaning is decided, but it is plainly more text than a two-word fragment, and the salad thresholds below are
+ * calibrated in pieces of text. Counting it as two made a list of file paths look like phrase salad and the
+ * surface was dropped, which emptied answers to questions about code.
+ */
+function lexicalPieceCount(symbols: readonly string[]): number {
+  let pieces = 0;
+  for (const symbol of symbols) {
+    for (const piece of symbol.split(WORD_INTERNAL_PUNCTUATION)) {
+      if ([...piece].some(char => isLetterLike(char) || isDigitLike(char))) pieces += 1;
+    }
+  }
+  return Math.max(pieces, symbols.length);
+}
+
+/** Punctuation that sits inside a lexical unit: a path separator, a dotted extension, a hyphenated compound. */
+const WORD_INTERNAL_PUNCTUATION = /[./-]+/u;
+
 function fragmentHeavyDiscourseSurface(text: string): boolean {
   const fragments = text
     .split(DISCOURSE_FRAGMENT_BOUNDARY)
@@ -3525,9 +3546,9 @@ function fragmentHeavyDiscourseSurface(text: string): boolean {
       .filter(symbol => [...symbol].some(char => isLetterLike(char) || isDigitLike(char))))
     .filter(fragment => fragment.length > 0);
   if (fragments.length < 5) return false;
-  const lexicalTokenCount = fragments.reduce((sum, fragment) => sum + fragment.length, 0);
+  const lexicalTokenCount = fragments.reduce((sum, fragment) => sum + lexicalPieceCount(fragment), 0);
   if (lexicalTokenCount < 12) return false;
-  const shortFragmentCount = fragments.filter(fragment => fragment.length <= 2).length;
+  const shortFragmentCount = fragments.filter(fragment => lexicalPieceCount(fragment) <= 2).length;
   const shortFragmentRatio = shortFragmentCount / fragments.length;
   const punctuationRuns = text.match(DISCOURSE_FRAGMENT_BOUNDARY)?.length ?? 0;
   const punctuationDensity = punctuationRuns / Math.max(1, lexicalTokenCount);
