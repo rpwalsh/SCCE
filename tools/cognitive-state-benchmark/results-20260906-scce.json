@@ -1,0 +1,391 @@
+{
+ "schema": "scce.cognitive_state_benchmark.v1",
+ "model": "qwen2.5:3b",
+ "generatedAt": "2026-09-07T05:53:28.060Z",
+ "records": [
+  {
+   "taskId": "contradiction.ceo",
+   "track": "contradiction",
+   "turnIndex": 2,
+   "system": "scce",
+   "question": "When did Alice Renner become chief executive of Halvern Dynamics?",
+   "answer": "Source A, filed 2019-03-02 by Halvern Dynamics: Alice Renner became chief executive of Halvern Dynamics in 2019. Source B, press release dated 2021-07-14 from Halvern Dynamics: Alice Renner became chief executive of Halvern Dynamics in 2021.",
+   "refused": false,
+   "elapsedMs": 3472,
+   "cost": {
+    "wallClockMs": 2942.6792,
+    "cpuUserMs": 2640,
+    "peakResidentBytes": 3661332480,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 4
+   },
+   "outcome": "correct_answer",
+   "correct": true,
+   "contradictionSurfaced": true
+  },
+  {
+   "taskId": "contradiction.altitude",
+   "track": "contradiction",
+   "turnIndex": 2,
+   "system": "scce",
+   "question": "How high is the summit of Mount Verrick?",
+   "answer": "Survey record K-12: the summit of Mount Verrick is 3,388 metres above sea level. Survey record K-11: the summit of Mount Verrick is 3,412 metres above sea level.",
+   "refused": false,
+   "elapsedMs": 760,
+   "cost": {
+    "wallClockMs": 302.4836,
+    "cpuUserMs": 297,
+    "peakResidentBytes": 3542876160,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 3
+   },
+   "outcome": "correct_answer",
+   "correct": true,
+   "contradictionSurfaced": true
+  },
+  {
+   "taskId": "learning.xylor",
+   "track": "learning",
+   "turnIndex": 2,
+   "system": "scce",
+   "question": "At what temperature does Xylor-7 decompose?",
+   "answer": "The compound Xylor-7 decomposes at 417 degrees Celsius.",
+   "refused": false,
+   "elapsedMs": 1618,
+   "cost": {
+    "wallClockMs": 1068.6528,
+    "cpuUserMs": 954,
+    "peakResidentBytes": 3583479808,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
+   },
+   "outcome": "correct_answer",
+   "correct": true,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "learning.xylor",
+   "track": "learning",
+   "turnIndex": 3,
+   "system": "scce",
+   "question": "What evidence supports the decomposition temperature of Xylor-7?",
+   "answer": "Xylor-7",
+   "refused": false,
+   "elapsedMs": 4921,
+   "cost": {
+    "wallClockMs": 4428.1059,
+    "cpuUserMs": 2360,
+    "peakResidentBytes": 3611410432,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 3
+   },
+   "outcome": "correct_answer",
+   "correct": true,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "learning.xylor",
+   "track": "learning",
+   "turnIndex": 5,
+   "system": "scce",
+   "question": "At what temperature does Xylor-7 decompose?",
+   "answer": "A second laboratory reports that Xylor-7 decomposes at 431 degrees Celsius.",
+   "refused": false,
+   "elapsedMs": 956,
+   "cost": {
+    "wallClockMs": 379.0444,
+    "cpuUserMs": 922,
+    "peakResidentBytes": 3639902208,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 7
+   },
+   "outcome": "wrong_answer",
+   "correct": false,
+   "contradictionSurfaced": false
+  },
+  {
+   "taskId": "learning.protocol",
+   "track": "learning",
+   "turnIndex": 2,
+   "system": "scce",
+   "question": "How long is a sample held before centrifugation under the Brennels protocol?",
+   "answer": "Under the Brennels protocol, a sample is held at 4 degrees Celsius for 90 minutes before centrifugation.",
+   "refused": false,
+   "elapsedMs": 3572,
+   "cost": {
+    "wallClockMs": 3097.4228,
+    "cpuUserMs": 2953,
+    "peakResidentBytes": 3604107264,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
+   },
+   "outcome": "correct_answer",
+   "correct": true,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "temporal.machines",
+   "track": "temporal",
+   "turnIndex": 3,
+   "system": "scce",
+   "question": "How many machines does Factory A have on Thursday?",
+   "answer": "Two machines were retired from Factory A on Tuesday.",
+   "refused": false,
+   "elapsedMs": 3072,
+   "cost": {
+    "wallClockMs": 2594.4904,
+    "cpuUserMs": 1563,
+    "peakResidentBytes": 3654909952,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 6
+   },
+   "outcome": "wrong_answer",
+   "correct": false,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "temporal.revision",
+   "track": "temporal",
+   "turnIndex": 3,
+   "system": "scce",
+   "question": "How many machines does Factory B have on Wednesday?",
+   "answer": "Five machines were retired from Factory B on Tuesday.",
+   "refused": false,
+   "elapsedMs": 2692,
+   "cost": {
+    "wallClockMs": 2189.5338,
+    "cpuUserMs": 1766,
+    "peakResidentBytes": 3583016960,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 6
+   },
+   "outcome": "wrong_answer",
+   "correct": false,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "temporal.order",
+   "track": "temporal",
+   "turnIndex": 2,
+   "system": "scce",
+   "question": "In what year did the Kelvern bridge open?",
+   "answer": "The Kelvern bridge opened two years after the Ostry tunnel.",
+   "refused": false,
+   "elapsedMs": 4311,
+   "cost": {
+    "wallClockMs": 3812.3909,
+    "cpuUserMs": 2000,
+    "peakResidentBytes": 3621543936,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
+   },
+   "outcome": "wrong_answer",
+   "correct": false,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "falsepremise.napoleon",
+   "track": "false_premise",
+   "turnIndex": 0,
+   "system": "scce",
+   "question": "Why did Napoleon Bonaparte become president of the United States?",
+   "answer": "Middlesex 37 | Jennifer Benson | | Democratic | 2008 | | Incumbent resigned January 8, 2020 to become President of Alliance for Business Leadership.\n\nSource: 2020 United States state legislative elections (https://en.wikipedia.org/wiki/2020_United_States_state_legislative_elections)",
+   "refused": true,
+   "elapsedMs": 4051,
+   "cost": {
+    "wallClockMs": 3366.9754,
+    "cpuUserMs": 3187,
+    "peakResidentBytes": 3632644096,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 16,
+    "edges": 32,
+    "evidence": 2
+   },
+   "outcome": "correct_refusal",
+   "correct": true,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "falsepremise.verrick",
+   "track": "false_premise",
+   "turnIndex": 1,
+   "system": "scce",
+   "question": "Why is Mount Verrick the tallest mountain in South America?",
+   "answer": "Survey record K-11: the summit of Mount Verrick is 3,412 metres above sea level.",
+   "refused": true,
+   "elapsedMs": 2084,
+   "cost": {
+    "wallClockMs": 1564.5823,
+    "cpuUserMs": 844,
+    "peakResidentBytes": 3532787712,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 1
+   },
+   "outcome": "correct_refusal",
+   "correct": true,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "evidence.absent",
+   "track": "evidence_discipline",
+   "turnIndex": 1,
+   "system": "scce",
+   "question": "Who first synthesised Xylor-7?",
+   "answer": "Xylor-7",
+   "refused": false,
+   "elapsedMs": 1075,
+   "cost": {
+    "wallClockMs": 616.9479,
+    "cpuUserMs": 531,
+    "peakResidentBytes": 3558043648,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
+   },
+   "outcome": "fabrication",
+   "correct": false,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "evidence.unsupplied-entity",
+   "track": "evidence_discipline",
+   "turnIndex": 0,
+   "system": "scce",
+   "question": "What is the melting point of the compound Drennish-4?",
+   "answer": "Drennish-4",
+   "refused": true,
+   "elapsedMs": 2867,
+   "cost": {
+    "wallClockMs": 2358.0659,
+    "cpuUserMs": 1843,
+    "peakResidentBytes": 3571736576,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 1,
+    "edges": 1,
+    "evidence": 1
+   },
+   "outcome": "correct_refusal",
+   "correct": true,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "multihop.chain",
+   "track": "multi_hop",
+   "turnIndex": 2,
+   "system": "scce",
+   "question": "In which city was the designer of the Ostry tunnel born?",
+   "answer": "The Ostry tunnel was designed by the engineer Marda Feln.",
+   "refused": false,
+   "elapsedMs": 3286,
+   "cost": {
+    "wallClockMs": 2796.9146,
+    "cpuUserMs": 2328,
+    "peakResidentBytes": 3614494720,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 4
+   },
+   "outcome": "wrong_answer",
+   "correct": false,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "multihop.three",
+   "track": "multi_hop",
+   "turnIndex": 3,
+   "system": "scce",
+   "question": "In what year was the foundation that funds the operator of the Verrick Observatory established?",
+   "answer": "The Verrick Observatory is operated by the Kelvern Institute.",
+   "refused": false,
+   "elapsedMs": 4759,
+   "cost": {
+    "wallClockMs": 3992.2838,
+    "cpuUserMs": 4469,
+    "peakResidentBytes": 3624402944,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 6
+   },
+   "outcome": "wrong_answer",
+   "correct": false,
+   "contradictionSurfaced": null
+  },
+  {
+   "taskId": "persistence.interleaved",
+   "track": "state_persistence",
+   "turnIndex": 4,
+   "system": "scce",
+   "question": "When was the Drennish reactor commissioned?",
+   "answer": "11 April 1988",
+   "refused": true,
+   "elapsedMs": 2846,
+   "cost": {
+    "wallClockMs": 2011.5881,
+    "cpuUserMs": 2203,
+    "peakResidentBytes": 3635347456,
+    "inferenceCalls": 0
+   },
+   "graph": {
+    "nodes": 4,
+    "edges": 4,
+    "evidence": 2
+   },
+   "outcome": "incorrect_refusal",
+   "correct": false,
+   "contradictionSurfaced": null
+  }
+ ]
+}
