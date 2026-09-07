@@ -3,6 +3,9 @@
 import type { EvidenceSpan, GraphEdge, GraphNode, Hyperedge, JsonValue, LanguageProfile, SourceVersionId } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { clamp01, toJsonValue, weightedJaccard } from "./primitives.js";
+import { atomizeText, propositionNodeRepresentation } from "./semantic-proof-system.js";
+import { SEMANTIC_SOURCE } from "./semantic-codes.js";
+import { evidenceProofBoundary } from "./proof-boundary.js";
 
 export interface SourceGraphBuildInput {
   sourceVersionId: SourceVersionId;
@@ -23,12 +26,16 @@ export interface SourceGraphBuildResult {
     nodeCount: number;
     edgeCount: number;
     hyperedgeCount: number;
+    propositionCount: number;
     symbolCount: number;
     sectionCount: number;
     scriptCount: number;
     meanEvidenceAlpha: number;
   };
 }
+
+/** Propositions kept per evidence span. A span states a bounded number of things; the rest is apparatus. */
+const MAX_PROPOSITIONS_PER_SPAN = 24;
 
 export function createSourceGraphBuilder(deps: { idFactory: IdFactory }) {
   return {
@@ -37,6 +44,7 @@ export function createSourceGraphBuilder(deps: { idFactory: IdFactory }) {
       const edges = new Map<string, GraphEdge>();
       const hyperedges = new Map<string, Hyperedge>();
       const t = input.observedAt;
+      let propositionCount = 0;
       const sourceNode = node(deps.idFactory, input.sourceVersionId, "source-version", { sourceVersionId: input.sourceVersionId, uri: input.uri, mediaType: input.mediaType }, ["source", `media:${input.mediaType}`, `uri:${input.uri}`], [], 0.72, t, { uri: input.uri });
       nodes.set(sourceNode.id, sourceNode);
 
@@ -72,6 +80,45 @@ export function createSourceGraphBuilder(deps: { idFactory: IdFactory }) {
           symbolNodes.set(feature, symbolNode);
           nodes.set(symbolNode.id, symbolNode);
           edges.set(`${evidenceNode.id}:${symbolNode.id}:mentions`, edge(deps.idFactory, evidenceNode, symbolNode, "mentions", [span.id], span.alpha * symbolWeight(feature), t, { feature }));
+        }
+
+        // The propositions this span states, written as propositions.
+        //
+        // atomizeText and the contradiction search over its atoms were both already complete, and both ran only
+        // while a turn was in flight, so every proposition the engine derived was thrown away when the turn ended
+        // and the graph kept only the symbol nodes above. A proof asking about this span then had nothing to read
+        // but feature strings, and atomizing "bi:appointed|headmistress" yields the predicate "|". The atoms are
+        // bound to the evidence that states them rather than gated on corroboration across sources, because the
+        // claim being stored is "this source says this", not "this relation holds" -- and two sources disagreeing
+        // is exactly what contradiction needs both of, so requiring agreement first would erase it.
+        const spanBoundary = evidenceProofBoundary(span);
+        for (const atom of atomizeText({
+          text: span.text,
+          source: SEMANTIC_SOURCE.EVIDENCE,
+          maxAtoms: MAX_PROPOSITIONS_PER_SPAN,
+          evidenceIds: [span.id],
+          alpha: span.alpha,
+          proofClass: spanBoundary.forceClass,
+          certifiesFactualProof: spanBoundary.certifiesFactualProof,
+          proofBoundaryReason: spanBoundary.reason
+        })) {
+          const propositionNode = node(
+            deps.idFactory,
+            ["proposition", input.sourceVersionId, atom.id],
+            "proposition",
+            propositionNodeRepresentation(atom),
+            [`predicate:${atom.predicate}`, ...atom.roles.slice(0, 8).map(role => `role:${role.name}:${role.normalized}`)],
+            [span.id],
+            atom.alpha,
+            t,
+            toJsonValue({ sourceVersionId: input.sourceVersionId, predicate: atom.predicate, constraints: atom.constraints.length })
+          );
+          nodes.set(propositionNode.id, propositionNode);
+          edges.set(
+            `${evidenceNode.id}:${propositionNode.id}:states`,
+            edge(deps.idFactory, evidenceNode, propositionNode, "states", [span.id], atom.alpha, t, { predicate: atom.predicate })
+          );
+          propositionCount += 1;
         }
 
         for (const scriptNode of scriptNodes) {
@@ -139,6 +186,7 @@ export function createSourceGraphBuilder(deps: { idFactory: IdFactory }) {
           nodeCount: nodeList.length,
           edgeCount: edgeList.length,
           hyperedgeCount: hyperedgeList.length,
+          propositionCount,
           symbolCount: symbolNodes.size,
           sectionCount: sectionNodes.size,
           scriptCount: scriptNodes.length,
