@@ -122,6 +122,21 @@ describe("two admitted sources that refute each other", () => {
     expect(result.mutualSourceContradiction).toBe(false);
   });
 
+  it("treats two statements the owner made this session as two sources, not one", () => {
+    // A session shares one source version by construction, so keying independence on it made two separate owner
+    // statements look like one document and hid the disagreement. Each turn is its own assertion.
+    const sessionVersion = "version.session";
+    const first = { ...spanFor("session://turn-1",
+      "Source A, filed 2019-03-02 by Halvern Dynamics: Alice Renner became chief executive of Halvern Dynamics in 2019.",
+      sessionVersion), id: "evidence_session_a" as EvidenceSpan["id"] };
+    const second = { ...spanFor("session://turn-2",
+      "Source B, press release dated 2021-07-14 from Halvern Dynamics: Alice Renner became chief executive of Halvern Dynamics in 2021.",
+      sessionVersion), id: "evidence_session_b" as EvidenceSpan["id"] };
+    const result = proof.prove({ claimText: answerExcerpt, evidence: [first, second], nodes: [] });
+
+    expect(result.mutualSourceContradiction).toBe(true);
+  });
+
   it("does not let a source contradict its own restatement", () => {
     // The same span offered twice is one source, not two, and a document is not in conflict with itself here.
     const result = proof.prove({ claimText: answerExcerpt, evidence: [filedIn2021, filedIn2021], nodes: [] });
