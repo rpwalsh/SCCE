@@ -175,7 +175,7 @@ async function typecheck(root) {
 /** SCCE's compile-gated lane, invoked exactly as an operator would from the CLI. */
 async function runScce(root, testCase) {
   const cli = path.resolve("packages/cli/dist/index.js");
-  const result = await run(process.execPath, [cli, "code", `--path=${testCase.entry}`, "--root", root, "--attempts=3", testCase.request], { cwd: process.cwd(), timeoutMs: 240_000 });
+  const result = await run(process.execPath, [cli, "code", `--path=${testCase.entry}`, `--root=${root}`, "--attempts=3", testCase.request], { cwd: process.cwd(), timeoutMs: 240_000 });
   const text = `${result.stdout}\n${result.stderr}`;
   const outcome = /resolved/i.test(text) ? "resolved"
     : /awaiting_selection/i.test(text) ? "awaiting_selection"

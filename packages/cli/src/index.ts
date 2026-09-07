@@ -93,13 +93,20 @@ async function main(): Promise<void> {
       case "code": {
         const target = parsed.args.find(arg => arg.startsWith("--path="))?.slice(7);
         const request = parsed.args.filter(arg => !arg.startsWith("--")).join(" ").trim();
-        if (!target || !request) return usage("scce code --path=<workspace-file> <request>");
+        if (!target || !request) return usage("scce code --path=<workspace-file> [--root=<dir>] <request>");
+        // Which project to repair. Without this the command always read config.runtime.workspaceRoot, so a caller
+        // pointing it at another checkout got diagnostics for THIS repository and a target file the compiler had
+        // never seen -- it declined every time, correctly, about a file it was never shown. The code-repair
+        // benchmark passes a temporary workspace and scored 0 of 7 repairs on exactly that: a measurement of an
+        // ignored argument rather than of the repair engine.
+        const workspaceRoot = parsed.args.find(arg => arg.startsWith("--root="))?.slice(7)
+          ?? config.runtime.workspaceRoot;
         const result = await runCodeMouth({
           request,
           targetPath: target,
           maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3),
           log: message => process.stderr.write(`[code-mouth] ${message}\n`),
-          ports: createTypeScriptCodeMouthPorts({ workspaceRoot: config.runtime.workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
+          ports: createTypeScriptCodeMouthPorts({ workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
         });
         printJson(result);
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
