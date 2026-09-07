@@ -843,9 +843,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       deadlineCheckpoint("runtime.seed.language.complete", 0);
       const exactRequestFramesStarted = Date.now();
+      // A resident miss must never fail the turn -- the same rule the language-memory hydration above already
+      // follows. Promoting reviewed material invalidates this cache, so the very next served request found it cold,
+      // and because every served turn runs resident-only it threw "resident semantic-frames was not warmed" and
+      // returned a 500: accepting new knowledge broke the next question asked about it. The resident attempt still
+      // runs first, so a warm cache keeps its fast path; only a genuine miss pays the durable read.
       const exactRequestFrames = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
-        : await requestSemanticFrames(input.text, { residentOnly: fastRuntimeBudget });
+        : await requestSemanticFrames(input.text, { residentOnly: fastRuntimeBudget })
+          .catch(async error => {
+            if (!fastRuntimeBudget || !isResidentRuntimeNotWarmError(error)) throw error;
+            return requestSemanticFrames(input.text, { residentOnly: false });
+          });
       kernelTrace({
         stage: "runtime.seed.request_frames",
         label: "kernel.turn",
