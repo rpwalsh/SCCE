@@ -40,10 +40,17 @@ const FORBIDDEN_SOURCE_PATTERNS = [
 // "Hidden" is the operative word: a runtime or endpoint declared in models.declared.json
 // (with the config gate that enables it) is visible, auditable, and off by default -- not a
 // violation. Undeclared stays forbidden.
+// A reference system in the sealed evaluation is deliberately a language model: it is the baseline SCCE is
+// measured against, and it must exist for the comparison to mean anything. Declaring one suppresses the endpoint
+// and generation-pattern rules for that file alone, and buys a stricter rule in exchange -- nothing under
+// packages/ may import it. Without this the gate simply failed, and a permanently red gate is not evidence.
 const declared = await readDeclaredModels();
 const violations = [];
 const scannedFiles = [];
+const productModules = [];
+const referenceImports = [];
 for (const relativeRoot of SCAN_ROOTS) await scanDirectory(path.resolve(ROOT, relativeRoot));
+verifyReferencesUnreachableFromProduct();
 
 const report = {
   schema: "scce.no-hidden-model-check.v1",
@@ -56,6 +63,8 @@ const report = {
   forbiddenSourcePatterns: FORBIDDEN_SOURCE_PATTERNS,
   declaredPackages: declared.packages,
   declaredEndpoints: declared.endpoints,
+  declaredEvaluationReferences: declared.references,
+  productImportsOfDeclaredReferences: referenceImports,
   violations,
   status: violations.length === 0 ? "passed" : "failed",
   limitation: "This static gate does not replace the sealed runner's network isolation and process-level traffic attestation."
@@ -101,14 +110,42 @@ async function scanSource(file) {
     ...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu),
     ...source.matchAll(/\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu)
   ].map(match => match[1]?.toLowerCase()).filter(Boolean);
+  if (relative(file).startsWith("packages/")) productModules.push({ file: relative(file), specifiers: moduleSpecifiers });
   for (const specifier of moduleSpecifiers) {
     if (FORBIDDEN_PACKAGES.some(dependency => (specifier === dependency || specifier.startsWith(`${dependency}/`)) && !declared.packages.includes(dependency))) {
       add(file, `imports forbidden external-model module ${specifier}`);
     }
   }
   const lower = source.toLowerCase();
-  for (const endpoint of FORBIDDEN_ENDPOINTS) if (lower.includes(endpoint) && !declared.endpoints.includes(endpoint)) add(file, `contains forbidden external-model endpoint ${endpoint}`);
-  for (const pattern of FORBIDDEN_SOURCE_PATTERNS) if (lower.includes(pattern)) add(file, `contains language-model generation pattern ${pattern}`);
+  const declaredReference = declared.references.includes(relative(file));
+  for (const endpoint of FORBIDDEN_ENDPOINTS) {
+    if (lower.includes(endpoint) && !declared.endpoints.includes(endpoint) && !declaredReference) {
+      add(file, `contains forbidden external-model endpoint ${endpoint}`);
+    }
+  }
+  for (const pattern of FORBIDDEN_SOURCE_PATTERNS) {
+    if (lower.includes(pattern) && !declaredReference) add(file, `contains language-model generation pattern ${pattern}`);
+  }
+}
+
+/**
+ * The teeth on the declaration: a declared reference may exist, and the product may not be able to reach it.
+ *
+ * Every file under packages/ is checked for an import that resolves to a declared reference, by path or by
+ * basename. A declaration that let a model be imported into the runtime would be worse than no gate at all.
+ */
+function verifyReferencesUnreachableFromProduct() {
+  if (declared.references.length === 0) return;
+  const basenames = new Set(declared.references.map(file => file.slice(file.lastIndexOf('/') + 1)));
+  for (const { file, specifiers } of productModules) {
+    for (const specifier of specifiers) {
+      const basename = specifier.slice(specifier.lastIndexOf('/') + 1);
+      if (declared.references.some(reference => specifier.includes(reference)) || basenames.has(basename)) {
+        referenceImports.push({ file, specifier });
+        add(path.resolve(ROOT, file), `imports declared evaluation reference ${specifier}; references must stay outside the product`);
+      }
+    }
+  }
 }
 
 function add(file, reason) {
@@ -129,9 +166,10 @@ async function readDeclaredModels() {
     const parsed = JSON.parse(await readFile(path.resolve(ROOT, "models.declared.json"), "utf8"));
     return {
       packages: (parsed.packages ?? []).map(item => String(item.name ?? "").toLowerCase()).filter(Boolean),
-      endpoints: (parsed.endpoints ?? []).map(item => String(item.match ?? "").toLowerCase()).filter(Boolean)
+      endpoints: (parsed.endpoints ?? []).map(item => String(item.match ?? "").toLowerCase()).filter(Boolean),
+      references: (parsed.evaluationReferences ?? []).map(item => String(item.file ?? "")).filter(Boolean)
     };
   } catch {
-    return { packages: [], endpoints: [] };
+    return { packages: [], endpoints: [], references: [] };
   }
 }
