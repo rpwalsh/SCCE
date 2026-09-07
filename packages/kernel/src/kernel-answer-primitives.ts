@@ -73,6 +73,21 @@ export function genericQuestionSignal(unit: string): boolean {
 
 
 
+/**
+ * A word written entirely in capitals is a name, however short.
+ *
+ * The single-word rule below keeps a run only at four normalized characters or more, which is a proxy for "long
+ * enough to be a name rather than a sentence-initial capital". It fails exactly on the names that carry the most
+ * information: measured on the live corpus, "What is DNA?" extracted the anchor "what" -- four characters, kept --
+ * and dropped "DNA" at three, so retrieval searched for the question word, gathered nothing, and refused a question
+ * whose article the corpus holds. Case, not length, is what separates a name from a sentence opening, and it reads
+ * the same way in every cased script.
+ */
+function acronymLikeUnit(value: string): boolean {
+  const letters = [...value].filter(character => /\p{Letter}/u.test(character));
+  return letters.length >= 2 && letters.every(character => /\p{Uppercase_Letter}/u.test(character));
+}
+
 export function surfaceEntityRuns(text: string): string[] {
   const out: string[] = [];
   let current: string[] = [];
@@ -80,6 +95,7 @@ export function surfaceEntityRuns(text: string): string[] {
     if (
       current.length >= 2 ||
       current.some(hasUncasedNonLatinLetter) ||
+      current.some(acronymLikeUnit) ||
       current.some(unit => hasPriorAnchorSignal(unit) && [...normalizePriorKey(unit)].length >= 4)
     ) out.push(current.join(" "));
     current = [];
