@@ -70,7 +70,11 @@ export function segmentUnicodeSurface(text: string): UnicodeSurfaceSegment[] {
       || current.surface === "_" && isLatinWordContinuation(graphemes[index + 1]?.surface)) {
       const end = consumeLatinWord(graphemes, index);
       const rows = graphemes.slice(index, end);
-      const kind = rows.every(row => isDecimalNumber(row.surface)) ? "number" : "word";
+      // A decimal point does not stop a run being a number; a hyphen does, because "417-431" is two numbers.
+      const kind = rows.some(row => isDecimalNumber(row.surface))
+        && rows.every(row => isDecimalNumber(row.surface) || row.surface === ".")
+        ? "number"
+        : "word";
       out.push(combineSegment(rows, kind));
       index = end;
       continue;
@@ -151,9 +155,26 @@ function consumeLatinWord(rows: readonly GraphemeSlice[], start: number): number
       index += 1;
       continue;
     }
+    // A period or hyphen between two word characters joins them; standing anywhere else it separates. This is the
+    // same rule surface-linguistics.ts applies, and it was missing here, so every path built on symbolizeData --
+    // the whole proof system, atomizeText, relation-hypothesis inference -- read "Xylor-7" as the word "xylor", the
+    // punctuation "-" and the NUMBER 7, and then derived a numeric constraint from an identifier's suffix. The
+    // apostrophe branch above already establishes the shape: a joiner needs a word character on both sides.
+    if (isWordInternalJoiner(surface)
+      && index > start
+      && index + 1 < rows.length
+      && isLatinWordContinuation(rows[index + 1]!.surface)) {
+      index += 1;
+      continue;
+    }
     break;
   }
   return Math.max(start + 1, index);
+}
+
+/** A period or hyphen: word-internal between two word characters, a separator anywhere else. Pure. */
+function isWordInternalJoiner(surface: string): boolean {
+  return surface === "." || surface === "-";
 }
 
 function isLatinWordContinuation(surface: string | undefined): boolean {

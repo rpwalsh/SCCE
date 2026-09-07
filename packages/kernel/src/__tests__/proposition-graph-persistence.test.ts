@@ -93,6 +93,24 @@ describe("propositions cross the graph boundary", () => {
     expect(values).toContain(431);
   });
 
+  it("pins the semantic identity, not only the number: subject, sign, and one measured quantity", () => {
+    // Values alone are not enough. An implementation could store 417 and 431 while mangling the relation and the
+    // value assertions above would still pass. This is what that mangling looked like: the segmenter read
+    // "Xylor-7" as the word "xylor" and the NUMBER 7, so the stored proposition carried a SECOND, fabricated
+    // constraint of 7 with the unit "decomposes", and its polarity came out negative for an affirmative sentence.
+    const atoms = proof.atomizeGraph(stored);
+    const first = atoms.find(atom => atom.constraints.some(constraint =>
+      (constraint.value as { value?: number }).value === 417));
+
+    expect(first).toBeDefined();
+    // The identifier survives whole: the subject is not split, and its suffix is not read as a measurement.
+    expect(first!.predicate).toBe("xylor-7");
+    expect(first!.polarity).toBe(1);
+    expect(first!.constraints).toHaveLength(1);
+    expect((first!.constraints[0]!.value as { unit?: string }).unit).toBe("degrees");
+    expect(first!.roles.map(role => role.normalized)).toContain("decomposes at 417 degrees celsius");
+  });
+
   it("recovers each proposition through atomizeGraph, bound to its node and its evidence", () => {
     const atoms = proof.atomizeGraph(stored);
 
