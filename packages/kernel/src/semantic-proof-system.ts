@@ -96,6 +96,8 @@ export interface SemanticProofStep {
 }
 
 export interface SemanticProofResult {
+  /** Two admitted sources, neither a learned prior, that refute each other. Distinct from claim-versus-evidence. */
+  mutualSourceContradiction: boolean;
   id: string;
   verdict: SemanticProofVerdict;
   claimAtoms: SemanticAtom[];
@@ -176,7 +178,9 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       const graphAtoms = atomizeGraphNodes(input.nodes ?? [], hasher, dimensions).slice(0, 2048);
       const activeAtoms = applyFieldMass([...evidenceAtoms, ...graphAtoms], input.field);
       const allSupportAtoms = activeAtoms.length ? activeAtoms : [...evidenceAtoms, ...graphAtoms];
-      const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher });
+      const sourceVersionByEvidence = new Map<string, string>();
+      for (const span of input.evidence) sourceVersionByEvidence.set(String(span.id), String(span.sourceVersionId));
+      const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher, sourceVersionByEvidence });
       const graph = proofGraphFrom(search, claimAtoms, evidenceAtoms, graphAtoms);
       const replay = toJsonValue({
         claimHash: hasher.digestHex(input.claimText),
@@ -192,7 +196,8 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
         counterexamples: search.counterexamples.map(item => item.id),
         admission: search.admission,
         scores: {
-          support: search.support,
+          mutualSourceContradiction: search.mutualSourceContradiction,
+        support: search.support,
           contradiction: search.contradiction,
           coverage: search.coverage,
           faithfulnessLcb: search.faithfulnessLcb
@@ -200,7 +205,8 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       });
       return {
         id: `semantic_proof_${hasher.digestHex(JSON.stringify(replay)).slice(0, 32)}`,
-        verdict: verdictFrom(search.support, search.contradiction, search.coverage, search.faithfulnessLcb, search.admission),
+        verdict: verdictFrom(search.support, search.contradiction, search.coverage, search.faithfulnessLcb, search.admission, search.mutualSourceContradiction),
+        mutualSourceContradiction: search.mutualSourceContradiction,
         claimAtoms,
         evidenceAtoms,
         graphAtoms,
@@ -353,6 +359,7 @@ function graphNodeText(node: GraphNode): string {
 }
 
 interface ProofSearchIntermediate {
+  mutualSourceContradiction: boolean;
   support: number;
   contradiction: number;
   coverage: number;
@@ -369,7 +376,7 @@ interface ProofSearchIntermediate {
   unifications: SemanticUnification[];
 }
 
-function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: SemanticAtom[]; hasher: Hasher }): ProofSearchIntermediate {
+function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: SemanticAtom[]; hasher: Hasher; sourceVersionByEvidence?: ReadonlyMap<string, string> }): ProofSearchIntermediate {
   const unifications: SemanticUnification[] = [];
   const obligations: ProofObligation[] = [];
   const counterexamples: ProofCounterexample[] = [];
@@ -448,6 +455,7 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   const admission = proofSearchAdmission(input.claimAtoms, selected, obligations, counterexamples);
   const rawSupport = selected.length ? selected.reduce((sum, item) => sum + item.support, 0) / selected.length : 0;
   const support = Math.min(rawSupport, admission.supportCeiling);
+  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.sourceVersionByEvidence);
   const contradiction = counterexamples.length
     ? Math.max(...counterexamples.map(item => item.contradiction))
     : selected.length
@@ -469,7 +477,7 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
       audit: toJsonValue({ selected: selected.map(item => ({ left: item.leftAtomId, right: item.rightAtomId, alpha: item.alpha, support: item.support, certifying: certifyingUnification(item) })), admission, rawSupport })
     });
   }
-  return { support, contradiction, coverage, faithfulnessLcb, admission, obligations, counterexamples, steps, unifications };
+  return { mutualSourceContradiction, support, contradiction, coverage, faithfulnessLcb, admission, obligations, counterexamples, steps, unifications };
 }
 
 function certifyingUnification(unification: SemanticUnification): boolean {
@@ -811,13 +819,130 @@ function obligationForClaim(claim: SemanticAtom, best: SemanticUnification | und
   };
 }
 
+/** Support atoms compared per predicate stay bounded; a source set larger than this is truncated, never scanned whole. */
+const MUTUAL_CONTRADICTION_GROUP_LIMIT = 12;
+
+/** Total pairs compared across all predicates in one proof, so the turn budget cannot be spent here. */
+const MUTUAL_CONTRADICTION_PAIR_LIMIT = 96;
+
+/**
+ * Two admitted sources that disagree with each other, which claim-versus-source comparison cannot see.
+ *
+ * searchProof unifies each claim atom against the support atoms and records the strongest disagreement it finds.
+ * That answers "does the evidence refute this claim" and cannot answer "do these sources refute each other", and
+ * the second is the question a reader has when two filings name different years for the same appointment. It is
+ * not reachable by the first: measured on that pair, the claim is the cleaned answer excerpt and unifies with the
+ * prefixed source sentences at 0.27, under the threshold, while the two sources unify with each other at 0.52 and
+ * disagree on the year. So the turn stated the earlier filing as fact and the disagreement was never surfaced.
+ *
+ * Only atoms sharing a predicate are compared -- two propositions about different relations holding different
+ * values are not in conflict -- and only atoms resting on different evidence, so a source cannot contradict its
+ * own restatement. Both bounds above are hard, because this is the one place in the proof whose cost is quadratic
+ * in the size of the admitted evidence.
+ */
+function collectMutuallyContradictorySupport(
+  supportAtoms: readonly SemanticAtom[],
+  hasher: Hasher,
+  counterexamples: ProofCounterexample[],
+  steps: SemanticProofStep[],
+  unifications: SemanticUnification[],
+  sourceVersionByEvidence?: ReadonlyMap<string, string>
+): boolean {
+  let found = false;
+  const byPredicate = new Map<string, SemanticAtom[]>();
+  for (const atom of supportAtoms) {
+    if (!atom.predicate) continue;
+    const group = byPredicate.get(atom.predicate);
+    if (group) { if (group.length < MUTUAL_CONTRADICTION_GROUP_LIMIT) group.push(atom); }
+    else byPredicate.set(atom.predicate, [atom]);
+  }
+  let pairs = 0;
+  for (const group of byPredicate.values()) {
+    if (group.length < 2) continue;
+    for (let left = 0; left < group.length; left++) {
+      for (let right = left + 1; right < group.length; right++) {
+        if (pairs >= MUTUAL_CONTRADICTION_PAIR_LIMIT) return found;
+        pairs += 1;
+        const first = group[left]!;
+        const second = group[right]!;
+        if (!fromDifferentSources(first, second, sourceVersionByEvidence)) continue;
+        // Sources, not priors. A learned prior disagreeing with a source is not two sources disagreeing, and must
+        // not stop the turn asserting what its evidence says. Certification is deliberately not the test: session
+        // evidence the owner stated this turn is uncertified by construction, and two owner statements that
+        // disagree are exactly the case worth reporting.
+        if (isLearnedPriorClass(first.proofClass) || isLearnedPriorClass(second.proofClass)) continue;
+        const unified = unifyAtoms(first, second);
+        unifications.push(unified);
+        if (!(unified.contradiction > PROOF_CONTRADICTION_THRESHOLD)) continue;
+        const evidenceIds = [...new Set([...first.evidenceIds, ...second.evidenceIds])];
+        found = true;
+        counterexamples.push({
+          id: `counterexample_${hasher.digestHex(`mutual:${first.id}:${second.id}`).slice(0, 24)}`,
+          claimAtomId: first.id,
+          evidenceAtomId: second.id,
+          reason: contradictionReason(unified),
+          contradiction: unified.contradiction,
+          evidenceIds
+        });
+        steps.push({
+          id: `step_${hasher.digestHex(`mutual-contradiction:${first.id}:${second.id}`).slice(0, 24)}`,
+          rule: PROOF_RULE.CONTRADICTION,
+          premises: [first.id, second.id],
+          conclusion: second.id,
+          support: unified.support,
+          contradiction: unified.contradiction,
+          evidenceIds,
+          audit: toJsonValue({ mutualSupportContradiction: true, predicate: first.predicate })
+        });
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Whether two atoms rest on genuinely different documents.
+ *
+ * Two spans of one article carry different evidence ids and are not two sources: an article that states a figure
+ * in its lede and a different one in a table is not a corpus in disagreement, and treating it as one would refuse
+ * to answer from any document that mentions two numbers. Source version is the identity that decides this, and
+ * evidence identity is only the fallback for atoms whose spans were not passed in.
+ */
+function fromDifferentSources(
+  left: SemanticAtom,
+  right: SemanticAtom,
+  sourceVersionByEvidence?: ReadonlyMap<string, string>
+): boolean {
+  if (!left.evidenceIds.length || !right.evidenceIds.length) return false;
+  if (sourceVersionByEvidence?.size) {
+    const leftVersions = new Set(left.evidenceIds.map(id => sourceVersionByEvidence.get(String(id))).filter(Boolean));
+    const rightVersions = right.evidenceIds.map(id => sourceVersionByEvidence.get(String(id))).filter(Boolean);
+    if (leftVersions.size && rightVersions.length) {
+      return !rightVersions.some(version => leftVersions.has(version));
+    }
+  }
+  const seen = new Set(left.evidenceIds.map(String));
+  return !right.evidenceIds.some(id => seen.has(String(id)));
+}
+
 function contradictionReason(unification: SemanticUnification): string {
   if (unification.polarity === 0 && unification.predicate > 0.45 && unification.roles > 0.35) return PROOF_COUNTEREXAMPLE_REASON.POLARITY;
   if (unification.violatedConstraints.length > 0) return `${PROOF_COUNTEREXAMPLE_REASON.CONSTRAINT}:${unification.violatedConstraints.slice(0, 3).join(",")}`;
   return PROOF_COUNTEREXAMPLE_REASON.ALPHA_INCOMPATIBLE;
 }
 
-function verdictFrom(support: number, contradiction: number, coverage: number, faithfulnessLcb: number, admission: ProofSearchIntermediate["admission"]): SemanticProofVerdict {
+/**
+ * The verdict, with one rule that does not go through a threshold.
+ *
+ * The contradiction bound below answers "is the claim refuted by the evidence", and is calibrated for that. Two
+ * certified sources refuting each other is a different fact about the corpus, and a stronger one: it does not
+ * depend on how well the claim happens to unify with either of them, and it leaves the turn no ground to assert
+ * either side. Measured on two filings naming different years for one appointment, that disagreement scores 0.52
+ * -- under a bound written for claim-versus-evidence -- so the turn asserted the earlier filing as fact and the
+ * reader never learned the sources disagreed. Reporting that is the product's reason for existing.
+ */
+function verdictFrom(support: number, contradiction: number, coverage: number, faithfulnessLcb: number, admission: ProofSearchIntermediate["admission"], mutualSourceContradiction = false): SemanticProofVerdict {
+  if (mutualSourceContradiction) return SEMANTIC_VERDICT.CONTRADICTED;
   if (contradiction >= 0.55 && contradiction > support * 0.9) return SEMANTIC_VERDICT.CONTRADICTED;
   if (admission.admitted && support >= 0.76 && coverage >= 0.72 && faithfulnessLcb >= 0.45) return SEMANTIC_VERDICT.ENTAILED;
   if (support >= 0.42 && coverage >= 0.35) return SEMANTIC_VERDICT.PARTIAL;

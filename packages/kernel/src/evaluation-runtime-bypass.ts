@@ -372,6 +372,7 @@ export function emptySemanticProofResult(
   return {
     id: `semantic_proof_disabled_${hasher.digestHex(text).slice(0, 24)}`,
     verdict: "underdetermined",
+    mutualSourceContradiction: false,
     claimAtoms: [],
     evidenceAtoms: [],
     graphAtoms: [],
