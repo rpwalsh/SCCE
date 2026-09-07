@@ -535,7 +535,7 @@ export function createProductionTurnRuntime(options: {
     }
   };
   const { activeBrainMarker, calibrationModelsCached, correctionRulesCached } = runtimeMemory;
-  const { learnHydrateReplan, runtimeMotionDeferredByDeadline } = runtimeAcquisition;
+  const { learnHydrateReplan, runtimeMotionDeferredByDeadline, searchConsentGranted } = runtimeAcquisition;
   const {
     actionGraphBuilder, alphaPersistence, answerRevision, candidates, ccr, connectorGovernance,
     constructSubstrate, correctionMemory, counterfactual, deterministicMouth, emissionEngine,
@@ -2718,7 +2718,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         let motion = inheritedRuntimeMotion;
         if (!motion) {
           const recoveryDecision = deadlineCheckpoint("runtime.replan.acquire", 5_000);
-          if (recoveryDecision?.allowed !== false) {
+          // The reservation protects a turn that already has an answer from spending it on a search. A turn holding
+          // no evidence at all, whose owner has already consented to the search, has no answer to protect -- and
+          // every served request runs under the fast budget, so this reservation is always refused there. Standing
+          // consent plus nothing to say is the one case where going to look IS the turn's work.
+          const consentStanding = selectedEvidence.length === 0 && searchConsentGranted(input.text);
+          if (recoveryDecision?.allowed !== false || consentStanding) {
             motion = await learnHydrateReplan({
               ownerInput: input,
               episodeId,
@@ -2735,7 +2740,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               });
             }
           }
-          motion = runtimeMotionDeferredByDeadline({
+          // Only when the acquisition never ran. This overwrote the real motion unconditionally, so an attempt that
+          // searched and simply found nothing was recorded as "unavailable / deadline_guard:not_started" -- the
+          // report said the turn never tried, when it had tried and come back empty. Two different facts, and the
+          // one that reached the log was the false one.
+          motion = performedRuntimeMotion ?? await runtimeMotionDeferredByDeadline({
             episodeId,
             requestedAuthority,
             trigger,

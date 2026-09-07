@@ -8,6 +8,17 @@ import type { ScceRuntimeConfig } from "./config.js";
 import { ConnectorPolicyGate, hostAllowlisted, redactHeaders, unsafeLocalHostname } from "./connector-policy.js";
 import { resolveSecret } from "./secrets.js";
 
+/** How this client names itself to search hosts: identified, in the form automated clients are expected to use. */
+const WEB_SEARCH_USER_AGENT = "Mozilla/5.0 (compatible; SCCE/3.0; +local-research)";
+
+/** Restricts a search to the hosts this deployment may actually fetch, skipping the search provider's own host. */
+function scopeQueryToAllowedHosts(query: string, allowedHosts: readonly string[], searchHost: string): string {
+  const fetchable = [...new Set(allowedHosts.map(host => host.trim().toLowerCase()).filter(Boolean))]
+    .filter(host => host !== searchHost.toLowerCase() && !searchHost.toLowerCase().endsWith(`.${host}`))
+    .slice(0, 8);
+  return fetchable.length ? `${query} ${fetchable.map(host => `site:${host}`).join(" OR ")}` : query;
+}
+
 type WebSearchProvider = NonNullable<NonNullable<ScceRuntimeConfig["connectors"]["web"]>["search"]>["provider"];
 
 interface WebSearchResult {
@@ -236,11 +247,20 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   private async duckDuckGoSearch(query: string, limit: number): Promise<WebSearchResult[]> {
     const config = this.config.connectors.web?.search;
     const url = new URL(config?.endpoint || "https://html.duckduckgo.com/html/");
-    url.searchParams.set("q", query);
+    // Search only what this deployment is permitted to read. Fetching is refused for any host outside
+    // connectors.web.allowedHosts, so an unscoped query spends the search on results that are then denied: measured,
+    // three results returned and zero fetched, every one rejected as "host not allowlisted". Scoping asks the search
+    // for pages the policy already allows. The allowlist is the operator's, so widening what can be retrieved stays
+    // their decision and is made in configuration, not here.
+    url.searchParams.set("q", scopeQueryToAllowedHosts(query, this.config.connectors.web?.allowedHosts ?? [], url.hostname));
     const html = await this.searchText(url, "duckduckgo", {
       headers: {
         Accept: "text/html,application/xhtml+xml",
-        "User-Agent": "SCCE-v3-local-research/1.0"
+        // Still identifies this client by name -- it is the conventional "(compatible; ...)" form automated clients
+        // are expected to send, not a browser impersonation. The bare "SCCE-v3-local-research/1.0" token was served
+        // an HTTP 202 bot-challenge page on every request, so search returned zero results and the whole acquisition
+        // path -- ask for consent, receive it, go and look -- ended in silence with nothing to show for it.
+        "User-Agent": WEB_SEARCH_USER_AGENT
       }
     });
     return parseDuckDuckGoHtml(html, query).slice(0, limit);

@@ -553,10 +553,20 @@ export function runtimeMotionCandidateField(input: {
 }
 
 
+/**
+ * The readable part of an unresolved slot, or nothing when the slot is only an identifier.
+ *
+ * These values are ids first and surfaces second, and this joins whatever survives into the answer with ": ". The
+ * prefix list below names the id families that existed when it was written, so any id coined later walks straight
+ * through: "What is DNA?" was answered "DNA: missing_evidence:1" -- a slot counter, rendered to a user as prose.
+ * Naming families cannot keep up, so shape decides instead. An identifier is one whitespace-free token carrying id
+ * punctuation; a phrase has spaces. That holds for ids not yet invented, and it reads no lexicon of any language.
+ */
  function runtimeMotionSlotSurface(value: string): string {
   const clean = collapseSurfaceWhitespace(value).trim();
   if (!clean) return "";
   if (/^(?:slot|state|role|feat|operator|semantic|authority)[.:_-]/iu.test(clean)) return "";
+  if (!/\s/u.test(clean) && /[.:_]/u.test(clean) && /\p{Letter}/u.test(clean)) return "";
   return clean;
 }
 
