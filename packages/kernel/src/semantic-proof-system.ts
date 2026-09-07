@@ -131,8 +131,15 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
   const maxEvidenceAtoms = Math.max(16, Math.floor(options.maxEvidenceAtoms ?? 4096));
 
   return {
-    atomizeClaim(text: string): SemanticAtom[] {
-      return atomizeText({ text, source: SEMANTIC_SOURCE.CLAIM, hasher, dimensions, maxAtoms: 128 });
+    atomizeClaim(text: string, grounding: readonly EvidenceSpan[] = []): SemanticAtom[] {
+      return atomizeText({
+        text,
+        source: SEMANTIC_SOURCE.CLAIM,
+        hasher,
+        dimensions,
+        maxAtoms: 128,
+        groundingSurfaces: grounding.map(span => span.text)
+      });
     },
 
     atomizeEvidence(evidence: readonly EvidenceSpan[]): SemanticAtom[] {
@@ -172,7 +179,9 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
         source: SEMANTIC_SOURCE.CLAIM,
         hasher,
         dimensions,
-        maxAtoms: Math.max(1, input.maxAtoms ?? 96)
+        maxAtoms: Math.max(1, input.maxAtoms ?? 96),
+        // The claim is checked against this evidence, so this evidence is what can have grounded it.
+        groundingSurfaces: input.evidence.map(span => span.text)
       });
       const evidenceAtoms = this.atomizeEvidence(input.evidence).slice(0, maxEvidenceAtoms);
       const graphAtoms = atomizeGraphNodes(input.nodes ?? [], hasher, dimensions).slice(0, 2048);
@@ -254,6 +263,8 @@ export function atomizeText(input: {
   proofClass?: string;
   certifiesFactualProof?: boolean;
   proofBoundaryReason?: string;
+  /** Source surfaces a claim may be grounded in, which decides its modality. Ignored for evidence and graph atoms. */
+  groundingSurfaces?: readonly string[];
 }): SemanticAtom[] {
   const hasher = input.hasher ?? createHasher();
   const dimensions = Math.max(16, Math.floor(input.dimensions ?? 64));
@@ -283,6 +294,7 @@ export function atomizeText(input: {
     const constraints = deriveConstraints(sentence, symbols, hasher, input.evidenceIds ?? []);
     const predicateFeatures = buildPredicateFeatures(predicateSymbol.surface, symbols, predicateSymbol.index);
     const polarity = polarityFromSurface(sentence, symbols);
+    const grounded = sentenceGroundedInSurfaces(sentence, input.groundingSurfaces);
     const alpha = clamp01((input.alpha ?? 0.5) * (0.65 + Math.min(0.35, symbols.length / 80)));
     const vector = stableVector([...predicateFeatures, ...roles.flatMap(role => role.features), ...constraints.map(c => `${c.kind}:${c.subject}:${c.operator}:${JSON.stringify(c.value)}`)], hasher, dimensions);
     const id = semanticAtomId(hasher, {
@@ -303,7 +315,7 @@ export function atomizeText(input: {
       constraints,
       polarity,
       alpha,
-      modality: modalityFromSurface(sentence, symbols, input.source),
+      modality: modalityFromSurface(sentence, symbols, input.source, grounded),
       source: input.source,
       sourceText: sentence,
       evidenceIds: input.evidenceIds ?? [],
@@ -413,16 +425,16 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
         evidenceIds: best.evidenceIds,
         audit: best.audit
       });
-      if (best.missingRoles.length > 0 || best.violatedConstraints.length > 0) {
+      if (best.missingRoles.length > 0 || best.violatedConstraints.length > 0 || best.transformObligations.length > 0) {
         steps.push({
           id: `step_${input.hasher.digestHex(`constraint:${claim.id}:${best.rightAtomId}`).slice(0, 24)}`,
           rule: PROOF_RULE.CONSTRAINT,
           premises: [best.rightAtomId],
           conclusion: claim.id,
-          support: Math.max(0, best.constraints - best.violatedConstraints.length * 0.12),
+          support: Math.max(0, best.constraints - openObligationCount(best) * 0.12),
           contradiction: best.violatedConstraints.length ? Math.min(1, best.violatedConstraints.length * 0.18) : 0,
           evidenceIds: best.evidenceIds,
-          audit: toJsonValue({ missingRoles: best.missingRoles, violatedConstraints: best.violatedConstraints })
+          audit: toJsonValue({ missingRoles: best.missingRoles, violatedConstraints: best.violatedConstraints, transformObligations: best.transformObligations })
         });
       }
     }
@@ -490,6 +502,11 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   return { mutualSourceContradiction, support, contradiction, coverage, faithfulnessLcb, admission, obligations, counterexamples, steps, unifications };
 }
 
+/** Everything left open on a unification: constraints it violated, plus inferences it has not licensed. Pure. */
+function openObligationCount(unification: SemanticUnification): number {
+  return unification.violatedConstraints.length + unification.transformObligations.length;
+}
+
 function certifyingUnification(unification: SemanticUnification): boolean {
   return unification.evidenceIds.length > 0 &&
     unification.factualProofEligible &&
@@ -551,7 +568,12 @@ function unifyAtoms(left: SemanticAtom, right: SemanticAtom): SemanticUnificatio
     support,
     contradiction,
     missingRoles: roleMatch.missing,
-    violatedConstraints: [...constraintMatch.violations, ...transforms.obligations],
+    // Constraint violations only. An obligation is not a violation: a violation says the evidence positively
+    // conflicts with the claim, an obligation says the inference has not been shown to be licensed. Merging them
+    // made every consumer that asks "which constraints were violated" answer with modality obligations too, so a
+    // counterexample raised by an epistemic gap was reported as a constraint conflict and certification checked
+    // the same fact twice. transformObligations carries them, and the callers that want both now say so.
+    violatedConstraints: [...constraintMatch.violations],
     transformIds: transforms.transformIds,
     transformSupport: transforms.supportBoost,
     transformContradiction: transforms.contradictionBoost,
@@ -736,6 +758,12 @@ function quantityContradiction(left: readonly SemanticConstraint[], right: reado
   let score = 0;
   for (const l of left.filter(isQuantityConstraint)) {
     for (const r of right.filter(isQuantityConstraint)) {
+      // Two quantities disagree only if they measure the same thing, and the subject is what records that.
+      // Comparing every quantity against every other made a sentence contradict itself: "commissioned on 11 April
+      // 1988" carries 11 and 1988, they are disjoint, and the pair scored 0.75 -- so the claim contradicted the
+      // very source it was read out of, on every factual turn carrying more than one number. Unit alone could not
+      // separate them because the guard below only skips when BOTH sides name a unit, and a bare year names none.
+      if (l.subject !== r.subject) continue;
       const ql = quantityFromJson(l.value);
       const qr = quantityFromJson(r.value);
       if (!ql || !qr) continue;
@@ -811,7 +839,14 @@ function atomMetadata(atom: SemanticAtom): JsonValue {
 
 function obligationForClaim(claim: SemanticAtom, best: SemanticUnification | undefined, hasher: Hasher): ProofObligation {
   const missingRoles = best?.missingRoles ?? claim.roles.map(role => `${role.name}:${role.normalized}`);
-  const kind: ProofObligation["kind"] = !best ? PROOF_OBLIGATION_KIND.PREDICATE : missingRoles.length ? PROOF_OBLIGATION_KIND.ROLE : best.violatedConstraints.length ? PROOF_OBLIGATION_KIND.CONSTRAINT : PROOF_OBLIGATION_KIND.SOURCE;
+  // A modality gap is an unmet source obligation, not a violated constraint, and the kind has to say which.
+  const kind: ProofObligation["kind"] = !best
+    ? PROOF_OBLIGATION_KIND.PREDICATE
+    : missingRoles.length
+      ? PROOF_OBLIGATION_KIND.ROLE
+      : best.violatedConstraints.length
+        ? PROOF_OBLIGATION_KIND.CONSTRAINT
+        : PROOF_OBLIGATION_KIND.SOURCE;
   const description = !best
     ? `${PROOF_OBLIGATION_KIND.PREDICATE}:${claim.predicate}`
     : missingRoles.length
@@ -939,6 +974,9 @@ function fromDifferentSources(
 function contradictionReason(unification: SemanticUnification): string {
   if (unification.polarity === 0 && unification.predicate > 0.45 && unification.roles > 0.35) return PROOF_COUNTEREXAMPLE_REASON.POLARITY;
   if (unification.violatedConstraints.length > 0) return `${PROOF_COUNTEREXAMPLE_REASON.CONSTRAINT}:${unification.violatedConstraints.slice(0, 3).join(",")}`;
+  // An outstanding obligation is not a constraint conflict, and reporting it as one sent a reader looking for a
+  // disagreement between values that does not exist.
+  if (unification.transformObligations.length > 0) return `${PROOF_COUNTEREXAMPLE_REASON.ALPHA_INCOMPATIBLE}:${unification.transformObligations.slice(0, 3).join(",")}`;
   return PROOF_COUNTEREXAMPLE_REASON.ALPHA_INCOMPATIBLE;
 }
 
@@ -1048,7 +1086,10 @@ function deriveConstraints(sentence: string, symbols: readonly string[], hasher:
         evidenceIds
       });
     }
-    const temporal = parseTemporalSymbol(symbols[i]!);
+    // A number that names what it measures is a measurement, not a year. Reading both from one token made
+    // "3412 metres" the year 3412 as well, and the sentence then held two disjoint intervals and contradicted
+    // itself. Only a bare number can be a year.
+    const temporal = quantity?.unit ? undefined : parseTemporalSymbol(symbols[i]!);
     if (temporal) {
       constraints.push({
         id: `constraint_${hasher.digestHex(`t:${sentence}:${i}:${symbols[i]}`).slice(0, 20)}`,
@@ -1091,11 +1132,46 @@ function polarityFromSurface(sentence: string, symbols: readonly string[]): Sema
   return 1;
 }
 
-function modalityFromSurface(sentence: string, symbols: readonly string[], source: SemanticAtom["source"]): SemanticAtom["modality"] {
+/**
+ * The epistemic status of a proposition, which is not the same thing as which side of a proof it sits on.
+ *
+ * A claim read out of a source has been observed, exactly as the source has. Minting it ASSERTED because its
+ * `source` field is not EVIDENCE ranked every claim above its own evidence, so modalityCompatibility raised an
+ * obligation and charged contradiction on every factual turn in the product -- and since unifyAtoms scales
+ * contradiction by predicate and role similarity, the closer a source matched the claim the more contradictory it
+ * scored. Measured on one turn: the answer's own source reached 0.63 while unrelated bigram atoms sat at 0.24, so
+ * the turn was ruled contradicted and reported insufficient support over a correct, cited answer.
+ *
+ * The ladder is unchanged and still does its work. A question stays POSSIBLE however well the evidence matches it,
+ * an emphatic claim stays REQUIRED and still owes an obligation against merely observed evidence, and a claim no
+ * source states stays ASSERTED -- the system asserting it on its own authority is precisely what that means.
+ */
+function modalityFromSurface(
+  sentence: string,
+  symbols: readonly string[],
+  source: SemanticAtom["source"],
+  groundedInEvidence = false
+): SemanticAtom["modality"] {
   if (source === SEMANTIC_SOURCE.GRAPH) return SEMANTIC_MODALITY.DERIVED;
   if (/[?]/.test(sentence)) return SEMANTIC_MODALITY.POSSIBLE;
   if (symbols.some(symbol => symbol.endsWith("!"))) return SEMANTIC_MODALITY.REQUIRED;
-  return source === SEMANTIC_SOURCE.EVIDENCE ? SEMANTIC_MODALITY.OBSERVED : SEMANTIC_MODALITY.ASSERTED;
+  if (source === SEMANTIC_SOURCE.EVIDENCE) return SEMANTIC_MODALITY.OBSERVED;
+  return groundedInEvidence ? SEMANTIC_MODALITY.OBSERVED : SEMANTIC_MODALITY.ASSERTED;
+}
+
+/** Whether a source surface states this sentence, compared on its own words rather than on punctuation. Pure. */
+function sentenceGroundedInSurfaces(sentence: string, surfaces: readonly string[] | undefined): boolean {
+  if (!surfaces?.length) return false;
+  const wanted = groundingKey(sentence);
+  if (!wanted) return false;
+  return surfaces.some(surface => groundingKey(surface).includes(wanted));
+}
+
+/** A surface reduced to its lexical symbols, so quoting differences and spacing do not decide provenance. Pure. */
+function groundingKey(text: string): string {
+  return symbolizeData(text)
+    .filter(symbol => [...symbol].some(char => /[\p{Letter}\p{Number}]/u.test(char)))
+    .join(" ");
 }
 
 function semanticAtomId(hasher: Hasher, payload: unknown): string {
@@ -1149,9 +1225,18 @@ function quantityFromJson(value: JsonValue): (SemanticQuantity & { operator?: st
   };
 }
 
+/**
+ * A temporal scope, or nothing when the value does not carry one.
+ *
+ * This returned a scope for ANY object, so isTemporalConstraint matched every constraint and quantities were
+ * compared as instants: "commissioned on 11 April 1988" carries 11 and 1988, read as two time intervals they are
+ * disjoint, and the sentence contradicted itself at 0.55. A quantity is not a time, and the two temporal markers
+ * -- a granularity or an instant -- are what tell them apart.
+ */
 function temporalFromJson(value: JsonValue): SemanticTemporalScope | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, JsonValue>;
+  if (typeof record.granularity !== "string" && typeof record.instant !== "number") return undefined;
   return {
     lower: typeof record.lower === "number" ? record.lower : undefined,
     upper: typeof record.upper === "number" ? record.upper : undefined,
