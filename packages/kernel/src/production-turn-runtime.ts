@@ -1578,7 +1578,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const proofClaimText = answerProposal
         ? localEvidenceAnswerClaimSurface(answerProposal) || input.text
         : input.text;
-      const proofCandidateEvidence = answerProposal?.evidence ?? supportCandidates;
+      // The proposal is checked against the rest of the admitted evidence, not only against the evidence that
+      // produced it. When the claim is the proposal own excerpt, giving the proof only that excerpt hands it a
+      // self-consistent subset by construction: no source that disagrees can be in the set, so no counterexample
+      // can exist. Two filings that name different years for the same appointment were both admitted and only one
+      // reached the proof, so the turn stated the first as fact and the disagreement was never visible.
+      const proofCandidateEvidence = answerProposal
+        ? mergeEvidenceSpans([...answerProposal.evidence, ...supportCandidates])
+        : supportCandidates;
       const proofSourceExcerpts = answerProposal
         ? localEvidenceAnswerProofExcerpts(answerProposal)
         : [];
@@ -1824,10 +1831,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // promoted source excerpt. Only contradiction mass from the selected
       // evidence lane can reject that excerpt.
       const proposalContradiction = entailmentResult.contradiction;
+      // Two admitted sources refuting each other is counterevidence from the evidence lane, not formal-proof
+      // pressure, and it is the one thing that must stop an exact excerpt being spoken as the answer. Both
+      // filings were promoted and both were quoted exactly; picking the earlier one and stating it as fact is
+      // the failure this product exists to prevent, and it read as a confident correct answer.
       const evidenceProposalAdmissible = Boolean(
         answerProposal
         && proofSourceExcerpts.length > 0
         && proposalContradiction < 0.72
+        && !semanticProof.mutualSourceContradiction
       );
       // localEvidenceAnswerSurface (backed by localEvidenceAnswerPlan) covers
       // however many sentences a compound request actually needs
