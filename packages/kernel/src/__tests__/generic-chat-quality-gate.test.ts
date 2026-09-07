@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createClock,
+  deriveTurnRequirementField,
   createCorrectionMemory,
   createEngineeringCorpusProjection,
   createHasher,
@@ -73,21 +74,7 @@ describe("Phase 10 generic chat quality gate", () => {
     if (result.verdict) assertProofVerdictObeyed(result.spoken, result.verdict);
   });
 
-  // KNOWN FAILURE, recorded rather than hidden. The claim carries an instruction -- "Answer directly without a
-  // follow-up question: <question>" -- and production-turn-runtime strips instruction spans from the subject only
-  // when requestedAuthority is "creative" (requestSubjectText, mouth.ts and production-turn-runtime.ts). On every
-  // other turn the whole claim, instruction included, is passed to languageMemory.generate as a context symbol,
-  // and this fixture's language model has a five-word vocabulary, so the generator emits the context back.
-  //
-  // The assertion below is correct and is deliberately left unweakened. It passed before only by accident: the
-  // segmenter used to split "follow-up" into three tokens, so the forbidden substring never matched while the same
-  // leak was present -- baseline output for this case is "follow - up question: quiet-hours lighting cue 40% 9:00
-  // Answer". Fixing it means extending subject extraction to non-creative turns, which changes what every factual
-  // turn retrieves and realizes and so belongs with a sealed benchmark run, not with a segmentation change.
-  //
-  // it.fails is the marker on purpose: when the leak is fixed this test starts passing and vitest reports THAT as
-  // a failure, which forces this block to be deleted rather than left behind.
-  it.fails("do not ask a follow-up direct answer", async () => {
+  it("do not ask a follow-up direct answer", async () => {
     const result = await speakNoFollowUp();
     assertHumanAnswer(result.spoken, { require: result.require, forbidden: result.forbidden });
     assertWalshSelectedValid(result.spoken);
@@ -282,10 +269,26 @@ describe("Phase 10 generic chat quality gate", () => {
   async function speakNoFollowUp() {
     const source = sourceVersion("fixture://phase10/no-follow-up", fixture.evidenceText);
     const direct = evidenceSpan(source, fixture.evidenceText, "direct_evidence");
-    const claim = "Answer directly without a follow-up question: the reading-room lights dim to 40% after 9:00 p.m.";
+    const instruction = "Answer directly without a follow-up question:";
+    const claim = `${instruction} the reading-room lights dim to 40% after 9:00 p.m.`;
     const field = emptyField(claim);
     const entailment = withProofVerdict(semanticEntailment(claim, [direct], field), "certified", "proved");
-    const spoken = await mouth.speak(baseSpeakInput({ claim, source, evidence: [direct], field, entailment, construct: answerConstruct("no-follow-up") }));
+    // A production turn carries a requirement field, and a corpus that has read instructions has learned their
+    // shape. This fixture's language model is five words wide, so without an activation the instruction span is
+    // indistinguishable from the subject and the realizer is told the instruction's words are required content.
+    const requirementField = deriveTurnRequirementField({
+      requestText: claim,
+      activations: [{
+        id: "pattern:phase10-instruction",
+        kind: "pattern",
+        activation: 0.9,
+        span: { charStart: 0, charEnd: [...instruction].length }
+      }]
+    });
+    const spoken = await mouth.speak({
+      ...baseSpeakInput({ claim, source, evidence: [direct], field, entailment, construct: answerConstruct("no-follow-up") }),
+      requirementField
+    });
     return { spoken, directEvidenceIds: [String(direct.id)], learnedPriorEvidenceIds: [], require: ["40%", "9:00"], forbidden: ["?","follow-up"], verdict: "certified" };
   }
 
