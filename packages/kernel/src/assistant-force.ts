@@ -58,6 +58,8 @@ export interface AssistantForceInput {
   support?: number;
   contradiction?: number;
   targetLanguageChanged?: boolean;
+  /** The answer states what each disagreeing source says instead of asserting one of them. */
+  reportsSourceConflict?: boolean;
 }
 
 export interface AssistantForceDecision {
@@ -102,7 +104,10 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
     || isUnsupportedTruthState(truthState)
     || proof === "scce.verdict.004";
   const proposalClaims = input.selectedProposal?.claims ?? [];
-  if (proposalClaims.length > 0) {
+  // A source conflict is decided before the per-claim path. That path reasons about how well each claim is
+  // supported, and every claim it can see states one side of the disagreement, so it resolves to unsupported and
+  // the turn reports insufficient support while holding a complete cited account of both sides.
+  if (proposalClaims.length > 0 && !input.reportsSourceConflict) {
     return proposalForceDecision({
       input,
       claims: proposalClaims,
@@ -122,6 +127,13 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
     // decides the force here.
     force = "translation_answer";
     reasonIds.push("assistant_force.requested_translation_authority");
+  } else if (contradicted && input.reportsSourceConflict) {
+    // The turn read the sources, found they disagree, and is reporting each of them. That is the opposite of
+    // having insufficient support: it has support from every side and declines to pick one. Calling it
+    // insufficient_support told a caller the answer was unusable while handing it a complete, cited account of
+    // the disagreement, and any consumer gating on the force discarded exactly the answer worth reading.
+    force = "source_conflict_reported";
+    reasonIds.push("assistant_force.source_conflict_reported");
   } else if (contradicted && input.requestedAuthority !== "creative") {
     // Contradiction pressure outranks a merely-incidental creative signal:
     // an "invented" epistemic force paired with high contradiction means
@@ -393,6 +405,7 @@ function reasonForProposalForce(force: AssistantForceClass): string {
     case "reasoned_answer": return "assistant_force.proposal.reasoned";
     case "learned_corpus_answer": return "assistant_force.proposal.learned_prior";
     case "conjecture": return "assistant_force.proposal.conjectured";
+    case "source_conflict_reported": return "assistant_force.proposal.source_conflict_reported";
     case "insufficient_support": return "assistant_force.proposal.unsupported";
   }
 }

@@ -1704,7 +1704,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidenceIds: entailmentResult.evidenceIds,
         directEvidenceIds: promoted.map(span => span.id),
         support: entailmentResult.support,
-        contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction)
+        contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction),
+        reportsSourceConflict: semanticProof.mutualSourceContradiction
       };
       const entailmentAssistantForce = assistantForceDecision(entailmentForceInput);
       const entailmentAssistantForceClass = assistantForceClass(entailmentForceInput);
@@ -3650,7 +3651,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         constructForces: spoken.surfacePlan.constructForces.map(force => force.id),
         support: answerEntailment.support,
         contradiction: spokenAnswerContradiction,
-        targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
+        targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale),
+        reportsSourceConflict: semanticProof.mutualSourceContradiction
       });
       kernelTrace({
         stage: "mouth.generate",
@@ -3805,7 +3807,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         constructForces: spoken.surfacePlan.constructForces.map(force => force.id),
         support: answerEntailment.support,
         contradiction: spokenAnswerContradiction,
-        targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale)
+        targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale),
+        reportsSourceConflict: semanticProof.mutualSourceContradiction
       });
       const runtimeReadinessForEmission = runtimeOrchestrator.readiness({ dag: runtimeDag, safety: safetyWithPlans, retrieval, field, alphaRecord, entailment: answerEntailment, construct: spokenConstructGraph, assembly, toolPlan, capabilityPlans, counterfactual: counterfactualWorld, validation, emission: rawEmission });
       const runtimeCoherence = decideRuntimeCoherence({
