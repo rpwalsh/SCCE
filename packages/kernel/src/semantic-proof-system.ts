@@ -178,9 +178,19 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       const graphAtoms = atomizeGraphNodes(input.nodes ?? [], hasher, dimensions).slice(0, 2048);
       const activeAtoms = applyFieldMass([...evidenceAtoms, ...graphAtoms], input.field);
       const allSupportAtoms = activeAtoms.length ? activeAtoms : [...evidenceAtoms, ...graphAtoms];
-      const sourceVersionByEvidence = new Map<string, string>();
-      for (const span of input.evidence) sourceVersionByEvidence.set(String(span.id), String(span.sourceVersionId));
-      const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher, sourceVersionByEvidence });
+      // What counts as one source, for the purpose of two of them disagreeing.
+      //
+      // For a document it is the source version: two spans of one article are one source, and an article that
+      // states a figure in its lede and another in a table is not a corpus in disagreement. For evidence the owner
+      // asserted this session it is the span, because each turn is its own assertion -- the whole session shares
+      // one source version by construction, and keying on that made two separate statements look like one source
+      // and hid exactly the disagreement worth reporting.
+      const independenceByEvidence = new Map<string, string>();
+      for (const span of input.evidence) {
+        const id = String(span.id);
+        independenceByEvidence.set(id, id.startsWith(SESSION_EVIDENCE_ID_PREFIX) ? id : String(span.sourceVersionId));
+      }
+      const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher, independenceByEvidence });
       const graph = proofGraphFrom(search, claimAtoms, evidenceAtoms, graphAtoms);
       const replay = toJsonValue({
         claimHash: hasher.digestHex(input.claimText),
@@ -376,7 +386,7 @@ interface ProofSearchIntermediate {
   unifications: SemanticUnification[];
 }
 
-function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: SemanticAtom[]; hasher: Hasher; sourceVersionByEvidence?: ReadonlyMap<string, string> }): ProofSearchIntermediate {
+function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: SemanticAtom[]; hasher: Hasher; independenceByEvidence?: ReadonlyMap<string, string> }): ProofSearchIntermediate {
   const unifications: SemanticUnification[] = [];
   const obligations: ProofObligation[] = [];
   const counterexamples: ProofCounterexample[] = [];
@@ -455,7 +465,7 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   const admission = proofSearchAdmission(input.claimAtoms, selected, obligations, counterexamples);
   const rawSupport = selected.length ? selected.reduce((sum, item) => sum + item.support, 0) / selected.length : 0;
   const support = Math.min(rawSupport, admission.supportCeiling);
-  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.sourceVersionByEvidence);
+  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.independenceByEvidence);
   const contradiction = counterexamples.length
     ? Math.max(...counterexamples.map(item => item.contradiction))
     : selected.length
@@ -819,6 +829,9 @@ function obligationForClaim(claim: SemanticAtom, best: SemanticUnification | und
   };
 }
 
+/** Evidence the owner asserted in this session: each span is its own assertion, not part of one document. */
+const SESSION_EVIDENCE_ID_PREFIX = "evidence_session_";
+
 /** Support atoms compared per predicate stay bounded; a source set larger than this is truncated, never scanned whole. */
 const MUTUAL_CONTRADICTION_GROUP_LIMIT = 12;
 
@@ -846,7 +859,7 @@ function collectMutuallyContradictorySupport(
   counterexamples: ProofCounterexample[],
   steps: SemanticProofStep[],
   unifications: SemanticUnification[],
-  sourceVersionByEvidence?: ReadonlyMap<string, string>
+  independenceByEvidence?: ReadonlyMap<string, string>
 ): boolean {
   let found = false;
   const byPredicate = new Map<string, SemanticAtom[]>();
@@ -865,7 +878,7 @@ function collectMutuallyContradictorySupport(
         pairs += 1;
         const first = group[left]!;
         const second = group[right]!;
-        if (!fromDifferentSources(first, second, sourceVersionByEvidence)) continue;
+        if (!fromDifferentSources(first, second, independenceByEvidence)) continue;
         // Sources, not priors. A learned prior disagreeing with a source is not two sources disagreeing, and must
         // not stop the turn asserting what its evidence says. Certification is deliberately not the test: session
         // evidence the owner stated this turn is uncertified by construction, and two owner statements that
@@ -911,15 +924,13 @@ function collectMutuallyContradictorySupport(
 function fromDifferentSources(
   left: SemanticAtom,
   right: SemanticAtom,
-  sourceVersionByEvidence?: ReadonlyMap<string, string>
+  independenceByEvidence?: ReadonlyMap<string, string>
 ): boolean {
   if (!left.evidenceIds.length || !right.evidenceIds.length) return false;
-  if (sourceVersionByEvidence?.size) {
-    const leftVersions = new Set(left.evidenceIds.map(id => sourceVersionByEvidence.get(String(id))).filter(Boolean));
-    const rightVersions = right.evidenceIds.map(id => sourceVersionByEvidence.get(String(id))).filter(Boolean);
-    if (leftVersions.size && rightVersions.length) {
-      return !rightVersions.some(version => leftVersions.has(version));
-    }
+  if (independenceByEvidence?.size) {
+    const leftKeys = new Set(left.evidenceIds.map(id => independenceByEvidence.get(String(id))).filter(Boolean));
+    const rightKeys = right.evidenceIds.map(id => independenceByEvidence.get(String(id))).filter(Boolean);
+    if (leftKeys.size && rightKeys.length) return !rightKeys.some(key => leftKeys.has(key));
   }
   const seen = new Set(left.evidenceIds.map(String));
   return !right.evidenceIds.some(id => seen.has(String(id)));

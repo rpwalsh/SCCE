@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { SEMANTIC_VERDICT } from "./semantic-codes.js";
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -765,6 +766,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
       : sourceCoherentUnanchoredEvidence(input.requestText, evidence);
   if (!answerEvidence.length) return undefined;
   const contradiction = Math.max(input.entailment?.contradiction ?? 0, input.semanticProof?.contradiction ?? 0);
+  // A contradicted proof blocks a plain answer whatever the mass is. The bounds below are calibrated for
+  // claim-versus-evidence contradiction; a verdict of contradicted also covers two admitted sources refuting each
+  // other, which scores lower than either bound and means something stronger -- there is no side to answer from.
+  if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED) return undefined;
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
   const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
   // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
