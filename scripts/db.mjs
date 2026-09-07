@@ -1,5 +1,8 @@
 import { createRequire } from "node:module";
-const require_ = createRequire("file:///C:/Users/react/fuggit/packages/adapters-node/package.json");
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+// Resolved from the repository, not from one machine's checkout path.
+const require_ = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")));
 const pg = require_("pg");
 import fs from "node:fs";
 const cfg = JSON.parse(fs.readFileSync("scce.config.json","utf8"));
