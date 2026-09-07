@@ -55,6 +55,8 @@ export type AssistantForceClass =
   | "action_result"
   | "verified_artifact"
   | "conjecture"
+  /** The sources were read, they disagree, and each is reported rather than one of them being asserted. */
+  | "source_conflict_reported"
   | "insufficient_support";
 
 export interface Clock {

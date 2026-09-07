@@ -12,6 +12,7 @@ import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-pl
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
 import { requestSubjectText } from "./turn-requirements.js";
+import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
 import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import type { ContinueDecision } from "./learning-loop.js";
@@ -1271,13 +1272,13 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
  *
  * Returns nothing for any other force, so the single-fact surfaces below remain the normal path.
  */
-function contradictedPointsSurface(plan: SurfacePlan): string {
-  if (dominantForce(plan) !== "contradicted") return "";
-  const surfaces = plan.orderedPoints
-    .filter(point => point.role === "answer" && point.proposition.trim())
-    .map(point => ensureSurfaceSentence(tidySurface(point.proposition)))
-    .filter(Boolean);
-  return uniqueStrings(surfaces).length > 1 ? uniqueStrings(surfaces).join(" ") : "";
+function sourceConflictSurface(input: SpeakInput): string {
+  const state = semanticAnswerConstructState(input.construct);
+  if (!state || state.forceId !== SOURCE_CONFLICT_FORCE_ID) return "";
+  const statements = uniqueStrings(state.selectedFacts
+    .map(fact => ensureSurfaceSentence(tidySurface(fact.object)))
+    .filter(Boolean));
+  return statements.length > 1 ? statements.join(" ") : "";
 }
 
 export function createDeterministicMouth(options: { hashText: (text: string) => string }): Mouth {
@@ -1317,7 +1318,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           // fact is the wrong unit: it is one side of the disagreement, stated alone, which is exactly what the
           // proof refused to let the evidence lane assert. Realizing every answer-role point keeps this
           // realization-only -- the planner selected these facts and this force -- while saying what was selected.
-          contradictedPointsSurface(plan),
+          sourceConflictSurface(input),
           semanticSlotSurface(input.semanticInput?.slots[1]?.value ?? input.semanticInput?.slots[0]?.value ?? null),
           plan.orderedPoints.find(point => point.role === "answer" && point.proposition.trim())?.proposition ?? "",
           plan.orderedPoints.find(programOrArtifactSurfacePoint)?.proposition ?? "",

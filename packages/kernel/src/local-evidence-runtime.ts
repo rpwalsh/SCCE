@@ -3687,6 +3687,9 @@ function fastAnswerSentences(text: string): string[] {
 }
 
 
+/** The force of an answer that reports disagreement between sources rather than answering from one of them. */
+export const SOURCE_CONFLICT_FORCE_ID = "output.force.source_conflict_answer";
+
 /** Whether this answer reports that the sources disagree, rather than answering from one of them. Pure. */
 export function localEvidenceAnswerReportsSourceConflict(plan: { kindId: string }): boolean {
   return plan.kindId === LOCAL_ANSWER_KIND_IDS.sourceConflict;
@@ -3722,7 +3725,11 @@ export function attachLocalEvidenceAnswerConstruct(input: {
     activatedNeighborhood: facts,
     rejectedCandidates: [],
     supportIds: evidenceIds,
-    forceId: "output.force.source_bound_answer",
+    // A conflict answer is source-bound like any other, and it is not one source speaking: the mouth must realize
+    // every fact rather than lead with one, so the force says so instead of leaving it to be inferred.
+    forceId: localEvidenceAnswerReportsSourceConflict(input.plan)
+      ? SOURCE_CONFLICT_FORCE_ID
+      : "output.force.source_bound_answer",
     boundaryId: "output.force.source_bound",
     activeBrainVersion: kernelString(marker.activeBrainVersion) ?? "",
     activeImportRunIds: kernelStringArray(marker.activeImportRunIds),
@@ -3780,8 +3787,11 @@ export function attachLocalEvidenceAnswerConstruct(input: {
     const statements = plan.slotSurfaces[LOCAL_ANSWER_SLOT_IDS.conflictingStatement];
     const surfaces = Array.isArray(statements) ? statements : [statements].filter(Boolean) as string[];
     return surfaces.map((statement, index) => localEvidenceSemanticFact({
-      subject: cleanSourceAnswerSurface(evidenceTitle(plan.evidence[index] ?? plan.evidence[0]!) || ""),
-      predicate: "",
+      // Same shape the ordinary source quote uses. semanticAnswerFactFromJson drops any fact with an empty
+      // subject, predicate or object, so a fact carrying the statement only in its object was discarded, the
+      // construct read as having no facts at all, and the turn fell back to answering from one side.
+      subject: localEvidenceSelectedSubject(plan, requestText),
+      predicate: ensureUnicodeSurfaceSentence(statement),
       object: ensureUnicodeSurfaceSentence(statement),
       relationId: LOCAL_ANSWER_RELATION_IDS.sourceQuote,
       evidence: plan.evidence[index] ? [plan.evidence[index]!] : plan.evidence,
