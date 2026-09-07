@@ -1266,6 +1266,20 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
  * candidate and the same proof-aware surface plan, but never reads or scores
  * language memory, imported surface pieces, or learned correction rules.
  */
+/**
+ * Every answer-role point, in order, when the planned force is that the sources contradict each other.
+ *
+ * Returns nothing for any other force, so the single-fact surfaces below remain the normal path.
+ */
+function contradictedPointsSurface(plan: SurfacePlan): string {
+  if (dominantForce(plan) !== "contradicted") return "";
+  const surfaces = plan.orderedPoints
+    .filter(point => point.role === "answer" && point.proposition.trim())
+    .map(point => ensureSurfaceSentence(tidySurface(point.proposition)))
+    .filter(Boolean);
+  return uniqueStrings(surfaces).length > 1 ? uniqueStrings(surfaces).join(" ") : "";
+}
+
 export function createDeterministicMouth(options: { hashText: (text: string) => string }): Mouth {
   return {
     async speak(input) {
@@ -1299,6 +1313,11 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           // the fallback's actual candidate content; slots[0] stays as a
           // last-resort behind it rather than being removed outright, in
           // case a future caller ever has only a subject slot populated.
+          // Every surface in this list is one fact. When the selected meaning is that the sources disagree, one
+          // fact is the wrong unit: it is one side of the disagreement, stated alone, which is exactly what the
+          // proof refused to let the evidence lane assert. Realizing every answer-role point keeps this
+          // realization-only -- the planner selected these facts and this force -- while saying what was selected.
+          contradictedPointsSurface(plan),
           semanticSlotSurface(input.semanticInput?.slots[1]?.value ?? input.semanticInput?.slots[0]?.value ?? null),
           plan.orderedPoints.find(point => point.role === "answer" && point.proposition.trim())?.proposition ?? "",
           plan.orderedPoints.find(programOrArtifactSurfacePoint)?.proposition ?? "",
