@@ -54,7 +54,8 @@ import type {
  const LOCAL_ANSWER_KIND_IDS = {
   evidenceBoundary: "ans.kind.6f2a4b81",
   collection: "ans.kind.3be50f92",
-  temporalCounterexample: "ans.kind.7f1c2a90"
+  temporalCounterexample: "ans.kind.7f1c2a90",
+  sourceConflict: "ans.kind.5c83b1d7"
 } as const;
 
 
@@ -65,7 +66,8 @@ import type {
   requestHead: "ans.slot.1a678d0b",
   requestPredicate: "ans.slot.42f8e39c",
   conceptEvidence: "ans.slot.b5d1c337",
-  counterexampleEvidence: "ans.slot.f9a41e0d"
+  counterexampleEvidence: "ans.slot.f9a41e0d",
+  conflictingStatement: "ans.slot.2e6b90fa"
 } as const;
 
 
@@ -436,7 +438,7 @@ export function localEvidenceAnswerSurface(input: {
   selectedEvidence: readonly EvidenceSpan[];
   temporalEvidence?: readonly EvidenceSpan[];
   entailment?: Pick<TurnResult["entailment"], "contradiction" | "evidenceIds" | "force">;
-  semanticProof?: { verdict: string; contradiction: number };
+  semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] };
   translationTarget?: string;
   sessionContextEvidence?: boolean;
   explicitContextEvidenceIds?: ReadonlySet<string>;
@@ -728,7 +730,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   selectedEvidence: readonly EvidenceSpan[];
   temporalEvidence?: readonly EvidenceSpan[];
   entailment?: Pick<TurnResult["entailment"], "contradiction" | "evidenceIds" | "force">;
-  semanticProof?: { verdict: string; contradiction: number };
+  semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] };
   sessionContextEvidence?: boolean;
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
@@ -769,7 +771,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // A contradicted proof blocks a plain answer whatever the mass is. The bounds below are calibrated for
   // claim-versus-evidence contradiction; a verdict of contradicted also covers two admitted sources refuting each
   // other, which scores lower than either bound and means something stronger -- there is no side to answer from.
-  if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED) return undefined;
+  // There is still something to say: which sources disagree, and what each of them states.
+  if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED) {
+    return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
+  }
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
   const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
   // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
@@ -940,6 +945,7 @@ export function localEvidenceAnswerProofExcerpts(
 
 
  function localEvidenceAnswerPriority(plan: LocalEvidenceAnswerPlan): number {
+  if (plan.kindId === LOCAL_ANSWER_KIND_IDS.sourceConflict) return 4;
   if (plan.kindId === LOCAL_ANSWER_KIND_IDS.temporalCounterexample) return 3;
   if (plan.kindId === LOCAL_ANSWER_KIND_IDS.collection) return 2;
   return 1;
@@ -956,7 +962,7 @@ export function localEvidenceAnswerProofExcerpts(
   requestText: string,
   evidence: readonly EvidenceSpan[],
   entailment?: Pick<TurnResult["entailment"], "contradiction">,
-  semanticProof?: { verdict: string; contradiction: number }
+  semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] }
 ): LocalEvidenceAnswerPlan | undefined {
   const contradiction = Math.max(entailment?.contradiction ?? 0, semanticProof?.contradiction ?? 0);
   const anchored = sourceAnchoredEvidenceForRequest(requestText, evidence);
@@ -1216,6 +1222,46 @@ export function assistantForceFromLocalEvidenceAudit(audit: JsonValue, defaultFo
   return Math.max(0, Math.min(1, value));
 }
 
+
+/**
+ * What the sources actually say, when they do not say the same thing.
+ *
+ * The proof reports which spans refute each other. Answering from one of them is the failure this exists to
+ * prevent, and answering with nothing tells the reader less than the corpus knows. Both statements are carried,
+ * each with the source that made it, and the disagreement is expressed by the relation rather than by any word:
+ * the mouth realizes it from learned constructions, so no phrasing is written here.
+ */
+function sourceConflictAnswerPlan(
+  requestText: string,
+  evidence: readonly EvidenceSpan[],
+  conflictingEvidenceIds: readonly string[]
+): LocalEvidenceAnswerPlan | undefined {
+  if (conflictingEvidenceIds.length < 2) return undefined;
+  const wanted = new Set(conflictingEvidenceIds.map(String));
+  const spans = evidence.filter(span => wanted.has(String(span.id)));
+  if (spans.length < 2) return undefined;
+  const statements: string[] = [];
+  const kept: EvidenceSpan[] = [];
+  for (const span of spans) {
+    const sentence = cleanSourceAnswerSurface(bestEvidenceSentences(requestText, [span], false)[0] ?? "");
+    if (!sentence || statements.includes(sentence)) continue;
+    statements.push(sentence);
+    kept.push(span);
+  }
+  if (statements.length < 2) return undefined;
+  return {
+    planId: "ans.plan.5c83b1d7",
+    kindId: LOCAL_ANSWER_KIND_IDS.sourceConflict,
+    evidence: uniqueEvidenceById(kept),
+    slotSurfaces: {
+      [LOCAL_ANSWER_SLOT_IDS.subject]: cleanSourceAnswerSurface(evidenceTitle(kept[0]!) || requestText),
+      [LOCAL_ANSWER_SLOT_IDS.conflictingStatement]: statements
+    },
+    maxSentences: Math.max(2, statements.length),
+    proofExcerpts: statements.map((text, index) => ({ text, evidenceId: kept[index]!.id })),
+    audit: toJsonValue({ source: "local-evidence.source-conflict", statements: statements.length })
+  };
+}
 
  function temporalCounterexampleAnswerPlan(requestText: string, evidence: readonly EvidenceSpan[]): LocalEvidenceAnswerPlan | undefined {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
@@ -3641,6 +3687,11 @@ function fastAnswerSentences(text: string): string[] {
 }
 
 
+/** Whether this answer reports that the sources disagree, rather than answering from one of them. Pure. */
+export function localEvidenceAnswerReportsSourceConflict(plan: { kindId: string }): boolean {
+  return plan.kindId === LOCAL_ANSWER_KIND_IDS.sourceConflict;
+}
+
 export function attachLocalEvidenceAnswerConstruct(input: {
   construct: ConstructGraph;
   plan: LocalEvidenceAnswerPlan;
@@ -3721,6 +3772,19 @@ export function attachLocalEvidenceAnswerConstruct(input: {
       object: subject,
       relationId: LOCAL_ANSWER_RELATION_IDS.member,
       evidence: plan.evidence,
+      index,
+      hasher
+    }));
+  }
+  if (plan.kindId === LOCAL_ANSWER_KIND_IDS.sourceConflict) {
+    const statements = plan.slotSurfaces[LOCAL_ANSWER_SLOT_IDS.conflictingStatement];
+    const surfaces = Array.isArray(statements) ? statements : [statements].filter(Boolean) as string[];
+    return surfaces.map((statement, index) => localEvidenceSemanticFact({
+      subject: cleanSourceAnswerSurface(evidenceTitle(plan.evidence[index] ?? plan.evidence[0]!) || ""),
+      predicate: "",
+      object: ensureUnicodeSurfaceSentence(statement),
+      relationId: LOCAL_ANSWER_RELATION_IDS.sourceQuote,
+      evidence: plan.evidence[index] ? [plan.evidence[index]!] : plan.evidence,
       index,
       hasher
     }));
