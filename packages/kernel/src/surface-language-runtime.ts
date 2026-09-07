@@ -14,6 +14,7 @@ import {
   languageProfileClusterCacheKey,
   normalizeSourceLanguageAlias,
   selectDominantLanguageProfileCluster,
+  selectLearnedLanguageProfileCluster,
   selectLanguageProfileForSurface,
   selectLanguageProfileClusterForSurface,
   type LanguageProfileCluster
@@ -27,7 +28,8 @@ import type { SegmentationPopulationModelRecord } from "./segmentation-populatio
 import type {
   EvidenceSpan,
   JsonValue,
-  LanguageProfile
+  LanguageProfile,
+  SourceVersionId
 } from "./types.js";
 
 /**
@@ -44,6 +46,9 @@ import type {
  * and eviction order doesn't need to be precise for a warm-recent-work
  * cache like this one.
  */
+/** Cache-key field separator; cannot occur in an id. */
+const UNIT_SEPARATOR = String.fromCharCode(31);
+
 function boundedCacheSet<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: number): void {
   map.delete(key);
   map.set(key, value);
@@ -201,6 +206,11 @@ export function createSurfaceLanguageRuntime(options: {
     clusters: LanguageProfileCluster[];
   }>();
   const surfaceCandidateProfileCache = new Map<string, {
+    loadedAt: number;
+    profiles: LanguageProfile[];
+    clusters: LanguageProfileCluster[];
+  }>();
+  const evidenceOwnedProfileCache = new Map<string, {
     loadedAt: number;
     profiles: LanguageProfile[];
     clusters: LanguageProfileCluster[];
@@ -749,22 +759,133 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
 
+  /**
+   * The language profiles the admitted evidence itself owns.
+   *
+   * Every other profile path here starts from the bounded global window -- listLanguageProfiles({ limit }) -- and asks
+   * whether the thing it wants happens to be inside it. For evidence that is the wrong question: the answer is being
+   * realized FROM these documents, so their profiles are named, not hoped for. Measured on the live corpus: 22,502
+   * profiles behind a window that admits a fraction, so most turns matched no cluster, and no cluster is the condition
+   * under which hydrateSurfaceLanguageMemory returns an explicitly empty state -- 226,992 learned units in storage and
+   * models=0 patterns=0 units=0 at the mouth.
+   */
+  async function evidenceOwnedLanguageProfilesCached(
+    sourceVersionIds: readonly SourceVersionId[],
+    cacheOptions: ResidentOnlyOptions = {}
+  ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
+    const byKey = new Map<string, SourceVersionId>();
+    for (const sourceVersionId of sourceVersionIds) {
+      const key = String(sourceVersionId);
+      if (key) byKey.set(key, sourceVersionId);
+    }
+    const versionKeys = [...byKey.keys()].sort();
+    if (!versionKeys.length) return { profiles: [], clusters: [] };
+    const cacheKey = versionKeys.join(UNIT_SEPARATOR);
+    const now = clock.now();
+    const cached = evidenceOwnedProfileCache.get(cacheKey);
+    if (cached && (cacheOptions.residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
+      return { profiles: cached.profiles, clusters: cached.clusters };
+    }
+    if (cacheOptions.residentOnly) {
+      // Resident answers only from what the global window already holds, which is exactly the population that fails
+      // to cover the evidence. It is still worth asking -- a warm cache costs nothing -- but a miss is not an error
+      // here the way it is for a warmed cluster: the durable path below is the one that resolves these.
+      if (!surfaceProfileCache) return { profiles: [], clusters: [] };
+      const requested = new Set(versionKeys);
+      const profiles = surfaceProfileCache.value
+        .filter(profile => requested.has(String(profile.sourceVersionId)))
+        .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+      return { profiles, clusters: buildLanguageProfileClusters(profiles) };
+    }
+    const profiles = (await deps.storage.model.listLanguageProfiles({
+      limit: surfaceLanguageProfileLimit,
+      referencedByLanguageMemory: true,
+      sourceVersionIds: versionKeys.map(key => byKey.get(key)!)
+    })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+    const clusters = buildLanguageProfileClusters(profiles);
+    boundedCacheSet(evidenceOwnedProfileCache, cacheKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
+    return { profiles, clusters };
+  }
+
+
+  /**
+   * The cluster the admitted evidence speaks in, resolved from its own profiles rather than from the global window.
+   *
+   * selectLanguageProfileClusterForSourceVersions abstains on a tie because over the global population a tie means the
+   * source versions are spread across unrelated clusters. Here every profile in every cluster is already owned by this
+   * turn's evidence, so a tie is not ambiguity about whose language this is -- it is one corpus that clustered into
+   * more than one profile group, and the surface picks among them.
+   */
+  async function evidenceOwnedLanguageClusterCached(
+    sourceVersionIds: readonly SourceVersionId[],
+    surface: string,
+    cacheOptions: ResidentOnlyOptions = {}
+  ): Promise<LanguageProfileCluster | undefined> {
+    const { clusters } = await evidenceOwnedLanguageProfilesCached(sourceVersionIds, cacheOptions);
+    if (clusters.length <= 1) return clusters[0];
+    if (!surface.trim()) return selectDominantLanguageProfileCluster(clusters);
+    return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
+      ?? selectDominantLanguageProfileCluster(clusters);
+  }
+
+
+  /**
+   * Which learned cluster this surface speaks in.
+   *
+   * Every exit used to be `selectLanguageProfileClusterForSurface(...)?.cluster` with nothing after it, so a surface
+   * that resembled no cluster resolved to no cluster -- and no cluster is the condition under which
+   * hydrateSurfaceLanguageMemory returns an explicitly empty state. "We could not tell which learned language to use"
+   * therefore behaved exactly like "there is no learned language": measured on the live brain, ordinary turns realized
+   * with models=0 patterns=0 units=0 against 226,992 stored units. sourceOwnedLanguageClusterForAlias never had this
+   * hole -- it has always ended `...ForSurface(...) ?? selectDominantLanguageProfileCluster(...)`, so a named source
+   * fell back to its own language while an ordinary question fell back to nothing. Same ending here: surface matching
+   * decides WHICH learned cluster speaks, not WHETHER any of it does.
+   */
+  /**
+   * Which learned language this turn speaks. Total whenever any learned language exists.
+   *
+   * Two different questions were being answered by one function. "Does this surface distinctively belong to cluster
+   * X?" is a discrimination and may legitimately abstain -- selectLanguageProfileClusterForSurface returns undefined
+   * when the top two clusters score within MIN_SURFACE_SELECTION_MARGIN of each other, which is the honest answer to
+   * that question. "Which learned language should this turn speak?" cannot abstain: no cluster is the condition under
+   * which hydrateSurfaceLanguageMemory returns an explicitly empty state, so an undecidable "which" became "none" and
+   * the mouth realized with models=0 patterns=0 units=0 against 226,992 stored units. The discrimination is an input
+   * here, not the answer; when it abstains the answer is the argmax it already ranked, which is only undefined when
+   * there is genuinely no learned language at all.
+   */
+  function languageForSurface(
+    clusters: readonly LanguageProfileCluster[],
+    surface: string
+  ): LanguageProfileCluster | undefined {
+    return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
+      ?? selectLearnedLanguageProfileCluster(clusters);
+  }
+
+
   async function surfaceLanguageClusterCached(surface: string, residentOnly = false): Promise<LanguageProfileCluster | undefined> {
     if (!surface.trim()) return undefined;
     const surfaceKey = hasher.digestHex(surface.normalize("NFC"));
     const cached = surfaceCandidateProfileCache.get(surfaceKey);
     const now = clock.now();
-    if (cached && (residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
-      return selectLanguageProfileClusterForSurface(cached.clusters, surface)?.cluster;
-    }
-    // Whole-memory cluster set answers most surfaces without a per-request query.
+    // Whole-memory cluster set answers most surfaces without a per-request query, and is also what makes the answer
+    // stable: the argmax of a per-surface trigram subset is a DIFFERENT cluster for every distinct question, so each
+    // would pay its own cold hydration and warmup could not have hydrated it in advance.
     const global = await surfaceLanguageProfilesCached(residentOnly);
+    if (cached && (residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
+      return selectLanguageProfileClusterForSurface(cached.clusters, surface)?.cluster
+        ?? languageForSurface(global.clusters, surface);
+    }
     const globalSelected = selectLanguageProfileClusterForSurface(global.clusters, surface)?.cluster;
-    if (globalSelected || residentOnly) return globalSelected;
+    if (globalSelected) return globalSelected;
+    if (residentOnly) return languageForSurface(global.clusters, surface);
     // Global under its cap holds every memory-referenced profile; a
     // trigram-filtered subset of an already-scanned set cannot match more.
     // Measured: this per-surface query cost 2.7s/turn to return nothing.
-    if (global.profiles.length && global.profiles.length < surfaceLanguageProfileLimit) return undefined;
+    if (global.profiles.length && global.profiles.length < surfaceLanguageProfileLimit) {
+      return languageForSurface(global.clusters, surface);
+    }
+    // Widening past the global cap is the one thing an abstaining discrimination legitimately triggers: a surface
+    // whose language lives outside the bounded window is exactly what it cannot decide about.
     const profiles = await deps.storage.model.listLanguageProfiles({
       limit: surfaceLanguageProfileLimit,
       referencedByLanguageMemory: true,
@@ -772,7 +893,8 @@ export function createSurfaceLanguageRuntime(options: {
     });
     const clusters = buildLanguageProfileClusters(profiles);
     boundedCacheSet(surfaceCandidateProfileCache, surfaceKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
-    return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster;
+    return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
+      ?? languageForSurface(global.clusters, surface);
   }
 
 
@@ -833,6 +955,8 @@ export function createSurfaceLanguageRuntime(options: {
     sourceOwnedLanguageProfilesCached,
     sourceOwnedLanguageClusterForAlias,
     sourceOwnedLanguageClustersForWarmup,
+    evidenceOwnedLanguageProfilesCached,
+    evidenceOwnedLanguageClusterCached,
     surfaceLanguageClusterCached,
     requestSemanticFrames,
     sourceAnchorSemanticFramesCached,
@@ -854,6 +978,7 @@ export function createSurfaceLanguageRuntime(options: {
         languageMemoryEstimatedBytes,
         candidateProfileEntries: surfaceCandidateProfileCache.size,
         aliasProfileEntries: sourceOwnedAliasProfileCache.size,
+        evidenceProfileEntries: evidenceOwnedProfileCache.size,
         surfaceProfiles: surfaceProfileCache?.value.length ?? 0,
         sourceAnchorFrames: sourceAnchorSemanticFrameCache?.value.length ?? 0,
         // Hit rates for the two memos that sit on the hottest paths in the kernel. Both accessors existed to be
@@ -866,6 +991,7 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceLanguageMemoryCache.clear();
       sourceOwnedAliasProfileCache.clear();
       surfaceCandidateProfileCache.clear();
+      evidenceOwnedProfileCache.clear();
       surfaceProfileCache = undefined;
       sourceAnchorSemanticFrameCache = undefined;
     }

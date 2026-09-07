@@ -513,9 +513,9 @@ export function createProductionTurnRuntime(options: {
     sessionEvidenceFromMetadata, ftrlShadowRankingForFeatures
   } = graphRetrieval;
   const {
-    hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, sourceOwnedLanguageClusterForAlias,
-    sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached, surfaceLanguageProfilesCached,
-    uniqueRecordsById
+    evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames,
+    sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
+    surfaceLanguageProfilesCached, uniqueRecordsById
   } = surfaceLanguageRuntime;
   // A resident-only hydration miss must never crash the turn: an ordinary
   // question whose language cluster had never been touched before (a
@@ -1918,7 +1918,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // checks for alongside the boundaries bindSelectedEvidenceToEntailment
       // already adds.
       const boundLongPathEntailment = longPathBasisAnswer
-        ? bindSelectedEvidenceToEntailment(entailmentResult, longPathBasisAnswer.evidence, longPathBasisAnswer.audit)
+        ? bindSelectedEvidenceToEntailment(entailmentResult, longPathBasisAnswer.evidence, longPathBasisAnswer.audit, longPathBasisAnswer.answer)
         : undefined;
       const answerEntailmentSeed = boundLongPathEntailment
         ? {
@@ -1950,10 +1950,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const evidenceSurfaceClusters = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
         : (await surfaceLanguageProfilesCached(fastRuntimeBudget)).clusters;
-      const evidenceSurfaceCluster = selectLanguageProfileClusterForSourceVersions(
-        evidenceSurfaceClusters,
-        selectedEvidence.map(span => span.sourceVersionId)
-      );
+      const evidenceSourceVersionIds = selectedEvidence.map(span => span.sourceVersionId);
+      // The global cluster set is built from a bounded profile window, so this asks whether the evidence's profiles
+      // happened to land inside it. On the live corpus they usually do not -- 22,502 profiles, a window that admits a
+      // fraction -- and no evidence cluster plus no surface cluster is exactly the condition under which hydration
+      // returns an explicitly empty language memory. The answer is realized FROM these documents, so when the window
+      // cannot name their language, ask the profiles the source versions themselves own.
+      const windowEvidenceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
+        ? undefined
+        : selectLanguageProfileClusterForSourceVersions(evidenceSurfaceClusters, evidenceSourceVersionIds);
+      const evidenceOwnedCluster = windowEvidenceCluster || deps.evaluationCondition?.flags.disableLanguageMemory
+        ? undefined
+        : await evidenceOwnedLanguageClusterCached(
+          evidenceSourceVersionIds,
+          input.text,
+          { residentOnly: fastRuntimeBudget }
+        ).catch(() => undefined);
+      const evidenceSurfaceCluster = windowEvidenceCluster ?? evidenceOwnedCluster;
       const preferredSurfaceCorpusRole = requestedAuthority === "creative"
         ? CORPUS_ROLE_IDS.publicDomainProse
         : undefined;
@@ -2126,10 +2139,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: {
           models: surfaceLanguageModels.length,
           patterns: surfaceLanguage.patterns.length,
+          units: surfaceLanguage.units.length,
           semanticFrames: surfaceLanguage.semanticFrames.length
         },
         support: {
           requestedAuthority,
+          // What language the answer is about to be realized from, and how it was resolved. Zero here means the mouth
+          // is speaking with no learned substrate at all, which is worth reading before blaming anything upstream.
+          languageScope: surfaceLanguageMemory.scope.mode,
+          evidenceCluster: evidenceSurfaceCluster?.id ?? null,
+          evidenceClusterFrom: windowEvidenceCluster ? "profile-window" : evidenceOwnedCluster ? "evidence-owned" : null,
           corpusRole: preferredSurfaceCorpusRole ?? null,
           creativeRequestFrameId: creativeRequestFrame?.id ?? null,
           creativeRequestCompilerId: creativeRequestFrame?.compilerId ?? null,

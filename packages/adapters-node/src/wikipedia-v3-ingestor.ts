@@ -83,6 +83,9 @@ import type { ScceRuntimeConfig } from "./config.js";
 import { trainLanguageCorpusText } from "./language-corpus-trainer.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
 
+/** How many entries of a diagnostic list the alignment provenance event keeps; the true length is recorded beside it. */
+const SPARSE_ALIGNMENT_EVENT_LIST_BOUND = 64;
+
 const WIKIPEDIA_INFORMATION_LABEL: InformationLabel = {
   tenantId: "scce.public.corpus",
   principals: [],
@@ -902,6 +905,43 @@ export class WikipediaV3Ingestor {
     };
   }
 
+  /**
+   * Appends the alignment provenance event, degrading to counts rather than failing the shard.
+   *
+   * toJsonValue canonically stringifies, and above V8's ~512MB string cap that throws RangeError -- which killed the
+   * corpus ingest mid-run at 21,571 of 27,353 articles. Provenance is worth recording and is not worth losing the
+   * run over, so an unserializable payload is replaced by its own shape: the keys it had and the sizes of what could
+   * not be kept, which is still an honest record that the shard was compiled.
+   */
+  private async appendBoundedAlignmentEvent(
+    episodeId: ReturnType<IdFactory["episodeId"]>,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    const append = async (value: JsonValue): Promise<void> => {
+      await this.storage.events.append(this.events.create({
+        episodeId,
+        typeId: "SparseAlignmentCandidatesCompiled",
+        payload: value
+      }));
+    };
+    try {
+      await append(toJsonValue(payload));
+      return;
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+    }
+    const sizes: Record<string, number> = {};
+    for (const [key, value] of Object.entries(payload)) if (Array.isArray(value)) sizes[key] = value.length;
+    await append(toJsonValue({
+      schema: "scce.sparse_alignment_candidate_batch.v1",
+      shardUri: payload.shardUri ?? null,
+      payloadTruncated: true,
+      truncationReason: "canonical payload exceeded the runtime string bound",
+      retainedKeys: Object.keys(payload).sort(),
+      omittedListSizes: sizes
+    }));
+  }
+
   private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaLanguageShardImport> {
     if (!samples.length) return zeroLanguageShard({ warnings: [] });
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
@@ -1384,10 +1424,15 @@ export class WikipediaV3Ingestor {
           }))
         })
       }));
-      await this.storage.events.append(this.events.create({
-        episodeId,
-        typeId: "SparseAlignmentCandidatesCompiled",
-        payload: toJsonValue({
+      // This payload is provenance, and provenance must not be able to stop ingestion. It could: the id lists and
+      // construction inventories below grow with the shard, and JSON.stringify throws RangeError above V8's ~512MB
+      // string cap -- which is exactly how the corpus stopped at 21,571 of 27,353 articles, mid-run, with the comment
+      // two lines down asserting the event "stays bounded". Only alignmentAlternativeSets is ever read back
+      // (alignmentAlternativeSetsFromEventPayloads); everything else is diagnostic, so the diagnostic parts are
+      // bounded the way this file already bounds its rejection lists, and a payload that still cannot be serialized
+      // degrades to counts rather than killing the run.
+      const bounded = <T>(rows: readonly T[]): T[] => rows.slice(0, SPARSE_ALIGNMENT_EVENT_LIST_BOUND);
+      await this.appendBoundedAlignmentEvent(episodeId, {
           schema: "scce.sparse_alignment_candidate_batch.v1",
           shardUri,
           incidenceGraphId: incidenceGraph.id,
@@ -1396,9 +1441,12 @@ export class WikipediaV3Ingestor {
           surfaceUnitCount: alignmentSurfaceUnitCount,
           candidateCount: alignmentCandidateCount,
           maximumCandidateDegree: maximumAlignmentDegree,
-          supportIds: alignmentSupportIds,
-          routedSupportIds: routedAlignmentSupportIds,
-          communityRoutingIds: alignmentCommunityRoutingIds,
+          supportIds: bounded(alignmentSupportIds),
+          supportIdCount: alignmentSupportIds.length,
+          routedSupportIds: bounded(routedAlignmentSupportIds),
+          routedSupportIdCount: routedAlignmentSupportIds.length,
+          communityRoutingIds: bounded(alignmentCommunityRoutingIds),
+          communityRoutingIdCount: alignmentCommunityRoutingIds.length,
           communityCount: alignmentCommunityRoutings.reduce(
             (sum, routing) => sum + routing.communities.length,
             0
@@ -1456,8 +1504,7 @@ export class WikipediaV3Ingestor {
           globalOptimalityClaimed: false,
           candidateMemory: "O(|S|*K_pi)",
           denseMatrixMaterialized: false
-        })
-      }));
+      });
     }
     return {
       languageProfiles: trained.languageProfiles,

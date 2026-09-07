@@ -33,7 +33,8 @@ import { createJudge } from "./judge.js";
 import { jsonRecord, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
-  createLanguageAcquisitionEngine
+  createLanguageAcquisitionEngine,
+  selectLearnedLanguageProfileCluster
 } from "./language.js";
 import { createWeightedFeatureSketchLearner } from "./latent.js";
 import { languageScore } from "./learning-acquisition-runtime.js";
@@ -324,19 +325,44 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
 
       if (input.language ?? true) {
         tasks.push(Promise.all([
-          sourceOwnedLanguageClustersForWarmup()
-            .then(clusters => Promise.all([
-              hydrateSurfaceLanguageMemoryCached(
-                languageLimit,
-                undefined,
-                "source-surface-ambiguous-or-no-signal"
-              ),
-              ...clusters.map(cluster => hydrateSurfaceLanguageMemoryCached(
-                languageLimit,
-                cluster,
-                "warmup-source-owned-language-cluster"
-              ))
-            ])),
+          Promise.all([sourceOwnedLanguageClustersForWarmup(), surfaceLanguageProfilesCached()])
+            // The cluster an unmatched request surface falls back to is the one turns most often realize from, and it
+            // was the one cluster warmup never touched: source-owned clusters are a narrow subset (profiles whose
+            // discovered names reference their own source version), so the dominant learned cluster paid a cold
+            // durable hydration inside the turn. Measured: that hydration outlives the whole turn, so the 1.5s stage
+            // budget substituted empty language on every request, and the next turn started its own copy rather than
+            // hitting a cache that had not finished filling. Hydrating it here is the same call under the same cache
+            // key -- turns read it resident instead of racing it.
+            .then(async ([sourceOwnedClusters, { clusters }]) => {
+              const dominant = selectLearnedLanguageProfileCluster(clusters);
+              const warmed = await Promise.all([
+                hydrateSurfaceLanguageMemoryCached(
+                  languageLimit,
+                  undefined,
+                  "source-surface-ambiguous-or-no-signal"
+                ),
+                ...sourceOwnedClusters
+                  .filter(cluster => cluster.id !== dominant?.id)
+                  .map(cluster => hydrateSurfaceLanguageMemoryCached(
+                    languageLimit,
+                    cluster,
+                    "warmup-source-owned-language-cluster"
+                  ))
+              ]);
+              // Warmed after the others have settled, not merely last in an array. The cache budget holds about three
+              // full cluster hydrations and evicts by insertion order, and concurrent hydrations insert in COMPLETION
+              // order -- so warming this one first meant warmup's own later hydrations pushed out the very cluster
+              // every unmatched surface then selects. Measured: four clusters warmed, cache holding two, this one
+              // gone before the first turn, which then raced a cold durable hydration it could not afford and
+              // realized empty. Sequencing it after the rest makes it the newest entry and the last evicted.
+              return dominant
+                ? [...warmed, await hydrateSurfaceLanguageMemoryCached(
+                  languageLimit,
+                  dominant,
+                  "warmup-dominant-language-cluster"
+                )]
+                : warmed;
+            }),
           sourceAnchorSemanticFramesCached()
         ])
           .then(([languages, sourceAnchorFrames]) => {

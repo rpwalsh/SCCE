@@ -1,0 +1,244 @@
+{
+ "schema": "scce.proofCalibration.v1",
+ "seed": "proof-calibration-v1",
+ "generatedFrom": {
+  "constructedPositives": 14,
+  "constructedNegatives": 24,
+  "corpusNegatives": 452,
+  "corpusDocuments": 120,
+  "rejectedByPredicateRule": 232
+ },
+ "current": {
+  "PROOF_CONTRADICTION_THRESHOLD": 0.42
+ },
+ "auroc": {
+  "contradiction": 1
+ },
+ "distributions": {
+  "positives": {
+   "min": 0.4779674724375603,
+   "p05": 0.4779674724375603,
+   "p50": 0.5084663920839148,
+   "p95": 0.5724460499441878,
+   "max": 0.5724460499441878
+  },
+  "constructedNegatives": {
+   "min": 0,
+   "p05": 0,
+   "p50": 0.09517753483086312,
+   "p95": 0.38187556697520575,
+   "max": 0.38690458651711834
+  },
+  "corpusNegatives": {
+   "min": 0,
+   "p05": 0,
+   "p50": 0,
+   "p95": 0.25454036986123457,
+   "max": 0.44515648727089163
+  }
+ },
+ "separableWindow": {
+  "low": 0.461561979854226,
+  "high": 0.461561979854226
+ },
+ "operatingPoints": {
+  "youden": {
+   "threshold": 0.461561979854226,
+   "tp": 14,
+   "fn": 0,
+   "fp": 0,
+   "tn": 476,
+   "tpr": 1,
+   "fpr": 0,
+   "youden": 1
+  },
+  "highestThresholdAtFullRecall": {
+   "threshold": 0.461561979854226,
+   "tp": 14,
+   "fn": 0,
+   "fp": 0,
+   "tn": 476,
+   "tpr": 1,
+   "fpr": 0,
+   "youden": 1
+  }
+ },
+ "atCurrentThreshold": {
+  "threshold": 0.4195890331807538,
+  "tp": 14,
+  "fn": 0,
+  "fp": 3,
+  "tn": 473,
+  "tpr": 1,
+  "fpr": 0.0063025210084033615,
+  "youden": 0.9936974789915967
+ },
+ "support": {
+  "counts": {
+   "positives": 6,
+   "negatives": 6
+  },
+  "auroc": 1,
+  "distributions": {
+   "positives": {
+    "min": 0.348262868461041,
+    "p05": 0.348262868461041,
+    "p50": 0.40814550767149854,
+    "p95": 0.4649053012339231,
+    "max": 0.4649053012339231
+   },
+   "negatives": {
+    "min": 0.19251229123960445,
+    "p05": 0.19251229123960445,
+    "p50": 0.20734591507875053,
+    "p95": 0.2287150723128229,
+    "max": 0.2287150723128229
+   }
+  },
+  "separableWindow": {
+   "low": 0.28848897038693194,
+   "high": 0.28848897038693194
+  },
+  "highestThresholdAtFullRecall": {
+   "threshold": 0.28848897038693194,
+   "tp": 6,
+   "fn": 0,
+   "fp": 0,
+   "tn": 6,
+   "tpr": 1,
+   "fpr": 0,
+   "youden": 1
+  },
+  "atCurrentThreshold": {
+   "threshold": 0.09625614561980222,
+   "tp": 6,
+   "fn": 0,
+   "fp": 6,
+   "tn": 0,
+   "tpr": 1,
+   "fpr": 1,
+   "youden": 0
+  }
+ },
+ "verdictCut": {
+  "value": 0.55,
+  "truePositivesReaching": 1,
+  "truePositivesTotal": 14
+ },
+ "worstFalsePositives": [
+  {
+   "kind": "same-document",
+   "contradiction": 0.4452,
+   "correspondence": 0.5621,
+   "a": "She was inducted as a member of the College of New Scholars, Artists and Scientists of the Royal Society of Ca",
+   "b": "==Career== As a member of the political science department at the University of Western Ontario, Quinn became "
+  },
+  {
+   "kind": "same-document",
+   "contradiction": 0.4311,
+   "correspondence": 0.5443,
+   "a": "She was inducted as a member of the College of New Scholars, Artists and Scientists of the Royal Society of Ca",
+   "b": "In 2018, Quinn was elected President of the College of New Scholars for a two-year term."
+  },
+  {
+   "kind": "same-document",
+   "contradiction": 0.421,
+   "correspondence": 0.5613,
+   "a": "The statue was initially located near the front entrance of Terminal Station, where it would remain until the ",
+   "b": "The statue was designed by Henry Bacon, Daniel Chester French, and the Piccirilli Brothers and was unveiled on"
+  },
+  {
+   "kind": "same-document",
+   "contradiction": 0.4182,
+   "correspondence": 0.5281,
+   "a": "The tournament was part of the 2019–2020 speed skating season.",
+   "b": "The '2020 KNSB Dutch Allround Championships' in speed skating were held in Heerenveen at the Thialf ice skatin"
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3869,
+   "correspondence": 0.4885,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Calder observatory was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3819,
+   "correspondence": 0.4822,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Marlin bridge was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3801,
+   "correspondence": 0.48,
+   "a": "The Marlin bridge was completed on 11 April 1988.",
+   "b": "The Calder observatory was completed on 3 September 1991."
+  },
+  {
+   "kind": "same-document",
+   "contradiction": 0.3762,
+   "correspondence": 0.3762,
+   "a": "In 2000, Kwabena Adusa won the Nkawkaw constituency parliamentary seat with 20,481 votes which is equivalent t",
+   "b": "He won on the ticket of the New Patriotic Party."
+  }
+ ],
+ "weakestTruePositives": [
+  {
+   "kind": "count",
+   "contradiction": 0.478,
+   "correspondence": 0.6373,
+   "a": "Factory A had 12 machines.",
+   "b": "Factory A had 30 machines."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4868,
+   "correspondence": 0.6146,
+   "a": "The Ostry tunnel was opened on 11 April 1988.",
+   "b": "The Ostry tunnel was opened on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4896,
+   "correspondence": 0.6182,
+   "a": "The Marlin bridge was completed on 11 April 1988.",
+   "b": "The Marlin bridge was completed on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4905,
+   "correspondence": 0.6193,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Drennish reactor was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4931,
+   "correspondence": 0.6227,
+   "a": "The Calder observatory was dedicated on 11 April 1988.",
+   "b": "The Calder observatory was dedicated on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.507,
+   "correspondence": 0.6401,
+   "a": "The Ostry tunnel was opened on 14 June 1972.",
+   "b": "The Ostry tunnel was opened on 27 January 1980."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.5071,
+   "correspondence": 0.6403,
+   "a": "The Marlin bridge was completed on 14 June 1972.",
+   "b": "The Marlin bridge was completed on 27 January 1980."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.5085,
+   "correspondence": 0.642,
+   "a": "The Drennish reactor was commissioned on 14 June 1972.",
+   "b": "The Drennish reactor was commissioned on 27 January 1980."
+  }
+ ]
+}

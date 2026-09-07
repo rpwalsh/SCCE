@@ -406,6 +406,7 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   const counterexamples: ProofCounterexample[] = [];
   const steps: SemanticProofStep[] = [];
   const bestPerClaim = new Map<string, SemanticUnification>();
+  const refutingAtomIds = new Set(input.supportAtoms.filter(atom => hasPredicateSubstance(atom.predicate)).map(atom => atom.id));
   for (const claim of input.claimAtoms) {
     // Support and refutation are chosen over the same candidates, and they used to be chosen independently: the
     // best supporting atom by support, the strongest counterexample by contradiction, with nothing requiring the
@@ -422,8 +423,15 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
       if (!best || unified.support > best.support) best = unified;
     }
     let strongestCounterexample: SemanticUnification | undefined;
-    for (const unified of claimUnifications) {
-      if (unified.contradiction > (strongestCounterexample?.contradiction ?? 0)) strongestCounterexample = unified;
+    // Only atoms that state a relation can refute one. Calibration over 708 labelled pairs put every single residual
+    // false positive in the same class: unscrubbed table markup, which atomizes with a punctuation predicate and
+    // whose long token runs disagree at 0.47-0.58, inside the band where real disagreements live. Excluding them is
+    // what makes the two classes separable, and the threshold below is read off that separation.
+    if (hasPredicateSubstance(claim.predicate)) {
+      for (const unified of claimUnifications) {
+        if (!refutingAtomIds.has(unified.rightAtomId)) continue;
+        if (unified.contradiction > (strongestCounterexample?.contradiction ?? 0)) strongestCounterexample = unified;
+      }
     }
     if (best && best.support > 0.12) {
       bestPerClaim.set(claim.id, best);
@@ -489,12 +497,19 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   const admission = proofSearchAdmission(input.claimAtoms, selected, obligations, counterexamples);
   const rawSupport = selected.length ? selected.reduce((sum, item) => sum + item.support, 0) / selected.length : 0;
   const support = Math.min(rawSupport, admission.supportCeiling);
-  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.independenceByEvidence);
+  // Scored BEFORE the mutual-source pass appends to the same list. "Do these sources disagree with each other" is a
+  // different question from "does the evidence refute this claim", and folding the first into the second let a
+  // disagreement between two admitted sources set the claim's own contradiction mass -- measured on "Who was Charles
+  // Babbage?": the claim's own strongest counterexample was under threshold, eight mutual pairs were not, and their
+  // 0.569 maximum became the claim's, which blocked a source excerpt that nothing in the corpus contradicted. The
+  // mutual finding keeps its own channel (mutualSourceContradiction) and its own answer plan; it is reported, never
+  // charged to the claim.
   const contradiction = counterexamples.length
     ? Math.max(...counterexamples.map(item => item.contradiction))
     : selected.length
       ? Math.max(...selected.map(item => item.contradiction))
       : 0;
+  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.independenceByEvidence);
   const certified = selected.filter(certifyingUnification);
   const coverage = input.claimAtoms.length ? certified.length / input.claimAtoms.length : 0;
   const supportVariance = selected.length ? selected.reduce((sum, item) => sum + (item.support - support) ** 2, 0) / selected.length : 0;
@@ -918,6 +933,16 @@ const MUTUAL_CONTRADICTION_PAIR_LIMIT = 96;
  * own restatement. Both bounds above are hard, because this is the one place in the proof whose cost is quadratic
  * in the size of the admitted evidence.
  */
+/**
+ * Whether a predicate names a relation at all, rather than being surviving punctuation.
+ *
+ * Exported so the calibration harness admits exactly what the proof admits: a rule the harness restates in its own
+ * words is a rule that can drift away from the one being measured.
+ */
+export function hasPredicateSubstance(predicate: string): boolean {
+  return /[\p{Letter}\p{Number}]/u.test(predicate);
+}
+
 function collectMutuallyContradictorySupport(
   supportAtoms: readonly SemanticAtom[],
   hasher: Hasher,
@@ -930,6 +955,11 @@ function collectMutuallyContradictorySupport(
   const byPredicate = new Map<string, SemanticAtom[]>();
   for (const atom of supportAtoms) {
     if (!atom.predicate) continue;
+    // A predicate carrying no letter or number is not a relation, it is punctuation that survived ingestion. Measured
+    // on the live corpus: unscrubbed wikitext table rows atomize with predicate "|", every such atom lands in that one
+    // group, and their sorted token runs disagree pairwise at 0.42-0.57 -- eight mutual "contradictions" between two
+    // articles that contradict nothing. Character classes, not a word list, so this holds in any script.
+    if (!hasPredicateSubstance(atom.predicate)) continue;
     const group = byPredicate.get(atom.predicate);
     if (group) { if (group.length < MUTUAL_CONTRADICTION_GROUP_LIMIT) group.push(atom); }
     else byPredicate.set(atom.predicate, [atom]);
@@ -1320,10 +1350,22 @@ function normalizedEditSimilarity(left: string, right: string): number {
 /**
  * The unification contradiction mass at which a counterexample is admitted as one.
  *
- * Named because it is a contract, not a tuning knob: it is the boundary a test asserts a real contradiction
- * crosses, and a test that hardcodes the number instead pins today's value rather than the system's own boundary.
+ * Calibrated, not chosen. `tools/proof-calibration/calibrate.mjs` scores 14 constructed minimal pairs (two sentences
+ * identical but for one asserted date, measurement or count -- the label is carried by the construction) against 476
+ * non-contradictions: restatements, the same predicate over different subjects, different predicates over one
+ * subject, and real sentence pairs drawn from inside single corpus documents. Under the same admission rule the
+ * proof uses, the two classes separate completely -- AUROC 1.0, every non-contradiction at or below 0.4452, every
+ * real disagreement at or above 0.4780 -- so any cut in [0.4452, 0.4780) is exact on that set. 0.46 sits near the
+ * centre of that gap, which is the placement that survives the most movement in either class.
+ *
+ * The previous value, 0.42, was inherited unmeasured from the initial source release and lies INSIDE the
+ * non-contradiction distribution: it cost 3 false conflicts on ordinary prose at no gain in recall, and a false
+ * conflict here suppresses a correct answer rather than merely adding noise -- measured on "Who was Charles
+ * Babbage?", where fabricated conflicts blocked a source excerpt nothing in the corpus contradicted.
+ *
+ * Rerun the harness after any change to unifyAtoms; a scoring change moves the distributions and this cut with them.
  */
-export const PROOF_CONTRADICTION_THRESHOLD = 0.42;
+export const PROOF_CONTRADICTION_THRESHOLD = 0.46;
 
 export const PROPOSITION_GRAPH_NODE_SCHEMA = "scce.proposition_node.v1" as const;
 

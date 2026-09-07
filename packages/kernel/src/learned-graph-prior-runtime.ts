@@ -301,6 +301,16 @@ export function attachLearnedGraphPriorConstruct(input: {
   brainMarker: JsonValue;
   hasher: { digestHex(input: string | Uint8Array): string };
 }): ConstructGraph {
+  // A learned prior does not overrule admitted source evidence. This runs after attachLocalEvidenceAnswerConstruct
+  // and both write construct:semantic_answer by filtering the other's node out, so whichever ran last simply won --
+  // and this one runs last. Measured on "Who was Charles Babbage?": the evidence lane selected, verified and bound
+  // "Charles Babbage and Ada Lovelace conceived the first programmable computer", and the prior replaced it with
+  // three sentences of unrelated trivia from the same article, which is the surface the turn actually spoke. Source-
+  // bound cognition is the whole doctrine here, so the evidence-backed node stands and the prior adds nothing.
+  if (input.construct.nodes.some(node => node.kind === "construct:semantic_answer"
+    && Boolean(jsonRecord(node.metadata).localEvidenceAnswer))) {
+    return input.construct;
+  }
   const state = learnedGraphPriorConstructState(input);
   if (!state) {
     const nodeAnswer = graphNodeAnswerConstructState(input);

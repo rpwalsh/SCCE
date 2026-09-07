@@ -115,6 +115,22 @@ export function selectDominantLanguageProfileCluster(
     .sort((left, right) => right.artifactSupport - left.artifactSupport || compareCodePoint(left.id, right.id))[0];
 }
 
+/**
+ * The language this memory has demonstrably learned, or nothing.
+ *
+ * Distinct from selectDominantLanguageProfileCluster, which ranks whatever it is given and so will happily name a
+ * cluster whose profiles own no learned material at all -- a profile row exists for every ingested source version, and
+ * calling the biggest of those "the language" is the guess that source-bound cognition forbids. Requiring real
+ * artifact support is what separates "we could not tell which learned language to use" (answerable: this one) from
+ * "nothing has been learned yet" (not answerable, and must not be guessed at).
+ */
+export function selectLearnedLanguageProfileCluster(
+  clusters: readonly LanguageProfileCluster[]
+): LanguageProfileCluster | undefined {
+  const dominant = selectDominantLanguageProfileCluster(clusters.filter(cluster => cluster.artifactSupport > 0));
+  return dominant;
+}
+
 export function selectLanguageProfileClusterForSourceVersions(
   clusters: readonly LanguageProfileCluster[],
   sourceVersionIds: readonly SourceVersionId[]
