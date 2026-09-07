@@ -109,38 +109,17 @@ export function compileRelationPromotionModel(input: {
   // observation set per relation: measured on 16 corpus documents, 1,285 relations over 2,068 observations took
   // 22s, and the cost grew with the square of the corpus, which put a corpus-scale promotion pass out of reach for
   // the one channel that produces thousands of relations. Same arithmetic, computed once per channel.
-  const channelScope = channelScopes(observations, fit, holdout);
+  const channelScope = channelScopes(observations, fit, holdout, hasher);
   const channelOf = new Map<string, SemanticCandidateChannel>();
   for (const row of observations) if (!channelOf.has(row.relationSeedId)) channelOf.set(row.relationSeedId, row.channel);
   const decisions = relationSeedIds.map(relationSeedId => {
     const channel = channelOf.get(relationSeedId)!;
     const scope = channelScope.get(channel)!;
-    const channelObservations = scope.observations;
-    const channelFit = scope.fit;
-    const channelHoldout = scope.holdout;
-    const channelRelationSeedIds = scope.relationSeedIds;
-    const channelSignatureAlphabet = scope.signatureAlphabet;
-    const actual = evaluateRelation({
-      relationSeedId,
-      fit: channelFit,
-      holdout: channelHoldout,
-      relationSeedIds: channelRelationSeedIds,
-      signatureAlphabet: channelSignatureAlphabet
-    });
-    const sourceCount = new Set(channelObservations
-      .filter(row => row.relationSeedId === relationSeedId)
-      .map(row => row.sourceFamilyId)).size;
-    const fitSourceFamilyIds = uniqueSourceFamilies(channelFit, relationSeedId);
-    const holdoutSourceFamilyIds = uniqueSourceFamilies(channelHoldout, relationSeedId);
-    const controls = controlResults({
-      relationSeedId,
-      observations: channelObservations,
-      fit: channelFit,
-      holdout: channelHoldout,
-      relationSeedIds: channelRelationSeedIds,
-      signatureAlphabet: channelSignatureAlphabet,
-      hasher
-    });
+    const actual = evaluateRelation(relationSeedId, scope.actual, scope.holdoutBySeed);
+    const sourceCount = scope.observationSourceFamilies.get(relationSeedId)?.size ?? 0;
+    const fitSourceFamilyIds = scope.fitSourceFamilies.get(relationSeedId) ?? [];
+    const holdoutSourceFamilyIds = scope.holdoutSourceFamilies.get(relationSeedId) ?? [];
+    const controls = controlResults(relationSeedId, scope);
     const reasons: string[] = [];
     if (sourceCount < MIN_INDEPENDENT_SOURCES) reasons.push("insufficient_independent_sources");
     if (fitSourceFamilyIds.length < MIN_FIT_SOURCES) reasons.push("insufficient_fit_source_families");
@@ -319,27 +298,26 @@ function sourceDisjointSplit(sourceIds: readonly string[], hasher: Hasher): {
   };
 }
 
-function evaluateRelation(input: {
-  relationSeedId: string;
-  fit: readonly RelationObservation[];
-  holdout: readonly RelationObservation[];
-  relationSeedIds: readonly string[];
-  signatureAlphabet: readonly string[];
-}): Evaluation {
-  const targetFit = input.fit.filter(row => row.relationSeedId === input.relationSeedId);
-  const targetHoldout = input.holdout.filter(row => row.relationSeedId === input.relationSeedId);
-  const backgroundCounts = countsBySignature(input.fit);
+/**
+ * One relation's held-out description length and recovery, read off a fit set that was prepared once.
+ *
+ * Everything here except the target's own rows is shared by every relation judged against the same fit: the
+ * background signature counts, each relation's prior, and the normalising denominator the recovery posterior
+ * divides by. Deriving them per relation is what made the pass grow with the square of the corpus.
+ */
+function evaluateRelation(
+  relationSeedId: string,
+  scope: FitScope,
+  holdoutBySeed: ReadonlyMap<string, RelationObservation[]>
+): Evaluation {
+  const targetFit = scope.fitBySeed.get(relationSeedId) ?? [];
+  const targetHoldout = holdoutBySeed.get(relationSeedId) ?? [];
   const relationCounts = countsBySignature(targetFit);
-  const baselineHeldoutNats = negativeLogLikelihood(targetHoldout, backgroundCounts, input.signatureAlphabet.length);
-  const relationHeldoutNats = negativeLogLikelihood(targetHoldout, relationCounts, input.signatureAlphabet.length);
-  const relationModelNats = modelCodeNats(relationCounts, targetFit.length, input.signatureAlphabet.length);
-  const recovery = recoveryProbabilities({
-    targetRelationSeedId: input.relationSeedId,
-    fit: input.fit,
-    holdout: targetHoldout,
-    relationSeedIds: input.relationSeedIds,
-    signatureAlphabetSize: input.signatureAlphabet.length
-  });
+  const alphabetSize = scope.signatureAlphabet.length;
+  const baselineHeldoutNats = negativeLogLikelihood(targetHoldout, scope.backgroundCounts, alphabetSize);
+  const relationHeldoutNats = negativeLogLikelihood(targetHoldout, relationCounts, alphabetSize);
+  const relationModelNats = modelCodeNats(relationCounts, targetFit.length, alphabetSize);
+  const recovery = recoveryProbabilities(scope, relationSeedId, targetHoldout);
   return {
     gainNats: quantize(baselineHeldoutNats - relationHeldoutNats - relationModelNats),
     baselineHeldoutNats,
@@ -351,64 +329,36 @@ function evaluateRelation(input: {
     independentSourceCount: new Set(targetFit.map(row => row.sourceFamilyId)).size
   };
 }
-
-function controlResults(input: {
-  relationSeedId: string;
-  observations: readonly RelationObservation[];
-  fit: readonly RelationObservation[];
-  holdout: readonly RelationObservation[];
-  relationSeedIds: readonly string[];
-  signatureAlphabet: readonly string[];
-  hasher: Hasher;
-}): RelationPromotionControlResult[] {
-  const shuffled = relabel(input.fit, input.relationSeedIds, row => {
-    const current = input.relationSeedIds.indexOf(row.relationSeedId);
-    return input.relationSeedIds[(current + 1) % Math.max(1, input.relationSeedIds.length)]!;
-  });
-  const randomRepetition = input.fit.map(row => ({
-    ...row,
-    signature: randomRepetitionSignature(row.sourceFamilyId, input.hasher)
-  }));
-  const randomRepetitionHoldout = input.holdout.map(row => ({
-    ...row,
-    signature: randomRepetitionSignature(row.sourceFamilyId, input.hasher)
-  }));
-  const randomRepetitionAlphabet = [...new Set([
-    ...randomRepetition,
-    ...randomRepetitionHoldout
-  ].map(row => row.signature))].sort();
-  const first = input.observations.find(row => row.relationSeedId === input.relationSeedId);
-  const duplicate = first
-    ? Array.from({ length: Math.max(MIN_INDEPENDENT_SOURCES, input.fit.length) }, (_, index) => ({
-      ...first,
-      candidateId: `${first.candidateId}.duplicate.${index}`
-    }))
+/**
+ * The three negative controls, judged against fit sets prepared once per channel plus one built per relation.
+ *
+ * Relabelling the fit, and re-signing it from source family alone, produce the same two sets for every relation in
+ * a channel. Only the duplicate control depends on which relation is being judged, because it is that relation's
+ * own first observation repeated -- the control that asks whether repetition inside one source can pass for
+ * corroboration across several.
+ */
+function controlResults(relationSeedId: string, scope: ChannelScope): RelationPromotionControlResult[] {
+  const first = scope.firstObservation.get(relationSeedId);
+  // The same observation repeated. Nothing this control evaluates reads candidateId -- it reads the relation, the
+  // signature and the source family, which are identical across the copies by construction -- so the copies share
+  // one row rather than allocating one object each, which was an allocation per relation pair over the channel.
+  const duplicate: RelationObservation[] = first
+    ? new Array<RelationObservation>(Math.max(MIN_INDEPENDENT_SOURCES, scope.fit.length)).fill(first)
     : [];
   return [
-    control("shuffled_relations", evaluateRelation({
-      relationSeedId: input.relationSeedId,
-      fit: shuffled,
-      holdout: input.holdout,
-      relationSeedIds: input.relationSeedIds,
-      signatureAlphabet: input.signatureAlphabet
-    })),
-    control("duplicate_only", evaluateRelation({
-      relationSeedId: input.relationSeedId,
-      fit: duplicate,
-      holdout: input.holdout,
-      relationSeedIds: input.relationSeedIds,
-      signatureAlphabet: input.signatureAlphabet
-    })),
-    control("random_repetition", evaluateRelation({
-      relationSeedId: input.relationSeedId,
-      fit: randomRepetition,
-      holdout: randomRepetitionHoldout,
-      relationSeedIds: input.relationSeedIds,
-      signatureAlphabet: randomRepetitionAlphabet
-    }))
+    control("shuffled_relations", evaluateRelation(relationSeedId, scope.shuffled, scope.holdoutBySeed)),
+    control("duplicate_only", evaluateRelation(
+      relationSeedId,
+      fitScope(duplicate, scope.relationSeedIds, scope.signatureAlphabet),
+      scope.holdoutBySeed
+    )),
+    control("random_repetition", evaluateRelation(
+      relationSeedId,
+      scope.randomRepetition,
+      scope.randomRepetitionHoldoutBySeed
+    ))
   ];
 }
-
 function randomRepetitionSignature(sourceId: string, hasher: Hasher): string {
   const digest = hasher.digestHex(`relation-promotion-random-repetition\u001f${sourceId}`);
   return `random_control_signature.${Number.parseInt(digest.slice(0, 8), 16) % 3}`;
@@ -436,57 +386,54 @@ function control(kind: RelationPromotionControlKind, evaluation: Evaluation): Re
   };
 }
 
-function recoveryProbabilities(input: {
-  targetRelationSeedId: string;
-  fit: readonly RelationObservation[];
-  holdout: readonly RelationObservation[];
-  relationSeedIds: readonly string[];
-  signatureAlphabetSize: number;
-}): { baseline: number; relation: number } {
-  if (!input.holdout.length || !input.fit.length || !input.relationSeedIds.length) {
+/**
+ * Posterior mass the correct relation keeps on its own held-out rows, against the prior it would keep by chance.
+ *
+ * The weight vector this normalises over is the same for every relation judged against one fit set: only which
+ * entry is read out as "correct" changes. It used to be rebuilt per relation and per held-out row, which is why a
+ * corpus-scale pass was out of reach. The denominator is now derived once per distinct signature, summed over the
+ * relations in their stored order so the floating-point result is bit-identical to the per-relation form.
+ */
+function recoveryProbabilities(
+  scope: FitScope,
+  targetRelationSeedId: string,
+  holdout: readonly RelationObservation[]
+): { baseline: number; relation: number } {
+  if (!holdout.length || !scope.fit.length || !scope.relationSeedIds.length) {
     return { baseline: 0, relation: 0 };
   }
-  // Grouping by one pass rather than one filter per relation, and counting each relation's signatures once rather
-  // than once per held-out row. Both were loop-invariant; recomputing them made this the dominant cost of the whole
-  // promotion pass, which grew with the square of the corpus and put a corpus-scale pass out of reach.
-  const fitCounts = new Map<string, RelationObservation[]>(
-    input.relationSeedIds.map(relationSeedId => [relationSeedId, []])
-  );
-  for (const row of input.fit) fitCounts.get(row.relationSeedId)?.push(row);
-  const priorDenominator = input.fit.length + DIRICHLET_ALPHA * input.relationSeedIds.length;
-  const priorByRelation = new Map<string, number>();
-  const signatureCountsByRelation = new Map<string, Map<string, number>>();
-  for (const relationSeedId of input.relationSeedIds) {
-    const examples = fitCounts.get(relationSeedId) ?? [];
-    priorByRelation.set(relationSeedId, (examples.length + DIRICHLET_ALPHA) / priorDenominator);
-    signatureCountsByRelation.set(relationSeedId, countsBySignature(examples));
-  }
+  const prior = relationPrior(scope, targetRelationSeedId);
+  const counts = relationSignatureCounts(scope, targetRelationSeedId);
+  const alphabetSize = scope.signatureAlphabet.length;
   let baseline = 0;
   let relation = 0;
-  for (const row of input.holdout) {
-    const weights = input.relationSeedIds.map(relationSeedId => {
-      const prior = priorByRelation.get(relationSeedId)!;
-      return {
-        relationSeedId,
-        prior,
-        joint: prior * probability(
-          row.signature,
-          signatureCountsByRelation.get(relationSeedId)!,
-          input.signatureAlphabetSize
-        )
-      };
-    });
-    const correct = weights.find(weight => weight.relationSeedId === input.targetRelationSeedId);
-    const denominator = weights.reduce((sum, weight) => sum + weight.joint, 0);
-    baseline += correct?.prior ?? 0;
-    relation += denominator > 0 ? (correct?.joint ?? 0) / denominator : 0;
+  for (const row of holdout) {
+    const denominator = recoveryDenominator(scope, row.signature);
+    const joint = prior === undefined || counts === undefined
+      ? 0
+      : prior * probability(row.signature, counts, alphabetSize);
+    baseline += prior ?? 0;
+    relation += denominator > 0 ? joint / denominator : 0;
   }
   return {
-    baseline: quantize(baseline / input.holdout.length),
-    relation: quantize(relation / input.holdout.length)
+    baseline: quantize(baseline / holdout.length),
+    relation: quantize(relation / holdout.length)
   };
 }
 
+/** The recovery posterior's normaliser for one signature: every relation's prior times its likelihood. Memoised. */
+function recoveryDenominator(scope: FitScope, signature: string): number {
+  const cached = scope.denominatorBySignature.get(signature);
+  if (cached !== undefined) return cached;
+  const alphabetSize = scope.signatureAlphabet.length;
+  let sum = 0;
+  for (const relationSeedId of scope.relationSeedIds) {
+    sum += relationPrior(scope, relationSeedId)!
+      * probability(signature, relationSignatureCounts(scope, relationSeedId)!, alphabetSize);
+  }
+  scope.denominatorBySignature.set(signature, sum);
+  return sum;
+}
 function countsBySignature(observations: readonly RelationObservation[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const row of observations) counts.set(row.signature, (counts.get(row.signature) ?? 0) + 1);
@@ -539,34 +486,188 @@ function quantize(value: number): number {
   return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
+/** A fit set with everything derived from it that does not depend on which relation is being judged. */
+interface FitScope {
+  fit: readonly RelationObservation[];
+  fitBySeed: Map<string, RelationObservation[]>;
+  backgroundCounts: Map<string, number>;
+  relationSeedIds: readonly string[];
+  relationSeedIdSet: ReadonlySet<string>;
+  signatureAlphabet: readonly string[];
+  priorDenominator: number;
+  signatureCountsCache: Map<string, Map<string, number>>;
+  denominatorBySignature: Map<string, number>;
+}
+
 interface ChannelScope {
   observations: RelationObservation[];
   fit: RelationObservation[];
   holdout: RelationObservation[];
   relationSeedIds: string[];
   signatureAlphabet: string[];
+  actual: FitScope;
+  shuffled: FitScope;
+  randomRepetition: FitScope;
+  holdoutBySeed: Map<string, RelationObservation[]>;
+  randomRepetitionHoldoutBySeed: Map<string, RelationObservation[]>;
+  observationSourceFamilies: Map<string, Set<string>>;
+  fitSourceFamilies: Map<string, string[]>;
+  holdoutSourceFamilies: Map<string, string[]>;
+  firstObservation: Map<string, RelationObservation>;
 }
 
-/** The per-channel view every relation decision in that channel shares, built in one pass each. Pure. */
+interface ChannelBucket {
+  observations: RelationObservation[];
+  fit: RelationObservation[];
+  holdout: RelationObservation[];
+}
+
+/** A fit set prepared once: grouped by relation, with each relation's prior and its signature counts. Pure. */
+/** Every relation observes the same empty fit set, so they share one. Read-only by construction. */
+const NO_SIGNATURE_COUNTS: ReadonlyMap<string, number> = new Map();
+
+function fitScope(
+  fit: readonly RelationObservation[],
+  relationSeedIds: readonly string[],
+  signatureAlphabet: readonly string[]
+): FitScope {
+  // Only relations this fit set actually contains get an entry. The duplicate-only control builds one fit set per
+  // relation, so materialising a prior and an empty count map for every relation in the channel each time was an
+  // allocation per relation pair -- quadratic in relations, and the largest single cost of the pass once the
+  // per-relation rescans were gone. A relation absent from the fit set has a known prior and no counts.
+  const fitBySeed = new Map<string, RelationObservation[]>();
+  for (const row of fit) {
+    const bucket = fitBySeed.get(row.relationSeedId);
+    if (bucket) bucket.push(row);
+    else fitBySeed.set(row.relationSeedId, [row]);
+  }
+  return {
+    fit,
+    fitBySeed,
+    backgroundCounts: countsBySignature(fit),
+    relationSeedIds,
+    relationSeedIdSet: new Set(relationSeedIds),
+    signatureAlphabet,
+    priorDenominator: fit.length + DIRICHLET_ALPHA * relationSeedIds.length,
+    signatureCountsCache: new Map(),
+    denominatorBySignature: new Map()
+  };
+}
+
+/** A relation's Dirichlet prior under this fit set, or undefined when the fit set does not range over it. Pure. */
+function relationPrior(scope: FitScope, relationSeedId: string): number | undefined {
+  if (!scope.relationSeedIdSet.has(relationSeedId)) return undefined;
+  return ((scope.fitBySeed.get(relationSeedId)?.length ?? 0) + DIRICHLET_ALPHA) / scope.priorDenominator;
+}
+
+/** A relation's signature counts under this fit set, memoised. */
+function relationSignatureCounts(scope: FitScope, relationSeedId: string): ReadonlyMap<string, number> | undefined {
+  if (!scope.relationSeedIdSet.has(relationSeedId)) return undefined;
+  const examples = scope.fitBySeed.get(relationSeedId);
+  if (!examples) return NO_SIGNATURE_COUNTS;
+  const cached = scope.signatureCountsCache.get(relationSeedId);
+  if (cached) return cached;
+  const counts = countsBySignature(examples);
+  scope.signatureCountsCache.set(relationSeedId, counts);
+  return counts;
+}
+
+/** Rows grouped by the relation they were observed for, in their original order. Pure. */
+function groupBySeed(rows: readonly RelationObservation[]): Map<string, RelationObservation[]> {
+  const grouped = new Map<string, RelationObservation[]>();
+  for (const row of rows) {
+    const bucket = grouped.get(row.relationSeedId);
+    if (bucket) bucket.push(row);
+    else grouped.set(row.relationSeedId, [row]);
+  }
+  return grouped;
+}
+
+/** Each relation's source families, unique and sorted, from one pass over the rows. Pure. */
+function sourceFamiliesBySeed(rows: readonly RelationObservation[]): Map<string, string[]> {
+  const sets = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const bucket = sets.get(row.relationSeedId);
+    if (bucket) bucket.add(row.sourceFamilyId);
+    else sets.set(row.relationSeedId, new Set([row.sourceFamilyId]));
+  }
+  return new Map([...sets].map(([relationSeedId, families]) => [relationSeedId, [...families].sort()]));
+}
+
+/**
+ * The per-channel view every relation decision in that channel shares, built in one pass each.
+ *
+ * A decision needs six views of its channel, and three of the four control fit sets, and none of them depend on
+ * which relation is being judged. Deriving them inside the decision loop rescanned the observation set for every
+ * relation: measured on 16 corpus documents, 1,285 relations over 1,878 observations took 25s, and the cost grew
+ * with the square of the corpus, which put a corpus-scale pass out of reach for the one channel that produces
+ * relations in the thousands. Same arithmetic, computed once per channel.
+ */
 function channelScopes(
   observations: readonly RelationObservation[],
   fit: readonly RelationObservation[],
-  holdout: readonly RelationObservation[]
+  holdout: readonly RelationObservation[],
+  hasher: Hasher
 ): Map<SemanticCandidateChannel, ChannelScope> {
-  const scopes = new Map<SemanticCandidateChannel, ChannelScope>();
-  const scopeFor = (channel: SemanticCandidateChannel): ChannelScope => {
-    const existing = scopes.get(channel);
+  const grouped = new Map<SemanticCandidateChannel, ChannelBucket>();
+  const bucketFor = (channel: SemanticCandidateChannel): ChannelBucket => {
+    const existing = grouped.get(channel);
     if (existing) return existing;
-    const created: ChannelScope = { observations: [], fit: [], holdout: [], relationSeedIds: [], signatureAlphabet: [] };
-    scopes.set(channel, created);
+    const created: ChannelBucket = { observations: [], fit: [], holdout: [] };
+    grouped.set(channel, created);
     return created;
   };
-  for (const row of observations) scopeFor(row.channel).observations.push(row);
-  for (const row of fit) scopeFor(row.channel).fit.push(row);
-  for (const row of holdout) scopeFor(row.channel).holdout.push(row);
-  for (const scope of scopes.values()) {
-    scope.relationSeedIds = [...new Set(scope.observations.map(row => row.relationSeedId))].sort();
-    scope.signatureAlphabet = [...new Set(scope.observations.map(row => row.signature))].sort();
+  for (const row of observations) bucketFor(row.channel).observations.push(row);
+  for (const row of fit) bucketFor(row.channel).fit.push(row);
+  for (const row of holdout) bucketFor(row.channel).holdout.push(row);
+
+  const scopes = new Map<SemanticCandidateChannel, ChannelScope>();
+  for (const [channel, bucket] of grouped) {
+    const relationSeedIds = [...new Set(bucket.observations.map(row => row.relationSeedId))].sort();
+    const signatureAlphabet = [...new Set(bucket.observations.map(row => row.signature))].sort();
+    // indexOf per row is a scan of every relation for every observation, which is the shuffle control's own
+    // quadratic. The position of each relation is fixed for the channel, so it is looked up once.
+    const relationSeedIndex = new Map(relationSeedIds.map((id, index) => [id, index]));
+    const shuffled = relabel(bucket.fit, relationSeedIds, row => {
+      const current = relationSeedIndex.get(row.relationSeedId) ?? -1;
+      return relationSeedIds[(current + 1) % Math.max(1, relationSeedIds.length)]!;
+    });
+    const randomRepetition = bucket.fit.map(row => ({
+      ...row,
+      signature: randomRepetitionSignature(row.sourceFamilyId, hasher)
+    }));
+    const randomRepetitionHoldout = bucket.holdout.map(row => ({
+      ...row,
+      signature: randomRepetitionSignature(row.sourceFamilyId, hasher)
+    }));
+    const randomRepetitionAlphabet = [...new Set([
+      ...randomRepetition,
+      ...randomRepetitionHoldout
+    ].map(row => row.signature))].sort();
+    const observationSourceFamilies = new Map<string, Set<string>>();
+    const firstObservation = new Map<string, RelationObservation>();
+    for (const row of bucket.observations) {
+      const families = observationSourceFamilies.get(row.relationSeedId);
+      if (families) families.add(row.sourceFamilyId);
+      else observationSourceFamilies.set(row.relationSeedId, new Set([row.sourceFamilyId]));
+      if (!firstObservation.has(row.relationSeedId)) firstObservation.set(row.relationSeedId, row);
+    }
+    scopes.set(channel, {
+      observations: bucket.observations,
+      fit: bucket.fit,
+      holdout: bucket.holdout,
+      relationSeedIds,
+      signatureAlphabet,
+      actual: fitScope(bucket.fit, relationSeedIds, signatureAlphabet),
+      shuffled: fitScope(shuffled, relationSeedIds, signatureAlphabet),
+      randomRepetition: fitScope(randomRepetition, relationSeedIds, randomRepetitionAlphabet),
+      holdoutBySeed: groupBySeed(bucket.holdout),
+      randomRepetitionHoldoutBySeed: groupBySeed(randomRepetitionHoldout),
+      observationSourceFamilies,
+      fitSourceFamilies: sourceFamiliesBySeed(bucket.fit),
+      holdoutSourceFamilies: sourceFamiliesBySeed(bucket.holdout),
+      firstObservation
+    });
   }
   return scopes;
 }
