@@ -47,6 +47,8 @@ export type {
 export interface SemanticUnification {
   leftAtomId: string;
   rightAtomId: string;
+  /** How far these two atoms are about the same proposition at all, before asking whether they agree. */
+  correspondence: number;
   predicate: number;
   roles: number;
   constraints: number;
@@ -405,12 +407,22 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   const steps: SemanticProofStep[] = [];
   const bestPerClaim = new Map<string, SemanticUnification>();
   for (const claim of input.claimAtoms) {
+    // Support and refutation are chosen over the same candidates, and they used to be chosen independently: the
+    // best supporting atom by support, the strongest counterexample by contradiction, with nothing requiring the
+    // two to be about the same proposition. A candidate that disagrees about something the claim never asserted
+    // could therefore carry the proof state of a claim it has no bearing on. What holds them in one correspondence
+    // class is that contradiction is bounded by correspondence in unifyAtoms, so an atom about another proposition
+    // cannot reach the threshold however strongly it disagrees about its own subject.
     let best: SemanticUnification | undefined;
-    let strongestCounterexample: SemanticUnification | undefined;
+    const claimUnifications: SemanticUnification[] = [];
     for (const candidate of input.supportAtoms) {
       const unified = unifyAtoms(claim, candidate);
       unifications.push(unified);
+      claimUnifications.push(unified);
       if (!best || unified.support > best.support) best = unified;
+    }
+    let strongestCounterexample: SemanticUnification | undefined;
+    for (const unified of claimUnifications) {
       if (unified.contradiction > (strongestCounterexample?.contradiction ?? 0)) strongestCounterexample = unified;
     }
     if (best && best.support > 0.12) {
@@ -555,11 +567,17 @@ function unifyAtoms(left: SemanticAtom, right: SemanticAtom): SemanticUnificatio
   const transforms = evaluateSemanticTransforms({ claim: left, evidence: right, predicateScore: predicate, roleScore: roleMatch.score, constraintScore: constraintMatch.score, polarityScore: polarity });
   const alpha = clamp01(0.5 * right.alpha + 0.5 * cosineSimilarity(left.vector, right.vector));
   const agreement = clamp01(0.34 * predicate + 0.32 * roleMatch.score + 0.16 * constraintMatch.score + 0.1 * polarity + 0.08 * transforms.supportBoost);
-  const contradiction = clamp01(contradictionScore(left, right, predicate, roleMatch.score, constraintMatch.violations.length) + transforms.contradictionBoost);
+  const correspondence = correspondenceScore(predicate, roleMatch.score);
+  // Disagreement, then aboutness, multiplied once. A refutation therefore never exceeds the correspondence it
+  // rests on, so an atom about another proposition cannot become this claim's counterexample however strongly it
+  // disagrees about its own subject. Measured before this: contradiction ran up to 0.11 over correspondence.
+  const disagreement = clamp01(contradictionScore(left, right, constraintMatch.violations.length) + transforms.contradictionBoost);
+  const contradiction = clamp01(disagreement * correspondence);
   const support = clamp01(agreement * (0.45 + 0.55 * alpha) * (1 - contradiction * 0.62));
   return {
     leftAtomId: left.id,
     rightAtomId: right.id,
+    correspondence,
     predicate,
     roles: roleMatch.score,
     constraints: constraintMatch.score,
@@ -745,12 +763,24 @@ function isTemporalConstraint(constraint: SemanticConstraint): boolean {
   return constraint.kind === SEMANTIC_CONSTRAINT.TEMPORAL || temporalFromJson(constraint.value) !== undefined;
 }
 
-function contradictionScore(left: SemanticAtom, right: SemanticAtom, predicate: number, roles: number, violatedConstraints: number): number {
-  const comparable = predicate * 0.6 + roles * 0.4;
-  const polarityConflict = left.polarity !== right.polarity ? comparable : 0;
-  const hardConstraint = Math.min(1, violatedConstraints * 0.22) * comparable;
-  const quantityConflict = quantityContradiction(left.constraints, right.constraints) * comparable;
-  const temporalConflict = temporalContradiction(left.constraints, right.constraints) * comparable;
+/** How far two atoms are about the same proposition: the predicate they name, and the roles they fill. Pure. */
+function correspondenceScore(predicate: number, roles: number): number {
+  return predicate * 0.6 + roles * 0.4;
+}
+
+/**
+ * How far two atoms disagree, on its own scale, before any question of whether they are about the same thing.
+ *
+ * Each term used to be multiplied by correspondence here and the transform boost added afterwards, so two
+ * individually bounded quantities could sum past the bound and a pair could be scored as refuting each other
+ * harder than they corresponded at all. Disagreement and aboutness are now separate, and unifyAtoms multiplies
+ * once, which makes "a refutation never exceeds its correspondence" hold by construction rather than by luck.
+ */
+function contradictionScore(left: SemanticAtom, right: SemanticAtom, violatedConstraints: number): number {
+  const polarityConflict = left.polarity !== right.polarity ? 1 : 0;
+  const hardConstraint = Math.min(1, violatedConstraints * 0.22);
+  const quantityConflict = quantityContradiction(left.constraints, right.constraints);
+  const temporalConflict = temporalContradiction(left.constraints, right.constraints);
   return clamp01(Math.max(polarityConflict, hardConstraint, quantityConflict, temporalConflict));
 }
 
@@ -921,6 +951,9 @@ function collectMutuallyContradictorySupport(
         if (isLearnedPriorClass(first.proofClass) || isLearnedPriorClass(second.proofClass)) continue;
         const unified = unifyAtoms(first, second);
         unifications.push(unified);
+        // Two sources disagree only if they are speaking about the same proposition. Without this a source could
+        // be reported as refuting another that it merely fails to resemble.
+        if (unified.correspondence <= 0) continue;
         if (!(unified.contradiction > PROOF_CONTRADICTION_THRESHOLD)) continue;
         const evidenceIds = [...new Set([...first.evidenceIds, ...second.evidenceIds])];
         found = true;
@@ -1126,9 +1159,23 @@ function buildPredicateFeatures(predicate: string, symbols: readonly string[], i
   ];
 }
 
+/**
+ * Whether the sentence asserts its proposition or denies it.
+ *
+ * A bare exclamation mark used to count as a denial, so every emphatic sentence was read as negated -- and
+ * modalityFromSurface reads the same character as REQUIRED, so one mark meant both "required" and "not" at once
+ * and any emphatic claim took a polarity conflict against its own source. polarityConflict is the largest term in
+ * contradictionScore, so that conflict alone drove disagreement to 1 and the contradiction to the full
+ * correspondence of the pair: measured at 0.66 between "the reactor must be commissioned on 11 April 1988!" and
+ * the sentence it was written from.
+ *
+ * What remains are the inequality operators, which deny in any notation, and "!" where it prefixes what it
+ * negates rather than closing a sentence.
+ */
 function polarityFromSurface(sentence: string, symbols: readonly string[]): SemanticAtomPolarity {
-  if (symbols.some(symbol => /^(?:!|-)$/u.test(symbol) || /^(?:!=)$/u.test(symbol))) return -1;
-  if (/(?:!=|<>|!|\/=)/u.test(sentence)) return -1;
+  void symbols;
+  if (/(?:!=|<>|\/=)/u.test(sentence)) return -1;
+  if (/![\p{Letter}\p{Number}_(]/u.test(sentence)) return -1;
   return 1;
 }
 
