@@ -781,6 +781,12 @@ export interface LanguageProfileQuery {
    * from the full durable corpus instead of only the newest profile window.
    */
   surfaceNgrams?: readonly string[];
+  /**
+   * Profiles owned by these source versions. The evidence admitted for a turn
+   * names its own language this way instead of hoping its profiles landed in
+   * the bounded global window.
+   */
+  sourceVersionIds?: readonly SourceVersionId[];
 }
 
 export interface LanguageMemoryStore {
