@@ -433,7 +433,7 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
         if (unified.contradiction > (strongestCounterexample?.contradiction ?? 0)) strongestCounterexample = unified;
       }
     }
-    if (best && best.support > 0.12) {
+    if (best && best.support > PROOF_DIRECT_SUPPORT_THRESHOLD) {
       bestPerClaim.set(claim.id, best);
       steps.push({
         id: `step_${input.hasher.digestHex(`direct:${claim.id}:${best.rightAtomId}`).slice(0, 24)}`,
@@ -1366,6 +1366,20 @@ function normalizedEditSimilarity(left: string, right: string): number {
  * Rerun the harness after any change to unifyAtoms; a scoring change moves the distributions and this cut with them.
  */
 export const PROOF_CONTRADICTION_THRESHOLD = 0.46;
+
+/**
+ * The unification support at which an atom is admitted as DIRECT evidence for a claim.
+ *
+ * Calibrated by the same harness. 12 facts each stated two ways give the positives (one proposition, reworded);
+ * every cross-pairing of those same sentences gives 132 negatives sharing no subject, predicate or value -- built
+ * from one table so the two classes are identical in shape and length and cannot be separated on surface form. They
+ * separate completely: AUROC 1.0, every unrelated pair at or below 0.2521, every restatement at or above 0.3068.
+ *
+ * The previous value, 0.12, sits far below the entire negative distribution: measured FPR 1.00, so every unrelated
+ * fact in the admitted evidence was accepted as direct support for the claim. That is not a loose gate, it is no
+ * gate. 0.28 centres the separating window.
+ */
+export const PROOF_DIRECT_SUPPORT_THRESHOLD = 0.28;
 
 export const PROPOSITION_GRAPH_NODE_SCHEMA = "scce.proposition_node.v1" as const;
 
