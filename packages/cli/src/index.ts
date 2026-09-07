@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
-import { createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
+import { createClangCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -101,12 +101,19 @@ async function main(): Promise<void> {
         // ignored argument rather than of the repair engine.
         const workspaceRoot = parsed.args.find(arg => arg.startsWith("--root="))?.slice(7)
           ?? config.runtime.workspaceRoot;
+        // Which compiler owns the fixes for this file. The repair loop itself is language-neutral, so the language
+        // only decides which ports it runs over; every other guarantee -- apply, verify, roll back what does not
+        // build -- is the same whichever compiler is answering.
+        const clangSource = /\.(c|h|cc|cpp|cxx|hpp|m|mm)$/iu.test(target);
+        const ports = clangSource
+          ? createClangCodeMouthPorts({ workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
+          : createTypeScriptCodeMouthPorts({ workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) });
         const result = await runCodeMouth({
           request,
           targetPath: target,
           maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3),
           log: message => process.stderr.write(`[code-mouth] ${message}\n`),
-          ports: createTypeScriptCodeMouthPorts({ workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
+          ports
         });
         printJson(result);
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
