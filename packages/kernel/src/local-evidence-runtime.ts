@@ -3346,7 +3346,23 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   // The quoted sentence answers a quotation by itself (same doctrine as the source-exact window).
-  const selected = selectEvidenceSentenceRows(candidates, candidates[0]?.nearDuplicate ? 1 : limit);
+  // Among the top candidates, the ones that predicate about the requested subject go first -- before the limit cuts
+  // the list, because a preference applied after truncation can only reorder sentences that already survived.
+  // Measured on "Who was Charles Babbage?": this returned two sentences, both merely naming him (a cast list and a
+  // Doctor Who credit), while "Charles Babbage and Ada Lovelace conceived the first programmable computer" ranked
+  // below the cut and never reached the answer. Stable partition of a bounded prefix: nothing is dropped, and when
+  // no candidate predicates about the anchor the order is untouched.
+  const rerankable = anchors.length && !candidates[0]?.nearDuplicate
+    ? candidates.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
+    : [];
+  const ranked = rerankable.length
+    ? [
+      ...rerankable.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
+      ...rerankable.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
+      ...candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT)
+    ]
+    : candidates;
+  const selected = selectEvidenceSentenceRows(ranked, ranked[0]?.nearDuplicate ? 1 : limit);
   // Adjacent sentences read in document order, whatever order they were
   // scored in (run-f emitted "It acquired the retronym... 'Star Trek' is
   // an American..." -- the article's sentences reversed).

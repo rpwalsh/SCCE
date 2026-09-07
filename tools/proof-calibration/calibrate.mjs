@@ -117,7 +117,7 @@ async function corpusNegatives(limitDocuments, pairsPerDocument, seed) {
   try { local = JSON.parse(fs.readFileSync("scce.config.local.json", "utf8")); } catch { /* optional overlay */ }
   const url = local?.database?.url ?? cfg.database?.url;
   const schema = local?.database?.schema ?? cfg.database?.schema;
-  if (!url) return [];
+  if (!url || limitDocuments <= 0) return [];
   const pg = require_("pg");
   const client = new pg.Client({ connectionString: url });
   await client.connect();
@@ -221,22 +221,27 @@ const allNegatives = [...scoredConstructedNegatives, ...scoredCorpusNegatives];
 // Support is a separate question with its own labels: does this evidence bear on this claim at all? Positives are the
 // same fact restated in different words (the evidence a real answer rests on); negatives pair a claim with a fact
 // about a different subject. The 0.12 admission cut for a DIRECT proof step is read off this, not off intuition.
-const SUPPORTED = [
+// Each entry states ONE fact two ways. The pair (a,b) is a support positive because it is the same proposition
+// reworded; any (a_i, b_j) with i != j is a support negative because the two facts share no subject, predicate or
+// value. Generating both classes from one table is what makes them symmetric -- the negatives are exactly as
+// well-formed and as long as the positives, so a threshold cannot separate them on surface shape alone.
+const FACT_PAIRS = [
   ["The Drennish reactor was commissioned on 11 April 1988.", "Commissioning of the Drennish reactor took place on 11 April 1988."],
   ["Xylor-7 decomposes at 417 degrees Celsius.", "Decomposition of Xylor-7 occurs at 417 degrees Celsius."],
   ["Alice Renner became chief executive of Halvern Dynamics in 2019.", "In 2019 Alice Renner was appointed chief executive of Halvern Dynamics."],
   ["The summit of Mount Verrick is 3412 metres above sea level.", "Mount Verrick rises to 3412 metres above sea level at its summit."],
   ["Factory A had 12 machines.", "There were 12 machines at Factory A."],
-  ["The Ostry tunnel was opened on 14 June 1972.", "Opening of the Ostry tunnel occurred on 14 June 1972."]
+  ["The Ostry tunnel was opened on 14 June 1972.", "Opening of the Ostry tunnel occurred on 14 June 1972."],
+  ["The Marlin bridge was completed on 27 January 1980.", "Completion of the Marlin bridge came on 27 January 1980."],
+  ["The Halvern furnace operates at 220 kilopascals.", "Operating pressure of the Halvern furnace is 220 kilopascals."],
+  ["The Renner aquifer yields 58 litres per second.", "A yield of 58 litres per second comes from the Renner aquifer."],
+  ["The Calder observatory was dedicated on 3 September 1991.", "Dedication of the Calder observatory happened on 3 September 1991."],
+  ["The Ostry depot stored 9 railcars.", "There were 9 railcars stored at the Ostry depot."],
+  ["Boreth Station reported 46 millimetres of rainfall.", "Rainfall of 46 millimetres was reported at Boreth Station."]
 ];
-const UNSUPPORTED = [
-  ["The Drennish reactor was commissioned on 11 April 1988.", "Mount Verrick rises to 3412 metres above sea level at its summit."],
-  ["Xylor-7 decomposes at 417 degrees Celsius.", "In 2019 Alice Renner was appointed chief executive of Halvern Dynamics."],
-  ["Alice Renner became chief executive of Halvern Dynamics in 2019.", "Opening of the Ostry tunnel occurred on 14 June 1972."],
-  ["The summit of Mount Verrick is 3412 metres above sea level.", "There were 12 machines at Factory A."],
-  ["Factory A had 12 machines.", "Commissioning of the Drennish reactor took place on 11 April 1988."],
-  ["The Ostry tunnel was opened on 14 June 1972.", "Decomposition of Xylor-7 occurs at 417 degrees Celsius."]
-];
+const SUPPORTED = FACT_PAIRS.map(([a, b]) => [a, b]);
+const UNSUPPORTED = FACT_PAIRS.flatMap(([a], i) =>
+  FACT_PAIRS.filter((_, j) => j !== i).map(([, b]) => [a, b]));
 const supportPositives = scorePairs(proof, SUPPORTED.map(([a, b]) => ({ kind: "restated-fact", a, b }))).filter(row => row.admitted);
 // Only constructed pairs are used as support negatives. Two sentences from one article frequently DO bear on each
 // other, so labelling them "unsupported" would be inventing a label rather than observing one -- they stay in the

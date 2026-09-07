@@ -1,0 +1,244 @@
+{
+ "schema": "scce.proofCalibration.v1",
+ "seed": "proof-calibration-v1",
+ "generatedFrom": {
+  "constructedPositives": 14,
+  "constructedNegatives": 24,
+  "corpusNegatives": 0,
+  "corpusDocuments": 0,
+  "rejectedByPredicateRule": 0
+ },
+ "current": {
+  "PROOF_CONTRADICTION_THRESHOLD": 0.46
+ },
+ "auroc": {
+  "contradiction": 1
+ },
+ "distributions": {
+  "positives": {
+   "min": 0.4779674724375603,
+   "p05": 0.4779674724375603,
+   "p50": 0.5084663920839148,
+   "p95": 0.5724460499441878,
+   "max": 0.5724460499441878
+  },
+  "constructedNegatives": {
+   "min": 0,
+   "p05": 0,
+   "p50": 0.09517753483086312,
+   "p95": 0.38187556697520575,
+   "max": 0.38690458651711834
+  },
+  "corpusNegatives": {
+   "min": null,
+   "p05": null,
+   "p50": null,
+   "p95": null,
+   "max": null
+  }
+ },
+ "separableWindow": {
+  "low": 0.43243602947733933,
+  "high": 0.43243602947733933
+ },
+ "operatingPoints": {
+  "youden": {
+   "threshold": 0.43243602947733933,
+   "tp": 14,
+   "fn": 0,
+   "fp": 0,
+   "tn": 24,
+   "tpr": 1,
+   "fpr": 0,
+   "youden": 1
+  },
+  "highestThresholdAtFullRecall": {
+   "threshold": 0.43243602947733933,
+   "tp": 14,
+   "fn": 0,
+   "fp": 0,
+   "tn": 24,
+   "tpr": 1,
+   "fpr": 0,
+   "youden": 1
+  }
+ },
+ "atCurrentThreshold": {
+  "threshold": 0.4823664385012131,
+  "tp": 13,
+  "fn": 1,
+  "fp": 0,
+  "tn": 24,
+  "tpr": 0.9285714285714286,
+  "fpr": 0,
+  "youden": 0.9285714285714286
+ },
+ "support": {
+  "counts": {
+   "positives": 12,
+   "negatives": 132
+  },
+  "auroc": 1,
+  "distributions": {
+   "positives": {
+    "min": 0.3067976091418049,
+    "p05": 0.3067976091418049,
+    "p50": 0.40789490327680167,
+    "p95": 0.4649053012339231,
+    "max": 0.4649053012339231
+   },
+   "negatives": {
+    "min": 0.16518594194124495,
+    "p05": 0.17301522671618771,
+    "p50": 0.1963379538447793,
+    "p95": 0.22894568545605692,
+    "max": 0.2520799280081146
+   }
+  },
+  "separableWindow": {
+   "low": 0.27943876857495975,
+   "high": 0.27943876857495975
+  },
+  "highestThresholdAtFullRecall": {
+   "threshold": 0.27943876857495975,
+   "tp": 12,
+   "fn": 0,
+   "fp": 0,
+   "tn": 132,
+   "tpr": 1,
+   "fpr": 0,
+   "youden": 1
+  },
+  "atCurrentThreshold": {
+   "threshold": 0.08259297097062247,
+   "tp": 12,
+   "fn": 0,
+   "fp": 132,
+   "tn": 0,
+   "tpr": 1,
+   "fpr": 1,
+   "youden": 0
+  }
+ },
+ "verdictCut": {
+  "value": 0.55,
+  "truePositivesReaching": 1,
+  "truePositivesTotal": 14
+ },
+ "worstFalsePositives": [
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3869,
+   "correspondence": 0.4885,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Calder observatory was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3819,
+   "correspondence": 0.4822,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Marlin bridge was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3801,
+   "correspondence": 0.48,
+   "a": "The Marlin bridge was completed on 11 April 1988.",
+   "b": "The Calder observatory was completed on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3755,
+   "correspondence": 0.4742,
+   "a": "The Ostry tunnel was opened on 11 April 1988.",
+   "b": "The Calder observatory was opened on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3755,
+   "correspondence": 0.4741,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Ostry tunnel was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "different-subject",
+   "contradiction": 0.3711,
+   "correspondence": 0.4686,
+   "a": "The Ostry tunnel was opened on 11 April 1988.",
+   "b": "The Marlin bridge was opened on 3 September 1991."
+  },
+  {
+   "kind": "different-predicate",
+   "contradiction": 0.3534,
+   "correspondence": 0.5355,
+   "a": "The Calder observatory was commissioned on 11 April 1988.",
+   "b": "The Calder observatory was surveyed by the Halvern institute."
+  },
+  {
+   "kind": "different-predicate",
+   "contradiction": 0.3483,
+   "correspondence": 0.5277,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Drennish reactor was surveyed by the Halvern institute."
+  }
+ ],
+ "weakestTruePositives": [
+  {
+   "kind": "count",
+   "contradiction": 0.478,
+   "correspondence": 0.6373,
+   "a": "Factory A had 12 machines.",
+   "b": "Factory A had 30 machines."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4868,
+   "correspondence": 0.6146,
+   "a": "The Ostry tunnel was opened on 11 April 1988.",
+   "b": "The Ostry tunnel was opened on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4896,
+   "correspondence": 0.6182,
+   "a": "The Marlin bridge was completed on 11 April 1988.",
+   "b": "The Marlin bridge was completed on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4905,
+   "correspondence": 0.6193,
+   "a": "The Drennish reactor was commissioned on 11 April 1988.",
+   "b": "The Drennish reactor was commissioned on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.4931,
+   "correspondence": 0.6227,
+   "a": "The Calder observatory was dedicated on 11 April 1988.",
+   "b": "The Calder observatory was dedicated on 3 September 1991."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.507,
+   "correspondence": 0.6401,
+   "a": "The Ostry tunnel was opened on 14 June 1972.",
+   "b": "The Ostry tunnel was opened on 27 January 1980."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.5071,
+   "correspondence": 0.6403,
+   "a": "The Marlin bridge was completed on 14 June 1972.",
+   "b": "The Marlin bridge was completed on 27 January 1980."
+  },
+  {
+   "kind": "date",
+   "contradiction": 0.5085,
+   "correspondence": 0.642,
+   "a": "The Drennish reactor was commissioned on 14 June 1972.",
+   "b": "The Drennish reactor was commissioned on 27 January 1980."
+  }
+ ]
+}
