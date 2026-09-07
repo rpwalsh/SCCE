@@ -116,7 +116,15 @@ export function createConnectorGovernance(options: { hasher?: Hasher; clock?: Cl
       if (risk > input.policy.alphaRiskCeiling) reasons.push(`risk ${risk.toFixed(3)} exceeds ceiling ${input.policy.alphaRiskCeiling.toFixed(3)}`);
       if (input.phase === "commit" && !input.policy.allowMutation) reasons.push("policy disallows mutation");
       if (input.quota.requestsUsed >= input.config.limits.requestsPerSession) reasons.push("session request quota exhausted");
-      if (input.quota.spendCents >= Math.min(input.config.limits.maxSpendCents, input.policy.maxSpendCents)) reasons.push("spend cap exhausted");
+      // A connector that cannot cost anything cannot exhaust a spend cap. Its own limit of 0 means "this call is
+      // free", not "no calls remain", and comparing 0 >= 0 read it the second way: the DuckDuckGo search connector,
+      // enabled and registered with maxSpendCents 0 because the endpoint is free, was denied on every single request
+      // as "spend cap exhausted" -- so acquisition could ask for consent, receive it, and still never search.
+      // The operator's budget still governs everything that does cost: a paid connector under a zero policy budget
+      // is refused exactly as before, because its own limit is above zero.
+      const connectorCanSpend = input.config.limits.maxSpendCents > 0;
+      const spendBudget = Math.min(input.config.limits.maxSpendCents, input.policy.maxSpendCents);
+      if (connectorCanSpend && input.quota.spendCents >= spendBudget) reasons.push("spend cap exhausted");
       if (input.quota.lastRequestAt && t - input.quota.lastRequestAt < 60000 / Math.max(1, input.config.limits.requestsPerMinute)) reasons.push("rate limit cooldown active");
       const needsApproval = approvalRequired(input.config, input.phase, risk, input.policy);
       const operatorGrantAllows = Boolean(input.temporaryOperatorGrant && input.config.approval.operatorGrantEligible && input.phase !== "commit" && risk < Math.min(0.78, input.policy.alphaRiskCeiling));

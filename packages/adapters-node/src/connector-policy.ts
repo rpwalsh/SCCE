@@ -55,7 +55,15 @@ export interface ConnectorQuotaSnapshot {
 
 export class ConnectorPolicyGate {
   private sequence = 0;
-  private lastAllowedAt: number | undefined;
+  /**
+   * When each connector last ran, keyed by connector -- the rate limit it feeds is defined per connector.
+   *
+   * One shared timestamp meant every connector shared one cooldown, so a fetch immediately after a search was
+   * refused as "rate limit cooldown active" against a limit the fetch connector had not touched. Acquisition does
+   * exactly that, search then fetch, so it was refused on every attempt: measured, three leads found and zero
+   * fetched, on a connector allowing sixty requests a minute.
+   */
+  private readonly lastAllowedAt = new Map<string, number>();
   private readonly sessionId = `connector_session_${Date.now().toString(36)}`;
   private readonly records: ConnectorRequestRecord[] = [];
 
@@ -64,7 +72,7 @@ export class ConnectorPolicyGate {
   begin(input: { connector: ConnectorRequestRecord["connector"]; operation: string; uri: string; mutates?: boolean; approved?: boolean }): ConnectorRequestRecord {
     const uri = normalizeUri(input.uri);
     const mutates = Boolean(input.mutates);
-    const allowed = this.allowed(input.connector, uri, mutates, Boolean(input.approved));
+    const allowed = this.allowed(input.connector, input.operation, uri, mutates, Boolean(input.approved));
     const record: ConnectorRequestRecord = {
       id: `connector_${Date.now().toString(36)}_${(this.sequence++).toString(36).padStart(4, "0")}`,
       connector: input.connector,
@@ -106,6 +114,7 @@ export class ConnectorPolicyGate {
 
   private allowed(
     connector: ConnectorRequestRecord["connector"],
+    operation: string,
     uri: string,
     mutates: boolean,
     approved: boolean
@@ -122,7 +131,7 @@ export class ConnectorPolicyGate {
       approved,
       sessionId: this.sessionId,
       requestsUsed: this.records.filter(record => record.allowed).length,
-      ...(this.lastAllowedAt === undefined ? {} : { lastRequestAt: this.lastAllowedAt })
+      ...(this.lastAllowedAt.has(`${connector}:${operation}`) ? { lastRequestAt: this.lastAllowedAt.get(`${connector}:${operation}`)! } : {})
     });
     const governance: ConnectorGovernanceDecision = {
       allowed: admission.allowed,
@@ -135,7 +144,7 @@ export class ConnectorPolicyGate {
     if (!admission.allowed) {
       return { ok: false, reason: `connector governance ${admission.mode}: ${admission.reasons[0] ?? "not admitted"}`, governance };
     }
-    this.lastAllowedAt = Date.now();
+    this.lastAllowedAt.set(`${connector}:${operation}`, Date.now());
     return { ...local, governance };
   }
 

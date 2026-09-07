@@ -398,6 +398,12 @@ export function createRuntimeAcquisition(options: {
           if (ingest.sources > 0) {
             sourceUris.push(canonicalUri);
             heldCandidates.set(canonicalUri, { title: searchRow.title, snippet: searchRow.snippet });
+            // One source is enough to answer from, and the connector's rate limit is one fetch per second while a
+            // turn has ten in total. This loop fetched every lead back to back, so each request after the first
+            // landed inside the cooldown and was denied -- measured, three leads and zero fetches, all refused as
+            // "rate limit cooldown active". Stopping on the first source that ingests respects the limit instead of
+            // spending the turn being refused by it; the remaining leads stay recorded as leads.
+            break;
           }
         } catch (error) {
           motionFailures.push(runtimeMotionFailure(`fetch_ingest:${searchUri}`, error));
@@ -469,14 +475,53 @@ export function createRuntimeAcquisition(options: {
   }
 
 
-  function runtimeMotionDeferredByDeadline(input: {
+  /**
+   * Registers the owner-consent request for a search, without performing one.
+   *
+   * Asking costs one bounded plan write and touches no network -- the search itself only runs once consent exists --
+   * so it is affordable on a turn that cannot afford the search. Same plan id as the acquisition path derives, so an
+   * owner approving this request satisfies the later attempt rather than being asked twice.
+   */
+  async function proposeSearchConsent(episodeId: EpisodeId, requestText: string): Promise<RuntimeReplanMotion["consent"]> {
+    if (!deps.connectors) return undefined;
+    const consentInput = learningConsentInput(requestText, hasher);
+    if (deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true) return undefined;
+    const queryHash = hasher.digestHex(requestText);
+    const planId = `capability_network.search_${hasher.digestHex(`${queryHash}consent`).slice(0, 32)}`;
+    const plan: CapabilityPlan = {
+      id: planId as CapabilityPlan["id"],
+      episodeId,
+      capabilityId: "network.search",
+      phase: "prepare",
+      status: "planned",
+      input: consentInput,
+      riskVector: { risk: 0.32, mutates: false },
+      permission: { allowed: false, dryRun: true, requiresExplicitApproval: true, reason: "owner-consent-required" },
+      createdAt: now()
+    };
+    await deps.storage.capabilities.putPlan(plan);
+    await deps.approvals?.observePending(plan);
+    return { capabilityId: "network.search", planId, granted: false };
+  }
+
+  /**
+   * The turn could not afford to go and look, so it asks instead of going quiet.
+   *
+   * Every API turn runs under the fast budget, so the acquisition checkpoint's five-second reservation is refused
+   * and this deferred path is what a served request actually takes. It reported status "unavailable" and registered
+   * nothing, so a question the engine had no evidence for returned an empty answer and no request to go find any --
+   * measured on "What is DNA?" against a configured, enabled web connector. The reservation protects the SEARCH,
+   * which needs consent this turn does not have; recording the request needs neither the network nor the budget.
+   */
+  async function runtimeMotionDeferredByDeadline(input: {
     episodeId: EpisodeId;
     requestedAuthority: RequestedAuthority;
     trigger: RuntimeReplanTrigger;
     requestText: string;
     connectorConfigured: boolean;
     decision?: RuntimeDeadlineDecision;
-  }): RuntimeReplanMotion {
+  }): Promise<RuntimeReplanMotion> {
+    const consent = await proposeSearchConsent(input.episodeId, input.requestText).catch(() => undefined);
     const queryHash = hasher.digestHex(input.requestText);
     const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}\u001fdeadline`).slice(0, 32)}`;
     const reason = input.decision
@@ -492,7 +537,8 @@ export function createRuntimeAcquisition(options: {
       parentEpisodeId: String(input.episodeId),
       queryHash,
       connectorConfigured: input.connectorConfigured,
-      status: "unavailable",
+      status: consent ? "awaiting_consent" : "unavailable",
+      ...(consent ? { consent } : {}),
       searchResultCount: 0,
       fetchedSourceCount: 0,
       ingestedSourceCount: 0,
@@ -504,5 +550,13 @@ export function createRuntimeAcquisition(options: {
     };
   }
 
-  return { learnHydrateReplan, runtimeMotionDeferredByDeadline };
+  /** Whether the owner has already consented to searching for this request, so the turn need not ask again. */
+  function searchConsentGranted(requestText: string): boolean {
+    return deps.approvals?.isApproved({
+      capabilityId: "network.search",
+      input: learningConsentInput(requestText, hasher)
+    }) === true;
+  }
+
+  return { learnHydrateReplan, runtimeMotionDeferredByDeadline, searchConsentGranted };
 }
