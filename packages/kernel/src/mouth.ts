@@ -5894,7 +5894,14 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   // arbitrary single-word satisfied obligation like "It".
   const reseededClaim = tidySurface(entailment.claim.text);
   if (reseededClaim && reseededClaim.length > requestText.length && !questionEchoHits(reseededClaim, requestText).length) return reseededClaim;
-  const satisfied = satisfiedObligations.find(item => item.kind !== "source_version") ?? satisfiedObligations[0];
+  // Same exclusion the informative branch above applies, which this fallback skipped: an obligation carrying
+  // evidence clears satisfiedObligations even when its whole claim is a fragment of the question, so "What is the
+  // capital of France?" answered "France" and "Who first synthesised Xylor-7?" answered "Xylor-7" -- verbatim
+  // pieces of the question, each trivially true and neither an answer. The block above already states the rule
+  // ("never falling back to a merely-satisfied-but-uninformative fragment"); it just was not applied here, so the
+  // honest boundary surface below was unreachable whenever any fragment happened to be satisfied.
+  const satisfied = [satisfiedObligations.find(item => item.kind !== "source_version"), satisfiedObligations[0]]
+    .find(item => item?.claimText && !containsSurface(requestText, item.claimText));
   if (satisfied?.claimText) return satisfied.claimText;
   // Real bug, confirmed live: this fallback used to hand back an entire
   // evidence span's full text/textPreview unbounded -- normalizeEvidenceSentence
