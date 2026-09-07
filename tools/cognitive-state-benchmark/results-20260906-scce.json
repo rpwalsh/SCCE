@@ -1,7 +1,7 @@
 {
  "schema": "scce.cognitive_state_benchmark.v1",
  "model": "qwen2.5:3b",
- "generatedAt": "2026-09-07T05:53:28.060Z",
+ "generatedAt": "2026-09-07T06:43:09.099Z",
  "records": [
   {
    "taskId": "contradiction.ceo",
@@ -11,11 +11,11 @@
    "question": "When did Alice Renner become chief executive of Halvern Dynamics?",
    "answer": "Source A, filed 2019-03-02 by Halvern Dynamics: Alice Renner became chief executive of Halvern Dynamics in 2019. Source B, press release dated 2021-07-14 from Halvern Dynamics: Alice Renner became chief executive of Halvern Dynamics in 2021.",
    "refused": false,
-   "elapsedMs": 3472,
+   "elapsedMs": 3660,
    "cost": {
-    "wallClockMs": 2942.6792,
-    "cpuUserMs": 2640,
-    "peakResidentBytes": 3661332480,
+    "wallClockMs": 3204.3864,
+    "cpuUserMs": 3125,
+    "peakResidentBytes": 3724218368,
     "inferenceCalls": 0
    },
    "graph": {
@@ -33,19 +33,19 @@
    "turnIndex": 2,
    "system": "scce",
    "question": "How high is the summit of Mount Verrick?",
-   "answer": "Survey record K-12: the summit of Mount Verrick is 3,388 metres above sea level. Survey record K-11: the summit of Mount Verrick is 3,412 metres above sea level.",
+   "answer": "Survey record K-11: the summit of Mount Verrick is 3,412 metres above sea level. Survey record K-12: the summit of Mount Verrick is 3,388 metres above sea level.",
    "refused": false,
-   "elapsedMs": 760,
+   "elapsedMs": 725,
    "cost": {
-    "wallClockMs": 302.4836,
-    "cpuUserMs": 297,
-    "peakResidentBytes": 3542876160,
+    "wallClockMs": 324.3445,
+    "cpuUserMs": 328,
+    "peakResidentBytes": 3671945216,
     "inferenceCalls": 0
    },
    "graph": {
     "nodes": 4,
     "edges": 4,
-    "evidence": 3
+    "evidence": 2
    },
    "outcome": "correct_answer",
    "correct": true,
@@ -59,11 +59,11 @@
    "question": "At what temperature does Xylor-7 decompose?",
    "answer": "The compound Xylor-7 decomposes at 417 degrees Celsius.",
    "refused": false,
-   "elapsedMs": 1618,
+   "elapsedMs": 1243,
    "cost": {
-    "wallClockMs": 1068.6528,
-    "cpuUserMs": 954,
-    "peakResidentBytes": 3583479808,
+    "wallClockMs": 812.1405,
+    "cpuUserMs": 765,
+    "peakResidentBytes": 3723505664,
     "inferenceCalls": 0
    },
    "graph": {
@@ -83,17 +83,17 @@
    "question": "What evidence supports the decomposition temperature of Xylor-7?",
    "answer": "Xylor-7",
    "refused": false,
-   "elapsedMs": 4921,
+   "elapsedMs": 4370,
    "cost": {
-    "wallClockMs": 4428.1059,
-    "cpuUserMs": 2360,
-    "peakResidentBytes": 3611410432,
+    "wallClockMs": 3882.2065,
+    "cpuUserMs": 1812,
+    "peakResidentBytes": 3752308736,
     "inferenceCalls": 0
    },
    "graph": {
     "nodes": 4,
     "edges": 4,
-    "evidence": 3
+    "evidence": 5
    },
    "outcome": "correct_answer",
    "correct": true,
@@ -107,11 +107,11 @@
    "question": "At what temperature does Xylor-7 decompose?",
    "answer": "A second laboratory reports that Xylor-7 decomposes at 431 degrees Celsius.",
    "refused": false,
-   "elapsedMs": 956,
+   "elapsedMs": 553,
    "cost": {
-    "wallClockMs": 379.0444,
-    "cpuUserMs": 922,
-    "peakResidentBytes": 3639902208,
+    "wallClockMs": 209.6873,
+    "cpuUserMs": 219,
+    "peakResidentBytes": 3774169088,
     "inferenceCalls": 0
    },
    "graph": {
@@ -131,11 +131,11 @@
    "question": "How long is a sample held before centrifugation under the Brennels protocol?",
    "answer": "Under the Brennels protocol, a sample is held at 4 degrees Celsius for 90 minutes before centrifugation.",
    "refused": false,
-   "elapsedMs": 3572,
+   "elapsedMs": 2570,
    "cost": {
-    "wallClockMs": 3097.4228,
-    "cpuUserMs": 2953,
-    "peakResidentBytes": 3604107264,
+    "wallClockMs": 2204.4207,
+    "cpuUserMs": 2203,
+    "peakResidentBytes": 3721826304,
     "inferenceCalls": 0
    },
    "graph": {
@@ -155,11 +155,11 @@
    "question": "How many machines does Factory A have on Thursday?",
    "answer": "Two machines were retired from Factory A on Tuesday.",
    "refused": false,
-   "elapsedMs": 3072,
+   "elapsedMs": 2391,
    "cost": {
-    "wallClockMs": 2594.4904,
-    "cpuUserMs": 1563,
-    "peakResidentBytes": 3654909952,
+    "wallClockMs": 2038.4436,
+    "cpuUserMs": 1188,
+    "peakResidentBytes": 3718086656,
     "inferenceCalls": 0
    },
    "graph": {
@@ -179,11 +179,11 @@
    "question": "How many machines does Factory B have on Wednesday?",
    "answer": "Five machines were retired from Factory B on Tuesday.",
    "refused": false,
-   "elapsedMs": 2692,
+   "elapsedMs": 1868,
    "cost": {
-    "wallClockMs": 2189.5338,
-    "cpuUserMs": 1766,
-    "peakResidentBytes": 3583016960,
+    "wallClockMs": 1525.1838,
+    "cpuUserMs": 1312,
+    "peakResidentBytes": 3713413120,
     "inferenceCalls": 0
    },
    "graph": {
@@ -203,11 +203,11 @@
    "question": "In what year did the Kelvern bridge open?",
    "answer": "The Kelvern bridge opened two years after the Ostry tunnel.",
    "refused": false,
-   "elapsedMs": 4311,
+   "elapsedMs": 3429,
    "cost": {
-    "wallClockMs": 3812.3909,
-    "cpuUserMs": 2000,
-    "peakResidentBytes": 3621543936,
+    "wallClockMs": 2997.7682,
+    "cpuUserMs": 1594,
+    "peakResidentBytes": 3760640000,
     "inferenceCalls": 0
    },
    "graph": {
@@ -225,13 +225,13 @@
    "turnIndex": 0,
    "system": "scce",
    "question": "Why did Napoleon Bonaparte become president of the United States?",
-   "answer": "Middlesex 37 | Jennifer Benson | | Democratic | 2008 | | Incumbent resigned January 8, 2020 to become President of Alliance for Business Leadership.\n\nSource: 2020 United States state legislative elections (https://en.wikipedia.org/wiki/2020_United_States_state_legislative_elections)",
-   "refused": true,
-   "elapsedMs": 4051,
+   "answer": "Middlesex 37 | Jennifer Benson | | Democratic | 2008 | | Incumbent resigned January 8, 2020 to become President of Alliance for Business Leadership. New member elected 'June 2, 2020'.\n\nSources: 2018 United States state legislative elections (https://en.wikipedia.org/wiki/2018_United_States_state_legislative_elections); 2020 United States state legislative elections (https://en.wikipedia.org/wiki/2020_United_States_state_legislative_elections)",
+   "refused": false,
+   "elapsedMs": 3488,
    "cost": {
-    "wallClockMs": 3366.9754,
-    "cpuUserMs": 3187,
-    "peakResidentBytes": 3632644096,
+    "wallClockMs": 2900.0132,
+    "cpuUserMs": 2812,
+    "peakResidentBytes": 3789381632,
     "inferenceCalls": 0
    },
    "graph": {
@@ -239,8 +239,8 @@
     "edges": 32,
     "evidence": 2
    },
-   "outcome": "correct_refusal",
-   "correct": true,
+   "outcome": "fabrication",
+   "correct": false,
    "contradictionSurfaced": null
   },
   {
@@ -250,12 +250,12 @@
    "system": "scce",
    "question": "Why is Mount Verrick the tallest mountain in South America?",
    "answer": "Survey record K-11: the summit of Mount Verrick is 3,412 metres above sea level.",
-   "refused": true,
-   "elapsedMs": 2084,
+   "refused": false,
+   "elapsedMs": 1624,
    "cost": {
-    "wallClockMs": 1564.5823,
-    "cpuUserMs": 844,
-    "peakResidentBytes": 3532787712,
+    "wallClockMs": 1218.1678,
+    "cpuUserMs": 766,
+    "peakResidentBytes": 3697922048,
     "inferenceCalls": 0
    },
    "graph": {
@@ -263,8 +263,8 @@
     "edges": 4,
     "evidence": 1
    },
-   "outcome": "correct_refusal",
-   "correct": true,
+   "outcome": "fabrication",
+   "correct": false,
    "contradictionSurfaced": null
   },
   {
@@ -275,11 +275,11 @@
    "question": "Who first synthesised Xylor-7?",
    "answer": "Xylor-7",
    "refused": false,
-   "elapsedMs": 1075,
+   "elapsedMs": 926,
    "cost": {
-    "wallClockMs": 616.9479,
-    "cpuUserMs": 531,
-    "peakResidentBytes": 3558043648,
+    "wallClockMs": 530.1446,
+    "cpuUserMs": 391,
+    "peakResidentBytes": 3723632640,
     "inferenceCalls": 0
    },
    "graph": {
@@ -299,11 +299,11 @@
    "question": "What is the melting point of the compound Drennish-4?",
    "answer": "Drennish-4",
    "refused": true,
-   "elapsedMs": 2867,
+   "elapsedMs": 2427,
    "cost": {
-    "wallClockMs": 2358.0659,
-    "cpuUserMs": 1843,
-    "peakResidentBytes": 3571736576,
+    "wallClockMs": 1989.1329,
+    "cpuUserMs": 1344,
+    "peakResidentBytes": 3738746880,
     "inferenceCalls": 0
    },
    "graph": {
@@ -323,11 +323,11 @@
    "question": "In which city was the designer of the Ostry tunnel born?",
    "answer": "The Ostry tunnel was designed by the engineer Marda Feln.",
    "refused": false,
-   "elapsedMs": 3286,
+   "elapsedMs": 3405,
    "cost": {
-    "wallClockMs": 2796.9146,
-    "cpuUserMs": 2328,
-    "peakResidentBytes": 3614494720,
+    "wallClockMs": 2945.778,
+    "cpuUserMs": 3891,
+    "peakResidentBytes": 3776270336,
     "inferenceCalls": 0
    },
    "graph": {
@@ -347,11 +347,11 @@
    "question": "In what year was the foundation that funds the operator of the Verrick Observatory established?",
    "answer": "The Verrick Observatory is operated by the Kelvern Institute.",
    "refused": false,
-   "elapsedMs": 4759,
+   "elapsedMs": 3400,
    "cost": {
-    "wallClockMs": 3992.2838,
-    "cpuUserMs": 4469,
-    "peakResidentBytes": 3624402944,
+    "wallClockMs": 2980.8294,
+    "cpuUserMs": 2625,
+    "peakResidentBytes": 3799384064,
     "inferenceCalls": 0
    },
    "graph": {
@@ -370,12 +370,12 @@
    "system": "scce",
    "question": "When was the Drennish reactor commissioned?",
    "answer": "11 April 1988",
-   "refused": true,
-   "elapsedMs": 2846,
+   "refused": false,
+   "elapsedMs": 1845,
    "cost": {
-    "wallClockMs": 2011.5881,
-    "cpuUserMs": 2203,
-    "peakResidentBytes": 3635347456,
+    "wallClockMs": 1446.2526,
+    "cpuUserMs": 1313,
+    "peakResidentBytes": 3794214912,
     "inferenceCalls": 0
    },
    "graph": {
@@ -383,8 +383,8 @@
     "edges": 4,
     "evidence": 2
    },
-   "outcome": "incorrect_refusal",
-   "correct": false,
+   "outcome": "correct_answer",
+   "correct": true,
    "contradictionSurfaced": null
   }
  ]
