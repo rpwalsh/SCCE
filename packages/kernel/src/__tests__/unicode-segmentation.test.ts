@@ -62,9 +62,10 @@ describe("reversible Unicode segmentation", () => {
       "\u0628",
       "\u064a",
       "\u0629",
-      "v2",
-      ".",
-      "0"
+      // A period between two word characters is word-internal: "v2.0" is one version, the way "cli.ts" is one
+      // filename. The segmenter used to break every one of them, which is how the proof system came to read
+      // "Xylor-7" as the word "xylor" and the number 7, and then derive a measurement from the identifier.
+      "v2.0"
     ]);
     expect(symbolizeData("_agent")).toEqual(["_agent"]);
     expect(symbolizeData("can't L\u2019annee")).toEqual(["can't", "l\u2019annee"]);
