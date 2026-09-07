@@ -3121,7 +3121,7 @@ function generatedCandidatesFromFrames(
     if (!frames.length) continue;
     const unitTerms = requiredTermsForDiscourseUnit(unit, frames, plan);
     const unitPlan: SurfacePlan = { ...plan, realizationFrames: frames, requiredTerms: unitTerms };
-    const contextSymbols = [input.entailment.claim.text, ...sentences.map(sentence => sentence.text)].filter(Boolean);
+    const contextSymbols = [mouthSubjectText(input), ...sentences.map(sentence => sentence.text)].filter(Boolean);
     const generationExtent = claimMouthGenerationWork(generationWorkBudget, unit.generationExtent);
     if (generationExtent === undefined) break;
     const generation = languageMemory.generate({
@@ -3803,7 +3803,7 @@ function conversationMemoryCandidate(
   const generation = languageMemory.generate({
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
-    contextSymbols: [input.entailment.claim.text],
+    contextSymbols: [mouthSubjectText(input)],
     requiredTerms: [],
     frames: [],
     generationExtent,
@@ -5425,7 +5425,9 @@ function answerFromConstruct(input: SpeakInput, force: ConstructOutputForce): st
   if (insufficientSupportConstructState(input.construct)) return "";
   if (force === "ProgramConstruct" && input.construct.program) return "";
   if (force === "CreativeConstruct" || input.entailment.force === "invented") return "";
-  return answerFromObligations(input.entailment, input.evidence, mouthEchoQuestionText(input), { allowClaimBoundary: claimSurfaceBoundaryAllowed(input, force) });
+  // The subject, not the raw request: the span that answers the question is chosen by what the question is about.
+  // Echo detection elsewhere in this file keeps the raw request, because repeating an instruction back is still an echo.
+  return answerFromObligations(input.entailment, input.evidence, mouthSubjectText(input), { allowClaimBoundary: claimSurfaceBoundaryAllowed(input, force) });
 }
 
 function answerPolicyFor(input: SpeakInput): ForceAwareAnswerPolicy {
@@ -6138,7 +6140,7 @@ function requiredTermsFor(input: SpeakInput, basePriorPieces?: readonly Imported
   if (semanticAnswer) return [];
   if (insufficientSupportConstructState(input.construct)) return [];
   if (!semanticAnswer && !isCreativeRequested(input) && learningAllowsFactualSurface(input.learningDecision) && proofGateAllowsFactualSurface(input.entailment)) {
-    for (const symbol of invariantSymbols(input.entailment.claim.text)) add(symbol.text, "claim", symbol.kind === "number" ? 0.95 : symbol.kind === "symbol" ? 0.88 : 0.68);
+    for (const symbol of invariantSymbols(mouthSubjectText(input))) add(symbol.text, "claim", symbol.kind === "number" ? 0.95 : symbol.kind === "symbol" ? 0.88 : 0.68);
     for (const obligation of input.entailment.obligations.slice(0, 20)) {
       if (obligation.kind === "quantity" || obligation.kind === "temporal" || obligation.kind === "symbol" || obligation.kind === "entity") {
         for (const symbol of invariantSymbols(obligation.claimText)) add(symbol.text, "obligation", obligation.required ? 0.82 : 0.48);
@@ -6461,6 +6463,23 @@ function semanticAnswerDriftHits(text: string, input: SpeakInput, priorPieces: r
 
 function mouthEchoQuestionText(input: SpeakInput): string {
   return input.requestText ?? input.entailment.claim?.text ?? "";
+}
+
+/**
+ * The request minus the instruction spans the corpus has learned to recognise: what the turn is actually about.
+ *
+ * A request can carry an instruction as well as a subject -- "Answer directly without a follow-up question: <the
+ * question>" -- and the instruction is not part of the answer. Passing the whole claim as generation context and
+ * as required terms told the realizer that the instruction's own words had to appear, and they did: a correct
+ * sentence came out followed by the request talking about itself. An answer is not made correct by containing the
+ * words of the question. This was applied on creative turns only; every other turn used the raw claim.
+ *
+ * requestSubjectText returns the text unchanged when no learned pattern or frame matched it, and when what is left
+ * would be shorter than two words, so a corpus that has learned no instruction language behaves exactly as before.
+ */
+function mouthSubjectText(input: SpeakInput): string {
+  const questionText = mouthEchoQuestionText(input);
+  return input.requirementField ? requestSubjectText(questionText, input.requirementField) : questionText;
 }
 
 function questionEchoHits(text: string, question: string): string[] {
