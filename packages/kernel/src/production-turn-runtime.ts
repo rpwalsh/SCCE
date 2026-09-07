@@ -94,6 +94,7 @@ import {
   arithmeticAnswerForText,
   assistantForceFromLocalEvidenceAudit,
   attachLocalEvidenceAnswerConstruct,
+  localEvidenceAnswerReportsSourceConflict,
   createArithmeticEntailment,
   evidenceBatchFromSlice,
   bindSelectedEvidenceToEntailment,
@@ -1850,13 +1851,22 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // request asked about) only when the richer plan finds nothing keeps
       // the exact-single-sentence path available without letting it
       // pre-empt a real compound answer by default.
-      const richLocalEvidenceAnswer = proofSelectedEvidence.length
+      // A source conflict is reported even when the proof attached no evidence of its own: the spans that disagree
+      // are named by the counterexamples, and the reader is owed what each of them says rather than silence.
+      const richLocalEvidenceAnswer = proofSelectedEvidence.length || semanticProof.mutualSourceContradiction
         ? localEvidenceAnswerSurface({
             requestText: input.text,
             selectedEvidence,
             temporalEvidence: selectedTemporalEvidence,
             entailment: entailmentResult,
-            semanticProof: { verdict: semanticProof.verdict, contradiction: semanticProof.contradiction },
+            semanticProof: {
+              verdict: semanticProof.verdict,
+              contradiction: semanticProof.contradiction,
+              // Which spans refute each other, so the answer can report the disagreement rather than pick a side.
+              conflictingEvidenceIds: semanticProof.mutualSourceContradiction
+                ? [...new Set(semanticProof.counterexamples.flatMap(item => item.evidenceIds.map(String)))]
+                : []
+            },
             translationTarget,
             sessionContextEvidence,
             explicitContextEvidenceIds,
@@ -3141,11 +3151,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       const selectedCandidateEvidenceIds = new Set(judged.selected.evidenceIds.map(String));
       const localAnswerEvidenceIds = longPathBasisAnswer?.evidence.map(span => String(span.id)) ?? [];
+      // The judge chooses among candidates; when the proof has found that the sources refute each other, every
+      // candidate it is choosing among states one side of that, which is the assertion the proof disqualified.
+      // The conflict answer is therefore the basis regardless of which side the judge preferred.
+      const reportsSourceConflict = Boolean(longPathBasisAnswer && localEvidenceAnswerReportsSourceConflict(longPathBasisAnswer.plan));
       const selectedLocalEvidenceAnswer = Boolean(
-        longPathBasisAnswer &&
-        judged.selected.kind === "proof-answer" &&
-        selectedCandidateEvidenceIds.size === localAnswerEvidenceIds.length &&
-        localAnswerEvidenceIds.every(id => selectedCandidateEvidenceIds.has(id))
+        longPathBasisAnswer && (
+          reportsSourceConflict || (
+            judged.selected.kind === "proof-answer" &&
+            selectedCandidateEvidenceIds.size === localAnswerEvidenceIds.length &&
+            localAnswerEvidenceIds.every(id => selectedCandidateEvidenceIds.has(id))
+          )
+        )
       );
       const localAnswerConstructGraph = runtimeDiagnosticRequested
         ? assembly.constructGraph
