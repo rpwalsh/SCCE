@@ -41,9 +41,19 @@ describe("graph target geometry", () => {
     expect(near).toBeLessThan(far);
   });
 
-  it("calls a pair unrelated when the walk cannot reach it", () => {
+  it("still says something about a pair the walk cannot reach, when their types share anything", () => {
     const geometry = createGraphTargetGeometry(targets);
-    expect(geometry.distance(targets[0]!, targets[8]!)).toBe(1);
+    // Out of walk range and in no shared relation, but the same kind of target: near the far end, not at it.
+    // Under the four-case lookup this was exactly 1, indistinguishable from a target with nothing in common.
+    const distance = geometry.distance(targets[0]!, targets[8]!);
+    expect(distance).toBeGreaterThan(0.9);
+    expect(distance).toBeLessThan(1);
+  });
+
+  it("reserves 1 for a pair that shares no type and no reachable path", () => {
+    const alien = { ...target("t10", "elsewhere", "nothing"), kind: "value_literal", relationId: "relation.elsewhere" } as unknown as SparseAlignmentTarget;
+    const geometry = createGraphTargetGeometry([...targets, alien]);
+    expect(geometry.distance(targets[0]!, alien)).toBe(1);
   });
 
   it("reports what the walk did, so a degenerate metric is visible rather than assumed", () => {
@@ -57,7 +67,10 @@ describe("graph target geometry", () => {
 
   it("is bounded by its radius rather than by the size of the graph", () => {
     const narrow = createGraphTargetGeometry(targets, 1);
-    // One hop of reach: two hops along the chain is already out of sight, and says so rather than guessing.
-    expect(narrow.distance(targets[0]!, targets[2]!)).toBe(1);
+    const wide = createGraphTargetGeometry(targets, 4);
+    // One hop of reach: two hops along the chain is out of the walk's sight, so what remains is what their
+    // types say. A narrower radius can only make a pair look further apart, never nearer.
+    expect(narrow.distance(targets[0]!, targets[2]!))
+      .toBeGreaterThan(wide.distance(targets[0]!, targets[2]!));
   });
 });
