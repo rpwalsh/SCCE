@@ -41,8 +41,13 @@ export interface LearnedCodeProposer {
   }): Promise<CodeMouthProposal | undefined>;
   /** What the last call composed, best first: the audit trail behind whatever the gate then accepted or rejected. */
   lastCandidates(): readonly LearnedCodeRepairCandidate[];
-  /** Models found for a language, so a caller can report "nothing learned for this language" as itself. */
-  trainedModelCount(languageId: string): Promise<number>;
+  /**
+   * Models hydrated for a language, bounded by `modelLimit` -- not the corpus total.
+   *
+   * Zero is the answer that matters: a language this brain was never shown is one it cannot write, and saying so
+   * is different from a repair loop declining.
+   */
+  availableModelCount(languageId: string): Promise<number>;
 }
 
 export interface LearnedCodeProposerOptions {
@@ -81,7 +86,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   return {
     lastCandidates: () => lastCandidates,
 
-    async trainedModelCount(languageId) {
+    async availableModelCount(languageId) {
       return (await modelsFor(languageId)).length;
     },
 

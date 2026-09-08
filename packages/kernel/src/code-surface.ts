@@ -102,7 +102,7 @@ export function renderCodeTokens(tokens: readonly string[], indent = ""): string
     current = current.length === 0 ? token : `${current}${codeTokenSeparator(current, token)}${token}`;
   }
   lines.push(current);
-  return lines.map((line, position) => (line.trim() ? `${position === 0 ? indent : indent}${line}` : line)).join("\n");
+  return lines.map(line => (line.trim() ? `${indent}${line}` : line)).join("\n");
 }
 
 function codeTokenSeparator(left: string, right: string): string {

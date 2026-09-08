@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { createClangCodeMouthPorts, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
+import { codeLanguageForPath } from "@scce/kernel";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -112,6 +113,13 @@ async function main(): Promise<void> {
           workspaceRoot,
           log: message => process.stderr.write(`[code-mouth] ${message}\n`)
         });
+        // Said once, before any attempt: a language this brain has never been shown is one it cannot write,
+        // and that is a fact about the corpus rather than a failure of the repair loop.
+        const codeLanguage = codeLanguageForPath(target);
+        const availableModels = codeLanguage ? await learnedProposer.availableModelCount(codeLanguage) : 0;
+        if (codeLanguage && !availableModels) {
+          process.stderr.write(`[code-mouth] no ${codeLanguage} corpus is trained; only compiler-owned fixes are available\n`);
+        }
         const ports = clangSource
           ? createClangCodeMouthPorts({ workspaceRoot, learnedProposer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
           : createTypeScriptCodeMouthPorts({ workspaceRoot, learnedProposer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) });
@@ -122,7 +130,23 @@ async function main(): Promise<void> {
           log: message => process.stderr.write(`[code-mouth] ${message}\n`),
           ports
         });
-        printJson(result);
+        // What the learned lane composed, whichever way the gate went. A rejected composition is the most
+        // informative thing this command produces -- it is what the corpus made likely, and reading it is how
+        // an operator sees whether the corpus is thin or the gate is strict.
+        const composed = learnedProposer.lastCandidates();
+        printJson({
+          ...result,
+          learned: {
+            language: codeLanguage ?? null,
+            modelsAvailable: availableModels,
+            composed: composed.map(candidate => ({
+              strategy: candidate.strategy,
+              line: candidate.startLine,
+              content: candidate.content,
+              averageLogProbability: candidate.averageLogProbability
+            }))
+          }
+        });
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
         if (result.outcome !== "resolved") process.exitCode = 1;
         break;
