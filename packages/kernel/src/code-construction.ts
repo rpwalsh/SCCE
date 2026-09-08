@@ -6,6 +6,7 @@ import { codeLanguageForPath } from "./code-request.js";
 import type { NgramModelRecord } from "./storage.js";
 import { CODE_LINE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
 import { composeSpanFillings } from "./code-span-repair.js";
+import type { CodeConstruction } from "./code-construction-grammar.js";
 import type { ProgramDiagnostic, RepairOperation } from "./program-repair-kernel.js";
 import { LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY } from "./program-repair-kernel.js";
 import { createClock, createHasher, toJsonValue } from "./primitives.js";
@@ -107,6 +108,8 @@ export interface LearnedCodeGenerationInput {
    * shrinks to what belongs in the hole, which is the question a learned distribution can actually answer.
    */
   spans?: readonly LearnedCodeRepairSpan[];
+  /** Shapes learned from the corpus, offered to fill a hole alongside what the beam can continue into. */
+  constructions?: readonly CodeConstruction[];
   /**
    * The identifiers a toolchain says may legally stand at the diagnostic's own position, when one was asked.
    *
@@ -161,7 +164,8 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
       languageId: input.languageId,
       targetPath: input.targetPath,
       targetText: input.targetText,
-      requiredSymbols: input.requiredSymbols ?? []
+      requiredSymbols: input.requiredSymbols ?? [],
+      constructions: input.constructions ?? []
     }));
   }
   if (out.length) return dedupedByContent(out).slice(0, maxCandidates);
@@ -270,6 +274,7 @@ function composeSpanReplacements(input: {
   targetPath: string;
   targetText: string;
   requiredSymbols: readonly string[];
+  constructions: readonly CodeConstruction[];
 }): LearnedCodeRepairCandidate[] {
   const { span, targetText } = input;
   const start = Math.max(0, Math.min(targetText.length, Math.floor(span.start)));
@@ -299,6 +304,7 @@ function composeSpanReplacements(input: {
     originalText,
     ...(admissible.size ? { admissible } : {}),
     ...(admissibleInside.size ? { admissibleInside } : {}),
+    ...(input.constructions.length ? { constructions: input.constructions } : {}),
     // Several hypotheses per hole: the compiler is a cheap oracle and every rejection is rolled back, so the
     // budget is better spent on distinct fillings than on one confident guess.
     limit: 6

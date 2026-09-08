@@ -21,7 +21,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const adapters = await import(pathToFileURL(path.resolve("packages/adapters-node/dist/index.js")).href);
-const { createLearnedCodeProposer, createTypeScriptCodeMouthPorts, readScceRuntimeConfig, createNodeRuntime, runCodeMouth } = adapters;
+const { createLearnedCodeProposer, createTypeScriptCodeMouthPorts, readScceRuntimeConfig, createNodeRuntime, runCodeMouth, diagnosticsForTarget } = adapters;
 
 const args = new Map(process.argv.slice(2).filter(a => a.startsWith("--")).map(a => {
   const at = a.indexOf("=");
@@ -152,14 +152,34 @@ for (const file of files) {
     try {
       await writeFile(path.join(root, "tsconfig.json"), TSCONFIG, "utf8");
       await mkdir(path.join(root, "src"), { recursive: true });
+      // The file is repaired inside a project, not alone in a directory.
+      //
+      // A single-file workspace is not the situation a repair happens in and it hides half the system: shapes are
+      // induced from what a project's own code recurs on, and one file cannot attest that anything recurs. Every
+      // other module goes in beside the mutated one, which is both more realistic and the only way the
+      // construction lane is exercised at all.
+      for (const sibling of files) {
+        await writeFile(path.join(root, "src", sibling.name), sibling.name === file.name ? mutated.text : sibling.text, "utf8");
+      }
       const target = path.join("src", file.name);
-      await writeFile(path.join(root, target), mutated.text, "utf8");
 
       const ports = createTypeScriptCodeMouthPorts({
         workspaceRoot: root,
-        learnedProposer: createLearnedCodeProposer({ storage: runtime.storage, workspaceRoot: root })
+        learnedProposer: createLearnedCodeProposer({
+          storage: runtime.storage,
+          workspaceRoot: root,
+          ...(args.has("log") ? { log: message => process.stdout.write(`   [lane] ${message}
+`) } : {})
+        }),
+        ...(args.has("log") ? { log: message => process.stdout.write(`   [port] ${message}
+`) } : {})
       });
-      const before = await ports.verify(target);
+      // Only the mutated file's diagnostics are this measurement's.
+      //
+      // The project holds every module now, and a module that does not typecheck standalone under this bare
+      // tsconfig contributes errors that were there before the mutation and have nothing to do with the repair.
+      // Counting those scored six byte-exact restorations as files left broken.
+      const before = { diagnostics: diagnosticsForTarget((await ports.verify(target)).diagnostics, target) };
       if (!before.diagnostics.length) {
         // The mutation did not break the build, so there is nothing here to repair and nothing to score.
         results.push({ file: file.name, mutation: mutation.id, outcome: "no_defect", detail: mutated.detail, compiles: true, exact: false });
@@ -169,7 +189,7 @@ for (const file of files) {
       const budget = Math.max(attempts, before.diagnostics.length * 3);
       const result = await runCodeMouth({ request: `repair ${file.name}`, targetPath: target, maxAttempts: budget, ports });
       const after = await readFile(path.join(root, target), "utf8");
-      const diagnostics = (await ports.verify(target)).diagnostics;
+      const diagnostics = diagnosticsForTarget((await ports.verify(target)).diagnostics, target);
       results.push({
         file: file.name,
         mutation: mutation.id,

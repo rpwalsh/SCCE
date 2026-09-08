@@ -4,10 +4,12 @@ import {
   CORPUS_SOURCE_SYSTEM_IDS,
   corpusSourceAlias,
   codeLanguageForPath,
+  induceCodeConstructions,
   codeSurfaceTokens,
   codeIdentifierTokens,
   generateLearnedCodeRepairs,
   learnedCodeRepairOperation,
+  type CodeConstruction,
   type KneserNeyModel,
   type LearnedCodeRepairCandidate,
   type LearnedCodeRepairSpan,
@@ -83,6 +85,13 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   // progress resets it, because the question has changed.
   let lastState = "";
   let retry = 0;
+  // Shapes induced from the project being repaired, not from the corpus at large.
+  //
+  // A repair should read like the code around it, and the strongest evidence for how this code is written is
+  // this code. The project slice the language service already loads is exactly that corpus, so the shapes come
+  // out of it for free; a workspace too small to attest a shape across files simply yields none, and the lane
+  // falls back to continuing sequences.
+  const constructionsByWorkspace = new Map<string, CodeConstruction[]>();
 
   const modelsFor = (languageId: string): Promise<KneserNeyModel[]> => {
     const cached = byLanguage.get(languageId);
@@ -109,6 +118,8 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         return undefined;
       }
       const spans = await repairSpans(options, languageId, context);
+      const constructions = await projectConstructions(options, context, constructionsByWorkspace);
+      if (constructions.length) log(`${constructions.length} shape(s) learned from this project`);
       if (spans.length) {
         log(`${spans.length} candidate defect range(s); the type system admits ${spans[0]!.admissible?.length ?? 0} identifier(s) at the first`);
       }
@@ -123,6 +134,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         diagnostics,
         requiredSymbols: requiredSymbols(request, knownSymbols(context.targetText, models)),
         ...(spans.length ? { spans } : {}),
+        ...(constructions.length ? { constructions } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
       });
@@ -165,6 +177,39 @@ function knownSymbols(targetText: string, models: readonly KneserNeyModel[]): Se
   const known = new Set(codeSurfaceTokens(targetText));
   for (const model of models) for (const symbol of model.vocabulary) known.add(symbol);
   return known;
+}
+
+/**
+ * The shapes this project's own code recurs on, induced once per workspace.
+ *
+ * The same snapshot the language service binds: the file, its relative imports, its project chain and its
+ * directory. Those files are the corpus whose conventions a repair here should match.
+ */
+async function projectConstructions(
+  options: LearnedCodeProposerOptions,
+  context: CodeMouthContext,
+  cache: Map<string, CodeConstruction[]>
+): Promise<CodeConstruction[]> {
+  if (!options.workspaceRoot) return [];
+  const cached = cache.get(options.workspaceRoot);
+  if (cached) return cached;
+  const snapshot = await typeScriptProjectSnapshot({
+    workspaceRoot: options.workspaceRoot,
+    targetPath: context.targetPath,
+    targetText: context.targetText,
+    imports: context.imports,
+    ...(options.tsconfigPath ? { tsconfigPath: options.tsconfigPath } : {})
+  });
+  const documents = (snapshot?.files ?? [])
+    .filter(file => codeLanguageForPath(file.path))
+    .map(file => ({ id: file.path, text: file.content }));
+  // Two documents cannot attest that a shape belongs to a language rather than to a file, so a small project
+  // contributes none and says so by returning nothing.
+  const constructions = documents.length >= 3
+    ? induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 3, limit: 2048 })
+    : [];
+  cache.set(options.workspaceRoot, constructions);
+  return constructions;
 }
 
 /**

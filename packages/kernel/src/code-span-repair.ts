@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { kneserNeyProbability, predictKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import { CODE_LINE_SYMBOL, codeBracketBalance, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
+import { applicableCodeConstructions, realizeCodeConstruction, type CodeConstruction } from "./code-construction-grammar.js";
 
 /**
  * Composing the text that belongs in an exact hole.
@@ -22,6 +23,16 @@ const MAX_FRAGMENT_SYMBOLS = 24;
 const PREDICTION_POOL = 24;
 /** Half the pool, so what a toolchain admits is always reachable without being all the search can see. */
 const ADMITTED_POOL_SHARE = 12;
+/**
+ * How many learned shapes are offered for one hole, and how many fillers are weighed for one of its slots.
+ *
+ * Offers are cheap in a way beam steps are not -- each is one realization of a shape the corpus already attests,
+ * not a search -- and the build is what selects among them. Twelve was too few to reach the shapes that add
+ * something: a construction one member longer than the hole ranks behind every rephrasing of it, and those are
+ * exactly the repairs a missing member or a missing argument needs.
+ */
+const CONSTRUCTION_OFFERS = 32;
+const SLOT_OPTIONS = 8;
 /** How much a name the type system admits inside the hole is preferred over one it does not. */
 const INSIDE_ADMITTED_PREFERENCE = 3.2;
 
@@ -69,6 +80,16 @@ export interface SpanCompositionInput {
   admissibleInside?: ReadonlySet<string>;
   /** How many distinct fillings to return, longest-odds first. */
   limit?: number;
+  /**
+   * Learned shapes to fill the hole with, as an alternative to running the beam free.
+   *
+   * A beam predicts one symbol at a time and cannot hold a shape: it has no way to represent "an object literal
+   * with one more member than this one has", so `{ x: 0 }` could never reach `{ x: 0, y: 0 }` however much
+   * evidence there was, and the argument a call was missing was equally out of reach. A construction is that
+   * shape -- induced from the corpus, with the positions that vary marked -- and filling one is a different move
+   * from continuing a sequence. Both are offered; the build decides.
+   */
+  constructions?: readonly CodeConstruction[];
 }
 
 /**
@@ -164,19 +185,30 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
     beams = next.sort(byDepthScore).slice(0, input.beamWidth);
   }
 
-  const seen = new Set<string>();
-  const out: SpanFragment[] = [];
-  for (const beam of complete.sort(byTotalProbability)) {
+  // Both kinds of filling compete on one objective.
+  //
+  // A shape realized from a construction and a path found by the beam are scored the same way -- the models'
+  // total log probability of the tokens -- so there is no reason to prefer one by provenance, and doing so was
+  // actively harmful: offering shapes first let them consume the whole limit and crowded out beam fillings that
+  // had been repairing files. Merged and ranked, each wins where it is actually the more likely thing to write.
+  const pool: SpanFragment[] = constructionFillings(input, prompt);
+  for (const beam of complete) {
     const text = renderCodeTokens(beam.symbols);
-    if (!text.trim() || seen.has(text)) continue;
-    seen.add(text);
+    if (!text.trim()) continue;
     const length = Math.max(1, beam.symbols.length);
-    out.push({
+    pool.push({
       symbols: beam.symbols,
       text,
       averageLogProbability: beam.logProbability / length,
       score: beam.logProbability
     });
+  }
+  const seen = new Set<string>();
+  const out: SpanFragment[] = [];
+  for (const filling of pool.sort((left, right) => right.score - left.score || left.text.localeCompare(right.text))) {
+    if (seen.has(filling.text)) continue;
+    seen.add(filling.text);
+    out.push(filling);
     if (out.length >= limit) break;
   }
   return out;
@@ -299,4 +331,150 @@ function unterminatedLiteral(symbol: string): boolean {
 /** A token that carries a value: a name, a number, or a delimited literal. Punctuation carries none. */
 function valueLike(symbol: string): boolean {
   return /^[\p{Letter}\p{Number}_$"'`]/u.test(symbol);
+}
+
+/**
+ * Fillings made by filling in a learned shape, rather than by continuing a sequence.
+ *
+ * The hole's own values are reused in the order it used them, because a repair keeps what the code already said;
+ * positions the hole has nothing for are the ones being added, and those are chosen the way any symbol is
+ * chosen -- by what the models make likely there, preferring what the type system admits inside the hole and
+ * what the corpus has actually seen in that slot.
+ *
+ * One branch point, at the first added position. Enumerating every combination of every slot is a search whose
+ * cost is the product of the slots and whose value is not, and the compiler is a cheap enough oracle that a
+ * handful of real alternatives beats a thousand near-identical ones.
+ */
+function constructionFillings(input: SpanCompositionInput, prompt: readonly string[]): SpanFragment[] {
+  const constructions = input.constructions ?? [];
+  if (!constructions.length) return [];
+  const originalTokens = codeSurfaceTokens(input.originalText);
+  if (!originalTokens.length) return [];
+  const holeValues = originalTokens.filter(valueLike);
+  const requiredValues = holeValues.length;
+  const requiredBrackets = bracketCounts(originalTokens);
+  const out: SpanFragment[] = [];
+  const seen = new Set<string>();
+
+  for (const construction of applicableCodeConstructions(constructions, originalTokens, CONSTRUCTION_OFFERS)) {
+    for (const branch of [0, 1]) {
+      const fillers = new Map<number, string>();
+      let branched = false;
+      let usable = true;
+      for (const slot of construction.slots) {
+        const reused = holeValues[slot.index];
+        if (reused !== undefined) {
+          fillers.set(slot.index, reused);
+          continue;
+        }
+        // The tokens already decided, so a filler is scored where it would actually stand. A whole realization
+        // is impossible while slots remain unfilled, so the prefix is walked directly.
+        const context = [...prompt, ...realizedPrefix(construction, fillers)];
+        const options = rankedSlotFillers(input, context, slot.observed);
+        const pick = options[branched || branch === 0 ? 0 : Math.min(1, options.length - 1)];
+        if (!pick) { usable = false; break; }
+        if (branch === 1 && !branched) branched = true;
+        fillers.set(slot.index, pick);
+      }
+      if (!usable) continue;
+      const symbols = realizeCodeConstruction(construction, fillers);
+      if (!symbols || !symbols.length) continue;
+      const balance = codeBracketBalance(symbols);
+      if (balance.underflow || balance.open.length) continue;
+      if (symbols.filter(valueLike).length < requiredValues) continue;
+      if (!coversBrackets(bracketCounts(symbols), requiredBrackets)) continue;
+      if (tokenClass(symbols[0] ?? "") !== tokenClass(originalTokens[0] ?? "")) continue;
+      const text = renderCodeTokens(symbols);
+      if (!text.trim() || text === input.originalText || seen.has(text)) continue;
+      seen.add(text);
+      const logProbability = sequenceLogProbability(input, prompt, symbols);
+      out.push({
+        symbols,
+        text,
+        averageLogProbability: logProbability / Math.max(1, symbols.length),
+        score: logProbability
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * What may stand in a slot, best first.
+ *
+ * The shape comes from the construction and the filler comes from the models, which is the same division the
+ * beam already runs on -- so the candidates are the same ones the beam would weigh here, together with what the
+ * type system admits inside the hole and what the corpus has actually seen in this slot. Restricting it to those
+ * last two could not reach a literal at all: nothing offers `2` as a completion and no slot's commonest fillers
+ * are numbers, so a call missing a numeric argument was unrepairable by construction.
+ */
+function rankedSlotFillers(
+  input: SpanCompositionInput,
+  context: readonly string[],
+  observed: readonly string[]
+): string[] {
+  const candidates = new Set<string>([
+    ...(input.admissibleInside ?? []),
+    ...observed.slice(0, SLOT_OPTIONS * 2),
+    ...interpolatedPredictions(input, context).map(item => item.symbol)
+  ]);
+  const admitted = input.admissibleInside;
+  return [...candidates]
+    // A slot is a value position by construction -- the signature that grouped these spans marked exactly the
+    // places a name, number or literal stood -- so punctuation is not a filler for one. Without this the models'
+    // own top predictions put a separator in the slot and composed `add(1,)`.
+    .filter(symbol => symbol && valueLike(symbol) && !unterminatedLiteral(symbol))
+    .map(symbol => ({
+      symbol,
+      weight: symbolProbability(input, context, symbol) * (admitted?.has(symbol) ? INSIDE_ADMITTED_PREFERENCE : 1)
+    }))
+    .sort((left, right) => right.weight - left.weight || left.symbol.localeCompare(right.symbol))
+    .slice(0, SLOT_OPTIONS)
+    .map(row => row.symbol);
+}
+
+/** The construction's tokens up to its first unfilled slot: where the next filler would actually stand. */
+function realizedPrefix(construction: CodeConstruction, fillers: ReadonlyMap<number, string>): string[] {
+  const out: string[] = [];
+  for (const part of construction.parts) {
+    if (part.kind === "literal") {
+      out.push(part.surface ?? "");
+      continue;
+    }
+    const filler = fillers.get(part.slot ?? -1);
+    if (filler === undefined) break;
+    out.push(filler);
+  }
+  return out;
+}
+
+/** One symbol's interpolated probability in a context, the same mixture the beam samples from. */
+function symbolProbability(
+  input: Pick<SpanCompositionInput, "corpusModels" | "localModel" | "corpusWeight">,
+  context: readonly string[],
+  symbol: string
+): number {
+  const corpus = input.corpusModels.length
+    ? input.corpusModels.reduce(
+      (sum, model) => sum + kneserNeyProbability(model, context.slice(-Math.max(0, model.order - 1)), symbol),
+      0
+    ) / input.corpusModels.length
+    : 0;
+  const local = kneserNeyProbability(input.localModel, context.slice(-Math.max(0, input.localModel.order - 1)), symbol);
+  return input.corpusWeight * corpus + (1 - input.corpusWeight) * local;
+}
+
+/** A realized shape scored on the same objective a generated one is: the model's own total, unboosted. */
+function sequenceLogProbability(
+  input: SpanCompositionInput,
+  prompt: readonly string[],
+  symbols: readonly string[]
+): number {
+  let total = 0;
+  const context = [...prompt];
+  for (const symbol of symbols) {
+    total += Math.log(Math.max(1e-300, symbolProbability(input, context, symbol)));
+    context.push(symbol);
+  }
+  return total;
 }
