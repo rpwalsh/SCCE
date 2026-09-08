@@ -122,6 +122,14 @@ export function authorityRequirementCoefficients(
  * instead of just letting the actually-best candidate answer. Kept as a
  * real function (not deleted) so the compatibility signal stays visible in
  * the audit trace for observability.
+ *
+ * One exception is not authority routing at all: a factual proof candidate
+ * whose own proof boundary says unresolved obligations overwhelm the amount
+ * of evidence supporting it is not an answer candidate. That is a proof
+ * admission failure. Keeping it in the field allowed the judge to select a
+ * source-grounded surface that was merely about the subject (for example an
+ * Apollo 11 launch sentence for "Who commanded Apollo 11?") even though the
+ * proof trace already said the requested relation was underdetermined.
  */
 export function admitCandidatesForAuthority(
   field: CandidateField,
@@ -130,6 +138,19 @@ export function admitCandidatesForAuthority(
   const compatible = field.candidates.filter(candidate =>
     candidateCompatibleWithAuthority(candidate, authority)
   );
+  const rejectedForFactualProof = authority === "factual"
+    ? field.candidates
+      .map(candidate => ({ candidate, failures: factualProofAdmissionFailures(candidate) }))
+      .filter(row => row.failures.length > 0)
+    : [];
+  const rejectedIds = new Set(rejectedForFactualProof.map(row => row.candidate.id));
+  const admittedCandidates = field.candidates.filter(candidate => !rejectedIds.has(candidate.id));
+  const admittedMassRows = field.surfaceMass.filter(row => !rejectedIds.has(row.candidateId));
+  const admittedMassTotal = admittedMassRows.reduce((sum, row) => sum + row.mass, 0);
+  const surfaceMass = admittedMassRows.map(row => ({
+    ...row,
+    mass: admittedMassTotal > 0 ? row.mass / admittedMassTotal : row.mass
+  }));
   const existingAudit = field.audit !== null
     && typeof field.audit === "object"
     && !Array.isArray(field.audit)
@@ -138,6 +159,8 @@ export function admitCandidatesForAuthority(
 
   return {
     ...field,
+    candidates: admittedCandidates,
+    surfaceMass,
     audit: toJsonValue({
       ...existingAudit,
       authorityAdmission: {
@@ -146,14 +169,37 @@ export function admitCandidatesForAuthority(
         authority,
         generatedCandidateCount: field.candidates.length,
         compatibleCandidateIds: compatible.map(candidate => candidate.id),
-        admittedCandidateIds: field.candidates.map(candidate => candidate.id),
-        admittedCandidateKinds: field.candidates.map(candidate => candidate.kind),
-        authorityUnavailable: field.candidates.length === 0,
+        admittedCandidateIds: admittedCandidates.map(candidate => candidate.id),
+        admittedCandidateKinds: admittedCandidates.map(candidate => candidate.kind),
+        rejectedFactualProofCandidates: rejectedForFactualProof.map(row => ({
+          candidateId: row.candidate.id,
+          failures: row.failures
+        })),
+        authorityUnavailable: admittedCandidates.length === 0,
         fallbackToGeneratedField: false,
         lexicalRouterUsed: false
       }
     })
   };
+}
+
+function factualProofAdmissionFailures(candidate: CandidateSurface): string[] {
+  if (candidate.kind !== "proof-answer" && candidate.kind !== "ccr-extractive") return [];
+  const failures: string[] = [];
+  if ((candidate.missedRequirementIds?.length ?? 0) > 0) failures.push("missed-required-output");
+  if (candidate.boundaries.includes("unsupported-factual-claim")) failures.push("unsupported-factual-claim");
+
+  const unresolved = candidate.boundaries
+    .map(boundary => /^underdetermined-obligations:(\d+)$/u.exec(boundary)?.[1])
+    .filter((value): value is string => value !== undefined)
+    .map(Number)
+    .filter(Number.isFinite)
+    .reduce((max, value) => Math.max(max, value), 0);
+  const evidenceCount = Math.max(1, candidate.evidenceIds.length);
+  if (unresolved > Math.max(1, evidenceCount * 2)) {
+    failures.push(`proof-obligations-overwhelm-evidence:${unresolved}/${candidate.evidenceIds.length}`);
+  }
+  return failures;
 }
 
 export function candidateCompatibleWithAuthority(
@@ -300,5 +346,5 @@ function isTurnRequirementDimension(value: string): value is TurnRequirementDime
 export function activeRequestOperatorIds(
   operators: readonly { operatorId: CognitiveOperatorId; active: boolean }[]
 ): CognitiveOperatorId[] {
-  return operators.filter(row => row.active).map(row => row.operatorId);
+  return operators.filter(row => row.active).map(row => operator.operatorId);
 }
