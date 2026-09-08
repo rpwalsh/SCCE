@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
-import { createClangCodeMouthPorts, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
+import { createClangCodeMouthPorts, createLearnedCodeProposer, createTreeSitterCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { codeLanguageForPath } from "@scce/kernel";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -120,9 +120,16 @@ async function main(): Promise<void> {
         if (codeLanguage && !availableModels) {
           process.stderr.write(`[code-mouth] no ${codeLanguage} corpus is trained; only compiler-owned fixes are available\n`);
         }
+        // Which verifier owns this file. A compiler where one is ported, and otherwise the grammar, which
+        // answers a strictly weaker question -- whether the file still parses -- with nothing installed.
+        // A language no verifier covers gets no repair, because an unverifiable edit is not one this
+        // system makes.
+        const log = (message: string) => process.stderr.write(`[code-mouth] ${message}\n`);
         const ports = clangSource
-          ? createClangCodeMouthPorts({ workspaceRoot, learnedProposer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
-          : createTypeScriptCodeMouthPorts({ workspaceRoot, learnedProposer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) });
+          ? createClangCodeMouthPorts({ workspaceRoot, learnedProposer, log })
+          : /\.(ts|tsx|mts|cts)$/iu.test(target)
+            ? createTypeScriptCodeMouthPorts({ workspaceRoot, learnedProposer, log })
+            : createTreeSitterCodeMouthPorts({ workspaceRoot, learnedProposer, log });
         const result = await runCodeMouth({
           request,
           targetPath: target,

@@ -20,6 +20,8 @@ import {
   type ProgramDiagnostic,
   type ScceStorage
 } from "@scce/kernel";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import type { CodeMouthContext, CodeMouthProposal } from "./code-mouth.js";
 import { typeScriptProjectSnapshot } from "./code-mouth-compiler-proposer.js";
 import { typeScriptRepairSites } from "./typescript-code-actions.js";
@@ -239,25 +241,51 @@ async function projectConstructions(
   cache: Map<string, CodeConstruction[]>
 ): Promise<CodeConstruction[]> {
   if (!options.workspaceRoot) return [];
-  const cached = cache.get(options.workspaceRoot);
+  const cacheKey = `${options.workspaceRoot}\u0001${context.language}`;
+  const cached = cache.get(cacheKey);
   if (cached) return cached;
-  const snapshot = await typeScriptProjectSnapshot({
-    workspaceRoot: options.workspaceRoot,
-    targetPath: context.targetPath,
-    targetText: context.targetText,
-    imports: context.imports,
-    ...(options.tsconfigPath ? { tsconfigPath: options.tsconfigPath } : {})
-  });
-  const documents = (snapshot?.files ?? [])
-    .filter(file => codeLanguageForPath(file.path))
-    .map(file => ({ id: file.path, text: file.content }));
+  const language = codeLanguageForPath(context.targetPath);
+  const snapshot = language === "typescript" || language === "javascript"
+    ? await typeScriptProjectSnapshot({
+      workspaceRoot: options.workspaceRoot,
+      targetPath: context.targetPath,
+      targetText: context.targetText,
+      imports: context.imports,
+      ...(options.tsconfigPath ? { tsconfigPath: options.tsconfigPath } : {})
+    })
+    : undefined;
+  // The language service's project slice where there is one, and the target's own directory where there is not.
+  // Shapes are induced from a token stream and care about no language in particular, so binding this to the one
+  // toolchain that can describe a project would have kept every other language from having any.
+  const documents = snapshot
+    ? snapshot.files.filter(file => codeLanguageForPath(file.path)).map(file => ({ id: file.path, text: file.content }))
+    : await siblingSources(options.workspaceRoot, context.targetPath, language);
   // Two documents cannot attest that a shape belongs to a language rather than to a file, so a small project
   // contributes none and says so by returning nothing.
   const constructions = documents.length >= 3
     ? induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 3, limit: 2048 })
     : [];
-  cache.set(options.workspaceRoot, constructions);
+  cache.set(cacheKey, constructions);
   return constructions;
+}
+
+/** Files beside the target in the same language: the corpus for a project no toolchain can describe. */
+async function siblingSources(
+  workspaceRoot: string,
+  targetPath: string,
+  languageId: string | undefined
+): Promise<Array<{ id: string; text: string }>> {
+  if (!languageId) return [];
+  const directory = path.dirname(path.resolve(workspaceRoot, targetPath));
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  const out: Array<{ id: string; text: string }> = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || codeLanguageForPath(entry.name) !== languageId) continue;
+    const text = await readFile(path.join(directory, entry.name), "utf8").catch(() => "");
+    if (text) out.push({ id: entry.name, text });
+    if (out.length >= 200) break;
+  }
+  return out;
 }
 
 /**

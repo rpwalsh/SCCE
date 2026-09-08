@@ -27,6 +27,8 @@ export * from "./typescript-code-actions.js";
 export * from "./typescript-command-lane.js";
 export * from "./typescript-semantic-program-index.js";
 export * from "./tree-sitter-syntax.js";
+export * from "./code-verifier-discovery.js";
+export * from "./tree-sitter-code-mouth-ports.js";
 export * from "./repo-cognition-files.js";
 export * from "./connectors.js";
 export * from "./connector-policy.js";
