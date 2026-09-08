@@ -91,6 +91,26 @@ const MUTATIONS = [
     }
   },
   {
+    id: "three-misspellings",
+    describe: "transpose characters in three separate uses, so no single edit can finish the file",
+    apply(text) {
+      let current = text;
+      const details = [];
+      for (const pattern of [/[.]([a-z][A-Za-z0-9_$]{5,})\b/gu, /\b([A-Za-z_$][A-Za-z0-9_$]{5,})\b/gu]) {
+        for (const match of [...current.matchAll(pattern)].reverse()) {
+          if (details.length >= 3) break;
+          const name = match[1];
+          const transposed = transpose(name);
+          if (!transposed || current.includes(transposed)) continue;
+          const at = match.index + (match[0].startsWith(".") ? 1 : 0);
+          current = `${current.slice(0, at)}${transposed}${current.slice(at + name.length)}`;
+          details.push(`${name}->${transposed}`);
+        }
+      }
+      return details.length === 3 ? { text: current, detail: details.join(", ") } : undefined;
+    }
+  },
+  {
     id: "drop-argument",
     describe: "remove the last argument of a two-argument call",
     apply(text) {
@@ -145,7 +165,9 @@ for (const file of files) {
         results.push({ file: file.name, mutation: mutation.id, outcome: "no_defect", detail: mutated.detail, compiles: true, exact: false });
         continue;
       }
-      const result = await runCodeMouth({ request: `repair ${file.name}`, targetPath: target, maxAttempts: attempts, ports });
+      // Attempts scale with what is wrong: converging on three defects needs at least three accepted steps.
+      const budget = Math.max(attempts, before.diagnostics.length * 3);
+      const result = await runCodeMouth({ request: `repair ${file.name}`, targetPath: target, maxAttempts: budget, ports });
       const after = await readFile(path.join(root, target), "utf8");
       const diagnostics = (await ports.verify(target)).diagnostics;
       results.push({

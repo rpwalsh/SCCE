@@ -65,9 +65,18 @@ function diagnosticsSignature(diagnostics: readonly ProgramDiagnostic[], hasher:
   return hasher.digestHex(canonicalStringify(ids)).slice(0, 24);
 }
 
+/**
+ * What a patch does, not what it is called.
+ *
+ * Hashing the ids alone made two different edits at one location indistinguishable, and a proposer that names
+ * its operations after the line they touch then had its second composition refused as a repeat of its first.
+ * The identity of a patch is the change it makes: where, over what range, and with what text.
+ */
 function operationSetHash(operations: readonly RepairOperation[], hasher: Hasher): string {
-  const ids = operations.map(op => op.id).sort();
-  return hasher.digestHex(canonicalStringify(ids)).slice(0, 24);
+  const edits = operations
+    .map(op => [op.id, op.kind, op.path, op.startLine ?? null, op.endLine ?? null, op.content ?? null, op.packageName ?? null])
+    .sort((left, right) => canonicalStringify(left).localeCompare(canonicalStringify(right)));
+  return hasher.digestHex(canonicalStringify(edits)).slice(0, 24);
 }
 
 export interface DebugAttemptPlanCheck {
