@@ -60,6 +60,23 @@ Shapes are induced from the project being repaired rather than a global corpus. 
 
 Filling a shape and continuing a sequence are both offered for the same hole, and they compete on one objective — the models' own total log probability. Preferring either by provenance is not justified: they are scored identically.
 
+## What a request has to do with code
+
+Repair is driven by diagnostics, which is why the lane can fix a file and has nothing to say when asked to write
+one: a request has no diagnostics. Reading the request with a code tokenizer is not an answer either — every word
+in every language looks like an identifier to it, so "fix the misspelled property access" came back as five
+symbols and none of them meant anything.
+
+The connection is already in the corpus. Every source file is trained twice: its token stream into the code
+corpus, and its comments and the words its identifiers are spelled out of into the documentation corpus. Both
+carry the same file path. A request matched against documentation is therefore ordinary retrieval — the same
+lane a question about any document uses — and it lands on files, which name the models, the shapes and the
+vocabulary that are relevant.
+
+Prose in, code out, with no vocabulary written down anywhere. A request word is admitted as a symbol only where
+some code actually uses it as a name; the rest of the symbols come from the documentation that answered it. A
+corpus never shown code about this request returns no references, which is a different thing from a guess.
+
 ## Convergence
 
 A draft is dozens of edits from correct, so a loop that keeps only patches finishing the file can repair nothing that is not already one edit away.
@@ -124,4 +141,4 @@ Stated rather than implied.
 - **The compiler is necessary, not sufficient.** `byFamily.set(id, bucket)` was once repaired to `byFamily.get(id)`: it type-checks, it is wrong, and no structural rule can see the difference. Only running the code can. Test execution is the next gate and this project has 2,228 tests to run it with.
 - **Composition is corpus-bound.** A shape must recur across documents to be admitted, so a two-file workspace induces none and the lane falls back to continuing sequences. Accuracy tracks corpus size; this is a knob, not a redesign.
 - **Multi-defect files converge but do not always finish.** Files reach one or two remaining diagnostics and stop when the search has no further hypothesis for what is left.
-- **The request's meaning does not yet reach this lane.** Repair is driven by compiler diagnostics. Being *told* what to write is a separate connection, and it is not built.
+- **The request reaches the lane; being told what to write is not finished.** Documentation retrieval names the files and vocabulary a request concerns, and both the repair lane and the chat lane read it. Composing a whole program from a plan is a further step and is not built.

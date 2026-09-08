@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorrectionRuleRecord } from "./storage.js";
 import { codeModelsFromRecords, generateLearnedCodeSurface } from "./code-construction.js";
+import { codeIntentFromDocumentation } from "./code-intent.js";
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
@@ -3110,12 +3111,25 @@ function learnedCodeSurfaceCandidate(input: SpeakInput): SurfaceCandidate | unde
   if (!input.codeLanguage) return undefined;
   const models = codeModelsFromRecords(input.languageMemory.records, input.codeLanguage);
   if (!models.length) return undefined;
+  // What the request is about, read off this turn's own retrieval.
+  //
+  // A request is written in a human language and a code tokenizer reads every word of it as an identifier, so
+  // the request's own words are admitted only where some code uses them as names. The rest comes from the
+  // documentation corpus: every source file is trained twice, its tokens as code and its comments and identifier
+  // words as documentation, and both carry the same path. Documentation this turn already retrieved therefore
+  // names the code the request is about, without a second query and without a word of vocabulary written down.
+  const known = new Set(models.flatMap(model => model.vocabulary));
+  const intent = codeIntentFromDocumentation({
+    requestText: input.requestText ?? "",
+    documentation: input.evidence,
+    knownSymbols: known,
+    languageId: input.codeLanguage
+  });
   const composed = generateLearnedCodeSurface({
     models,
     languageId: input.codeLanguage,
     requestText: input.requestText ?? "",
-    // The names the request itself spells: what the composition should be about, boosted but never forced.
-    requiredSymbols: codeIdentifierTokens(codeSurfaceTokens(input.requestText ?? ""), 32)
+    requiredSymbols: intent.symbols
   });
   if (!composed?.text.trim()) return undefined;
   return {
@@ -3126,7 +3140,7 @@ function learnedCodeSurfaceCandidate(input: SpeakInput): SurfaceCandidate | unde
     evidenceIds: [],
     fit: clamp01(0.5 + Math.max(0, 1 + composed.averageLogProbability / 8) * 0.4),
     importedPieceIds: [],
-    audit: composed.audit
+    audit: toJsonValue({ ...jsonRecord(composed.audit), intent: intent.audit })
   };
 }
 

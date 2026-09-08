@@ -12,6 +12,7 @@ import {
 } from "../code-surface.js";
 import { codeLanguageForPath } from "../code-request.js";
 import { applicableCodeConstructions, induceCodeConstructions, realizeCodeConstruction } from "../code-construction-grammar.js";
+import { codeIntentFromDocumentation } from "../code-intent.js";
 import {
   generateLearnedCodeRepairs,
   generateLearnedCodeSurface,
@@ -273,6 +274,48 @@ describe("filling an exact hole", () => {
       ]
     });
     expect(candidates[0]!.holeLength).toBe(5);
+  });
+});
+
+describe("what a request has to do with code", () => {
+  const span = (path: string, text: string, alpha: number) => ({
+    id: `evidence.${path}` as never,
+    sourceVersionId: "v" as never,
+    text,
+    textPreview: text,
+    alpha,
+    status: "promoted" as const,
+    provenance: { sourceSystem: "oss_docs", relativePath: path, projection: "code_adjacent_prose" }
+  }) as never;
+
+  it("lands a request on the files whose documentation answers it", () => {
+    const intent = codeIntentFromDocumentation({
+      requestText: "how does the retry budget work",
+      documentation: [
+        span("src/retry-budget.ts", "budget for retrying a failed attempt retry budget attempt", 0.9),
+        span("src/colour.ts", "convert between colour spaces", 0.2)
+      ]
+    });
+    expect(intent.references[0]!.relativePath).toBe("src/retry-budget.ts");
+    expect(intent.languageId).toBe("typescript");
+    expect(intent.symbols).toContain("retry");
+  });
+
+  it("admits a request word only where some code uses it as a name", () => {
+    const known = new Set(["parse", "token"]);
+    const intent = codeIntentFromDocumentation({
+      requestText: "please parse the token for me",
+      documentation: [],
+      knownSymbols: known
+    });
+    // `please`, `the` and `for` are words; `parse` and `token` are names this code uses.
+    expect(intent.symbols).toEqual(["parse", "token"]);
+  });
+
+  it("returns nothing rather than guessing when the corpus has no documentation about it", () => {
+    const intent = codeIntentFromDocumentation({ requestText: "quantum harmonic oscillator", documentation: [] });
+    expect(intent.references).toEqual([]);
+    expect(intent.languageId).toBeUndefined();
   });
 });
 
