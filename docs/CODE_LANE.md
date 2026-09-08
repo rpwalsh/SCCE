@@ -130,15 +130,26 @@ Read `exact` as the result and `fully repaired` as an upper bound. The two that 
 
 ## Language coverage
 
-The composition, the structural rules and the convergence loop are language-neutral: identifiers, numbers, delimited literals and bracket nesting are categories every formal language shares, and no keyword list appears anywhere in the lane.
+The composition, the structural rules and the convergence loop are language-neutral: identifiers, numbers, delimited literals and bracket nesting are categories every formal language shares, and no keyword list appears anywhere in the lane. Shapes are induced from a token stream and are equally indifferent — where a language service can describe a project its files are the corpus, and where none can, the target's own directory is.
 
-What is language-specific is verification, and it is a port. TypeScript and the C family are implemented — the same contract over `tsc` and over `clang -fsyntax-only` with parseable fix-its. The corpus lane already routes `.ts .tsx .js .py .rs .go .java .kt .swift .rb .php .c .cc .cpp .cs .sql` and others; each becomes writable when its verifier is ported.
+What is language-specific is verification, and there are three strengths of it. They are not interchangeable and the lane reports which one answered.
+
+| Verifier | Bounds | Available |
+|---|---|---|
+| A dedicated compiler port | meaning: types, scopes, arity | TypeScript (`tsc`), the C family (`clang -fsyntax-only`) |
+| A checker discovered on the machine | the language's own acceptance | Python, Rust, Go, PHP, Ruby, Java |
+| A grammar | form only: does it still parse | every WebAssembly grammar carried, with nothing installed |
+
+Discovery searches beyond `PATH` deliberately. `rustup` installs to `~/.cargo/bin` and edits `PATH` for new shells only, so a machine with a working Rust toolchain reports none to a process started before the install; the same is true of a Go under `~/go` and of anything installed in the current session.
+
+A language with none of the three gets no repair. Reporting an edit nothing could verify as applied would forfeit the only guarantee this lane has, so an unavailable grammar and an unreadable checker failure both count as *not verified* rather than as passing.
 
 ## Boundaries
 
 Stated rather than implied.
 
 - **The compiler is necessary, not sufficient.** `byFamily.set(id, bucket)` was once repaired to `byFamily.get(id)`: it type-checks, it is wrong, and no structural rule can see the difference. Only running the code can. Test execution is the next gate and this project has 2,228 tests to run it with.
+- **A verifier is not a corpus.** Python and Rust can be *checked* on a machine that has them; composing in either still requires a corpus of that language, and only TypeScript has one here. The corpus lane already routes the file extensions, so this is an ingestion knob rather than a redesign.
 - **Composition is corpus-bound.** A shape must recur across documents to be admitted, so a two-file workspace induces none and the lane falls back to continuing sequences. Accuracy tracks corpus size; this is a knob, not a redesign.
 - **Multi-defect files converge but do not always finish.** Files reach one or two remaining diagnostics and stop when the search has no further hypothesis for what is left.
 - **The request reaches the lane; being told what to write is not finished.** Documentation retrieval names the files and vocabulary a request concerns, and both the repair lane and the chat lane read it. Composing a whole program from a plan is a further step and is not built.
