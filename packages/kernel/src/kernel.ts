@@ -34,7 +34,8 @@ import { jsonRecord, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
   createLanguageAcquisitionEngine,
-  selectLearnedLanguageProfileCluster
+  selectLearnedLanguageProfileCluster,
+  type LanguageProfileCluster
 } from "./language.js";
 import { createWeightedFeatureSketchLearner } from "./latent.js";
 import { languageScore } from "./learning-acquisition-runtime.js";
@@ -355,13 +356,37 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
               // every unmatched surface then selects. Measured: four clusters warmed, cache holding two, this one
               // gone before the first turn, which then raced a cold durable hydration it could not afford and
               // realized empty. Sequencing it after the rest makes it the newest entry and the last evicted.
-              return dominant
-                ? [...warmed, await hydrateSurfaceLanguageMemoryCached(
+              // Warm what turns actually select, which is not what this function calls dominant.
+              //
+              // selectLearnedLanguageProfileCluster ranks by artifact support; a turn ranks the clusters against
+              // its own request surface. On this brain those disagree: the artifact-dominant cluster holds 93
+              // profiles and 395,844 artifacts, while the cluster two of three sampled questions selected holds
+              // 402 profiles and 231,268. Warmup hydrated the first and every request paid a cold durable scan of
+              // the second, which its stage budget then abandoned -- so the turn realized with no language at all,
+              // and the closed-class derivation that separates a question word from a content word received an
+              // empty model set. Measured downstream: "When was Ada Lovelace born?" answered "Lovelace first met
+              // him on 5 June 1833" cold and "10 December 1815" warm, off the same corpus and the same code.
+              //
+              // Both are warmed, and the profile-largest goes last because the cache evicts by insertion order.
+              // Same eligibility rule the dominant selector uses: a cluster with no artifact support is not a
+              // learned cluster, and warming one by exact profile would be the guess that surface-free warmup is
+              // required not to make. Where nothing qualifies, nothing is warmed and the turn decides for itself.
+              const byProfiles = dominant
+                ? [...clusters]
+                  .filter(cluster => cluster.artifactSupport > 0)
+                  .sort((left, right) => right.profileIds.length - left.profileIds.length)[0]
+                : undefined;
+              const ordered = [dominant, byProfiles?.id === dominant?.id ? undefined : byProfiles]
+                .filter((cluster): cluster is LanguageProfileCluster => Boolean(cluster));
+              const out = [...warmed];
+              for (const cluster of ordered) {
+                out.push(await hydrateSurfaceLanguageMemoryCached(
                   languageLimit,
-                  dominant,
-                  "warmup-dominant-language-cluster"
-                )]
-                : warmed;
+                  cluster,
+                  "warmup-selected-language-cluster"
+                ));
+              }
+              return out;
             }),
           sourceAnchorSemanticFramesCached()
         ])
