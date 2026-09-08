@@ -4649,8 +4649,21 @@ function evidenceInSubjectCommunity(
 
 /** What the language cluster escalation must be able to spend before the deadline guard refuses it. */
 const LANGUAGE_CLUSTER_ESCALATION_MS = 900;
-/** What a durable language-memory hydration is allowed to cost before the turn proceeds on resident memory instead. */
-const LANGUAGE_MEMORY_DURABLE_ESCALATION_MS = 1_500;
+/**
+ * What a durable language-memory hydration is allowed to cost before the turn proceeds on resident memory instead.
+ *
+ * At 1.5s the scan was abandoned after doing the work: the trace shows 402 semantic frames, 768 patterns and 1,536
+ * units read from a brain holding 388,149 units, the budget expiring, and the turn continuing with models=0,
+ * patterns=0, frames=0 because the resident fallback was cold. A turn that hydrates nothing cannot know which
+ * words of a request are its subject and which are asking the question, so every stage below it falls back to
+ * shape rules -- a four-character minimum admitted "what" and "does" as content units, and a heading reading
+ * "## What SlopBlocker is" outranked the line naming the licence.
+ *
+ * Five seconds sits inside the 10s turn ceiling and leaves the rest of the pipeline its share. It does not make
+ * the scan free: a genuinely cold durable hydration has been measured at 30s, and the fallback still exists for
+ * that case. What it buys is that a hydration this brain can actually finish is not thrown away half-done.
+ */
+const LANGUAGE_MEMORY_DURABLE_ESCALATION_MS = 5_000;
 
 /** Calibration steps to accumulate before one write. Learning is per turn; persistence is not. */
 const TURN_REQUIREMENT_FLUSH_STEPS = 16;

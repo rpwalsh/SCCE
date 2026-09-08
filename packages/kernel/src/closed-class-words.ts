@@ -23,7 +23,18 @@ export function deriveClosedClassWords(input: {
     }
   }
   const ranked = [...totals.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
-  const out = new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase()));
+  // Taking the most frequent words is only evidence of function-word status when there are words left over.
+  //
+  // A corpus smaller than the limit has its CONTENT words at the top: on a three-document corpus about the
+  // Kelvinge threshold, "kelvinge" and "threshold" are the most frequent unigrams in it, so the top-96 marked
+  // the subject as closed class and left the question word standing. Coverage then required an answer to
+  // contain "what" and rejected the sentence that defined the subject. Selecting the whole vocabulary ranks
+  // nothing, so it reports nothing and the callers that need this fall back rather than trust an inversion.
+  // Only the frequency half stands down. A construction's literal slot is an observed part of a learned pattern
+  // rather than an inference from a ranking, so it is closed-class evidence at any corpus size.
+  const out = ranked.length > limit
+    ? new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase()))
+    : new Set<string>();
   for (const construction of input.constructions ?? []) {
     for (const part of construction.parts ?? []) {
       if (part.kind !== "literal") continue;

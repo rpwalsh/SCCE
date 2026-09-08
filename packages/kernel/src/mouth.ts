@@ -6705,6 +6705,19 @@ function mouthCoverageUnits(input: SpeakInput): string[] {
   // A translation carries the source, not the request; it is judged by preservation, not coverage.
   if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
   const closedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
+  // No learned language, no coverage rule.
+  //
+  // The filter below is what separates a word the request is ASKING WITH from a word it is asking ABOUT, and it
+  // is derived from the corpus rather than listed, which is right. With an empty model set it derives nothing,
+  // and every question word survives as a content unit: "When was Ada Lovelace born?" then demanded a sentence
+  // containing "when", which the sentence carrying her birth date does not, so the surface that won was the one
+  // reading "Lovelace first met him on 5 June 1833, WHEN she and her mother...". On a corpus with no learned
+  // language at all nothing satisfies it and the turn goes silent holding the answer.
+  //
+  // A filter that cannot be computed is not a stricter filter, it is an unknown one. Enforcing it anyway rejects
+  // correct answers on exactly the corpora that have learned the least. The proof boundary, source-identity
+  // admission and entailment all still apply; this rule alone stands down until the language it needs exists.
+  if (!closedClass.size) return [];
   return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
 }
 
