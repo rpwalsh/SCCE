@@ -145,6 +145,22 @@ const DEFAULT_NGRAM_SETTINGS: CorpusNgramSettings = {
   vocabularyLimit: 8192
 };
 
+/**
+ * Code needs a longer order than prose, and the difference is measured rather than assumed.
+ *
+ * A prose dependency is usually resolved within a few words; a code one spans the whole of `Buffer . from (
+ * bytes ) . toString` before the next symbol is determined. Sweeping order 2 through 6 against held-out lines of
+ * real source (`tools/code-generation-calibration/calibrate.mjs`, 116 corpus files, 24 held out, 3,948 symbols)
+ * puts the minimum at order 5: bigrams cost 1.71x the perplexity of the minimum, order 3 recovers most of that,
+ * and order 6 turns back up. `maxCountersPerOrder` rises with the order because the count budget is per order
+ * and a code vocabulary is dense in punctuation the smaller budget would evict first.
+ */
+const CODE_NGRAM_SETTINGS: CorpusNgramSettings = {
+  maxOrder: 5,
+  maxCountersPerOrder: 192,
+  vocabularyLimit: 12288
+};
+
 const DEFAULT_REGISTRY: CorpusRegistryEntry[] = [
   entry(CORPUS_SOURCE_SYSTEM_IDS.corrections, "corrections", CORPUS_ROLE_IDS.interactionCorrection, 95, 1, false, {
     ngramModels: 12,
@@ -163,7 +179,7 @@ const DEFAULT_REGISTRY: CorpusRegistryEntry[] = [
     languageUnits: 1024,
     languagePatterns: 256,
     semanticFrames: 512
-  })
+  }, CODE_NGRAM_SETTINGS)
 ];
 
 export function createCorpusRegistry(overrides: readonly CorpusRegistryOverride[] = []): CorpusRegistryEntry[] {
@@ -248,7 +264,8 @@ function entry(
   priority: number,
   weight: number,
   graphEvidenceEligible: boolean,
-  limits: CorpusHydrationLimits = DEFAULT_HYDRATION_LIMITS
+  limits: CorpusHydrationLimits = DEFAULT_HYDRATION_LIMITS,
+  ngram: CorpusNgramSettings = DEFAULT_NGRAM_SETTINGS
 ): CorpusRegistryEntry {
   return {
     sourceSystem,
@@ -260,7 +277,7 @@ function entry(
     languageMemoryEligible: true,
     graphEvidenceEligible,
     hydration: { priority, weight, limits: { ...limits } },
-    ngram: { ...DEFAULT_NGRAM_SETTINGS }
+    ngram: { ...ngram }
   };
 }
 

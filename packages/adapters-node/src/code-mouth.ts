@@ -16,6 +16,7 @@ import {
   type RepairOperation
 } from "@scce/kernel";
 import { extractNodeSourceCodeFacts } from "./code-graph.js";
+import type { LearnedCodeProposer } from "./learned-code-proposer.js";
 import { runProcess } from "./document.js";
 
 /**
@@ -36,6 +37,7 @@ export interface CodeMouthContext {
 export interface CodeMouthProposal {
   operations: RepairOperation[];
   surface: string;
+  source?: CodeMouthProposalSource;
 }
 
 export interface CodeMouthVerification {
@@ -45,6 +47,14 @@ export interface CodeMouthVerification {
   testsSucceeded: boolean;
   diagnostics: ProgramDiagnostic[];
 }
+
+/**
+ * How a proposal was arrived at, so a caller never has to infer it from the patch.
+ *
+ * `learned_construction` is composed from the language corpus; `compiler_owned` is transcribed from a fix the
+ * toolchain itself computed. Both are gated identically -- the distinction is authorship, not trust.
+ */
+export type CodeMouthProposalSource = "learned_construction" | "compiler_owned";
 
 export interface CodeMouthPorts {
   retrieve: (targetPath: string) => Promise<CodeMouthContext>;
@@ -64,6 +74,8 @@ export interface CodeMouthResult {
   reason: string;
   /** Fixes the compiler owns for this file when more than one answers the request; the caller chooses. */
   candidates?: Array<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }>;
+  /** Where each attempted proposal came from, in attempt order. An empty list means nothing was ever proposed. */
+  proposalSources?: CodeMouthProposalSource[];
 }
 
 export async function runCodeMouth(input: {
@@ -82,6 +94,7 @@ export async function runCodeMouth(input: {
   let diagnostics: ProgramDiagnostic[] = (await input.ports.verify(input.targetPath)).diagnostics;
   let applied: RepairOperation[] = [];
   let decision: DebugLoopDecision | undefined;
+  const proposalSources: CodeMouthProposalSource[] = [];
   for (let attempt = 1; attempt <= session.budget.maxAttempts; attempt++) {
     // Only this file's diagnostics are this edit's to answer; repo-wide failures elsewhere made the proposer return the file unchanged.
     const targetDiagnostics = diagnosticsForTarget(diagnostics, input.targetPath);
@@ -90,12 +103,13 @@ export async function runCodeMouth(input: {
       const candidates = offered();
       // The compiler has fixes but more than one answers the request: choosing for the owner would be a guess.
       if (candidates.length) {
-        return { outcome: "awaiting_selection", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, candidates, reason: `the compiler offers ${candidates.length} fixes for this file; choose one to apply` };
+        return { outcome: "awaiting_selection", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, candidates, proposalSources, reason: `the compiler offers ${candidates.length} fixes for this file; choose one to apply` };
       }
-      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "no proposer produced a patch; name a diagnostic or fix the compiler owns for this file" };
+      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: "no proposer produced a patch; name a diagnostic or fix the compiler owns for this file" };
     }
+    if (proposal.source) proposalSources.push(proposal.source);
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
-    if (!check.permitted) return { outcome: "budget_exhausted", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: check.reason };
+    if (!check.permitted) return { outcome: "budget_exhausted", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: check.reason };
     log(`attempt ${attempt}: ${proposal.operations.map(operation => `${operation.kind} ${path.basename(operation.path)}`).join(", ")}`);
     const rollback = await input.ports.apply(proposal.operations);
     const verification = await input.ports.verify(input.targetPath);
@@ -119,6 +133,7 @@ export async function runCodeMouth(input: {
         finalDiagnostics: verification.diagnostics,
         appliedOperations: applied,
         decision,
+        proposalSources,
         reason: verification.testsRun === false
           ? "the compiler accepted the patch; no test suite was run"
           : "the compiler accepted the patch and the tests passed"
@@ -127,9 +142,9 @@ export async function runCodeMouth(input: {
     await rollback();
     diagnostics = verification.diagnostics;
     log(`attempt ${attempt} rejected by the gate (${verification.diagnostics.length} diagnostics); decision ${decision.outcome}: ${decision.reason}`);
-    if (decision.outcome !== "continue") return { outcome: "stopped", attempts: attempt, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: decision.reason };
+    if (decision.outcome !== "continue") return { outcome: "stopped", attempts: attempt, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: decision.reason };
   }
-  return { outcome: "budget_exhausted", attempts: session.attempts.length, finalDiagnostics: diagnostics, appliedOperations: applied, decision, reason: "attempt budget exhausted" };
+  return { outcome: "budget_exhausted", attempts: session.attempts.length, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: "attempt budget exhausted" };
 }
 
 /**
@@ -200,6 +215,8 @@ export function createTypeScriptCodeMouthPorts(input: {
   workspaceRoot: string;
   tsconfigPath?: string;
   tscCommand?: { command: string; args: string[] };
+  /** The learned lane. Given one, composition is tried first and the compiler's own fix is the fallback. */
+  learnedProposer?: LearnedCodeProposer;
   log?: (message: string) => void;
 }): CodeMouthPorts {
   const root = path.resolve(input.workspaceRoot);
@@ -219,7 +236,17 @@ export function createTypeScriptCodeMouthPorts(input: {
         language: "typescript"
       };
     },
-    async propose({ request, context, attempt }) {
+    async propose({ request, context, diagnostics, attempt }) {
+      // Composition leads, but only on the first attempt.
+      //
+      // A learned proposal that does not build is rolled back and costs nothing but that attempt, so leading with
+      // the general lane risks only a turn of the loop -- and it is the only order under which this system writes
+      // code rather than relaying someone else's. Handing the rest of the budget back is what keeps that free:
+      // where the compiler does own an exact fix, it still gets its chance to apply it.
+      if (attempt === 1) {
+        const learned = await input.learnedProposer?.propose({ request, context, diagnostics, attempt });
+        if (learned) return { ...learned, source: "learned_construction" };
+      }
       const compilerRepair = await proposeCompilerOwnedRepair({
         workspaceRoot: root,
         targetPath: context.targetPath,
@@ -231,11 +258,16 @@ export function createTypeScriptCodeMouthPorts(input: {
       });
       if (isCompilerRepairProposal(compilerRepair)) {
         input.log?.(`attempt ${attempt}: compiler code action ${compilerRepair.fixName} for TS${compilerRepair.diagnosticCode}`);
-        return { operations: compilerRepair.operations, surface: compilerRepair.surface };
+        return { operations: compilerRepair.operations, surface: compilerRepair.surface, source: "compiler_owned" };
       }
       if (compilerRepair) {
         input.log?.(`compiler offers ${compilerRepair.candidates.length} fix(es) for this file; name one (for example its TS code) to apply it`);
         offeredCandidates = compilerRepair.candidates;
+      }
+      // Nothing the compiler owns: the learned lane's remaining compositions are what is left to try.
+      if (attempt > 1) {
+        const learned = await input.learnedProposer?.propose({ request, context, diagnostics, attempt });
+        if (learned) return { ...learned, source: "learned_construction" };
       }
       return undefined;
     },

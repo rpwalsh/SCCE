@@ -3311,8 +3311,14 @@ function renderContinuationSentences(
     // Training symbolization lowercases every symbol (unicode-segmentation.ts
     // normalizedSymbol), so word casing is not recoverable from the model --
     // only the pronoun "I" and known proper nouns can be restored here.
+    // Own-property read: the casing table is a plain object, so a symbol that names one of Object.prototype's
+    // members (`constructor`, `toString`) otherwise renders that function's source into the sentence.
     const cased = symbols.map(symbol =>
-      symbol === "i" ? "I" : properNounCasing?.[symbol] ?? symbol
+      symbol === "i"
+        ? "I"
+        : properNounCasing && Object.hasOwn(properNounCasing, symbol) && typeof properNounCasing[symbol] === "string"
+          ? properNounCasing[symbol]!
+          : symbol
     );
     const joined = cased.join(" ").replace(/\s+([,;:.!?…])/gu, "$1").replace(/(\S) - (\S)/gu, "$1-$2");
     const first = [...joined].findIndex(char => char.toLocaleLowerCase() !== char.toLocaleUpperCase());

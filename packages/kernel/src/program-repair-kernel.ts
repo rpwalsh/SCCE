@@ -19,15 +19,29 @@ export const TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY = "repair.family.typescript.co
  * TypeScript code-action family rests on: the compiler owns the fix, the system only applies and verifies it.
  */
 export const CLANG_FIXIT_REPAIR_FAMILY = "repair.family.clang.compiler_fixit.v1" as const;
+/**
+ * A repair this system composed itself, from constructions learned out of a corpus of the language in question.
+ *
+ * The three families above all rest on the same premise: a compiler owns the fix and the system transcribes it.
+ * That premise is what limits them to defects some toolchain already knows the answer to. This family carries
+ * the other case -- the edit is generated from learned code the way a sentence is generated from learned prose,
+ * and the compiler's role is to falsify it rather than to author it. `sourceLanguages` is open because nothing
+ * in the generator is language-specific: whichever languages have a corpus are the languages it can write.
+ */
+export const LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY = "repair.family.learned.code_construction.v1" as const;
 export type ProgramRepairFamilyId =
   | typeof UNUSED_TYPE_IMPORT_REPAIR_FAMILY
   | typeof TYPESCRIPT_CODE_ACTION_REPAIR_FAMILY
-  | typeof CLANG_FIXIT_REPAIR_FAMILY;
+  | typeof CLANG_FIXIT_REPAIR_FAMILY
+  | typeof LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY;
 export interface SupportedProgramRepairFamilyDescriptor {
   id: ProgramRepairFamilyId;
   requestSyntax: string;
   sourceLanguages: readonly string[];
-  mutationClass: "program.mutation.type_only_compile_hygiene" | "program.mutation.compiler_diagnostic_repair";
+  mutationClass:
+    | "program.mutation.type_only_compile_hygiene"
+    | "program.mutation.compiler_diagnostic_repair"
+    | "program.mutation.learned_construction_repair";
   requiredValidationChecks: readonly ("compiler" | "typecheck" | "tests")[];
   limitations: readonly string[];
 }
@@ -69,6 +83,19 @@ export const SUPPORTED_PROGRAM_REPAIR_FAMILIES: readonly SupportedProgramRepairF
     "the fix-it must name an exact source range on a single line and its replacement text",
     "diagnostics offering several fix-it hints are unsupported and are reported rather than chosen between",
     "the edit is recomputed from the exact range and verified by re-running the compiler"
+  ])
+}, {
+  id: LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY,
+  requestSyntax: "a request naming one existing file whose formal language this system has a trained corpus for",
+  sourceLanguages: Object.freeze(["*"]),
+  mutationClass: "program.mutation.learned_construction_repair",
+  requiredValidationChecks: Object.freeze(["compiler"] as const),
+  limitations: Object.freeze([
+    "one existing file, edited one line at a time",
+    "a diagnostic supplies the location only; nothing reads what the compiler suggests",
+    "the language must have trained code n-gram models, and no proposal is made when it has none",
+    "generated fragments must close every bracket they open before the build is spent on them",
+    "the edit is provisional until the build accepts it and is rolled back when it does not"
   ])
 }]);
 const UNUSED_TYPE_IMPORT_DIAGNOSTIC_PATTERN_ID = "diagnostic.typescript.unused_type_import.v1";

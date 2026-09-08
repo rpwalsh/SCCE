@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CORPUS_SOURCE_SYSTEM_IDS, type InformationLabel, type ScceStorage } from "@scce/kernel";
+import { CORPUS_SOURCE_SYSTEM_IDS, codeCommentProse, codeLanguageForPath, codeTrainingSurface, type InformationLabel, type ScceStorage } from "@scce/kernel";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
@@ -91,41 +91,63 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && !includeDocs) continue;
     if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) continue;
     const raw = await readFile(file.absolutePath, "utf8");
-    const text = sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs ? raw : codeAdjacentTrainingText(file.path, raw);
-    if (!text.trim()) {
-      skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
-      continue;
+    // A source file carries two languages at once, and one projection cannot hold both. The code lane learns the
+    // token stream itself, because that is the only thing a generator can compose an expression out of; the
+    // documentation lane learns the file's comments and the words its identifiers are built from, because that
+    // is what a question about the code is asked in. Splitting them keeps each corpus a model of one thing.
+    const projections: Array<{ sourceSystem: OssCorpusSourceSystem; text: string; projection: string }> =
+      sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs
+        ? [{ sourceSystem, text: raw, projection: "verbatim" }]
+        : [
+          { sourceSystem, text: codeTrainingSurface(raw), projection: "code_surface_tokens" },
+          ...(includeDocs
+            ? [{
+              sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.ossDocs,
+              text: codeAdjacentTrainingText(file.path, raw),
+              projection: "code_adjacent_prose"
+            }]
+            : [])
+        ];
+    let trainedAnyProjection = false;
+    for (const projected of projections) {
+      if (!projected.text.trim()) continue;
+      trainedAnyProjection = true;
+      // Same failure-containment contract as gutenberg-corpus.ts: one
+      // pathological file records an explicit skip with the real reason;
+      // it never costs the rest of the in-process run.
+      try {
+        reports.push(await trainLanguageCorpusText({
+          storage: input.storage,
+          sourceSystem: projected.sourceSystem,
+          streamUri: `${projected.sourceSystem}:${normalizeRelative(file.path)}`,
+          sourceUri: pathToFileURL(file.absolutePath).href,
+          text: projected.text,
+          mediaType: file.mediaType,
+          namespace: `corpus:${projected.sourceSystem}`,
+          maxEvidenceChunkBytes: 64 * 1024,
+          ngramMaxOrder: input.ngramMaxOrder,
+          ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
+          ngramVocabularyLimit: input.ngramVocabularyLimit,
+          informationLabel: OSS_CORPUS_INFORMATION_LABEL,
+          corpusMetadata: {
+            relativePath: normalizeRelative(file.path),
+            sourceHash: file.contentHash ?? sha256(raw),
+            extractor: file.extractor,
+            supportedSections: file.supportedSections,
+            projection: projected.projection,
+            formalLanguage: codeLanguageForPath(file.path) ?? null
+          }
+        }));
+      } catch (error) {
+        skipped.push({
+          path: file.path,
+          reason: `training_failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`,
+          byteLength: file.byteLength
+        });
+      }
     }
-    // Same failure-containment contract as gutenberg-corpus.ts: one
-    // pathological file records an explicit skip with the real reason;
-    // it never costs the rest of the in-process run.
-    try {
-      reports.push(await trainLanguageCorpusText({
-        storage: input.storage,
-        sourceSystem,
-        streamUri: `${sourceSystem}:${normalizeRelative(file.path)}`,
-        sourceUri: pathToFileURL(file.absolutePath).href,
-        text,
-        mediaType: file.mediaType,
-        namespace: `corpus:${sourceSystem}`,
-        maxEvidenceChunkBytes: 64 * 1024,
-        ngramMaxOrder: input.ngramMaxOrder,
-        ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
-        ngramVocabularyLimit: input.ngramVocabularyLimit,
-        informationLabel: OSS_CORPUS_INFORMATION_LABEL,
-        corpusMetadata: {
-          relativePath: normalizeRelative(file.path),
-          sourceHash: file.contentHash ?? sha256(raw),
-          extractor: file.extractor,
-          supportedSections: file.supportedSections
-        }
-      }));
-    } catch (error) {
-      skipped.push({
-        path: file.path,
-        reason: `training_failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`,
-        byteLength: file.byteLength
-      });
+    if (!trainedAnyProjection) {
+      skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
     }
   }
   return {
@@ -154,14 +176,15 @@ export function sourceSystemForPath(relativePath: string): OssCorpusSourceSystem
   return undefined;
 }
 
+/**
+ * A source file's prose: its comments, and the words its identifiers are spelled out of.
+ *
+ * This is the documentation projection of code, not the code itself -- what a question about a library is asked
+ * in. Comment recognition is delegated so that `#` is never read as a comment marker: it opens a preprocessor
+ * directive in C and an attribute in Rust, and treating it as one silently swallowed every `#include` line.
+ */
 export function codeAdjacentTrainingText(relativePath: string, text: string): string {
-  const comments = [
-    ...text.matchAll(/\/\*[\s\S]*?\*\//gu),
-    ...text.matchAll(/\/\/[^\n]*/gu),
-    ...text.matchAll(/#[^\n]*/gu)
-  ].map(match => match[0].replace(/^\/\*+|\*+\/$/gu, "").replace(/^\s*(?:\/\/|#)\s?/gu, "").trim())
-    .filter(Boolean)
-    .slice(0, 512);
+  const comments = codeCommentProse(text, 512);
   const identifiers = [...new Set(text.match(/[$_\p{Letter}][$_\p{Letter}\p{Number}]{2,}/gu) ?? [])]
     .slice(0, 1200)
     .map(splitIdentifierSurface)
