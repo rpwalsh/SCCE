@@ -38,11 +38,37 @@ const SAME_RELATION_SAME_KIND = 0.2;
 /** Different relation nodes participating in one hyperedge. */
 const SAME_HYPEREDGE = 0.25;
 
+/**
+ * Everything a target's type says about it.
+ *
+ * The four-case lookup read four of a target's twelve fields and ignored the relation it belongs to, the role
+ * and port it fills, the kind of value it carries, the participant it names and the incidence that produced it.
+ * Two targets filling the same role of the same relation were exactly as far apart as two with nothing whatever
+ * in common, which is a statement about what the lookup could express and not about the graph.
+ */
+function typedFeatures(target: SparseAlignmentTarget): string[] {
+  const out = [`kind:${target.kind}`, `relation:${target.relationId}`, `relationNode:${target.relationNodeId}`, `hyperedge:${target.hyperedgeId}`];
+  if (target.roleId) out.push(`role:${target.roleId}`);
+  if (target.portId) out.push(`port:${target.portId}`);
+  if (target.valueKind) out.push(`valueKind:${target.valueKind}`);
+  if (target.participantNodeId) out.push(`participant:${target.participantNodeId}`);
+  if (target.incidenceId) out.push(`incidence:${target.incidenceId}`);
+  if (target.realization) out.push(`realization:${target.realization}`);
+  return out;
+}
+
 export interface GraphTargetGeometry {
   /** Distance in [0, 1]; 0 is the same target and 1 is unrelated within the radius searched. */
   distance(left: SparseAlignmentTarget, right: SparseAlignmentTarget): number;
   /** What the walk found, for the audit that reports whether the metric discriminated at all. */
-  audit(): { targets: number; radius: number; walks: number; resolvedBeyondOneHop: number };
+  audit(): {
+    targets: number;
+    radius: number;
+    walks: number;
+    resolvedBeyondOneHop: number;
+    resolvedByType: number;
+    typeFeatures: number;
+  };
 }
 
 /**
@@ -67,9 +93,46 @@ export function createGraphTargetGeometry(
     index(byHyperedge, target.hyperedgeId, target.id);
   }
 
+  // How much each type feature is worth, from how rare it is among the targets in play.
+  //
+  // A weight has to come from somewhere and the alternative to measuring it is picking it, which is what the
+  // four constants were. A feature every target carries distinguishes nothing and earns nothing; one carried by
+  // a handful is what actually separates them. This is inverse document frequency over the target set, so the
+  // weights are a property of the graph slice being aligned rather than of anyone's judgement.
+  const featureCounts = new Map<string, number>();
+  const featuresById = new Map<string, string[]>();
+  for (const target of all) {
+    const features = typedFeatures(target);
+    featuresById.set(target.id, features);
+    for (const feature of features) featureCounts.set(feature, (featureCounts.get(feature) ?? 0) + 1);
+  }
+  const featureWeight = (feature: string): number =>
+    Math.log(1 + all.length / Math.max(1, featureCounts.get(feature) ?? 1));
+
+  /** One minus the share of type weight two targets hold in common: a weighted Jaccard over their features. */
+  const typedDistance = (left: SparseAlignmentTarget, right: SparseAlignmentTarget): number => {
+    const leftFeatures = featuresById.get(left.id) ?? typedFeatures(left);
+    const rightFeatures = new Set(featuresById.get(right.id) ?? typedFeatures(right));
+    let shared = 0;
+    let union = 0;
+    const seen = new Set<string>();
+    for (const feature of leftFeatures) {
+      seen.add(feature);
+      const weight = featureWeight(feature);
+      union += weight;
+      if (rightFeatures.has(feature)) shared += weight;
+    }
+    for (const feature of rightFeatures) {
+      if (seen.has(feature)) continue;
+      union += featureWeight(feature);
+    }
+    return union > 0 ? Math.max(0, Math.min(1, 1 - shared / union)) : 1;
+  };
+
   const walked = new Map<string, Map<string, number>>();
   let walks = 0;
   let resolvedBeyondOneHop = 0;
+  let resolvedByType = 0;
 
   /** Hop counts from one target outward, to the radius. Computed once per source and reused. */
   const hopsFrom = (sourceId: string): Map<string, number> => {
@@ -101,18 +164,34 @@ export function createGraphTargetGeometry(
   return {
     distance(left, right) {
       if (left.id === right.id) return 0;
-      // The short-range cases are exactly as they were: correct, and cheaper than a walk.
-      if (left.relationNodeId === right.relationNodeId) {
-        return left.kind !== right.kind ? SAME_RELATION_DIFFERENT_KIND : SAME_RELATION_SAME_KIND;
-      }
-      if (left.hyperedgeId === right.hyperedgeId) return SAME_HYPEREDGE;
+      // Three readings of the same pair, and the nearest wins.
+      //
+      // What a target is and where it sits are different kinds of proximity and either is evidence: two targets
+      // filling one role of one relation are close however far apart the incidence walk puts them, and two
+      // adjacent in the walk are close whatever their types. Taking the smallest also makes this monotone
+      // against the lookup it replaces -- the old cases are still floors, so no pair is coarser than before and
+      // the 99.7% that used to be flat 1 can only come down.
+      const lookup = left.relationNodeId === right.relationNodeId
+        ? (left.kind !== right.kind ? SAME_RELATION_DIFFERENT_KIND : SAME_RELATION_SAME_KIND)
+        : left.hyperedgeId === right.hyperedgeId ? SAME_HYPEREDGE : 1;
+      if (lookup <= SAME_HYPEREDGE) return lookup;
       const hops = hopsFrom(left.id).get(right.id);
-      if (hops === undefined) return 1;
-      resolvedBeyondOneHop++;
-      // Everything a walk can reach sits between the one-hop cases and unrelated, spread by how far it is.
-      return Math.min(1, SAME_HYPEREDGE + (1 - SAME_HYPEREDGE) * (hops - 1) / bounded);
+      const walkDistance = hops === undefined
+        ? 1
+        : Math.min(1, SAME_HYPEREDGE + (1 - SAME_HYPEREDGE) * (hops - 1) / bounded);
+      if (hops !== undefined) resolvedBeyondOneHop++;
+      const typed = typedDistance(left, right);
+      if (typed < 1) resolvedByType++;
+      return Math.min(lookup, walkDistance, typed);
     },
-    audit: () => ({ targets: all.length, radius: bounded, walks, resolvedBeyondOneHop })
+    audit: () => ({
+      targets: all.length,
+      radius: bounded,
+      walks,
+      resolvedBeyondOneHop,
+      resolvedByType,
+      typeFeatures: featureCounts.size
+    })
   };
 }
 
