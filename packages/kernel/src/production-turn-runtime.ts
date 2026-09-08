@@ -161,7 +161,7 @@ import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resou
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
-import { codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
+import { codeRequestCorroborated, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -3269,7 +3269,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       const speakInput = {
         requestText: input.text,
-        ...(codeRequest && codeSignal.language ? { codeLanguage: codeSignal.language } : {}),
+        // Corroborated code shape, not a bare language name. "Java", "Ruby", "Swift" and "Python" are ordinary
+        // words in encyclopedic prose, and a turn about the island should not reach a code lane at all -- which
+        // was harmless only while that lane had no producer to reach.
+        ...(codeRequest && codeSignal.language && codeRequestCorroborated(codeSignal)
+          ? { codeLanguage: codeSignal.language }
+          : {}),
         meaningVerifier,
         construct: spokenConstructGraph,
         field,
