@@ -82,34 +82,81 @@ export async function runCodeMouth(input: {
   request: string;
   targetPath: string;
   ports: CodeMouthPorts;
+  /**
+   * Safety ceiling on iterations. Not a cost.
+   *
+   * Nothing here is metered -- no tokens, no calls, no money. The only thing an attempt actually spends is time,
+   * and that is what `maxWallClockMs` bounds, because a person is waiting. Termination does not need a counter
+   * either: every iteration either strictly reduces the diagnostics, which is bounded below by zero, or spends
+   * one of a finite number of hypotheses about a state it may not then repeat. This exists so that a fault in
+   * one of those guarantees cannot spin forever, and it is derived from the work when a caller says nothing.
+   */
   maxAttempts?: number;
   maxWallClockMs?: number;
   log?: (message: string) => void;
 }): Promise<CodeMouthResult> {
   const log = input.log ?? (() => undefined);
   const hasher = createHasher();
-  let session: BoundedDebugSession = createBoundedDebugSession({ maxAttempts: input.maxAttempts ?? 3, maxWallClockMs: input.maxWallClockMs ?? 180_000, maxMutatedFiles: 4 }, Date.now());
+  const startedAt = Date.now();
+  const maxWallClockMs = input.maxWallClockMs ?? 180_000;
   const context = await input.ports.retrieve(input.targetPath);
   const offered = () => (input.ports.offeredCandidates?.() ?? []);
-  let diagnostics: ProgramDiagnostic[] = (await input.ports.verify(input.targetPath)).diagnostics;
+  const startingDiagnostics = (await input.ports.verify(input.targetPath)).diagnostics;
+  let diagnostics: ProgramDiagnostic[] = startingDiagnostics;
+  // Roughly one hypothesis per diagnostic per candidate the proposer holds, which is what the search can try
+  // before it has nothing further to say. A caller may set its own. Neither is a price.
+  const iterationCeiling = Math.max(4, input.maxAttempts ?? startingDiagnostics.length * 8);
+  let session: BoundedDebugSession = createBoundedDebugSession(
+    { maxAttempts: iterationCeiling, maxWallClockMs, maxMutatedFiles: 4 },
+    startedAt
+  );
+  // What has been accepted, and what stays accepted.
+  //
+  // Each of these strictly reduced what was wrong and introduced nothing, so undoing them because a later
+  // hypothesis failed would hand back a file the loop had already improved. Three defects repaired to one is a
+  // better file than three defects untouched, and it is the file a person working through them would have. The
+  // guarantee is that the file never gets worse, not that the loop only ever finishes.
   let applied: RepairOperation[] = [];
   let decision: DebugLoopDecision | undefined;
   const proposalSources: CodeMouthProposalSource[] = [];
-  for (let attempt = 1; attempt <= session.budget.maxAttempts; attempt++) {
+  // The loop's own count. A session is replaced whenever the state advances, so its length is how many
+  // hypotheses have been tried against the current state and not how many turns the loop has taken.
+  let iterations = 0;
+
+  const finish = (outcome: CodeMouthResult["outcome"], reason: string): CodeMouthResult => ({
+    outcome,
+    attempts: iterations,
+    finalDiagnostics: diagnostics,
+    appliedOperations: applied,
+    decision,
+    proposalSources,
+    reason: applied.length && outcome !== "resolved"
+      ? `${reason}; kept ${applied.length} repair(s) taking this file from ${startingDiagnostics.length} to ${diagnostics.length} diagnostics`
+      : reason
+  });
+
+  for (let attempt = 1; attempt <= iterationCeiling; attempt++) {
+    if (Date.now() - startedAt >= maxWallClockMs) {
+      return finish("stopped", `wall-clock bound of ${maxWallClockMs}ms reached`);
+    }
     // Only this file's diagnostics are this edit's to answer; repo-wide failures elsewhere made the proposer return the file unchanged.
     const targetDiagnostics = diagnosticsForTarget(diagnostics, input.targetPath);
+    iterations = attempt - 1;
     const proposal = await input.ports.propose({ request: input.request, context, diagnostics: targetDiagnostics, attempt });
     if (!proposal || !proposal.operations.length) {
       const candidates = offered();
       // The compiler has fixes but more than one answers the request: choosing for the owner would be a guess.
       if (candidates.length) {
-        return { outcome: "awaiting_selection", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, candidates, proposalSources, reason: `the compiler offers ${candidates.length} fixes for this file; choose one to apply` };
+        return { ...finish("awaiting_selection", `the compiler offers ${candidates.length} fixes for this file; choose one to apply`), candidates };
       }
-      return { outcome: "no_proposal", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: "no proposer produced a patch; name a diagnostic or fix the compiler owns for this file" };
+      return finish("no_proposal", applied.length
+        ? "the search has no further hypothesis for what remains"
+        : "no proposer produced a patch; name a diagnostic or fix the compiler owns for this file");
     }
     if (proposal.source) proposalSources.push(proposal.source);
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
-    if (!check.permitted) return { outcome: "budget_exhausted", attempts: attempt - 1, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: check.reason };
+    if (!check.permitted) return finish("budget_exhausted", check.reason);
+    iterations = attempt;
     log(`attempt ${attempt}: ${proposal.operations.map(operation => `${operation.kind} ${path.basename(operation.path)}`).join(", ")}`);
     const rollback = await input.ports.apply(proposal.operations);
     const verification = await input.ports.verify(input.targetPath);
@@ -125,26 +172,48 @@ export async function runCodeMouth(input: {
     });
     session = recorded.session;
     decision = recorded.decision;
-    if (patchResolvedTarget({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths: proposal.operations.map(operation => operation.path) }) && verification.testsSucceeded) {
+    const mutatedPaths = proposal.operations.map(operation => operation.path);
+    if (patchResolvedTarget({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths }) && verification.testsSucceeded) {
       applied = [...applied, ...proposal.operations];
-      return {
-        outcome: "resolved",
-        attempts: attempt,
-        finalDiagnostics: verification.diagnostics,
-        appliedOperations: applied,
-        decision,
-        proposalSources,
-        reason: verification.testsRun === false
-          ? "the compiler accepted the patch; no test suite was run"
-          : "the compiler accepted the patch and the tests passed"
-      };
+      diagnostics = verification.diagnostics;
+      return finish("resolved", verification.testsRun === false
+        ? "the compiler accepted the patch; no test suite was run"
+        : "the compiler accepted the patch and the tests passed");
     }
+    // Not finished, but strictly better: keep it and carry on from there. This is the only way a file with more
+    // than one defect is repairable at all, because every step of a convergent sequence looks like a failure to
+    // a gate that recognises only the last one.
+    if (patchReducedDiagnostics({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths })) {
+      applied = [...applied, ...proposal.operations];
+      log(`attempt ${attempt} kept: ${diagnostics.length} -> ${verification.diagnostics.length} diagnostics`);
+      diagnostics = verification.diagnostics;
+      // A kept step changes the state being worked on, so what failed against the old one is not evidence about
+      // this one. Carrying it forward made one poor guess after real progress read as thrashing.
+      session = createBoundedDebugSession(
+        { maxAttempts: Math.max(1, iterationCeiling - attempt), maxWallClockMs, maxMutatedFiles: 4 },
+        Date.now()
+      );
+      continue;
+    }
+    // Rolled back, so the file is as it was and so is what is wrong with it. Recording the rejected attempt's
+    // diagnostics as current told the loop it was somewhere it had just undone.
     await rollback();
-    diagnostics = verification.diagnostics;
     log(`attempt ${attempt} rejected by the gate (${verification.diagnostics.length} diagnostics); decision ${decision.outcome}: ${decision.reason}`);
-    if (decision.outcome !== "continue") return { outcome: "stopped", attempts: attempt, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: decision.reason };
+    if (session.attempts.length >= session.budget.maxAttempts) {
+      session = createBoundedDebugSession(
+        { maxAttempts: Math.max(1, iterationCeiling - attempt), maxWallClockMs, maxMutatedFiles: 4 },
+        Date.now()
+      );
+    }
+    // A stall is only a stall once there is nothing new to try. The heuristic measures progress across attempts,
+    // but successive attempts against one state are competing hypotheses about it, and every one before the
+    // right one makes no progress by construction. What protects this loop is exact: planDebugAttempt refuses a
+    // patch already tried against this exact diagnostic state, and the proposer stops offering once its
+    // candidates run out.
+    const stalledWithHypothesesLeft = decision.outcome === "stopped_repeated_failure" && attempt < iterationCeiling;
+    if (decision.outcome !== "continue" && !stalledWithHypothesesLeft) return finish("stopped", decision.reason);
   }
-  return { outcome: "budget_exhausted", attempts: session.attempts.length, finalDiagnostics: diagnostics, appliedOperations: applied, decision, proposalSources, reason: "attempt budget exhausted" };
+  return finish("budget_exhausted", `iteration ceiling of ${iterationCeiling} reached`);
 }
 
 /**
@@ -195,6 +264,45 @@ export function patchResolvedTarget(input: {
   if (input.after.some(inTouched)) return false;
   const beforeIds = new Set(input.before.map(diagnostic => diagnostic.id));
   return !input.after.some(diagnostic => !beforeIds.has(diagnostic.id));
+}
+
+/**
+ * Whether an edit strictly reduced what is wrong, without breaking anything that was not.
+ *
+ * `patchResolvedTarget` asks whether the file is finished, and rolling back everything that does not finish it
+ * makes a file with two defects unrepairable: fixing the first still leaves the second, so the first is undone,
+ * and the loop can only ever converge on files that were one edit away. A draft of anything is dozens of edits
+ * away. Progress is the weaker property a loop actually runs on -- fewer diagnostics in the files touched, and no
+ * new diagnostic anywhere -- and a sequence of such steps is monotone, so it terminates.
+ *
+ * Keeping a partial repair is not the same as shipping one. The caller keeps these steps while it is still
+ * converging and undoes all of them if it stops short, so the workspace is either fixed or untouched.
+ */
+export function patchReducedDiagnostics(input: {
+  before: readonly ProgramDiagnostic[];
+  after: readonly ProgramDiagnostic[];
+  targetPath: string;
+  mutatedPaths: readonly string[];
+}): boolean {
+  const touched = new Set([input.targetPath, ...input.mutatedPaths].map(value => value.replace(/\\/gu, "/").toLocaleLowerCase()));
+  const inTouched = (diagnostic: ProgramDiagnostic) => {
+    const file = String(diagnostic.path ?? "").replace(/\\/gu, "/").toLocaleLowerCase();
+    return [...touched].some(value => file.endsWith(value) || value.endsWith(file));
+  };
+  // Identity by kind, not by position.
+  //
+  // A diagnostic's id carries its line and column, and every repair moves them: fixing the first of three
+  // misspellings shifts the other two, whose ids then look like diagnostics the edit introduced. A convergent
+  // step was rejected for having caused exactly the errors it had just left alone. What an edit must not do is
+  // introduce a kind of failure that was not already there, and that is what this compares.
+  const beforeKinds = new Set(input.before.map(diagnosticKind));
+  if (input.after.some(diagnostic => !beforeKinds.has(diagnosticKind(diagnostic)))) return false;
+  return input.after.filter(inTouched).length < input.before.filter(inTouched).length;
+}
+
+/** What kind of thing went wrong, independent of where it now sits. */
+function diagnosticKind(diagnostic: ProgramDiagnostic): string {
+  return `${diagnostic.patternId ?? diagnostic.class}${diagnostic.message}`;
 }
 
 /** tsc output line -> ProgramDiagnostic. Pure. */

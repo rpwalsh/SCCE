@@ -75,6 +75,14 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   const log = options.log ?? (() => {});
   const byLanguage = new Map<string, Promise<KneserNeyModel[]>>();
   let lastCandidates: LearnedCodeRepairCandidate[] = [];
+  // Which candidate to offer, and what state it was chosen against.
+  //
+  // The loop's attempt number counts every turn of the loop, including the ones that accepted a repair and moved
+  // on. Indexing candidates by it meant that after a step was kept the next state was offered this proposer's
+  // *second* choice for it, and its first was never tried at all. Retrying is what advances the index; making
+  // progress resets it, because the question has changed.
+  let lastState = "";
+  let retry = 0;
 
   const modelsFor = (languageId: string): Promise<KneserNeyModel[]> => {
     const cached = byLanguage.get(languageId);
@@ -119,11 +127,14 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
       });
       lastCandidates = candidates;
+      const state = diagnostics.map(diagnostic => `${diagnostic.patternId ?? diagnostic.class}:${diagnostic.message}`).sort().join("");
+      retry = state === lastState ? retry + 1 : 0;
+      lastState = state;
       // One attempt, one candidate: the loop is what tries the next one, and it only gets there by watching this
       // one fail its build. Reusing a rejected composition would spend the budget re-proving the same failure.
-      const candidate = candidates[Math.max(0, attempt - 1)];
+      const candidate = candidates[retry];
       if (!candidate) return undefined;
-      log(`attempt ${attempt}: composed ${languageId} from ${models.length} trained models (${candidate.strategy}, avg log p ${candidate.averageLogProbability.toFixed(3)})`);
+      log(`attempt ${attempt} (offer ${retry + 1} of ${candidates.length}): composed ${languageId} from ${models.length} trained models (${candidate.strategy}, avg log p ${candidate.averageLogProbability.toFixed(3)})`);
       return {
         operations: [learnedCodeRepairOperation(candidate, context.targetPath)],
         surface: candidate.surface
