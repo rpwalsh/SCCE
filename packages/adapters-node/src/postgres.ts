@@ -5180,15 +5180,22 @@ function titleMatchExpression(alias: string, parameter: number): string {
 function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: number): string {
   void query;
   // The parameter is always bound, so it must always be referenced with its type: returning a bare TRUE for an
-  // empty list left $n unreferenced, Postgres refused the statement ("could not determine data type of
-  // parameter"), and every search by source version failed silently -- which starved the construction lane of
-  // its graph. An empty list is a no-op through the cardinality guard.
-  // Repository spans ingested as text/plain carry no sourceKind, only a repo-relative path; prose lanes name
-  // themselves (wikimedia_dump) or arrive from the web (https://). Anything else unlabelled is the owner's workspace, file:// included.
-  return `(cardinality($${parameter}::text[]) = 0 OR (COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[])
-    AND NOT (COALESCE(${alias}.provenance_json->>'sourceKind', '') = '' AND COALESCE(${alias}.provenance_json->>'uri', '') !~* '^https?://' AND ${alias}.media_type NOT LIKE 'text/x-wiki%')))`;
+  // empty list left the placeholder unreferenced, Postgres refused the statement, and every search by source
+  // version failed silently -- which starved the construction lane of its graph. An empty list is a no-op
+  // through the cardinality guard.
+  //
+  // This excludes the source kinds the caller named and nothing else. It used to also guess: an unlabelled span
+  // not fetched over http was taken for the workspace and dropped from every non-code request. The private-docs
+  // corpus is file:// and unlabelled throughout, so the guess hid all of it from questions about it. Asked what
+  // license SlopBlocker uses, retrieval returned 151 spans of MediaWiki boilerplate while the span reading
+  // "# License SlopBlocker is source-available under the PolyForm Noncommercial License" was excluded here,
+  // before ranking ever saw it, though it was indexed under the request subject anchor.
+  //
+  // Whether a span is source code is isCodeEvidenceSpan's decision -- media type, then extension, then code
+  // shape -- and it already runs over the merged pool. A second, cheaper predicate answering the same question
+  // from provenance can only disagree with it, and did.
+  return `(cardinality($${parameter}::text[]) = 0 OR COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[]))`;
 }
-
 function evidenceStatusCondition(
   alias: string,
   status: EvidenceQuery["status"]

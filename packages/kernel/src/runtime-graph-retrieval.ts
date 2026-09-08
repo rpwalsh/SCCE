@@ -644,10 +644,13 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // A question that is not about code draws its candidates from prose lanes only; the exclusion is applied in the
     // search itself, before ranking, so the owner's repository cannot crowd the article out of the candidate set.
     const proseSourceKinds = codeRequestRecognized(codeRequestSignal(text)) ? {} : { excludeSourceKinds: ["developer_intelligence", "construction_training"] };
+    const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
     const anchoredEvidenceResults = anchorFeatureGroups.length
-      ? await Promise.all(anchorFeatureGroups.map(group =>
-        searchAnchorGroup(group, proseSourceKinds)
-      )).then(groupResults => groupResults.flat())
+      ? await Promise.all(anchorFeatureGroups.map(async group => {
+        const rows = await searchAnchorGroup(group, proseSourceKinds);
+        perGroupCounts.push({ group: [...group], rows: rows.length, heads: rows.slice(0, 2).map(item => String(item.span.textPreview ?? "").replace(/s+/gu, " ").slice(0, 50)) });
+        return rows;
+      })).then(groupResults => groupResults.flat())
       : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48, ...proseSourceKinds });
     // Late-interaction visual prefilter (Phase 3): one more candidate group upstream of
     // admission and graph activation; it narrows, it never decides.
@@ -672,7 +675,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         anchorFeatureGroups,
         gathered: gatheredResults.length,
         afterProseFilter: evidenceResults.length,
-        gatheredHeads: gatheredResults.slice(0, 6).map(item => String(item.span.id).slice(0, 34))
+        gatheredHeads: gatheredResults.slice(0, 6).map(item => String(item.span.id).slice(0, 34)),
+        ...(process.env.SCCE_TRACE_GROUPS ? { perGroup: perGroupCounts } : {})
       }
     });
     const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
@@ -804,18 +808,37 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // subject in the request, was never searched at all, and the turn abstained over a corpus holding the article.
     // Such a subject is restored as its own group: the search is per-group and unioned, so an extra group can only
     // add candidates, and the group budget still bounds the query count.
+    // Ranked by how much of the request each unit carries, because "in every phrase" is not what a subject is.
+    // "What license does SlopBlocker use?" generates the phrases "what license", "license does" and "what license
+    // does", none of which contain the subject, so requiring the unit in every specific anchor dropped
+    // `slopblocker` -- the one rare term in the request -- and searched function-word bigrams instead. Retrieval
+    // returned 151 spans of MediaWiki boilerplate, admission refused all of them, and the turn abstained over a
+    // corpus holding a span that opens "# License SlopBlocker is source-available under the PolyForm...".
+    // Carrying count orders the subject above the question word without naming either: the unit inside more of the
+    // request's own phrases is the one the request is about, and normalized length breaks ties toward the more
+    // specific unit. A unit in every phrase still ranks first, so the case this rule was written for is unchanged.
     const subsumedSubjectAnchors = specificAnchors.length
-      ? anchors.filter(anchor => {
-        const units = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
-        if (units.length !== 1) return false;
-        const unit = units[0]!;
-        if (genericQuestionSignal(unit) || [...unit].length < 3) return false;
-        return specificAnchors.every(specific =>
-          splitPriorUnits(normalizePriorKey(specific)).filter(Boolean).includes(unit));
-      }).slice(0, 2)
+      ? anchors
+        .map(anchor => {
+          const units = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+          if (units.length !== 1) return undefined;
+          const unit = units[0]!;
+          if (genericQuestionSignal(unit) || [...unit].length < 3) return undefined;
+          const carrying = specificAnchors.filter(specific =>
+            splitPriorUnits(normalizePriorKey(specific)).filter(Boolean).includes(unit)).length;
+          return carrying ? { anchor, carrying, length: [...normalizePriorKey(unit)].length } : undefined;
+        })
+        .filter((entry): entry is { anchor: string; carrying: number; length: number } => entry !== undefined)
+        .sort((left, right) => right.carrying - left.carrying || right.length - left.length)
+        .slice(0, 2)
+        .map(entry => entry.anchor)
       : [];
-    const candidateAnchors = uniqueKernelStrings([...specificAnchors, ...subsumedSubjectAnchors].length
-      ? [...specificAnchors, ...subsumedSubjectAnchors]
+    // The restored subject leads. Appended after the phrases it exists to rescue, it was cut by this slice on
+    // any request generating five or more phrase anchors -- which is most of them -- so the rule above had never
+    // reached a query. The subject is the group most likely to find the source, so it goes first and the phrase
+    // anchors fill the remaining budget.
+    const candidateAnchors = uniqueKernelStrings([...subsumedSubjectAnchors, ...specificAnchors].length
+      ? [...subsumedSubjectAnchors, ...specificAnchors]
       : anchors).slice(0, 5);
     const groups: string[][] = [];
     for (const anchor of candidateAnchors) {
@@ -2135,8 +2158,17 @@ export function isCodeEvidenceSpan(span: EvidenceSpan): boolean {
   if (MARKUP_MEDIA_TYPES.some(markup => media.startsWith(markup))) return false;
   if (CODE_MEDIA_MARKERS.some(marker => media.includes(marker))) return true;
   const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
-  const metadata = provenance.metadata && typeof provenance.metadata === "object" && !Array.isArray(provenance.metadata) ? provenance.metadata as Record<string, unknown> : {};
-  if (metadata.sourceCode && typeof metadata.sourceCode === "object") return true;
+  // Source-code METADATA says the span came from a code project, not that the span is code. Ingesting a
+  // repository stamps it on every file in the tree, so it was true of the README, the HTML pages and the
+  // package manifest as much as of the TypeScript -- and returning true here on that basis made every prose
+  // document in an ingested project invisible to every non-code question. The private-docs corpus is one such
+  // project: asked what license SlopBlocker uses, the markdown span answering it was classified as code and
+  // filtered out of the pool, after the retrieval fix had already found it.
+  //
+  // The two checks below decide it from the span instead: the URI extension names the language, and failing
+  // that the punctuation shape reads the content. The workspace TypeScript this branch was added for is caught
+  // by both -- it is ingested with its .ts path, and it reads as code -- so nothing that was excluded on
+  // evidence stops being excluded.
   const uri = String(provenance.uri ?? provenance.canonicalUri ?? "").toLocaleLowerCase();
   if (CODE_EXTENSIONS.some(extension => uri.endsWith(extension))) return true;
   return textShapeIsSourceCode(String(span.text ?? ""));
