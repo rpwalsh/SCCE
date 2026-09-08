@@ -8,7 +8,8 @@ import { CODE_LINE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurface
 import { composeSpanFillings } from "./code-span-repair.js";
 import type { ProgramDiagnostic, RepairOperation } from "./program-repair-kernel.js";
 import { LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY } from "./program-repair-kernel.js";
-import { toJsonValue } from "./primitives.js";
+import { createClock, createHasher, toJsonValue } from "./primitives.js";
+import { createIdFactory } from "./ids.js";
 import type { JsonValue } from "./types.js";
 
 /**
@@ -495,13 +496,37 @@ function indentForDepth(depth: number): string {
   return "  ".repeat(Math.max(0, Math.min(8, depth)));
 }
 
+/**
+ * Deterministic identity for a composed repair, minted the way every other derived id in this system is.
+ *
+ * A hand-built name keyed on the location was the same string for every composition at that line, and the
+ * bounded-debugging guard -- which asks whether a patch has been tried before -- could not tell two different
+ * edits apart, so a proposer's second hypothesis was refused as a repeat of its first. An id derived from what
+ * the edit does is the same id for the same edit and a different one otherwise, which is the property that guard
+ * was always relying on.
+ */
+const REPAIR_ID_FACTORY = createIdFactory({
+  clock: createClock({ fixedTime: 0, stepMs: 1 }),
+  hasher: createHasher(),
+  deterministicReplay: true,
+  namespace: "learned-code-repair"
+});
+
 /** One learned candidate as the repair operation the code mouth applies, verifies, and rolls back. */
 export function learnedCodeRepairOperation(
   candidate: LearnedCodeRepairCandidate,
   targetPath: string
 ): RepairOperation {
   return {
-    id: `repair.learned_code.${candidate.strategy}.${candidate.startLine}`,
+    id: REPAIR_ID_FACTORY.semanticId("program_repair_operation", {
+      family: LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY,
+      languageId: candidate.languageId,
+      targetPath,
+      strategy: candidate.strategy,
+      startLine: candidate.startLine,
+      endLine: candidate.endLine,
+      content: candidate.content
+    }),
     kind: "replace",
     path: targetPath,
     startLine: candidate.startLine,
