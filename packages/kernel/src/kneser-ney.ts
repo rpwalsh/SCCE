@@ -420,10 +420,31 @@ function orderSummary(model: KneserNeyModel): Array<{ order: number; grams: numb
   return out;
 }
 
+/**
+ * Own-property reads for the model's count tables.
+ *
+ * These tables are plain objects -- built with Object.fromEntries and restored from JSON -- so a bare-symbol key
+ * reaches Object.prototype whenever the corpus contains one of its member names. `toString`, `constructor` and
+ * `valueOf` are ordinary identifiers in every code corpus, and reading them returned a function where a count
+ * belonged: arithmetic on it produced NaN probabilities, and iterating it threw. Measured on this repository's
+ * own TypeScript, where `toString` alone poisoned every model that saw it.
+ */
+function ownCount(record: Record<string, number>, key: string): number | undefined {
+  if (!Object.hasOwn(record, key)) return undefined;
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function ownSuccessors(record: Record<string, string[]>, key: string): readonly string[] {
+  if (!Object.hasOwn(record, key)) return [];
+  const value = record[key];
+  return Array.isArray(value) ? value : [];
+}
+
 function baseProbability(model: KneserNeyModel, symbol: string): number {
-  const continuation = model.continuationCounts[symbol] ?? (symbol === "<unk>" ? 1 : 0);
+  const continuation = ownCount(model.continuationCounts, symbol) ?? (symbol === "<unk>" ? 1 : 0);
   if (model.totalContinuationTypes > 0 && continuation > 0) return Math.max(1e-12, continuation / model.totalContinuationTypes);
-  const unigram = model.unigramCounts[symbol] ?? (symbol === "<unk>" ? 1 : 0);
+  const unigram = ownCount(model.unigramCounts, symbol) ?? (symbol === "<unk>" ? 1 : 0);
   return Math.max(1e-12, unigram / Math.max(1, model.totalUnigramCount + (symbol === "<unk>" ? 1 : 0)));
 }
 
@@ -432,12 +453,12 @@ function recursiveProbability(model: KneserNeyModel, rawContext: readonly string
   const context = rawContext.slice(-(order - 1));
   const gram = gramKey([...context, symbol]);
   const contextKey = gramKey(context);
-  const count = model.counts[gram] ?? 0;
-  const contextCount = model.contextCounts[contextKey] ?? 0;
-  const continuationTypes = model.contextContinuationTypes[contextKey] ?? 0;
+  const count = ownCount(model.counts, gram) ?? 0;
+  const contextCount = ownCount(model.contextCounts, contextKey) ?? 0;
+  const continuationTypes = ownCount(model.contextContinuationTypes, contextKey) ?? 0;
   if (contextCount <= 0) return recursiveProbability(model, context.slice(1), symbol, order - 1);
   const discounted = Math.max(count - model.discount, 0) / contextCount;
-  const lambda = model.backoffWeights[contextKey]
+  const lambda = ownCount(model.backoffWeights, contextKey)
     ?? (model.discount * continuationTypes) / contextCount;
   return Math.max(1e-12, discounted + lambda * recursiveProbability(model, context.slice(1), symbol, order - 1));
 }
@@ -536,7 +557,7 @@ function activeSuccessors(model: KneserNeyModel, rawContext: readonly string[], 
   const context = rawContext.slice(-(model.order - 1));
   for (let start = 0; start < context.length && out.length < maximum; start += 1) {
     const key = gramKey(context.slice(start));
-    for (const symbol of model.successorIndex[key] ?? []) {
+    for (const symbol of ownSuccessors(model.successorIndex, key)) {
       if (seen.has(symbol)) continue;
       seen.add(symbol);
       out.push(symbol);

@@ -176,12 +176,41 @@ describe("multi-corpus training", () => {
 
     const result = await trainOssCorpus({ storage: fixture.storage, rootPath: root, maxFiles: 10, maxFileBytes: 100_000, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64 });
 
-    expect(result.docsTrained).toBe(1);
+    // A source file trains twice, into different corpora: its token stream is code, and its comments and
+    // identifier words are documentation. One projection cannot be both, and the code lane is unusable for
+    // generation if it holds prose.
     expect(result.codeTrained).toBe(1);
+    expect(result.docsTrained).toBe(2);
     expect(result.totals.oss_docs.ngramObservations).toBeGreaterThan(0);
     expect(result.totals.oss_code.ngramObservations).toBeGreaterThan(0);
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["oss_docs", "oss_code"]));
     expect(JSON.stringify(result).toLowerCase()).not.toContain("provider");
+
+    const codeReport = result.reports.find(report => report.sourceSystem === "oss_code")!;
+    const proseReport = result.reports.find(report => report.streamUri.endsWith("src/pump.ts") && report.sourceSystem === "oss_docs")!;
+    expect(codeReport.streamUri.endsWith("src/pump.ts")).toBe(true);
+    expect(proseReport).toBeDefined();
+  });
+
+  it("keeps the code corpus free of prose and the prose corpus free of syntax", async () => {
+    const root = await tempDir("oss-projection-fixture-");
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "pump.ts"), [
+      "// Stabilize pump pressure before returning a status object.",
+      "export function stabilizePumpPressure(input: number) {",
+      "  return { pressureReading: input, stable: input > 0 };",
+      "}"
+    ].join("\n"), "utf8");
+
+    // Trained separately so each projection can be read on its own.
+    const codeOnly = memoryStorage();
+    await trainOssCorpus({ storage: codeOnly.storage, rootPath: root, maxFiles: 10, includeDocs: false, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64 });
+    const docsOnly = memoryStorage();
+    await trainOssCorpus({ storage: docsOnly.storage, rootPath: root, maxFiles: 10, includeSource: false, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64 });
+
+    expect(allSourceSystems(codeOnly.state)).toEqual(new Set(["oss_code"]));
+    // includeSource:false skips the file entirely, so no projection of it is trained at all.
+    expect(allSourceSystems(docsOnly.state).size).toBe(0);
   });
 
   it("stops the Gutenberg run gracefully at the heap-safety checkpoint with a resumable report", async () => {

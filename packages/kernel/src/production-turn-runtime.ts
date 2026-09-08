@@ -3940,14 +3940,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
       // A grounded label needs a spoken surface: when the mouth admitted none, the turn is insufficient support.
       const groundedLabel = runtimeCoherence.assistantForceAfter === "source_grounded_answer" || runtimeCoherence.assistantForceAfter === "certified_fact";
-      // An artifact its compiler accepted is proven by that compiler, whatever the prose lanes could not support.
+      // Composed code, and whether anything actually built it.
+      //
+      // `verified_artifact` names a proof, so it may only be claimed when a compiler supplied one. The turn's
+      // verified workspace plans are that proof and nothing else in a chat turn is: this lane composes an
+      // artifact out of a learned corpus, which is a proposal until a toolchain accepts it. Labelling every
+      // `candidate:generated:code:` surface verified -- which is what this did, on the name alone -- would have
+      // asserted a build that never ran the moment the lane acquired a producer.
       const spokenArtifact = String(spoken.realizationTrace.selected.surfaceRealizationId ?? spoken.realizationTrace.selected.id).startsWith("candidate:generated:code:")
         && rawEmission.answer.trim().length > 0;
+      const artifactCompilerVerified = spokenArtifact && workspacePlanContext.plans.length > 0;
       const emission = {
         ...rawEmission,
-        assistantForce: spokenArtifact
+        assistantForce: artifactCompilerVerified
           ? "verified_artifact" as const
-          : groundedLabel && !rawEmission.answer.trim() ? "insufficient_support" as const : runtimeCoherence.assistantForceAfter
+          : spokenArtifact
+            ? "conjecture" as const
+            : groundedLabel && !rawEmission.answer.trim() ? "insufficient_support" as const : runtimeCoherence.assistantForceAfter
       };
       // Fired exactly once per non-recursive turn, right here: this is the
       // earliest point where emission.answer is settled -- past

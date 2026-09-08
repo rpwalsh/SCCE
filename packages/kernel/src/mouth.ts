@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorrectionRuleRecord } from "./storage.js";
+import { codeModelsFromRecords, generateLearnedCodeSurface } from "./code-construction.js";
+import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
 import { isEntitySaladSurface } from "./evidence-gist.js";
@@ -707,7 +709,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const groundedSurfaceAvailable = input.evidence.some(span => span.status === "promoted")
         || input.entailment.evidenceIds.length > 0
         || (semanticAnswerConstructState(input.construct)?.selectedFacts.length ?? 0) > 0;
+      // Code composed the way prose is: the same predict-from-learned-symbols engine, over the corpus for the
+      // formal language this request names. Absent a trained corpus for that language this produces nothing and
+      // the turn answers as it did before -- a language never shown to the system is one it declines to write.
+      const learnedCodeCandidate = learnedCodeSurfaceCandidate(input);
       const rawCandidates = [
+        ...(learnedCodeCandidate ? [learnedCodeCandidate] : []),
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
         ...(semanticSourceCandidate && semanticSourceCandidate.id !== kernelSelectedCandidate?.id ? [semanticSourceCandidate] : []),
@@ -3086,6 +3093,41 @@ function contentScriptIds(surface: string): Set<string> {
   return new Set([...surface]
     .filter(point => /[\p{Letter}\p{Mark}]/u.test(point))
     .map(learnedScriptIdForCharacter));
+}
+
+/**
+ * The mouth's generated-code lane, finally producing what it has always selected.
+ *
+ * Five call sites in this file already treat `candidate:generated:code:` as a first-class surface -- exempt from
+ * prose admissibility, exempt from the prompt-echo rule, selected ahead of every other candidate when a formal
+ * language is named. Nothing produced one, so none of it ever ran. This composes the surface those rules were
+ * written for, out of the code models the hydrated language memory is holding for that language.
+ *
+ * The candidate carries no claim that it builds. What it asserts is only that it was composed from a corpus of
+ * the requested language, and the turn labels it accordingly.
+ */
+function learnedCodeSurfaceCandidate(input: SpeakInput): SurfaceCandidate | undefined {
+  if (!input.codeLanguage) return undefined;
+  const models = codeModelsFromRecords(input.languageMemory.records, input.codeLanguage);
+  if (!models.length) return undefined;
+  const composed = generateLearnedCodeSurface({
+    models,
+    languageId: input.codeLanguage,
+    requestText: input.requestText ?? "",
+    // The names the request itself spells: what the composition should be about, boosted but never forced.
+    requiredSymbols: codeIdentifierTokens(codeSurfaceTokens(input.requestText ?? ""), 32)
+  });
+  if (!composed?.text.trim()) return undefined;
+  return {
+    id: `candidate:generated:code:${input.codeLanguage}`,
+    style: "surface.path.generated.code",
+    path: "generated",
+    text: composed.text,
+    evidenceIds: [],
+    fit: clamp01(0.5 + Math.max(0, 1 + composed.averageLogProbability / 8) * 0.4),
+    importedPieceIds: [],
+    audit: composed.audit
+  };
 }
 
 function generatedCandidatesFromFrames(

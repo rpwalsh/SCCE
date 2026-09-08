@@ -271,7 +271,9 @@ function bm25(querySymbols: readonly string[], doc: IndexedDocument, index: Corp
   for (const symbol of querySymbols) {
     const f = doc.termFrequency.get(symbol) ?? 0;
     if (!f) continue;
-    const df = index.docFreq[symbol] ?? 0;
+    // Own-property read: docFreq is a plain object, so a query symbol like `toString` otherwise resolves to a
+    // method on Object.prototype and turns the whole BM25 score into NaN.
+    const df = Object.hasOwn(index.docFreq, symbol) && typeof index.docFreq[symbol] === "number" ? index.docFreq[symbol]! : 0;
     const idf = Math.log(1 + (index.totalDocuments - df + 0.5) / (df + 0.5));
     const denom = f + k1 * (1 - b + b * doc.length / Math.max(1, index.avgLength));
     score += idf * ((f * (k1 + 1)) / denom);

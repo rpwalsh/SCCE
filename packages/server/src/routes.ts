@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
+import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   curriculumItemFromPlan,
@@ -477,7 +477,9 @@ async function dispatch(
       targetPath,
       maxAttempts: attempts,
       ports: createTypeScriptCodeMouthPorts({
-        workspaceRoot: context.config.runtime.workspaceRoot
+        workspaceRoot: context.config.runtime.workspaceRoot,
+        // Composed from this brain's own code corpus first; the compiler-owned fix answers when it composes nothing.
+        learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage })
       })
     });
     // A repair that is forgotten cannot be learned from: every accepted patch enters the ledger with what

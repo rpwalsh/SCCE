@@ -1,0 +1,372 @@
+{
+ "schema": "scce.code_generation_calibration.v1",
+ "generatedAt": "2026-09-08T00:22:21.612Z",
+ "root": "C:\\Users\\react\\fuggit\\packages\\kernel\\src",
+ "extension": ".ts",
+ "corpusFiles": 116,
+ "heldOutFiles": 24,
+ "linesPerFile": 14,
+ "corpusMixtureLimit": 12,
+ "contextSymbols": 48,
+ "rows": [
+  {
+   "order": 2,
+   "weight": 0,
+   "logPerplexity": 3.700318846300056,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.15,
+   "logPerplexity": 3.5145478197344833,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.3,
+   "logPerplexity": 3.495361053102236,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.45,
+   "logPerplexity": 3.519187255009169,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.55,
+   "logPerplexity": 3.55446051907095,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.65,
+   "logPerplexity": 3.606955396053058,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.75,
+   "logPerplexity": 3.6820789140812553,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 0.85,
+   "logPerplexity": 3.7933606467211307,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 2,
+   "weight": 1,
+   "logPerplexity": 4.250343874372838,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0,
+   "logPerplexity": 3.5303902132820593,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.15,
+   "logPerplexity": 3.082364258766471,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.3,
+   "logPerplexity": 3.0412597849247915,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.45,
+   "logPerplexity": 3.0585774090048994,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.55,
+   "logPerplexity": 3.0944065674505854,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.65,
+   "logPerplexity": 3.151263280355926,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.75,
+   "logPerplexity": 3.2358444815830176,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.85,
+   "logPerplexity": 3.3659352064307932,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 1,
+   "logPerplexity": 4.092721765967145,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0,
+   "logPerplexity": 3.571133231288676,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.15,
+   "logPerplexity": 3.021607760611514,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.3,
+   "logPerplexity": 2.973596573293962,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.45,
+   "logPerplexity": 2.9881354644560645,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.55,
+   "logPerplexity": 3.0234592309678487,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.65,
+   "logPerplexity": 3.080845801593943,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.75,
+   "logPerplexity": 3.1673087191572478,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.85,
+   "logPerplexity": 3.3016876736582677,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 1,
+   "logPerplexity": 4.129978457157851,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0,
+   "logPerplexity": 3.626102932980978,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.15,
+   "logPerplexity": 3.012385457226282,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.3,
+   "logPerplexity": 2.959883728394435,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.45,
+   "logPerplexity": 2.9722717875140043,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.55,
+   "logPerplexity": 3.006893005620064,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.65,
+   "logPerplexity": 3.064109117517471,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.75,
+   "logPerplexity": 3.1510685479447167,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.85,
+   "logPerplexity": 3.2871073010820835,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 1,
+   "logPerplexity": 4.172734709163715,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0,
+   "logPerplexity": 3.6819686930028785,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.15,
+   "logPerplexity": 3.0222843852452557,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.3,
+   "logPerplexity": 2.9667673764275833,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.45,
+   "logPerplexity": 2.9775934883971247,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.55,
+   "logPerplexity": 3.01161008365242,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.65,
+   "logPerplexity": 3.0685268150238514,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.75,
+   "logPerplexity": 3.155560575288897,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.85,
+   "logPerplexity": 3.2923274671152205,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 1,
+   "logPerplexity": 4.210416704099651,
+   "symbols": 3948,
+   "coverage": 1
+  }
+ ],
+ "best": {
+  "order": 5,
+  "weight": 0.3,
+  "logPerplexity": 2.959883728394435,
+  "symbols": 3948,
+  "coverage": 1
+ },
+ "bestByOrder": [
+  {
+   "order": 2,
+   "weight": 0.3,
+   "logPerplexity": 3.495361053102236,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 3,
+   "weight": 0.3,
+   "logPerplexity": 3.0412597849247915,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 4,
+   "weight": 0.3,
+   "logPerplexity": 2.973596573293962,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 5,
+   "weight": 0.3,
+   "logPerplexity": 2.959883728394435,
+   "symbols": 3948,
+   "coverage": 1
+  },
+  {
+   "order": 6,
+   "weight": 0.3,
+   "logPerplexity": 2.9667673764275833,
+   "symbols": 3948,
+   "coverage": 1
+  }
+ ]
+}
