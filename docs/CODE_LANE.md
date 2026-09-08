@@ -109,6 +109,8 @@ llm:qwen2.5:3b   repaired 4/7   destroyed 1   left broken 2   declined 1
 | dropped argument | 4 | 0 | 1 | 0 | **0** |
 | **total** | **28** | **9** | **11** | **5** | **0** |
 
+Read `exact` as the result and `fully repaired` as an upper bound. The two that compile without being exact are not known to be right: one of them replaced `byFamily.set(id, bucket)` with `byFamily.get(id)`, which type-checks, drops a write, and is indistinguishable from a repair to any compiler. Argument restoration in particular has no genuine success here -- it is the class that needs a filler chosen by type rather than by likelihood, and that is not built.
+
 ## Language coverage
 
 The composition, the structural rules and the convergence loop are language-neutral: identifiers, numbers, delimited literals and bracket nesting are categories every formal language shares, and no keyword list appears anywhere in the lane.
