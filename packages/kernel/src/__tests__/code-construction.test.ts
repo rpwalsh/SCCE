@@ -21,12 +21,12 @@ import { LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY, SUPPORTED_PROGRAM_REPAIR_FAMIL
 import { kneserNeyProbability, predictKneserNey, trainKneserNey } from "../kneser-ney.js";
 import { toJsonValue } from "../primitives.js";
 
-const CORPUS = `interface Row { label: string; }
+const CORPUS = `interface Row { title: string; }
 export function show(row: Row): string {
-  return row.label;
+  return row.title;
 }
 export function name(value: Row): string {
-  return value.label;
+  return value.title;
 }
 interface Point { x: number; y: number; }
 export function origin(): Point {
@@ -64,7 +64,7 @@ describe("code as a learnable surface", () => {
   });
 
   it("round-trips a statement back to something a compiler accepts", () => {
-    const source = "return row.label;";
+    const source = "return row.title;";
     expect(renderCodeTokens(codeSurfaceTokens(source))).toBe(source);
   });
 
@@ -85,7 +85,7 @@ describe("code as a learnable surface", () => {
   });
 
   it("names the identifiers a request or a file puts in play", () => {
-    expect(codeIdentifierTokens(codeSurfaceTokens("row.label = 3;"))).toEqual(["row", "label"]);
+    expect(codeIdentifierTokens(codeSurfaceTokens("row.title = 3;"))).toEqual(["row", "title"]);
   });
 
   it("projects a whole file to a training surface", () => {
@@ -120,7 +120,7 @@ describe("kneser-ney count lookups", () => {
 
 describe("composing a repair from learned code", () => {
   it("writes the corrected member access without reading any compiler suggestion", () => {
-    const target = "interface Row { label: string; }\n\nexport function show(row: Row): string {\n  return row.labell;\n}\n";
+    const target = "interface Row { title: string; }\n\nexport function show(row: Row): string {\n  return row.titel;\n}\n";
     const candidates = generateLearnedCodeRepairs({
       models: [corpusModel()],
       languageId: "typescript",
@@ -132,14 +132,14 @@ describe("composing a repair from learned code", () => {
         path: "src/main.ts",
         line: 4,
         column: 14,
-        message: "Property 'labell' does not exist on type 'Row'.",
+        message: "Property 'titel' does not exist on type 'Row'.",
         raw: "",
         confidence: 0.95
       }],
-      requiredSymbols: ["label", "row"]
+      requiredSymbols: ["title", "row"]
     });
     expect(candidates.length).toBeGreaterThan(0);
-    expect(candidates[0]!.content).toBe("  return row.label;");
+    expect(candidates[0]!.content).toBe("  return row.title;");
     expect(candidates[0]!.id.startsWith("candidate:generated:code:")).toBe(true);
     // The score carries the boosts; the reported probability must not.
     expect(candidates[0]!.averageLogProbability).toBeLessThan(0);
@@ -189,7 +189,7 @@ describe("composing a repair from learned code", () => {
       models: [corpusModel()],
       languageId: "typescript",
       targetPath: "src/main.ts",
-      targetText: "interface Row { label: string; }\n\nexport function show(row: Row): string {\n  return row.labell;\n}\n",
+      targetText: "interface Row { title: string; }\n\nexport function show(row: Row): string {\n  return row.titel;\n}\n",
       diagnostics: [{ id: "TS2551", class: "type", line: 4, column: 14, message: "", raw: "", confidence: 0.95 }]
     })[0]!;
     const operation = learnedCodeRepairOperation(candidate, "src/main.ts");
@@ -203,6 +203,75 @@ describe("composing a repair from learned code", () => {
     const family = SUPPORTED_PROGRAM_REPAIR_FAMILIES.find(item => item.id === LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY)!;
     expect(family.mutationClass).toBe("program.mutation.learned_construction_repair");
     expect(family.requiredValidationChecks).toContain("compiler");
+  });
+});
+
+describe("filling an exact hole", () => {
+  const target = "interface Row { title: string; }\n\nexport function show(row: Row): string {\n  return row.titel;\n}\n";
+  const hole = { start: target.indexOf("titel"), length: 5, diagnosticId: "TS2551" };
+
+  it("writes what the type system admits there, leaving every other byte alone", () => {
+    const candidates = generateLearnedCodeRepairs({
+      models: [corpusModel()],
+      languageId: "typescript",
+      targetPath: "src/main.ts",
+      targetText: target,
+      diagnostics: [],
+      spans: [{ ...hole, admissible: ["title"], admissibleInside: ["title"] }]
+    });
+    expect(candidates[0]!.strategy).toBe("span");
+    expect(candidates[0]!.content).toBe("  return row.title;");
+  });
+
+  // Every one of these type-checks. Each was produced by the search before the rule that forbids it.
+  it("never fills a hole with less than the hole said", () => {
+    const call = "function add(left: number, right: number): number {\n  return left + right;\n}\n\nexport const total = add(1);\n";
+    const start = call.indexOf("add(1)");
+    const candidates = generateLearnedCodeRepairs({
+      models: [corpusModel()],
+      languageId: "typescript",
+      targetPath: "src/main.ts",
+      targetText: call,
+      diagnostics: [],
+      spans: [{ start, length: 6, diagnosticId: "TS2554", admissible: ["add", "total"] }]
+    });
+    for (const candidate of candidates) {
+      // `add(1)` filled with `(1)` drops the call; filled with `add` drops the arguments.
+      expect(candidate.content).toContain("(");
+      expect(candidate.content).toContain(")");
+      expect(candidate.content).toContain("export const total =");
+    }
+  });
+
+  it("opens a hole the way the hole opened", () => {
+    const literal = "interface Point { x: number; y: number; }\n\nexport function origin(): Point {\n  return { x: 0 };\n}\n";
+    const start = literal.indexOf("{ x: 0 }");
+    const candidates = generateLearnedCodeRepairs({
+      models: [corpusModel()],
+      languageId: "typescript",
+      targetPath: "src/main.ts",
+      targetText: literal,
+      diagnostics: [],
+      spans: [{ start, length: 8, diagnosticId: "TS2741", admissible: ["origin"], admissibleInside: ["y"] }]
+    });
+    for (const candidate of candidates) {
+      expect(candidate.content.trim().startsWith("return {")).toBe(true);
+    }
+  });
+
+  it("prefers the smallest hole that admits a filling", () => {
+    const candidates = generateLearnedCodeRepairs({
+      models: [corpusModel()],
+      languageId: "typescript",
+      targetPath: "src/main.ts",
+      targetText: target,
+      diagnostics: [],
+      spans: [
+        { start: target.indexOf("row.titel"), length: 9, diagnosticId: "TS2551:expression", admissible: ["row"] },
+        { ...hole, diagnosticId: "TS2551:token", admissible: ["title"], admissibleInside: ["title"] }
+      ]
+    });
+    expect(candidates[0]!.holeLength).toBe(5);
   });
 });
 

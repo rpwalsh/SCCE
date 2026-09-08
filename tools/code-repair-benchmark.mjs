@@ -63,7 +63,7 @@ const CASES = [
     ownedFix: true,
     request: "fix the misspelled property access",
     files: {
-      "src/main.ts": `interface Row { label: string; }\n\nexport function show(row: Row): string {\n  return row.labell;\n}\n`
+      "src/main.ts": `interface Row { title: string; }\n\nexport function show(row: Row): string {\n  return row.titel;\n}\n`
     },
     entry: "src/main.ts"
   },
