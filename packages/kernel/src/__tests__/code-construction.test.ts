@@ -11,6 +11,7 @@ import {
   renderCodeTokens
 } from "../code-surface.js";
 import { codeLanguageForPath } from "../code-request.js";
+import { applicableCodeConstructions, induceCodeConstructions, realizeCodeConstruction } from "../code-construction-grammar.js";
 import {
   generateLearnedCodeRepairs,
   generateLearnedCodeSurface,
@@ -272,6 +273,52 @@ describe("filling an exact hole", () => {
       ]
     });
     expect(candidates[0]!.holeLength).toBe(5);
+  });
+});
+
+describe("shapes induced from what code recurs on", () => {
+  const documents = [
+    { id: "a.ts", text: "export const a = { id: 1, kind: 2 };\nexport const b = f(1, 2);\n" },
+    { id: "b.ts", text: "export const c = { id: 3, kind: 4 };\nexport const d = g(5, 6);\n" },
+    { id: "c.ts", text: "export const e = { id: 7, kind: 8 };\nexport const h = k(9, 10);\n" }
+  ];
+  const render = (construction: { parts: Array<{ kind: string; surface?: string; slot?: number }> }): string =>
+    construction.parts.map(part => (part.kind === "literal" ? part.surface : `<${part.slot}>`)).join(" ");
+
+  it("marks the positions that vary, not the ones a predicate sits beside", () => {
+    const constructions = induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 2 });
+    const shapes = constructions.map(render);
+    // The keys are the same in all three documents and the values are not, so the keys are part of the shape and
+    // the values are its slots. That is the whole difference from the prose-derived induction, whose slots were
+    // whatever happened to sit either side of a token it had guessed was a predicate.
+    expect(shapes).toContain("{ id : <0> , kind : <1> }");
+    expect(shapes).toContain("<0> ( <1> , <2> )");
+  });
+
+  it("keeps a shape only when more than one document attests it", () => {
+    const single = induceCodeConstructions({
+      documents: [documents[0]!],
+      minimumDocuments: 2,
+      minimumOccurrences: 2
+    });
+    expect(single).toEqual([]);
+  });
+
+  it("offers the shapes a hole could become, nearest in size first", () => {
+    const constructions = induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 2 });
+    const applicable = applicableCodeConstructions(constructions, codeSurfaceTokens("f(1)"), 8).map(render);
+    // A call with one argument may become a call with two; it may not become something that drops the call.
+    expect(applicable.some(shape => shape === "<0> ( <1> , <2> )")).toBe(true);
+    expect(applicable.every(shape => shape.includes("(") && shape.includes(")"))).toBe(true);
+  });
+
+  it("realizes a shape only when every slot has a filler", () => {
+    const construction = induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 2 })
+      .find(item => render(item) === "<0> ( <1> , <2> )")!;
+    expect(realizeCodeConstruction(construction, new Map([[0, "add"], [1, "1"], [2, "2"]]))).toEqual(
+      ["add", "(", "1", ",", "2", ")"]
+    );
+    expect(realizeCodeConstruction(construction, new Map([[0, "add"]]))).toBeUndefined();
   });
 });
 
