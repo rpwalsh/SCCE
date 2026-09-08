@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { performance } from "node:perf_hooks";
+import { createGraphTargetGeometry } from "./graph-target-geometry.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type {
   SparseAlignmentCandidate,
@@ -637,6 +638,9 @@ function localStructuralCosts(input: {
 }): { costs: number[]; comparisons: number } {
   const costs = input.cells.map(() => 0);
   const weights = input.cells.map(() => 0);
+  // The geometry over exactly the targets this call will compare, so the walk stays inside material already in
+  // memory. Built once per call and memoised per source.
+  const geometry = createGraphTargetGeometry(input.targetById.values());
   let comparisons = 0;
   for (let row = 0; row < input.rowCells.length; row++) {
     const current = input.rowCells[row] ?? [];
@@ -671,7 +675,7 @@ function localStructuralCosts(input: {
             source.candidate,
             neighbor.candidate
           );
-          const graphDistance = typedGraphDistance(sourceTarget, neighborTarget);
+          const graphDistance = geometry.distance(sourceTarget, neighborTarget);
           const loss = huber(surfaceDistance - graphDistance, 0.25);
           const weight = neighbor.mass;
           costs[index] = (costs[index] ?? 0) + weight * loss;
@@ -907,16 +911,6 @@ function surfaceCandidatesCompatible(
 ): boolean {
   return left.sourceCoordinates.codePointEnd <= right.sourceCoordinates.codePointStart
     || right.sourceCoordinates.codePointEnd <= left.sourceCoordinates.codePointStart;
-}
-
-function typedGraphDistance(left: SparseAlignmentTarget, right: SparseAlignmentTarget): number {
-  if (left.id === right.id) return 0;
-  if (left.relationNodeId === right.relationNodeId) {
-    if (left.kind !== right.kind) return 0.1;
-    return 0.2;
-  }
-  if (left.hyperedgeId === right.hyperedgeId) return 0.25;
-  return 1;
 }
 
 function huber(value: number, delta: number): number {
