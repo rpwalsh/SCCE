@@ -312,62 +312,192 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
   };
 }
 
-export interface TypeScriptLegalIdentifierSite {
-  /** Workspace-relative path of the file being written. */
-  path: string;
-  line: number;
-  column: number;
+export type TypeScriptRepairHoleScope = "token" | "expression" | "subject";
+
+export interface TypeScriptRepairHole {
+  /** Exact UTF-16 range a repair may rewrite. Everything outside it stays byte-identical. */
+  start: number;
+  length: number;
+  scope: TypeScriptRepairHoleScope;
+  /** Identifiers the type system admits where the hole begins. */
+  admissible: string[];
+  /** Identifiers admitted one position in, where a member access resolves against what precedes it. */
+  admissibleInside: string[];
+}
+
+export interface TypeScriptRepairSite {
+  code: number;
+  category: string;
+  start: number;
+  length: number;
+  message: string;
+  /**
+   * Every range this defect is expressible in, the reported one first.
+   *
+   * A diagnostic anchors where the compiler can point, which is regularly not where a repair has to act.
+   * "Expected 2 arguments" is reported on the callee, so no rewriting of the callee's name can add an argument.
+   * "Property 'y' is missing" is reported on the `return` keyword, which cannot be rewritten into an object
+   * literal at all. "Type 'string' is not assignable" is reported on the binding name, a position where the type
+   * system admits nothing whatsoever. In each case the repair lives in a range the AST knows and the diagnostic
+   * does not name: the expression around the token, or the expression the statement is actually about.
+   *
+   * Which hole is the right one is not decided here. All of them are offered and the build is the selector.
+   */
+  holes: TypeScriptRepairHole[];
 }
 
 /**
- * The identifiers the type system says are legal at a position.
+ * Every defect in a file as an exact range, with the vocabulary the type system admits there.
  *
- * Not a suggested fix, and deliberately so: this is the language's own symbol table -- what may be written here
- * at all -- with no opinion about which of them belongs. A generator that composes from a corpus cannot know
- * that `row` has exactly one member, and a corpus thin in a given API cannot supply its names at all; bounding
- * the vocabulary by what would type-check is what lets a learned distribution choose among real candidates
- * instead of plausible-looking wrong ones. The compiler bounds, the cognition chooses, the build decides.
+ * A line and a column are what a compiler prints; a span is what it knows. Repairing by line forces a generator
+ * to rewrite a whole statement to change one token, which is both a harder composition and a licence to delete
+ * things the diagnostic never named. Replacing the span leaves everything outside it byte-identical, so the
+ * question shrinks to what belongs in the hole -- and that is the question a learned distribution can answer.
+ *
+ * One service for the file, so the diagnostics and the vocabulary come from the same bound project.
  */
-export function typeScriptLegalIdentifiersAt(
-  input: Omit<TypeScriptCodeActionInput, "requestText"> & { site: TypeScriptLegalIdentifierSite; limit?: number }
-): string[] {
+export function typeScriptRepairSites(
+  input: Omit<TypeScriptCodeActionInput, "requestText"> & { targetPath: string; limit?: number }
+): TypeScriptRepairSite[] {
   const snapshot = exactSnapshot(input.rootPath, input.files, input.workspaceManifest ?? input.files);
-  const requested = requestedSourceFiles(snapshot, [input.site.path]);
+  const requested = requestedSourceFiles(snapshot, [input.targetPath]);
   const file = requested[0];
   if (!file) return [];
   const project = createProjectContext(snapshot, observedCompilerProject(snapshot, input.compilerCommand, false), requested);
   try {
-    const position = positionOfLineColumn(file.content, input.site.line, input.site.column);
-    if (position === undefined) return [];
-    const completions = project.service.getCompletionsAtPosition(file.absolutePath, position, {});
-    if (!completions) return [];
-    const limit = Math.max(1, Math.min(512, Math.floor(input.limit ?? 128)));
-    const out: string[] = [];
-    for (const entry of completions.entries) {
-      if (!/^[\p{Letter}_$][\p{Letter}\p{Number}_$]*$/u.test(entry.name)) continue;
-      if (out.includes(entry.name)) continue;
-      out.push(entry.name);
+    const limit = Math.max(1, Math.min(32, Math.floor(input.limit ?? 8)));
+    const source = project.service.getProgram()?.getSourceFile(file.absolutePath);
+    const out: TypeScriptRepairSite[] = [];
+    for (const diagnostic of compilerDiagnostics(project.service, file)) {
+      if (diagnostic.category !== "error") continue;
+      out.push({
+        code: diagnostic.code,
+        category: diagnostic.category,
+        start: diagnostic.start,
+        length: diagnostic.length,
+        message: diagnostic.message,
+        holes: repairHoleRanges(source, diagnostic.start, diagnostic.length)
+          .map(range => ({
+            ...range,
+            admissible: completionNames(project.service, file.absolutePath, range.start),
+            admissibleInside: completionNames(project.service, file.absolutePath, range.start + 1)
+          }))
+          // A position where the type system will accept no name at all is not a position a name may be written
+          // in: the binding side of `const total: number = "three"` admits nothing, and filling it produced
+          // `export const : number: number = ...`. The value the declaration is about is a separate hole.
+          .filter(hole => hole.scope !== "token" || hole.admissible.length > 0)
+      });
       if (out.length >= limit) break;
     }
     return out;
   } catch {
-    // A snapshot the compiler cannot bind offers no vocabulary; the corpus lane still composes without it.
+    // A snapshot the compiler cannot bind reports no sites; the corpus lane still composes from line positions.
     return [];
   } finally {
     project.service.dispose();
   }
 }
 
-/** 1-based line and column to the offset the language service indexes by. */
-function positionOfLineColumn(content: string, line: number, column: number): number | undefined {
-  if (!Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) return undefined;
-  const lines = content.split(/\r?\n/u);
-  if (line > lines.length) return undefined;
-  const newlineLength = content.includes("\r\n") ? 2 : 1;
-  let offset = 0;
-  for (let index = 0; index < line - 1; index++) offset += lines[index]!.length + newlineLength;
-  return offset + Math.min(column - 1, lines[line - 1]!.length);
+/**
+ * The ranges a defect is expressible in: the token it was reported on, the expression containing that token, and
+ * the expression the enclosing statement is about.
+ *
+ * All three are AST facts about where things begin and end. None of them says what should be written there.
+ */
+function repairHoleRanges(
+  source: ts.SourceFile | undefined,
+  start: number,
+  length: number
+): Array<{ start: number; length: number; scope: TypeScriptRepairHoleScope }> {
+  const ranges: Array<{ start: number; length: number; scope: TypeScriptRepairHoleScope }> = [];
+  if (!source) return [{ start, length, scope: "token" }];
+  // A keyword is not a hole. `Property 'y' is missing` is reported on `return`, and treating that as a name
+  // position let the search replace the keyword with an identifier -- `origin { x: 0 };` -- which is not a
+  // repair of anything. The statement's own subject expression, added below, is where that defect lives.
+  if (!isKeywordAt(source, start)) ranges.push({ start, length, scope: "token" });
+  const end = start + length;
+  let innermost: ts.Node | undefined;
+  let containingExpression: ts.Node | undefined;
+  const visit = (node: ts.Node): void => {
+    if (node.getStart(source) > start || node.getEnd() < end) return;
+    innermost = node;
+    if (ts.isExpression(node) && (node.getStart(source) < start || node.getEnd() > end)) {
+      if (!containingExpression || nodeWidth(node, source) < nodeWidth(containingExpression, source)) {
+        containingExpression = node;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  try {
+    ts.forEachChild(source, visit);
+  } catch {
+    return ranges;
+  }
+  const push = (node: ts.Node | undefined, scope: TypeScriptRepairHoleScope): void => {
+    if (!node) return;
+    const nodeStart = node.getStart(source);
+    const nodeLength = node.getEnd() - nodeStart;
+    if (nodeLength <= 0) return;
+    if (ranges.some(range => range.start === nodeStart && range.length === nodeLength)) return;
+    ranges.push({ start: nodeStart, length: nodeLength, scope });
+  };
+  push(containingExpression, "expression");
+  push(subjectExpression(innermost), "subject");
+  return ranges;
 }
+
+/**
+ * The expression a statement or declaration is about.
+ *
+ * A type error on a return statement is a claim about what it returns; one on a variable's name is a claim about
+ * what it was initialised with. The compiler anchors on the keyword or the binding because that is where it can
+ * point, and the value it is complaining about is one AST edge away.
+ */
+function subjectExpression(node: ts.Node | undefined): ts.Node | undefined {
+  for (let current = node, depth = 0; current && depth < 12; current = current.parent, depth++) {
+    if (ts.isReturnStatement(current) || ts.isThrowStatement(current)) return current.expression;
+    if (ts.isVariableDeclaration(current) || ts.isPropertyDeclaration(current)) return current.initializer;
+    if (ts.isPropertyAssignment(current)) return current.initializer;
+    if (ts.isExpressionStatement(current)) return current.expression;
+  }
+  return undefined;
+}
+
+/** Whether the token beginning at a position is one of the language's own reserved words. */
+function isKeywordAt(source: ts.SourceFile, position: number): boolean {
+  const token = (ts as unknown as { getTokenAtPosition?: (file: ts.SourceFile, position: number) => ts.Node })
+    .getTokenAtPosition?.(source, position);
+  const kind = token?.kind;
+  return kind !== undefined
+    && kind >= ts.SyntaxKind.FirstKeyword
+    && kind <= ts.SyntaxKind.LastKeyword;
+}
+
+function nodeWidth(node: ts.Node, source: ts.SourceFile): number {
+  return node.getEnd() - node.getStart(source);
+}
+
+function completionNames(service: ts.LanguageService, fileName: string, position: number, limit = 128): string[] {
+  try {
+    const completions = service.getCompletionsAtPosition(fileName, position, {});
+    if (!completions) return [];
+    const out: string[] = [];
+    for (const entry of completions.entries) {
+      // Keywords are offered here too, and they are not names an expression can be built out of: `const` came
+      // back as an admissible head for a call expression, and the generator dutifully composed `const total`.
+      if (entry.kind === ts.ScriptElementKind.keyword) continue;
+      if (!IDENTIFIER_NAME.test(entry.name) || out.includes(entry.name)) continue;
+      out.push(entry.name);
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+const IDENTIFIER_NAME = /^[\p{Letter}_$][\p{Letter}\p{Number}_$]*$/u;
+
 
 function deriveCompilerCodeActions(
   input: Omit<TypeScriptCodeActionInput, "requestText">,
