@@ -123,13 +123,15 @@ export function authorityRequirementCoefficients(
  * real function (not deleted) so the compatibility signal stays visible in
  * the audit trace for observability.
  *
- * One exception is not authority routing at all: a factual proof candidate
- * whose own proof boundary says unresolved obligations overwhelm the amount
- * of evidence supporting it is not an answer candidate. That is a proof
- * admission failure. Keeping it in the field allowed the judge to select a
- * source-grounded surface that was merely about the subject (for example an
- * Apollo 11 launch sentence for "Who commanded Apollo 11?") even though the
- * proof trace already said the requested relation was underdetermined.
+ * One exception is not authority routing at all: for factual authority, a
+ * candidate whose own proof/requirement signals say it has not established
+ * the requested answer is not an answer candidate. Keeping those candidates
+ * in the field allowed the judge to select a source-grounded surface that
+ * was merely about the subject (for example an Apollo 11 launch sentence
+ * for "Who commanded Apollo 11?") even though the trace already exposed
+ * severe underdetermination. This gate consumes only candidate-internal
+ * semantic/proof signals; it does not parse request language or add a second
+ * lexical router.
  */
 export function admitCandidatesForAuthority(
   field: CandidateField,
@@ -140,7 +142,7 @@ export function admitCandidatesForAuthority(
   );
   const rejectedForFactualProof = authority === "factual"
     ? field.candidates
-      .map(candidate => ({ candidate, failures: factualProofAdmissionFailures(candidate) }))
+      .map(candidate => ({ candidate, failures: factualCandidateAdmissionFailures(candidate) }))
       .filter(row => row.failures.length > 0)
     : [];
   const rejectedIds = new Set(rejectedForFactualProof.map(row => row.candidate.id));
@@ -183,8 +185,7 @@ export function admitCandidatesForAuthority(
   };
 }
 
-function factualProofAdmissionFailures(candidate: CandidateSurface): string[] {
-  if (candidate.kind !== "proof-answer" && candidate.kind !== "ccr-extractive") return [];
+function factualCandidateAdmissionFailures(candidate: CandidateSurface): string[] {
   const failures: string[] = [];
   if ((candidate.missedRequirementIds?.length ?? 0) > 0) failures.push("missed-required-output");
   if (candidate.boundaries.includes("unsupported-factual-claim")) failures.push("unsupported-factual-claim");
@@ -198,6 +199,12 @@ function factualProofAdmissionFailures(candidate: CandidateSurface): string[] {
   const evidenceCount = Math.max(1, candidate.evidenceIds.length);
   if (unresolved > Math.max(1, evidenceCount * 2)) {
     failures.push(`proof-obligations-overwhelm-evidence:${unresolved}/${candidate.evidenceIds.length}`);
+  }
+
+  if (!candidateCompatibleWithAuthority(candidate, "factual")
+    && candidate.scores.support <= 0
+    && candidate.scores.faithfulness <= 0) {
+    failures.push("no-factual-support");
   }
   return failures;
 }
