@@ -158,6 +158,7 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
         : "";
       const candidate: string = (strategy === "tail" ? `${prefixText}${rendered}${preserved}` : `${indent}${rendered}`).trimEnd();
       if (!candidate.trim() || candidate === lineText) continue;
+      if (!preservesUninvolvedTokens(lineText, candidate, site.column)) continue;
       const coveredSymbols = (input.requiredSymbols ?? []).filter(symbol => generated.symbols.includes(symbol));
       out.push({
         id: `candidate:generated:code:${input.languageId}:${strategy}:${site.line}:${out.length}`,
@@ -349,6 +350,29 @@ export function learnedCodeRepairOperation(
     riskStatus: "provisional-uncalibrated",
     repairFamilyId: LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY
   };
+}
+
+/**
+ * A repair may rewrite what the diagnostic points at. Everything else on that line was never in question.
+ *
+ * Without this the gate is satisfiable by deletion, and the search finds that out: asked to fix a call with too
+ * few arguments, it replaced `export const total = add(1);` with `add`, which type-checks perfectly and destroys
+ * the module. "It compiles" is a real criterion but a one-sided one -- it bounds what is wrong with a program,
+ * not what the program has to still be. The token the diagnostic names may change or vanish; every other token
+ * on the line has to survive, because removing one is a different operation that nobody asked for.
+ */
+function preservesUninvolvedTokens(originalLine: string, candidate: string, column: number): boolean {
+  const before = originalLine.slice(0, Math.max(0, column - 1));
+  const after = originalLine.slice(Math.max(0, column - 1)).replace(/^[\p{Letter}\p{Number}_$]+/u, "");
+  const required = codeSurfaceTokens(`${before}${after}`);
+  const present = new Map<string, number>();
+  for (const token of codeSurfaceTokens(candidate)) present.set(token, (present.get(token) ?? 0) + 1);
+  for (const token of required) {
+    const remaining = present.get(token) ?? 0;
+    if (remaining <= 0) return false;
+    present.set(token, remaining - 1);
+  }
+  return true;
 }
 
 interface RepairSite {
