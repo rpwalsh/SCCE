@@ -10,6 +10,7 @@ import {
   learnedCodeRepairOperation,
   type KneserNeyModel,
   type LearnedCodeRepairCandidate,
+  type LearnedCodeRepairSpan,
   type JsonValue,
   type NgramModelRecord,
   type ProgramDiagnostic,
@@ -17,7 +18,7 @@ import {
 } from "@scce/kernel";
 import type { CodeMouthContext, CodeMouthProposal } from "./code-mouth.js";
 import { typeScriptProjectSnapshot } from "./code-mouth-compiler-proposer.js";
-import { typeScriptLegalIdentifiersAt } from "./typescript-code-actions.js";
+import { typeScriptRepairSites } from "./typescript-code-actions.js";
 
 /**
  * The proposer that writes code instead of transcribing a fix.
@@ -99,16 +100,21 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         log(`no trained ${languageId} corpus; the learned lane has nothing to compose from`);
         return undefined;
       }
-      const legal = await legalIdentifiers(options, languageId, context, diagnostics);
-      if (legal.length) log(`the type system admits ${legal.length} identifier(s) at the defect site`);
+      const spans = await repairSpans(options, languageId, context);
+      if (spans.length) {
+        log(`${spans.length} candidate defect range(s); the type system admits ${spans[0]!.admissible?.length ?? 0} identifier(s) at the first`);
+      }
+      // The admitted names bound each hole individually and are not folded into the global boost: a hole whose
+      // vocabulary is the whole global scope would otherwise mark 128 names equally wanted, which is the same as
+      // wanting none of them and drowns out the handful the request actually spelled.
       const candidates = generateLearnedCodeRepairs({
         models,
         languageId,
         targetPath: context.targetPath,
         targetText: context.targetText,
         diagnostics,
-        requiredSymbols: [...new Set([...requiredSymbols(request), ...legal])],
-        ...(legal.length ? { admissibleSiteSymbols: legal } : {}),
+        requiredSymbols: requiredSymbols(request),
+        ...(spans.length ? { spans } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
       });
@@ -138,21 +144,18 @@ function requiredSymbols(request: string): string[] {
 }
 
 /**
- * What the type system will accept at the first located defect, when a workspace is available to ask.
+ * The exact defect ranges in this file, with what the type system admits at each.
  *
- * Bounded to TypeScript because that is the toolchain this package can query for a symbol table; every other
- * language falls back to the corpus alone, which is the honest degradation -- fewer right names available, never
- * a wrong one asserted.
+ * Bounded to TypeScript because that is the toolchain this package can ask for spans and a symbol table. Every
+ * other language falls back to the line and column its compiler prints, which is the honest degradation: a
+ * coarser hole, never a wrong answer asserted.
  */
-async function legalIdentifiers(
+async function repairSpans(
   options: LearnedCodeProposerOptions,
   languageId: string,
-  context: CodeMouthContext,
-  diagnostics: readonly ProgramDiagnostic[]
-): Promise<string[]> {
+  context: CodeMouthContext
+): Promise<LearnedCodeRepairSpan[]> {
   if (!options.workspaceRoot || languageId !== "typescript") return [];
-  const site = diagnostics.find(diagnostic => Number.isInteger(diagnostic.line) && (diagnostic.line ?? 0) > 0);
-  if (!site) return [];
   const snapshot = await typeScriptProjectSnapshot({
     workspaceRoot: options.workspaceRoot,
     targetPath: context.targetPath,
@@ -161,26 +164,23 @@ async function legalIdentifiers(
     ...(options.tsconfigPath ? { tsconfigPath: options.tsconfigPath } : {})
   });
   if (!snapshot) return [];
-  const at = (column: number): string[] => {
-    try {
-      return typeScriptLegalIdentifiersAt({
-        rootPath: snapshot.root.replace(/\\/gu, "/"),
-        requestedPaths: [snapshot.relativeTarget],
-        files: snapshot.files,
-        compilerCommand: snapshot.compilerCommand,
-        site: { path: snapshot.relativeTarget, line: site.line!, column }
-      });
-    } catch {
-      return [];
-    }
-  };
-  // A diagnostic points at the first character of the offending token, and TypeScript only resolves a member
-  // access from inside that token: asked at the token start it answers with the whole global scope, asked one
-  // character in it answers with the members of whatever precedes the dot. The tighter answer is the useful
-  // one, and where there is no token to be inside, the position itself still bounds what may be named there.
-  const column = Math.max(1, site.column ?? 1);
-  const inside = at(column + 1);
-  return inside.length ? inside : at(column);
+  try {
+    return typeScriptRepairSites({
+      rootPath: snapshot.root.replace(/\\/gu, "/"),
+      requestedPaths: [snapshot.relativeTarget],
+      targetPath: snapshot.relativeTarget,
+      files: snapshot.files,
+      compilerCommand: snapshot.compilerCommand
+    }).flatMap(site => site.holes.map((hole): LearnedCodeRepairSpan => ({
+      start: hole.start,
+      length: hole.length,
+      diagnosticId: `TS${site.code}:${hole.start}:${hole.length}:${hole.scope}`,
+      admissible: hole.admissible,
+      admissibleInside: hole.admissibleInside
+    })));
+  } catch {
+    return [];
+  }
 }
 
 /**

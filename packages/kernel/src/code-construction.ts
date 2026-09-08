@@ -5,6 +5,7 @@ import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias } from "./corpus-registry.j
 import { codeLanguageForPath } from "./code-request.js";
 import type { NgramModelRecord } from "./storage.js";
 import { CODE_LINE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
+import { composeSpanFillings } from "./code-span-repair.js";
 import type { ProgramDiagnostic, RepairOperation } from "./program-repair-kernel.js";
 import { LEARNED_CODE_CONSTRUCTION_REPAIR_FAMILY } from "./program-repair-kernel.js";
 import { toJsonValue } from "./primitives.js";
@@ -25,8 +26,8 @@ import type { JsonValue } from "./types.js";
  * Weight on the corpus distribution against the file's own.
  *
  * A corpus model cannot emit an identifier it never saw, and the names a repair must use are usually local to
- * the file being repaired -- so a corpus-only distribution is structurally incapable of writing `row.label` for
- * a file whose `label` the corpus has never met. Interpolating a model trained on the target file itself closes
+ * the file being repaired -- so a corpus-only distribution is structurally incapable of writing `row.title` for
+ * a file whose `title` the corpus has never met. Interpolating a model trained on the target file itself closes
  * that, and the split decides which one leads: the corpus knows the shape of the language, the file knows its
  * names.
  *
@@ -58,12 +59,33 @@ export interface LearnedCodeRepairCandidate {
   endLine: number;
   content: string;
   surface: string;
-  strategy: "line" | "tail";
+  strategy: "span" | "line" | "tail";
   averageLogProbability: number;
   /** Ranking objective: the above with required-symbol boosts applied. Never read as a probability. */
   score: number;
+  /**
+   * Width of the hole this filled, when it filled one.
+   *
+   * The first ranking key, ahead of probability. A defect is expressible in several ranges -- the token the
+   * compiler named, the expression around it, the expression its statement is about -- and the smallest one that
+   * admits a filling is the repair that changes least. Ranking by likelihood across ranges instead put a
+   * confident rewrite of a whole statement ahead of the one-token correction that was actually wanted, and the
+   * attempt budget was gone before the loop reached it.
+   */
+  holeLength?: number;
   coveredSymbols: string[];
   audit: JsonValue;
+}
+
+export interface LearnedCodeRepairSpan {
+  /** UTF-16 offset and length of the defect in `targetText`. */
+  start: number;
+  length: number;
+  diagnosticId: string;
+  /** Identifiers the type system admits where the span begins. */
+  admissible?: readonly string[];
+  /** Identifiers admitted one position in, where a member access resolves against what precedes it. */
+  admissibleInside?: readonly string[];
 }
 
 export interface LearnedCodeGenerationInput {
@@ -75,6 +97,15 @@ export interface LearnedCodeGenerationInput {
   diagnostics: readonly ProgramDiagnostic[];
   /** Names the request, the retrieved API surface, or the diagnostics put in play, boosted during generation. */
   requiredSymbols?: readonly string[];
+  /**
+   * Exact defect ranges, when the toolchain reports them.
+   *
+   * A span is what a compiler knows; a line and a column are what it prints. Repairing by line makes a generator
+   * rewrite a whole statement to change one token -- a harder composition, and a licence to delete what the
+   * diagnostic never named. Replacing the span leaves every other byte of the file identical, so the question
+   * shrinks to what belongs in the hole, which is the question a learned distribution can actually answer.
+   */
+  spans?: readonly LearnedCodeRepairSpan[];
   /**
    * The identifiers a toolchain says may legally stand at the diagnostic's own position, when one was asked.
    *
@@ -112,14 +143,36 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
   const maxCandidates = Math.max(1, Math.min(8, Math.floor(input.maxCandidates ?? 4)));
   const out: LearnedCodeRepairCandidate[] = [];
 
+  // Where the toolchain reports exact ranges, they are the whole story; the line strategies below are what is
+  // left for a compiler that reports only a line and a column. Smallest range first, so the most local repair is
+  // the first thing the build is asked about.
+  const orderedSpans = [...(input.spans ?? [])]
+    .sort((left, right) => left.length - right.length || left.start - right.start)
+    .slice(0, 8);
+  for (const span of orderedSpans) {
+    out.push(...composeSpanReplacements({
+      span,
+      corpusModels,
+      corpusOrder,
+      corpusWeight,
+      boost,
+      beamWidth: Math.max(2, Math.min(12, Math.floor(input.beamWidth ?? 6))),
+      languageId: input.languageId,
+      targetPath: input.targetPath,
+      targetText: input.targetText,
+      requiredSymbols: input.requiredSymbols ?? []
+    }));
+  }
+  if (out.length) return dedupedByContent(out).slice(0, maxCandidates);
+
   for (const site of repairSites(input.diagnostics, lines.length)) {
     const lineText: string | undefined = lines[site.line - 1];
     if (lineText === undefined) continue;
     const indent = lineText.match(/^[ \t]*/u)?.[0] ?? "";
     // The file's own model, trained on everything except the line being replaced.
     //
-    // Left in, the defect is the strongest local evidence there is: a model that has read `row.labell`
-    // predicts `labell` after `row .` more confidently than any corpus can outvote, and the lane regenerates
+    // Left in, the defect is the strongest local evidence there is: a model that has read `row.titel`
+    // predicts `titel` after `row .` more confidently than any corpus can outvote, and the lane regenerates
     // the very text it was asked to fix. Removing the line is also what makes the calibrated interpolation
     // weight apply, because a held-out line is the condition it was measured under.
     const localModel = trainKneserNey(
@@ -194,17 +247,126 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
     }
   }
 
-  // Two diagnostics on the same statement compose the same replacement, and offering it twice spends a second
-  // attempt re-proving the first one's rejection. The loop's budget is for distinct hypotheses.
+  return dedupedByContent(out).slice(0, maxCandidates);
+}
+
+/**
+ * One defect range, filled.
+ *
+ * The file is rebuilt as prefix + filling + suffix, so nothing outside the range can change however the filling
+ * turns out. That is what makes several hypotheses per site safe to offer: the worst a wrong one can do is fail
+ * to build, and it is rolled back. The operation is still expressed over whole lines because that is what the
+ * apply port writes, but the lines it carries are recomputed from the spliced file rather than composed.
+ */
+function composeSpanReplacements(input: {
+  span: LearnedCodeRepairSpan;
+  corpusModels: readonly KneserNeyModel[];
+  corpusOrder: number;
+  corpusWeight: number;
+  boost: ReadonlyMap<string, number>;
+  beamWidth: number;
+  languageId: string;
+  targetPath: string;
+  targetText: string;
+  requiredSymbols: readonly string[];
+}): LearnedCodeRepairCandidate[] {
+  const { span, targetText } = input;
+  const start = Math.max(0, Math.min(targetText.length, Math.floor(span.start)));
+  const end = Math.max(start, Math.min(targetText.length, start + Math.max(0, Math.floor(span.length))));
+  const prefixText = targetText.slice(0, start);
+  const suffixText = targetText.slice(end);
+  const originalText = targetText.slice(start, end);
+  // Trained on the file with the hole in it, which is the condition the interpolation weight was measured under
+  // and the only one that keeps the defect from teaching the model to reproduce itself.
+  const localModel = trainKneserNey(codeSurfaceTokens(`${prefixText}${suffixText}`), {
+    order: input.corpusOrder,
+    discount: 0.75,
+    vocabularyLimit: 8192
+  });
+  // Two vocabularies, kept apart because they answer different questions: what may open the filling, and what
+  // may be named inside it. Merging them told a hole opening a brace that the global scope was its content.
+  const admissible = new Set(span.admissible ?? []);
+  const admissibleInside = new Set(span.admissibleInside ?? []);
+  const fillings = composeSpanFillings({
+    corpusModels: input.corpusModels,
+    localModel,
+    corpusWeight: input.corpusWeight,
+    boost: input.boost,
+    beamWidth: input.beamWidth,
+    prefixText,
+    suffixText,
+    originalText,
+    ...(admissible.size ? { admissible } : {}),
+    ...(admissibleInside.size ? { admissibleInside } : {}),
+    // Several hypotheses per hole: the compiler is a cheap oracle and every rejection is rolled back, so the
+    // budget is better spent on distinct fillings than on one confident guess.
+    limit: 6
+  });
+
+  const startLine = countLines(prefixText);
+  const endLine = startLine + countLines(originalText) - 1;
+  const out: LearnedCodeRepairCandidate[] = [];
+  for (const [ordinal, filling] of fillings.entries()) {
+    if (filling.text === originalText) continue;
+    const spliced = `${prefixText}${filling.text}${suffixText}`;
+    const content = spliced.split(/\r?\n/u).slice(startLine - 1, endLine).join("\n");
+    if (!content.trim()) continue;
+    const coveredSymbols = input.requiredSymbols.filter(symbol => filling.symbols.includes(symbol));
+    out.push({
+      id: `candidate:generated:code:${input.languageId}:span:${start}:${ordinal}`,
+      languageId: input.languageId,
+      startLine,
+      endLine,
+      content,
+      surface: filling.text.trim(),
+      strategy: "span",
+      averageLogProbability: filling.averageLogProbability,
+      score: filling.score,
+      holeLength: end - start,
+      coveredSymbols,
+      audit: toJsonValue({
+        source: "code-construction.composeSpanReplacements",
+        languageId: input.languageId,
+        targetPath: input.targetPath,
+        diagnosticId: span.diagnosticId,
+        spanStart: start,
+        spanLength: end - start,
+        replaced: originalText,
+        filling: filling.text,
+        admissible: admissible.size,
+        admissibleInside: admissibleInside.size,
+        corpusModels: input.corpusModels.length,
+        corpusModelOrder: input.corpusOrder,
+        corpusWeight: input.corpusWeight,
+        averageLogProbability: filling.averageLogProbability,
+        score: filling.score,
+        coveredSymbols
+      })
+    });
+  }
+  return out;
+}
+
+/** How many lines a piece of text spans, counting the one it starts on. */
+function countLines(text: string): number {
+  return text.split(/\r?\n/u).length;
+}
+
+/**
+ * Two diagnostics on one statement compose the same replacement, and offering it twice spends a second attempt
+ * re-proving the first rejection. The loop's budget is for distinct hypotheses.
+ */
+function dedupedByContent(candidates: readonly LearnedCodeRepairCandidate[]): LearnedCodeRepairCandidate[] {
   const distinct = new Map<string, LearnedCodeRepairCandidate>();
-  for (const candidate of out.sort((left, right) =>
-    right.coveredSymbols.length - left.coveredSymbols.length
+  for (const candidate of [...candidates].sort((left, right) =>
+    (left.holeLength ?? 0) - (right.holeLength ?? 0)
+    || right.coveredSymbols.length - left.coveredSymbols.length
     || right.score - left.score
     || left.id.localeCompare(right.id))) {
     const key = `${candidate.startLine}\u0001${candidate.content}`;
     if (!distinct.has(key)) distinct.set(key, candidate);
   }
-  return [...distinct.values()].slice(0, maxCandidates);
+  return [...distinct.values()];
 }
 
 /**
