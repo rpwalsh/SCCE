@@ -87,16 +87,41 @@ open defect, reproducible with one command.
 The turn deadline is enforced at stage boundaries: a stage that overruns its budget yields to a bounded alternative
 and the turn completes degraded rather than running past the contract.
 
+### Code repair, decided by a compiler
+
+SCCE repairs source the way it answers questions: composed from what it has learned, with something outside it deciding whether the answer stands. The type system bounds what may legally be written at a defect, a learned distribution chooses among it, and the build decides. Every proposal is applied, verified, and rolled back if it fails.
+
+On this project's own modules — real files of a hundred to three hundred lines, a defect introduced by a deterministic mutation, repaired inside a project of eight, the TypeScript compiler deciding. Because a mutation's inverse is known, the criterion is byte equality with the original, not merely that it compiles:
+
+| mutation | defects | restored exactly | fully repaired | partly repaired | **made worse** |
+|---|---|---|---|---|---|
+| misspelled reference | 8 | 3 | 4 | 0 | **0** |
+| misspelled member | 8 | 6 | 6 | 0 | **0** |
+| three misspellings | 8 | 0 | 0 | 5 | **0** |
+| dropped argument | 4 | 0 | 1 | 0 | **0** |
+| **total** | **28** | **9** | **11** | **5** | **0** |
+
+Against a locally hosted model on seeded defects, the failure modes differ more than the counts:
+
+```
+scce             repaired 2/7   destroyed 0   left broken 0   declined 5
+llm:qwen2.5:3b   repaired 4/7   destroyed 1   left broken 2   declined 1
+```
+
+`destroyed` counts a file that compiles because its contents were removed — a state the compiler cannot distinguish from a repair. SCCE declines where it has nothing; it does not guess and leave the workspace broken.
+
+See [`docs/CODE_LANE.md`](docs/CODE_LANE.md) for the architecture, the calibration, and the stated boundaries.
+
 ### Test and trial evidence
 
-- **Test suite**: 2,228 tests across 352 files pass (`pnpm test:unit`, 11 skipped — live-database tests that require `SCCE_TEST_DATABASE_URL`); 1,704 of them cover the kernel.
+- **Test suite**: 2,239 tests across 353 files pass (`pnpm test:unit`, 11 skipped — live-database tests that require `SCCE_TEST_DATABASE_URL`); 1,704 of them cover the kernel.
 - **Real-use trial**: a private repository of 50 files, ingested cold, answered questions from its own documents with evidence-bound citations.
 - **Learning with consent**: when a question has no evidence the turn asks before searching; fetched material is quarantined with a preview and becomes evidence only after the owner confirms it.
 - **Ingest throughput**: a shard flush completes in minutes. Role induction uses a bounded medoid search; graph-surface alignment is bounded per lattice unit rather than compared against every shard target.
 
 ### Scope
 
-Two boundaries are stated rather than implied. Learned reversible constructions have not yet been promoted from the Wikipedia corpus: the relation channels available there (article links and section headings) yield page-specific hyperedges that no independent source corroborates, and a prose relation channel is the next item. The independent public-review protocol in [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) is specified and has not yet been executed by a third party.
+Two boundaries are stated rather than implied. Learned reversible constructions have not yet been promoted from the Wikipedia corpus: the relation channels available there (article links and section headings) yield page-specific hyperedges that no independent source corroborates, and a prose relation channel is the next item. The independent public-review protocol in [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) is specified and has not yet been executed by a third party. In the code lane a compiler is a necessary and not a sufficient criterion — an edit that type-checks can still be wrong, and test execution is the gate that closes it — and being *told* what to write, as distinct from repairing what is there, is not yet connected.
 
 ## What SCCE does
 
@@ -107,6 +132,7 @@ Two boundaries are stated rather than implied. Learned reversible constructions 
 - Activates a bounded, task-relevant graph field instead of evaluating a dense model for every generated token.
 - Constructs answers with explicit evidence, contradiction, and confidence traces.
 - Separates what may be claimed from how it is expressed.
+- Repairs source code by composing from a learned corpus, bounded by the language's own type system and decided by its compiler — improving a file or leaving it untouched, never between the two.
 - Applies reviewed code patches through a loopback-only VS Code integration backed by exact-byte workspace snapshots.
 - Preserves learned knowledge and outcomes in operator-controlled storage.
 
@@ -289,6 +315,7 @@ docs                    architecture, guides, and normative contracts
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — cognitive architecture and runtime pipeline
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — installation and operation
 - [`docs/API_SURFACE.md`](docs/API_SURFACE.md) — HTTP API
+- [`docs/CODE_LANE.md`](docs/CODE_LANE.md) — writing and repairing code: the division between type system, learned distribution and compiler
 - [`docs/ACCEPTANCE_SUITE.md`](docs/ACCEPTANCE_SUITE.md) — twenty behaviours the architecture must demonstrate, with current coverage
 - [`docs/ABLATION.md`](docs/ABLATION.md) — what each component is worth, measured by disabling it
 - [`docs/PUBLIC_REVIEW_CONTRACT.md`](docs/PUBLIC_REVIEW_CONTRACT.md) — evidence required before a reproducible public-review claim

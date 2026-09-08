@@ -11,6 +11,7 @@ available to licensees and to evaluators under a signed agreement; see [COMMERCI
 
 - [User guide](USER_GUIDE.md) — setup, ingestion, operation, inspection, and validation.
 - [Architecture](ARCHITECTURE.md) — the one-lane runtime, package boundaries, and durable-store boundary.
+- [Code lane](CODE_LANE.md) — writing and repairing code: how the type system, a learned distribution, and the compiler divide the work, with calibration and measured outcomes.
 - [Security policy](../SECURITY.md) — vulnerability reporting and the supported security boundary.
 
 ## Operate SCCE
