@@ -121,7 +121,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         targetPath: context.targetPath,
         targetText: context.targetText,
         diagnostics,
-        requiredSymbols: requiredSymbols(request),
+        requiredSymbols: requiredSymbols(request, knownSymbols(context.targetText, models)),
         ...(spans.length ? { spans } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
@@ -144,14 +144,27 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
 }
 
 /**
- * The names generation is pulled toward: what the request itself spells.
+ * The names generation is pulled toward: the ones the request spells that are actually names.
  *
- * Not the file's whole symbol table. The generator already models the file directly, so every name in it is
- * represented there at its real frequency; passing the same names in again as a flat boost only tells the search
- * that all of them are equally wanted, which is exactly what they are not.
+ * A request is written in a human language and this lane reads it with a code tokenizer, so every ordinary word
+ * in it comes back looking like an identifier: "fix the misspelled property access" yielded five, each then
+ * boosted as strongly as a real symbol. That is not the request being understood, it is prose being mistaken for
+ * code. A word earns the boost by being a name this file or this language's corpus actually uses -- which is a
+ * question about the evidence and needs no list of words in any language to answer.
+ *
+ * Not the file's whole symbol table either: the generator already models the file directly, so every name in it
+ * is represented there at its real frequency, and passing them all back in as a flat boost only says that all of
+ * them are equally wanted, which is exactly what they are not.
  */
-function requiredSymbols(request: string): string[] {
-  return codeIdentifierTokens(codeSurfaceTokens(request), 32);
+function requiredSymbols(request: string, known: ReadonlySet<string>): string[] {
+  return codeIdentifierTokens(codeSurfaceTokens(request), 64).filter(symbol => known.has(symbol));
+}
+
+/** Every symbol some code in play actually uses: this file's, and the corpus models' vocabularies. */
+function knownSymbols(targetText: string, models: readonly KneserNeyModel[]): Set<string> {
+  const known = new Set(codeSurfaceTokens(targetText));
+  for (const model of models) for (const symbol of model.vocabulary) known.add(symbol);
+  return known;
 }
 
 /**
