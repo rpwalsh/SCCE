@@ -101,6 +101,8 @@ On this project's own modules — real files of a hundred to three hundred lines
 | dropped argument | 4 | 0 | 1 | 0 | **0** |
 | **total** | **28** | **9** | **11** | **5** | **0** |
 
+Read `restored exactly` as the result and `fully repaired` as an upper bound: the two that compile without being byte-exact are not known to be right, and one of them drops a write while type-checking cleanly. The compiler is a necessary criterion, not a sufficient one, and this table reports both.
+
 Against a locally hosted model on seeded defects, the failure modes differ more than the counts:
 
 ```
