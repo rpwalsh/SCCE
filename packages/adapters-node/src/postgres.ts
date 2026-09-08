@@ -1067,6 +1067,8 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_version_updated ON ${q}.ngram_models((model_json->>'sourceVersionId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_updated ON ${q}.ngram_models((model_json->>'profileId'),updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
+    // Models load best-trained first (learned unigram mass), not newest first.
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_trained ON ${q}.ngram_models((model_json->>'sourceSystem'), (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) DESC, updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_ngrams ON ${q}.language_profiles USING GIN(ngram_keys)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_source_version ON ${q}.language_profiles(source_version_id,created_at DESC,id ASC)`,
@@ -1472,9 +1474,38 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                ON anchor_index.features @> ARRAY[postings.feature]::text[]
              WHERE postings.posting_count <= ${EVIDENCE_FEATURE_POSTING_CAP}
            ),
+           -- The subject seeds even when it is over the cap: "ada|lovelace" carries 409 postings against a cap
+           -- of 400, so the article about her could only be reached through "lovelace|born", six postings that
+           -- were all the owner's source comments. The leading feature is the request subject (features arrive
+           -- in priority order), and its postings are admitted where the span's title carries the subject, which
+           -- bounds the seed to the documents that are about it rather than an arbitrary slice of its postings.
+           -- Only a phrase can be a subject here: a lone over-cap symbol is a function word ("which", "was") or a
+           -- subject the no-selective-feature fallback already seeds. And only a phrase whose postings the fallback
+           -- cap could carry: "united|states" is a phrase in tens of thousands of spans, and title-checking every one
+           -- of them cost 25s on one question (measured), so it is left to the features that are selective.
+           subject_hits AS (
+             SELECT anchor_index.evidence_id AS id, chosen.feature, chosen.feature_ord
+             FROM (
+               SELECT feature, feature_ord FROM feature_postings
+               WHERE posting_count > ${EVIDENCE_FEATURE_POSTING_CAP}
+                 AND feature LIKE 'anchor:bi:%'
+                 AND (SELECT COUNT(*) FROM (
+                        SELECT 1 FROM ${storage.table("evidence_anchor_index")} probe
+                        WHERE probe.features @> ARRAY[feature_postings.feature]::text[]
+                        LIMIT ${EVIDENCE_FEATURE_FALLBACK_CAP + 1}
+                      ) bounded) <= ${EVIDENCE_FEATURE_FALLBACK_CAP}
+               ORDER BY feature_ord ASC
+               LIMIT 1
+             ) chosen
+             JOIN ${storage.table("evidence_anchor_index")} anchor_index
+               ON anchor_index.features @> ARRAY[chosen.feature]::text[]
+             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id = anchor_index.evidence_id
+             WHERE ${titleMatchExpression("evidence", 4 + access.params.length)}
+             LIMIT ${EVIDENCE_FEATURE_FALLBACK_CAP}
+           ),
            common_hits AS (
              SELECT seeds.id, postings.feature, postings.feature_ord
-             FROM (SELECT DISTINCT id FROM seed_hits) seeds
+             FROM (SELECT id FROM seed_hits UNION SELECT id FROM subject_hits) seeds
              JOIN ${storage.table("evidence_anchor_index")} anchor_index ON anchor_index.evidence_id = seeds.id
              JOIN feature_postings postings
                ON postings.posting_count > ${EVIDENCE_FEATURE_POSTING_CAP}
@@ -1508,9 +1539,11 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            ),
            feature_hits AS (
              SELECT * FROM seed_hits
-             UNION ALL
+             UNION
+             SELECT * FROM subject_hits
+             UNION
              SELECT * FROM common_hits
-             UNION ALL
+             UNION
              SELECT * FROM fallback_hits
            ),
            candidate_count AS (SELECT GREATEST(1, COUNT(DISTINCT id))::float8 AS n FROM feature_hits),
@@ -1654,6 +1687,10 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       for (const prefix of query.excludeUriPrefixes ?? []) {
         params.push(`${prefix}%`);
         where.push(`s.canonical_uri NOT LIKE $${params.length}`);
+      }
+      if (query.includeUriPrefixes?.length) {
+        const alternatives = query.includeUriPrefixes.map(prefix => { params.push(`${prefix}%`); return `s.canonical_uri LIKE $${params.length}`; });
+        where.push(`(${alternatives.join(" OR ")})`);
       }
       if (query.sourceVersionIds?.length) { params.push([...query.sourceVersionIds]); where.push(`sv.id = ANY($${params.length}::text[])`); }
       if (query.minByteLength !== undefined) { params.push(Math.floor(query.minByteLength)); where.push(`sv.byte_length >= $${params.length}`); }
@@ -2181,9 +2218,11 @@ function graphQueryFeatures(query: GraphSliceQuery): string[] {
  * the largest posting list, and simultaneously floors the IDF of any term
  * common enough to hit it.
  */
-const EVIDENCE_FEATURE_POSTING_CAP = 400;
+// A feature seeds candidates when its postings fit this many rows. The rows are (id, feature, ordinal) and cost
+// nothing at this size; the cap is where a term stops being a subject and starts being a stopword for this corpus.
+const EVIDENCE_FEATURE_POSTING_CAP = 4096;
 /** How many postings a last-resort seed may pull when no feature of the request is selective. */
-const EVIDENCE_FEATURE_FALLBACK_CAP = 2000;
+const EVIDENCE_FEATURE_FALLBACK_CAP = 16384;
 
 /**
  * Whether language_profiles carries the precomputed
@@ -3579,6 +3618,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       appendInformationAccess(storage, "model", params, where);
       params.push(query.limit ?? 100);
       const limitParam = params.length;
+      const trainedMass = "COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0)";
       // Cumulative byte budget in the same relevance order as the count
       // limit: whole-novel training grew single model_json blobs to tens
       // of MB, so a count limit alone stopped bounding memory (a 4GB
@@ -3600,21 +3640,21 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         return (await storage.query<NgramModelRow>(
           `SELECT ranked.* FROM (
              SELECT model.*,
-               SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
-               ROW_NUMBER() OVER (ORDER BY model.updated_at DESC, model.id ASC) AS relevance_rank
+               SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               ROW_NUMBER() OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC) AS relevance_rank
              FROM (
-               SELECT * FROM ${storage.table("ngram_models")} model
+               SELECT model.*, ${trainedMass} AS trained_mass FROM ${storage.table("ngram_models")} model
                WHERE ${where.join(" AND ")}
-               ORDER BY model.updated_at DESC, model.id ASC
+               ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC
                LIMIT $${limitParam}
              ) model
            ) ranked
            WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
-           ORDER BY ranked.updated_at DESC, ranked.id ASC LIMIT $${limitParam}`,
+           ORDER BY ranked.trained_mass DESC, ranked.updated_at DESC, ranked.id ASC LIMIT $${limitParam}`,
           params
         )).map(rowToNgramModel);
       }
-      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel);
+      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel);
     },
     async listNgramObservations(query = {}) {
       const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
@@ -3750,10 +3790,50 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern.pattern_json->>'sourceSystem'=$${params.length}`); }
       appendInformationAccess(storage, "pattern", params, where);
       params.push(query.limit ?? 1000);
+      const limitParam = params.length;
+      // Ranked on the narrow indexed columns first. The previous shape materialised pattern_json for every
+      // matching row before ranking: a construction pattern's bundle averages 700KB, so a corpus with 14,784
+      // patterns detoasted ~2GB per call (measured 40-128s per hydration, even when 13 rows came back).
+      // pg_column_size reads the stored size without detoasting, so the byte window admits candidates
+      // cheaply; the exact JSON-text window then runs over those admitted rows only, which are read anyway.
+      const byteBudget = query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0 ? Math.floor(query.maxTotalJsonBytes) : undefined;
+      if (byteBudget) params.push(byteBudget);
+      const order = (alias: string) => `${alias}.support DESC, ${alias}.updated_at DESC, ${alias}.id ASC`;
+      const narrow = "id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label";
+      const admitted = byteBudget
+        ? `SELECT ${narrow} FROM (
+             SELECT candidate.*,
+               SUM(candidate.stored_bytes) OVER (ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
+               ROW_NUMBER() OVER (ORDER BY ${order("candidate")}) AS relevance_rank
+             FROM candidates candidate
+           ) sized
+           WHERE sized.running_stored_bytes <= $${params.length} OR sized.relevance_rank = 1`
+        : `SELECT ${narrow} FROM candidates`;
+      const finalSelect = byteBudget
+        ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label
+           FROM (
+             SELECT eligible.*,
+               SUM(octet_length(eligible.pattern_json::text)) OVER (ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               ROW_NUMBER() OVER (ORDER BY ${order("eligible")}) AS relevance_rank
+             FROM eligible_patterns eligible
+           ) ranked
+           WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
+           ORDER BY ${order("ranked")} LIMIT $${limitParam}`
+        : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       return (await storage.query<LanguagePatternRow>(
-        `WITH scoped_patterns AS MATERIALIZED (
+        `WITH candidates AS MATERIALIZED (
+           SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy, pattern.evidence_ids, pattern.updated_at, pattern.information_label,
+                  pg_column_size(pattern.pattern_json) AS stored_bytes
+           FROM ${storage.table("language_patterns")} pattern
+           ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+           ORDER BY ${order("pattern")}
+           LIMIT $${limitParam}
+         ),
+         admitted AS (${admitted}),
+         scoped_patterns AS MATERIALIZED (
            SELECT
-             pattern.*,
+             admitted.id, admitted.profile_id, admitted.pattern_kind, admitted.support, admitted.entropy, admitted.evidence_ids, admitted.updated_at, admitted.information_label,
+             pattern.pattern_json,
              profile.source_version_id,
              version.source_id,
              version.observed_at AS source_observed_at,
@@ -3764,10 +3844,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                'language.unspecified'
              ) AS source_language,
              COALESCE(NULLIF(pattern.pattern_json->>'sourceSystem',''), 'source.unspecified') AS source_system
-           FROM ${storage.table("language_patterns")} pattern
-           LEFT JOIN ${storage.table("language_profiles")} profile ON profile.id=pattern.profile_id
+           FROM admitted
+           JOIN ${storage.table("language_patterns")} pattern ON pattern.id=admitted.id
+           LEFT JOIN ${storage.table("language_profiles")} profile ON profile.id=admitted.profile_id
            LEFT JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
-           ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
          ),
          ranked_request_patterns AS (
            SELECT
@@ -3780,18 +3860,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE scoped.pattern_json->>'schema'='scce.request_requirement_pattern.v1'
          ),
          eligible_patterns AS (
-            SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
-            FROM scoped_patterns
-            WHERE pattern_json->>'schema' IS DISTINCT FROM 'scce.request_requirement_pattern.v1'
-            UNION ALL
-            SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
-            FROM ranked_request_patterns
+           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
+           FROM scoped_patterns
+           WHERE pattern_json->>'schema' IS DISTINCT FROM 'scce.request_requirement_pattern.v1'
+           UNION ALL
+           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
+           FROM ranked_request_patterns
            WHERE source_version_rank=1
          )
-         SELECT *
-         FROM eligible_patterns
-         ORDER BY support DESC, updated_at DESC, id ASC
-         LIMIT $${params.length}`,
+         ${finalSelect}`,
         params
       )).map(rowToLanguagePattern);
     },

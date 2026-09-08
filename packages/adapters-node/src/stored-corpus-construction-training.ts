@@ -33,6 +33,8 @@ export interface StoredCorpusConstructionTrainingOptions {
   minArticleBytes?: number;
   maxArticleBytes?: number;
   creativeEventCompiler?: CreativeEventConstructionCompiler;
+  languageOnly?: boolean;
+  includeUriPrefixes?: readonly string[];
 }
 
 export interface StoredCorpusConstructionTrainingReport {
@@ -80,6 +82,7 @@ export async function trainStoredCorpusConstructions(
 
   const versions = await list.call(input.storage.evidence, {
     excludeUriPrefixes: input.excludeUriPrefixes ?? ["file://"],
+    ...(input.includeUriPrefixes?.length ? { includeUriPrefixes: input.includeUriPrefixes } : {}),
     ...(input.sourceVersionIds?.length ? { sourceVersionIds: input.sourceVersionIds } : {}),
     minByteLength: Math.max(0, Math.floor(input.minArticleBytes ?? 2000)),
     maxByteLength: Math.max(1, Math.floor(input.maxArticleBytes ?? 400000)),
@@ -129,10 +132,11 @@ export async function trainStoredCorpusConstructions(
         // original ingestion: re-inserting it would double-count the
         // corpus and dominate wall time (~700K observation rows per MB).
         // This lane exists for the construction inventory only.
-        skipNgramPersistence: true,
-        ngramMaxOrder: 2,
-        ngramMaxCountersPerOrder: 64,
-        ngramVocabularyLimit: 4096,
+        // Language-only inverts this lane: the n-gram layer IS the product, and no synthetic source is written --
+        // the text already lives in the brain, so only the learned language attaches to it.
+        ...(input.languageOnly
+          ? { skipNgramPersistence: false, persistSource: false, languageOnly: true }
+          : { skipNgramPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
         creativeEventCompiler: compiler,
         graphSnapshotSourceVersionIds: currentSourceVersionIds,
         sourceFamilyRanges: currentFamilyRanges,

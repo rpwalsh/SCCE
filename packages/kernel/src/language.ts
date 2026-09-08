@@ -166,11 +166,48 @@ export function selectLanguageProfileClusterForSurface(
   if (!selected || selected.score < MIN_SURFACE_SELECTION_SCORE) return undefined;
   const margin = selected.score - (ranked[1]?.score ?? 0);
   if (margin >= MIN_SURFACE_SELECTION_MARGIN) return { ...selected, margin };
+  // A tie here is a tie on LANGUAGE, not on corpus: this score is coverage of the request's character trigrams,
+  // and every large English cluster covers a short English question completely. Three clusters tied at 1.000 for
+  // "When was Ada Lovelace born?" and the source-anchored preference below then chose the one carrying the sole
+  // source-owned identity -- the owner's own documentation -- so the turn hydrated documentation English and
+  // derived its closed class from it: "id", "source", "evidence", "graph", with "when" nowhere in it.
+  //
+  // Source-owned language is the right choice when the request is about that source, which the request shows
+  // by naming it. Otherwise the tied clusters are one language and are hydrated as one: every model of that
+  // language the corpus has learned, and the closed class summed over all of it.
   const sourceAnchored = sourceAnchoredSurfaceSelection(ranked, selected.score);
+  const surfaceKey = normalizeSourceLanguageAlias(surface);
+  const requestNamesSource = sourceAnchored !== undefined
+    && [...verifiedClusterAliasKeys(sourceAnchored.cluster)].some(alias => alias.length >= 2 && surfaceKey.includes(alias));
+  if (sourceAnchored && requestNamesSource) {
+    return {
+      ...sourceAnchored,
+      margin: Math.max(0, sourceAnchored.score - (ranked.find(row => row.cluster.id !== sourceAnchored.cluster.id)?.score ?? 0))
+    };
+  }
+  // Tied on the surface AND lexically one distribution: a topic split of one language, not two languages sharing letters.
+  const sameLanguage = new Set(sameLanguageClusters(selected.cluster, ranked.map(row => row.cluster)).map(cluster => cluster.id));
+  const tied = ranked.filter(row => row.cluster.id === selected.cluster.id || (
+    row.score >= MIN_SOURCE_ANCHORED_SURFACE_SCORE
+    && selected.score - row.score <= MAX_SOURCE_ANCHORED_TOP_GAP
+    && sameLanguage.has(row.cluster.id)
+  ));
+  if (tied.length > 1) {
+    const members = tied.flatMap(row => row.cluster.members);
+    return { ...selected, cluster: aggregateLanguageProfileCluster(members), margin };
+  }
   return sourceAnchored ? {
     ...sourceAnchored,
     margin: Math.max(0, sourceAnchored.score - (ranked.find(row => row.cluster.id !== sourceAnchored.cluster.id)?.score ?? 0))
   } : undefined;
+}
+
+/** The clusters whose learned character distribution is the anchor's language, the anchor included. Pure. */
+export function sameLanguageClusters(
+  anchor: LanguageProfileCluster,
+  clusters: readonly LanguageProfileCluster[]
+): LanguageProfileCluster[] {
+  return clusters.filter(cluster => cluster.id === anchor.id || profileDistributionFit(anchor, cluster).lexical >= MIN_CLUSTER_DISTRIBUTION_FIT);
 }
 
 /**
@@ -497,7 +534,9 @@ function scoreSurfaceDistribution(input: SurfaceStatistics, distribution: Surfac
   };
 }
 
-function profileDistributionFit(left: LanguageProfile, right: LanguageProfile): { score: number; lexical: number } {
+type LanguageDistribution = Pick<LanguageProfile, "charNgrams" | "scripts" | "symbolShapes" | "direction">;
+
+function profileDistributionFit(left: LanguageDistribution, right: LanguageDistribution): { score: number; lexical: number } {
   const trigram = weightedDistributionOverlap(
     new Map(left.charNgrams.map(row => [row.ngram.normalize("NFC").toLowerCase(), row.count])),
     new Map(right.charNgrams.map(row => [row.ngram.normalize("NFC").toLowerCase(), row.count]))
@@ -556,7 +595,7 @@ function symmetricSetOverlap(left: ReadonlySet<string>, right: ReadonlySet<strin
   return clamp01(intersection / Math.max(1, left.size + right.size - intersection));
 }
 
-function aggregateLanguageProfileCluster(rawMembers: readonly LanguageProfile[]): LanguageProfileCluster {
+export function aggregateLanguageProfileCluster(rawMembers: readonly LanguageProfile[]): LanguageProfileCluster {
   const members = [...rawMembers].sort((left, right) => compareCodePoint(left.id, right.id));
   const scripts = aggregateNormalizedRows(members.map(member => member.scripts.map(row => [row.script, row.mass] as const)))
     .map(([script, mass]) => ({ script, mass }));

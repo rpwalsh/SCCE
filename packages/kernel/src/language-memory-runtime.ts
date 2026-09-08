@@ -1717,18 +1717,15 @@ export function scopeLanguageMemoryStateToProfile(
 
 export function scopeLanguageMemoryStateToCluster(
   state: LanguageMemoryRuntimeState,
-  cluster: LanguageProfileCluster
+  cluster: LanguageProfileCluster,
+  options: { admitUnprofiled?: boolean } = {}
 ): LanguageMemoryRuntimeState {
   const profileIds = new Set(cluster.profileIds);
   const sourceVersionIds = new Set(cluster.sourceVersionIds.map(String));
-  const records = state.records.filter(record => ownedLanguageArtifact(
-    modelProfileId(record),
-    profileIds
-  ));
-  const importedObservations = state.importedObservations.filter(record => ownedLanguageArtifact(
-    observationProfileId(record),
-    profileIds
-  ));
+  // A corpus-role hydration already proved provenance by corpus; records trained before profiles existed stay.
+  const owned = (profileId: string | undefined) => ownedLanguageArtifact(profileId, profileIds) || (options.admitUnprofiled === true && !profileId);
+  const records = state.records.filter(record => owned(modelProfileId(record)));
+  const importedObservations = state.importedObservations.filter(record => owned(observationProfileId(record)));
   const importedUnits = state.importedUnits.filter(record => profileIds.has(record.profileId));
   const importedPatterns = state.importedPatterns.filter(record => profileIds.has(record.profileId));
   const importedSemanticFrames = state.importedSemanticFrames.filter(frame => semanticFrameBelongsToCluster(frame, profileIds));
@@ -4483,36 +4480,47 @@ function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefi
   if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
   const row = model as Record<string, JsonValue>;
   if (
-    row.schema !== KNESER_NEY_SCHEMA
-    || typeof row.order !== "number"
+    typeof row.order !== "number"
     || typeof row.discount !== "number"
     || !isRecord(row.counts)
     || !isRecord(row.contextCounts)
     || !Array.isArray(row.vocabulary)
-    || !isRecord(row.successorIndex)
-    || !isRecord(row.successorOverflowCounts)
-    || !isRecord(row.backoffWeights)
-    || !Array.isArray(row.baseContinuations)
   ) return undefined;
-  return {
-    schema: KNESER_NEY_SCHEMA,
-    sourceKey: modelProfileId(record) ?? record.streamId,
-    order: row.order,
+  const core = {
     discount: row.discount,
-    observedSymbolCount: numberOf(row.observedSymbolCount),
-    vocabularySize: numberOf(row.vocabularySize),
     counts: numberRecord(row.counts),
     contextCounts: numberRecord(row.contextCounts),
     continuationCounts: numberRecord(row.continuationCounts),
     contextContinuationTypes: numberRecord(row.contextContinuationTypes),
+    unigramCounts: numberRecord(row.unigramCounts)
+  };
+  // Persisted models carry counts only (every model in the live brain: 1,993 records, none with a successor
+  // index), so the runtime indexes are compiled here exactly as they are for observation-built models.
+  // Requiring them persisted rejected every hydrated record silently and left the mouth with observation samples.
+  const persistedIndexes = row.schema === KNESER_NEY_SCHEMA
+    && isRecord(row.successorIndex)
+    && isRecord(row.successorOverflowCounts)
+    && isRecord(row.backoffWeights)
+    && Array.isArray(row.baseContinuations);
+  const indexes = persistedIndexes
+    ? {
+      successorIndex: stringArrayRecord(row.successorIndex),
+      successorOverflowCounts: numberRecord(row.successorOverflowCounts),
+      backoffWeights: numberRecord(row.backoffWeights),
+      baseContinuations: (row.baseContinuations as JsonValue[]).map(String)
+    }
+    : compileKneserNeyRuntimeIndexes(core);
+  return {
+    schema: KNESER_NEY_SCHEMA,
+    sourceKey: modelProfileId(record) ?? record.streamId,
+    order: row.order,
+    observedSymbolCount: numberOf(row.observedSymbolCount),
+    vocabularySize: numberOf(row.vocabularySize),
+    ...core,
     totalContinuationTypes: numberOf(row.totalContinuationTypes),
-    unigramCounts: numberRecord(row.unigramCounts),
     totalUnigramCount: numberOf(row.totalUnigramCount),
     vocabulary: row.vocabulary.map(String),
-    successorIndex: stringArrayRecord(row.successorIndex),
-    successorOverflowCounts: numberRecord(row.successorOverflowCounts),
-    backoffWeights: numberRecord(row.backoffWeights),
-    baseContinuations: row.baseContinuations.map(String)
+    ...indexes
   };
 }
 

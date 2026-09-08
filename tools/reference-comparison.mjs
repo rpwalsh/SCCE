@@ -154,12 +154,12 @@ try {
 
     // Dates are compared by their parts, so "March 14, 1879" and "14 March 1879" are the same answer.
     const statesExpected = (answer) => {
-      const parts = String(question.expect).split(/[s,]+/u).filter(Boolean);
+      const parts = String(question.expect).split(/[\s,]+/u).filter(Boolean);
       const spoken = normalize(answer);
       return parts.every(part => spoken.includes(normalize(part)));
     };
     const score = (answer) => question.answerable
-      ? { correct: new RegExp(question.expect.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu").test(answer), declined: declines(answer) }
+      ? { correct: statesExpected(answer), declined: declines(answer) }
       : { correct: null, declined: declines(answer) };
 
     rows.push({

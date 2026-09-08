@@ -70,6 +70,7 @@ export interface LanguageCorpusTrainingInput {
   /** Alignment evidence carried from earlier batches: a construction is promoted on what the corpus shows, not one document. */
   alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
   alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
+  languageOnly?: boolean;
   /**
    * Skip writing n-gram observations and models. For text whose n-gram
    * mass is ALREADY in the store (stored-corpus construction training
@@ -292,6 +293,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       maxCountersPerOrder: input.ngramMaxCountersPerOrder ?? registryNgram.maxCountersPerOrder,
       vocabularyLimit: input.ngramVocabularyLimit ?? registryNgram.vocabularyLimit,
       constructionSets: input.constructionSets,
+      ...(input.languageOnly ? { languageOnly: true } : {}),
       ...(input.alignmentPromotionObservations?.length ? { alignmentPromotionObservations: input.alignmentPromotionObservations } : {}),
       ...(input.alignmentCalibrationObservations?.length ? { alignmentCalibrationObservations: input.alignmentCalibrationObservations } : {})
     }

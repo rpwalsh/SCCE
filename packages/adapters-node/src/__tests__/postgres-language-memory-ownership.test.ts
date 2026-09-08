@@ -54,7 +54,7 @@ describe("Postgres language-memory ownership queries", () => {
     // limit, and the top record always loads so an undersized budget
     // degrades to one record instead of zero.
     const modelSql = calls[0]!.sql;
-    expect(modelSql).toContain("SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.updated_at DESC, model.id ASC");
+    expect(modelSql).toContain("SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC");
     expect(modelSql).toContain("running_json_bytes <=");
     expect(modelSql).toContain("relevance_rank = 1");
     expect(calls[0]?.params.at(-1)).toBe(64 * 1024 * 1024);

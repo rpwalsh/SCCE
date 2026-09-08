@@ -7,12 +7,14 @@ Running it requires a commercial license.
 
 A self-contained cognitive runtime that:
 
-- **Proves what it says.** Every answer is bound to ingested evidence with
-  an inspectable proof route. There is no generative model anywhere in the
-  runtime — not a hosted API, not a local one — so there is nothing that can
-  hallucinate; wording comes from learned constructions and language memory
-  over the admitted corpus. When it doesn't know, it says so, and that
-  behaviour is measured rather than asserted.
+- **Proves what it says.** Every factual answer is bound to ingested evidence
+  with an inspectable proof route. There is no generative model anywhere in
+  the runtime — not a hosted API, not a local one. Factual admission is not
+  delegated to a model whose learned weights serve as the source of truth; it
+  is constrained by explicit evidence and proof boundaries, and wording comes
+  from learned constructions and language memory over the admitted corpus.
+  When it doesn't know, it says so, and that behaviour is measured rather
+  than asserted.
 - **Runs where your data must stay.** CPU-only, PostgreSQL-backed, zero
   network dependency at inference time. Suitable for air-gapped,
   regulated, and privacy-critical environments where LLM APIs and GPU

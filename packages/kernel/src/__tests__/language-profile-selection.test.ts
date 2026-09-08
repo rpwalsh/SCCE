@@ -72,26 +72,28 @@ describe("learned language-profile surface selection", () => {
     expect(selectLanguageProfileClusterForSurface(clusters, "a")).toBeUndefined();
   });
 
-  it("uses a sole source-owned identity to resolve nearby topic clusters", () => {
+  it("hydrates tied topic clusters of one language as one, and the source-owned one alone only when the request names it", () => {
     const surface = "write a short story about an inventor fighting dragons";
     const owned = sourceOwnedProfile(
-      profile("profile.owned", `${surface} ${"qelari ".repeat(30)}`, "script.shared"),
+      profile("profile.owned", `${surface} the source-language-id manual ${"qelari ".repeat(4)}`, "script.shared"),
       "source-language-id"
     );
     const unowned = profile(
       "profile.unowned",
-      `${surface} ${"zomiku ".repeat(30)}`,
+      `${surface} the source-language-id manual ${"zomiku ".repeat(4)}`,
       "script.shared"
     );
-    const selected = selectLanguageProfileClusterForSurface(
-      buildLanguageProfileClusters([unowned, owned]),
-      surface
-    );
+    // Two clusters the way a large corpus produces them: grouped in different windows, never compared for merging.
+    const clusters = [...buildLanguageProfileClusters([unowned]), ...buildLanguageProfileClusters([owned])];
 
-    expect(selected?.cluster.profileIds).toEqual([owned.id]);
+    const unnamed = selectLanguageProfileClusterForSurface(clusters, surface);
+    expect(unnamed?.cluster.profileIds).toEqual([owned.id, unowned.id]);
+
+    const named = selectLanguageProfileClusterForSurface(clusters, `${surface} in the source-language-id manual`);
+    expect(named?.cluster.profileIds).toEqual([owned.id]);
   });
 
-  it("keeps competing source-owned identities ambiguous", () => {
+  it("hydrates competing source-owned identities of one language together when the request names neither", () => {
     const surface = "write a short story about an inventor fighting dragons";
     const first = sourceOwnedProfile(
       profile("profile.first-owned", `${surface} qelari qelari qelari qelari`, "script.shared"),
@@ -105,7 +107,14 @@ describe("learned language-profile surface selection", () => {
     expect(selectLanguageProfileClusterForSurface(
       buildLanguageProfileClusters([first, second]),
       surface
-    )).toBeUndefined();
+    )?.cluster.profileIds).toEqual([first.id, second.id]);
+  });
+
+  it("does not merge two distributions that merely share the letters of a one-letter surface", () => {
+    const left = profile("profile.left", "ababa ababa", "script.shared");
+    const right = profile("profile.right", "acaca acaca", "script.shared");
+
+    expect(selectLanguageProfileClusterForSurface(buildLanguageProfileClusters([left, right]), "a")).toBeUndefined();
   });
 
   it("selects learned unknown and mixed-script clusters without script-name routing", () => {

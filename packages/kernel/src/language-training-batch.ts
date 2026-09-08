@@ -126,6 +126,8 @@ export interface LanguageTrainingBatch {
   maxOrder?: number;
   maxCountersPerOrder?: number;
   vocabularyLimit?: number;
+  /** Train the language layer only: n-gram observations, models, units, frames. No construction induction or alignment. */
+  languageOnly?: boolean;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   additionalPatterns?: readonly LanguagePatternRecord[];
   graphSnapshot?: GraphSnapshot;
@@ -246,7 +248,8 @@ export function compileLanguageTrainingBatch(input: {
     vocabularyLimit: batch.vocabularyLimit
   }));
   const inducedSets = induceSourceBoundConstructionTrainingSets({
-    evidence: constructionTrainEvidence(batch.evidence, input.hasher),
+    // Language-only training hands the construction lane nothing, so every stage below compiles empties.
+    evidence: batch.languageOnly ? [] : constructionTrainEvidence(batch.evidence, input.hasher),
     profileId: batch.profile.id,
     hasher: input.hasher
   });

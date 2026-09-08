@@ -33,7 +33,9 @@ import { createJudge } from "./judge.js";
 import { jsonRecord, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import {
+  aggregateLanguageProfileCluster,
   createLanguageAcquisitionEngine,
+  sameLanguageClusters,
   selectLearnedLanguageProfileCluster,
   type LanguageProfileCluster
 } from "./language.js";
@@ -172,7 +174,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     clock,
     hasher,
     cacheMs: surfaceLanguageMemoryCacheMs,
-    profileLimit: Math.min(2048, positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_PROFILE_LIMIT", 512))
+    profileLimit: Math.min(8192, positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_PROFILE_LIMIT", 2048))
   });
   // Only what this module itself calls: the turn runtime receives `surfaceLanguageRuntime` whole and destructures its own.
   const {
@@ -379,11 +381,28 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
               const ordered = [dominant, byProfiles?.id === dominant?.id ? undefined : byProfiles]
                 .filter((cluster): cluster is LanguageProfileCluster => Boolean(cluster));
               const out = [...warmed];
-              for (const cluster of ordered) {
+              // A turn selects the aggregate of every cluster tied on its surface, which is the learned language as a
+              // whole; warming that aggregate makes the turn's cluster a subset of a resident one, and it contains
+              // both clusters the selectors above name, so it replaces them rather than joining them (each
+              // hydration is hundreds of MB of heap; a fifth one OOMed a 4GB warmup). Factual turns then realize
+              // from the encyclopedic role, warmed last so it is the newest cache entry.
+              const learned = dominant
+                ? aggregateLanguageProfileCluster(sameLanguageClusters(dominant, clusters.filter(cluster => cluster.artifactSupport > 0))
+                  .flatMap(cluster => cluster.members))
+                : undefined;
+              for (const cluster of learned ? [learned] : ordered) {
                 out.push(await hydrateSurfaceLanguageMemoryCached(
                   languageLimit,
                   cluster,
-                  "warmup-selected-language-cluster"
+                  learned ? "warmup-learned-language" : "warmup-selected-language-cluster"
+                ));
+              }
+              if (learned) {
+                out.push(await hydrateSurfaceLanguageMemoryCached(
+                  languageLimit,
+                  learned,
+                  "warmup-encyclopedic-language-cluster",
+                  CORPUS_ROLE_IDS.encyclopedic
                 ));
               }
               return out;
