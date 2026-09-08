@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { CLANG_FIXIT_REPAIR_FAMILY, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
 import type { CodeMouthContext, CodeMouthPorts, CodeMouthProposal, CodeMouthVerification } from "./code-mouth.js";
+import type { LearnedCodeProposer } from "./learned-code-proposer.js";
 
 /**
  * The same repair contract as the TypeScript port, over a different compiler.
@@ -22,6 +23,8 @@ export function createClangCodeMouthPorts(options: {
   workspaceRoot: string;
   compiler?: string;
   compilerArgs?: readonly string[];
+  /** The learned lane, on the same terms as the TypeScript ports: composition first, the fix-it as fallback. */
+  learnedProposer?: LearnedCodeProposer;
   log?: (message: string) => void;
 }): CodeMouthPorts {
   const root = path.resolve(options.workspaceRoot);
@@ -57,6 +60,11 @@ export function createClangCodeMouthPorts(options: {
     },
 
     async propose(input): Promise<CodeMouthProposal | undefined> {
+      // Same order as the TypeScript ports: compose first, hand the rest of the budget back to the compiler.
+      if (input.attempt === 1) {
+        const learned = await options.learnedProposer?.propose(input);
+        if (learned) return { ...learned, source: "learned_construction" };
+      }
       const fixits = parseFixits(input.diagnostics);
       offered = fixits.map(fixit => ({
         diagnosticCode: 0,
@@ -70,6 +78,10 @@ export function createClangCodeMouthPorts(options: {
       const applicable = fixits.filter(fixit => comparablePath(path.resolve(fixit.file)) === target);
       if (applicable.length !== 1) {
         log(`clang offered ${applicable.length} fix-its for ${input.context.targetPath}; declining to choose`);
+        if (input.attempt > 1) {
+          const learned = await options.learnedProposer?.propose(input);
+          if (learned) return { ...learned, source: "learned_construction" };
+        }
         return undefined;
       }
       const fixit = applicable[0]!;
@@ -89,7 +101,7 @@ export function createClangCodeMouthPorts(options: {
         risk: 0.1,
         riskStatus: "provisional-uncalibrated"
       };
-      return { operations: [operation], surface: repaired.trim() };
+      return { operations: [operation], surface: repaired.trim(), source: "compiler_owned" };
     },
 
     async apply(operations: readonly RepairOperation[]): Promise<() => Promise<void>> {

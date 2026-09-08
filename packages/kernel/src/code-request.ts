@@ -33,6 +33,18 @@ const CODE_EXTENSION_LANGUAGES: ReadonlyMap<string, string> = new Map([
   ["cs", "csharp"], ["rb", "ruby"], ["php", "php"], ["sh", "shell"], ["sql", "sql"]
 ]);
 
+/**
+ * The formal language a path is written in, by extension.
+ *
+ * One table serves both directions: recognising the language a request names, and labelling the corpus a file
+ * trains into. A second table would drift, and a corpus filed under a language the request cannot name is a
+ * corpus the generator can never reach.
+ */
+export function codeLanguageForPath(value: string): string | undefined {
+  const extension = /\.([\p{L}\p{N}]{1,4})$/u.exec(value.trim())?.[1]?.toLocaleLowerCase();
+  return extension ? CODE_EXTENSION_LANGUAGES.get(extension) : undefined;
+}
+
 export interface CodeRequestSignal {
   /** The formal language the request names or implies, when one is identifiable. */
   language?: string;

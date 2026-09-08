@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
-import { createClangCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
+import { createClangCodeMouthPorts, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -105,9 +105,15 @@ async function main(): Promise<void> {
         // only decides which ports it runs over; every other guarantee -- apply, verify, roll back what does not
         // build -- is the same whichever compiler is answering.
         const clangSource = /\.(c|h|cc|cpp|cxx|hpp|m|mm)$/iu.test(target);
+        // The learned lane reads this brain's code corpus. It leads; the compiler-owned fix is the fallback, and
+        // a brain with no corpus for the language simply proposes nothing and the fallback answers as before.
+        const learnedProposer = createLearnedCodeProposer({
+          storage: runtime.storage,
+          log: message => process.stderr.write(`[code-mouth] ${message}\n`)
+        });
         const ports = clangSource
-          ? createClangCodeMouthPorts({ workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
-          : createTypeScriptCodeMouthPorts({ workspaceRoot, log: message => process.stderr.write(`[code-mouth] ${message}\n`) });
+          ? createClangCodeMouthPorts({ workspaceRoot, learnedProposer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) })
+          : createTypeScriptCodeMouthPorts({ workspaceRoot, learnedProposer, log: message => process.stderr.write(`[code-mouth] ${message}\n`) });
         const result = await runCodeMouth({
           request,
           targetPath: target,
