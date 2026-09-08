@@ -162,46 +162,6 @@ async function virtualByteLength(filePath: string): Promise<number> {
   return withBrainBundleEntryStream(filePath, async input => input.byteLength);
 }
 
-export function summarizeScce2NgramState(state: Scce2NgramState) {
-  return toJsonValue({
-    totalUnigrams: state.totalUnigrams,
-    vocabularySize: state.vocabulary.size,
-    orders: [
-      { order: 1, contexts: 1, continuations: state.unigrams.size },
-      { order: 2, contexts: state.bigrams.size, continuations: nestedMapSize(state.bigrams) },
-      { order: 3, contexts: state.trigrams.size, continuations: nestedMapSize(state.trigrams) },
-      { order: 4, contexts: state.quadgrams.size, continuations: nestedMapSize(state.quadgrams) },
-      { order: 5, contexts: state.pentagrams.size, continuations: nestedMapSize(state.pentagrams) },
-      { order: 6, contexts: state.hexagrams.size, continuations: nestedMapSize(state.hexagrams) }
-    ],
-    interpolationWeights: state.interpolationWeights ?? null,
-    discounts: state.discounts ?? null
-  });
-}
-
-export function* iterateScce2NgramCounts(state: Scce2NgramState, limit = 10000): Iterable<{ order: number; history: string[]; symbol: string; count: number }> {
-  let emitted = 0;
-  for (const [symbol, count] of topMapEntries(state.unigrams, limit)) {
-    yield { order: 1, history: [], symbol, count };
-    if (++emitted >= limit) return;
-  }
-  for (const [order, map] of [
-    [2, state.bigrams],
-    [3, state.trigrams],
-    [4, state.quadgrams],
-    [5, state.pentagrams],
-    [6, state.hexagrams]
-  ] as const) {
-    for (const [context, inner] of map) {
-      const history = splitWhitespaceKey(context);
-      for (const [symbol, count] of topMapEntries(inner, Math.max(1, limit - emitted))) {
-        yield { order, history, symbol, count };
-        if (++emitted >= limit) return;
-      }
-    }
-  }
-}
-
 function readBinaryNgramState(filePath: string, buffer: Buffer): Scce2SnapshotReadResult<Scce2NgramState> {
   if (buffer.length < 12) return { ok: false, path: filePath, byteLength: buffer.length, warning: "truncated SCCE2 n-gram binary state" };
   const magic = buffer.readUInt32LE(0);

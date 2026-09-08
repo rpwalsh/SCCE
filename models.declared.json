@@ -36,6 +36,12 @@
       "purpose": "Harness for the code-repair comparison: gives SCCE and the same local reference model identical broken files and compiles both outputs. Measurement only.",
       "endpoint": "127.0.0.1:11434",
       "productReachable": false
+    },
+    {
+      "file": "tools/self-repair-benchmark.mjs",
+      "purpose": "Harness for the self-repair comparison: mutates real SCCE modules, gives SCCE and the same local reference model the identical defect, and scores both by the same compiler and byte comparison. Measurement only.",
+      "endpoint": "127.0.0.1:11434",
+      "productReachable": false
     }
   ]
 }

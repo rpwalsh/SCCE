@@ -2,7 +2,6 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
 import {
-  classifyRequestedAuthority,
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
   CREATIVE_REQUEST_FRAME_SCHEMA,
@@ -29,45 +28,6 @@ import {
   type PlanInventionsInput
 } from "../index.js";
 import type { LanguageProfile } from "../types.js";
-
-describe("requested authority classification", () => {
-  it("classifies a structured creative activation with inspectable softmax state", () => {
-    const decision = classifyRequestedAuthority({
-      requestText: "Ω-17",
-      semanticFrameIds: ["authority.feature.request.creative"]
-    });
-
-    expect(decision.requestedAuthority).toBe("creative");
-    expect(decision.explicitOverride).toBe(false);
-    expect(decision.features["authority.feature.request.creative"]).toBeGreaterThan(0);
-    expect(Object.values(decision.probabilities).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
-    expect(decision.probabilities.creative).toBeGreaterThan(decision.probabilities.factual);
-    expect(decision.probabilities.creative / decision.probabilities.factual).toBeCloseTo(
-      Math.exp((decision.logits.creative - decision.logits.factual) / decision.temperature),
-      12
-    );
-    expect(JSON.stringify(decision.audit)).toContain("evidenceAvailabilityUsed");
-  });
-
-  it("keeps an unsupported factual question factual", () => {
-    const decision = classifyRequestedAuthority({ requestText: "Ω-18?" });
-
-    expect(decision.requestedAuthority).toBe("factual");
-    expect(decision.features["authority.feature.request.creative"]).toBe(0);
-  });
-
-  it("honors an explicit authority override before inference", () => {
-    const decision = classifyRequestedAuthority({
-      requestText: "Ω-19",
-      explicitAuthority: "program"
-    });
-
-    expect(decision.requestedAuthority).toBe("program");
-    expect(decision.explicitOverride).toBe(true);
-    expect(decision.probabilities.program).toBe(1);
-    expect(decision.probabilities.creative).toBe(0);
-  });
-});
 
 describe("invention planner", () => {
   it("creates deterministic citation-free structural constructs from exact production memory", () => {

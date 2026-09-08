@@ -3,6 +3,7 @@
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
   corpusSourceAlias,
+  anchorFeatureSet,
   codeIntentFromDocumentation,
   codeLanguageForPath,
   induceCodeConstructions,
@@ -54,11 +55,20 @@ export async function codeIntentForRequest(input: {
   languageId?: string;
   limit?: number;
 }): Promise<CodeIntent> {
-  const found = await input.storage.evidence.searchEvidence({
-    text: input.requestText,
-    status: "promoted",
-    limit: Math.max(1, Math.min(64, Math.floor(input.limit ?? 16)))
-  }).catch(() => []);
+  // Features, not text.
+  //
+  // searchEvidence ranks over the feature postings an evidence span was indexed with and ignores a `text` field
+  // entirely, so a query carrying only prose matched nothing at all -- 418 documentation files in the store and
+  // every request returning no references. The request has to be reduced to the same anchors the index was
+  // built from, which is what the retrieval lane does everywhere else.
+  const features = anchorFeatureSet(input.requestText, 96);
+  const found = features.length
+    ? await input.storage.evidence.searchEvidence({
+      features,
+      status: "promoted",
+      limit: Math.max(1, Math.min(64, Math.floor(input.limit ?? 16)))
+    }).catch(() => [])
+    : [];
   const documentation = found
     .map(result => result.span)
     .filter(span => documentationCorpusSpan(span));
@@ -321,7 +331,8 @@ async function repairSpans(
       length: hole.length,
       diagnosticId: `TS${site.code}:${hole.start}:${hole.length}:${hole.scope}`,
       admissible: hole.admissible,
-      admissibleInside: hole.admissibleInside
+      admissibleInside: hole.admissibleInside,
+      expectedLiteralKinds: hole.expectedLiteralKinds
     })));
   } catch {
     return [];

@@ -146,10 +146,6 @@ export function discourseObjectStateFromMetadata(metadata: JsonValue | undefined
   };
 }
 
-export function discourseEvidenceIdsFromMetadata(metadata: JsonValue | undefined): string[] {
-  return discourseObjectStateFromMetadata(metadata)?.evidenceIds ?? [];
-}
-
 function findEvidenceCarrierIndex(turns: readonly NormalizedTurn[]): number {
   for (let index = turns.length - 1; index >= 0; index--) {
     if (turns[index]!.evidenceIds.length) return index;

@@ -98,14 +98,6 @@ interface PreparedInput {
   weightFn: (edge: GraphEdge) => number;
 }
 
-export function createPersonalizedRandomWalkWithRestart() {
-  return {
-    rank: personalizedRandomWalkWithRestart,
-    rankDetailed: personalizedRandomWalkWithRestartDetailed,
-    denseReference: personalizedRandomWalkWithRestartDenseReference
-  };
-}
-
 /**
  * Query-conditioned PageRank-family diffusion:
  * r_(k+1) = restart * v + continuation * P^T r_k.
@@ -297,11 +289,6 @@ interface LegacyPerronFrobeniusInput {
   iterations?: number;
   tolerance?: number;
   relationPolicies?: readonly RelationTransitionPolicy[];
-}
-
-/** @deprecated Use createPersonalizedRandomWalkWithRestart. */
-export function createPersonalizedPerronFrobenius() {
-  return { rank: personalizedPerronFrobenius, rankDetailed: personalizedPerronFrobeniusDetailed };
 }
 
 /** @deprecated Use personalizedRandomWalkWithRestart. */

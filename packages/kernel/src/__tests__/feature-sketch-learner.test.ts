@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { createLatentConceptLearner, createWeightedFeatureSketchLearner, featureSketchProjection, featureSketchSupportShare } from "../latent.js";
+import { createWeightedFeatureSketchLearner, featureSketchProjection, featureSketchSupportShare } from "../latent.js";
 import { createHasher } from "../primitives.js";
 import type { GraphNode, LatentConcept } from "../types.js";
 
@@ -24,9 +24,7 @@ describe("weighted feature sketch learner", () => {
     expect(sketches[0]?.projectionVariance).toBeGreaterThanOrEqual(0);
   });
 
-  it("keeps the historical factory and persisted shape as explicit compatibility paths", () => {
-    const oldFactory = createLatentConceptLearner({ hasher: createHasher() });
-    expect(oldFactory.learn([node("a", 1, ["x"])], 1)[0]?.method).toBe("weighted_feature_frequency_hash_projection.v1");
+  it("reads a persisted sketch whose variance share cannot be reconstructed as support", () => {
 
     const persisted: LatentConcept = { id: "old", features: ["x"], basis: [0.25], varianceShare: 0.4 };
     expect(featureSketchSupportShare(persisted)).toBe(0);

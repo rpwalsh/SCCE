@@ -3,8 +3,6 @@
 import type { InformationLabel } from "./types.js";
 import type { InducedLanguageModel } from "./language-induction.js";
 
-export const INDUCED_LANGUAGE_MODEL_SCHEMA_V1 = "scce.induced_language_model.v1";
-
 /**
  * Durable archival home for the full induction model computed by
  * `language-induction.ts`'s engine. Runtime language behavior must still

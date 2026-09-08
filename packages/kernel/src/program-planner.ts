@@ -2576,12 +2576,3 @@ function hashText(text: string): string {
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
   return (h >>> 0).toString(16);
 }
-
-export function programPlanFingerprint(plan: ProgramPlan): string {
-  return canonicalStringify({
-    id: plan.id,
-    intent: plan.intent,
-    files: plan.files.map(file => ({ path: file.path, role: file.role, invariants: file.invariants })),
-    energy: plan.intent.shape.energy
-  });
-}

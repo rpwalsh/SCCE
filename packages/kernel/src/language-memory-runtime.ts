@@ -235,27 +235,6 @@ export function languageGenerationSurfaceAdequate(
   return discourseSurfaceAdequate(generation.discourse, extent);
 }
 
-/**
- * Plan items 140-141. Whether a discourse trace's own real coverage
- * (`requiredTermIdsCovered`/`propositionAtomIdsCovered`, already computed
- * from the trace's real text against the caller's real requiredTerms/
- * frameAtoms) clears the same bar the primary evidence-grounded beam-
- * search discourse path holds itself to. `generateFromLanguageMemory`
- * requires this (in addition to `languageGenerationSurfaceAdequate`'s
- * pure fluency check) before ever accepting the Kneser-Ney-driven
- * fallback continuation (`learnedContinuationDiscourse`) in place of the
- * real evidence-grounded discourse -- fluency alone used to be enough,
- * which let a fluent but factually empty continuation replace a real one
- * whenever the real one merely fell short on fluency.
- */
-export function languageGenerationDiscourseCoversRequiredContent(
-  discourse: LanguageDiscourseTrace,
-  requiredTerms: readonly LanguageGenerationTerm[],
-  frameAtoms: readonly LanguageGenerationAtom[]
-): boolean {
-  return discourseTraceHasCoverage(discourse, requiredTerms, frameAtoms);
-}
-
 export const RHETORICAL_MOVE_IDS = {
   lead: "rmove.94c0e1b7",
   support: "rmove.27f59d04",
@@ -2494,7 +2473,20 @@ function coverageMeetsThreshold(
   return requiredOk && atomOk;
 }
 
-function discourseTraceHasCoverage(
+/**
+ * Plan items 140-141. Whether a discourse trace's own real coverage
+ * (`requiredTermIdsCovered`/`propositionAtomIdsCovered`, already computed
+ * from the trace's real text against the caller's real requiredTerms/
+ * frameAtoms) clears the same bar the primary evidence-grounded beam-
+ * search discourse path holds itself to. `generateFromLanguageMemory`
+ * requires this (in addition to `languageGenerationSurfaceAdequate`'s
+ * pure fluency check) before ever accepting the Kneser-Ney-driven
+ * fallback continuation (`learnedContinuationDiscourse`) in place of the
+ * real evidence-grounded discourse -- fluency alone used to be enough,
+ * which let a fluent but factually empty continuation replace a real one
+ * whenever the real one merely fell short on fluency.
+ */
+export function discourseTraceHasCoverage(
   discourse: LanguageDiscourseTrace,
   requiredTerms: readonly LanguageGenerationTerm[],
   atoms: readonly LanguageGenerationAtom[]
