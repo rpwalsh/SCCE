@@ -252,12 +252,17 @@ describe("kernel training", () => {
     });
 
     await kernel.turn({ text: "Zephyr valve pressure stabilizes after calibration." });
-    // sourceAnchoredEvidenceForText searches each candidate anchor phrase as its own query instead of blending them
-    // into one overlap-ranked search, and each bigram that matches nothing is retried by its own symbols, so an empty
-    // store sees two calls per group. Five groups, not four: a one-unit subject that every multi-word anchor contains
-    // is restored as its own group, because dropping it searched only phrases like "did einstein" while `einstein` --
-    // the request's actual subject -- was never searched at all. The group budget still caps this at five.
-    expect(fixture.evidenceSearchCalls).toBe(10);
+    // sourceAnchoredEvidenceForText searches each candidate anchor phrase as its own query instead of blending
+    // them into one overlap-ranked search, and each bigram that matches nothing is retried by its own symbols, so
+    // an empty store sees two calls per phrase group. Five groups, and nine calls rather than ten: the subject
+    // leads the list as its own single-symbol group, and a group carrying no bigram has nothing to retry with.
+    //
+    // The subject is restored because dropping it searched only phrases like "did einstein" while the request's
+    // actual subject was never searched at all. It is now ranked by how many of the request's own anchors carry
+    // it rather than by appearing in every one of them, and it leads rather than trails: appended last it was cut
+    // by the five-group budget on every request generating five or more phrase anchors, so the rule that restored
+    // it had never reached a query.
+    expect(fixture.evidenceSearchCalls).toBe(9);
 
     evidence.push(evidenceSpan({
       id: "evidence:zephyr",

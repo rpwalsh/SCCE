@@ -4598,10 +4598,28 @@ function evidenceInSubjectCommunity(
   if (!graph.nodes.length || !graph.edges.length || !anchors.length) return [...evidence];
   const anchorUnits = uniqueKernelStrings(anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))).filter(Boolean);
   if (!anchorUnits.length) return [...evidence];
-  const seed = graph.nodes.find(node => {
-    const features = node.features.map((feature: unknown) => String(feature).toLocaleLowerCase());
-    return anchorUnits.every(unit => features.some(feature => feature.includes(unit)));
-  });
+  // Seeded on the subject, not on every word the request happened to contain.
+  //
+  // Requiring one node to carry all of them made the question words part of the subject: for "What license does
+  // SlopBlocker use?" the seed had to match `slopblocker`, `what`, `license`, `does` and `use` at once, and
+  // because features are matched by substring, `use` hits "used" and `what` hits "somewhat". A node satisfying
+  // all five is found by coincidence rather than by aboutness, and the community grown from it kept 1 of 12 spans
+  // and dropped the one reading "# License SlopBlocker is source-available under the PolyForm...".
+  //
+  // The subject is the unit carried by most of the request's own anchors, longest first on a tie -- the same
+  // reading of "what this request is about" that the anchor groups use, so the two cannot disagree. An exact
+  // feature match is preferred to a substring one for the same reason.
+  const subjectUnit = [...anchorUnits]
+    .map(unit => ({
+      unit,
+      carrying: anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).includes(unit)).length,
+      length: [...unit].length
+    }))
+    .sort((left, right) => right.carrying - left.carrying || right.length - left.length)[0]?.unit;
+  if (!subjectUnit) return [...evidence];
+  const nodeFeatures = (node: GraphNode): string[] => node.features.map((feature: unknown) => String(feature).toLocaleLowerCase());
+  const seed = graph.nodes.find(node => nodeFeatures(node).some(feature => feature === subjectUnit))
+    ?? graph.nodes.find(node => nodeFeatures(node).some(feature => feature.includes(subjectUnit)));
   if (!seed) return [...evidence];
   const pushEdges = graph.edges
     .filter(edge => Number.isFinite(edge.alpha) && edge.alpha > 0)
