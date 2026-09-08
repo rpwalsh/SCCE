@@ -17,6 +17,7 @@ import { CODE_LINE_SYMBOL, codeBracketBalance, codeSurfaceTokens, renderCodeToke
  */
 
 const CONTEXT_SYMBOLS = 48;
+/** Compute budget on the beam, in symbols. Not a statement about how long a repair may be. */
 const MAX_FRAGMENT_SYMBOLS = 24;
 const PREDICTION_POOL = 24;
 /** Half the pool, so what a toolchain admits is always reachable without being all the search can see. */
@@ -81,7 +82,6 @@ export interface SpanCompositionInput {
 export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[] {
   const prompt = codeSurfaceTokens(input.prefixText).slice(-CONTEXT_SYMBOLS);
   const originalTokens = codeSurfaceTokens(input.originalText);
-  const originalSymbols = originalTokens.length;
   // A repair may rewrite what the diagnostic named. It may not say less than it did.
   //
   // Scoping the edit to a span bounds where a filling may act, not what it may leave out, and the search finds
@@ -106,13 +106,15 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
   // opening a brace, a name by something that also starts with a name. Without it the search filled `{ x: 0 }`
   // with `; Point { x: number; }`, which balances, carries enough values, and is not an expression.
   const requiredOpening = tokenClass(originalTokens[0] ?? "");
-  // Room to say the same thing differently, not room to say something else.
+  // Length is priced, not forbidden.
   //
-  // The allowance has to exceed the smallest structural addition or that addition is not expressible at all: a
-  // missing argument costs a separator and a value, a missing member costs a separator, a name, a colon and a
-  // value. At three tokens of headroom `{ x: 0 }` could not reach `{ x: 0, y: 0 }` by one symbol, and the search
-  // spent its whole budget on rewrites of what was already there.
-  const maxSymbols = Math.max(2, Math.min(MAX_FRAGMENT_SYMBOLS, originalSymbols + 6));
+  // A cap tied to the hole's own size is a guess about how much repair a defect needs, and a wrong guess makes
+  // the right answer unreachable rather than unlikely: at three tokens of headroom `{ x: 0 }` could not express
+  // `{ x: 0, y: 0 }` by one symbol, and no amount of evidence could have changed that. The objective already
+  // charges for length -- every additional symbol multiplies in a probability below one -- so a longer filling
+  // has to earn its extra tokens against every shorter one. What remains here is a compute budget on the search
+  // and nothing more, which is why it is a constant of this module rather than a function of the input.
+  const maxSymbols = MAX_FRAGMENT_SYMBOLS;
   const limit = Math.max(1, Math.min(8, Math.floor(input.limit ?? 4)));
 
   type Beam = { symbols: string[]; logProbability: number; score: number };
