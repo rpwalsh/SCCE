@@ -1,10 +1,10 @@
 {
- "generatedAt": "2026-09-07T02:27:31.305Z",
+ "generatedAt": "2026-09-08T05:33:29.313Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1677,
-  "reached": 1187,
-  "internalHelpersOnly": 461,
+  "exports": 1700,
+  "reached": 1208,
+  "internalHelpersOnly": 463,
   "orphans": 29,
   "declaredConstants": 3,
   "compatibilityAliases": 10,

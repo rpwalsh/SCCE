@@ -3,6 +3,7 @@
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
   corpusSourceAlias,
+  codeIntentFromDocumentation,
   codeLanguageForPath,
   induceCodeConstructions,
   codeSurfaceTokens,
@@ -10,6 +11,7 @@ import {
   generateLearnedCodeRepairs,
   learnedCodeRepairOperation,
   type CodeConstruction,
+  type CodeIntent,
   type KneserNeyModel,
   type LearnedCodeRepairCandidate,
   type LearnedCodeRepairSpan,
@@ -35,6 +37,44 @@ import { typeScriptRepairSites } from "./typescript-code-actions.js";
  */
 
 /** Trained code models, per language, for the life of the process. Hydration is a query; generation is not. */
+/**
+ * What a request has to do with code, read off the documentation corpus.
+ *
+ * Every source file trains twice -- its tokens into the code corpus, its comments and identifier words into the
+ * documentation corpus -- and both carry the same path. Matching a request against documentation is therefore
+ * ordinary retrieval that lands on files, and a file names the models, shapes and symbols that are relevant. A
+ * corpus that has never been shown code about this request returns nothing, which is the honest answer.
+ */
+export async function codeIntentForRequest(input: {
+  storage: ScceStorage;
+  requestText: string;
+  knownSymbols?: ReadonlySet<string>;
+  languageId?: string;
+  limit?: number;
+}): Promise<CodeIntent> {
+  const found = await input.storage.evidence.searchEvidence({
+    text: input.requestText,
+    status: "promoted",
+    limit: Math.max(1, Math.min(64, Math.floor(input.limit ?? 16)))
+  }).catch(() => []);
+  const documentation = found
+    .map(result => result.span)
+    .filter(span => documentationCorpusSpan(span));
+  return codeIntentFromDocumentation({
+    requestText: input.requestText,
+    documentation,
+    ...(input.knownSymbols ? { knownSymbols: input.knownSymbols } : {}),
+    ...(input.languageId ? { languageId: input.languageId } : {})
+  });
+}
+
+/** A span the documentation projection of the code corpus produced, as the corpus lane stamped it. */
+function documentationCorpusSpan(span: { provenance?: unknown }): boolean {
+  const provenance = span.provenance;
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return false;
+  return (provenance as Record<string, unknown>).sourceSystem === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossDocs);
+}
+
 export interface LearnedCodeProposer {
   propose(input: {
     request: string;
@@ -120,6 +160,14 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       const spans = await repairSpans(options, languageId, context);
       const constructions = await projectConstructions(options, context, constructionsByWorkspace);
       if (constructions.length) log(`${constructions.length} shape(s) learned from this project`);
+      // What the request is about, where the corpus has documentation that answers it. A repair is driven by
+      // diagnostics and does not need this to work; where it lands, it says which names the request put in play
+      // beyond the ones it happened to spell.
+      const known = knownSymbols(context.targetText, models);
+      const intent = await codeIntentForRequest({ storage: options.storage, requestText: request, knownSymbols: known, languageId });
+      if (intent.references.length) {
+        log(`the request matches documentation for ${intent.references.length} file(s): ${intent.references.slice(0, 3).map(reference => reference.relativePath).join(", ")}`);
+      }
       if (spans.length) {
         log(`${spans.length} candidate defect range(s); the type system admits ${spans[0]!.admissible?.length ?? 0} identifier(s) at the first`);
       }
@@ -132,7 +180,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         targetPath: context.targetPath,
         targetText: context.targetText,
         diagnostics,
-        requiredSymbols: requiredSymbols(request, knownSymbols(context.targetText, models)),
+        requiredSymbols: [...new Set([...requiredSymbols(request, known), ...intent.symbols])],
         ...(spans.length ? { spans } : {}),
         ...(constructions.length ? { constructions } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
