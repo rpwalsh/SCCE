@@ -1480,10 +1480,38 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                ON postings.posting_count > ${EVIDENCE_FEATURE_POSTING_CAP}
               AND anchor_index.features @> ARRAY[postings.feature]::text[]
            ),
+           -- A request whose every feature is over the cap still has to be searched.
+           --
+           -- Over-cap features cannot seed, which is right when they are stopwords and wrong when they are the
+           -- subject: "apollo" carries 438 postings against a cap of 400, so "When did Apollo 11 land on the
+           -- Moon?" seeded nothing, retrieved nothing, and the turn declined over a corpus holding 39 promoted
+           -- spans of that article. Einstein (258) and a selective bigram both seed, which is why the same
+           -- question shape answers for one subject and not another.
+           --
+           -- When nothing is selective, the least common feature seeds anyway, bounded so a genuine stopword
+           -- query cannot materialise the corpus. Features arrive in priority order and the subject leads, so
+           -- the one chosen here is the request subject rather than whichever term happened to be first.
+           selective_features AS (
+             SELECT COUNT(*) AS n FROM feature_postings WHERE posting_count <= ${EVIDENCE_FEATURE_POSTING_CAP}
+           ),
+           fallback_hits AS (
+             SELECT anchor_index.evidence_id AS id, chosen.feature, chosen.feature_ord
+             FROM (
+               SELECT feature, feature_ord FROM feature_postings
+               WHERE (SELECT n FROM selective_features) = 0
+               ORDER BY posting_count ASC, feature_ord ASC
+               LIMIT 1
+             ) chosen
+             JOIN ${storage.table("evidence_anchor_index")} anchor_index
+               ON anchor_index.features @> ARRAY[chosen.feature]::text[]
+             LIMIT ${EVIDENCE_FEATURE_FALLBACK_CAP}
+           ),
            feature_hits AS (
              SELECT * FROM seed_hits
              UNION ALL
              SELECT * FROM common_hits
+             UNION ALL
+             SELECT * FROM fallback_hits
            ),
            candidate_count AS (SELECT GREATEST(1, COUNT(DISTINCT id))::float8 AS n FROM feature_hits),
            feature_df AS (SELECT feature, COUNT(DISTINCT id)::float8 AS df FROM feature_hits GROUP BY feature),
@@ -2154,6 +2182,8 @@ function graphQueryFeatures(query: GraphSliceQuery): string[] {
  * common enough to hit it.
  */
 const EVIDENCE_FEATURE_POSTING_CAP = 400;
+/** How many postings a last-resort seed may pull when no feature of the request is selective. */
+const EVIDENCE_FEATURE_FALLBACK_CAP = 2000;
 
 /**
  * Whether language_profiles carries the precomputed
