@@ -88,6 +88,8 @@ export interface LearnedCodeRepairSpan {
   admissible?: readonly string[];
   /** Identifiers admitted one position in, where a member access resolves against what precedes it. */
   admissibleInside?: readonly string[];
+  /** Primitive types a call here still expects an argument of, when a signature says so. */
+  expectedLiteralKinds?: readonly string[];
 }
 
 export interface LearnedCodeGenerationInput {
@@ -304,6 +306,7 @@ function composeSpanReplacements(input: {
     originalText,
     ...(admissible.size ? { admissible } : {}),
     ...(admissibleInside.size ? { admissibleInside } : {}),
+    ...(span.expectedLiteralKinds?.length ? { expectedLiteralKinds: new Set(span.expectedLiteralKinds) } : {}),
     ...(input.constructions.length ? { constructions: input.constructions } : {}),
     // Several hypotheses per hole: the compiler is a cheap oracle and every rejection is rolled back, so the
     // budget is better spent on distinct fillings than on one confident guess.

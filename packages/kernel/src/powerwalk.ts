@@ -535,14 +535,6 @@ export function initializePowerWalkParameters(nodes: readonly GraphNode[], edges
 }
 
 /**
- * @deprecated Compatibility name only. PowerWalk graph statistics initialize
- * parameters; they do not calibrate probabilities.
- */
-export function calibratePowerWalkParameters(nodes: readonly GraphNode[], edges: readonly GraphEdge[], now = graphSnapshotTime(edges)): PowerWalkParams {
-  return initializePowerWalkParameters(nodes, edges, now);
-}
-
-/**
  * Fit p, q, and temporal decay only from supplied transition choices. The
  * graph-statistics initializer remains the published fallback unless the
  * untouched, source-record-disjoint holdout has lower mean NLL.

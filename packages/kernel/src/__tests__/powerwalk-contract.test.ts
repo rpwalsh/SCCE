@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import { createIdFactory } from "../ids.js";
 import {
-  calibratePowerWalkParameters,
   createTypedTemporalWalkEngine,
   powerWalkTransitionProbability,
   type PowerWalkParams
@@ -86,14 +85,12 @@ describe("typed temporal second-order walk contract", () => {
     expect("calibration" in result).toBe(false);
   });
 
-  it("keeps deprecated calibration names as initializer-only compatibility aliases", () => {
+  it("keeps the engine's deprecated calibrate method as an initializer-only alias", () => {
     const engine = createTypedTemporalWalkEngine({ hasher });
     const initialized = engine.initialize([a, b], [ab], 1_000);
     const legacyEngineResult = engine.calibrate([a, b], [ab], 1_000);
-    const legacyFunctionResult = calibratePowerWalkParameters([a, b], [ab], 1_000);
 
     expect(legacyEngineResult).toEqual(initialized);
-    expect(legacyFunctionResult).toEqual(initialized);
     expect(legacyEngineResult.audit).toMatchObject({
       method: "graph_statistics_bootstrap",
       fitted: false,

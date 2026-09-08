@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import {
-  languageGenerationDiscourseCoversRequiredContent,
+  discourseTraceHasCoverage,
   type LanguageDiscourseTrace,
   type LanguageGenerationAtom,
   type LanguageGenerationTerm
@@ -19,7 +19,7 @@ import {
 // awareness of the caller's real requiredTerms/frameAtoms -- a fluent but
 // factually empty continuation could replace a real, evidence-grounded
 // one. This file proves the new gate this pass added
-// (languageGenerationDiscourseCoversRequiredContent, now required
+// (discourseTraceHasCoverage, now required
 // alongside the fluency check before the fallback is ever accepted) --
 // the concrete guarantee item 141 asks for: continuation memory cannot
 // stand in as though it had introduced/proven a required entity/
@@ -65,34 +65,34 @@ function atom(id: string): LanguageGenerationAtom {
   return { id, text: id };
 }
 
-describe("languageGenerationDiscourseCoversRequiredContent (plan items 140-141)", () => {
+describe("discourseTraceHasCoverage (plan items 140-141)", () => {
   it("with no required terms or frame atoms, any discourse trivially satisfies coverage -- nothing was required, so nothing needs to be checked", () => {
-    expect(languageGenerationDiscourseCoversRequiredContent(trace({}), [], [])).toBe(true);
+    expect(discourseTraceHasCoverage(trace({}), [], [])).toBe(true);
   });
 
   it("rejects a fluent-looking discourse that covers zero of the real required terms -- the exact case a Kneser-Ney fallback that never actually mentioned the required content must fail", () => {
     const requiredTerms = [term("term.subject"), term("term.object")];
     const uncoveredDiscourse = trace({ requiredTermIdsCovered: [] });
-    expect(languageGenerationDiscourseCoversRequiredContent(uncoveredDiscourse, requiredTerms, [])).toBe(false);
+    expect(discourseTraceHasCoverage(uncoveredDiscourse, requiredTerms, [])).toBe(false);
   });
 
   it("accepts a discourse that genuinely covers every real required term", () => {
     const requiredTerms = [term("term.subject"), term("term.object")];
     const coveredDiscourse = trace({ requiredTermIdsCovered: ["term.subject", "term.object"] });
-    expect(languageGenerationDiscourseCoversRequiredContent(coveredDiscourse, requiredTerms, [])).toBe(true);
+    expect(discourseTraceHasCoverage(coveredDiscourse, requiredTerms, [])).toBe(true);
   });
 
   it("low-weight required terms (below the real 0.45 significance floor) do not force coverage -- only genuinely significant terms count toward the denominator", () => {
     const requiredTerms = [term("term.trivial", 0.1)];
-    expect(languageGenerationDiscourseCoversRequiredContent(trace({ requiredTermIdsCovered: [] }), requiredTerms, [])).toBe(true);
+    expect(discourseTraceHasCoverage(trace({ requiredTermIdsCovered: [] }), requiredTerms, [])).toBe(true);
   });
 
   it("requires at least half of real frame atoms to be covered, matching the same threshold the primary evidence-grounded beam-search path already holds itself to", () => {
     const frameAtoms = [atom("atom.1"), atom("atom.2"), atom("atom.3"), atom("atom.4")];
     const underThreshold = trace({ propositionAtomIdsCovered: ["atom.1"] }); // 1/4 < ceil(4*0.5)=2
     const atThreshold = trace({ propositionAtomIdsCovered: ["atom.1", "atom.2"] }); // 2/4 == 2
-    expect(languageGenerationDiscourseCoversRequiredContent(underThreshold, [], frameAtoms)).toBe(false);
-    expect(languageGenerationDiscourseCoversRequiredContent(atThreshold, [], frameAtoms)).toBe(true);
+    expect(discourseTraceHasCoverage(underThreshold, [], frameAtoms)).toBe(false);
+    expect(discourseTraceHasCoverage(atThreshold, [], frameAtoms)).toBe(true);
   });
 
   it("requires both required-term and frame-atom coverage together -- satisfying only one is not enough", () => {
@@ -101,8 +101,8 @@ describe("languageGenerationDiscourseCoversRequiredContent (plan items 140-141)"
     const onlyTermsCovered = trace({ requiredTermIdsCovered: ["term.subject"], propositionAtomIdsCovered: [] });
     const onlyAtomsCovered = trace({ requiredTermIdsCovered: [], propositionAtomIdsCovered: ["atom.1", "atom.2"] });
     const bothCovered = trace({ requiredTermIdsCovered: ["term.subject"], propositionAtomIdsCovered: ["atom.1"] }); // 1/2 meets ceil(2*0.5)=1
-    expect(languageGenerationDiscourseCoversRequiredContent(onlyTermsCovered, requiredTerms, frameAtoms)).toBe(false);
-    expect(languageGenerationDiscourseCoversRequiredContent(onlyAtomsCovered, requiredTerms, frameAtoms)).toBe(false);
-    expect(languageGenerationDiscourseCoversRequiredContent(bothCovered, requiredTerms, frameAtoms)).toBe(true);
+    expect(discourseTraceHasCoverage(onlyTermsCovered, requiredTerms, frameAtoms)).toBe(false);
+    expect(discourseTraceHasCoverage(onlyAtomsCovered, requiredTerms, frameAtoms)).toBe(false);
+    expect(discourseTraceHasCoverage(bothCovered, requiredTerms, frameAtoms)).toBe(true);
   });
 });

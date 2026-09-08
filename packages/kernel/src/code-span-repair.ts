@@ -78,6 +78,14 @@ export interface SpanCompositionInput {
    * member belongs in the literal is a question about the corpus, not about the type.
    */
   admissibleInside?: ReadonlySet<string>;
+  /**
+   * Primitive types a signature says a call still wants an argument of.
+   *
+   * The only thing here that reaches a value rather than a name. A completion list enumerates what exists and a
+   * missing numeric argument is not among them at any position, so `add(1)` could never reach `add(1, 2)` no
+   * matter how the search was tuned. A literal of the declared type is admitted for that reason and no other.
+   */
+  expectedLiteralKinds?: ReadonlySet<string>;
   /** How many distinct fillings to return, longest-odds first. */
   limit?: number;
   /**
@@ -306,6 +314,15 @@ function coversBrackets(present: ReadonlyMap<string, number>, required: Readonly
   return true;
 }
 
+/** Whether a token is a literal of a type the signature said it wants. */
+function matchesExpectedLiteral(symbol: string, kinds: ReadonlySet<string> | undefined): boolean {
+  if (!kinds?.size) return false;
+  const first = symbol.slice(0, 1);
+  if (kinds.has("number") && /\p{Number}/u.test(first)) return true;
+  if (kinds.has("string") && (first === "\"" || first === "'" || first === "`")) return true;
+  return kinds.has("boolean") && (symbol === "true" || symbol === "false");
+}
+
 function identifierLike(symbol: string): boolean {
   return /^[\p{Letter}_$]/u.test(symbol);
 }
@@ -426,7 +443,9 @@ function rankedSlotFillers(
     .filter(symbol => symbol && valueLike(symbol) && !unterminatedLiteral(symbol))
     .map(symbol => ({
       symbol,
-      weight: symbolProbability(input, context, symbol) * (admitted?.has(symbol) ? INSIDE_ADMITTED_PREFERENCE : 1)
+      weight: symbolProbability(input, context, symbol)
+        * (admitted?.has(symbol) ? INSIDE_ADMITTED_PREFERENCE : 1)
+        * (matchesExpectedLiteral(symbol, input.expectedLiteralKinds) ? INSIDE_ADMITTED_PREFERENCE : 1)
     }))
     .sort((left, right) => right.weight - left.weight || left.symbol.localeCompare(right.symbol))
     .slice(0, SLOT_OPTIONS)
