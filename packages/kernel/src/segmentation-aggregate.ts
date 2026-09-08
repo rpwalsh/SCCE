@@ -3,8 +3,6 @@
 import type { InformationLabel } from "./types.js";
 import type { SegmentationModel } from "./unicode-segmentation-v2.js";
 
-export const SEGMENTATION_AGGREGATE_SCHEMA_V1 = "scce.segmentation_aggregate.v1";
-
 /**
  * Part B step 2: the key a durable per-language-cluster aggregate is scoped
  * under. Per the plan's own correction, "language" alone is not a safe key

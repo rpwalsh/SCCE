@@ -127,8 +127,3 @@ export function createSnippetVerifier(options: {
     }
   };
 }
-
-/** @deprecated Kept for callers that only ever meant TypeScript; {@link createSnippetVerifier} covers every configured language. */
-export function createTypeScriptSnippetVerifier(options: { timeoutMs?: number; tscPath?: string } = {}): CodeVerifier {
-  return createSnippetVerifier(options);
-}

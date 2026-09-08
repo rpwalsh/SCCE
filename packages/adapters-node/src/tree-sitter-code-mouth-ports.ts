@@ -80,7 +80,8 @@ export function createTreeSitterCodeMouthPorts(options: {
       const checker = await findCodeVerifierForPath(targetPath);
       if (checker) {
         const file = absolute(targetPath);
-        const result = await runProcess(checker.command, [...checker.checkArgs(file)], { cwd: root, timeoutMs: 120_000 });
+        const args = checker.check.args.map(argument => argument.split("{artifact}").join(file));
+        const result = await runProcess(checker.command, args, { cwd: root, timeoutMs: 120_000 });
         const diagnostics = checkerDiagnostics(result, targetPath, checker.languageId);
         options.log?.(`${checker.languageId} checked by ${checker.command} (${diagnostics.length} diagnostic(s))`);
         return { testsRun: false, buildSucceeded: result.code === 0 && !diagnostics.length, testsSucceeded: true, diagnostics };

@@ -323,6 +323,16 @@ export interface TypeScriptRepairHole {
   admissible: string[];
   /** Identifiers admitted one position in, where a member access resolves against what precedes it. */
   admissibleInside: string[];
+  /**
+   * Primitive types a call at this hole still expects arguments of.
+   *
+   * Completions cannot answer this. They offer names that exist, and an argument a call is missing has no
+   * position yet to ask about and may not be a name at all: `add(1)` needs a second number, and no amount of
+   * scope enumeration proposes `2`. The signature does say it -- the parameter is declared `number` -- which is
+   * the type system doing here what it does everywhere else in this lane. It bounds the kind of thing that
+   * belongs; which number belongs is the corpus's answer and not the compiler's.
+   */
+  expectedLiteralKinds: string[];
 }
 
 export interface TypeScriptRepairSite {
@@ -380,7 +390,8 @@ export function typeScriptRepairSites(
           .map(range => ({
             ...range,
             admissible: completionNames(project.service, file.absolutePath, range.start),
-            admissibleInside: completionNames(project.service, file.absolutePath, range.start + 1)
+            admissibleInside: completionNames(project.service, file.absolutePath, range.start + 1),
+            expectedLiteralKinds: expectedLiteralKinds(project.service, file.absolutePath, range.start, range.length)
           }))
           // A position where the type system will accept no name at all is not a position a name may be written
           // in: the binding side of `const total: number = "three"` admits nothing, and filling it produced
@@ -476,6 +487,41 @@ function isKeywordAt(source: ts.SourceFile, position: number): boolean {
 function nodeWidth(node: ts.Node, source: ts.SourceFile): number {
   return node.getEnd() - node.getStart(source);
 }
+
+/**
+ * The primitive types a call still wants, read off its signature.
+ *
+ * Asked from inside the argument list, because that is where a signature is in scope. Only primitives are
+ * reported: a parameter typed `Point` is answered by the names completions already give, and one typed `number`
+ * is answered by a literal no completion will ever offer.
+ */
+function expectedLiteralKinds(
+  service: ts.LanguageService,
+  fileName: string,
+  start: number,
+  length: number
+): string[] {
+  const out = new Set<string>();
+  for (const position of [start + 1, Math.max(start + 1, start + length - 1)]) {
+    let help: ts.SignatureHelpItems | undefined;
+    try {
+      help = service.getSignatureHelpItems(fileName, position, {});
+    } catch {
+      continue;
+    }
+    if (!help) continue;
+    for (const item of help.items) {
+      for (const parameter of item.parameters) {
+        const declared = PARAMETER_TYPE.exec(parameter.displayParts.map(part => part.text).join(""))?.[1];
+        if (declared === "number" || declared === "string" || declared === "boolean") out.add(declared);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** `name: type` as a signature displays a parameter. */
+const PARAMETER_TYPE = new RegExp(String.raw`:\s*([A-Za-z]+)\s*$`, "u");
 
 function completionNames(service: ts.LanguageService, fileName: string, position: number, limit = 128): string[] {
   try {

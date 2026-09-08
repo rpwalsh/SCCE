@@ -1,48 +1,30 @@
 {
- "generatedAt": "2026-09-08T05:33:29.313Z",
+ "generatedAt": "2026-09-08T07:30:15.493Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1700,
-  "reached": 1208,
-  "internalHelpersOnly": 463,
-  "orphans": 29,
-  "declaredConstants": 3,
-  "compatibilityAliases": 10,
-  "legacyMigration": 2,
+  "exports": 1691,
+  "reached": 1213,
+  "internalHelpersOnly": 461,
+  "orphans": 17,
+  "declaredConstants": 0,
+  "compatibilityAliases": 1,
+  "legacyMigration": 0,
   "hostContracts": 1,
-  "testOnlyHelpers": 7,
-  "implementedButUncalled": 14,
-  "ofWhichCoveredByTestsOnly": 7,
+  "testOnlyHelpers": 8,
+  "implementedButUncalled": 15,
+  "ofWhichCoveredByTestsOnly": 8,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 14
  },
  "orphans": [
   {
-   "name": "createTypeScriptSnippetVerifier",
+   "name": "createSnippetVerifier",
    "file": "packages/adapters-node/src/code-verification.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "summarizeScce2NgramState",
-   "file": "packages/adapters-node/src/scce2/brain-shard-reader.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "iterateScce2NgramCounts",
-   "file": "packages/adapters-node/src/scce2/brain-shard-reader.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
    "hostContract": false,
-   "testOnly": false
+   "testOnly": true
   },
   {
    "name": "csrScale",
@@ -55,15 +37,6 @@
    "testOnly": false
   },
   {
-   "name": "DEFAULT_ALPHA",
-   "file": "packages/kernel/src/alpha.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "structuredSurface",
    "file": "packages/kernel/src/candidate.ts",
    "caller": "",
@@ -72,51 +45,6 @@
    "deliberatelyUnwired": "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank.",
    "hostContract": false,
    "testOnly": false
-  },
-  {
-   "name": "discourseEvidenceIdsFromMetadata",
-   "file": "packages/kernel/src/discourse-state.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "requestedAuthorityBootstrapModel",
-   "file": "packages/kernel/src/invention-planner.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "INDUCED_LANGUAGE_MODEL_SCHEMA_V1",
-   "file": "packages/kernel/src/language-induction-persistence.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
-   "name": "languageGenerationDiscourseCoversRequiredContent",
-   "file": "packages/kernel/src/language-memory-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "createLatentConceptLearner",
-   "file": "packages/kernel/src/latent.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": true
   },
   {
    "name": "addMatrix",
@@ -159,15 +87,6 @@
    "testOnly": true
   },
   {
-   "name": "compilePairedAntiUnifiedPattern",
-   "file": "packages/kernel/src/paired-anti-unification.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "createBulkIngestBatches",
    "file": "packages/kernel/src/postgres-contract.ts",
    "caller": "",
@@ -178,22 +97,13 @@
    "testOnly": false
   },
   {
-   "name": "calibratePowerWalkParameters",
-   "file": "packages/kernel/src/powerwalk.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "createPersonalizedPerronFrobenius",
+   "name": "personalizedPerronFrobenius",
    "file": "packages/kernel/src/ppf.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": true,
    "hostContract": false,
-   "testOnly": false
+   "testOnly": true
   },
   {
    "name": "createPredictionConstruct",
@@ -226,15 +136,6 @@
    "testOnly": false
   },
   {
-   "name": "programPlanFingerprint",
-   "file": "packages/kernel/src/program-planner.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": true,
-   "hostContract": false,
-   "testOnly": false
-  },
-  {
    "name": "scoreRelationPotential",
    "file": "packages/kernel/src/relation-potential.ts",
    "caller": "",
@@ -243,15 +144,6 @@
    "deliberatelyUnwired": "Validates the model on every call, which is right for a single score and wrong for the only production use: scoreGraphEdgesWithRelationPotential freezes the model once and scores every edge against it. Routing that loop through here would re-validate per edge. Relation promotion, the other place a potential score would fit, decides by description length rather than by this model.",
    "hostContract": false,
    "testOnly": true
-  },
-  {
-   "name": "SEGMENTATION_AGGREGATE_SCHEMA_V1",
-   "file": "packages/kernel/src/segmentation-aggregate.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": false
   },
   {
    "name": "sparseDot",

@@ -31,7 +31,11 @@ const sourceDir = path.resolve(args.get("dir") ?? "packages/kernel/src");
 const maxFiles = Number(args.get("files") ?? 8);
 const attempts = Number(args.get("attempts") ?? 3);
 const outPath = args.get("out");
+const NEWLINE = String.fromCharCode(10);
 const only = args.get("only");
+/** Compare against a hosted model, so "how close" has a denominator. */
+const compareModel = args.get("compare");
+const modelEndpoint = args.get("endpoint") ?? "http://127.0.0.1:11434";
 
 const TSCONFIG = JSON.stringify({
   compilerOptions: {
@@ -187,7 +191,9 @@ for (const file of files) {
       }
       // Attempts scale with what is wrong: converging on three defects needs at least three accepted steps.
       const budget = Math.max(attempts, before.diagnostics.length * 3);
+      const started = Date.now();
       const result = await runCodeMouth({ request: `repair ${file.name}`, targetPath: target, maxAttempts: budget, ports });
+      const durationMs = Date.now() - started;
       const after = await readFile(path.join(root, target), "utf8");
       const diagnostics = diagnosticsForTarget((await ports.verify(target)).diagnostics, target);
       results.push({
@@ -208,8 +214,33 @@ for (const file of files) {
         changed: after !== mutated.text,
         // What it wrote, against what was there. A repair that compiles but says something else has to be
         // readable as such, or "compiles" quietly becomes the whole standard.
+        durationMs,
         wrote: firstDifference(file.text, after)
       });
+
+      if (compareModel) {
+        // The same defect, the same compiler, the same byte comparison -- and a model that always writes.
+        await writeFile(path.join(root, target), mutated.text, "utf8");
+        const model = await runModelRepair({ name: file.name, mutated: mutated.text });
+        await writeFile(path.join(root, target), model.text, "utf8");
+        const modelDiagnostics = diagnosticsForTarget((await ports.verify(target)).diagnostics, target);
+        results.push({
+          file: file.name,
+          mutation: mutation.id,
+          detail: mutated.detail,
+          system: compareModel,
+          outcome: model.failed ? "failed" : "wrote_file",
+          diagnosticsBefore: before.diagnostics.length,
+          diagnosticsAfter: modelDiagnostics.length,
+          compiles: modelDiagnostics.length === 0,
+          improved: modelDiagnostics.length < before.diagnostics.length && modelDiagnostics.length > 0,
+          worse: modelDiagnostics.length > before.diagnostics.length,
+          exact: model.text === file.text,
+          changed: model.text !== mutated.text,
+          durationMs: model.durationMs,
+          wrote: firstDifference(file.text, model.text)
+        });
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -256,7 +287,13 @@ async function selfContainedSources(directory) {
 }
 
 function report(rows) {
+  const systems = [...new Set(rows.map(row => row.system ?? "scce"))];
+  for (const system of systems) summarize(rows.filter(row => (row.system ?? "scce") === system), system);
+}
+
+function summarize(rows, system) {
   const scored = rows.filter(row => row.outcome !== "not_applicable" && row.outcome !== "no_defect");
+  process.stdout.write(`${NEWLINE}=== ${system}${NEWLINE}`);
   process.stdout.write(`Repairing this project's own source, decided by the TypeScript compiler\n\n`);
   process.stdout.write(`${"module".padEnd(34)}${"mutation".padEnd(20)}${"outcome".padEnd(20)}result\n`);
   for (const row of rows) {
@@ -278,4 +315,47 @@ function report(rows) {
   const improved = scored.filter(row => row.improved).length;
   const worse = scored.filter(row => row.worse).length;
   process.stdout.write(`\n${scored.length} real defects: ${exact} restored exactly, ${compiles} fully repaired, ${improved} partly repaired, ${worse} made worse\n`);
+  const seconds = scored.reduce((sum, row) => sum + (row.durationMs ?? 0), 0) / 1000;
+  process.stdout.write(`${seconds.toFixed(1)}s total, ${(seconds / Math.max(1, scored.length)).toFixed(1)}s per defect\n`);
+}
+
+/**
+ * The same defect, repaired by a hosted model, so the gap is a number rather than an impression.
+ *
+ * The model is given the whole file and asked for the whole file back. That is the interface it has: there is no
+ * span to fill, no diagnostic to converge on, and nothing that stops it rewriting whatever it likes. Every
+ * outcome here is scored by the same compiler and the same byte comparison as the learned lane's, so what the
+ * two columns differ by is capability and not bookkeeping.
+ *
+ * Cost is recorded because it is the point. This runs the learned lane in this process on a CPU and the model on
+ * whatever accelerator its host has, so the wall clock is not a like-for-like comparison of algorithms -- it is
+ * a like-for-like comparison of what a buyer waits for and pays to run.
+ */
+async function runModelRepair(input) {
+  const prompt = [
+    "You are repairing a TypeScript file so that it compiles under strict mode.",
+    "Reply with the complete corrected contents of the target file and nothing else: no explanation, no markdown fence.",
+    "If the file is already correct, reply with it unchanged.",
+    `\nTarget file ${input.name}:\n${input.mutated}`
+  ].join("\n");
+  const started = Date.now();
+  const response = await fetch(`${modelEndpoint}/api/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: compareModel,
+      prompt,
+      stream: false,
+      options: { temperature: 0, top_p: 1, seed: 20260907, num_predict: 4096 }
+    })
+  }).catch(error => ({ ok: false, statusText: String(error).slice(0, 80) }));
+  if (!response.ok) return { text: input.mutated, durationMs: Date.now() - started, failed: true };
+  const body = await response.json();
+  const fenced = String(body.response ?? "").match(/```(?:[a-zA-Z]*)\n([\s\S]*?)```/u);
+  const written = (fenced ? fenced[1] : String(body.response ?? "")).trim();
+  return {
+    text: written ? (written.endsWith("\n") ? written : `${written}\n`) : input.mutated,
+    durationMs: Date.now() - started,
+    failed: false
+  };
 }

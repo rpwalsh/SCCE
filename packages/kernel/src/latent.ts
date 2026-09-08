@@ -41,11 +41,6 @@ export function createWeightedFeatureSketchLearner(options: { hasher: Hasher }) 
   };
 }
 
-/** @deprecated Use createWeightedFeatureSketchLearner. */
-export function createLatentConceptLearner(options: { hasher: Hasher }): ReturnType<typeof createWeightedFeatureSketchLearner> {
-  return createWeightedFeatureSketchLearner(options);
-}
-
 export function featureSketchSupportShare(sketch: LatentConcept): number {
   const current = (sketch as Partial<WeightedFeatureSketch>).supportShare;
   // Historical varianceShare mixed frequency share with hash-vector variance,

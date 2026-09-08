@@ -447,13 +447,6 @@ export function interpretAntiUnifiedConstruction(input: {
   };
 }
 
-export function compilePairedAntiUnifiedPattern(
-  construction: PairedAntiUnifiedConstruction,
-  admission: PairedVariabilityAdmission
-): LanguagePatternRecord {
-  return compilePairedAntiUnifiedPatterns(construction, admission)[0]!;
-}
-
 export function compilePairedAntiUnifiedPatterns(
   construction: PairedAntiUnifiedConstruction,
   admission: PairedVariabilityAdmission

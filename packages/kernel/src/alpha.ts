@@ -10,12 +10,6 @@ export type AlphaThresholds = AlphaTrace["thresholds"];
 const EMPIRICAL_QUANTILE_PROBABILITIES = [0.2, 0.4, 0.6, 0.8] as const;
 const EMPTY_SAMPLE_THRESHOLDS: Readonly<AlphaThresholds> = Object.freeze({ virtual: 0.2, visible: 0.4, bonded: 0.6, structural: 0.8 });
 
-/**
- * Compatibility value for callers that inspect a layer before building a trace.
- * Runtime traces do not use it when an active relation-strength sample exists.
- */
-export const DEFAULT_ALPHA = EMPTY_SAMPLE_THRESHOLDS.visible;
-
 export function createAlphaLayer(options: { alpha?: number } = {}) {
   const configured = options.alpha === undefined ? undefined : configuredNormalization(options.alpha, []);
   const initial = configured ?? emptySampleNormalization();
