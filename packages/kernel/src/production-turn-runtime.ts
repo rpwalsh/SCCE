@@ -17,7 +17,7 @@ import { createCcrEngine } from "./ccr.js";
 import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
 import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
-import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, type CorpusRoleId } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { detectConflictingCorrections } from "./translation-correction-engine.js";
 import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
@@ -173,7 +173,7 @@ import { normalizeRawGraphEdgeToCognitiveEdge } from "./question-cognitive-edge.
 import { evidenceForceFromProofForceClass, type EvidenceForceClass } from "./truth-contract.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
-import type { EvidenceId, GraphEdge, GraphNode, NodeId } from "./types.js";
+import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } from "./types.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -1976,11 +1976,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           { residentOnly: fastRuntimeBudget }
         ).catch(() => undefined);
       const evidenceSurfaceCluster = windowEvidenceCluster ?? evidenceOwnedCluster;
-      const preferredSurfaceCorpusRole = requestedAuthority === "creative"
-        ? CORPUS_ROLE_IDS.publicDomainProse
-        : undefined;
+      // An evaluation condition without language memory reads none; the creative lane keeps its own contract.
+      const preferredSurfaceCorpusRole = deps.evaluationCondition?.flags.disableLanguageMemory && requestedAuthority !== "creative"
+        ? undefined
+        : surfaceCorpusRoleForAuthority(requestedAuthority);
       const exactCreativeAuthorityReady = Boolean(
-        preferredSurfaceCorpusRole
+        preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         && selectedSurfaceCluster
         && authorityLanguage.state.scope.mode === "cluster"
         && authorityLanguage.state.scope.purityProven
@@ -2021,26 +2022,37 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // language-memory:creative-output-language-unresolved was not
       // warmed") -- verified live. The first creative turn pays the durable
       // hydration once; the cache holds it for every later one.
-      const creativeOutputLanguage = preferredSurfaceCorpusRole
+      const roleOutputLanguage = preferredSurfaceCorpusRole && !exactCreativeAuthorityReady
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
           selectedSurfaceCluster,
-          "creative-output-language-unresolved",
+          "role-output-language-unresolved",
           preferredSurfaceCorpusRole,
           input.text,
           { residentOnly: false }
         )
         : undefined;
-      let surfaceLanguage = preferredSurfaceCorpusRole
+      // The role corpus speaks when it has learned this language; an empty role falls back to what the evidence owns.
+      const roleLanguageSpeaks = Boolean(roleOutputLanguage && roleOutputLanguage.state.models.length > 0);
+      kernelTrace({
+        stage: "runtime.candidates.language_role",
+        label: "kernel.turn",
+        durationMs: 0,
+        counts: { models: roleOutputLanguage?.state.models.length ?? 0, units: roleOutputLanguage?.state.importedUnits.length ?? 0 },
+        support: { role: preferredSurfaceCorpusRole ?? null, authority: requestedAuthority, speaks: roleLanguageSpeaks, ready: exactCreativeAuthorityReady }
+      });
+      let surfaceLanguage = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         ? exactCreativeAuthorityReady
           ? authorityLanguage
           : requireHydratedSurfaceLanguage(
-            creativeOutputLanguage,
+            roleOutputLanguage,
             `creative corpus role ${preferredSurfaceCorpusRole}`
           )
-        : evidenceOutputLanguage
-          ? evidenceOutputLanguage
-          : authorityLanguage;
+        : roleLanguageSpeaks
+          ? roleOutputLanguage!
+          : evidenceOutputLanguage
+            ? evidenceOutputLanguage
+            : authorityLanguage;
       const productionTranslationProfiles = translationTarget
         ? (await sourceOwnedLanguageProfilesCached(
           [translationTarget],
@@ -4345,6 +4357,21 @@ async function dispatchBuildTestThroughExecutive(input: {
   );
 
   return { disposition: result.disposition, attemptId: result.attemptId, receipt: result.receipt, buildTest: capturedResult };
+}
+
+// Wikipedia teaches the language of facts, Gutenberg the language of prose, code corpora the language of code.
+function surfaceCorpusRoleForAuthority(authority: RequestedAuthority): CorpusRoleId | undefined {
+  switch (authority) {
+    case "factual":
+    case "reasoned":
+      return CORPUS_ROLE_IDS.encyclopedic;
+    case "creative":
+      return CORPUS_ROLE_IDS.publicDomainProse;
+    case "program":
+      return CORPUS_ROLE_IDS.softwareSymbolic;
+    default:
+      return undefined;
+  }
 }
 
 function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {

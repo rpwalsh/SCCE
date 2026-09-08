@@ -149,6 +149,24 @@ describe("language-memory profile scope", () => {
     expect(scoped.records.map(row => row.id)).toEqual(["model.selected"]);
     expect(scoped.importedObservations.map(row => row.id)).toEqual(["observation.selected"]);
   });
+
+  it("keeps a corpus role's profile-less records in scope when the role already proved provenance", () => {
+    const selected = profile("profile.selected", "source.selected");
+    const other = profile("profile.other", "source.other");
+    const unprofiledModel = model(selected, "model.unprofiled");
+    delete (unprofiledModel.modelJson as Record<string, unknown>).profileId;
+    const unprofiledObservation = { ...observation(selected, "observation.unprofiled"), metadata: null };
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrate({
+      models: [model(selected, "model.selected"), model(other, "model.other"), unprofiledModel],
+      observations: [observation(selected, "observation.selected"), observation(other, "observation.other"), unprofiledObservation]
+    });
+
+    const scoped = scopeLanguageMemoryStateToCluster(state, cluster("cluster.selected", [selected]), { admitUnprofiled: true });
+
+    expect(scoped.records.map(row => row.id).sort()).toEqual(["model.selected", "model.unprofiled"]);
+    expect(scoped.importedObservations.map(row => row.id).sort()).toEqual(["observation.selected", "observation.unprofiled"]);
+  });
 });
 
 function profile(id: string, sourceVersionId: string): LanguageProfile {

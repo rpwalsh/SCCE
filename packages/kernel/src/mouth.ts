@@ -1290,6 +1290,12 @@ function sourceConflictSurface(input: SpeakInput): string {
   return statements.length > 1 ? statements.join(" ") : "";
 }
 
+function countBy<T>(rows: readonly T[], key: (row: T) => string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of rows) { const k = key(row).slice(0, 32); out[k] = (out[k] ?? 0) + 1; }
+  return out;
+}
+
 export function createDeterministicMouth(options: { hashText: (text: string) => string }): Mouth {
   return {
     async speak(input) {
@@ -1382,6 +1388,9 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         counts: { surfaces: clippedDeterministicSurfaces.length, chosenChars: selectedText.length, units: deterministicUnits.length },
         support: {
           units: deterministicUnits.slice(0, 8),
+          modelsHydrated: input.languageMemory?.models?.length ?? 0,
+          closedClassSample: [...deriveClosedClassWords({ models: input.languageMemory?.models ?? [] })].slice(0, 16),
+          modelsByCorpus: countBy(input.languageMemory?.records ?? [], record => String(jsonRecord(record.modelJson).sourceSystem ?? record.streamId.split(":")[0])),
           boundSpans: deterministicSpans.length,
           quotation: deterministicQuotation,
           terminalRuntimeMotion: terminalRuntimeMotionSelected,
