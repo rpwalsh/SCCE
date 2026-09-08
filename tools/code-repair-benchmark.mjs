@@ -130,6 +130,13 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
         : await runLlm(root, testCase, before);
       const after = await readFile(path.join(root, testCase.entry), "utf8");
       const afterDiagnostics = await typecheck(root);
+      // A file that compiles because its contents were deleted is not repaired.
+      //
+      // The compiler is a one-sided criterion: it bounds what is wrong with a program, never what the program
+      // still has to be. Asked to fix a call with too few arguments, SCCE's learned lane replaced
+      // `export const total = add(1);` with `add` -- legal TypeScript, zero diagnostics, and the module's export
+      // gone. It scored as a repair here until this check existed.
+      const lostDeclarations = declaredNames(before).filter(name => !declaredNames(after).includes(name));
       results.push({
         case: testCase.id,
         ownedFix: testCase.ownedFix,
@@ -139,8 +146,11 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
         diagnosticsBefore: beforeDiagnostics.length,
         diagnosticsAfter: afterDiagnostics.length,
         changed: before !== after,
-        // The three states that matter, decided by the compiler and not by reading the patch.
-        repaired: beforeDiagnostics.length > 0 && afterDiagnostics.length === 0,
+        lostDeclarations,
+        // The states that matter, decided by the compiler and by what the file still declares -- never by
+        // reading the patch.
+        repaired: beforeDiagnostics.length > 0 && afterDiagnostics.length === 0 && lostDeclarations.length === 0,
+        destroyed: lostDeclarations.length > 0,
         leftBroken: afterDiagnostics.length > 0 && before !== after,
         declined: before === after,
         afterFirstDiagnostic: afterDiagnostics[0] ?? null
@@ -213,6 +223,12 @@ async function runLlm(root, testCase, before) {
   return { outcome: "wrote_file", reason: firstLine(written) };
 }
 
+/** Top-level names a module declares. What a repair of it has to leave declaring. */
+function declaredNames(source) {
+  const pattern = new RegExp(String.raw`(?:^|\n)\s*(?:export\s+)?(?:declare\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)`, "gu");
+  return [...source.matchAll(pattern)].map(match => match[1]);
+}
+
 function stripFence(text) {
   const fenced = text.match(/```(?:[a-zA-Z]*)\n([\s\S]*?)```/u);
   return (fenced ? fenced[1] : text).trim();
@@ -243,7 +259,7 @@ function report(rows) {
     const cells = systems.map(system => {
       const row = rows.find(candidate => candidate.case === id && candidate.system === system);
       if (!row) return "-".padEnd(26);
-      const verdict = row.repaired ? "repaired" : row.leftBroken ? "LEFT BROKEN" : row.declined ? "declined" : "no change, still broken";
+      const verdict = row.destroyed ? "DESTROYED" : row.repaired ? "repaired" : row.leftBroken ? "LEFT BROKEN" : row.declined ? "declined" : "no change, still broken";
       return `${verdict} (${row.diagnosticsBefore}->${row.diagnosticsAfter})`.padEnd(26);
     });
     const owned = rows.find(row => row.case === id)?.ownedFix ? "yes" : "no";
@@ -252,7 +268,7 @@ function report(rows) {
   process.stdout.write("\n");
   for (const system of systems) {
     const mine = rows.filter(row => row.system === system);
-    process.stdout.write(`${system.padEnd(20)} repaired ${mine.filter(r => r.repaired).length}/${mine.length}  left broken ${mine.filter(r => r.leftBroken).length}  declined ${mine.filter(r => r.declined).length}\n`);
+    process.stdout.write(`${system.padEnd(20)} repaired ${mine.filter(r => r.repaired).length}/${mine.length}  destroyed ${mine.filter(r => r.destroyed).length}  left broken ${mine.filter(r => r.leftBroken).length}  declined ${mine.filter(r => r.declined).length}\n`);
   }
   process.stdout.write("\n");
 }
