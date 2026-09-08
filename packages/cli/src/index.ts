@@ -583,6 +583,9 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
         maxTotalBytes: options.maxFileBytes,
         heapCheckpointMb: options.heapCheckpointMb,
         ...(options.sourceVersionIds ? { sourceVersionIds: options.sourceVersionIds } : {}),
+        ...(options.languageOnly ? { languageOnly: true } : {}),
+        ...(options.includeUriPrefixes?.length ? { includeUriPrefixes: options.includeUriPrefixes } : {}),
+        ...(options.batchBytes ? { batchBytes: options.batchBytes } : {}),
         creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
       }));
       return;
@@ -1644,6 +1647,9 @@ function parseCorpusTrainOptions(args: string[]): {
   languageAliases?: string[];
   heapCheckpointMb?: number;
   sourceVersionIds?: string[];
+  languageOnly?: boolean;
+  includeUriPrefixes?: string[];
+  batchBytes?: number;
 } {
   const out: {
     maxFiles?: number;
@@ -1658,6 +1664,9 @@ function parseCorpusTrainOptions(args: string[]): {
     languageAliases?: string[];
     heapCheckpointMb?: number;
     sourceVersionIds?: string[];
+    languageOnly?: boolean;
+    includeUriPrefixes?: string[];
+    batchBytes?: number;
   } = {};
   for (const arg of args) {
     const [flag, raw] = arg.split("=", 2);
@@ -1679,6 +1688,12 @@ function parseCorpusTrainOptions(args: string[]): {
     else if (arg === "--docs-only") {
       out.includeDocs = true;
       out.includeSource = false;
+    } else if (arg === "--language-only") {
+      out.languageOnly = true;
+    } else if (flag === "--uri-prefix" && raw?.trim()) {
+      out.includeUriPrefixes = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
+    } else if (flag === "--batch-bytes" && Number.isFinite(num)) {
+      out.batchBytes = Math.max(1024, Math.floor(num));
     } else if (arg === "--code-only") {
       out.includeDocs = false;
       out.includeSource = true;

@@ -672,6 +672,8 @@ export interface EvidenceStore {
    */
   listEvidenceBackedSourceVersions?(query?: {
     excludeUriPrefixes?: readonly string[];
+    /** Only sources whose canonical URI starts with one of these, so a lane can train one corpus at a time. */
+    includeUriPrefixes?: readonly string[];
     sourceVersionIds?: readonly string[];
     minByteLength?: number;
     maxByteLength?: number;
@@ -813,7 +815,7 @@ export interface LanguageMemoryStore {
   listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<NgramModelRecord[]>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
-  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }

@@ -561,24 +561,28 @@ export function createRuntimeGraphRetrieval(options: {
   /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
-  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
     // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
     const titleUnits = anchorGroupTitleUnits(group);
-    const rows = await deps.storage.evidence.searchEvidence({ features: [...group], limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) });
+    // A prose question's hits are the prose hits: four source comments carrying "Lovelace born" satisfied this
+    // search, were dropped as code afterwards, and the symbol fallback that would have found the article never ran.
+    const usable = (rows: Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>) => proseOnly ? rows.filter(item => !spanIsSourceCode(item.span)) : rows;
+    const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
       : []));
-    return symbols.length ? deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }) : rows;
+    return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
   }
 
-  /** The units an anchor group is looking for, taken from its own features so the two can never disagree. Pure. */
+  /** The units the group's subject is made of: its leading feature, since features arrive subject first. Pure. */
   function anchorGroupTitleUnits(group: readonly string[]): string[] {
-    const units = group.flatMap(feature => feature.startsWith("anchor:bi:")
-      ? feature.slice("anchor:bi:".length).split("|")
-      : feature.startsWith("anchor:sym:")
-        ? [feature.slice("anchor:sym:".length)]
-        : []);
+    const lead = group[0] ?? "";
+    const units = lead.startsWith("anchor:bi:")
+      ? lead.slice("anchor:bi:".length).split("|")
+      : lead.startsWith("anchor:sym:")
+        ? [lead.slice("anchor:sym:".length)]
+        : [];
     // A digit qualifier stays: it is short, and it is the whole difference between two titles.
     //
     // Dropping units under three characters removed the 11 from {apollo, 11}, so the title test matched both
@@ -652,7 +656,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
     const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(async group => {
-        const rows = await searchAnchorGroup(group, proseSourceKinds);
+        const rows = await searchAnchorGroup(group, proseSourceKinds, !codeRequestRecognized(codeRequestSignal(text)));
         perGroupCounts.push({ group: [...group], rows: rows.length, heads: rows.slice(0, 2).map(item => String(item.span.textPreview ?? "").replace(/s+/gu, " ").slice(0, 50)) });
         return rows;
       })).then(groupResults => groupResults.flat())
