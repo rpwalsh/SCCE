@@ -325,15 +325,32 @@ and returned 1 for 99.78% of pairs -- a standard deviation of 0.037 on a unit me
 structural term reduces to a function of surface distance alone, so the graph half of a fused transport was
 contributing almost nothing while costing what it cost to compute.
 
-The short-range cases were not wrong and are unchanged. What was missing was any gradient beyond them: two
-targets three hops apart and two targets in unrelated components were the same number, so nothing in the
-transport could prefer the near one. Distance beyond one hop is now the hop count over the incidence graph --
-targets are adjacent when they share a relation node or a hyperedge -- from a bounded breadth-first walk built
-per transport call over that call's own targets and memoised per source. On the same sample the metric takes six
-values, returns 1 for 69.5% of pairs, and has a standard deviation of 0.138.
+Two things were coarse, and they are different things.
 
-The radius is honest about itself: beyond it distance is 1 because the walk stopped looking, not because the
-targets are known to be unrelated.
+**Topologically**, there was no gradient past one hop: two targets three hops apart and two in unrelated
+components were the same number. Distance beyond one hop is now the hop count over the incidence graph -- targets
+are adjacent when they share a relation node or a hyperedge -- from a bounded breadth-first walk built per
+transport call over that call's own targets and memoised per source.
+
+**By type**, the lookup read four of a target's twelve fields. It ignored the relation the target belongs to, the
+role and port it fills, the kind of value it carries, the participant it names and the incidence that produced
+it, so two targets filling the same role of the same relation were exactly as far apart as two with nothing in
+common. All of them now contribute, as a weighted Jaccard over the target's type features. The weights are
+inverse document frequency across the targets in play, so a feature every target carries earns nothing and one
+carried by a handful earns a great deal -- measured from the graph slice being aligned rather than chosen.
+
+The two readings and the original lookup are taken together and the nearest wins. What a target *is* and where it
+*sits* are different kinds of proximity and either is evidence: two targets filling one role of one relation are
+close however far apart the walk puts them, and two adjacent in the walk are close whatever their types. Taking
+the smallest also makes the change monotone -- the old cases remain floors, so no pair is coarser than before.
+
+On 120,000 pairs from the live graph the metric goes from 3 values to 9, from 99.88% of pairs at exactly 1 to
+17.8%, and from a standard deviation of 0.027 to 0.090. The type reading resolves 119,872 of those pairs; the
+lookup resolved 146.
+
+A radius and a shared feature both say what they mean. Beyond the radius the walk contributes nothing because it
+stopped looking, not because the targets are known unrelated, and 1 is reserved for a pair sharing no type and no
+reachable path.
 
 Whether richer geometry improves construction promotion is a separate measurement and requires a training run.
 What is established is that the metric now discriminates where it previously did not.
