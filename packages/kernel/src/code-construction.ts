@@ -144,7 +144,7 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
   if (!fileTokens.length) return [];
   const corpusWeight = clampUnit(input.corpusWeight ?? CODE_CORPUS_INTERPOLATION_WEIGHT);
   const boost = boostedSymbols(input.requiredSymbols ?? []);
-  const maxCandidates = Math.max(1, Math.min(8, Math.floor(input.maxCandidates ?? 4)));
+  const maxCandidates = Math.max(1, Math.min(64, Math.floor(input.maxCandidates ?? 12)));
   const out: LearnedCodeRepairCandidate[] = [];
 
   // Where the toolchain reports exact ranges, they are the whole story; the line strategies below are what is
@@ -168,7 +168,7 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
       constructions: input.constructions ?? []
     }));
   }
-  if (out.length) return dedupedByContent(out).slice(0, maxCandidates);
+  if (out.length) return spreadAcrossHoles(dedupedByContent(out), maxCandidates);
 
   for (const site of repairSites(input.diagnostics, lines.length)) {
     const lineText: string | undefined = lines[site.line - 1];
@@ -357,6 +357,40 @@ function composeSpanReplacements(input: {
 /** How many lines a piece of text spans, counting the one it starts on. */
 function countLines(text: string): number {
   return text.split(/\r?\n/u).length;
+}
+
+/**
+ * One hypothesis per defect before a second for any of them.
+ *
+ * A file with three defects has three questions, and ranking every candidate together answers whichever one the
+ * models happen to feel strongest about -- over and over. The smallest hole is tried first, then its next-best,
+ * then its next, until the search gives up having never proposed anything for the other two. Taking the best for
+ * each hole, then the second for each, gives every defect a turn, which is how the file gets finished rather
+ * than how one line gets rewritten five ways.
+ */
+function spreadAcrossHoles(
+  candidates: readonly LearnedCodeRepairCandidate[],
+  limit: number
+): LearnedCodeRepairCandidate[] {
+  const byHole = new Map<string, LearnedCodeRepairCandidate[]>();
+  for (const candidate of candidates) {
+    const key = `${candidate.startLine}\u0001${candidate.holeLength ?? 0}`;
+    byHole.set(key, [...(byHole.get(key) ?? []), candidate]);
+  }
+  const queues = [...byHole.values()];
+  const out: LearnedCodeRepairCandidate[] = [];
+  for (let round = 0; out.length < limit; round++) {
+    let added = false;
+    for (const queue of queues) {
+      const candidate = queue[round];
+      if (!candidate) continue;
+      out.push(candidate);
+      added = true;
+      if (out.length >= limit) break;
+    }
+    if (!added) break;
+  }
+  return out;
 }
 
 /**

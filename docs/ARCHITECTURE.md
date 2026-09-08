@@ -314,6 +314,49 @@ visibility is not globally atomic; the receipt truthfully reports
 `atomic-per-file-with-verified-transaction-rollback`. See
 `docs/PATCH_TRANSACTION_CONTRACT.md`.
 
+## Code Lane
+
+The code lane runs the same cognition as the prose lane over a formal language, with a different
+arbiter. Prose is decided by evidence; code is decided by a compiler.
+
+Three parties, none doing another's job. The **type system** is asked what may legally stand at a
+defect -- the symbol table, not a suggested fix. A **learned distribution** chooses among what is
+admissible: a mixture over the corpus for the shape of the language, interpolated with a model of the
+file being edited for the names only that file knows. The **build** decides, and every proposal is
+applied, verified, and rolled back if it fails.
+
+Repair is scoped to an exact range rather than a line, because a line is what a compiler prints and a
+span is what it knows. A diagnostic's own range is frequently not where its repair lives -- a missing
+argument is reported on the callee, a missing member on the `return` keyword, an unassignable type on
+the binding name -- so three ranges are offered per defect: the token, the expression containing it,
+and the expression its statement is about. Smallest first; the build selects.
+
+Composition works at two levels. A sequence model continues token by token and cannot hold a shape.
+Constructions supply the shape: balanced spans grouped by their punctuation and anti-unified, so the
+positions that vary become slots. Over 120 modules of this repository that yields 459 shapes,
+including `<0> ( <1> , <2> )` and `{ <0> : <1> , <2> : <3> }` -- the forms a token-level model provably
+cannot represent. Shapes are induced from the project being repaired, because a repair should read
+like the code around it. Both kinds of filling compete on one objective, the models' own total log
+probability.
+
+Four structural admissibility rules bound what a filling may be, each present because the search found
+the hole in the previous set, and each producing code that type-checks: a filling may not say less
+than the hole said, may not drop the hole's structure, opens the way the hole opened, and a keyword or
+a position admitting no name is not a hole at all. Without them "it compiles" is satisfiable by
+deleting the code that failed to.
+
+The loop is monotone rather than all-or-nothing. A step that strictly reduces the diagnostics and
+introduces no kind of failure that was not already present is kept, and kept steps stay kept; a run
+that converges partway reports how far it got and what remains. The file never gets worse. Termination
+needs no counter: diagnostics are bounded below by zero and hypotheses per state are finite, so the
+only real bound is wall clock.
+
+Everything above is language-neutral -- no keyword list appears in the lane. What is language-specific
+is verification, and it is a port: `tsc` and `clang -fsyntax-only` are implemented under one contract.
+
+Calibration, measured outcomes, and stated boundaries are in
+[`CODE_LANE.md`](CODE_LANE.md).
+
 ## Product Surfaces
 
 - `packages/cli`: local CLI.
