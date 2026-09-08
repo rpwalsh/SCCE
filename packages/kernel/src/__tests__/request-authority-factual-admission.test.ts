@@ -10,18 +10,21 @@ function candidate(input: {
   obligations: number;
   evidenceCount?: number;
   missedRequirementIds?: string[];
+  kind?: CandidateSurface["kind"];
+  support?: number;
+  faithfulness?: number;
 }): CandidateSurface {
   const evidenceCount = input.evidenceCount ?? 2;
   return {
     id: input.id,
-    kind: "proof-answer",
+    kind: input.kind ?? "proof-answer",
     answer: input.id,
     force: "inferred",
     evidenceIds: Array.from({ length: evidenceCount }, (_, index) => `evidence_${input.id}_${index}` as EvidenceId),
     scores: {
-      support: 0.54,
+      support: input.support ?? 0.54,
       contradiction: 0,
-      faithfulness: 0.44,
+      faithfulness: input.faithfulness ?? 0.44,
       alphaPressure: 0.55,
       actionability: 0.8,
       evidenceCoverage: 0.01,
@@ -60,6 +63,15 @@ describe("factual candidate proof admission", () => {
     expect(result.candidates.map(row => row.id)).toEqual(["good"]);
     expect(result.surfaceMass.map(row => row.candidateId)).toEqual(["good"]);
     expect(result.surfaceMass[0]?.mass).toBe(1);
+  });
+
+  it("rejects graph and zero-support synthesis siblings instead of routing around a failed factual proof", () => {
+    const proof = candidate({ id: "apollo-proof", obligations: 9 });
+    const graph = candidate({ id: "apollo-graph", obligations: 9, kind: "graph-inference", support: 0.46, faithfulness: 0.40 });
+    const synthesis = candidate({ id: "apollo-synthesis", obligations: 0, kind: "reasoned-synthesis", support: 0, faithfulness: 0 });
+    const result = admitCandidatesForAuthority(field([proof, graph, synthesis]), "factual");
+    expect(result.candidates).toEqual([]);
+    expect(result.surfaceMass).toEqual([]);
   });
 
   it("rejects a factual proof candidate that explicitly missed a required output", () => {
