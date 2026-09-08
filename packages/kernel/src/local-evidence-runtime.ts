@@ -207,15 +207,24 @@ export function trailingInitialismTokensForAnchor(text: string, anchor: string):
   // being mistaken for a disambiguator: real initialisms are short and
   // follow the full subject phrase, they don't precede or partially
   // overlap it.
+  //
+  // A digit run trailing a single-word name is the same disambiguator, and the multi-word requirement above
+  // was hiding it: "Apollo 11" reduces to the one unit "apollo", so nothing carried the 11 and the request
+  // searched the Greek god. The corpus indexes anchor:bi:apollo|11 with 99 postings, 32 of them the Apollo 11
+  // article, so the discriminating feature existed the whole time and was never asked for. Digits are the one
+  // trailing shape that cannot be an ordinary word of any language, which is why the single-word case is
+  // narrowed to them: a word trailing a one-word anchor is usually just the rest of the sentence.
   const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
-  if (anchorUnits.length < 2) return [];
+  const namedSingleAnchor = anchorUnits.length === 1 && [...(anchorUnits[0] ?? "")].length >= 5;
+  if (anchorUnits.length < 2 && !namedSingleAnchor) return [];
   const units = requestOrderedUnits(text);
   const out: string[] = [];
   for (let index = 0; index + anchorUnits.length < units.length; index++) {
     const matches = anchorUnits.every((anchorUnit, offset) => units[index + offset] === anchorUnit);
     if (!matches) continue;
     const next = units[index + anchorUnits.length] ?? "";
-    if (next.length >= 2 && next.length <= 4) out.push(next);
+    const digitQualifier = /^\p{Number}+$/u.test(next);
+    if (next.length >= 2 && next.length <= 4 && (anchorUnits.length >= 2 || digitQualifier)) out.push(next);
   }
   return uniqueKernelStrings(out);
 }
@@ -909,6 +918,14 @@ export function answerCoversRequest(sentences: readonly string[], span: Evidence
     || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
   const covered = contentUnits.filter(matches).length;
   // A subject unit must be among the covered ones: function words shared with the request mark no topic.
+  //
+  // Excluding the subject from its own quota was tried, so that naming the topic could not by itself prove a
+  // sentence answers the question: on the live corpus it cut fabrications on unanswerable questions from three
+  // in five to one, and it emptied seven answers this file's own tests require -- an exact-title span whose
+  // answering sentence does not restate the request's other words is common and correct. The measured defect
+  // is real ("Who was Albert Einstein's dentist?" is covered by the article's opening sentence because it
+  // contains "Einstein") but the quota is the wrong place to fix it; separating aboutness from answerhood
+  // needs the question's own shape, which is what the semantic frames are for.
   return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(contentUnits.length / 3));
 }
 
