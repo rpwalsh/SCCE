@@ -26,15 +26,35 @@ export interface CompilerRepairCandidates {
  * diagnostic it answers. This is the native lane; a local model is optional and
  * only handles what the compiler has no fix for.
  */
-export async function proposeCompilerOwnedRepair(input: {
+export interface TypeScriptProjectSnapshot {
+  root: string;
+  relativeTarget: string;
+  tsconfigRelative: string;
+  files: TypeScriptCodeActionSnapshotFile[];
+  /**
+   * The compiler invocation, bound to a workspace artifact that is actually in the snapshot.
+   *
+   * It was pinned to `package.json` unconditionally, and a project without one -- every workspace the code
+   * repair benchmark builds, among others -- threw before a single diagnostic was read. The whole TypeScript
+   * lane then reported "no proposal", which read as the repair engine declining when in fact the project had
+   * never bound. A tsconfig determines the compilation just as truly as a build script does, so it is the
+   * fallback; package.json is still preferred where it exists, because it can carry an exact script binding.
+   */
+  compilerCommand: { executable: "tsc"; args: string[]; cwd: string; sourcePath: string };
+}
+
+/**
+ * The bounded slice of a workspace the language service needs to bind one file: the project chain, the file
+ * itself, the relative imports it names, and its own directory. Shared by every lane that asks TypeScript a
+ * question about this file, so they all ask it about exactly the same project.
+ */
+export async function typeScriptProjectSnapshot(input: {
   workspaceRoot: string;
   targetPath: string;
   targetText: string;
-  requestText: string;
-  attempt: number;
   imports?: readonly string[];
   tsconfigPath?: string;
-}): Promise<CompilerRepairProposal | CompilerRepairCandidates | undefined> {
+}): Promise<TypeScriptProjectSnapshot | undefined> {
   const root = path.resolve(input.workspaceRoot);
   const absoluteTarget = path.resolve(root, input.targetPath);
   const relativeTarget = path.relative(root, absoluteTarget).replace(/\\/gu, "/");
@@ -95,6 +115,31 @@ export async function proposeCompilerOwnedRepair(input: {
     if (budget <= 0) break;
   }
   if (!files.some(file => file.path === tsconfigRelative)) return undefined;
+  const commandSourcePath = files.some(file => file.path === "package.json") ? "package.json" : tsconfigRelative;
+  const commandCwd = path.posix.dirname(commandSourcePath) === "." ? "." : path.posix.dirname(commandSourcePath);
+  const projectArgument = commandCwd === "." ? tsconfigRelative : path.posix.relative(commandCwd, tsconfigRelative);
+  return {
+    root,
+    relativeTarget,
+    tsconfigRelative,
+    files,
+    compilerCommand: { executable: "tsc", args: ["-p", projectArgument], cwd: commandCwd, sourcePath: commandSourcePath }
+  };
+}
+
+export async function proposeCompilerOwnedRepair(input: {
+  workspaceRoot: string;
+  targetPath: string;
+  targetText: string;
+  requestText: string;
+  attempt: number;
+  imports?: readonly string[];
+  tsconfigPath?: string;
+}): Promise<CompilerRepairProposal | CompilerRepairCandidates | undefined> {
+  const snapshot = await typeScriptProjectSnapshot(input);
+  if (!snapshot) return undefined;
+  const { root, relativeTarget, files } = snapshot;
+  const absoluteTarget = path.resolve(root, relativeTarget);
 
   let repair;
   try {
@@ -103,7 +148,7 @@ export async function proposeCompilerOwnedRepair(input: {
       requestedPaths: [relativeTarget],
       requestText: input.requestText,
       files,
-      compilerCommand: { executable: "tsc", args: ["-p", tsconfigRelative], cwd: ".", sourcePath: "package.json" }
+      compilerCommand: snapshot.compilerCommand
     });
   } catch {
     // A snapshot the compiler cannot bind is not a failure of the turn; the model lane still applies.
