@@ -200,6 +200,7 @@ export * from "./generative-derivation-runtime.js";
 export * from "./request-requirement-learning.js";
 export * from "./code-request.js";
 export * from "./code-surface.js";
+export * from "./graph-target-geometry.js";
 export * from "./code-intent.js";
 export * from "./code-construction-grammar.js";
 export * from "./code-span-repair.js";
