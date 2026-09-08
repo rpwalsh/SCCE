@@ -276,13 +276,17 @@ export function createTypeScriptCodeMouthPorts(input: {
       for (const operation of operations) {
         const current = originals.get(operation.path) ?? await readFile(operation.path, "utf8").catch(() => "");
         if (!originals.has(operation.path)) originals.set(operation.path, current);
-        const lines = current.split("\n");
+        // The file's own line ending, kept. Splitting on "\n" alone leaves every other line of a CRLF file
+        // carrying its carriage return while the replaced one loses it, so a one-token repair silently
+        // returned a file with mixed endings -- a diff across the whole line, and not what was asked for.
+        const newline = current.includes("\r\n") ? "\r\n" : "\n";
+        const lines = current.split(/\r?\n/u);
         let next: string;
         if (operation.kind === "replace" && operation.startLine) {
           const start = operation.startLine - 1, end = (operation.endLine ?? operation.startLine) - 1;
-          next = [...lines.slice(0, start), ...(operation.content ?? "").split("\n"), ...lines.slice(end + 1)].join("\n");
+          next = [...lines.slice(0, start), ...(operation.content ?? "").split(/\r?\n/u), ...lines.slice(end + 1)].join(newline);
         } else if (operation.kind === "delete" && operation.startLine) {
-          next = [...lines.slice(0, operation.startLine - 1), ...lines.slice((operation.endLine ?? operation.startLine))].join("\n");
+          next = [...lines.slice(0, operation.startLine - 1), ...lines.slice((operation.endLine ?? operation.startLine))].join(newline);
         } else {
           next = current + (operation.content ?? "");
         }
