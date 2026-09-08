@@ -42,6 +42,12 @@
       "purpose": "Harness for the self-repair comparison: mutates real SCCE modules, gives SCCE and the same local reference model the identical defect, and scores both by the same compiler and byte comparison. Measurement only.",
       "endpoint": "127.0.0.1:11434",
       "productReachable": false
+    },
+    {
+      "file": "tools/reference-comparison.mjs",
+      "purpose": "Harness for the acceptance-workload comparison: gives SCCE and the same local reference model an identical invented corpus and identical questions, one of which the corpus cannot answer, and scores grounding and fabrication from the corpus bytes. Measurement only.",
+      "endpoint": "127.0.0.1:11434",
+      "productReachable": false
     }
   ]
 }
