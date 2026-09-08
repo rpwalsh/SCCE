@@ -75,6 +75,15 @@ export interface LearnedCodeGenerationInput {
   diagnostics: readonly ProgramDiagnostic[];
   /** Names the request, the retrieved API surface, or the diagnostics put in play, boosted during generation. */
   requiredSymbols?: readonly string[];
+  /**
+   * The identifiers a toolchain says may legally stand at the diagnostic's own position, when one was asked.
+   *
+   * A constraint at that position rather than a preference, because it is not an opinion: an identifier outside
+   * this set does not type-check there, and composing one spends an attempt proving what was already known. It
+   * binds only the first symbol of a fragment that starts at the defect; every later position is one this
+   * answer was never about.
+   */
+  admissibleSiteSymbols?: readonly string[];
   maxCandidates?: number;
   beamWidth?: number;
   corpusWeight?: number;
@@ -92,7 +101,7 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
   // Every model the corpus lane trained for this language, mixed. Each source file trains its own model, so a
   // language's competence is spread across them; taking one would be reading a single file's habits as the
   // language, and merging their counts is not something Kneser-Ney smoothing survives.
-  const corpusModels = [...input.models].sort((left, right) => right.order - left.order).slice(0, CORPUS_MODEL_MIXTURE_LIMIT);
+  const corpusModels = selectCorpusMixture(input.models);
   const corpusOrder = corpusModels[0]?.order;
   if (!corpusOrder) return [];
   const lines = input.targetText.split(/\r?\n/u);
@@ -130,6 +139,10 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
         corpusModels,
         localModel,
         corpusWeight,
+        // Only the tail begins at the reported position, so only the tail is bound by what is legal there.
+        ...(strategy === "tail" && input.admissibleSiteSymbols?.length
+          ? { firstSymbolVocabulary: new Set(input.admissibleSiteSymbols) }
+          : {}),
         prompt,
         boost,
         beamWidth: Math.max(2, Math.min(12, Math.floor(input.beamWidth ?? 6)))
@@ -137,7 +150,13 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
       if (!generated) continue;
       const rendered = renderCodeTokens(generated.symbols).trimEnd();
       if (!rendered.trim()) continue;
-      const candidate: string = (strategy === "tail" ? `${prefixText}${rendered}` : `${indent}${rendered}`).trimEnd();
+      // What the fragment did not replace, it keeps. A tail regenerates from the defect to the end of a
+      // statement, and where it stopped at the line boundary instead of a terminator the rest of the
+      // original line was never in question -- dropping it turns a one-token repair into a rewrite.
+      const preserved = strategy === "tail" && !rendered.endsWith(";")
+        ? lineText.slice(site.column - 1).replace(/^[\p{Letter}\p{Number}_$]+/u, "")
+        : "";
+      const candidate: string = (strategy === "tail" ? `${prefixText}${rendered}${preserved}` : `${indent}${rendered}`).trimEnd();
       if (!candidate.trim() || candidate === lineText) continue;
       const coveredSymbols = (input.requiredSymbols ?? []).filter(symbol => generated.symbols.includes(symbol));
       out.push({
@@ -174,12 +193,17 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
     }
   }
 
-  return out
-    .sort((left, right) =>
-      right.coveredSymbols.length - left.coveredSymbols.length
-      || right.score - left.score
-      || left.id.localeCompare(right.id))
-    .slice(0, maxCandidates);
+  // Two diagnostics on the same statement compose the same replacement, and offering it twice spends a second
+  // attempt re-proving the first one's rejection. The loop's budget is for distinct hypotheses.
+  const distinct = new Map<string, LearnedCodeRepairCandidate>();
+  for (const candidate of out.sort((left, right) =>
+    right.coveredSymbols.length - left.coveredSymbols.length
+    || right.score - left.score
+    || left.id.localeCompare(right.id))) {
+    const key = `${candidate.startLine}\u0001${candidate.content}`;
+    if (!distinct.has(key)) distinct.set(key, candidate);
+  }
+  return [...distinct.values()].slice(0, maxCandidates);
 }
 
 /**
@@ -242,7 +266,7 @@ export function generateLearnedCodeSurface(input: {
   beamWidth?: number;
   corpusWeight?: number;
 }): LearnedCodeSurface | undefined {
-  const corpusModels = [...input.models].sort((left, right) => right.order - left.order).slice(0, CORPUS_MODEL_MIXTURE_LIMIT);
+  const corpusModels = selectCorpusMixture(input.models);
   const corpusOrder = corpusModels[0]?.order;
   if (!corpusOrder) return undefined;
   const seedTokens = codeSurfaceTokens(`${input.contextCode ?? ""}\n${input.requestText}`);
@@ -372,6 +396,8 @@ function beamGenerateFragment(input: {
   prompt: readonly string[];
   boost: ReadonlyMap<string, number>;
   beamWidth: number;
+  /** What may legally be named at the position the fragment starts at; unset means nothing bounds it. */
+  firstSymbolVocabulary?: ReadonlySet<string>;
 }): GeneratedFragment | undefined {
   type Beam = { symbols: string[]; logProbability: number; score: number };
   let beams: Beam[] = [{ symbols: [], logProbability: 0, score: 0 }];
@@ -382,6 +408,8 @@ function beamGenerateFragment(input: {
     for (const beam of beams) {
       const context = [...input.prompt, ...beam.symbols];
       for (const item of interpolatedPredictions(input, context)) {
+        if (step === 0 && input.firstSymbolVocabulary && identifierLikeSymbol(item.symbol)
+          && !input.firstSymbolVocabulary.has(item.symbol)) continue;
         const symbols = [...beam.symbols, item.symbol];
         // Self-contained: a fragment may close only what it opened itself. Balancing against the prompt instead
         // let a replacement close an enclosing block it was not replacing -- `return row.}` scored well because
@@ -470,6 +498,29 @@ function boostedSymbols(required: readonly string[]): Map<string, number> {
   const boost = new Map<string, number>();
   for (const symbol of required) if (symbol.trim()) boost.set(symbol, 3.2);
   return boost;
+}
+
+/**
+ * Which trained models represent the language.
+ *
+ * The corpus holds one model per source file and only a bounded mixture is affordable, so the choice of which
+ * ones matters. Longest order first, because a shorter model answers a shorter question; then most observed
+ * symbols, because a model built from more of the language is a better estimate of it than one built from less.
+ * Both are properties of the model rather than of the store's return order, which keeps the mixture -- and every
+ * composition that comes out of it -- the same from one run to the next as the corpus grows around it.
+ */
+function selectCorpusMixture(models: readonly KneserNeyModel[]): KneserNeyModel[] {
+  return [...models]
+    .sort((left, right) =>
+      right.order - left.order
+      || right.observedSymbolCount - left.observedSymbolCount
+      || right.vocabularySize - left.vocabularySize)
+    .slice(0, CORPUS_MODEL_MIXTURE_LIMIT);
+}
+
+/** A symbol that names something rather than punctuating it: the only class a symbol table has an opinion on. */
+function identifierLikeSymbol(symbol: string): boolean {
+  return /^[\p{Letter}_$]/u.test(symbol);
 }
 
 function clampUnit(value: number): number {

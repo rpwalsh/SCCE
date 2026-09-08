@@ -479,7 +479,7 @@ async function dispatch(
       ports: createTypeScriptCodeMouthPorts({
         workspaceRoot: context.config.runtime.workspaceRoot,
         // Composed from this brain's own code corpus first; the compiler-owned fix answers when it composes nothing.
-        learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage })
+        learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage, workspaceRoot: context.config.runtime.workspaceRoot })
       })
     });
     // A repair that is forgotten cannot be learned from: every accepted patch enters the ledger with what

@@ -16,6 +16,8 @@ import {
   type ScceStorage
 } from "@scce/kernel";
 import type { CodeMouthContext, CodeMouthProposal } from "./code-mouth.js";
+import { typeScriptProjectSnapshot } from "./code-mouth-compiler-proposer.js";
+import { typeScriptLegalIdentifiersAt } from "./typescript-code-actions.js";
 
 /**
  * The proposer that writes code instead of transcribing a fix.
@@ -45,6 +47,16 @@ export interface LearnedCodeProposer {
 
 export interface LearnedCodeProposerOptions {
   storage: ScceStorage;
+  /**
+   * Workspace to ask the type system what may legally be written at a defect site.
+   *
+   * Optional, and absent it the lane composes from the corpus alone. What it buys is a vocabulary: a corpus that
+   * has never met an API cannot supply its names, and no amount of fluency substitutes for knowing that `row`
+   * has exactly one member. This is the symbol table, not a suggested fix -- the compiler says what is legal,
+   * the learned distribution says what is likely, and the build still decides.
+   */
+  workspaceRoot?: string;
+  tsconfigPath?: string;
   /** How many trained models to hydrate per language. */
   modelLimit?: number;
   maxCandidates?: number;
@@ -82,13 +94,16 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         log(`no trained ${languageId} corpus; the learned lane has nothing to compose from`);
         return undefined;
       }
+      const legal = await legalIdentifiers(options, languageId, context, diagnostics);
+      if (legal.length) log(`the type system admits ${legal.length} identifier(s) at the defect site`);
       const candidates = generateLearnedCodeRepairs({
         models,
         languageId,
         targetPath: context.targetPath,
         targetText: context.targetText,
         diagnostics,
-        requiredSymbols: requiredSymbols(request),
+        requiredSymbols: [...new Set([...requiredSymbols(request), ...legal])],
+        ...(legal.length ? { admissibleSiteSymbols: legal } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
       });
@@ -115,6 +130,52 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
  */
 function requiredSymbols(request: string): string[] {
   return codeIdentifierTokens(codeSurfaceTokens(request), 32);
+}
+
+/**
+ * What the type system will accept at the first located defect, when a workspace is available to ask.
+ *
+ * Bounded to TypeScript because that is the toolchain this package can query for a symbol table; every other
+ * language falls back to the corpus alone, which is the honest degradation -- fewer right names available, never
+ * a wrong one asserted.
+ */
+async function legalIdentifiers(
+  options: LearnedCodeProposerOptions,
+  languageId: string,
+  context: CodeMouthContext,
+  diagnostics: readonly ProgramDiagnostic[]
+): Promise<string[]> {
+  if (!options.workspaceRoot || languageId !== "typescript") return [];
+  const site = diagnostics.find(diagnostic => Number.isInteger(diagnostic.line) && (diagnostic.line ?? 0) > 0);
+  if (!site) return [];
+  const snapshot = await typeScriptProjectSnapshot({
+    workspaceRoot: options.workspaceRoot,
+    targetPath: context.targetPath,
+    targetText: context.targetText,
+    imports: context.imports,
+    ...(options.tsconfigPath ? { tsconfigPath: options.tsconfigPath } : {})
+  });
+  if (!snapshot) return [];
+  const at = (column: number): string[] => {
+    try {
+      return typeScriptLegalIdentifiersAt({
+        rootPath: snapshot.root.replace(/\\/gu, "/"),
+        requestedPaths: [snapshot.relativeTarget],
+        files: snapshot.files,
+        compilerCommand: snapshot.compilerCommand,
+        site: { path: snapshot.relativeTarget, line: site.line!, column }
+      });
+    } catch {
+      return [];
+    }
+  };
+  // A diagnostic points at the first character of the offending token, and TypeScript only resolves a member
+  // access from inside that token: asked at the token start it answers with the whole global scope, asked one
+  // character in it answers with the members of whatever precedes the dot. The tighter answer is the useful
+  // one, and where there is no token to be inside, the position itself still bounds what may be named there.
+  const column = Math.max(1, site.column ?? 1);
+  const inside = at(column + 1);
+  return inside.length ? inside : at(column);
 }
 
 /**

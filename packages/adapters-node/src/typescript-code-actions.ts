@@ -312,6 +312,63 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
   };
 }
 
+export interface TypeScriptLegalIdentifierSite {
+  /** Workspace-relative path of the file being written. */
+  path: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * The identifiers the type system says are legal at a position.
+ *
+ * Not a suggested fix, and deliberately so: this is the language's own symbol table -- what may be written here
+ * at all -- with no opinion about which of them belongs. A generator that composes from a corpus cannot know
+ * that `row` has exactly one member, and a corpus thin in a given API cannot supply its names at all; bounding
+ * the vocabulary by what would type-check is what lets a learned distribution choose among real candidates
+ * instead of plausible-looking wrong ones. The compiler bounds, the cognition chooses, the build decides.
+ */
+export function typeScriptLegalIdentifiersAt(
+  input: Omit<TypeScriptCodeActionInput, "requestText"> & { site: TypeScriptLegalIdentifierSite; limit?: number }
+): string[] {
+  const snapshot = exactSnapshot(input.rootPath, input.files, input.workspaceManifest ?? input.files);
+  const requested = requestedSourceFiles(snapshot, [input.site.path]);
+  const file = requested[0];
+  if (!file) return [];
+  const project = createProjectContext(snapshot, observedCompilerProject(snapshot, input.compilerCommand, false), requested);
+  try {
+    const position = positionOfLineColumn(file.content, input.site.line, input.site.column);
+    if (position === undefined) return [];
+    const completions = project.service.getCompletionsAtPosition(file.absolutePath, position, {});
+    if (!completions) return [];
+    const limit = Math.max(1, Math.min(512, Math.floor(input.limit ?? 128)));
+    const out: string[] = [];
+    for (const entry of completions.entries) {
+      if (!/^[\p{Letter}_$][\p{Letter}\p{Number}_$]*$/u.test(entry.name)) continue;
+      if (out.includes(entry.name)) continue;
+      out.push(entry.name);
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch {
+    // A snapshot the compiler cannot bind offers no vocabulary; the corpus lane still composes without it.
+    return [];
+  } finally {
+    project.service.dispose();
+  }
+}
+
+/** 1-based line and column to the offset the language service indexes by. */
+function positionOfLineColumn(content: string, line: number, column: number): number | undefined {
+  if (!Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) return undefined;
+  const lines = content.split(/\r?\n/u);
+  if (line > lines.length) return undefined;
+  const newlineLength = content.includes("\r\n") ? 2 : 1;
+  let offset = 0;
+  for (let index = 0; index < line - 1; index++) offset += lines[index]!.length + newlineLength;
+  return offset + Math.min(column - 1, lines[line - 1]!.length);
+}
+
 function deriveCompilerCodeActions(
   input: Omit<TypeScriptCodeActionInput, "requestText">,
   requireExactCommandBinding: boolean

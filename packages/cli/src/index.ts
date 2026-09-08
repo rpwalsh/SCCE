@@ -109,6 +109,7 @@ async function main(): Promise<void> {
         // a brain with no corpus for the language simply proposes nothing and the fallback answers as before.
         const learnedProposer = createLearnedCodeProposer({
           storage: runtime.storage,
+          workspaceRoot,
           log: message => process.stderr.write(`[code-mouth] ${message}\n`)
         });
         const ports = clangSource
