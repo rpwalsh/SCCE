@@ -165,6 +165,25 @@ describe("composing a repair from learned code", () => {
     })).toEqual([]);
   });
 
+  // Composing `add` for `export const total = add(1);` type-checks perfectly and destroys the module. The gate
+  // could not see it, because "it compiles" bounds what is wrong with a program and never what it has to be.
+  it("will not silence a diagnostic by deleting what the diagnostic never named", () => {
+    const target = "function add(left: number, right: number): number {\n  return left + right;\n}\n\nexport const total = add(1);\n";
+    const candidates = generateLearnedCodeRepairs({
+      models: [corpusModel()],
+      languageId: "typescript",
+      targetPath: "src/main.ts",
+      targetText: target,
+      diagnostics: [{ id: "TS2554", class: "type", path: "src/main.ts", line: 5, column: 22, message: "Expected 2 arguments, but got 1.", raw: "", confidence: 0.95 }]
+    });
+    for (const candidate of candidates) {
+      // Everything the line said outside the call must still be said.
+      for (const token of ["export", "const", "total", "="]) {
+        expect(candidate.content).toContain(token);
+      }
+    }
+  });
+
   it("carries the learned family, not a compiler-owned one", () => {
     const candidate = generateLearnedCodeRepairs({
       models: [corpusModel()],
