@@ -198,7 +198,12 @@ for (const file of files) {
         proposalSources: result.proposalSources ?? [],
         diagnosticsBefore: before.diagnostics.length,
         diagnosticsAfter: diagnostics.length,
+        // Four states, because the loop keeps partial progress and "changed but still has diagnostics" is what
+        // a kept partial repair looks like, not a file left broken. Five files taken from four defects to
+        // three were being reported as damage by a metric that predates the loop keeping anything.
         compiles: diagnostics.length === 0,
+        improved: diagnostics.length < before.diagnostics.length && diagnostics.length > 0,
+        worse: diagnostics.length > before.diagnostics.length,
         exact: after === file.text,
         changed: after !== mutated.text,
         // What it wrote, against what was there. A repair that compiles but says something else has to be
@@ -257,7 +262,11 @@ function report(rows) {
   for (const row of rows) {
     const verdict = row.outcome === "not_applicable" || row.outcome === "no_defect"
       ? "-"
-      : row.exact ? "EXACT" : row.compiles ? "compiles, different" : "unrepaired";
+      : row.worse ? "WORSE"
+        : row.exact ? "EXACT"
+          : row.compiles ? "compiles, different"
+            : row.improved ? `partly (${row.diagnosticsBefore}->${row.diagnosticsAfter})`
+              : "unrepaired";
     process.stdout.write(`${row.file.padEnd(34)}${row.mutation.padEnd(20)}${String(row.outcome).padEnd(20)}${verdict}\n`);
     if (row.compiles && !row.exact && row.wrote) {
       process.stdout.write(`${" ".repeat(34)}  was: ${row.wrote.was.slice(0, 96)}\n`);
@@ -266,6 +275,7 @@ function report(rows) {
   }
   const exact = scored.filter(row => row.exact).length;
   const compiles = scored.filter(row => row.compiles).length;
-  const broken = scored.filter(row => row.changed && !row.compiles).length;
-  process.stdout.write(`\n${scored.length} real defects: ${exact} restored exactly, ${compiles} compile, ${broken} left broken\n`);
+  const improved = scored.filter(row => row.improved).length;
+  const worse = scored.filter(row => row.worse).length;
+  process.stdout.write(`\n${scored.length} real defects: ${exact} restored exactly, ${compiles} fully repaired, ${improved} partly repaired, ${worse} made worse\n`);
 }
