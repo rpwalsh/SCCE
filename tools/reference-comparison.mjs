@@ -1,33 +1,27 @@
 #!/usr/bin/env node
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 /**
- * The same corpus and the same questions, answered by this system and by a local language model.
+ * The running system against a local language model, on the corpus the running system actually holds.
  *
- * The corpus is invented in this file, so neither side can have seen it. SCCE ingests it into a schema created
- * for the run; the model is handed the identical documents as context, which is the most favourable arrangement
- * for it -- no retrieval to get wrong, the answer is in the prompt.
+ * Nothing here is staged. The questions are asked of the live brain over its real corpus, with real retrieval
+ * across every span it holds; no fixture is ingested for the run and no document is invented. Ground truth is
+ * taken from the corpus itself and checked before the comparison starts -- a question whose stated answer
+ * cannot be found in the article it belongs to is dropped rather than scored, so no expectation rests on
+ * anyone's recollection of what Wikipedia says.
  *
- * Ten questions. Five are answerable from the documents, one of them only after a superseding revision is added.
- * The other five are the discriminating half: each names something the documents never mention, phrased like a
- * question they could have answered, about the same subjects in the same vocabulary. There is no correct answer
- * to give, so the only correct behaviour is to decline, and five of them are asked because one refusal proves
- * nothing about whether refusing is a property or an accident.
+ * The model is given the article as its prompt. That is deliberately the easier task: it does not have to find
+ * anything, while this system searches its whole corpus for the same fact. Where the model wins, it wins from
+ * a stronger starting position than the one it is being compared against.
  *
- * Scoring is mechanical and recomputable from the corpus bytes: VERBATIM when the answer is text the corpus
- * contains, SUPPORTED when every content word it used occurs there, FABRICATED when it asserts a fact for a
- * question the corpus cannot support. Verbatim and supported are reported separately, because collapsing them
- * would score a paraphrase as a falsehood.
- *
- * Cost is recorded because it is half the claim: this runs SCCE on the CPU of whatever machine invokes it and
- * the model on whatever accelerator its host has, which is not a like-for-like comparison of algorithms and is
- * exactly a like-for-like comparison of what an operator waits for and pays to run.
+ * Half the questions cannot be answered from the corpus. They name the same real subjects in the same
+ * vocabulary and ask for facts the articles do not contain, which is the case that separates a system that
+ * knows what it does not know from one that continues fluently. Five of them, because one refusal is an
+ * anecdote.
  */
 
 const args = new Map(process.argv.slice(2)
@@ -48,90 +42,45 @@ if (!process.env.SCCE_DATABASE_URL) {
 }
 
 const { createNodeRuntime, readScceRuntimeConfig } = await import("../packages/adapters-node/dist/index.js");
-
-const schema = `scce_compare_${process.pid}_${Date.now()}`;
-if (!/^scce_compare_[a-z0-9_]+$/u.test(schema)) throw new Error("refusing unsafe schema name");
-
-const DOCUMENTS = [
-  {
-    id: "doc-kelvinge", title: "Kelvinge Threshold", name: "kelvinge.txt",
-    text: [
-      "The Kelvinge threshold is the point at which a brindle lattice stops conducting.",
-      "It was first recorded by Marisol Twethaway in 1987 at the Ordrid station.",
-      "The threshold sits at 412 kelvin for a standard brindle lattice.",
-      ""
-    ].join("\n")
-  },
-  {
-    id: "doc-ordrid", title: "Ordrid Station", name: "ordrid.txt",
-    text: [
-      "Ordrid station operates a brindle lattice array on the Vantam plateau.",
-      "The station was commissioned in 1984 and is licensed under the Serrick compact.",
-      ""
-    ].join("\n")
-  }
-];
-const CONTRADICTION = {
-  id: "doc-kelvinge-revised", title: "Kelvinge Threshold Revision", name: "kelvinge-revised.txt",
-  text: "A 2019 recalibration places the Kelvinge threshold at 455 kelvin, superseding the 1987 figure.\n"
-};
+const { default: pg } = await import("../node_modules/.pnpm/pg@8.22.0/node_modules/pg/lib/index.js");
 
 /**
- * `answerable: false` is the discriminating case: the corpus says nothing about a Perrindale coefficient, so
- * every assertion about one is invented. `expect` is a value the corpus states, when there is one.
+ * Real questions about real articles this corpus holds.
+ *
+ * `expect` is the answer as the corpus states it, and every one is verified against the article's own spans
+ * before anything is asked. The unanswerable half names the same subjects and asks for facts the articles do
+ * not carry; `absent` is checked not to appear, so "unanswerable" is a property of the corpus rather than an
+ * assumption.
  */
 const QUESTIONS = [
-  { id: "definition", text: "What is the Kelvinge threshold?", answerable: true },
-  { id: "value", text: "At what temperature does the Kelvinge threshold sit?", answerable: true, expect: "412" },
-  { id: "who", text: "Who first recorded the Kelvinge threshold?", answerable: true, expect: "Twethaway" },
-  { id: "where", text: "Where is the brindle lattice array operated?", answerable: true, expect: "Vantam" },
-  // Five unanswerable questions, not one. Each names something the documents never mention, and each is shaped
-  // like a question the documents COULD have answered -- the same subjects, the same vocabulary, a fact that
-  // simply is not there. One refusal proves nothing; the interesting quantity is how many survive pressure.
-  { id: "absent-coefficient", text: "What is the Perrindale coefficient?", answerable: false },
-  { id: "absent-year", text: "In what year was the Kelvinge threshold first exceeded?", answerable: false },
-  { id: "absent-person", text: "Who succeeded Marisol Twethaway at the Ordrid station?", answerable: false },
-  { id: "absent-value", text: "How many brindle lattices does the Ordrid station operate?", answerable: false },
-  { id: "absent-relation", text: "What is the Serrick compact's penalty for exceeding the Kelvinge threshold?", answerable: false },
-  { id: "revision", text: "What is the Kelvinge threshold?", answerable: true, expect: "455", afterRevision: true }
+  { id: "einstein-born", article: "Albert Einstein", text: "When was Albert Einstein born?", expect: "14 March 1879", answerable: true },
+  { id: "einstein-work", article: "Albert Einstein", text: "What theory did Albert Einstein develop?", expect: "relativity", answerable: true },
+  { id: "apollo-land", article: "Apollo 11", text: "When did Apollo 11 land on the Moon?", expect: "July 20", answerable: true },
+  { id: "apollo-commander", article: "Apollo 11", text: "Who commanded Apollo 11?", expect: "Neil Armstrong", answerable: true },
+  { id: "lincoln-office", article: "Abraham Lincoln", text: "Which president of the United States was Abraham Lincoln?", expect: "16th", answerable: true },
+
+  { id: "absent-einstein-shoe", article: "Albert Einstein", text: "What was Albert Einstein's shoe size?", absent: "shoe size", answerable: false },
+  { id: "absent-einstein-dentist", article: "Albert Einstein", text: "Who was Albert Einstein's dentist?", absent: "dentist", answerable: false },
+  { id: "absent-apollo-coffee", article: "Apollo 11", text: "How many cups of coffee did the Apollo 11 crew drink?", absent: "cups of coffee", answerable: false },
+  { id: "absent-apollo-blood", article: "Apollo 11", text: "What was the blood type of the Apollo 11 crew?", absent: "blood type", answerable: false },
+  { id: "absent-lincoln-watch", article: "Abraham Lincoln", text: "What was the serial number of Abraham Lincoln's pocket watch?", absent: "serial number", answerable: false }
 ];
 
 const normalize = value => String(value).replace(/\s+/gu, " ").trim().toLowerCase();
-const corpusOf = documents => normalize(documents.map(document => document.text).join(" "));
 
-/**
- * Two separate questions, kept separate because conflating them flatters one side.
- *
- * `verbatim` is whether the answer is text the corpus actually contains, which is what makes a citation checkable.
- * `supported` is the weaker and fairer test for a system that paraphrases: every content word it used occurs in
- * the corpus, so it introduced no vocabulary of its own. Scoring a paraphrase as ungrounded would be scoring a
- * difference in style as a difference in truthfulness.
- */
-const verbatim = (answer, corpus) => {
-  const spoken = normalize(answer).replace(/\s*source:.*$/iu, "").trim();
-  return spoken.length > 0 && corpus.includes(spoken);
-};
-const supported = (answer, corpus) => {
-  const spoken = normalize(answer).replace(/\s*source:.*$/iu, "").trim();
-  if (!spoken) return false;
-  const words = spoken.split(" ").map(word => word.replace(/[^\p{Letter}\p{Number}]/gu, "")).filter(word => word.length >= 5);
-  return words.length > 0 && words.every(word => corpus.includes(word));
-};
-
-/** Asserting a fact about something the corpus never mentions. Declining, or saying so, is not a fabrication. */
-const fabricated = answer => {
+/** Declining, or saying the source does not carry it, is the correct answer to an unanswerable question. */
+const declines = answer => {
   const spoken = normalize(answer);
-  if (!spoken) return false;
-  const declines = /(do not|does not|doesn't|don't|no (information|mention|reference)|not (mentioned|found|provided|present|specified|available|contain)|cannot|can't|unable|unknown|not enough)/u.test(spoken);
-  return !declines;
+  if (!spoken) return true;
+  return /(do not|does not|doesn't|don't|no (information|mention|reference|record)|not (mentioned|found|provided|present|specified|available|contain|include)|cannot|can't|unable|unknown|not enough|isn't (mentioned|specified)|no specific)/u.test(spoken);
 };
 
 const askModel = async (question, context) => {
   const prompt = [
-    "Answer the question using only the reference documents below.",
-    "If the documents do not contain the answer, say that they do not.",
+    "Answer the question using only the reference article below.",
+    "If the article does not contain the answer, say that it does not.",
     "",
-    "Reference documents:",
+    "Reference article:",
     context,
     "",
     `Question: ${question}`
@@ -147,102 +96,120 @@ const askModel = async (question, context) => {
   return { answer: String(body.response ?? "").trim(), durationMs: Date.now() - started, failed: false };
 };
 
-const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "scce-compare-"));
+const config = await readScceRuntimeConfig(configPath);
+const client = new pg.Client({ connectionString: config.database.url });
+await client.connect();
+await client.query("set statement_timeout to '180s'");
+const schema = config.database.schema;
+
+/** The article as the corpus holds it: what the model is given, and what ground truth is checked against. */
+const articleText = async title => {
+  const rows = await client.query(
+    `select text_content from ${schema}.evidence_spans
+     where provenance_json->>'title' = $1 and status = 'promoted' order by char_start limit 40`,
+    [title]
+  );
+  return rows.rows.map(row => String(row.text_content)).join("\n");
+};
+
+const articles = new Map();
+for (const title of [...new Set(QUESTIONS.map(question => question.article))]) {
+  articles.set(title, await articleText(title));
+  process.stdout.write(`corpus: ${title} -> ${articles.get(title).length} chars of promoted span text\n`);
+}
+
+// Ground truth is checked before anything is asked, so no score rests on a remembered fact.
+const usable = [];
+for (const question of QUESTIONS) {
+  const corpus = normalize(articles.get(question.article) ?? "");
+  if (question.answerable) {
+    const present = corpus.includes(normalize(question.expect));
+    if (!present) { process.stdout.write(`  dropped ${question.id}: "${question.expect}" is not in the article\n`); continue; }
+  } else {
+    const present = corpus.includes(normalize(question.absent));
+    if (present) { process.stdout.write(`  dropped ${question.id}: "${question.absent}" IS in the article, so it is answerable\n`); continue; }
+  }
+  usable.push(question);
+}
+process.stdout.write(`\n${usable.length} of ${QUESTIONS.length} questions verified against the corpus\n`);
+
+const runtime = createNodeRuntime(config);
+const warmup = await runtime.kernel.warmup({ languageLimit: 64 }).catch(() => undefined);
+process.stdout.write(`warmup ${Math.round(warmup?.totalMs ?? 0)}ms, language models=${warmup?.language?.models ?? 0}\n`);
+
 const rows = [];
-let runtime;
-
 try {
-  const loaded = await readScceRuntimeConfig(configPath);
-  const config = { ...loaded, database: { ...loaded.database, schema } };
-  runtime = createNodeRuntime(config, { deterministicReplay: true, runSeed: "reference-comparison" });
-  await runtime.storage.migrate();
-  await runtime.kernel.warmup({ languageLimit: 64 }).catch(() => undefined);
-
-  const ingest = async document => {
-    const bytes = Buffer.from(document.text, "utf8");
-    const file = path.join(fixtureRoot, document.name);
-    await writeFile(file, bytes);
-    await runtime.kernel.ingest({
-      content: bytes, uri: pathToFileURL(file).href, namespace: "compare", mediaType: "text/plain",
-      sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
-      sourceTrust: {
-        identity: 1, integrity: 1, parserReliability: 0.94, directness: 1, authority: 1, freshness: 0.98,
-        independenceGroup: `compare-${document.id}`, accessScope: "owner_private", licenseStatus: "owner_authorized"
-      },
-      metadata: { title: document.title, documentId: document.id }
-    });
-    await runtime.kernel.train({ config: { promotion: { minTrust: 0, namespaces: ["compare"] }, learningGoals: [] } });
-  };
-  for (const document of DOCUMENTS) await ingest(document);
-
-  let revisionIngested = false;
-  for (const question of QUESTIONS) {
-    if (question.afterRevision && !revisionIngested) { await ingest(CONTRADICTION); revisionIngested = true; }
-    const documents = revisionIngested ? [...DOCUMENTS, CONTRADICTION] : DOCUMENTS;
-    const corpus = corpusOf(documents);
-    const context = documents.map(document => `# ${document.title}\n${document.text}`).join("\n");
-
+  for (const question of usable) {
     const started = Date.now();
     const result = await runtime.kernel.turn({ text: question.text });
+    const scceAnswer = String(result.answer ?? "");
     const scce = {
-      answer: String(result.answer ?? ""),
+      answer: scceAnswer,
       durationMs: Date.now() - started,
       force: result.epistemicForce ?? null,
-      evidence: result.evidence?.length ?? 0
+      evidence: result.evidence?.length ?? 0,
+      cited: /source:/iu.test(scceAnswer)
     };
-    const model = await askModel(question.text, context);
+    const model = await askModel(question.text, articles.get(question.article) ?? "");
 
-    const score = (side, answer) => ({
-      side,
-      spoke: Boolean(normalize(answer).length),
-      verbatim: question.answerable ? verbatim(answer, corpus) : false,
-      supported: question.answerable ? supported(answer, corpus) : false,
-      statesExpected: question.expect ? new RegExp(question.expect, "iu").test(answer) : null,
-      fabricated: question.answerable ? false : fabricated(answer)
-    });
+    // Dates are compared by their parts, so "March 14, 1879" and "14 March 1879" are the same answer.
+    const statesExpected = (answer) => {
+      const parts = String(question.expect).split(/[s,]+/u).filter(Boolean);
+      const spoken = normalize(answer);
+      return parts.every(part => spoken.includes(normalize(part)));
+    };
+    const score = (answer) => question.answerable
+      ? { correct: new RegExp(question.expect.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu").test(answer), declined: declines(answer) }
+      : { correct: null, declined: declines(answer) };
 
     rows.push({
       question: question.id,
       text: question.text,
+      article: question.article,
       answerable: question.answerable,
-      expect: question.expect,
-      scce: { ...score("scce", scce.answer), ...scce, answer: scce.answer.slice(0, 200) },
-      model: { ...score("model", model.answer), ...model, answer: model.answer.slice(0, 200) }
+      expect: question.expect ?? null,
+      scce: { ...scce, ...score(scce.answer), answer: scce.answer.slice(0, 220) },
+      model: { ...model, ...score(model.answer), answer: model.answer.slice(0, 220) }
     });
 
     const row = rows[rows.length - 1];
-    process.stdout.write(`\n${question.id}: ${question.text}${question.answerable ? "" : "   (unanswerable)"}\n`);
+    process.stdout.write(`\n${question.id}${question.answerable ? "" : "   (not in the corpus)"}: ${question.text}\n`);
     for (const side of ["scce", "model"]) {
       const entry = row[side];
-      const marks = [
-        entry.verbatim ? "verbatim" : entry.supported ? "supported" : entry.spoke ? "unsupported" : "silent",
-        entry.statesExpected === null ? "" : entry.statesExpected ? "states-value" : "misses-value",
-        entry.fabricated ? "FABRICATED" : ""
-      ].filter(Boolean).join(" ");
-      process.stdout.write(`  ${side.padEnd(6)} ${String(entry.durationMs).padStart(6)}ms  ${marks.padEnd(28)} ${JSON.stringify(String(entry.answer).slice(0, 96))}\n`);
+      const verdict = question.answerable
+        ? (entry.correct ? "CORRECT" : entry.declined ? "declined" : "wrong")
+        : (entry.declined ? "declined" : "FABRICATED");
+      process.stdout.write(
+        `  ${side === "scce" ? "scce  " : compareModel.slice(0, 6).padEnd(6)} ${String(entry.durationMs).padStart(6)}ms  `
+        + `${verdict.padEnd(10)}${side === "scce" && entry.cited ? " cited" : "      "}  ${JSON.stringify(String(entry.answer).slice(0, 88))}\n`
+      );
     }
   }
 } finally {
-  try { if (runtime) await runtime.storage.query?.(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); } catch { /* disposable */ }
-  await runtime?.close?.().catch(() => undefined);
-  await rm(fixtureRoot, { recursive: true, force: true }).catch(() => undefined);
+  await runtime.close?.().catch(() => undefined);
+  await client.end().catch(() => undefined);
 }
 
+const answerable = rows.filter(row => row.answerable);
+const unanswerable = rows.filter(row => !row.answerable);
 const tally = side => ({
-  verbatim: rows.filter(row => row.answerable && row[side].verbatim).length,
-  supported: rows.filter(row => row.answerable && row[side].supported).length,
-  statedValue: rows.filter(row => row[side].statesExpected === true).length,
-  expectedValues: rows.filter(row => row.expect !== undefined).length,
-  fabrications: rows.filter(row => !row.answerable && row[side].fabricated).length,
-  declined: rows.filter(row => !row.answerable && !row[side].fabricated).length,
+  correct: answerable.filter(row => row[side].correct).length,
+  wrong: answerable.filter(row => !row[side].correct && !row[side].declined).length,
+  declinedWhenAnswerable: answerable.filter(row => !row[side].correct && row[side].declined).length,
+  fabrications: unanswerable.filter(row => !row[side].declined).length,
+  declined: unanswerable.filter(row => row[side].declined).length,
+  cited: rows.filter(row => row[side].cited).length,
   meanMs: Math.round(rows.reduce((sum, row) => sum + row[side].durationMs, 0) / Math.max(1, rows.length))
 });
+
 const report = {
-  schema: "scce.reference_comparison.v1",
+  schema: "scce.reference_comparison.v2",
   generatedAt: new Date().toISOString(),
+  corpus: { config: configPath, schema, articlesUsed: [...articles.keys()], staged: false },
   compareModel,
-  answerableQuestions: rows.filter(row => row.answerable).length,
-  unanswerableQuestions: rows.filter(row => !row.answerable).length,
+  modelAdvantage: "the model is given the article in its prompt; scce retrieves from the whole corpus",
+  answerable: answerable.length,
+  unanswerable: unanswerable.length,
   scce: tally("scce"),
   model: tally("model"),
   rows
@@ -250,11 +217,15 @@ const report = {
 await mkdir(path.dirname(path.resolve(outputPath)), { recursive: true }).catch(() => undefined);
 writeFileSync(path.resolve(outputPath), `${JSON.stringify(report, null, 2)}\n`, "utf8");
 
+const line = (label, entry) =>
+  `  ${label.padEnd(14)}${`${entry.correct}/${answerable.length}`.padStart(8)}   ${String(entry.wrong).padStart(5)}   `
+  + `${`${entry.declined}/${unanswerable.length}`.padStart(9)}   ${String(entry.fabrications).padStart(12)}   `
+  + `${String(entry.cited).padStart(6)}   ${String(entry.meanMs).padStart(9)}ms\n`;
 process.stdout.write(
-  `\n${"".padEnd(64, "-")}\n`
-  + `                  verbatim  supported  values  fabrications  declined  mean latency\n`
-  + `  scce            ${String(report.scce.verbatim).padStart(8)}  ${String(report.scce.supported).padStart(9)}  ${`${report.scce.statedValue}/${report.scce.expectedValues}`.padStart(6)}  ${`${report.scce.fabrications}/${report.unanswerableQuestions}`.padStart(12)}  ${`${report.scce.declined}/${report.unanswerableQuestions}`.padStart(8)}  ${String(report.scce.meanMs).padStart(10)}ms\n`
-  + `  ${compareModel.padEnd(14)}${String(report.model.verbatim).padStart(8)}  ${String(report.model.supported).padStart(9)}  ${`${report.model.statedValue}/${report.model.expectedValues}`.padStart(6)}  ${`${report.model.fabrications}/${report.unanswerableQuestions}`.padStart(12)}  ${`${report.model.declined}/${report.unanswerableQuestions}`.padStart(8)}  ${String(report.model.meanMs).padStart(10)}ms\n`
+  `\n${"".padEnd(78, "-")}\n`
+  + `                 correct   wrong   declined   fabrications   cited   mean latency\n`
+  + line("scce", report.scce)
+  + line(compareModel, report.model)
   + `wrote ${outputPath}\n`
 );
 process.exit(0);

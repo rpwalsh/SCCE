@@ -18,6 +18,7 @@ import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
 import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
+import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import type {
@@ -1372,6 +1373,26 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
         && (terminalRuntimeMotionSelected
           || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
+      // Which surface was chosen and why the others were not. The deterministic realizer had no trace at all,
+      // so an empty answer or a wrong sentence could only be diagnosed by editing this file, which is how a
+      // question-word coverage rule went unnoticed while it silently rejected every correct answer.
+      traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+        stage: "mouth.deterministic.select",
+        label: "mouth.speak",
+        counts: { surfaces: clippedDeterministicSurfaces.length, chosenChars: selectedText.length, units: deterministicUnits.length },
+        support: {
+          units: deterministicUnits.slice(0, 8),
+          boundSpans: deterministicSpans.length,
+          quotation: deterministicQuotation,
+          terminalRuntimeMotion: terminalRuntimeMotionSelected,
+          rows: clippedDeterministicSurfaces.slice(0, 5).map(surface => ({
+            head: surface.slice(0, 60),
+            admissible: admissibleMouthSurface(surface),
+            repeatsPrompt: surfaceRepeatsPrompt(surface, input.requestText ?? ""),
+            covers: coversRequest(surface)
+          }))
+        }
+      });
       const normalizedSelectedText = tidySurface(selectedText);
       const readableSelectedText = dominantConstructForce(plan.constructForces) === "ProgramConstruct"
         || hasStructuredSurfaceShape(normalizedSelectedText)

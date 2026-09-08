@@ -579,7 +579,12 @@ export function createRuntimeGraphRetrieval(options: {
       : feature.startsWith("anchor:sym:")
         ? [feature.slice("anchor:sym:".length)]
         : []);
-    const distinct = uniqueKernelStrings(units.map(unit => normalizePriorKey(unit)).filter(unit => [...unit].length >= 3));
+    // A digit qualifier stays: it is short, and it is the whole difference between two titles.
+    //
+    // Dropping units under three characters removed the 11 from {apollo, 11}, so the title test matched both
+    // "Apollo" and "Apollo 11" and the Greek god outranked the mission on its own article.
+    const distinct = uniqueKernelStrings(units.map(unit => normalizePriorKey(unit))
+      .filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)));
     // Every unit must appear in the title, so a group of unrelated units matches nothing rather than everything.
     return distinct.length && distinct.length <= 4 ? distinct : [];
   }
@@ -848,7 +853,16 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       // anchor's own features rather than as a separate group, so it
       // doesn't change how many independent anchor searches a request
       // produces.
-      const trailingFeatures = trailingInitialismTokensForAnchor(text, anchor).map(token => `anchor:sym:${token}`);
+      // Bound to the anchor, not searched alone. A qualifier's own symbol is worthless as a seed -- anchor:sym:11
+      // carries thousands of postings and is capped out of seeding, so a group of {apollo, 11} seeded on neither
+      // and the fallback took the plain subject, answering "When did Apollo 11 land on the Moon?" from the
+      // article about the Greek god. The pair is what discriminates: anchor:bi:apollo|11 carries 99 postings,
+      // 32 of them the Apollo 11 article, and seeds cleanly under the cap.
+      const trailingTokens = trailingInitialismTokensForAnchor(text, anchor);
+      const anchorTailUnit = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).slice(-1)[0] ?? "";
+      const trailingFeatures = trailingTokens.flatMap(token => (anchorTailUnit
+        ? [`anchor:bi:${anchorTailUnit}|${token}`, `anchor:sym:${token}`]
+        : [`anchor:sym:${token}`]));
       const ordered = anchorFeatureSet(anchor, 64);
       const phraseFeatures = ordered
         .filter(feature => feature.startsWith("anchor:bi:"))

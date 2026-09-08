@@ -103,6 +103,16 @@ export function surfaceEntityRuns(text: string): string[] {
   for (const raw of surfaceWords(text)) {
     const word = stripOuterPriorSeparators(raw);
     if (!word) continue;
+    // A digit run continues a name it follows: "Apollo 11", "Windows 95", "World War 2".
+    //
+    // Digits carry no case, so the anchor-signal test below is false for them and the run flushed at "Apollo".
+    // The request subject became "apollo", which exact-matches the title of the article about the Greek god,
+    // and "When did Apollo 11 land on the Moon?" was answered from it. Only a run already under construction
+    // may be extended, so a bare year elsewhere in a sentence still starts nothing.
+    if (current.length > 0 && /^\p{Number}+$/u.test(word)) {
+      current.push(word);
+      continue;
+    }
     if (hasPriorAnchorSignal(word) && splitPriorUnits(normalizePriorKey(word)).some(unit => unit.length >= 2)) {
       current.push(word);
       continue;
