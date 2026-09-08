@@ -346,5 +346,5 @@ function isTurnRequirementDimension(value: string): value is TurnRequirementDime
 export function activeRequestOperatorIds(
   operators: readonly { operatorId: CognitiveOperatorId; active: boolean }[]
 ): CognitiveOperatorId[] {
-  return operators.filter(row => row.active).map(row => operator.operatorId);
+  return operators.filter(row => row.active).map(row => row.operatorId);
 }
