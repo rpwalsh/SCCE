@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { candidateSurvivesRealizationContract, compileRealizationContract, type SemanticAnswerConstructFact } from "../semantic-answer-construct.js";
+import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, type SemanticAnswerConstructFact } from "../semantic-answer-construct.js";
 
 function fact(overrides: Partial<SemanticAnswerConstructFact>): SemanticAnswerConstructFact {
   return {
@@ -73,5 +73,31 @@ describe("candidateSurvivesRealizationContract", () => {
       contract
     );
     expect(result.survives).toBe(false);
+  });
+
+  it("rejects a bare bound value on its own, since it cannot restate the required relation unit", () => {
+    // Real bug, confirmed live: "20:17" (a real, extracted, correct answer) failed the full sentence-shaped
+    // survival check because it cannot lexically contain "land" -- exactly why candidateIsVerifiedBoundValue
+    // exists as a separate, narrower check below, instead of this function being relaxed to accept it.
+    const contract = compileRealizationContract("When did Apollo 11 land on the Moon?", fact({ object: "20:17" }));
+    const result = candidateSurvivesRealizationContract("20:17", contract);
+    expect(result.survives).toBe(false);
+  });
+});
+
+describe("candidateIsVerifiedBoundValue", () => {
+  it("accepts a bare value that exactly matches the fact's own bound object", () => {
+    const contract = compileRealizationContract("When did Apollo 11 land on the Moon?", fact({ object: "20:17" }));
+    expect(candidateIsVerifiedBoundValue("20:17", contract)).toBe(true);
+  });
+
+  it("rejects a value that does not match the fact's bound object", () => {
+    const contract = compileRealizationContract("When did Apollo 11 land on the Moon?", fact({ object: "20:17" }));
+    expect(candidateIsVerifiedBoundValue("21:45", contract)).toBe(false);
+  });
+
+  it("rejects a full sentence -- this check is scoped to the bare-value case only", () => {
+    const contract = compileRealizationContract("When did Apollo 11 land on the Moon?", fact({ object: "20:17" }));
+    expect(candidateIsVerifiedBoundValue("Apollo 11 landed on the Moon at 20:17.", contract)).toBe(false);
   });
 });
