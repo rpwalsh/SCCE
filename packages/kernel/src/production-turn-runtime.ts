@@ -12,7 +12,7 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
-import { compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
+import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
@@ -3829,8 +3829,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       if (!answer.trim()) answer = "";
       answer = withCitation(answer, spoken);
       // calibration_observations had zero rows for every non-translation dimension; record one for real turns.
+      // Real bug, confirmed live (Apollo-11 landing-date turn): "non-empty answer + low self-contradiction" is
+      // satisfied by a fluent, sourced, but completely non-responsive answer (a Kennedy/Khrushchev negotiation
+      // paragraph for "When did Apollo 11 land?", omitting the turn's own realization contract's required
+      // relation "land" and value "20:17"). Recording that as a calibration success would teach the judge model
+      // to reinforce whatever scoring produced it. When this turn compiled a realization contract, the outcome
+      // requires the actual spoken answer to survive it -- the same contract-survival check Mouth's own
+      // candidate gate uses -- not just non-emptiness.
       if ((requestedAuthority === "factual" || requestedAuthority === "reasoned") && judged.selected) {
-        const turnOutcome = Boolean(answer.trim()) && judged.selected.scores.contradiction < 0.5;
+        const contractSatisfied = realizationContract
+          ? candidateSurvivesRealizationContract(answer, realizationContract, hasher).survives
+          : true;
+        const turnOutcome = Boolean(answer.trim()) && judged.selected.scores.contradiction < 0.5 && contractSatisfied;
         await deps.storage.dialogueMemory?.putCalibrationObservation?.(calibrationObservationRecord({
           calibrationId: CALIBRATION_IDS.candidateMass,
           subsystemId: CALIBRATION_SUBSYSTEM_IDS.candidate,
