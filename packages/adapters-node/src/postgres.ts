@@ -3908,12 +3908,44 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       return (await storage.query<LanguagePatternRow>(
-        `WITH candidates AS MATERIALIZED (
+        `WITH candidate_pool AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy, pattern.evidence_ids, pattern.updated_at, pattern.information_label,
-                  pg_column_size(pattern.pattern_json) AS stored_bytes
+                  pg_column_size(pattern.pattern_json) AS stored_bytes,
+                  -- A flat "ORDER BY support DESC, capped to the row budget" ranked every pattern kind on one
+                  -- scale, but the scales are not comparable: measured live, a construction-bundle pattern's support tops out at ~1.0
+                  -- while a creative-event bundle's routinely runs into the hundreds (avg 667 of 169 rows, against
+                  -- 14,623 real construction-bundle rows averaging 0.51) -- so creative-event bundles filled the
+                  -- entire row budget before a single real relation-filling bundle was ever admitted, on every
+                  -- hydration, regardless of how much real construction-bundle data existed. id prefixes are
+                  -- assigned deliberately at write time (surface.construction.bundle.*, surface.creative_event.
+                  -- bundle.*, etc. -- language-construction-memory.ts) and cost nothing extra to read here, unlike
+                  -- pattern_json's schema field.
+                  CASE
+                    WHEN pattern.id LIKE 'surface.construction.bundle.%' THEN 'construction_bundle'
+                    WHEN pattern.id LIKE 'surface.creative_event.bundle.%' THEN 'creative_event_bundle'
+                    WHEN pattern.id LIKE 'reversible_construction.%' THEN 'reversible_construction'
+                    WHEN pattern.id LIKE 'request_requirement_pattern_%' THEN 'request_requirement'
+                    WHEN pattern.id LIKE 'optional_null_realization_pattern.%' THEN 'optional_null'
+                    ELSE 'other'
+                  END AS support_category
            FROM ${storage.table("language_patterns")} pattern
            ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-           ORDER BY ${order("pattern")}
+         ),
+         category_counts AS (
+           SELECT GREATEST(COUNT(DISTINCT support_category), 1) AS n FROM candidate_pool
+         ),
+         ranked_pool AS (
+           SELECT pool.*,
+             ROW_NUMBER() OVER (PARTITION BY pool.support_category ORDER BY pool.support DESC, pool.updated_at DESC, pool.id ASC) AS category_rank
+           FROM candidate_pool pool
+         ),
+         candidates AS MATERIALIZED (
+           SELECT ranked.id, ranked.profile_id, ranked.pattern_kind, ranked.support, ranked.entropy, ranked.evidence_ids, ranked.updated_at, ranked.information_label, ranked.stored_bytes
+           FROM ranked_pool ranked CROSS JOIN category_counts
+           -- Each pattern kind gets an even share of the row budget, ranked by its own support within that share --
+           -- fair representation across kinds, not a hardcoded per-kind quota.
+           WHERE ranked.category_rank <= CEIL($${limitParam}::numeric / category_counts.n)
+           ORDER BY ${order("ranked")}
            LIMIT $${limitParam}
          ),
          admitted AS (${admitted}),
