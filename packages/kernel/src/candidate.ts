@@ -818,8 +818,11 @@ function ccrCandidate(input: {
     scores: {
       ...baseScores(input),
       support: clamp01(input.entailment.support * 0.8 + mean(input.ccr.l2.survivors.map(item => item.score)) * 0.2),
-      faithfulness: clamp01(input.entailment.faithfulnessLcb * 0.6 + mean(input.ccr.l3.sentences.map(item => item.lcb)) * 0.4),
-      realizability: 0.95
+      faithfulness: clamp01(input.entailment.faithfulnessLcb * 0.6 + mean(input.ccr.l3.sentences.map(item => item.lcb)) * 0.4)
+      // realizability intentionally not overridden: baseScores(input) (spread above) already computes it for
+      // real from entailment.contradiction/field risk/uncertainty, the same formula proofAnswer relies on.
+      // The flat 0.95 this used to carry was an unearned magic number with no relationship to this specific
+      // candidate's actual realizability.
     },
     boundaries: input.ccr.l3.abstentions,
     audit: input.ccr.audit,
@@ -862,8 +865,15 @@ function graphInferenceCandidate(input: {
     scores: {
       ...baseScores(input),
       support: clamp01(mean(top.map(item => item.mass)) * 0.5 + input.entailment.support * 0.5),
-      novelty: 0.52,
-      realizability: 0.72
+      // Real bug, confirmed live: this used to be a flat literal (novelty: 0.52) applied to every
+      // graph-inference candidate regardless of whether its text differs from anything -- pure, unearned
+      // score inflation with no relationship to genuine novelty, big enough on its own to flip the planner's
+      // ranking against a proof-answer candidate with materially higher support (0.617 vs 0.500), identical
+      // contradiction and faithfulness, for "When was Albert Einstein born?" -- a direct factual lookup where
+      // novelty should carry no positive weight at all. baseScores(input).novelty (already spread above) is
+      // the same real field.alphaTrace.surfaces.drift signal proof-answer and every other candidate kind
+      // already uses; graph-inference now reports that honest value instead of a magic number bypassing it.
+      // realizability: same fix, same reasoning -- baseScores(input)'s real formula, not a flat 0.72.
     },
     boundaries: [...input.entailment.boundaries, "graph-inference-not-direct-proof"],
     audit: toJsonValue({
