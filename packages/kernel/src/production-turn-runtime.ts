@@ -3827,6 +3827,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       answer = spoken.text;
       if (!answer.trim()) answer = "";
       answer = withCitation(answer, spoken);
+      // calibration_observations had zero rows for every non-translation dimension; record one for real turns.
+      if ((requestedAuthority === "factual" || requestedAuthority === "reasoned") && judged.selected) {
+        await deps.storage.dialogueMemory?.putCalibrationObservation?.(calibrationObservationRecord({
+          calibrationId: CALIBRATION_IDS.candidateMass,
+          subsystemId: CALIBRATION_SUBSYSTEM_IDS.candidate,
+          taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+          rawScore: clamp01(judged.selected.scores.support),
+          outcome: Boolean(answer.trim()) && judged.selected.scores.contradiction < 0.5,
+          sourceRecordId: judged.selected.id,
+          metadata: toJsonValue({ candidateKind: judged.selected.kind, force: judged.selected.force }),
+          createdAt: clock.now()
+        }));
+      }
       // Withheld only when the corpus genuinely could not answer: a three-word answer like "10 December 1815" is not a stub.
       if (performedRuntimeMotion?.status === "awaiting_consent" && emptyAuthoritySurface && !spoken.evidenceRefs.length) answer = "";
       const mouthAssistantForce = assistantForceDecision({
