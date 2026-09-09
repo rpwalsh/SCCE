@@ -1,10 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EvidenceId, Hasher } from "./types.js";
+import type { ConstructGraph, EvidenceId, Hasher, JsonValue } from "./types.js";
 import type { SemanticAtom } from "./semantic-proof-types.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { SEMANTIC_SOURCE } from "./semantic-codes.js";
-import { namedSubjectAnchors, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
+import { jsonRecord, namedSubjectAnchors, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { requestContentEvidenceUnits, requestUnitSharesStem } from "./local-evidence-runtime.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
 import { surfaceWords } from "./surface-linguistics.js";
@@ -78,7 +78,7 @@ export interface SemanticRealizationContract {
 }
 
 /** The request's relation units, with its subject anchors removed: the same subject/relation split answerCoversRequest already makes, reused rather than re-derived. Pure. */
-function requestRelationUnits(requestText: string): string[] {
+export function requestRelationUnits(requestText: string): string[] {
   if (!requestText) return [];
   const subjectUnits = new Set(namedSubjectAnchors(requestText)
     .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
@@ -186,5 +186,79 @@ export function candidateSurvivesRealizationContract(
     requiredRelationUnitCount,
     missingRelationUnitCount: missingRelationUnits.length,
     requestedSlotSatisfied
+  };
+}
+
+function stringField(value: JsonValue | undefined): string {
+  return typeof value === "string" ? value : "";
+}
+
+function numberField(value: JsonValue | undefined): number {
+  return typeof value === "number" ? value : 0;
+}
+
+function stringArrayField(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** Parses one selectedFacts row -- the same scce.semantic_answer_construct.v1 schema mouth.ts's own reader
+ *  parses, kept as an independent minimal reader here rather than importing mouth.ts (a large module with
+ *  its own private helpers) for the handful of fields compileRealizationContract actually needs. Pure. */
+function factFromJson(value: JsonValue): SemanticAnswerConstructFact | undefined {
+  const record = jsonRecord(value);
+  const subject = stringField(record.subject);
+  const predicate = stringField(record.predicate);
+  const object = stringField(record.object);
+  if (!subject || !predicate || !object) return undefined;
+  return {
+    subject,
+    predicate,
+    object,
+    sourceNodeId: stringField(record.sourceNodeId),
+    targetNodeId: stringField(record.targetNodeId),
+    relationId: stringField(record.relationId),
+    forceClass: stringField(record.forceClass),
+    score: numberField(record.score),
+    activation: numberField(record.activation),
+    overlap: numberField(record.overlap),
+    support: numberField(record.support),
+    sourceVersionId: record.sourceVersionId ? stringField(record.sourceVersionId) : undefined,
+    evidenceIds: record.evidenceIds ? stringArrayField(record.evidenceIds) : undefined,
+    requestedSlotId: record.requestedSlotId ? stringField(record.requestedSlotId) : undefined,
+    questionSlotId: record.questionSlotId ? stringField(record.questionSlotId) : undefined,
+    questionSlotImportance: record.questionSlotImportance ? stringField(record.questionSlotImportance) : undefined
+  };
+}
+
+export interface SemanticAnswerConstructFacts {
+  facts: SemanticAnswerConstructFact[];
+  certificationBoundary: RealizationCertificationBoundary;
+}
+
+/**
+ * Reads the facts a proof stage already bound onto the construct graph -- the same
+ * scce.semantic_answer_construct.v1 / scce.prior_bound_answer_construct.v1 node mouth.ts's own
+ * semanticAnswerConstructState reads, kept as an independent minimal reader (see factFromJson) so
+ * production-turn-runtime.ts and cognitive-planner.ts can compile a realization contract without importing
+ * mouth.ts. Pure.
+ */
+export function semanticAnswerConstructFacts(construct: ConstructGraph | undefined): SemanticAnswerConstructFacts | undefined {
+  if (!construct) return undefined;
+  const rows = construct.nodes.map(node => ({ node, metadata: jsonRecord(node.metadata) }));
+  const row = rows.find(item => item.node.kind === "construct:semantic_answer" || item.metadata.schema === "scce.semantic_answer_construct.v1")
+    ?? rows.find(item => item.node.kind === "construct:prior_bound_answer" || item.metadata.schema === "scce.prior_bound_answer_construct.v1");
+  if (!row) return undefined;
+  const rawFacts = row.metadata.selectedFacts;
+  const facts = (Array.isArray(rawFacts) ? rawFacts : [])
+    .map(factFromJson)
+    .filter((fact): fact is SemanticAnswerConstructFact => Boolean(fact));
+  if (!facts.length) return undefined;
+  const boundary = jsonRecord(row.metadata.certificationBoundary);
+  return {
+    facts,
+    certificationBoundary: {
+      certified: boundary.directEvidenceCount ? numberField(boundary.directEvidenceCount) > 0 : undefined,
+      externallyFactual: boundary.externalFactCertification === true
+    }
   };
 }

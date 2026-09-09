@@ -13,16 +13,26 @@ export interface RealizedConstructSurface {
   audit: JsonValue;
 }
 
+export interface RealizationAttempt {
+  accepted: boolean;
+  surface?: RealizedConstructSurface;
+  /** Why generation was rejected, even when a candidate was not returned -- the doctrine-required
+   *  observability: a caller falling back to source-exact text should be able to say WHY, not just that it did. */
+  diagnostic: JsonValue;
+}
+
 /**
  * The single choke point every verbatim-fallback answer producer should call before reaching for quoted
  * evidence text: attempts REAL generation from the corpus's own trained language model (the sanctioned
  * `generate()` in language-memory-runtime -- Kneser-Ney + construction algebra + rhetorical lattice, never a
  * neural model), seeded by the contract's bound subject/relation/value rather than loose prompting, and
  * accepts the result only if it survives `candidateSurvivesRealizationContract` (no fabrication, no missing
- * answerhood). Returns undefined rather than a degraded substitute when generation fails the contract --
- * the caller decides fallback policy; this function never silently quotes evidence as a consolation prize.
+ * answerhood). `accepted: false` rather than a degraded substitute when generation fails the contract -- the
+ * caller decides fallback policy; this function never silently quotes evidence as a consolation prize. The
+ * diagnostic is returned on every outcome, accepted or not, so a fallback to source-exact text is traceable
+ * to a real reason instead of being indistinguishable from a normal answer.
  */
-export function realizeConstructSurface(
+export function attemptConstructRealization(
   contract: SemanticRealizationContract,
   opts: {
     languageMemory: LanguageMemoryRuntime;
@@ -31,37 +41,52 @@ export function realizeConstructSurface(
     hasher?: Hasher;
     generationExtent?: number;
   }
-): RealizedConstructSurface | undefined {
+): RealizationAttempt {
   const fact = contract.sourceFact;
-  const requiredTerms = [fact.subject, ...contract.requiredRelationUnits, fact.object]
-    .filter(Boolean)
-    .map(text => ({ text }));
+  // Seeded the same way mouth.ts's own working call (rhetoricalLatticeCandidateFromFrames) seeds it: ONE
+  // coherent claim string as the primary context symbol, not a bag of disconnected words -- measured live,
+  // three loose words ("Albert Einstein", "born", "14 March 1879") gave the model nothing to continue from
+  // and it echoed the subject then stopped (source_exhausted) after producing two words. requiredTerms left
+  // empty to match; it does not carry the fact's meaning into generation the way a real claim sentence does.
+  const claimText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ");
   const generation = opts.languageMemory.generate({
     state: opts.state,
     targetLanguageProfile: opts.languageProfile,
-    contextSymbols: [fact.subject, fact.predicate, fact.object].filter(Boolean),
-    requiredTerms,
-    generationExtent: opts.generationExtent ?? 48
+    contextSymbols: [claimText].filter(Boolean),
+    requiredTerms: [],
+    semanticFrameIds: opts.state.importedSemanticFrames.map(frame => frame.id).slice(0, 64),
+    generationExtent: opts.generationExtent ?? 96
   });
   const text = ensureSurfaceSentence(generation.text.trim());
-  if (!text) return undefined;
+  if (!text) {
+    return {
+      accepted: false,
+      diagnostic: toJsonValue({
+        schema: "scce.answer_realization.v1",
+        rejected: "empty_generation",
+        generationStoppedBy: generation.stoppedBy,
+        generationConfidence: generation.confidence
+      })
+    };
+  }
   const survival = candidateSurvivesRealizationContract(text, contract, opts.hasher);
-  if (!survival.survives) return undefined;
+  const diagnostic = toJsonValue({
+    schema: "scce.answer_realization.v1",
+    rejected: survival.survives ? null : survival.reason ?? "contract_failed",
+    generatedText: text,
+    requiredAtomCount: survival.requiredAtomCount,
+    addedUnsupportedAtomCount: survival.addedUnsupportedAtomCount,
+    requiredRelationUnitCount: survival.requiredRelationUnitCount,
+    missingRelationUnitCount: survival.missingRelationUnitCount,
+    requestedSlotSatisfied: survival.requestedSlotSatisfied,
+    requestedSlotId: contract.requestedSlotId ?? null,
+    generationConfidence: generation.confidence,
+    generationStoppedBy: generation.stoppedBy
+  });
+  if (!survival.survives) return { accepted: false, diagnostic };
   return {
-    text,
-    evidenceIds: contract.evidenceIds,
-    realizationOrigin: "learned_generation",
-    audit: toJsonValue({
-      schema: "scce.answer_realization.v1",
-      realizationOrigin: "learned_generation",
-      requiredAtomCount: survival.requiredAtomCount,
-      addedUnsupportedAtomCount: survival.addedUnsupportedAtomCount,
-      requiredRelationUnitCount: survival.requiredRelationUnitCount,
-      missingRelationUnitCount: survival.missingRelationUnitCount,
-      requestedSlotSatisfied: survival.requestedSlotSatisfied,
-      requestedSlotId: contract.requestedSlotId ?? null,
-      generationConfidence: generation.confidence,
-      generationStoppedBy: generation.stoppedBy
-    })
+    accepted: true,
+    surface: { text, evidenceIds: contract.evidenceIds, realizationOrigin: "learned_generation", audit: diagnostic },
+    diagnostic
   };
 }
