@@ -3415,6 +3415,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ? { codeLanguage: codeSignal.language }
           : {}),
         meaningVerifier,
+        realizationContract,
         construct: spokenConstructGraph,
         field,
         languageProfile: translationTarget

@@ -19,7 +19,7 @@ import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
 import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
-import { candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
+import { candidateSurvivesRealizationContract, compileRealizationContract, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
@@ -429,6 +429,9 @@ export interface SpeakInput {
   calibrationTaskClass?: string;
   requestedAuthority?: RequestedAuthority;
   semanticInput?: MouthSemanticInput;
+  /** Lets a short bound value (a bare date/time/name the request's own subject+relation demanded, e.g. "20:17"
+   *  for "when did X land") satisfy coverage without lexically restating the request -- see coversRequest below. */
+  realizationContract?: SemanticRealizationContract;
 }
 
 export interface SpokenOutput {
@@ -1394,7 +1397,17 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const deterministicUnits = mouthCoverageUnits(input);
       const deterministicEvidenceIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
       const deterministicSpans = input.evidence.filter(span => deterministicEvidenceIds.has(String(span.id)));
+      // A bare bound value (a date/time/name a realization contract required, e.g. "20:17" for "when did X
+      // land") cannot lexically restate the request's own words -- that is what makes it a bound value rather
+      // than a sentence. Real bug, confirmed live: "20:17" was the judge-selected, contract-verified answer to
+      // "When did Apollo 11 land on the Moon?" but failed this lexical coverage check and was discarded in
+      // favor of an unrelated evidence excerpt that merely happened to repeat "land"/"Moon". Scoped narrowly to
+      // the selected candidate's own original answer -- other fallback surfaces below still need real lexical
+      // coverage, since the contract only certifies that one specific text.
+      const contractVerifiedCandidateAnswer = Boolean(input.realizationContract && input.selectedCandidate?.answer
+        && candidateSurvivesRealizationContract(input.selectedCandidate.answer, input.realizationContract).survives);
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
+        || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
         || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) }));
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
         && (terminalRuntimeMotionSelected
