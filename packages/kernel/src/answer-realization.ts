@@ -3,6 +3,7 @@
 import type { Hasher, JsonValue, LanguageProfile } from "./types.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { candidateSurvivesRealizationContract, type SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { languageGenerationFramesFromContract } from "./semantic-realization-frames.js";
 import { toJsonValue } from "./primitives.js";
 import { ensureSurfaceSentence } from "./surface-linguistics.js";
 
@@ -50,22 +51,17 @@ export function attemptConstructRealization(
 ): RealizationAttempt {
   const fact = contract.sourceFact;
   const claimText = opts.attestedSeedText?.trim() || [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ");
-  // generateFromLanguageMemory is piece-based retrieval-and-weave, not raw continuation: requiredTerms and
-  // frames are what generationPieces/selectGenerationPieces actually search learned material by, and
-  // contextSymbols alone (tried in two earlier attempts here) starved it of anchors -- both returned nothing,
-  // with the identical baseline confidence of a genuinely empty pool. requiredTerms restores the anchors
-  // (subject/relation/value) real generation is meant to retrieve pieces around; the real attested sentence
-  // still seeds contextSymbols so contextText/discourse-weaving has real linguistic material, not a synthetic
-  // fragment. No frames are supplied -- those come from a SurfacePlan this call site does not have -- so this
-  // remains a narrower attempt than mouth.ts's own rhetorical-lattice call, by design.
-  const requiredTerms = [fact.subject, ...contract.requiredRelationUnits, fact.object]
-    .filter(Boolean)
-    .map(text => ({ text }));
+  const frames = languageGenerationFramesFromContract(contract, {
+    ...(opts.languageProfile?.id ? { targetLanguage: opts.languageProfile.id } : {}),
+    ...(opts.languageProfile?.scripts[0]?.script ? { targetScript: opts.languageProfile.scripts[0].script } : {})
+  });
+  const requiredTerms = frames.flatMap(frame => frame.requiredTerms ?? []);
   const generation = opts.languageMemory.generate({
     state: opts.state,
     targetLanguageProfile: opts.languageProfile,
     contextSymbols: [claimText].filter(Boolean),
     requiredTerms,
+    frames,
     semanticFrameIds: opts.state.importedSemanticFrames.map(frame => frame.id).slice(0, 64),
     generationExtent: opts.generationExtent ?? 96
   });
@@ -77,7 +73,9 @@ export function attemptConstructRealization(
         schema: "scce.answer_realization.v1",
         rejected: "empty_generation",
         generationStoppedBy: generation.stoppedBy,
-        generationConfidence: generation.confidence
+        generationConfidence: generation.confidence,
+        realizationFrameCount: frames.length,
+        realizationFrameAtomCount: frames.reduce((sum, frame) => sum + (frame.propositionAtoms?.length ?? 0), 0)
       })
     };
   }
@@ -93,7 +91,9 @@ export function attemptConstructRealization(
     requestedSlotSatisfied: survival.requestedSlotSatisfied,
     requestedSlotId: contract.requestedSlotId ?? null,
     generationConfidence: generation.confidence,
-    generationStoppedBy: generation.stoppedBy
+    generationStoppedBy: generation.stoppedBy,
+    realizationFrameCount: frames.length,
+    realizationFrameAtomCount: frames.reduce((sum, frame) => sum + (frame.propositionAtoms?.length ?? 0), 0)
   });
   if (!survival.survives) return { accepted: false, diagnostic };
   return {
