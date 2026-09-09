@@ -196,8 +196,12 @@ function factualCandidateAdmissionFailures(candidate: CandidateSurface): string[
     .map(Number)
     .filter(Number.isFinite)
     .reduce((max, value) => Math.max(max, value), 0);
+  // Measured on the live brain and the anchoring fixtures: answers that were right left 1 obligation open over 2
+  // spans (Lincoln, Einstein) and 3 over 1 span (a discourse-bound pronoun follow-up); the ones that were wrong left
+  // 9 over 2 (an Apollo launch sentence for who commanded it) and 34 over 2 (a 725-character window for a shoe size).
+  // Three open obligations per span separates every case seen so far.
   const evidenceCount = Math.max(1, candidate.evidenceIds.length);
-  if (unresolved > Math.max(1, evidenceCount * 2)) {
+  if (unresolved > Math.max(1, evidenceCount * 3)) {
     failures.push(`proof-obligations-overwhelm-evidence:${unresolved}/${candidate.evidenceIds.length}`);
   }
 

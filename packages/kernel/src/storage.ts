@@ -1089,6 +1089,31 @@ export interface ScceStorage extends StorageAdmin {
    * sufficient statistics, estimators, assignments, and selection trace.
    */
   segmentationPopulations?: import("./segmentation-population-persistence.js").SegmentationPopulationModelStore;
+  /**
+   * Learned language identities and the profile-to-identity assignment. Language admission at turn time reads
+   * these; provenance stays on the artifacts and is never consulted for admission.
+   */
+  languageIdentities?: LanguageIdentityStore;
+}
+
+export interface LanguageProfileSignatureRow {
+  id: string;
+  sourceVersionId: SourceVersionId;
+  /** The source's canonical URI, from which the corpus family is read; empty when the source is unknown. */
+  sourceUri: string;
+  scripts: Array<{ script: string; mass: number }>;
+  direction: string;
+  topContinuation: Array<[string, number]>;
+}
+
+export interface LanguageIdentityStore {
+  putIdentities(records: readonly import("./language-identity.js").LanguageIdentityRecord[]): Promise<void>;
+  listIdentities(): Promise<import("./language-identity.js").LanguageIdentityRecord[]>;
+  /** Replace the assignment of the named profiles; profiles not named keep theirs. */
+  assignProfileLanguages(assignments: ReadonlyArray<{ profileId: string; languageId: string }>): Promise<void>;
+  listProfileLanguages(): Promise<Array<{ profileId: string; languageId: string }>>;
+  /** Page through every profile's discovery signature in id order, without loading whole profiles. */
+  listProfileSignatures(query: { afterId?: string; limit: number }): Promise<LanguageProfileSignatureRow[]>;
 }
 
 export interface PolicyEvolutionStore {
@@ -1171,6 +1196,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "forecast_envelopes",
   "learning_needs",
   "language_profiles",
+  "language_identities",
   "language_profile_aliases",
   "ngram_observations",
   "ngram_models",

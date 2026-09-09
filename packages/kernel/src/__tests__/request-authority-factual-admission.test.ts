@@ -56,6 +56,11 @@ describe("factual candidate proof admission", () => {
     expect(result.surfaceMass[0]?.mass).toBe(1);
   });
 
+  it("keeps a discourse-bound follow-up answer that leaves three obligations open over one span", () => {
+    const result = admitCandidatesForAuthority(field([candidate({ id: "follow-up", obligations: 3, evidenceCount: 1 })]), "factual");
+    expect(result.candidates.map(row => row.id)).toEqual(["follow-up"]);
+  });
+
   it("rejects a factual answer when unresolved obligations overwhelm its evidence", () => {
     const good = candidate({ id: "good", obligations: 1 });
     const bad = candidate({ id: "apollo-like", obligations: 9 });

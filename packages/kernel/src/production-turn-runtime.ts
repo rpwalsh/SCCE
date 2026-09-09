@@ -8,7 +8,7 @@ import { revisionAnswerVersion, selectedCandidateRevisionQuality } from "./answe
 import {
   createAnswerRevisionCoordinator
 } from "./answer-revision.js";
-import { assistantForceClass, assistantForceDecision } from "./assistant-force.js";
+import { assistantForceClass, assistantForceDecision, unresolvedObligationCount } from "./assistant-force.js";
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
@@ -132,7 +132,7 @@ import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits, tidySur
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
-import { deriveClosedClassWords } from "./closed-class-words.js";
+import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -413,6 +413,7 @@ export function createProductionTurnRuntime(options: {
   eventFactory: ReturnType<typeof createEventFactory>;
   graphRetrieval: ReturnType<typeof createRuntimeGraphRetrieval>;
   surfaceLanguageRuntime: ReturnType<typeof createSurfaceLanguageRuntime>;
+  languageIdentityRuntime: import("./language-identity-runtime.js").LanguageIdentityRuntime;
   runtimeMemory: ReturnType<typeof createRuntimeMemoryControl>;
   runtimeAcquisition: ReturnType<typeof createRuntimeAcquisition>;
   languageMemoryRuntime: ReturnType<typeof createLanguageMemoryRuntime>;
@@ -459,7 +460,7 @@ export function createProductionTurnRuntime(options: {
 }) {
   const {
     deps, state: runtimeState, policy, failures, turnProofEvidenceLimit, clock, hasher, idFactory, eventFactory,
-    graphRetrieval, surfaceLanguageRuntime, runtimeMemory, runtimeAcquisition, languageMemoryRuntime,
+    graphRetrieval, surfaceLanguageRuntime, languageIdentityRuntime, runtimeMemory, runtimeAcquisition, languageMemoryRuntime,
     lifecycle, engines
   } = options;
   const { append, withBufferedEventWrites, kernelTrace } = lifecycle;
@@ -814,13 +815,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // when the remaining budget cannot afford the scan the turn proceeds on resident memory alone, which is the
       // degraded path the deadline contract calls for rather than a turn that silently runs three times over.
       const unscopedLanguageReason = selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal";
+      // The request's language identity, when the brain has learned identities: hydration and scoping follow it,
+      // and the cluster only names a surface profile for realization.
+      const requestLanguage = deps.evaluationCondition?.flags.disableLanguageMemory ? undefined : languageIdentityRuntime.selectForSurface(input.text);
+      const requestLanguageId = requestLanguage?.identity.id;
+      kernelTrace({
+        stage: "runtime.seed.language_identity",
+        label: "kernel.turn",
+        counts: { identities: languageIdentityRuntime.identities().length, coverage: requestLanguage?.coverage ?? 0 },
+        support: { languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
+      });
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
         () => withStageBudget(
-          hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget }),
+          hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }),
           LANGUAGE_MEMORY_DURABLE_ESCALATION_MS,
-          () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true })
+          () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId })
             .catch(() => emptySurfaceLanguageMemory()),
           overrun => kernelTrace({
             stage: "runtime.seed.language.budget_exceeded",
@@ -954,6 +965,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         predicted: { inferentialDepth: requirementField.inferentialDepth }
       });
       let requestedAuthority = authorityProjection.requestedAuthority;
+      // The learned closed class for this request: the language's function words plus the request scaffolding the
+      // interaction corpus taught for this authority. What it leaves of the request is the subject and the relation.
+      const requestClosedClassWords = () => requestClosedClassWordsFor({
+        requestText: input.text,
+        models: authorityLanguage.state.models ?? [],
+        patterns: authorityLanguage.requestControlPatterns,
+        authority: requestedAuthority
+      });
       let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
         requirementField,
@@ -1155,6 +1174,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ? graphForEvidenceIds([...metadataEvidenceIds])
             : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
+              requestScaffolding: requestClosedClassWords(),
               // Reverted to conditional (was unconditionally true): this
               // flag doesn't just tighten anchoring, it switches
               // runtime-graph-retrieval.ts's graphForText onto an entirely
@@ -1208,6 +1228,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (allowed) {
           const durableSlice = await graphForText(subjectRetrievalText, {
             allowSemanticFrameEvidence,
+            requestScaffolding: requestClosedClassWords(),
             sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
             residentOnly: false
           }).catch(() => undefined);
@@ -1338,7 +1359,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           counts: { before: admissibleEvidence.length, after: communityAdmitted.length },
           support: { anchors: sourceAnchorAudit.anchors.slice(0, 4) }
         });
-        admissibleEvidence = communityAdmitted;
+        // The opening block of an admitted source states what its subject is; the community walk dropped the Apollo
+        // 11 lead ("...first landed humans on the Moon...") while keeping four mid-article chunks about it.
+        // Kept by source or by title: an article held in two source versions has two opening blocks, and the one the
+        // community walk kept chunks from is not necessarily the one whose lead states the fact.
+        const keptSources = new Set(communityAdmitted.map(span => String(span.sourceVersionId)));
+        const keptTitles = new Set(communityAdmitted.map(span => evidenceSpanProvenanceTitle(span)).filter(Boolean));
+        admissibleEvidence = uniqueRecordsById([
+          ...communityAdmitted,
+          ...admissibleEvidence.filter(span => Number(span.charStart ?? -1) === 0
+            && (keptSources.has(String(span.sourceVersionId)) || (evidenceSpanProvenanceTitle(span) !== undefined && keptTitles.has(evidenceSpanProvenanceTitle(span)))))
+        ], admissibleEvidence.length);
       }
       if (sourceAnchorAudit.required && admissibleEvidence.length) graph = graphFilteredToEvidence(graph, admissibleEvidence);
       kernelTrace({
@@ -1544,6 +1575,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requestText: input.text,
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
+        closedClassWords: requestClosedClassWords(),
         ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
           ? { responseSentenceBudget: responseFormSentences }
           : {})
@@ -1714,7 +1746,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         directEvidenceIds: promoted.map(span => span.id),
         support: entailmentResult.support,
         contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction),
-        reportsSourceConflict: semanticProof.mutualSourceContradiction
+        reportsSourceConflict: semanticProof.mutualSourceContradiction,
+        unresolvedObligations: unresolvedObligationCount(entailmentResult.boundaries)
       };
       const entailmentAssistantForce = assistantForceDecision(entailmentForceInput);
       const entailmentAssistantForceClass = assistantForceClass(entailmentForceInput);
@@ -1880,7 +1913,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             translationTarget,
             sessionContextEvidence,
             explicitContextEvidenceIds,
-            semanticFrameBoundEvidenceIds
+            semanticFrameBoundEvidenceIds,
+            closedClassWords: requestClosedClassWords()
           })
         : undefined;
       // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.
@@ -2022,6 +2056,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // language-memory:creative-output-language-unresolved was not
       // warmed") -- verified live. The first creative turn pays the durable
       // hydration once; the cache holds it for every later one.
+      // A factual turn never hydrates durably on its own critical path: a role miss measured 40s of a 52s turn
+      // while the cognition itself took under a second. The miss is served from the resident language this turn
+      // already has, and the durable hydration runs off the path so the next turn finds it resident. The creative
+      // lane keeps paying durably, for the reason stated above.
+      const roleHydrationOptions = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
+        ? { residentOnly: false, languageId: requestLanguageId }
+        : { residentOnly: true, languageId: requestLanguageId };
       const roleOutputLanguage = preferredSurfaceCorpusRole && !exactCreativeAuthorityReady
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
@@ -2029,8 +2070,25 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "role-output-language-unresolved",
           preferredSurfaceCorpusRole,
           input.text,
-          { residentOnly: false }
-        )
+          roleHydrationOptions
+        ).catch(error => {
+          if (roleHydrationOptions.residentOnly !== true || !isResidentRuntimeNotWarmError(error)) throw error;
+          void hydrateSurfaceLanguageMemoryCached(
+            12,
+            selectedSurfaceCluster,
+            "role-output-language-unresolved",
+            preferredSurfaceCorpusRole,
+            input.text,
+            { residentOnly: false, languageId: requestLanguageId }
+          ).catch(() => undefined);
+          kernelTrace({
+            stage: "runtime.candidates.language_role.deferred",
+            label: "kernel.turn",
+            durationMs: 0,
+            support: { role: preferredSurfaceCorpusRole ?? null, cluster: selectedSurfaceCluster?.id ?? null }
+          });
+          return undefined;
+        })
         : undefined;
       // The role corpus speaks when it has learned this language; an empty role falls back to what the evidence owns.
       const roleLanguageSpeaks = Boolean(roleOutputLanguage && roleOutputLanguage.state.models.length > 0);
@@ -2038,8 +2096,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         stage: "runtime.candidates.language_role",
         label: "kernel.turn",
         durationMs: 0,
-        counts: { models: roleOutputLanguage?.state.models.length ?? 0, units: roleOutputLanguage?.state.importedUnits.length ?? 0 },
-        support: { role: preferredSurfaceCorpusRole ?? null, authority: requestedAuthority, speaks: roleLanguageSpeaks, ready: exactCreativeAuthorityReady }
+        counts: { models: roleOutputLanguage?.state.models.length ?? 0, units: roleOutputLanguage?.state.importedUnits.length ?? 0, bundles: roleOutputLanguage?.state.importedConstructionBundles.length ?? 0, scopeProfiles: roleOutputLanguage?.state.scope.profileIds.length ?? 0 },
+        support: { role: preferredSurfaceCorpusRole ?? null, authority: requestedAuthority, speaks: roleLanguageSpeaks, ready: exactCreativeAuthorityReady, scope: roleOutputLanguage?.state.scope.mode ?? null, languageId: roleOutputLanguage?.state.scope.languageId ?? null }
       });
       let surfaceLanguage = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         ? exactCreativeAuthorityReady
@@ -2143,9 +2201,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const surfaceLanguageModels = surfaceLanguage.models;
       // A translation speaks the target language, so its language memory is scoped to the target profile rather than to
       // the cluster the request surface selected.
+      // The learned request-requirement patterns ride along: they are what the interaction corpus taught about request
+      // scaffolding ("who", "when"), which an encyclopedic role corpus never asks and so never ranks as closed class.
       const surfaceLanguageMemory = translationTarget && productionTranslationPlan?.targetProfile
         ? scopeLanguageMemoryStateToProfile(surfaceLanguage.state, productionTranslationPlan.targetProfile)
-        : surfaceLanguage.state;
+        : {
+          ...surfaceLanguage.state,
+          importedPatterns: uniqueRecordsById([
+            ...authorityLanguage.requestControlPatterns,
+            ...surfaceLanguage.state.importedPatterns
+          ], 4096)
+        };
       if (requestedAuthority === "creative") {
         creativeRequestFrame = compileCreativeRequestFrameFromCompatibilityModels({
           requestText: input.text,
@@ -2958,7 +3024,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         directEvidenceIds: selectedEvidence.map(span => span.id),
         constructForces: judged.selected.kind === "creative-candidate" ? ["CreativeConstruct"] : [],
         support: judged.selected.scores.support,
-        contradiction: judged.selected.scores.contradiction
+        contradiction: judged.selected.scores.contradiction,
+        unresolvedObligations: unresolvedObligationCount(entailmentResult.boundaries)
       });
       events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateSelected", payload: { candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force, assistantForce: selectedAssistantForce.force, assistantForceTrace: selectedAssistantForce.audit, candidateAudit: judged.selected.audit, judge: judged.audit } })));
       kernelTrace({
@@ -3706,7 +3773,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         support: answerEntailment.support,
         contradiction: spokenAnswerContradiction,
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale),
-        reportsSourceConflict: semanticProof.mutualSourceContradiction
+        reportsSourceConflict: semanticProof.mutualSourceContradiction,
+        unresolvedObligations: unresolvedObligationCount(answerEntailment.boundaries ?? entailmentResult.boundaries)
       });
       kernelTrace({
         stage: "mouth.generate",
@@ -3862,7 +3930,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         support: answerEntailment.support,
         contradiction: spokenAnswerContradiction,
         targetLanguageChanged: Boolean(translationTarget && translationTarget !== locale),
-        reportsSourceConflict: semanticProof.mutualSourceContradiction
+        reportsSourceConflict: semanticProof.mutualSourceContradiction,
+        unresolvedObligations: unresolvedObligationCount(answerEntailment.boundaries ?? entailmentResult.boundaries)
       });
       const runtimeReadinessForEmission = runtimeOrchestrator.readiness({ dag: runtimeDag, safety: safetyWithPlans, retrieval, field, alphaRecord, entailment: answerEntailment, construct: spokenConstructGraph, assembly, toolPlan, capabilityPlans, counterfactual: counterfactualWorld, validation, emission: rawEmission });
       const runtimeCoherence = decideRuntimeCoherence({

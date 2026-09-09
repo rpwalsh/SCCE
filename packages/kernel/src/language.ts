@@ -202,6 +202,21 @@ export function selectLanguageProfileClusterForSurface(
   } : undefined;
 }
 
+/**
+ * Whether a set of clusters speaks a surface at all: the best cluster's fit, or undefined below the selection floor.
+ * Selection must stay unresolved between two lexically different clusters; a resident hydration of a whole language
+ * only has to answer whether the surface is that language. Pure.
+ */
+export function clustersSpeakSurface(
+  clusters: readonly LanguageProfileCluster[],
+  surface: string
+): { score: number; cluster: LanguageProfileCluster } | undefined {
+  const input = surfaceStatistics(surface);
+  if (input.signalCount === 0) return undefined;
+  const best = rankLanguageProfileClustersForSurface(clusters, surface)[0];
+  return best && best.score >= MIN_SURFACE_SELECTION_SCORE ? { score: best.score, cluster: best.cluster } : undefined;
+}
+
 /** The clusters whose learned character distribution is the anchor's language, the anchor included. Pure. */
 export function sameLanguageClusters(
   anchor: LanguageProfileCluster,

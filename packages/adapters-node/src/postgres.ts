@@ -90,6 +90,9 @@ import {
   type SegmentationPopulationModel,
   type SegmentationPopulationModelRecord,
   type SegmentationPopulationModelStore,
+  type LanguageIdentityRecord,
+  type LanguageIdentityStore,
+  type LanguageProfileSignatureRow,
   type ProofId,
   type ProofStore,
   type QuarantineSource,
@@ -180,6 +183,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly segmentationAggregates: SegmentationAggregateStore;
   readonly inducedLanguageModels: InducedLanguageModelStore;
   readonly segmentationPopulations: SegmentationPopulationModelStore;
+  readonly languageIdentities: LanguageIdentityStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
@@ -223,6 +227,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.segmentationAggregates = createSegmentationAggregateStore(this);
     this.inducedLanguageModels = createInducedLanguageModelStore(this);
     this.segmentationPopulations = createSegmentationPopulationModelStore(this);
+    this.languageIdentities = createLanguageIdentityStore(this);
   }
 
   table(name: string): string {
@@ -984,6 +989,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_population_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, profile_ids TEXT[] NOT NULL, source_version_ids TEXT[] NOT NULL, population_count INTEGER NOT NULL, mdl_gain_nats DOUBLE PRECISION NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.language_identities (id TEXT PRIMARY KEY, identity_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `ALTER TABLE ${q}.language_profiles ADD COLUMN IF NOT EXISTS language_id TEXT`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_language ON ${q}.language_profiles(language_id) WHERE language_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_events_episode_t ON ${q}.events(episode_id,t)`,
     // Real, measured fix: EventLedger.readRange's own typeId-filtered
     // lookups (e.g. production-turn-runtime.ts's per-turn
@@ -1482,7 +1490,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            -- Only a phrase can be a subject here: a lone over-cap symbol is a function word ("which", "was") or a
            -- subject the no-selective-feature fallback already seeds. And only a phrase whose postings the fallback
            -- cap could carry: "united|states" is a phrase in tens of thousands of spans, and title-checking every one
-           -- of them cost 25s on one question (measured), so it is left to the features that are selective.
+           -- of them cost 25s on one question (measured); the title check scans every posting, so a phrase seeds this way
+           -- only while its postings are within twice the selectivity cap.
            subject_hits AS (
              SELECT anchor_index.evidence_id AS id, chosen.feature, chosen.feature_ord
              FROM (
@@ -1492,8 +1501,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                  AND (SELECT COUNT(*) FROM (
                         SELECT 1 FROM ${storage.table("evidence_anchor_index")} probe
                         WHERE probe.features @> ARRAY[feature_postings.feature]::text[]
-                        LIMIT ${EVIDENCE_FEATURE_FALLBACK_CAP + 1}
-                      ) bounded) <= ${EVIDENCE_FEATURE_FALLBACK_CAP}
+                        LIMIT ${EVIDENCE_FEATURE_POSTING_CAP * 2 + 1}
+                      ) bounded) <= ${EVIDENCE_FEATURE_POSTING_CAP * 2}
                ORDER BY feature_ord ASC
                LIMIT 1
              ) chosen
@@ -1549,7 +1558,9 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            candidate_count AS (SELECT GREATEST(1, COUNT(DISTINCT id))::float8 AS n FROM feature_hits),
            feature_df AS (SELECT feature, COUNT(DISTINCT id)::float8 AS df FROM feature_hits GROUP BY feature),
            candidate_length AS (
-             SELECT hits.id, GREATEST(1, OCTET_LENGTH(evidence.text_content))::float8 AS len
+             -- Length from the char range, not from the text: OCTET_LENGTH detoasted every candidate span (36k of
+             -- them once the posting cap admitted real subjects), 20-30s of a turn for a normalisation term.
+             SELECT hits.id, GREATEST(1, evidence.char_end - evidence.char_start)::float8 AS len
              FROM (SELECT DISTINCT id FROM feature_hits) hits
              JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
            ),
@@ -1571,7 +1582,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            SELECT evidence.*
            FROM (
              SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
-                    ${titleMatchExpression("evidence", 4 + access.params.length)} AS title_match
+                    ${titleMatchExpression("evidence", 4 + access.params.length)} AS title_match,
+                    (evidence.char_start = 0) AS opening_block
              FROM candidate_hits hits
              JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
              CROSS JOIN LATERAL (SELECT evidence.status, evidence.alpha, evidence.observed_at) narrow
@@ -1579,6 +1591,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                AND ${access.sql}
                AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
              ORDER BY title_match DESC,
+                      opening_block DESC,
                       hits.score DESC,
                       hits.overlap_count DESC,
                       hits.first_feature_ord ASC,
@@ -1589,6 +1602,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            ) top
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=top.id
            ORDER BY top.title_match DESC,
+                    top.opening_block DESC,
                     top.score DESC,
                     top.overlap_count DESC,
                     top.first_feature_ord ASC,
@@ -2222,7 +2236,9 @@ function graphQueryFeatures(query: GraphSliceQuery): string[] {
 // nothing at this size; the cap is where a term stops being a subject and starts being a stopword for this corpus.
 const EVIDENCE_FEATURE_POSTING_CAP = 4096;
 /** How many postings a last-resort seed may pull when no feature of the request is selective. */
-const EVIDENCE_FEATURE_FALLBACK_CAP = 16384;
+// The last-resort seed pulls at most twice the selectivity cap: a lone over-cap word ("which") seeded 16,384 postings
+// and 26s of candidate scoring on one question (measured); a subject just over the cap still fits in twice it.
+const EVIDENCE_FEATURE_FALLBACK_CAP = EVIDENCE_FEATURE_POSTING_CAP * 2;
 
 /**
  * Whether language_profiles carries the precomputed
@@ -2941,6 +2957,62 @@ function createSegmentationPopulationModelStore(
   };
 }
 
+function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageIdentityStore {
+  return {
+    async putIdentities(records) {
+      for (const record of records) {
+        await storage.query(
+          `INSERT INTO ${storage.table("language_identities")}(id,identity_json,created_at,information_label)
+           VALUES($1,$2::jsonb,TO_TIMESTAMP($3/1000.0),$4::jsonb)
+           ON CONFLICT(id) DO UPDATE SET identity_json=EXCLUDED.identity_json, information_label=EXCLUDED.information_label`,
+          [record.id, JSON.stringify(record), record.createdAt, JSON.stringify(storage.requireWritableInformationLabel(record.informationLabel))]
+        );
+      }
+    },
+    async listIdentities() {
+      const rows = await storage.query<{ identity_json: LanguageIdentityRecord }>(`SELECT identity_json FROM ${storage.table("language_identities")} ORDER BY id`);
+      return rows.map(row => row.identity_json);
+    },
+    async assignProfileLanguages(assignments) {
+      for (let offset = 0; offset < assignments.length; offset += 5000) {
+        const chunk = assignments.slice(offset, offset + 5000);
+        await storage.query(
+          `UPDATE ${storage.table("language_profiles")} lp SET language_id = r.language_id
+           FROM jsonb_to_recordset($1::jsonb) AS r(profile_id text, language_id text)
+           WHERE lp.id = r.profile_id`,
+          [JSON.stringify(chunk.map(row => ({ profile_id: row.profileId, language_id: row.languageId })))]
+        );
+      }
+    },
+    async listProfileLanguages() {
+      const rows = await storage.query<{ id: string; language_id: string }>(`SELECT id, language_id FROM ${storage.table("language_profiles")} WHERE language_id IS NOT NULL ORDER BY id`);
+      return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
+    },
+    async listProfileSignatures(query) {
+      const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
+        `SELECT lp.id, lp.source_version_id, s.canonical_uri AS source_uri,
+                lp.profile_json->'scripts' AS scripts, lp.profile_json->>'direction' AS direction,
+                lp.profile_json->'kneserNey'->'topContinuation' AS top
+         FROM ${storage.table("language_profiles")} lp
+         LEFT JOIN ${storage.table("source_versions")} sv ON sv.id = lp.source_version_id
+         LEFT JOIN ${storage.table("sources")} s ON s.id = sv.source_id
+         WHERE lp.id > $1 ORDER BY lp.id LIMIT $2`,
+        [query.afterId ?? "", Math.max(1, Math.min(10000, Math.floor(query.limit)))]
+      );
+      return rows.map(row => ({
+        id: row.id,
+        sourceVersionId: row.source_version_id as SourceVersionId,
+        sourceUri: row.source_uri ?? "",
+        scripts: Array.isArray(row.scripts) ? (row.scripts as Array<{ script: string; mass: number }>) : [],
+        direction: row.direction ?? "unknown",
+        topContinuation: Array.isArray(row.top)
+          ? (row.top as JsonValue[]).filter((pair): pair is JsonValue[] => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number").map(pair => [String(pair[0]), Number(pair[1])] as [string, number])
+          : []
+      }));
+    }
+  };
+}
+
 // A non-public label requires at least one principal (see
 // packages/kernel/src/information-flow.ts's normalizeInformationLabel) --
 // "system" is the coherent self-referential principal for this tenant-less
@@ -3060,7 +3132,7 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
     },
     async listLanguageProfiles(query) {
       const requestedLimit = typeof query === "number" ? query : query?.limit;
-      const boundedLimit = Math.max(1, Math.min(2048, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit!) : 512));
+      const boundedLimit = Math.max(1, Math.min(8192, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit!) : 512));
       if (typeof query === "object" && query?.surfaceNgrams !== undefined) {
         const ngrams = [...new Set(query.surfaceNgrams.map(value => value.normalize("NFC").toLowerCase()).filter(Boolean))].slice(0, 1024);
         if (!ngrams.length) return [];
@@ -3637,16 +3709,31 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         // both only ever shrink a prefix of the SAME relevance ordering, so
         // windowing over the top-LIMIT prefetch is provably identical
         // output at LIMIT-rows serialisation cost instead of table-wide.
+        // Two windows: pg_column_size reads the stored size without detoasting, so the top-LIMIT prefetch admits
+        // candidates cheaply (a 24MB model detoasted 64 times was 50s of a warmup); the exact JSON-text window then
+        // runs over the admitted rows only, which are read anyway. Stored size never exceeds text size, so the
+        // second window's result is exactly the single-window result.
         return (await storage.query<NgramModelRow>(
           `SELECT ranked.* FROM (
-             SELECT model.*,
+             SELECT model.*, octet_length(model.model_json::text) AS json_bytes,
                SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
                ROW_NUMBER() OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC) AS relevance_rank
              FROM (
-               SELECT model.*, ${trainedMass} AS trained_mass FROM ${storage.table("ngram_models")} model
-               WHERE ${where.join(" AND ")}
-               ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC
-               LIMIT $${limitParam}
+               SELECT sized.id AS sized_id, sized.trained_mass, model.*
+               FROM (
+                 SELECT candidate.id, candidate.trained_mass,
+                   SUM(candidate.stored_bytes) OVER (ORDER BY candidate.trained_mass DESC, candidate.updated_at DESC, candidate.id ASC ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
+                   ROW_NUMBER() OVER (ORDER BY candidate.trained_mass DESC, candidate.updated_at DESC, candidate.id ASC) AS stored_rank
+                 FROM (
+                   SELECT model.id, model.updated_at, ${trainedMass} AS trained_mass, pg_column_size(model.model_json) AS stored_bytes
+                   FROM ${storage.table("ngram_models")} model
+                   WHERE ${where.join(" AND ")}
+                   ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC
+                   LIMIT $${limitParam}
+                 ) candidate
+               ) sized
+               JOIN ${storage.table("ngram_models")} model ON model.id = sized.id
+               WHERE sized.running_stored_bytes <= $${params.length} OR sized.stored_rank = 1
              ) model
            ) ranked
            WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1

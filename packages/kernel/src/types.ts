@@ -1368,6 +1368,14 @@ export interface ScceKernel {
   analyzeCausalEffect(request: import("./causal-analysis-runtime.js").CausalAnalysisRequest): Promise<import("./causal-analysis-runtime.js").CausalAnalysisResult>;
   /** Temporal causal discovery over caller-supplied series. Typed input only, never inferred from prose. */
   discoverCausalStructure(request: import("./causal-analysis-runtime.js").CausalDiscoveryRequest): Promise<import("./causal-analysis-runtime.js").CausalDiscoveryResult>;
+  /** The learned language identities and their assignment; discovered from the corpus on first use or on rebuild. */
+  languageIdentities(input?: { rebuild?: boolean }): Promise<{
+    schema: "scce.language_identities.v1";
+    identities: import("./language-identity.js").LanguageIdentityRecord[];
+    assigned: number;
+    discovered: boolean;
+    elapsedMs: number;
+  }>;
   /** What the learned construction grammar composes with no semantic target. Diagnostic only; never spoken. */
   inspectGenerativeStructure(query?: { constructionLimit?: number; maxRecursionDepth?: number; treewidthBudget?: number }): Promise<{
     schema: "scce.generative_structure_inspection.v1";

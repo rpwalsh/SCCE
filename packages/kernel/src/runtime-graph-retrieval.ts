@@ -283,6 +283,8 @@ export function createRuntimeGraphRetrieval(options: {
     allowSemanticFrameEvidence?: boolean;
     sourceAnchoringRequired?: boolean;
     residentOnly?: boolean;
+    /** The request's learned scaffolding (closed class); an anchor group made only of it is not a subject to search. */
+    requestScaffolding?: ReadonlySet<string>;
     /** This turn's evaluation trace, so a slice served from cache records which condition owns the entry. */
     evaluation?: { trace: EvaluationTraceRecorder };
   } = {}) {
@@ -318,7 +320,8 @@ export function createRuntimeGraphRetrieval(options: {
       topicTerms,
       allowSemanticFrameEvidence,
       sourceAnchoringRequired,
-      residentOnly
+      residentOnly,
+      scaffolding: [...(options.requestScaffolding ?? [])].sort()
     })).slice(0, 32);
     const cacheOwner = deps.evaluationCondition ? currentEvaluationCacheOwner(deps.evaluationCondition) : undefined;
     const cacheKey = cacheOwner
@@ -383,7 +386,7 @@ export function createRuntimeGraphRetrieval(options: {
       // above (residentOnly: true) before falling through here; retrying
       // it non-resident would both double the lookup and break the bounded
       // turn's residency contract, so only attempt it once per turn.
-      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly);
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding);
       kernelTrace({
         stage: "graph.resolve.anchor_evidence",
         label: "kernel.graphForText",
@@ -575,6 +578,15 @@ export function createRuntimeGraphRetrieval(options: {
     return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
   }
 
+  /** Every unit a group's features are made of. Pure. */
+  function anchorGroupUnits(group: readonly string[]): string[] {
+    return uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
+      ? feature.slice("anchor:bi:".length).split("|")
+      : feature.startsWith("anchor:sym:")
+        ? [feature.slice("anchor:sym:".length)]
+        : []).map(unit => normalizePriorKey(unit)).filter(Boolean));
+  }
+
   /** The units the group's subject is made of: its leading feature, since features arrive subject first. Pure. */
   function anchorGroupTitleUnits(group: readonly string[]): string[] {
     const lead = group[0] ?? "";
@@ -629,8 +641,13 @@ function spanIsSourceCode(span: EvidenceSpan): boolean {
   return isCodeEvidenceSpan(span);
 }
 
-async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true): Promise<SourceAnchoredEvidenceSelection> {
-    const anchorFeatureGroups = sourceAnchorRetrievalFeatureGroups(text);
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>): Promise<SourceAnchoredEvidenceSelection> {
+    // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
+    // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
+    const allGroups = sourceAnchorRetrievalFeatureGroups(text);
+    const scaffoldingOnly = (group: readonly string[]) => Boolean(requestScaffolding?.size) && anchorGroupUnits(group).every(unit => requestScaffolding!.has(unit));
+    const anchorFeatureGroups = allGroups.filter(group => !scaffoldingOnly(group));
+    const droppedScaffoldingGroups = allGroups.length - anchorFeatureGroups.length;
     const anchorFeatures = uniqueKernelStrings(anchorFeatureGroups.flat());
     // Source-bound retrieval should rank on the subject anchors themselves. Mixing
     // the full request feature field into this query makes common prompt fragments
@@ -682,6 +699,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       support: {
         anchorFeatures,
         anchorFeatureGroups,
+        droppedScaffoldingGroups,
         gathered: gatheredResults.length,
         afterProseFilter: evidenceResults.length,
         gatheredHeads: gatheredResults.slice(0, 6).map(item => String(item.span.id).slice(0, 34)),

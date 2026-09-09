@@ -60,6 +60,19 @@ export interface AssistantForceInput {
   targetLanguageChanged?: boolean;
   /** The answer states what each disagreeing source says instead of asserting one of them. */
   reportsSourceConflict?: boolean;
+  /** Required obligations the proof left missing or underdetermined; a certified fact has none. */
+  unresolvedObligations?: number;
+}
+
+/** How many required obligations a proof's boundary list reports unresolved: the missing ones and the underdetermined count. Pure. */
+export function unresolvedObligationCount(boundaries: readonly string[] | undefined): number {
+  let count = 0;
+  for (const boundary of boundaries ?? []) {
+    const underdetermined = /^underdetermined-obligations:(\d+)$/u.exec(boundary);
+    if (underdetermined) count += Number(underdetermined[1]);
+    else if (boundary.startsWith("missing-")) count += 1;
+  }
+  return count;
 }
 
 export interface AssistantForceDecision {
@@ -150,9 +163,14 @@ export function assistantForceDecision(input: AssistantForceInput): AssistantFor
   } else if (translation) {
     force = "translation_answer";
     reasonIds.push("assistant_force.translation_surface");
-  } else if ((input.epistemicForce === "proved" || truthState === "truth.certified" || proof === "scce.verdict.002") && hasDirectEvidence) {
+  } else if ((input.epistemicForce === "proved" || truthState === "truth.certified" || proof === "scce.verdict.002") && hasDirectEvidence && (input.unresolvedObligations ?? 0) === 0) {
     force = "certified_fact";
     reasonIds.push("assistant_force.certified_direct_evidence");
+  } else if ((input.epistemicForce === "proved" || truthState === "truth.certified" || proof === "scce.verdict.002") && hasDirectEvidence) {
+    // A proof that left required obligations unresolved is grounded, not certified: "April 12, 1961" was certified
+    // for when Apollo 11 landed while the landing obligation stayed open. The evidence is real; the certification is not.
+    force = "source_grounded_answer";
+    reasonIds.push("assistant_force.unresolved_obligations");
   } else if (hasDirectEvidence || (input.epistemicForce === "observed" && hasEvidence)) {
     force = "source_grounded_answer";
     reasonIds.push(hasDirectEvidence ? "assistant_force.source_evidence_present" : "assistant_force.observed_without_certification");

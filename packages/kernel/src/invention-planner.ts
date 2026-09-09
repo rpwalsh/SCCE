@@ -357,11 +357,13 @@ function productionStructuralCreativeBundles(
 ): LanguageMemoryRuntimeState["importedConstructionBundles"] {
   const scope = input.languageMemoryState.scope;
   if (input.requestedAuthority !== "creative"
-    || scope.mode !== "cluster"
+    || (scope.mode !== "cluster" && scope.mode !== "language")
     || !scope.purityProven
     || scope.degraded
     || !scope.profileIds.length
-    || !scope.sourceVersionIds.length) return [];
+    || (scope.mode === "cluster" && !scope.sourceVersionIds.length)) return [];
+  // Under a language scope every retained bundle is already admitted by language; provenance is not re-checked.
+  if (scope.mode === "language") return input.languageMemoryState.importedConstructionBundles;
   const profileIds = new Set(scope.profileIds);
   const sourceVersionIds = new Set(scope.sourceVersionIds);
   return input.languageMemoryState.importedConstructionBundles.filter(bundle => {
