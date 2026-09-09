@@ -35,6 +35,33 @@ describe("answerhood gate", () => {
     expect(answerCoversRequest([eduard], einstein, units, "When was Albert Einstein born?", { relationRequired: true })).toBe(false);
   });
 
+  it("resolves an anaphoric answering sentence from the one sentence before it in the same span, real corpus shape", () => {
+    // Verbatim shape of the live regression: the commander sentence never restates "Apollo 11", the lead sentence
+    // immediately before it does. Rejecting the commander sentence here is what made "Who commanded Apollo 11?"
+    // answer empty on the live brain even though the corpus states it plainly.
+    const article = span(
+      "evidence:apollo-live",
+      "Apollo 11",
+      "'Apollo 11' (July 16-24, 1969) was the fifth crewed flight in the United States Apollo program and the first spaceflight to land humans on the Moon. Commander Neil Armstrong and Lunar Module Pilot Edwin \"Buzz\" Aldrin landed the Lunar Module 'Eagle' on July 20 at 20:17 UTC, and Armstrong became the first person to step onto the surface."
+    );
+    const units = ["commanded", "apollo"];
+    const commanderSentence = "Commander Neil Armstrong and Lunar Module Pilot Edwin \"Buzz\" Aldrin landed the Lunar Module 'Eagle' on July 20 at 20:17 UTC, and Armstrong became the first person to step onto the surface.";
+    expect(answerCoversRequest([commanderSentence], article, units, "Who commanded Apollo 11?", { relationRequired: true })).toBe(true);
+  });
+
+  it("does not widen past a sentence naming a different subject, real corpus shape", () => {
+    // Verbatim shape of the Eduard regression this replaced: the sentence immediately before Eduard's birth is about
+    // a different son (Hans Albert), so "Einstein" is still not one sentence back and the answer stays rejected.
+    const article = span(
+      "evidence:einstein-live",
+      "Albert Einstein",
+      "Einstein and Maric married in January 1903. In May 1904, their son Hans Albert was born in Bern, Switzerland. Their son Eduard was born in Zurich in July 1910."
+    );
+    const units = ["albert", "einstein", "born"];
+    const eduardSentence = "Their son Eduard was born in Zurich in July 1910.";
+    expect(answerCoversRequest([eduardSentence], article, units, "When was Albert Einstein born?", { relationRequired: true })).toBe(false);
+  });
+
   it("keeps the quota when no learned closed class can tell scaffolding from relation", () => {
     const vega = span("evidence:vega", "Armand Vega", "unused");
     const sentence = "The calculating apparatus was designed and refined by the pioneering mathematician Armand Vega.";
