@@ -2966,12 +2966,25 @@ function exactFactSurface(value: string): boolean {
   return value.length > 0 && value === value.normalize("NFC") && value === value.trim();
 }
 
+// A composite answer built from several quoted sentences (e.g. a two-sentence Wikipedia lead) produces one
+// answerSlot per sentence, all under the same generic quote relation -- state.answerSlots.length was required to
+// be exactly 1, so this coverage check failed before singleCoreFact (mouth.ts, chosen by the callers of this
+// function) ever got to pick its one representative fact, and generation could never engage for any multi-sentence
+// local-evidence answer. selectedRelations staying singular is what actually distinguishes "one cohesive relation,
+// several candidate facts for it" from a genuinely composite answer (a source-conflict answer carries a distinct
+// forceId and is already excluded by every caller before this runs; a collection/member answer's per-member
+// subject never equals state.selectedSubject, so it is excluded by the very next check). Coverage now asks only
+// whether SOME slot matches the specific fact singleCoreFact already chose.
 function completeLearnedFactCoverage(state: SemanticAnswerConstructState, fact: SemanticAnswerFact): boolean {
-  if (state.answerSlots.length !== 1 || state.selectedRelations.length !== 1) return false;
+  if (state.selectedRelations.length !== 1) return false;
   if (state.selectedRelations[0] !== fact.relationId || state.selectedSubject !== fact.subject) return false;
-  const slot = state.answerSlots[0]!;
-  if (slot.relationIds.length !== 1 || slot.relationIds[0] !== fact.relationId) return false;
-  if (slot.factKeys.length !== 1 || !learnedFactSurfaceKeys(fact).has(slot.factKeys[0]!)) return false;
+  const factKeys = learnedFactSurfaceKeys(fact);
+  const slot = state.answerSlots.find(candidate =>
+    candidate.relationIds.length === 1
+    && candidate.relationIds[0] === fact.relationId
+    && candidate.factKeys.length === 1
+    && factKeys.has(candidate.factKeys[0]!));
+  if (!slot) return false;
   return finiteUnitSignal(slot.support) && finiteUnitSignal(slot.activation);
 }
 
