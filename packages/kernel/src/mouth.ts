@@ -7714,7 +7714,22 @@ function requestWindowSurfaceFromEvidence(input: SpeakInput, plan: SurfacePlan):
   if (!cleaned || surfaceIsSourceApparatus(cleaned) || windowStructuralMarkup.test(cleaned)) return "";
   const window = preserveSurfaceExtent(tidySurface(cleaned), input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT, plan);
   if (!window) return "";
-  return answerCoversRequest([window], best.span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) }) ? window : "";
+  const relationRequired = mouthRelationRequired(input);
+  if (!answerCoversRequest([window], best.span, units, input.requestText ?? "", { relationRequired })) return "";
+  // The window is scored as a bag of units across up to eight sentences, so it can cover every unit while no
+  // sentence inside it relates them to each other: two disjoint quotes that jointly mention the subject and the
+  // relation word are not one fact. Measured live: "It almost seems to me that man was not born to be a
+  // carnivore." next to "Albert Einstein [...] also read Blavatsky and attended lectures by Rudolf Steiner."
+  // covers albert/einstein/born between them and answers nothing about when Einstein was born. At least one
+  // sentence inside the window -- with the same one-sentence anaphora resolution a single-sentence answer
+  // already gets -- must carry the relation bound to the subject on its own.
+  if (relationRequired) {
+    const boundSpan = best.span;
+    const windowSentences = window.split(/(?<=[.!?。．！？])\s+/u).map(sentence => sentence.trim()).filter(Boolean);
+    const coherent = windowSentences.some(sentence => answerCoversRequest([sentence], boundSpan, units, input.requestText ?? "", { relationRequired: true }));
+    if (!coherent) return "";
+  }
+  return window;
 }
 
 /** Heading and list markers removed; every remaining word is the source's own. Pure. */
