@@ -19,6 +19,7 @@ import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
 import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
+import { candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
@@ -851,7 +852,25 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const semanticDirectEvidenceCandidate = semanticAnswerState
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:semantic-direct-evidence" && !candidate.forbiddenHits.length)
         : undefined;
-      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticDirectEvidenceCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
+      // Verbatim (semanticDirectEvidenceCandidate) beat real generation (semanticRhetoricalCandidate) by
+      // elimination, not by design: the construction-template candidate ahead of both is almost always
+      // undefined (no learned bundle matches most relations), so the chain fell through past generation
+      // straight to the trivially-always-constructible quote. A generated candidate is preferred here only
+      // when it survives the same contract-based meaning check as everywhere else in this pass -- required
+      // atoms present, no fabrication -- so promoting it ahead of the quote can never surface incoherent text;
+      // it can only ever surface something the request's own relation and bound value verify against.
+      const semanticCoreFact = semanticAnswerState ? singleCoreFact(uniquePriorBoundFacts(semanticAnswerState.selectedFacts)) : undefined;
+      const semanticRealizationContract = semanticCoreFact
+        ? compileRealizationContract(input.requestText ?? "", semanticCoreFact, {
+          certified: semanticAnswerState!.certificationBoundary.directEvidenceCount > 0,
+          externallyFactual: semanticAnswerState!.certificationBoundary.externalFactCertification
+        })
+        : undefined;
+      const semanticRhetoricalCandidateVerified = semanticRhetoricalCandidate && semanticRealizationContract
+        && candidateSurvivesRealizationContract(semanticRhetoricalCandidate.text, semanticRealizationContract).survives
+        ? semanticRhetoricalCandidate
+        : undefined;
+      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
         ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
         : undefined);
       const structuredConstructCandidate = generatedConstructSurface(input.construct) && !creativeRequested
