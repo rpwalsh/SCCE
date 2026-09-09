@@ -3875,6 +3875,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push(`pattern.profile_id=ANY($${params.length}::text[])`);
       } else if (query.profileId) { params.push(query.profileId); where.push(`pattern.profile_id=$${params.length}`); }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern.pattern_json->>'sourceSystem'=$${params.length}`); }
+      if (query.languageId) {
+        // sourceSystem alone mixes identities: "wikipedia" carries a small minority of profiles under other
+        // learned identities too (measured live -- a 569-profile code/license-header identity still owns 9
+        // wikipedia-attributed profiles). Filtering by identity before the row budget is spent, rather than after
+        // scopeLanguageMemoryStateToLanguage discards off-identity rows post-hoc, means the budget itself only
+        // ever competes among patterns that actually belong to the language being hydrated.
+        params.push(query.languageId);
+        where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} lp WHERE lp.id=pattern.profile_id AND lp.language_id=$${params.length})`);
+      }
       appendInformationAccess(storage, "pattern", params, where);
       params.push(query.limit ?? 1000);
       const limitParam = params.length;
