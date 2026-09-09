@@ -933,7 +933,15 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         && (kernelCandidateCarriesExactBoundSourceSurface(input.selectedCandidate, input)
           || kernelCandidateCarriesVerifiedSourceExcerptSurface(input.selectedCandidate, input))
       );
-      const validGeneratedCandidateAvailable = generatedCandidates.some(candidate => (
+      // Real bug, confirmed live: this only ever checked generatedCandidates (the free rhetorical-lattice
+      // generation), never learnedConstructionCandidate/reversibleConstructionCandidate/
+      // antiUnifiedConstructionCandidate -- so even a fully successful, energy-valid construction-grammar
+      // realization could never stop a raw kernel excerpt from preempting it. Construction-grammar output is
+      // at least as authoritative as free generation here (it is licensed by a promoted, held-out-validated
+      // pattern, not just Kneser-Ney continuation), so it belongs in the same "a real alternative exists" check.
+      const constructionGrammarCandidates = [learnedConstructionCandidate, reversibleConstructionCandidate, antiUnifiedConstructionCandidate]
+        .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+      const validGeneratedCandidateAvailable = [...generatedCandidates, ...constructionGrammarCandidates].some(candidate => (
         energyRows.some(row => row.candidate.id === candidate.id && row.result.valid)
       ));
       // A verified realizer surface (every content word licensed by the evidence facts) that tops the energy ranking and is bound to the kernel candidate's own evidence speaks that evidence in fluent prose; the kernel candidate preempts it only when exact source wording was requested.
@@ -986,6 +994,42 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         realizedCreativeCandidate ??
         (energySelected && !energySelected.forbiddenHits.length && !energySelectedIsBlockedKernelCandidate ? energySelected : undefined);
       const selectedEnergy = energyRows.find(row => row.candidate.id === selected?.id)?.result;
+      // Real gap this trace closes: nothing previously exposed WHICH of Mouth's own candidate lanes won or why
+      // one was skipped -- a bare bound value silently winning via plannerSelectedCandidate (the raw kernel
+      // excerpt) versus a real construction-grammar realization winning via semanticGraphCandidate looked
+      // identical from the outside until this existed.
+      traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+        stage: "mouth.candidate.select",
+        label: "mouth.speak",
+        support: {
+          selectedSource: codeRealizerCandidate ? "codeRealizerCandidate"
+            : groundedRealizerCandidate ? "groundedRealizerCandidate"
+            : plannerSelectedCandidate ? "plannerSelectedCandidate"
+            : verifiedRealizerCandidate ? "verifiedRealizerCandidate"
+            : realizerInventionCandidate ? "realizerInventionCandidate"
+            : semanticGraphCandidate === semanticTemporalCounterexampleCandidate && semanticGraphCandidate ? "semanticTemporalCounterexampleCandidate"
+            : semanticGraphCandidate === semanticLearnedCandidate && semanticGraphCandidate ? "semanticLearnedCandidate"
+            : semanticGraphCandidate === semanticRhetoricalCandidateVerified && semanticGraphCandidate ? "semanticRhetoricalCandidateVerified"
+            : semanticGraphCandidate === semanticDirectEvidenceCandidate && semanticGraphCandidate ? "semanticDirectEvidenceCandidate"
+            : semanticGraphCandidate === semanticRhetoricalCandidate && semanticGraphCandidate ? "semanticRhetoricalCandidate"
+            : semanticGraphCandidate ? "semanticAnswerStateFallback"
+            : structuredConstructCandidate ? "structuredConstructCandidate"
+            : proofBoundarySelectedCandidate ? "proofBoundarySelectedCandidate"
+            : governedActionDraftCandidate ? "governedActionDraftCandidate"
+            : workspaceDraftCandidate ? "workspaceDraftCandidate"
+            : learnedCreativeProposal ? "learnedCreativeProposal"
+            : realizedCreativeCandidate ? "realizedCreativeCandidate"
+            : energySelected ? "energySelected"
+            : "none",
+          selectedId: selected?.id ?? null,
+          isVerifiedSourceExcerptKernelCandidate,
+          validGeneratedCandidateAvailable,
+          learnedConstructionCandidateId: learnedConstructionCandidate?.id ?? null,
+          reversibleConstructionCandidateId: reversibleConstructionCandidate?.id ?? null,
+          antiUnifiedConstructionCandidateId: antiUnifiedConstructionCandidate?.id ?? null,
+          semanticLearnedCandidateId: semanticLearnedCandidate?.id ?? null
+        }
+      });
       markMouthPhase("candidate_selection");
       const selectedBoundSourceSurface = Boolean(
         selected &&
