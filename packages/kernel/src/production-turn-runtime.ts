@@ -2322,14 +2322,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // build directly than to wait for a ConstructGraph node that this answer path (local exact-evidence,
       // not the learned-prior/graph-inference path) never populates for a plain one-hop lookup.
       const temporalAnswerSubject = namedSubjectAnchors(input.text)[0];
+      const temporalRelationPredicate = requestRelationUnits(input.text).join(" ") || "is";
       const temporalConstructFact: SemanticAnswerConstructFact | undefined = temporalAnswerValue && temporalAnswerSubject
         ? {
           subject: temporalAnswerSubject,
-          predicate: requestRelationUnits(input.text).join(" ") || "is",
+          predicate: temporalRelationPredicate,
           object: temporalAnswerValue,
           sourceNodeId: "",
           targetNodeId: "",
-          relationId: "",
+          // Real bug, confirmed live: an empty relationId is dropped by uniqueKernelStrings (kernel-answer-
+          // primitives.ts) as blank, so mouth.ts's completeLearnedFactCoverage saw selectedRelations.length===0
+          // (not 1) and rejected construction-grammar realization outright, before even reaching the real
+          // predicate-hash bundle lookup. No real graph relation ID exists for this fast path (it never
+          // populates a ConstructGraph edge), so this reuses the predicate text itself -- deterministic,
+          // non-empty, and harmless for bundle matching (bundle.bindingId is a hash, so this never
+          // accidentally matches the wrong bundle; the real match still comes from
+          // sourceRelationConstructionBindingId keyed on this same predicate).
+          relationId: `local:temporal:relation:${temporalRelationPredicate}`,
           forceClass: "direct_evidence",
           score: 1,
           activation: 1,
@@ -2339,13 +2348,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           sourceVersionId: selectedEvidence[0]?.sourceVersionId ? String(selectedEvidence[0].sourceVersionId) : undefined,
           questionSlotImportance: "core",
           // Same gate as localEvidenceSemanticFact's (local-evidence-runtime.ts) -- mouth.ts's
-          // learnedFactRouteAdmissible requires all four, real bug confirmed live via candidate.field.generate's
-          // empty_generation trace. This value is already fully verified (subject-context-checked, non-citation),
-          // so reusing the same 1 already asserted on score/activation/overlap/support above is honest, not a new number.
+          // learnedFactRouteAdmissible requires all five, real bug confirmed live via candidate.field.generate's
+          // empty_generation trace, then via mouth.learned_construction.reject's route_inadmissible (missing
+          // questionSlotScore specifically). This value is already fully verified (subject-context-checked,
+          // non-citation), so reusing the same 1 already asserted on score/activation/overlap/support above is
+          // honest, not a new number.
           answerGrade: true,
           finalQuestionFit: 1,
           certificationPower: 1,
-          semanticQuality: 1
+          semanticQuality: 1,
+          questionSlotScore: 1
         }
         : undefined;
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
