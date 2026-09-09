@@ -1024,6 +1024,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           selectedId: selected?.id ?? null,
           isVerifiedSourceExcerptKernelCandidate,
           validGeneratedCandidateAvailable,
+          hasInputSelectedCandidate: Boolean(input.selectedCandidate),
+          inputSelectedCandidateId: input.selectedCandidate?.id ?? null,
+          hasKernelSelectedCandidate: Boolean(kernelSelectedCandidate),
+          rawCandidateCount: rawCandidates.length,
+          scoredCandidateCount: scoredCandidates.length,
+          hasSemanticAnswerState: Boolean(semanticAnswerState),
           learnedConstructionCandidateId: learnedConstructionCandidate?.id ?? null,
           reversibleConstructionCandidateId: reversibleConstructionCandidate?.id ?? null,
           antiUnifiedConstructionCandidateId: antiUnifiedConstructionCandidate?.id ?? null,
@@ -2300,7 +2306,7 @@ function semanticReversibleConstructionCandidate(
   if (!state?.certificationBoundary.externalFactCertification
     || state.forceId !== "output.force.source_bound_answer"
     || state.boundaryId !== "output.force.source_bound"
-    || plan.targetLanguage !== input.languageProfile.id) return undefined;
+    || !planTargetsLanguageProfile(plan, input.languageProfile)) return undefined;
   const facts = uniquePriorBoundFacts(state.selectedFacts);
   const fact = singleCoreFact(facts);
   if (!fact) return undefined;
@@ -2395,7 +2401,7 @@ function semanticAntiUnifiedConstructionCandidate(
   if (!state?.certificationBoundary.externalFactCertification
     || state.forceId !== "output.force.source_bound_answer"
     || state.boundaryId !== "output.force.source_bound"
-    || plan.targetLanguage !== input.languageProfile.id) return undefined;
+    || !planTargetsLanguageProfile(plan, input.languageProfile)) return undefined;
   const facts = uniquePriorBoundFacts(state.selectedFacts);
   const fact = singleCoreFact(facts);
   if (!fact) return undefined;
@@ -2653,22 +2659,56 @@ function semanticLearnedConstructionCandidate(
   discoursePlan: DiscoursePlan,
   hasher: Hasher
 ): SurfaceCandidate | undefined {
+  const done = (reason: string, extra?: Record<string, unknown>): undefined => {
+    traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+      stage: "mouth.learned_construction.reject",
+      label: "mouth.speak",
+      support: { reason, ...extra }
+    });
+    return undefined;
+  };
   const state = semanticAnswerConstructState(input.construct);
-  if (!state?.certificationBoundary.externalFactCertification) return undefined;
-  if (state.forceId !== "output.force.source_bound_answer" || state.boundaryId !== "output.force.source_bound") return undefined;
-  if (plan.targetLanguage !== input.languageProfile.id) return undefined;
+  if (!state?.certificationBoundary.externalFactCertification) return done("no_state_or_uncertified");
+  if (state.forceId !== "output.force.source_bound_answer" || state.boundaryId !== "output.force.source_bound") {
+    return done("force_or_boundary_mismatch", { forceId: state.forceId, boundaryId: state.boundaryId });
+  }
+  if (!planTargetsLanguageProfile(plan, input.languageProfile)) return done("target_language_mismatch", { planLanguage: plan.targetLanguage, profileLanguage: input.languageProfile.id });
   const certifiedEvidenceIds = new Set(state.certificationBoundary.evidenceSpanIds);
-  if (!certifiedEvidenceIds.size) return undefined;
+  if (!certifiedEvidenceIds.size) return done("no_certified_evidence_ids");
   const certifiedSourceVersionIds = new Set(state.certificationBoundary.sourceVersionIds);
   const rows: LearnedConstructionCandidateRow[] = [];
   const facts = uniquePriorBoundFacts(state.selectedFacts);
   const fact = singleCoreFact(facts);
-  if (!fact) return undefined;
-  if (!completeLearnedFactCoverage(state, fact) || !learnedFactRouteAdmissible(fact)) return undefined;
-
-  if (!exactFactSurface(fact.subject) || !exactFactSurface(fact.predicate) || !exactFactSurface(fact.object)) return undefined;
+  if (!fact) return done("no_core_fact");
+  if (!completeLearnedFactCoverage(state, fact)) {
+    return done("incomplete_fact_coverage", {
+      answerSlotCount: state.answerSlots.length,
+      selectedRelationCount: state.selectedRelations.length,
+      selectedRelation0: state.selectedRelations[0] ?? null,
+      factRelationId: fact.relationId,
+      selectedSubject: state.selectedSubject,
+      factSubject: fact.subject
+    });
+  }
+  if (!learnedFactRouteAdmissible(fact)) {
+    return done("route_inadmissible", {
+      forceClass: fact.forceClass,
+      answerGrade: fact.answerGrade ?? null,
+      finalQuestionFit: fact.finalQuestionFit ?? null,
+      support: fact.support,
+      activation: fact.activation,
+      score: fact.score,
+      overlap: fact.overlap,
+      certificationPower: fact.certificationPower ?? null,
+      semanticQuality: fact.semanticQuality ?? null,
+      questionSlotScore: fact.questionSlotScore ?? null
+    });
+  }
+  if (!exactFactSurface(fact.subject) || !exactFactSurface(fact.predicate) || !exactFactSurface(fact.object)) {
+    return done("fact_surface_not_exact", { subject: fact.subject, predicate: fact.predicate, object: fact.object });
+  }
   const factEvidenceIds = new Set(fact.evidenceIds ?? []);
-  if (!factEvidenceIds.size || !fact.sourceVersionId) return undefined;
+  if (!factEvidenceIds.size || !fact.sourceVersionId) return done("no_fact_evidence_or_source_version", { evidenceCount: factEvidenceIds.size, sourceVersionId: fact.sourceVersionId ?? null });
   const proofEvidence = input.evidence
     .filter(span => span.status === "promoted"
       && jsonRecord(span.trustVector).forceClass === "direct_evidence"
@@ -2677,9 +2717,17 @@ function semanticLearnedConstructionCandidate(
       && fact.sourceVersionId === String(span.sourceVersionId)
       && certifiedSourceVersionIds.has(String(span.sourceVersionId)))
     .sort((left, right) => compareSurfaceText(String(left.id), String(right.id)));
-  if (!proofEvidence.length) return undefined;
+  if (!proofEvidence.length) {
+    return done("no_matching_proof_evidence", {
+      factEvidenceIds: [...factEvidenceIds],
+      certifiedEvidenceIds: [...certifiedEvidenceIds],
+      factSourceVersionId: fact.sourceVersionId,
+      certifiedSourceVersionIds: [...certifiedSourceVersionIds],
+      evidenceStatuses: input.evidence.filter(span => factEvidenceIds.has(String(span.id))).map(span => ({ id: String(span.id), status: span.status, forceClass: jsonRecord(span.trustVector).forceClass ?? null, sourceVersionId: String(span.sourceVersionId) }))
+    });
+  }
   const routeAdmissibility = Math.max(...proofEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
-  if (routeAdmissibility <= 0) return undefined;
+  if (routeAdmissibility <= 0) return done("zero_route_admissibility");
   const proofEvidenceIds = proofEvidence.map(span => String(span.id));
   const sourceRelationBindingId = sourceRelationConstructionBindingId(
     hasher,
@@ -2691,6 +2739,16 @@ function semanticLearnedConstructionCandidate(
       && bundle.sourceProfileId === input.languageProfile.id
       && bundle.targetProfileId === input.languageProfile.id)
     .sort((left, right) => compareSurfaceText(left.id, right.id));
+  if (!bundles.length) {
+    return done("no_matching_bundles", {
+      factPredicate: fact.predicate,
+      factRelationId: fact.relationId,
+      sourceRelationBindingId,
+      profileId: input.languageProfile.id,
+      totalImportedBundles: input.languageMemory.importedConstructionBundles.length,
+      importedBundleBindingIds: input.languageMemory.importedConstructionBundles.slice(0, 12).map(bundle => bundle.bindingId)
+    });
+  }
 
   for (const bundle of bundles) {
     for (const construction of bundle.constructions) {
@@ -2709,12 +2767,14 @@ function semanticLearnedConstructionCandidate(
     }
   }
 
-  return rows.sort((left, right) => (
+  const winner = rows.sort((left, right) => (
     right.candidate.fit - left.candidate.fit
     || compareSurfaceText(left.bundleId, right.bundleId)
     || compareSurfaceText(left.constructionId, right.constructionId)
     || compareSurfaceText(left.candidate.id, right.candidate.id)
   ))[0]?.candidate;
+  if (!winner) return done("bundles_matched_but_no_construction_bound", { bundleCount: bundles.length, constructionCount: bundles.reduce((sum, bundle) => sum + bundle.constructions.length, 0) });
+  return winner;
 }
 
 function learnedConstructionCandidateFromBundle(input: {
@@ -2952,9 +3012,24 @@ function finiteUnitSignal(value: number | undefined): boolean {
   return Number.isFinite(value) && (value ?? 0) > 0 && (value ?? 0) <= 1;
 }
 
+/**
+ * plan.targetLanguage is a locale-ish tag (defaults to "und" when the turn named no explicit target language
+ * -- see localeFromMetadata); languageProfile.id is an opaque, content-hash-keyed learned-profile identity.
+ * These are different ID spaces and are only comparable when the turn actually requested a specific target
+ * language. Real bug, confirmed live: comparing them for exact equality unconditionally made every
+ * construction-grammar and reversible-construction candidate permanently unreachable on any ordinary
+ * (non-translation) turn, since "und" can never equal a profile hash -- traced via a live Apollo-11 probe
+ * (mouth.learned_construction.reject: target_language_mismatch, planLanguage "und"). "und" honestly means "no
+ * explicit language was requested," so it is treated as compatible with whichever profile is active, not as a
+ * mismatch; an explicit non-"und" target (e.g. a translation request) still requires a real match.
+ */
+function planTargetsLanguageProfile(plan: SurfacePlan, languageProfile: LanguageProfile): boolean {
+  return plan.targetLanguage === "und" || plan.targetLanguage === languageProfile.id;
+}
+
 function exactSurfaceSatisfiesPlan(surface: string, input: SpeakInput, plan: SurfacePlan): boolean {
   if (input.maxLength && input.maxLength > 0 && [...surface].length > input.maxLength) return false;
-  if (plan.targetLanguage !== input.languageProfile.id) return false;
+  if (!planTargetsLanguageProfile(plan, input.languageProfile)) return false;
   if (plan.targetScript && !input.languageProfile.scripts.some(row => row.script === plan.targetScript)) return false;
   if (input.requirementField || input.requiredOutputFeatures?.length || input.prohibitedOutputFeatures?.length || input.revisionConstraints?.length) return false;
   if (plan.caveatBindings.some(binding => !containsSurface(surface, binding.reason))) return false;
