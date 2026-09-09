@@ -1175,6 +1175,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
               requestScaffolding: requestClosedClassWords(),
+              languageModels: authorityLanguage.state.models ?? [],
               // Reverted to conditional (was unconditionally true): this
               // flag doesn't just tighten anchoring, it switches
               // runtime-graph-retrieval.ts's graphForText onto an entirely
@@ -1229,6 +1230,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           const durableSlice = await graphForText(subjectRetrievalText, {
             allowSemanticFrameEvidence,
             requestScaffolding: requestClosedClassWords(),
+            languageModels: authorityLanguage.state.models ?? [],
             sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
             residentOnly: false
           }).catch(() => undefined);

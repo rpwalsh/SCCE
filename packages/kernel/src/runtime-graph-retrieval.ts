@@ -26,6 +26,7 @@ import {
   temporalCounterexampleExpected,
   trailingInitialismTokensForAnchor
 } from "./local-evidence-runtime.js";
+import type { KneserNeyModel } from "./kneser-ney.js";
 import { anchorFeatureSet, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import type { RuntimeGraphSliceValue } from "./runtime-graph-cache.js";
 import {
@@ -285,6 +286,9 @@ export function createRuntimeGraphRetrieval(options: {
     residentOnly?: boolean;
     /** The request's learned scaffolding (closed class); an anchor group made only of it is not a subject to search. */
     requestScaffolding?: ReadonlySet<string>;
+    /** The role language's trained models, so anchor search can widen a relation word to its morphological
+     *  siblings actually observed in the corpus's own vocabulary (see learnedMorphologicalSiblings). */
+    languageModels?: readonly KneserNeyModel[];
     /** This turn's evaluation trace, so a slice served from cache records which condition owns the entry. */
     evaluation?: { trace: EvaluationTraceRecorder };
   } = {}) {
@@ -292,7 +296,8 @@ export function createRuntimeGraphRetrieval(options: {
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
     const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
     const residentOnly = options.residentOnly === true;
-    const sourceAnchorFeatures = sourceAnchoringRequired ? sourceAnchorRetrievalFeatures(text) : [];
+    const languageModels = options.languageModels ?? [];
+    const sourceAnchorFeatures = sourceAnchoringRequired ? sourceAnchorRetrievalFeatures(text, languageModels) : [];
     const features = sourceAnchoringRequired
       ? sourceAnchorFeatures.map(feature => feature.slice("anchor:".length))
       : graphRetrievalFeatures(text);
@@ -386,7 +391,7 @@ export function createRuntimeGraphRetrieval(options: {
       // above (residentOnly: true) before falling through here; retrying
       // it non-resident would both double the lookup and break the bounded
       // turn's residency contract, so only attempt it once per turn.
-      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding);
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels);
       kernelTrace({
         stage: "graph.resolve.anchor_evidence",
         label: "kernel.graphForText",
@@ -641,10 +646,10 @@ function spanIsSourceCode(span: EvidenceSpan): boolean {
   return isCodeEvidenceSpan(span);
 }
 
-async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>): Promise<SourceAnchoredEvidenceSelection> {
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = []): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
-    const allGroups = sourceAnchorRetrievalFeatureGroups(text);
+    const allGroups = sourceAnchorRetrievalFeatureGroups(text, languageModels);
     const scaffoldingOnly = (group: readonly string[]) => Boolean(requestScaffolding?.size) && anchorGroupUnits(group).every(unit => requestScaffolding!.has(unit));
     const anchorFeatureGroups = allGroups.filter(group => !scaffoldingOnly(group));
     const droppedScaffoldingGroups = allGroups.length - anchorFeatureGroups.length;
@@ -825,7 +830,33 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   // best-ranked anchor still gets a chance to be seen at all before the
   // real evidence-driven disambiguation (primarySourceAnchorForRequest/
   // sourceAnchoredEvidenceForRequest) picks the winner.
-  function sourceAnchorRetrievalFeatureGroups(text: string): string[][] {
+  /** Morphological siblings of a request word actually observed in the corpus's own learned vocabulary: a
+   *  vocabulary entry where the shorter of the two forms is a genuine prefix of the longer, within a few
+   *  characters -- exactly the relationship "die"/"died"/"dies"/"dying" share. Nothing invented and no English
+   *  suffix rule: a form the corpus never trained on is never returned, so a script with different inflection
+   *  entirely (or none) contributes nothing rather than a wrong guess. This is what a language model that
+   *  learned English already knows, read off its own vocabulary instead of hand-coded back in. Measured live:
+   *  "When did Albert Einstein die?" searched only the literal token "die", sharing no anchor symbol with the
+   *  corpus's "died", so the relation never seeded or scored and ranking fell back to subject-only relevance --
+   *  the EPR-paradox and Zionist-movement paragraphs won on other shared words while "He died in the Princeton
+   *  Hospital ... on 18 April 1955" was never reachable on the relation at all. Pure. */
+  function learnedMorphologicalSiblings(unit: string, models: readonly KneserNeyModel[]): string[] {
+    if ([...unit].length < 3 || !models.length) return [];
+    const siblings = new Set<string>();
+    for (const model of models) {
+      for (const candidate of model.vocabulary) {
+        // Inflection only ever adds length onto the bare form ("die" -> "died"/"dies"/"dying"); a vocabulary
+        // entry shorter than or equal to the query is a different, unrelated word ("d", "di"), not a sibling,
+        // and matching it anyway bloats the anchor query without finding anything real.
+        if (candidate.length > unit.length && candidate.startsWith(unit) && candidate.length - unit.length <= 4) {
+          siblings.add(candidate);
+        }
+      }
+    }
+    return [...siblings].slice(0, 3);
+  }
+
+  function sourceAnchorRetrievalFeatureGroups(text: string, languageModels: readonly KneserNeyModel[] = []): string[][] {
     const anchors = sourceEvidenceAnchorsForRequest(text);
     if (!anchors.length) return [];
     const specificAnchors = anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
@@ -882,9 +913,17 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       // 32 of them the Apollo 11 article, and seeds cleanly under the cap.
       const trailingTokens = trailingInitialismTokensForAnchor(text, anchor);
       const anchorTailUnit = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).slice(-1)[0] ?? "";
-      const trailingFeatures = trailingTokens.flatMap(token => (anchorTailUnit
-        ? [`anchor:bi:${anchorTailUnit}|${token}`, `anchor:sym:${token}`]
-        : [`anchor:sym:${token}`]));
+      // A trailing token following a question's subject is often its verb, in whatever bare or auxiliary-bound
+      // form the question grammar puts it ("did ... die"); the corpus states it inflected ("died"). Widened with
+      // the corpus's own learned vocabulary (learnedMorphologicalSiblings), not invented: measured live, this is
+      // the one place "die" actually reaches the query for "When did Albert Einstein die?" -- it trails the
+      // subject anchor "albert einstein", not any bigram or plain symbol feature built elsewhere in this loop.
+      const trailingFeatures = trailingTokens.flatMap(token => {
+        const forms = uniqueKernelStrings([token, ...learnedMorphologicalSiblings(token, languageModels)]);
+        return anchorTailUnit
+          ? forms.flatMap(form => [`anchor:bi:${anchorTailUnit}|${form}`, `anchor:sym:${form}`])
+          : forms.map(form => `anchor:sym:${form}`);
+      });
       const ordered = anchorFeatureSet(anchor, 64);
       const phraseFeatures = ordered
         .filter(feature => feature.startsWith("anchor:bi:"))
@@ -903,7 +942,9 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
           return !genericQuestionSignal(unit) && [...unit].length >= 3;
         })
         .slice(0, 4);
-      const mergedSymFeatures = uniqueKernelStrings([...symFeatures, ...trailingFeatures]);
+      const learnedSymFeatures = symFeatures.flatMap(feature =>
+        learnedMorphologicalSiblings(normalizePriorKey(feature.slice("anchor:sym:".length)), languageModels).map(variant => `anchor:sym:${variant}`));
+      const mergedSymFeatures = uniqueKernelStrings([...symFeatures, ...learnedSymFeatures, ...trailingFeatures]);
       if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
     }
     // One extra group of the request's longest uncovered adjacent bigrams:
@@ -949,8 +990,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     }
   }
 
-  function sourceAnchorRetrievalFeatures(text: string): string[] {
-    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text).flat()).slice(0, 16);
+  function sourceAnchorRetrievalFeatures(text: string, languageModels: readonly KneserNeyModel[] = []): string[] {
+    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text, languageModels).flat()).slice(0, 16);
   }
 
 
