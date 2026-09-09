@@ -3895,25 +3895,40 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const byteBudget = query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0 ? Math.floor(query.maxTotalJsonBytes) : undefined;
       if (byteBudget) params.push(byteBudget);
       const order = (alias: string) => `${alias}.support DESC, ${alias}.updated_at DESC, ${alias}.id ASC`;
+      // Same categorisation as candidate_pool's, recomputed from id (cheap, no extra column to thread through
+      // scoped_patterns/eligible_patterns). Both byte-budget windows below rank and accumulate PER CATEGORY --
+      // otherwise a byte budget sized for the row-count cap's fair split gets spent the same unfair way the row
+      // cap used to be, on whichever category's pattern_json blobs are cheapest per unit of "support DESC": measured
+      // live, real construction-bundle rows survived the row-count cap (row-fair fix, previous commit) but were
+      // then entirely squeezed back out by this exact same global-support byte window, still ordering across
+      // categories with incomparable scales.
+      const category = (alias: string) => `CASE
+        WHEN ${alias}.id LIKE 'surface.construction.bundle.%' THEN 'construction_bundle'
+        WHEN ${alias}.id LIKE 'surface.creative_event.bundle.%' THEN 'creative_event_bundle'
+        WHEN ${alias}.id LIKE 'reversible_construction.%' THEN 'reversible_construction'
+        WHEN ${alias}.id LIKE 'request_requirement_pattern_%' THEN 'request_requirement'
+        WHEN ${alias}.id LIKE 'optional_null_realization_pattern.%' THEN 'optional_null'
+        ELSE 'other'
+      END`;
       const narrow = "id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label";
       const admitted = byteBudget
         ? `SELECT ${narrow} FROM (
              SELECT candidate.*,
-               SUM(candidate.stored_bytes) OVER (ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
-               ROW_NUMBER() OVER (ORDER BY ${order("candidate")}) AS relevance_rank
+               SUM(candidate.stored_bytes) OVER (PARTITION BY ${category("candidate")} ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
+               ROW_NUMBER() OVER (PARTITION BY ${category("candidate")} ORDER BY ${order("candidate")}) AS category_relevance_rank
              FROM candidates candidate
-           ) sized
-           WHERE sized.running_stored_bytes <= $${params.length} OR sized.relevance_rank = 1`
+           ) sized CROSS JOIN category_counts
+           WHERE sized.running_stored_bytes <= CEIL($${params.length}::numeric / category_counts.n) OR sized.category_relevance_rank = 1`
         : `SELECT ${narrow} FROM candidates`;
       const finalSelect = byteBudget
         ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label
            FROM (
              SELECT eligible.*,
-               SUM(octet_length(eligible.pattern_json::text)) OVER (ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
-               ROW_NUMBER() OVER (ORDER BY ${order("eligible")}) AS relevance_rank
+               SUM(octet_length(eligible.pattern_json::text)) OVER (PARTITION BY ${category("eligible")} ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               ROW_NUMBER() OVER (PARTITION BY ${category("eligible")} ORDER BY ${order("eligible")}) AS category_relevance_rank
              FROM eligible_patterns eligible
-           ) ranked
-           WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
+           ) ranked CROSS JOIN category_counts
+           WHERE ranked.running_json_bytes <= CEIL($${params.length}::numeric / category_counts.n) OR ranked.category_relevance_rank = 1
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       return (await storage.query<LanguagePatternRow>(
@@ -3929,14 +3944,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                   -- assigned deliberately at write time (surface.construction.bundle.*, surface.creative_event.
                   -- bundle.*, etc. -- language-construction-memory.ts) and cost nothing extra to read here, unlike
                   -- pattern_json's schema field.
-                  CASE
-                    WHEN pattern.id LIKE 'surface.construction.bundle.%' THEN 'construction_bundle'
-                    WHEN pattern.id LIKE 'surface.creative_event.bundle.%' THEN 'creative_event_bundle'
-                    WHEN pattern.id LIKE 'reversible_construction.%' THEN 'reversible_construction'
-                    WHEN pattern.id LIKE 'request_requirement_pattern_%' THEN 'request_requirement'
-                    WHEN pattern.id LIKE 'optional_null_realization_pattern.%' THEN 'optional_null'
-                    ELSE 'other'
-                  END AS support_category
+                  ${category("pattern")} AS support_category
            FROM ${storage.table("language_patterns")} pattern
            ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
          ),
