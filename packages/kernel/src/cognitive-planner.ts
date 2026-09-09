@@ -6,6 +6,9 @@ import type { InventionConstruct } from "./prediction.js";
 import type { TranslationPlan } from "./translation.js";
 import { canonicalStringify, clamp01, createHasher, mean, symbolizeData, toJsonValue } from "./primitives.js";
 import { projectGraphEdgeRelationPotential } from "./relation-potential.js";
+import { attemptConstructRealization } from "./answer-realization.js";
+import type { SemanticRealizationContract } from "./semantic-answer-construct.js";
+import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import {
   addReasoningFact,
   applyReasoningOperator,
@@ -32,6 +35,7 @@ import type {
   GraphNode,
   GraphSlice,
   JsonValue,
+  LanguageProfile,
   ProgramGraph
 } from "./types.js";
 
@@ -167,6 +171,10 @@ export interface CognitivePlannerInput {
   actionPlans?: readonly CognitiveActionPlan[];
   proposalMemory?: readonly CognitiveProposal[];
   maxProposals?: number;
+  /** The turn's own one-hop bound fact, when it has one -- see production-turn-runtime.ts's realizationContract.
+   *  Optional so the ~15 existing test call sites keep compiling unchanged. */
+  realizationContract?: SemanticRealizationContract;
+  languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }
 
 /** A typed action meaning supplied by the action lane before Mouth realization. */
@@ -241,6 +249,8 @@ export function planCognitiveProposals(input: CognitivePlannerInput): CognitiveP
   const activeOperators = input.operatorActivations
     .filter(operator => operator.active && operator.activation > 0)
     .sort((left, right) => right.activation - left.activation || left.id.localeCompare(right.id));
+  const relationDraftsResult = relationDrafts(input, activeOperators, evidenceById, nodeById);
+  const sourceSynthesisDraftsResult = sourceSynthesisDrafts(input, activeOperators, evidenceById, nodeById);
   const drafts = uniqueDrafts([
     ...translationDrafts(input, activeOperators),
     ...workspacePlanDrafts(input, activeOperators),
@@ -251,8 +261,9 @@ export function planCognitiveProposals(input: CognitivePlannerInput): CognitiveP
     ...orderedCompositionDrafts(input, activeOperators),
     ...programDesignDrafts(input, activeOperators),
     ...hypothesisDrafts(input, activeOperators, nodeById),
-    ...relationDrafts(input, activeOperators, evidenceById, nodeById),
-    ...sourceSynthesisDrafts(input, activeOperators, evidenceById, nodeById),
+    ...relationDraftsResult,
+    ...sourceSynthesisDraftsResult,
+    ...oneHopConstructDraft(input, relationDraftsResult.length > 0 || sourceSynthesisDraftsResult.length > 0),
     ...constructPriorDrafts(input, activeOperators),
     ...clarificationDrafts(input, activeOperators)
   ]).slice(0, Math.max(maxProposals * 3, 3));
@@ -1306,6 +1317,66 @@ function sourceSynthesisDrafts(
       missedRequirementIds: matched.missed
     }];
   });
+}
+
+/**
+ * Closes a real gap, confirmed live: this planner made zero calls to languageMemory.generate, and
+ * relationDrafts/sourceSynthesisDrafts both require multi-step graph structure or >=2 distinct sources -- a
+ * plain one-hop fact ("Apollo 11 landed on 20:17") satisfies neither, so reasoned-synthesis candidates always
+ * scored support:0 for ordinary one-hop questions. Only fires when neither of those two drafts produced
+ * anything (this planner's own zero-fired check, not per-subject -- MMR/dedup downstream absorbs any overlap).
+ * Real generation is attempted first via the same attemptConstructRealization every other realization call
+ * site uses; when it fails (the known Kneser-Ney/frames limitation -- see
+ * [[project-semantic-realization-contract-20260909]]), the fact's own already-attested bound value is used
+ * directly -- real, verified content, not a fabrication, the same value proofAnswer's temporal-value path
+ * already surfaces for the candidate lane this proposal competes against.
+ */
+function oneHopConstructDraft(input: CognitivePlannerInput, otherDraftsFired: boolean): ProposalDraft[] {
+  if (otherDraftsFired || !input.realizationContract) return [];
+  const fact = input.realizationContract.sourceFact;
+  const object = fact.object.trim();
+  if (!object) return [];
+  const realizationAttempt = input.languageMemoryForRealization
+    ? attemptConstructRealization(input.realizationContract, {
+      ...input.languageMemoryForRealization,
+      attestedSeedText: [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ")
+    })
+    : undefined;
+  const text = cleanMeaningSurface(realizationAttempt?.accepted && realizationAttempt.surface ? realizationAttempt.surface.text : object);
+  if (!text) return [];
+  const evidenceIds = asEvidenceIds(fact.evidenceIds ?? []);
+  const claim = plannedClaim({
+    seed: ["one_hop_construct", fact.subject, fact.predicate, fact.object],
+    text,
+    basis: "direct_evidence",
+    evidenceIds,
+    priorIds: [],
+    graphNodeIds: [fact.sourceNodeId, fact.targetNodeId].filter(Boolean),
+    graphEdgeIds: fact.relationId ? [fact.relationId] : [],
+    externallyFactual: true,
+    hypothetical: false,
+    trace: {
+      source: "cognitive_planner.one_hop_construct",
+      realizationOrigin: realizationAttempt?.accepted ? "learned_generation" : "bound_value",
+      ...(realizationAttempt ? { realizationAudit: realizationAttempt.diagnostic } : {})
+    }
+  });
+  const matched = matchRequirements(input.requirements, { claims: [claim], artifacts: [], steps: [], evidenceIds: claim.evidenceIds });
+  return [{
+    kind: "reasoning",
+    operatorActivations: [],
+    claims: [claim],
+    relations: [],
+    steps: [],
+    artifacts: [],
+    evidenceIds: claim.evidenceIds,
+    priorIds: [],
+    graphNodeIds: claim.graphNodeIds,
+    semanticFrameIds: uniqueStrings(input.requirements.activatedFrameIds),
+    constructIds: [],
+    satisfiedRequirementIds: matched.satisfied,
+    missedRequirementIds: matched.missed
+  }];
 }
 
 function constructPriorDrafts(input: CognitivePlannerInput, operators: ActivatedOperator[]): ProposalDraft[] {

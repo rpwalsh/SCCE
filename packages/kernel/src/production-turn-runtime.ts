@@ -2339,6 +2339,33 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
         : undefined;
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
+      // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() (and, downstream,
+      // cognitive-planner.ts's one-hop draft) can attempt real generation, verified against what the request
+      // actually asked, before reaching for source-exact text. Two independent sources, tried in order: the
+      // temporal-value fact above (the local exact-evidence path's own bound value, which never populates a
+      // ConstructGraph node) takes priority when present; otherwise whatever proof/graph fact this turn bound
+      // onto the construct graph (the learned-prior/graph-inference path). Absent for turns with neither
+      // (creative, dialogue, etc.) -- proofAnswer() falls straight through to today's behavior when this is
+      // undefined. Computed here (before planCognitiveProposals, not after) so both consumers see it.
+      const boundConstructFacts = semanticAnswerConstructFacts(candidateConstructSeed);
+      const realizationSourceFact = temporalConstructFact
+        ?? (boundConstructFacts ? [...boundConstructFacts.facts].sort((left, right) => right.score - left.score)[0] : undefined);
+      const realizationContract = realizationSourceFact
+        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary)
+        : undefined;
+      kernelTrace({
+        stage: "candidate.realization_contract",
+        label: "kernel.turn",
+        counts: { requiredAtoms: realizationContract?.requiredAtoms.length ?? 0, requiredRelationUnits: realizationContract?.requiredRelationUnits.length ?? 0 },
+        support: {
+          contractSource: temporalConstructFact ? "temporal_value" : boundConstructFacts ? "construct_graph" : "none",
+          subject: realizationSourceFact?.subject ?? null,
+          predicate: realizationSourceFact?.predicate ?? null,
+          object: realizationSourceFact?.object ?? null,
+          requestedSlotId: realizationContract?.requestedSlotId ?? null,
+          requiredRelationUnits: realizationContract?.requiredRelationUnits ?? []
+        }
+      });
       const counterfactualWorld = counterfactual.simulate({
         graph,
         query: {
@@ -2714,7 +2741,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         programGraphs: candidateConstructSeed.program ? [candidateConstructSeed.program] : [],
         workspacePlans: workspacePlanContext.plans,
         actionPlans: cognitiveActionPlans,
-        maxProposals: 8
+        maxProposals: 8,
+        realizationContract,
+        languageMemoryForRealization: { languageMemory: languageMemoryRuntime, state: surfaceLanguageMemory }
       });
       kernelTrace({
         stage: "candidate.cognitive.plan",
@@ -2780,32 +2809,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }))) })));
       }
       const candidateFieldStarted = Date.now();
-      // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() can attempt
-      // real generation, verified against what the request actually asked, before reaching for source-exact
-      // text. Two independent sources, tried in order: the temporal-value fact above (the local exact-
-      // evidence path's own bound value, which never populates a ConstructGraph node) takes priority when
-      // present; otherwise whatever proof/graph fact this turn bound onto the construct graph (the learned-
-      // prior/graph-inference path). Absent for turns with neither (creative, dialogue, etc.) -- proofAnswer()
-      // falls straight through to today's behavior when this is undefined.
-      const boundConstructFacts = semanticAnswerConstructFacts(candidateConstructSeed);
-      const realizationSourceFact = temporalConstructFact
-        ?? (boundConstructFacts ? [...boundConstructFacts.facts].sort((left, right) => right.score - left.score)[0] : undefined);
-      const realizationContract = realizationSourceFact
-        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary)
-        : undefined;
-      kernelTrace({
-        stage: "candidate.realization_contract",
-        label: "kernel.turn",
-        counts: { requiredAtoms: realizationContract?.requiredAtoms.length ?? 0, requiredRelationUnits: realizationContract?.requiredRelationUnits.length ?? 0 },
-        support: {
-          contractSource: temporalConstructFact ? "temporal_value" : boundConstructFacts ? "construct_graph" : "none",
-          subject: realizationSourceFact?.subject ?? null,
-          predicate: realizationSourceFact?.predicate ?? null,
-          object: realizationSourceFact?.object ?? null,
-          requestedSlotId: realizationContract?.requestedSlotId ?? null,
-          requiredRelationUnits: realizationContract?.requiredRelationUnits ?? []
-        }
-      });
       const candidateField = candidates.generate({
         requestText: input.text,
         realizationContract,
