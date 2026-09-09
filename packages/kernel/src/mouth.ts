@@ -2334,7 +2334,7 @@ function semanticReversibleConstructionCandidate(
   const proofEvidenceSet = new Set(proofEvidenceIds);
   const rows = (input.languageMemory.importedReversibleConstructions ?? [])
     .filter(construction =>
-      construction.profileId === input.languageProfile.id
+      profileInHydratedScope(construction.profileId, input.languageProfile, input.languageMemory)
       && construction.provenance.evidenceIds.some(id =>
         proofEvidenceSet.has(id)))
     .flatMap(construction => {
@@ -2729,24 +2729,29 @@ function semanticLearnedConstructionCandidate(
   const routeAdmissibility = Math.max(...proofEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
   if (routeAdmissibility <= 0) return done("zero_route_admissibility");
   const proofEvidenceIds = proofEvidence.map(span => String(span.id));
-  const sourceRelationBindingId = sourceRelationConstructionBindingId(
-    hasher,
-    input.languageProfile.id,
-    fact.predicate
-  );
+  // Real bug, confirmed live: hydration brings in construction bundles from every profile in the turn's active
+  // language scope (traced live -- 25 real bundles, all from OTHER profiles than the one arbitrarily chosen as
+  // input.languageProfile, since selectLanguageProfileForSurface (language.ts) picks a cluster's alphabetically
+  // -first member ID with no regard for which member owns trained bundles), but a bundle's own bindingId was
+  // computed at training/promotion time using ITS OWN profile ID, not the turn's chosen representative -- so
+  // even relaxing the profile-equality filter alone would still never match on the hash. Computed per-bundle,
+  // using that bundle's own sourceProfileId, instead of once against input.languageProfile.id.
   const bundles = input.languageMemory.importedConstructionBundles
-    .filter(bundle => (bundle.bindingId === fact.relationId || bundle.bindingId === sourceRelationBindingId)
-      && bundle.sourceProfileId === input.languageProfile.id
-      && bundle.targetProfileId === input.languageProfile.id)
+    .filter(bundle => profileInHydratedScope(bundle.sourceProfileId, input.languageProfile, input.languageMemory)
+      && profileInHydratedScope(bundle.targetProfileId, input.languageProfile, input.languageMemory)
+      && (bundle.bindingId === fact.relationId
+        || bundle.bindingId === sourceRelationConstructionBindingId(hasher, bundle.sourceProfileId, fact.predicate)))
     .sort((left, right) => compareSurfaceText(left.id, right.id));
   if (!bundles.length) {
     return done("no_matching_bundles", {
       factPredicate: fact.predicate,
       factRelationId: fact.relationId,
-      sourceRelationBindingId,
+      sourceRelationBindingId: sourceRelationConstructionBindingId(hasher, input.languageProfile.id, fact.predicate),
       profileId: input.languageProfile.id,
+      scopeProfileCount: input.languageMemory.scope.profileIds.length,
       totalImportedBundles: input.languageMemory.importedConstructionBundles.length,
-      importedBundleBindingIds: input.languageMemory.importedConstructionBundles.slice(0, 12).map(bundle => bundle.bindingId)
+      importedBundleBindingIds: input.languageMemory.importedConstructionBundles.slice(0, 12).map(bundle => bundle.bindingId),
+      importedBundleProfileIds: uniqueStrings(input.languageMemory.importedConstructionBundles.map(bundle => `${bundle.sourceProfileId}=>${bundle.targetProfileId}`)).slice(0, 12)
     });
   }
 
@@ -3025,6 +3030,19 @@ function finiteUnitSignal(value: number | undefined): boolean {
  */
 function planTargetsLanguageProfile(plan: SurfacePlan, languageProfile: LanguageProfile): boolean {
   return plan.targetLanguage === "und" || plan.targetLanguage === languageProfile.id;
+}
+
+/**
+ * A learned construction/reversible artifact's own profileId almost never equals the ONE representative
+ * profile chosen for a turn (selectLanguageProfileForSurface picks a cluster's alphabetically-first member ID,
+ * with no regard for which member owns trained artifacts -- confirmed live: 25 real hydrated bundles, all from
+ * OTHER profiles than the active one). input.languageMemory.scope.profileIds is the same authoritative list
+ * that already determined what got hydrated into this turn's languageMemory in the first place -- trusting it
+ * for membership is not a relaxed/cheap check, it is the correct scope the exact-match comparison should have
+ * used all along.
+ */
+function profileInHydratedScope(profileId: string, activeProfile: LanguageProfile, languageMemory: LanguageMemoryRuntimeState): boolean {
+  return profileId === activeProfile.id || languageMemory.scope.profileIds.includes(profileId);
 }
 
 function exactSurfaceSatisfiesPlan(surface: string, input: SpeakInput, plan: SurfacePlan): boolean {
