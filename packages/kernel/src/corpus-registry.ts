@@ -135,7 +135,13 @@ const DEFAULT_HYDRATION_LIMITS: CorpusHydrationLimits = {
   ngramModels: 24,
   ngramObservations: 8000,
   languageUnits: 1536,
-  languagePatterns: 384,
+  // A real relation's construction bundle competes for this slot against 14,623 others system-wide (measured
+  // live, the wikipedia corpus alone): at 384, only 128 candidates per pattern kind ever reach the per-kind
+  // fairness ranking (postgres.ts's listLanguagePatterns), so an ordinary relation like "land" or "president"
+  // has no guarantee of surviving even once its own kind is no longer starved by another kind's inflated scale.
+  // The real memory backstop is the byte budget (SCCE_LANGUAGE_HYDRATE_PATTERNS_MB, now itself per-kind-fair),
+  // not this row count -- raising it only widens the candidate pool the byte budget then trims from.
+  languagePatterns: 2048,
   semanticFrames: 768
 };
 
