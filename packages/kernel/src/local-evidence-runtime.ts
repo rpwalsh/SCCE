@@ -3956,7 +3956,15 @@ export function attachLocalEvidenceAnswerConstruct(input: {
 }
 
 
- function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }): SemanticAnswerConstructFact[] {
+// Request relation minus subject anchors, so predicate hashes to a relation word ("born"), not a whole sentence.
+function localAnswerRelationText(requestText: string): string {
+  if (!requestText) return "";
+  const subjectUnits = new Set(namedSubjectAnchors(requestText)
+    .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit)).join(" ");
+}
+
+function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }): SemanticAnswerConstructFact[] {
   if (plan.kindId === LOCAL_ANSWER_KIND_IDS.collection) {
     const subject = localEvidenceSelectedSubject(plan, requestText);
     return stringArrayFromSlot(plan.slotSurfaces[LOCAL_ANSWER_SLOT_IDS.memberList]).map((member, index) => localEvidenceSemanticFact({
@@ -4015,9 +4023,10 @@ export function attachLocalEvidenceAnswerConstruct(input: {
     }));
     return facts;
   }
+  const relationText = localAnswerRelationText(requestText);
   return localEvidenceFactSurfaces(plan, requestText).map((sentence, index) => localEvidenceSemanticFact({
     subject: localEvidenceSelectedSubject(plan, requestText),
-    predicate: sentence,
+    predicate: relationText || sentence,
     object: sentence,
     relationId: LOCAL_ANSWER_RELATION_IDS.sourceQuote,
     evidence: plan.evidence,
