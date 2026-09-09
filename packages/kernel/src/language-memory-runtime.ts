@@ -101,8 +101,10 @@ export function activeJoinProgram(
 }
 
 export interface LanguageMemoryRuntimeScope {
-  mode: "unscoped" | "cluster";
+  mode: "unscoped" | "cluster" | "language";
   clusterId?: string;
+  /** The learned language identity this memory was scoped to; provenance is not part of the scope. */
+  languageId?: string;
   profileIds: string[];
   sourceVersionIds: string[];
   purityProven: boolean;
@@ -1715,6 +1717,34 @@ export function scopeLanguageMemoryStateToProfile(
   };
 }
 
+/** Which artifacts a scope admits. Each predicate sees only what the artifact says about itself. */
+export interface LanguageMemoryOwnership {
+  /** A model or observation: its profile when it has one, else the corpus it was trained from. */
+  record(profileId: string | undefined, sourceSystem: string | undefined): boolean;
+  profile(profileId: string): boolean;
+  frame(frame: SemanticFrameRecord): boolean;
+  bundle(bundle: LanguageMemoryRuntimeState["importedConstructionBundles"][number]): boolean;
+  reversible(construction: NonNullable<LanguageMemoryRuntimeState["importedReversibleConstructions"]>[number]): boolean;
+}
+
+interface LanguageMemoryScopeMeta {
+  mode: "cluster" | "language";
+  clusterId?: string;
+  languageId?: string;
+  /** Profiles the scope names; a language scope names the profiles it retained. */
+  profileIds?: readonly string[];
+  /** Provenance of the retained material, reported for audit and never consulted for admission. */
+  sourceVersionIds?: readonly string[];
+  purityProven: boolean;
+  source: string;
+  emptyReason: string;
+}
+
+/**
+ * Scope a hydrated language memory to a cluster of profiles: an artifact stays when its profile is a member, and a
+ * construction bundle additionally when every source version it cites is a member's. Document identity, in other
+ * words. Kept for translation targets and source-owned language; the language scope below is the general case.
+ */
 export function scopeLanguageMemoryStateToCluster(
   state: LanguageMemoryRuntimeState,
   cluster: LanguageProfileCluster,
@@ -1722,37 +1752,88 @@ export function scopeLanguageMemoryStateToCluster(
 ): LanguageMemoryRuntimeState {
   const profileIds = new Set(cluster.profileIds);
   const sourceVersionIds = new Set(cluster.sourceVersionIds.map(String));
-  // A corpus-role hydration already proved provenance by corpus; records trained before profiles existed stay.
   const owned = (profileId: string | undefined) => ownedLanguageArtifact(profileId, profileIds) || (options.admitUnprofiled === true && !profileId);
-  const records = state.records.filter(record => owned(modelProfileId(record)));
-  const importedObservations = state.importedObservations.filter(record => owned(observationProfileId(record)));
-  const importedUnits = state.importedUnits.filter(record => profileIds.has(record.profileId));
-  const importedPatterns = state.importedPatterns.filter(record => profileIds.has(record.profileId));
-  const importedSemanticFrames = state.importedSemanticFrames.filter(frame => semanticFrameBelongsToCluster(frame, profileIds));
-  const importedConstructionBundles = state.importedConstructionBundles.filter(bundle => (
-    profileIds.has(bundle.targetProfileId)
-    && profileIds.has(bundle.sourceProfileId)
-    && bundle.sourceVersionIds.length > 0
-    && bundle.sourceVersionIds.every(sourceVersionId => sourceVersionIds.has(sourceVersionId))
-    && bundle.sourceExamples.every(example => (
-      sourceVersionIds.has(example.sourceVersionId)
-      && bundle.evidenceIds.includes(example.evidenceId)
-    ))
-  ));
-  const importedReversibleConstructions =
-    (state.importedReversibleConstructions ?? []).filter(construction => (
-      profileIds.has(construction.profileId)
+  return scopeLanguageMemoryStateWith(state, {
+    record: profileId => owned(profileId),
+    profile: profileId => profileIds.has(profileId),
+    frame: frame => semanticFrameBelongsToCluster(frame, profileIds),
+    bundle: bundle => profileIds.has(bundle.targetProfileId)
+      && profileIds.has(bundle.sourceProfileId)
+      && bundle.sourceVersionIds.length > 0
+      && bundle.sourceVersionIds.every(sourceVersionId => sourceVersionIds.has(sourceVersionId))
+      && bundle.sourceExamples.every(example => sourceVersionIds.has(example.sourceVersionId) && bundle.evidenceIds.includes(example.evidenceId)),
+    reversible: construction => profileIds.has(construction.profileId)
       && Boolean(construction.surface.sourceVersionId)
       && sourceVersionIds.has(construction.surface.sourceVersionId!)
-    ));
+  }, {
+    mode: "cluster",
+    clusterId: cluster.id,
+    profileIds: [...cluster.profileIds].sort(compareCodePoint),
+    sourceVersionIds: cluster.sourceVersionIds.map(String).sort(compareCodePoint),
+    purityProven: profileIds.size > 0 && sourceVersionIds.size > 0,
+    source: "language-memory-runtime.cluster-scope",
+    emptyReason: "cluster-has-no-retained-language-memory"
+  });
+}
+
+/**
+ * Scope a hydrated language memory to a learned language identity. An artifact is admitted when its own profile
+ * resolves to that language, or, for a model or observation trained without a profile, when its corpus does. A
+ * construction bundle is admitted by the language of the profiles it was induced for; where it came from stays
+ * provenance. This is what lets a construction learned from a training batch be spoken in an answer about an article
+ * the batch never contained: same language, different document.
+ */
+export function scopeLanguageMemoryStateToLanguage(
+  state: LanguageMemoryRuntimeState,
+  languageId: string,
+  resolve: {
+    profile(profileId: string): string | undefined;
+    corpus(sourceSystem: string | undefined): string | undefined;
+  }
+): LanguageMemoryRuntimeState {
+  const profileSpeaks = (profileId: string | undefined) => Boolean(profileId) && resolve.profile(profileId!) === languageId;
+  const speaks = (profileId: string | undefined, sourceSystem: string | undefined) =>
+    profileId ? resolve.profile(profileId) === languageId : resolve.corpus(sourceSystem) === languageId;
+  return scopeLanguageMemoryStateWith(state, {
+    record: speaks,
+    profile: profileId => profileSpeaks(profileId),
+    frame: frame => {
+      const row = jsonRecord(frame.frameJson);
+      const profileId = typeof row.profileId === "string" && row.profileId ? row.profileId : undefined;
+      return speaks(profileId, typeof row.sourceSystem === "string" ? row.sourceSystem : undefined);
+    },
+    bundle: bundle => profileSpeaks(bundle.targetProfileId) || profileSpeaks(bundle.sourceProfileId),
+    reversible: construction => profileSpeaks(construction.profileId)
+  }, {
+    mode: "language",
+    languageId,
+    purityProven: true,
+    source: "language-memory-runtime.language-scope",
+    emptyReason: "language-has-no-retained-language-memory"
+  });
+}
+
+function scopeLanguageMemoryStateWith(
+  state: LanguageMemoryRuntimeState,
+  ownership: LanguageMemoryOwnership,
+  meta: LanguageMemoryScopeMeta
+): LanguageMemoryRuntimeState {
+  const records = state.records.filter(record => ownership.record(modelProfileId(record), recordSourceSystem(record.modelJson)));
+  const importedObservations = state.importedObservations.filter(record => ownership.record(observationProfileId(record), recordSourceSystem(record.metadata)));
+  const importedUnits = state.importedUnits.filter(record => ownership.profile(record.profileId));
+  const importedPatterns = state.importedPatterns.filter(record => ownership.profile(record.profileId));
+  const importedSemanticFrames = state.importedSemanticFrames.filter(frame => ownership.frame(frame));
+  const importedConstructionBundles = state.importedConstructionBundles.filter(bundle => ownership.bundle(bundle));
+  const importedReversibleConstructions =
+    (state.importedReversibleConstructions ?? []).filter(construction => ownership.reversible(construction));
   const importedPairedAntiUnifiedConstructions =
     (state.importedPairedAntiUnifiedConstructions ?? []).filter(construction =>
-      construction.profileIds.some(profileId => profileIds.has(profileId)));
+      construction.profileIds.some(profileId => ownership.profile(profileId)));
   const optionalNullRealizationModels =
     (() => {
       const observations = (state.optionalNullRealizationModels ?? [])
         .flatMap(model => model.observations)
-        .filter(row => profileIds.has(row.profileId));
+        .filter(row => ownership.profile(row.profileId));
       return observations.length
         ? [compileOptionalNullRealizationModel({ observations })]
         : [];
@@ -1764,8 +1845,18 @@ export function scopeLanguageMemoryStateToCluster(
     retainedCreativeCompilerIds.has(model.eventCompilerId)
   ));
   const rejectedConstructionPatterns = state.rejectedConstructionPatterns.filter(issue => (
-    issue.profileId ? profileIds.has(issue.profileId) : false
+    issue.profileId ? ownership.profile(issue.profileId) : false
   ));
+  const retainedProfileIds = uniqueStrings([
+    ...importedUnits.map(record => record.profileId),
+    ...importedPatterns.map(record => record.profileId),
+    ...importedConstructionBundles.flatMap(bundle => [bundle.sourceProfileId, bundle.targetProfileId]),
+    ...records.map(record => modelProfileId(record) ?? "").filter(Boolean)
+  ]).sort(compareCodePoint);
+  const scopeProfileIds = meta.profileIds ? [...meta.profileIds] : retainedProfileIds;
+  const scopeSourceVersionIds = meta.sourceVersionIds
+    ? [...meta.sourceVersionIds]
+    : uniqueStrings(importedConstructionBundles.flatMap(bundle => bundle.sourceVersionIds.map(String))).sort(compareCodePoint);
   const reconstructed = modelsFromObservations(importedObservations);
   const models = selectRuntimeModels(records, reconstructed);
   const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
@@ -1823,21 +1914,23 @@ export function scopeLanguageMemoryStateToCluster(
     importedLanguagePriorCount,
     competenceVector,
     scope: {
-      mode: "cluster",
-      clusterId: cluster.id,
-      profileIds: [...cluster.profileIds].sort(compareCodePoint),
-      sourceVersionIds: cluster.sourceVersionIds.map(String).sort(compareCodePoint),
-      purityProven: profileIds.size > 0 && sourceVersionIds.size > 0,
+      mode: meta.mode,
+      ...(meta.clusterId ? { clusterId: meta.clusterId } : {}),
+      ...(meta.languageId ? { languageId: meta.languageId } : {}),
+      profileIds: scopeProfileIds,
+      sourceVersionIds: scopeSourceVersionIds,
+      purityProven: meta.purityProven,
       degraded: importedLanguagePriorCount === 0,
-      ...(importedLanguagePriorCount === 0 ? { reason: "cluster-has-no-retained-language-memory" } : {})
+      ...(importedLanguagePriorCount === 0 ? { reason: meta.emptyReason } : {})
     },
     audit: toJsonValue({
-      source: "language-memory-runtime.cluster-scope",
-      mode: "cluster",
-      clusterId: cluster.id,
-      profileIds: [...profileIds].sort(compareCodePoint),
-      sourceVersionIds: [...sourceVersionIds].sort(compareCodePoint),
-      purityProven: profileIds.size > 0 && sourceVersionIds.size > 0,
+      source: meta.source,
+      mode: meta.mode,
+      clusterId: meta.clusterId ?? null,
+      languageId: meta.languageId ?? null,
+      profileIds: scopeProfileIds,
+      sourceVersionIds: scopeSourceVersionIds,
+      purityProven: meta.purityProven,
       degraded: importedLanguagePriorCount === 0,
       retained: {
         modelRecords: records.length,
@@ -4444,6 +4537,11 @@ function selectRuntimeModels(records: readonly NgramModelRecord[], reconstructed
       || compareCodePoint(left.key, right.key))
     .slice(0, 36)
     .map(candidate => candidate.model);
+}
+
+function recordSourceSystem(json: JsonValue | undefined): string | undefined {
+  const row = jsonRecord(json);
+  return typeof row.sourceSystem === "string" && row.sourceSystem ? row.sourceSystem : undefined;
 }
 
 function modelProfileId(record: NgramModelRecord): string | undefined {

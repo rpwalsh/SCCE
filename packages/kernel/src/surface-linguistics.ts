@@ -26,7 +26,9 @@ export function isSentenceBoundarySymbol(value: string): boolean {
 export function splitSurfaceSentences(text: string): string[] {
   const out: string[] = [];
   let current = "";
-  const chars = [...text.replace(/\u0000/g, " ").normalize("NFC")];
+  // A heading run ("== Life and career ==") ends a segment: the source's own section boundary, so the sentence after
+  // it is not answered with the heading glued to its front. The heading text itself stays verbatim as its own segment.
+  const chars = [...text.replace(/\u0000/g, " ").replace(/(={2,}[^=\r\n]+={2,})[ \t]*/gu, "$1\n").normalize("NFC")];
   const push = () => {
     const clean = collapseSurfaceWhitespace(current);
     if (clean) out.push(clean);

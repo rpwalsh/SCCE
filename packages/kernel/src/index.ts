@@ -45,6 +45,7 @@ export * from "./boundary-estimator.js";
 export * from "./segmentation-forest.js";
 export * from "./segmentation-population.js";
 export * from "./segmentation-population-persistence.js";
+export * from "./language-identity.js";
 export * from "./join-program.js";
 export * from "./surface-lattice.js";
 export * from "./segmentation-aggregate.js";

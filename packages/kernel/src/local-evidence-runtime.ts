@@ -453,6 +453,7 @@ export function localEvidenceAnswerSurface(input: {
   sessionContextEvidence?: boolean;
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
+  closedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   if (input.translationTarget) return undefined;
   const plan = localEvidenceAnswerPlan(input);
@@ -484,6 +485,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
    * classic single-sentence behavior exactly.
    */
   responseSentenceBudget?: number;
+  /** The learned closed class (role language plus request scaffolding); when present, the relation asked about is required. */
+  closedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!promoted.length) return undefined;
@@ -651,9 +654,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
-  const coverageUnits = requestContentEvidenceUnits(input.requestText);
+  const coverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit));
+  const relationRequired = Boolean(input.closedClassWords?.size);
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
-    row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText);
+    row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, { relationRequired });
   // Two sentences can both name the subject while only one says anything about it. Nothing above separates them:
   // "The character was portrayed by Sylvie Briggs, alongside characterisations of Charles Babbage and Noor Inayat
   // Khan." beat "Charles Babbage and Ada Lovelace conceived the first programmable computer" by 0.056 for "Who was
@@ -758,6 +762,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   sessionContextEvidence?: boolean;
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
+  closedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
@@ -830,7 +835,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // preferredLocalEvidenceAnswer selected and the mouth spoke. Preference, never exclusion: when nothing predicates
   // about the anchor the ranked order stands unchanged.
   const answerSurfaceSentences = sentences;
-  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, requestContentEvidenceUnits(input.requestText), input.requestText))) return undefined;
+  const planCoverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit));
+  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size) }))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
@@ -901,11 +907,19 @@ export function proposeSourceExactEvidenceAnswer(input: {
 
 
 /** Corpus-oriented truth: an answer must carry a third of the request's content units, in its sentences or its source title; a passage sharing none of them is a different topic, however well it scores lexically. Pure. */
-export function answerCoversRequest(sentences: readonly string[], span: EvidenceSpan, contentUnits: readonly string[], requestText = ""): boolean {
+export function answerCoversRequest(
+  sentences: readonly string[],
+  span: EvidenceSpan,
+  contentUnits: readonly string[],
+  requestText = "",
+  options: { relationRequired?: boolean } = {}
+): boolean {
   // The request's subject: its named anchors when it has any, else its longer content units. A request with none (a pronoun follow-up) is covered by whatever it was bound to.
   // A lone short cased run (a sentence-initial question word) is not a name.
+  // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
+  // reaching for the Moon and the mission that landed on it.
   const named = namedSubjectAnchors(requestText)
-    .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3))
+    .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
     .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5)
     .flat();
   const subjectUnits = named.length ? named : contentUnits.filter(unit => [...unit].length >= 6);
@@ -916,17 +930,50 @@ export function answerCoversRequest(sentences: readonly string[], span: Evidence
   // A subject matches by identity or inflection only: similarity let "Majorian" stand in for "Bajoran".
   const subjectMatches = (unit: string) => surfaceUnits.some(surfaceUnit => surfaceUnit === unit
     || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
-  const covered = contentUnits.filter(matches).length;
-  // A subject unit must be among the covered ones: function words shared with the request mark no topic.
+  // Aboutness and answerhood are two different questions. The subject may be bound by the title (that is what an
+  // article about the subject is); the relation asked about must be carried by the sentence itself. With the learned
+  // request scaffolding stripped from the units, what remains after the subject is exactly that relation: "commanded"
+  // in "Who commanded Apollo 11?", "born" in "When was Albert Einstein born?", "dentist" in a question the corpus
+  // cannot answer. A quota of one third let the relation drop and admitted any sentence naming the subject: the songs
+  // that reference the Apollo 11 landing answered who commanded it, and the article's opening sentence answered who
+  // Einstein's dentist was. Every relation unit is required, tolerating inflection (commanded/commander, land/landed).
   //
-  // Excluding the subject from its own quota was tried, so that naming the topic could not by itself prove a
-  // sentence answers the question: on the live corpus it cut fabrications on unanswerable questions from three
-  // in five to one, and it emptied seven answers this file's own tests require -- an exact-title span whose
-  // answering sentence does not restate the request's other words is common and correct. The measured defect
-  // is real ("Who was Albert Einstein's dentist?" is covered by the article's opening sentence because it
-  // contains "Einstein") but the quota is the wrong place to fix it; separating aboutness from answerhood
-  // needs the question's own shape, which is what the semantic frames are for.
-  return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(contentUnits.length / 3));
+  // The relation can only be required when the caller could tell scaffolding from relation, which takes a learned
+  // language (a hydrated model or the interaction corpus's request patterns). Without one, "what" and "known" are
+  // indistinguishable from "commanded", and the one-third quota is the honest gate.
+  if (!options.relationRequired) {
+    const covered = contentUnits.filter(matches).length;
+    return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(contentUnits.length / 3));
+  }
+  // The sentence itself must name the subject it predicates about: with the title standing in, "Their son Eduard was
+  // born in Zurich in July 1910" answered when Einstein was born, because the article is about Einstein and the
+  // sentence carries "born".
+  const relationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
+  const sentenceUnits = memoizedSurfaceUnits(sentences.join(" ")).map(stripOuterPriorSeparators);
+  const subjectInSentence = (unit: string) => sentenceUnits.some(surfaceUnit => surfaceUnit === unit
+    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+  const relationCarried = relationUnits.every(unit => sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+  // A name's parts are redundant (Einstein names Albert Einstein); a numeric qualifier is not (Apollo does not name
+  // Apollo 11), so every numeric unit of the subject must be in the sentence.
+  const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => sentenceUnits.includes(unit));
+  return subjectUnits.some(subjectInSentence) && numericQualifiersPresent && relationCarried;
+}
+
+/**
+ * Two surfaces share a stem when one matches the other by identity or inflection, or when their common prefix is at
+ * least four code points and most of the longer surface: commanded/commander, land/landed, develop/developing. A
+ * learned morphology would replace the prefix rule; until then this is the same tolerance the fuzzy matcher already
+ * grants, extended to the short verbs it refused. Pure.
+ */
+export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolean {
+  if (!unit || !surfaceUnit) return false;
+  if (unit === surfaceUnit) return true;
+  if ([...unit].length >= 5 && requestUnitMatchesSurface(unit, surfaceUnit)) return true;
+  const left = [...unit];
+  const right = [...surfaceUnit];
+  let shared = 0;
+  while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
+  return shared >= 4 && shared / Math.max(left.length, right.length) >= 0.6;
 }
 
 export function requestContentEvidenceUnits(requestText: string): string[] {

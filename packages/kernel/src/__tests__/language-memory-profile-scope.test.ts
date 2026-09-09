@@ -5,6 +5,7 @@ import {
   createLanguageMemoryRuntime,
   markLanguageMemoryStateUnscoped,
   scopeLanguageMemoryStateToCluster,
+  scopeLanguageMemoryStateToLanguage,
   scopeLanguageMemoryStateToProfile
 } from "../language-memory-runtime.js";
 import type { LanguageProfileCluster } from "../language.js";
@@ -148,6 +149,32 @@ describe("language-memory profile scope", () => {
 
     expect(scoped.records.map(row => row.id)).toEqual(["model.selected"]);
     expect(scoped.importedObservations.map(row => row.id)).toEqual(["observation.selected"]);
+  });
+
+  it("scopes by learned language identity: same language admits, provenance is never a condition", () => {
+    const article = profile("profile.article", "source.article");
+    const batch = profile("profile.batch", "source.training-batch");
+    const code = profile("profile.code", "source.code");
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrate({
+      models: [model(article, "model.article"), model(batch, "model.batch"), model(code, "model.code"), { ...model(article, "model.unprofiled"), modelJson: { sourceSystem: "wikipedia", model: (model(article, "model.unprofiled").modelJson as Record<string, unknown>).model } as never }],
+      observations: [observation(article, "observation.article"), observation(code, "observation.code")],
+      units: [unit(article, "unit.article"), unit(batch, "unit.batch"), unit(code, "unit.code")],
+      patterns: [pattern(batch, "pattern.batch"), pattern(code, "pattern.code")]
+    });
+    const language = new Map([[article.id, "lang.english"], [batch.id, "lang.english"], [code.id, "lang.code"]]);
+    const corpora = new Map([["wikipedia", "lang.english"], ["oss_code", "lang.code"]]);
+    const scoped = scopeLanguageMemoryStateToLanguage(state, "lang.english", {
+      profile: id => language.get(id),
+      corpus: sourceSystem => (sourceSystem ? corpora.get(sourceSystem) : undefined)
+    });
+    // The training-batch profile shares no source version with the article and is admitted by language alone.
+    expect(scoped.records.map(row => row.id).sort()).toEqual(["model.article", "model.batch", "model.unprofiled"]);
+    expect(scoped.importedUnits.map(row => row.id).sort()).toEqual(["unit.article", "unit.batch"]);
+    expect(scoped.importedPatterns.map(row => row.id)).toEqual(["pattern.batch"]);
+    expect(scoped.importedObservations.map(row => row.id)).toEqual(["observation.article"]);
+    expect(scoped.scope).toMatchObject({ mode: "language", languageId: "lang.english", purityProven: true, degraded: false });
+    expect(scoped.scope.profileIds).toEqual([article.id, batch.id]);
   });
 
   it("keeps a corpus role's profile-less records in scope when the role already proved provenance", () => {
