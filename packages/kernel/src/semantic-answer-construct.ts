@@ -189,6 +189,26 @@ export function candidateSurvivesRealizationContract(
   };
 }
 
+/**
+ * A narrower, separate check for a BARE VALUE candidate (a date/time/name, not a sentence): the required-
+ * relation-unit check in candidateSurvivesRealizationContract above is right for a generated sentence -- it
+ * must restate the relation in words -- but a bare value structurally cannot restate "land" inside "20:17",
+ * and it doesn't need to: the value's own answerhood was already verified when it was extracted (near the
+ * request's subject, not a citation date -- see extractTemporalAnswerFromEvidence). Real bug, confirmed live:
+ * the judge-selected, correct answer "20:17" to "When did Apollo 11 land on the Moon?" failed the sentence-
+ * shaped check and was discarded for an unrelated evidence excerpt. Scoped tightly -- the candidate must equal
+ * the fact's own bound object exactly, so this can never validate an arbitrary sentence, only the specific
+ * bare-value case. No separate atomizer fabrication check: the atomizer parses a bare fragment differently in
+ * isolation than embedded in a full sentence (confirmed live -- it false-positived "20:17" against its own
+ * source sentence), and is redundant here anyway -- an exact match against the fact's own already-attested
+ * object cannot assert anything beyond that fact by construction.
+ */
+export function candidateIsVerifiedBoundValue(candidateText: string, contract: SemanticRealizationContract): boolean {
+  const trimmed = candidateText.trim();
+  const object = contract.sourceFact.object.trim();
+  return Boolean(trimmed && object && trimmed === object);
+}
+
 function stringField(value: JsonValue | undefined): string {
   return typeof value === "string" ? value : "";
 }
