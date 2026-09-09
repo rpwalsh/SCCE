@@ -462,9 +462,6 @@ const JUDGE_REQUIREMENT_TERMS: readonly JudgeRequirementTerm[] = [
   { paramId: "structure.executableArtifactDemand", dimension: "structure", featureId: "executableArtifactDemand", bootstrap: 0.55 }
 ];
 
-export const JUDGE_REQUIREMENT_BOOTSTRAP_COEFFICIENTS: Readonly<Record<string, number>> =
-  Object.freeze(Object.fromEntries(JUDGE_REQUIREMENT_TERMS.map(term => [term.paramId, term.bootstrap])));
-
 export function derivedJudgeRequirementFeatures(requirement: TurnRequirementField): Record<string, number> {
   const averageRequirement = mean([
     requirement.externalTruthAuthority,
