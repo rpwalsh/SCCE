@@ -27,6 +27,7 @@ import {
   type TurnRequirementDimension,
   type TurnRequirementField
 } from "../index.js";
+import { compileRealizationContract, type SemanticAnswerConstructFact } from "../semantic-answer-construct.js";
 
 describe("cognitive meaning planner", () => {
   it("builds a multi-source synthesis and a non-verbatim conclusion", () => {
@@ -367,6 +368,67 @@ describe("cognitive meaning planner", () => {
     expect(cognitiveProposalComparisonReceipt([])).toBeUndefined();
     expect(cognitiveProposalComparisonReceipt([minimalProposal("proposal.only", { baseQuality: 0.5, diversity: 0.5 })])).toBeUndefined();
   });
+
+  it("closes the reasoned-synthesis support:0 gap for a plain one-hop fact with no relation path or second source", () => {
+    // Real bug, confirmed live: this planner made zero calls to languageMemory.generate, and neither
+    // relationDrafts (needs an active reasoning operator) nor sourceSynthesisDrafts (needs >=2 distinct
+    // sources) fires for a plain one-hop fact -- no operators active here, single evidence span, no graph
+    // path -- so before this fix, planCognitiveProposals returned nothing for exactly this shape of turn.
+    const fact: SemanticAnswerConstructFact = {
+      subject: "Apollo 11",
+      predicate: "land",
+      object: "20:17",
+      sourceNodeId: "node.apollo11",
+      targetNodeId: "node.landing_time",
+      relationId: "edge.apollo11.landing_time",
+      forceClass: "direct_evidence",
+      score: 1,
+      activation: 1,
+      overlap: 1,
+      support: 1,
+      evidenceIds: ["evidence.apollo11"]
+    };
+    const contract = compileRealizationContract("When did Apollo 11 land on the Moon?", fact);
+    const proposals = planCognitiveProposals(plannerInput({ realizationContract: contract }));
+
+    const oneHop = proposals.find(proposal => proposal.claims.some(claim => claim.text === "20:17"));
+    expect(oneHop).toBeDefined();
+    const claim = oneHop!.claims.find(item => item.text === "20:17")!;
+    expect(claim.basis).toBe("direct_evidence");
+    expect(claim.evidenceIds).toEqual(["evidence.apollo11"]);
+    expect(claim.externallyFactual).toBe(true);
+  });
+
+  it("does not add the one-hop draft when relationDrafts or sourceSynthesisDrafts already produced a claim", () => {
+    const premise = evidence("evidence.premise", "source.premise", "The upstream gate is closed.");
+    const source = node("node.upstream", "upstream gate closure", [premise.id]);
+    const target = node("node.downstream", "downstream flow reduction", []);
+    const graph = graphSlice([source, target], [edge("edge.flow", source, target, [premise.id])]);
+    const fact: SemanticAnswerConstructFact = {
+      subject: "unrelated subject",
+      predicate: "is",
+      object: "unrelated bound value",
+      sourceNodeId: "",
+      targetNodeId: "",
+      relationId: "",
+      forceClass: "direct_evidence",
+      score: 1,
+      activation: 1,
+      overlap: 1,
+      support: 1,
+      evidenceIds: []
+    };
+    const contract = compileRealizationContract("What is the unrelated subject?", fact);
+    const proposals = planCognitiveProposals(plannerInput({
+      graph,
+      evidence: [premise],
+      requirements: requirements({ inferentialDepth: 0.9 }, [requirement("req.infer", "inferentialDepth")]),
+      operators: [operator("relation", COGNITIVE_OPERATOR_IDS.relationComposition, ["inferentialDepth"])],
+      realizationContract: contract
+    }));
+
+    expect(proposals.some(proposal => proposal.claims.some(claim => claim.text === "unrelated bound value"))).toBe(false);
+  });
 });
 
 function minimalProposal(id: string, quality: { baseQuality: number; diversity: number }): CognitiveProposal {
@@ -406,6 +468,7 @@ function plannerInput(options: {
   workspacePlans?: PatchTransactionPlan[];
   actionPlans?: CognitiveActionPlan[];
   maxProposals?: number;
+  realizationContract?: CognitivePlannerInput["realizationContract"];
 } = {}): CognitivePlannerInput {
   const graph = options.graph ?? graphSlice([], []);
   return {
@@ -420,7 +483,8 @@ function plannerInput(options: {
     programGraphs: options.programGraphs ?? [],
     workspacePlans: options.workspacePlans ?? [],
     actionPlans: options.actionPlans ?? [],
-    maxProposals: options.maxProposals ?? 8
+    maxProposals: options.maxProposals ?? 8,
+    realizationContract: options.realizationContract
   };
 }
 
