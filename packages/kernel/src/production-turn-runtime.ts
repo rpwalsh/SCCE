@@ -96,7 +96,6 @@ import {
   arithmeticAnswerForText,
   assistantForceFromLocalEvidenceAudit,
   attachLocalEvidenceAnswerConstruct,
-  localEvidenceAnswerReportsSourceConflict,
   createArithmeticEntailment,
   evidenceBatchFromSlice,
   bindSelectedEvidenceToEntailment,
@@ -3329,24 +3328,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         program: construct.program,
         artifacts: construct.artifacts
       });
-      const selectedCandidateEvidenceIds = new Set(judged.selected.evidenceIds.map(String));
-      const localAnswerEvidenceIds = longPathBasisAnswer?.evidence.map(span => String(span.id)) ?? [];
-      // The judge chooses among candidates; when the proof has found that the sources refute each other, every
-      // candidate it is choosing among states one side of that, which is the assertion the proof disqualified.
-      // The conflict answer is therefore the basis regardless of which side the judge preferred.
-      const reportsSourceConflict = Boolean(longPathBasisAnswer && localEvidenceAnswerReportsSourceConflict(longPathBasisAnswer.plan));
-      const selectedLocalEvidenceAnswer = Boolean(
-        longPathBasisAnswer && (
-          reportsSourceConflict || (
-            judged.selected.kind === "proof-answer" &&
-            selectedCandidateEvidenceIds.size === localAnswerEvidenceIds.length &&
-            localAnswerEvidenceIds.every(id => selectedCandidateEvidenceIds.has(id))
-          )
-        )
-      );
+      // Real bug, confirmed live: gating this attachment on an exact-match check between the local-evidence
+      // plan's own evidence and the JUDGE's already-decided winning candidate's evidence meant Mouth's
+      // construct-graph never carried a scce.semantic_answer_construct.v1 node for the ordinary case where a
+      // local-evidence answer plan exists but the judge's evidence-id set doesn't exactly mirror it --
+      // confirmed via a live trace showing
+      // hasSemanticConstruct: false right before mouth.speak() for a plain "When was X born?" turn. With no
+      // construct, semanticAnswerConstructState(input.construct) returns undefined in mouth.ts, so its entire
+      // semantic-construct branch (semanticLearnedCandidate/semanticRhetoricalCandidate/semanticDirectEvidence
+      // Candidate) is permanently unreachable, not merely losing a ranking -- the construction-grammar and
+      // rhetorical-generation machinery never gets a chance to run at all. Attaching whenever a local-evidence
+      // plan exists, not only when it exactly matches the judge's pick, costs nothing when a different
+      // candidate wins (the facts simply go unused) and unlocks the real generation lanes when it does.
       const localAnswerConstructGraph = runtimeDiagnosticRequested
         ? assembly.constructGraph
-        : selectedLocalEvidenceAnswer && longPathBasisAnswer
+        : longPathBasisAnswer
           ? attachLocalEvidenceAnswerConstruct({
             construct: assembly.constructGraph,
             plan: longPathBasisAnswer.plan,
@@ -3465,6 +3461,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // 750ms placeholder), so it can only become *more* permissive, never
       // less, for any caller already relying on the old budget.
       const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", estimateKneserNeyGenerationCostMs(64));
+      kernelTrace({
+        stage: "mouth.realize.decision",
+        label: "kernel.turn",
+        support: {
+          learnedMouthAllowed: learnedMouthDecision?.allowed !== false,
+          decision: toJsonValue(learnedMouthDecision ?? null),
+          hasSemanticConstruct: Boolean(semanticAnswerConstructFacts(spokenConstructGraph))
+        }
+      });
       const realizeOnce = (realizationInput: typeof speakInput) => evaluationComponent(
         "learned-mouth",
         "mouth.realize",
