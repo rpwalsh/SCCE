@@ -40,20 +40,32 @@ export function attemptConstructRealization(
     languageProfile?: LanguageProfile;
     hasher?: Hasher;
     generationExtent?: number;
+    /** Real, attested text this fact is already known to appear in (typically the source-exact sentence
+     *  already extracted from evidence). Kneser-Ney continuation has no data to draw from for a synthetic
+     *  fact triple that was never seen as a sequence anywhere in training -- measured live, it produced two
+     *  words then stopped, then nothing at all, on two different synthetic seedings. Seeding from real
+     *  attested text instead gives the model an actual linguistic neighborhood to riff from. */
+    attestedSeedText?: string;
   }
 ): RealizationAttempt {
   const fact = contract.sourceFact;
-  // Seeded the same way mouth.ts's own working call (rhetoricalLatticeCandidateFromFrames) seeds it: ONE
-  // coherent claim string as the primary context symbol, not a bag of disconnected words -- measured live,
-  // three loose words ("Albert Einstein", "born", "14 March 1879") gave the model nothing to continue from
-  // and it echoed the subject then stopped (source_exhausted) after producing two words. requiredTerms left
-  // empty to match; it does not carry the fact's meaning into generation the way a real claim sentence does.
-  const claimText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ");
+  const claimText = opts.attestedSeedText?.trim() || [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ");
+  // generateFromLanguageMemory is piece-based retrieval-and-weave, not raw continuation: requiredTerms and
+  // frames are what generationPieces/selectGenerationPieces actually search learned material by, and
+  // contextSymbols alone (tried in two earlier attempts here) starved it of anchors -- both returned nothing,
+  // with the identical baseline confidence of a genuinely empty pool. requiredTerms restores the anchors
+  // (subject/relation/value) real generation is meant to retrieve pieces around; the real attested sentence
+  // still seeds contextSymbols so contextText/discourse-weaving has real linguistic material, not a synthetic
+  // fragment. No frames are supplied -- those come from a SurfacePlan this call site does not have -- so this
+  // remains a narrower attempt than mouth.ts's own rhetorical-lattice call, by design.
+  const requiredTerms = [fact.subject, ...contract.requiredRelationUnits, fact.object]
+    .filter(Boolean)
+    .map(text => ({ text }));
   const generation = opts.languageMemory.generate({
     state: opts.state,
     targetLanguageProfile: opts.languageProfile,
     contextSymbols: [claimText].filter(Boolean),
-    requiredTerms: [],
+    requiredTerms,
     semanticFrameIds: opts.state.importedSemanticFrames.map(frame => frame.id).slice(0, 64),
     generationExtent: opts.generationExtent ?? 96
   });

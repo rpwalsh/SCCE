@@ -65,6 +65,7 @@ export interface CandidateGenerationInput {
   /** What this turn's answer is required to preserve, compiled from the request and a proven graph fact.
    *  When present, proofAnswer() attempts real generation before falling back to source-exact text. */
   realizationContract?: SemanticRealizationContract;
+  attestedAnswerSurface?: string;
   languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }
 
@@ -627,6 +628,10 @@ function proofAnswer(input: {
   locale?: string;
   requestedAuthority?: RequestedAuthority;
   realizationContract?: SemanticRealizationContract;
+  /** The full source-exact sentence this turn already extracted, BEFORE any bare-value override (e.g. a
+   *  temporal extractor narrowing it to just a date) -- the real, attested text a generation attempt should
+   *  seed from. `proofAnswer` itself can be that narrower bare value, which carries no continuation history. */
+  attestedAnswerSurface?: string;
   languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }): CandidateSurface {
   // The contract, when present, is tried BEFORE the source-exact text this candidate would otherwise carry
@@ -635,7 +640,7 @@ function proofAnswer(input: {
   // fails the contract falls straight through to today's exact behavior, marked so the drop is measurable
   // rather than indistinguishable from a normal answer.
   const realizationAttempt = input.realizationContract && input.languageMemoryForRealization
-    ? attemptConstructRealization(input.realizationContract, input.languageMemoryForRealization)
+    ? attemptConstructRealization(input.realizationContract, { ...input.languageMemoryForRealization, attestedSeedText: input.attestedAnswerSurface ?? input.proofAnswer })
     : undefined;
   const realized = realizationAttempt?.accepted ? realizationAttempt.surface : undefined;
   const answer = realized ? realized.text : normalizeCandidateAnswer(input.proofAnswer, input);

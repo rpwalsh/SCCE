@@ -2810,6 +2810,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const candidateField = candidates.generate({
         requestText: input.text,
         realizationContract,
+        attestedAnswerSurface: answerSurface.answer,
         languageMemoryForRealization: { languageMemory: languageMemoryRuntime, state: surfaceLanguageMemory },
         requestedAuthority,
         inventionCandidates,
