@@ -32,6 +32,7 @@ import { createIngestionRuntime } from "./ingestion-runtime.js";
 import { createJudge } from "./judge.js";
 import { jsonRecord, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
+import { createLanguageIdentityRuntime } from "./language-identity-runtime.js";
 import {
   aggregateLanguageProfileCluster,
   createLanguageAcquisitionEngine,
@@ -168,13 +169,18 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);
   const surfaceLanguageMemoryCacheMs = positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_CACHE_MS", 600_000);
 
+  const languageIdentityRuntime = createLanguageIdentityRuntime({ store: deps.storage.languageIdentities, hasher, now: () => clock.now(), informationLabel: deps.sourceInformationLabel });
   const surfaceLanguageRuntime = createSurfaceLanguageRuntime({
     deps,
     languageMemoryRuntime,
     clock,
     hasher,
     cacheMs: surfaceLanguageMemoryCacheMs,
-    profileLimit: Math.min(8192, positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_PROFILE_LIMIT", 2048))
+    languageResolver: () => languageIdentityRuntime.resolver(),
+    // A per-turn CPU cost, not a memory bound: the window is clustered on every request (measured: 2,048 profiles
+    // put 10-15s of clustering into each turn's seed; 512 about 2s). The role hydration carries the language now,
+    // so the window only has to name the request's cluster.
+    profileLimit: Math.min(8192, positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_PROFILE_LIMIT", 512))
   });
   // Only what this module itself calls: the turn runtime receives `surfaceLanguageRuntime` whole and destructures its own.
   const {
@@ -273,6 +279,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const { learnHydrateReplan, runtimeMotionDeferredByDeadline } = runtimeAcquisition;
   const productionTurnRuntime = createProductionTurnRuntime({
     deps,
+    languageIdentityRuntime,
     state: turnState,
     policy,
     failures,
@@ -296,6 +303,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     }
   });
   const kernel: ScceKernel = {
+    async languageIdentities(input = {}) {
+      const result = await languageIdentityRuntime.ensure(input);
+      return { schema: "scce.language_identities.v1" as const, ...result };
+    },
     async warmup(input: RuntimeWarmupInput = {}): Promise<RuntimeWarmupResult> {
       const started = clock.now();
       const failures: string[] = [];
@@ -326,6 +337,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }));
       }
 
+      // Language identities first: everything below hydrates and scopes by them once they exist.
+      const identityWarmup = await languageIdentityRuntime.ensure().catch(error => {
+        failures.push(`language identity warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      });
+      if (identityWarmup) {
+        kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length, assigned: identityWarmup.assigned }, support: { discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
+      }
       if (input.language ?? true) {
         tasks.push(Promise.all([
           Promise.all([sourceOwnedLanguageClustersForWarmup(), surfaceLanguageProfilesCached()])
@@ -390,15 +409,17 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
                 ? aggregateLanguageProfileCluster(sameLanguageClusters(dominant, clusters.filter(cluster => cluster.artifactSupport > 0))
                   .flatMap(cluster => cluster.members))
                 : undefined;
-              for (const cluster of learned ? [learned] : ordered) {
-                out.push(await hydrateSurfaceLanguageMemoryCached(
-                  languageLimit,
-                  cluster,
-                  learned ? "warmup-learned-language" : "warmup-selected-language-cluster"
-                ));
-              }
-              if (learned) {
-                out.push(await hydrateSurfaceLanguageMemoryCached(
+              // With identities loaded, the resident hydrations are keyed by language: the language the corpus
+              // mostly speaks, alone and with the encyclopedic role.
+              const spoken = languageIdentityRuntime.identities().slice().sort((a, b) => b.profileCount - a.profileCount)[0];
+              if (spoken) {
+                out.push(await hydrateSurfaceLanguageMemoryCached(languageLimit, learned, "warmup-language", undefined, "", { languageId: spoken.id }));
+                out.push(await hydrateSurfaceLanguageMemoryCached(languageLimit, learned, "warmup-language-encyclopedic", CORPUS_ROLE_IDS.encyclopedic, "", { languageId: spoken.id }));
+              } else {
+                for (const cluster of learned ? [learned] : ordered) {
+                  out.push(await hydrateSurfaceLanguageMemoryCached(languageLimit, cluster, learned ? "warmup-learned-language" : "warmup-selected-language-cluster"));
+                }
+                if (learned) out.push(await hydrateSurfaceLanguageMemoryCached(
                   languageLimit,
                   learned,
                   "warmup-encyclopedic-language-cluster",

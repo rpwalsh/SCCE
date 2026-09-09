@@ -18,6 +18,7 @@ import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
 import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
+import { requestClosedClassWords } from "./closed-class-words.js";
 import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
@@ -1375,7 +1376,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const deterministicEvidenceIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
       const deterministicSpans = input.evidence.filter(span => deterministicEvidenceIds.has(String(span.id)));
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
-        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? ""));
+        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) }));
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
         && (terminalRuntimeMotionSelected
           || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
@@ -3102,6 +3103,11 @@ function evidenceLanguageCompatibleWithMouth(span: EvidenceSpan, input: SpeakInp
     && !scope.degraded
     && declaredIds.some(id => scope.profileIds.includes(id))
     && scope.sourceVersionIds.includes(String(span.sourceVersionId))) return true;
+  // A language scope admits by language: a span declaring a retained profile, or the language itself, belongs.
+  if (scope.mode === "language"
+    && scope.purityProven
+    && !scope.degraded
+    && declaredIds.some(id => scope.profileIds.includes(id) || id === scope.languageId)) return true;
   if (declaredIds.length) return false;
   const declaredScripts = new Set([
     ...arrayRecords(hints.scripts),
@@ -6734,8 +6740,23 @@ function repairPreservation(input: { text: string; plan: SurfacePlan; preservati
 function mouthCoverageUnits(input: SpeakInput): string[] {
   // A translation carries the source, not the request; it is judged by preservation, not coverage.
   if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
-  const closedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
+  const closedClass = mouthClosedClass(input);
   return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
+}
+
+/** The learned closed class the mouth judges coverage with: the role language's models plus the request scaffolding. Pure. */
+function mouthClosedClass(input: SpeakInput): Set<string> {
+  return requestClosedClassWords({
+    requestText: input.requestText ?? "",
+    models: input.languageMemory?.models ?? [],
+    patterns: input.languageMemory?.importedPatterns ?? [],
+    authority: input.requestedAuthority
+  });
+}
+
+/** Whether the relation asked about can be required of a surface: only a learned closed class can name it. Pure. */
+function mouthRelationRequired(input: SpeakInput): boolean {
+  return mouthClosedClass(input).size > 0;
 }
 
 /** An owner assertion bound as session evidence is confirmed by restating it; it is not a question to cover or an echo to reject. Pure. */
@@ -6752,7 +6773,7 @@ function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: S
   const bound = input.evidence.filter(span => ids.has(String(span.id)));
   const spans = bound.length ? bound : input.evidence;
   if (!spans.length) return [];
-  return spans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "")) ? [] : ["surface.reject.request_coverage"];
+  return spans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) })) ? [] : ["surface.reject.request_coverage"];
 }
 
 /** A surface repeats the request when it echoes it or when every content unit it carries is already in the request: it adds nothing. Pure. */
@@ -7693,7 +7714,7 @@ function requestWindowSurfaceFromEvidence(input: SpeakInput, plan: SurfacePlan):
   if (!cleaned || surfaceIsSourceApparatus(cleaned) || windowStructuralMarkup.test(cleaned)) return "";
   const window = preserveSurfaceExtent(tidySurface(cleaned), input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT, plan);
   if (!window) return "";
-  return answerCoversRequest([window], best.span, units, input.requestText ?? "") ? window : "";
+  return answerCoversRequest([window], best.span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) }) ? window : "";
 }
 
 /** Heading and list markers removed; every remaining word is the source's own. Pure. */

@@ -83,6 +83,11 @@ async function main(): Promise<void> {
       case "hydrate":
         await hydrate(runtime, parsed.args);
         return;
+      case "language":
+        if (!runtime) return usage("scce language identities [--rebuild]");
+        if (parsed.args[0] !== "identities") return usage("scce language identities [--rebuild]");
+        printJson(await runtime.kernel.languageIdentities({ rebuild: parsed.args.includes("--rebuild") }));
+        return;
       case "ingest":
         if (parsed.args[0] === "wiki") {
           await ingestWiki(parsed.configPath, config, runtime, parsed.args.slice(1));

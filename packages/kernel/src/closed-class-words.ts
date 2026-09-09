@@ -1,7 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { KneserNeyModel } from "./kneser-ney.js";
-import type { LearnedConstructionPart } from "./language-construction.js";
+import { jsonRecord } from "./kernel-answer-primitives.js";
+import { isRequestRequirementPattern } from "./request-requirement-learning.js";
+import type { LanguagePatternRecord } from "./storage.js";
 
 /**
  * Closed-class words (function words, connectives) derived from the active
@@ -9,9 +11,52 @@ import type { LearnedConstructionPart } from "./language-construction.js";
  * of the resident Kneser-Ney models plus single-token literal slots of learned
  * constructions. Language-agnostic by construction.
  */
+/**
+ * Request scaffolding the interaction corpus taught for an authority ("who", "when" as learned request openers), as
+ * literal construction parts for the derivation above. Multi-word surfaces contribute each of their words: "known for"
+ * is scaffolding in "What was X known for?", and neither word is a relation the answer must restate. Pure.
+ */
+export function requestScaffoldingConstructions(
+  patterns: readonly LanguagePatternRecord[],
+  authority?: string
+): Array<{ parts: Array<{ kind: "literal"; surface: string }> }> {
+  return patterns
+    .filter(isRequestRequirementPattern)
+    .map(pattern => jsonRecord(pattern.patternJson))
+    .filter(record => typeof record.surface === "string" && (!authority || record.selectedAuthority === authority))
+    .flatMap(record => String(record.surface).split(/\s+/u).filter(Boolean)
+      .map(surface => ({ parts: [{ kind: "literal" as const, surface }] })));
+}
+
+/**
+ * The closed class of a REQUEST: what its words may be discounted as scaffolding when judging whether an answer
+ * carries the relation asked about.
+ *
+ * Two learned sources, applied where each is valid. The interaction corpus's request patterns say which words open or
+ * frame a request ("who", "what is", "list the") and apply anywhere. The role language's continuation counts say which
+ * words the corpus uses in the most contexts, and that is a property of the corpus, not of the request: "born" continues
+ * more contexts than "when" in encyclopedic prose because biographies say it, yet it is the whole relation in "When was
+ * Albert Einstein born?". So the corpus signal applies only to the request's opening words, where a question word
+ * stands; the request patterns already record openers with anchor "start", and this follows that shape. Pure.
+ */
+export function requestClosedClassWords(input: {
+  requestText: string;
+  models?: readonly KneserNeyModel[];
+  patterns?: readonly LanguagePatternRecord[];
+  authority?: string;
+  limit?: number;
+}): Set<string> {
+  const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority) });
+  const corpus = deriveClosedClassWords({ models: input.models ?? [], limit: input.limit });
+  const opening = input.requestText.normalize("NFC").toLocaleLowerCase().split(/[^\p{L}\p{M}\p{N}'’-]+/u).filter(Boolean).slice(0, 2);
+  const out = new Set(scaffolding);
+  for (const word of opening) if (corpus.has(word)) out.add(word);
+  return out;
+}
+
 export function deriveClosedClassWords(input: {
   models?: readonly KneserNeyModel[];
-  constructions?: readonly { parts?: readonly LearnedConstructionPart[] }[];
+  constructions?: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[];
   limit?: number;
 }): Set<string> {
   const limit = Math.max(1, input.limit ?? 96);
@@ -50,7 +95,7 @@ export function deriveClosedClassWords(input: {
   for (const construction of input.constructions ?? []) {
     for (const part of construction.parts ?? []) {
       if (part.kind !== "literal") continue;
-      const surface = part.surface.trim().toLocaleLowerCase();
+      const surface = String(part.surface ?? "").trim().toLocaleLowerCase();
       if (surface && !/\s/u.test(surface) && isWordSymbol(surface)) out.add(surface);
     }
   }
