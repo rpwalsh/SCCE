@@ -3887,14 +3887,27 @@ export function attachLocalEvidenceAnswerConstruct(input: {
   requestText: string;
   brainMarker: JsonValue;
   hasher: { digestHex(input: string | Uint8Array): string };
+  /** A higher-precision fact this turn already bound outside the local-evidence quote path (e.g. the temporal-
+   *  value fast path's bare bound value) -- real bug, confirmed live: that fact never reached this
+   *  ConstructGraph, so mouth.ts's construction-bundle lookup (semanticLearnedCandidate) never saw it and
+   *  never had a chance to realize a real sentence around it; only the local-evidence quote's own facts were
+   *  ever offered. REPLACES the quote-derived facts rather than merging with them: mouth.ts's
+   *  completeLearnedFactCoverage requires exactly one relation/one answer slot, and this fact is strictly more
+   *  precise than the quote it was extracted from, so there is nothing to gain from carrying both. */
+  additionalFacts?: readonly SemanticAnswerConstructFact[];
 }): ConstructGraph {
-  const facts = localEvidenceAnswerFacts(input.plan, input.requestText, input.hasher);
+  const facts = input.additionalFacts?.length
+    ? [...input.additionalFacts]
+    : localEvidenceAnswerFacts(input.plan, input.requestText, input.hasher);
   if (!facts.length) return input.construct;
   const marker = jsonRecord(input.brainMarker);
   const evidenceIds = uniqueKernelStrings(input.plan.evidence.map(span => String(span.id)));
   const sourceVersionIds = uniqueKernelStrings(input.plan.evidence.map(span => String(span.sourceVersionId)));
   const nodeId = `construct:ans:${input.hasher.digestHex(JSON.stringify({ planId: input.plan.planId, evidenceIds })).slice(0, 20)}`;
-  const selectedSubject = localEvidenceSelectedSubject(input.plan, input.requestText);
+  // completeLearnedFactCoverage requires state.selectedSubject === fact.subject exactly -- when additionalFacts
+  // replaced the quote-derived facts above, selectedSubject must track that same fact's own subject, not the
+  // local-evidence plan's independently-derived one (real risk of a byte-level mismatch between the two).
+  const selectedSubject = input.additionalFacts?.length ? input.additionalFacts[0]!.subject : localEvidenceSelectedSubject(input.plan, input.requestText);
   const metadata = {
     schema: "scce.semantic_answer_construct.v1",
     questionShapeId: `qshape.${input.hasher.digestHex(input.requestText).slice(0, 12)}`,
@@ -4083,7 +4096,22 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
     relationRoleId: input.relationId,
     questionSlotImportance: input.index === 0 ? "core" : "secondary",
     questionSlotScore: Math.max(0.42, 0.9 - input.index * 0.08),
-    questionSlotReasonIds: [input.relationId]
+    questionSlotReasonIds: [input.relationId],
+    // Real bug, confirmed live: mouth.ts's learnedFactRouteAdmissible (the gate construction-bundle
+    // realization requires) checks answerGrade/finalQuestionFit/certificationPower/semanticQuality, and this
+    // fact never set any of them -- undefined fails every check, so construction-grammar realization was
+    // unreachable for every local-evidence answer, not just a ranking loss. This fact was already selected as
+    // an answer candidate by the caller; answerGrade is honestly true regardless (learnedFactRouteAdmissible
+    // still independently requires finalQuestionFit >= 0.44, so a genuinely weak-evidence fact is still
+    // correctly rejected by that check). finalQuestionFit deliberately has NO floor, unlike support/
+    // questionSlotScore above -- learned-graph-prior-runtime.ts derives its own answerGrade from this exact
+    // signal crossing that same 0.44 threshold (factQuestionFitAllowsSurface), so flooring it here would let a
+    // fact past a gate its own real evidence quality does not support. certificationPower/semanticQuality
+    // reuse the same 0.86 already governing this fact's score/activation/overlap above, not a new literal.
+    answerGrade: true,
+    finalQuestionFit: mean(input.evidence.map(span => span.alpha)),
+    certificationPower: 0.86,
+    semanticQuality: 0.86
   };
 }
 

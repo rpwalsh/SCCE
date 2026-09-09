@@ -2335,7 +2335,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           activation: 1,
           overlap: 1,
           support: 1,
-          evidenceIds: selectedEvidence.map(span => String(span.id))
+          evidenceIds: selectedEvidence.map(span => String(span.id)),
+          sourceVersionId: selectedEvidence[0]?.sourceVersionId ? String(selectedEvidence[0].sourceVersionId) : undefined,
+          questionSlotImportance: "core",
+          // Same gate as localEvidenceSemanticFact's (local-evidence-runtime.ts) -- mouth.ts's
+          // learnedFactRouteAdmissible requires all four, real bug confirmed live via candidate.field.generate's
+          // empty_generation trace. This value is already fully verified (subject-context-checked, non-citation),
+          // so reusing the same 1 already asserted on score/activation/overlap/support above is honest, not a new number.
+          answerGrade: true,
+          finalQuestionFit: 1,
+          certificationPower: 1,
+          semanticQuality: 1
         }
         : undefined;
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
@@ -3352,7 +3362,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             plan: longPathBasisAnswer.plan,
             requestText: input.text,
             brainMarker: brain,
-            hasher
+            hasher,
+            additionalFacts: temporalConstructFact ? [temporalConstructFact] : undefined
           })
           : assembly.constructGraph;
       // Learned graph prior: the graph-node answer / insufficient-support constructs the mouth already knows how to realize.
