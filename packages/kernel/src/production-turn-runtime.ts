@@ -12,6 +12,8 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
+import { compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
+import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
 import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
@@ -2314,7 +2316,29 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // separately. Never fabricates: returns undefined (falls through to
       // whichever branch's real answer) for anything that isn't a
       // recognizable temporal question.
-      const proofAnswer = extractTemporalAnswerFromEvidence(input.text, selectedEvidence) || answerSurface.answer;
+      const temporalAnswerValue = extractTemporalAnswerFromEvidence(input.text, selectedEvidence);
+      const proofAnswer = temporalAnswerValue || answerSurface.answer;
+      // A recognizable temporal question already yields a bare bound VALUE here (a date, not a whole
+      // sentence) -- exactly the subject/relation/value triple a realization contract needs, and cheaper to
+      // build directly than to wait for a ConstructGraph node that this answer path (local exact-evidence,
+      // not the learned-prior/graph-inference path) never populates for a plain one-hop lookup.
+      const temporalAnswerSubject = namedSubjectAnchors(input.text)[0];
+      const temporalConstructFact: SemanticAnswerConstructFact | undefined = temporalAnswerValue && temporalAnswerSubject
+        ? {
+          subject: temporalAnswerSubject,
+          predicate: requestRelationUnits(input.text).join(" ") || "is",
+          object: temporalAnswerValue,
+          sourceNodeId: "",
+          targetNodeId: "",
+          relationId: "",
+          forceClass: "direct_evidence",
+          score: 1,
+          activation: 1,
+          overlap: 1,
+          support: 1,
+          evidenceIds: selectedEvidence.map(span => String(span.id))
+        }
+        : undefined;
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
       const counterfactualWorld = counterfactual.simulate({
         graph,
@@ -2757,8 +2781,36 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }))) })));
       }
       const candidateFieldStarted = Date.now();
+      // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() can attempt
+      // real generation, verified against what the request actually asked, before reaching for source-exact
+      // text. Two independent sources, tried in order: the temporal-value fact above (the local exact-
+      // evidence path's own bound value, which never populates a ConstructGraph node) takes priority when
+      // present; otherwise whatever proof/graph fact this turn bound onto the construct graph (the learned-
+      // prior/graph-inference path). Absent for turns with neither (creative, dialogue, etc.) -- proofAnswer()
+      // falls straight through to today's behavior when this is undefined.
+      const boundConstructFacts = semanticAnswerConstructFacts(candidateConstructSeed);
+      const realizationSourceFact = temporalConstructFact
+        ?? (boundConstructFacts ? [...boundConstructFacts.facts].sort((left, right) => right.score - left.score)[0] : undefined);
+      const realizationContract = realizationSourceFact
+        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary)
+        : undefined;
+      kernelTrace({
+        stage: "candidate.realization_contract",
+        label: "kernel.turn",
+        counts: { requiredAtoms: realizationContract?.requiredAtoms.length ?? 0, requiredRelationUnits: realizationContract?.requiredRelationUnits.length ?? 0 },
+        support: {
+          contractSource: temporalConstructFact ? "temporal_value" : boundConstructFacts ? "construct_graph" : "none",
+          subject: realizationSourceFact?.subject ?? null,
+          predicate: realizationSourceFact?.predicate ?? null,
+          object: realizationSourceFact?.object ?? null,
+          requestedSlotId: realizationContract?.requestedSlotId ?? null,
+          requiredRelationUnits: realizationContract?.requiredRelationUnits ?? []
+        }
+      });
       const candidateField = candidates.generate({
         requestText: input.text,
+        realizationContract,
+        languageMemoryForRealization: { languageMemory: languageMemoryRuntime, state: surfaceLanguageMemory },
         requestedAuthority,
         inventionCandidates,
         requirementField,
@@ -2791,7 +2843,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         stage: "candidate.field.generate",
         label: "kernel.turn",
         durationMs: Date.now() - candidateFieldStarted,
-        counts: { candidates: candidateField.candidates.length }
+        counts: { candidates: candidateField.candidates.length },
+        support: {
+          proofAnswerRealization: candidateField.candidates
+            .filter(candidate => candidate.kind === "proof-answer")
+            .map(candidate => {
+              const audit = jsonRecord(candidate.audit);
+              return { realizationOrigin: audit.realizationOrigin ?? null, realizationAudit: audit.realizationAudit ?? null };
+            })
+        }
       });
       let authorityCandidateField = admitCandidatesForAuthority(candidateField, requestedAuthority);
       let runtimeSurfaceMotion: RuntimeReplanMotion | undefined;

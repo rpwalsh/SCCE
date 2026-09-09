@@ -1,7 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EpistemicForce, EvidenceId, EvidenceSpan, FieldState, JsonValue, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
+import type { EpistemicForce, EvidenceId, EvidenceSpan, FieldState, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { InventionConstruct } from "./prediction.js";
+import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
+import { attemptConstructRealization } from "./answer-realization.js";
+import type { SemanticRealizationContract } from "./semantic-answer-construct.js";
 import {
   COGNITIVE_OPERATOR_IDS,
   type ActivatedOperator,
@@ -59,6 +62,10 @@ export interface CandidateGenerationInput {
   workspacePlans?: readonly JsonValue[];
   actionPlans?: readonly JsonValue[];
   functionalGate?: FunctionalSelectionGate;
+  /** What this turn's answer is required to preserve, compiled from the request and a proven graph fact.
+   *  When present, proofAnswer() attempts real generation before falling back to source-exact text. */
+  realizationContract?: SemanticRealizationContract;
+  languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }
 
 export function createCandidateEngine() {
@@ -619,8 +626,24 @@ function proofAnswer(input: {
   proofAnswer: string;
   locale?: string;
   requestedAuthority?: RequestedAuthority;
+  realizationContract?: SemanticRealizationContract;
+  languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }): CandidateSurface {
-  const answer = normalizeCandidateAnswer(input.proofAnswer, input);
+  // The contract, when present, is tried BEFORE the source-exact text this candidate would otherwise carry
+  // verbatim: real generation from the corpus's own trained language model, verified against what the
+  // request actually asked (see semantic-answer-construct.ts). Never a silent substitute -- a candidate that
+  // fails the contract falls straight through to today's exact behavior, marked so the drop is measurable
+  // rather than indistinguishable from a normal answer.
+  const realizationAttempt = input.realizationContract && input.languageMemoryForRealization
+    ? attemptConstructRealization(input.realizationContract, input.languageMemoryForRealization)
+    : undefined;
+  const realized = realizationAttempt?.accepted ? realizationAttempt.surface : undefined;
+  const answer = realized ? realized.text : normalizeCandidateAnswer(input.proofAnswer, input);
+  const realizationOrigin: "learned_generation" | "source_exact" | "degraded_source_exact_fallback" = realized
+    ? "learned_generation"
+    : input.realizationContract
+      ? "degraded_source_exact_fallback"
+      : "source_exact";
   const proof = input.entailment.proof;
   const proofRoute = normalizedSemanticProofRoute(proof);
   // A plain session-owner assertion ("The release codename is Aster") can
@@ -654,6 +677,8 @@ function proofAnswer(input: {
       source: "semantic-proof",
       proofId: proof.id,
       sessionBound: boundEvidence.some(promotedSessionEvidence),
+      realizationOrigin,
+      ...(realizationAttempt ? { realizationAudit: realizationAttempt.diagnostic } : {}),
       semanticFrame: {
         frameId: "semantic.answer.proof.v1",
         claimId: proof.claimId,
