@@ -449,9 +449,22 @@ export function createSurfaceLanguageRuntime(options: {
       const resolver = languageId ? options.languageResolver?.() : undefined;
       if (languageId && resolver) {
         languageScopedState ??= scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
+        // cluster is the document/evidence-similarity cluster this hydration was originally asked to scope to --
+        // unrelated to languageId, and its members can belong to any identity at all (verified live: a factual
+        // turn's cluster member ended up a profile trained almost entirely from this repo's own source files and
+        // license headers, under a completely different learned identity than the one languageScopedState was
+        // just built from, while the identity's own real prose profiles -- one alone carrying 2,815 semantic-role
+        // patterns -- went unused). The surface profile has to come from the same identity-scoped population the
+        // state itself was filtered to, or every downstream profile-identity comparison is comparing across
+        // unrelated corpora by accident. Falls back to the old cluster-based pick only if scoping produced no
+        // candidate profiles at all, rather than leaving surfaceProfile undefined.
+        const languageScopedProfileIds = new Set(languageScopedState.scope.profileIds);
+        const languageScopedProfiles = roleProfiles.filter(profile => languageScopedProfileIds.has(profile.id));
         return {
           state: languageScopedState,
-          surfaceProfile: (cluster ? selectLanguageProfileForSurface(cluster.members, surface) ?? cluster.members[0] : undefined) as LanguageProfile | undefined
+          surfaceProfile: (languageScopedProfiles.length
+            ? selectLanguageProfileForSurface(languageScopedProfiles, surface) ?? languageScopedProfiles[0]
+            : cluster ? selectLanguageProfileForSurface(cluster.members, surface) ?? cluster.members[0] : undefined) as LanguageProfile | undefined
         };
       }
       const roleCluster = preferredCorpusRoleId
