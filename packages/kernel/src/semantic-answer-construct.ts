@@ -1,5 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import type { EvidenceId, Hasher } from "./types.js";
+import type { SemanticAtom } from "./semantic-proof-types.js";
+import { atomizeText } from "./semantic-proof-system.js";
+import { SEMANTIC_SOURCE } from "./semantic-codes.js";
+import { namedSubjectAnchors, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
+import { requestContentEvidenceUnits, requestUnitSharesStem } from "./local-evidence-runtime.js";
+import { factualRoundTripGate } from "./semantic-round-trip.js";
+import { surfaceWords } from "./surface-linguistics.js";
+
 export interface SemanticAnswerConstructFact {
   subject: string;
   predicate: string;
@@ -34,4 +43,148 @@ export interface SemanticAnswerConstructFact {
   questionSlotImportance?: string;
   questionSlotScore?: number;
   questionSlotReasonIds?: string[];
+}
+
+/** Certification signal a proof stage attaches to a fact: never a bare boolean guess. */
+export interface RealizationCertificationBoundary {
+  certified?: boolean;
+  externallyFactual?: boolean;
+}
+
+export type RealizationEpistemicForce = "observed" | "certified" | "inferred";
+
+/**
+ * A contract between cognition and language: what a given utterance is REQUIRED to preserve, not another
+ * copy of the answer fact. Two independent checks, not one: `requiredAtoms` (the fact's own real, well-formed
+ * text, atomized) catches hallucination -- a realized surface asserting something the fact never said.
+ * `requiredRelationUnits` (the REQUEST's own obligation, the same units `answerCoversRequest` in
+ * local-evidence-runtime.ts already derives for extraction-time gating) catches the OTHER failure:
+ * "Apollo 11 was the first spaceflight to land humans on the Moon" fully preserves the fact's own atoms
+ * while never answering "When did Apollo 11 land?" -- fabrication-free is not the same as answering the
+ * question, and only checking preserved atoms from the fact's own sentence can't tell the two apart. Kept as
+ * a plain lexical stem-carried check (not atomized): the request's relation words are often ungrammatical as
+ * a standalone fragment once the subject is stripped out, and the atomizer is a real syntactic parser that
+ * mis-shapes broken fragments -- exactly the failure mode that made an earlier version of this function
+ * reject a genuinely correct answer.
+ */
+export interface SemanticRealizationContract {
+  sourceFact: SemanticAnswerConstructFact;
+  requestedSlotId?: string;
+  requiredAtoms: SemanticAtom[];
+  requiredRelationUnits: string[];
+  boundValues: Record<string, string>;
+  evidenceIds: string[];
+  epistemicForce: RealizationEpistemicForce;
+}
+
+/** The request's relation units, with its subject anchors removed: the same subject/relation split answerCoversRequest already makes, reused rather than re-derived. Pure. */
+function requestRelationUnits(requestText: string): string[] {
+  if (!requestText) return [];
+  const subjectUnits = new Set(namedSubjectAnchors(requestText)
+    .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit));
+}
+
+function epistemicForceFromFact(fact: SemanticAnswerConstructFact, certificationBoundary?: RealizationCertificationBoundary): RealizationEpistemicForce {
+  if (certificationBoundary?.certified && fact.forceClass === "direct_evidence") return "certified";
+  if (certificationBoundary?.certified || certificationBoundary?.externallyFactual) return "observed";
+  return "inferred";
+}
+
+/**
+ * Compiles a SemanticRealizationContract from the request that asked the question and the fact that answers
+ * it. `requiredAtoms` comes from the fact's own real subject+predicate+object text (well-formed, so the real
+ * atomizer parses it the same way it would parse a realized candidate saying the same thing) -- this is the
+ * hallucination check. `requiredRelationUnits` comes from the request, independently -- this is the
+ * answerhood check. Falls back to the fact's own predicate units when the request yields no relation units
+ * (e.g. a session-bound assertion, not a question).
+ */
+export function compileRealizationContract(
+  requestText: string,
+  fact: SemanticAnswerConstructFact,
+  certificationBoundary?: RealizationCertificationBoundary
+): SemanticRealizationContract {
+  const evidenceIds = fact.evidenceIds ?? [];
+  const factText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ").trim();
+  const requiredAtoms = factText
+    ? atomizeText({ text: factText, source: SEMANTIC_SOURCE.CLAIM, evidenceIds: evidenceIds as EvidenceId[] })
+    : [];
+  const relationUnits = requestRelationUnits(requestText);
+  const requiredRelationUnits = relationUnits.length ? relationUnits : requestContentEvidenceUnits(fact.predicate);
+  const requestedSlotId = fact.requestedSlotId ?? fact.questionSlotId;
+  return {
+    sourceFact: fact,
+    requestedSlotId,
+    requiredAtoms,
+    requiredRelationUnits,
+    boundValues: { [requestedSlotId ?? "value"]: fact.object },
+    evidenceIds,
+    epistemicForce: epistemicForceFromFact(fact, certificationBoundary)
+  };
+}
+
+export interface RealizationSurvivalResult {
+  survives: boolean;
+  reason?: string;
+  requiredAtomCount: number;
+  addedUnsupportedAtomCount: number;
+  requiredRelationUnitCount: number;
+  missingRelationUnitCount: number;
+  requestedSlotSatisfied: boolean;
+}
+
+/** Every surface unit of a candidate answer, lowercased: the same tokenization surfaceWords already gives every other caller comparing surface text against request units. Pure. */
+function candidateSurfaceUnits(candidateText: string): string[] {
+  return surfaceWords(candidateText).map(word => word.toLocaleLowerCase());
+}
+
+/**
+ * The two-step contract check: (1) no fabrication -- the realized surface must assert nothing beyond the
+ * fact's own real, well-formed subject/predicate/object text (factualRoundTripGate's existing added-atom
+ * rule, applied against real sentence text so the atomizer's genuine syntactic parse is comparable on both
+ * sides); (2) no missing answerhood -- every unit of the REQUEST's own relation must have a stem-tolerant
+ * match in the candidate (requestUnitSharesStem, the same tolerance answerCoversRequest already grants:
+ * commanded/commander, land/landed), and the fact's bound value must actually appear in the candidate. A
+ * candidate that merely restates the fact's own sentence without the request's relation, or without its
+ * value, fails step 2 even though it would pass step 1 alone -- exactly why this is a second, independent
+ * check rather than folded into the atom comparison.
+ */
+export function candidateSurvivesRealizationContract(
+  candidateText: string,
+  contract: SemanticRealizationContract,
+  hasher?: Hasher
+): RealizationSurvivalResult {
+  const fact = contract.sourceFact;
+  const factText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ").trim();
+  const fabricationCheck = factualRoundTripGate({ intendedText: factText, realizedText: candidateText, ...(hasher ? { hasher } : {}) });
+  const requiredRelationUnitCount = contract.requiredRelationUnits.length;
+  if (!fabricationCheck.accepted) {
+    return {
+      survives: false,
+      reason: fabricationCheck.reason,
+      requiredAtomCount: contract.requiredAtoms.length,
+      addedUnsupportedAtomCount: fabricationCheck.cycleTrace.distance.added.length,
+      requiredRelationUnitCount,
+      missingRelationUnitCount: requiredRelationUnitCount,
+      requestedSlotSatisfied: false
+    };
+  }
+  const surfaceUnits = candidateSurfaceUnits(candidateText);
+  const missingRelationUnits = contract.requiredRelationUnits.filter(unit =>
+    !surfaceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+  const boundValues = Object.values(contract.boundValues).filter(Boolean);
+  const candidateNormalized = candidateText.toLocaleLowerCase();
+  const requestedSlotSatisfied = boundValues.every(value => candidateNormalized.includes(value.toLocaleLowerCase()));
+  const survives = missingRelationUnits.length === 0 && requestedSlotSatisfied;
+  return {
+    survives,
+    reason: survives ? undefined : missingRelationUnits.length
+      ? `realized text is missing ${missingRelationUnits.length} of the request's required relation unit(s): ${missingRelationUnits.join(", ")}`
+      : "realized text does not carry the fact's bound value",
+    requiredAtomCount: contract.requiredAtoms.length,
+    addedUnsupportedAtomCount: fabricationCheck.cycleTrace.distance.added.length,
+    requiredRelationUnitCount,
+    missingRelationUnitCount: missingRelationUnits.length,
+    requestedSlotSatisfied
+  };
 }
