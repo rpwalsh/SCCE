@@ -3,6 +3,7 @@
 import { canonicalStringify, clamp01, createClock, featureSet, toJsonValue } from "./primitives.js";
 import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, type CalibrationModel } from "./scoring/calibration.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
+import { TURN_REQUIREMENT_DIMENSIONS, type TurnRequirementField } from "./turn-requirements.js";
 import type { Clock, JsonValue } from "./types.js";
 
 export const CALIBRATION_IDS = {
@@ -23,7 +24,9 @@ export const CALIBRATION_IDS = {
   alphaVisibleBondedStructural: "alpha.visible_bonded_structural",
   alphaCacheInvalidation: "alpha.cache_invalidation",
   /** Plan item 129: translation.ts's own preservation/confidence score, calibrated against the real preservation-gate pass/fail outcome (item 125) instead of shipped as a bespoke ad hoc weighted sum. */
-  translationPreservation: "translation.preservation"
+  translationPreservation: "translation.preservation",
+  /** judge.ts's requirement-conditioned positive-quality softmax weights (its "logits"), previously a fixed 2026-07-12 hand-tuned bootstrap, now fit from real selected-candidate outcomes. */
+  judgeRequirementWeights: "judge.requirement_weights"
 } as const;
 
 export type CalibrationId = typeof CALIBRATION_IDS[keyof typeof CALIBRATION_IDS];
@@ -136,6 +139,7 @@ export interface CalibrationModelSet {
   id: string;
   models: Record<string, CalibrationModel>;
   creativePreferenceModels?: Record<string, CreativePreferenceModel>;
+  judgeRequirementModels?: Record<string, JudgeRequirementModel>;
   observationCount: number;
   createdAt: number;
 }
@@ -376,6 +380,308 @@ export function creativePreferenceScore(input: {
   };
 }
 
+// judge.ts's requirement-conditioned positive-quality weighting, learned from real turns instead of hand-tuned.
+// Same term structure as the formulas judge.ts shipped on 2026-07-12 (one base coefficient per quality
+// dimension, plus a slope coefficient per requirement feature that formula referenced) -- what's learned is
+// the NUMBER on each term, not which requirement features matter to which dimension; that structure stays
+// fixed so a realistic amount of live telemetry (tens to low hundreds of turns) is enough data to fit against.
+
+export const JUDGE_REQUIREMENT_QUALITY_KEYS = [
+  "truthSupport",
+  "sourceFidelity",
+  "requirementCoverage",
+  "novelty",
+  "semanticPreservation",
+  "transformationQuality",
+  "inferentialContinuity",
+  "explanatoryPower",
+  "executableCompleteness",
+  "dialogueContinuity",
+  "languageQuality",
+  "usefulness",
+  "coherence",
+  "uncertaintyCalibration",
+  "formatFit",
+  "styleFit",
+  "directness",
+  "structure"
+] as const;
+
+export type JudgeRequirementQualityKey = typeof JUDGE_REQUIREMENT_QUALITY_KEYS[number];
+
+interface JudgeRequirementTerm {
+  paramId: string;
+  dimension: JudgeRequirementQualityKey;
+  featureId: string;
+  bootstrap: number;
+}
+
+const JUDGE_REQUIREMENT_TERMS: readonly JudgeRequirementTerm[] = [
+  { paramId: "truthSupport.base", dimension: "truthSupport", featureId: "base", bootstrap: 0.10 },
+  { paramId: "truthSupport.externalTruthAuthority", dimension: "truthSupport", featureId: "externalTruthAuthority", bootstrap: 2.20 },
+  { paramId: "sourceFidelity.base", dimension: "sourceFidelity", featureId: "base", bootstrap: 0.05 },
+  { paramId: "sourceFidelity.sourceDependence", dimension: "sourceFidelity", featureId: "sourceDependence", bootstrap: 1.45 },
+  { paramId: "sourceFidelity.externalTruthAuthority", dimension: "sourceFidelity", featureId: "externalTruthAuthority", bootstrap: 0.75 },
+  { paramId: "requirementCoverage.base", dimension: "requirementCoverage", featureId: "base", bootstrap: 0.25 },
+  { paramId: "requirementCoverage.averageRequirement", dimension: "requirementCoverage", featureId: "averageRequirement", bootstrap: 1.45 },
+  { paramId: "novelty.base", dimension: "novelty", featureId: "base", bootstrap: 0.05 },
+  { paramId: "novelty.noveltyDemand", dimension: "novelty", featureId: "noveltyDemand", bootstrap: 2.15 },
+  { paramId: "semanticPreservation.base", dimension: "semanticPreservation", featureId: "base", bootstrap: 0.05 },
+  { paramId: "semanticPreservation.semanticPreservation", dimension: "semanticPreservation", featureId: "semanticPreservation", bootstrap: 2.10 },
+  { paramId: "transformationQuality.base", dimension: "transformationQuality", featureId: "base", bootstrap: 0.05 },
+  { paramId: "transformationQuality.surfaceTransformation", dimension: "transformationQuality", featureId: "surfaceTransformation", bootstrap: 1.45 },
+  { paramId: "transformationQuality.semanticPreservation", dimension: "transformationQuality", featureId: "semanticPreservation", bootstrap: 0.55 },
+  { paramId: "inferentialContinuity.base", dimension: "inferentialContinuity", featureId: "base", bootstrap: 0.10 },
+  { paramId: "inferentialContinuity.inferentialDepth", dimension: "inferentialContinuity", featureId: "inferentialDepth", bootstrap: 1.95 },
+  { paramId: "explanatoryPower.base", dimension: "explanatoryPower", featureId: "base", bootstrap: 0.05 },
+  { paramId: "explanatoryPower.inferentialDepth", dimension: "explanatoryPower", featureId: "inferentialDepth", bootstrap: 1.35 },
+  { paramId: "explanatoryPower.causalReasoningDemand", dimension: "explanatoryPower", featureId: "causalReasoningDemand", bootstrap: 0.35 },
+  { paramId: "executableCompleteness.base", dimension: "executableCompleteness", featureId: "base", bootstrap: 0.05 },
+  { paramId: "executableCompleteness.executableArtifactDemand", dimension: "executableCompleteness", featureId: "executableArtifactDemand", bootstrap: 2.20 },
+  { paramId: "executableCompleteness.actionCommitment", dimension: "executableCompleteness", featureId: "actionCommitment", bootstrap: 0.45 },
+  { paramId: "dialogueContinuity.base", dimension: "dialogueContinuity", featureId: "base", bootstrap: 0.05 },
+  { paramId: "dialogueContinuity.dialogueDependence", dimension: "dialogueContinuity", featureId: "dialogueDependence", bootstrap: 2.10 },
+  { paramId: "languageQuality.base", dimension: "languageQuality", featureId: "base", bootstrap: 0.30 },
+  { paramId: "languageQuality.audienceAdaptation", dimension: "languageQuality", featureId: "audienceAdaptation", bootstrap: 0.55 },
+  { paramId: "usefulness.base", dimension: "usefulness", featureId: "base", bootstrap: 0.25 },
+  { paramId: "usefulness.noveltyDemand", dimension: "usefulness", featureId: "noveltyDemand", bootstrap: 0.60 },
+  { paramId: "usefulness.executableArtifactDemand", dimension: "usefulness", featureId: "executableArtifactDemand", bootstrap: 0.70 },
+  { paramId: "coherence.base", dimension: "coherence", featureId: "base", bootstrap: 0.50 },
+  { paramId: "coherence.inferentialDepth", dimension: "coherence", featureId: "inferentialDepth", bootstrap: 0.65 },
+  { paramId: "uncertaintyCalibration.base", dimension: "uncertaintyCalibration", featureId: "base", bootstrap: 0.10 },
+  { paramId: "uncertaintyCalibration.externalTruthAuthority", dimension: "uncertaintyCalibration", featureId: "externalTruthAuthority", bootstrap: 1.40 },
+  { paramId: "uncertaintyCalibration.uncertaintyTolerance", dimension: "uncertaintyCalibration", featureId: "uncertaintyTolerance", bootstrap: 0.35 },
+  { paramId: "formatFit.base", dimension: "formatFit", featureId: "base", bootstrap: 0.05 },
+  { paramId: "formatFit.formatConstraintStrength", dimension: "formatFit", featureId: "formatConstraintStrength", bootstrap: 2.00 },
+  { paramId: "styleFit.base", dimension: "styleFit", featureId: "base", bootstrap: 0.10 },
+  { paramId: "styleFit.audienceAdaptation", dimension: "styleFit", featureId: "audienceAdaptation", bootstrap: 1.20 },
+  { paramId: "directness.base", dimension: "directness", featureId: "base", bootstrap: 0.20 },
+  { paramId: "directness.inverseBrevityDetailBalance", dimension: "directness", featureId: "inverseBrevityDetailBalance", bootstrap: 0.75 },
+  { paramId: "structure.base", dimension: "structure", featureId: "base", bootstrap: 0.20 },
+  { paramId: "structure.formatConstraintStrength", dimension: "structure", featureId: "formatConstraintStrength", bootstrap: 0.80 },
+  { paramId: "structure.executableArtifactDemand", dimension: "structure", featureId: "executableArtifactDemand", bootstrap: 0.55 }
+];
+
+export const JUDGE_REQUIREMENT_BOOTSTRAP_COEFFICIENTS: Readonly<Record<string, number>> =
+  Object.freeze(Object.fromEntries(JUDGE_REQUIREMENT_TERMS.map(term => [term.paramId, term.bootstrap])));
+
+export function derivedJudgeRequirementFeatures(requirement: TurnRequirementField): Record<string, number> {
+  const averageRequirement = mean([
+    requirement.externalTruthAuthority,
+    requirement.sourceDependence,
+    requirement.noveltyDemand,
+    requirement.inferentialDepth,
+    requirement.semanticPreservation,
+    requirement.executableArtifactDemand,
+    requirement.dialogueDependence,
+    requirement.formatConstraintStrength
+  ]);
+  const features: Record<string, number> = { base: 1, averageRequirement, inverseBrevityDetailBalance: 1 - clamp01(requirement.brevityDetailBalance) };
+  for (const dimension of TURN_REQUIREMENT_DIMENSIONS) features[dimension] = requirement[dimension];
+  return features;
+}
+
+function judgeRequirementLogitsFromFeatures(features: Record<string, number>, coefficients: Readonly<Record<string, number>>): Record<JudgeRequirementQualityKey, number> {
+  const logits: Record<string, number> = {};
+  for (const key of JUDGE_REQUIREMENT_QUALITY_KEYS) logits[key] = 0;
+  for (const term of JUDGE_REQUIREMENT_TERMS) {
+    const coefficient = coefficients[term.paramId] ?? term.bootstrap;
+    logits[term.dimension] = (logits[term.dimension] ?? 0) + coefficient * (features[term.featureId] ?? 0);
+  }
+  return logits as Record<JudgeRequirementQualityKey, number>;
+}
+
+function softmaxRecord<K extends string>(logits: Record<K, number>, keys: readonly K[]): Record<K, number> {
+  const maxLogit = Math.max(...keys.map(key => logits[key]));
+  const exponentials = keys.map(key => Math.exp(Math.max(-40, Math.min(40, logits[key] - maxLogit))));
+  const total = exponentials.reduce((sum, value) => sum + value, 0);
+  return Object.fromEntries(keys.map((key, index) => [key, total > 0 ? (exponentials[index] ?? 0) / total : 1 / keys.length])) as Record<K, number>;
+}
+
+export interface JudgeRequirementModel {
+  schema: "scce.judge_requirement_model.v1";
+  id: string;
+  taskClass: string;
+  coefficients: Record<string, number>;
+  sampleCount: number;
+  trainingLoss: number;
+  modelHash: string;
+  createdAt: number;
+}
+
+interface JudgeRequirementSample {
+  requirementFeatures: Record<string, number>;
+  qualityPositive: Record<JudgeRequirementQualityKey, number>;
+  outcome: boolean;
+}
+
+function judgeRequirementSamplesFromObservations(observations: readonly CalibrationObservationRecord[]): JudgeRequirementSample[] {
+  const samples: JudgeRequirementSample[] = [];
+  const requirementFeatureIds = ["base", "averageRequirement", "inverseBrevityDetailBalance", ...TURN_REQUIREMENT_DIMENSIONS];
+  for (const observation of observations) {
+    if (observation.calibrationId !== CALIBRATION_IDS.judgeRequirementWeights) continue;
+    const metadata = jsonRecord(observation.metadata);
+    if (metadata.schema !== "scce.judge_requirement.observation.v1") continue;
+    const requirementFeatures = numericRecordFromJson(metadata.requirementFeatures, requirementFeatureIds);
+    const qualityPositive = numericRecordFromJson(metadata.qualityPositive, JUDGE_REQUIREMENT_QUALITY_KEYS);
+    if (!requirementFeatures || !qualityPositive) continue;
+    samples.push({ requirementFeatures, qualityPositive: qualityPositive as Record<JudgeRequirementQualityKey, number>, outcome: observation.outcome });
+  }
+  return samples;
+}
+
+function numericRecordFromJson(value: JsonValue | undefined, keys: readonly string[]): Record<string, number> | undefined {
+  const row = jsonRecord(value);
+  const entries = keys.map(key => [key, row[key]] as const);
+  if (entries.some(([, item]) => typeof item !== "number" || !Number.isFinite(item))) return undefined;
+  return Object.fromEntries(entries as Array<[string, number]>);
+}
+
+function judgeRequirementLoss(input: { samples: readonly JudgeRequirementSample[]; coefficients: Record<string, number>; l2: number }): number {
+  if (!input.samples.length) return 0;
+  const dataLoss = input.samples.reduce((sum, sample) => {
+    const weights = softmaxRecord(judgeRequirementLogitsFromFeatures(sample.requirementFeatures, input.coefficients), JUDGE_REQUIREMENT_QUALITY_KEYS);
+    const Q = JUDGE_REQUIREMENT_QUALITY_KEYS.reduce((total, key) => total + weights[key] * sample.qualityPositive[key], 0);
+    const y = sample.outcome ? 1 : 0;
+    const p = sigmoid(Q);
+    const eps = 1e-6;
+    return sum - (y * Math.log(Math.max(eps, p)) + (1 - y) * Math.log(Math.max(eps, 1 - p)));
+  }, 0) / input.samples.length;
+  const regularization = JUDGE_REQUIREMENT_TERMS.reduce((sum, term) => sum + input.l2 * (((input.coefficients[term.paramId] ?? term.bootstrap) - term.bootstrap) ** 2), 0);
+  return dataLoss + regularization;
+}
+
+/**
+ * Batch-fits judge.ts's requirement -> positive-quality-weight coefficients from real turns: for each turn,
+ * the requirement field in force and the SELECTED candidate's quality vector, labeled by a real downstream
+ * outcome (not the judge's own preference order -- that would just teach the model to imitate itself).
+ * Regularized toward the 2026-07-12 bootstrap values (MAP shrinkage to a sane prior), not toward zero, since
+ * zero is not a meaningful coefficient value for e.g. a quality dimension's base weight. Re-run on every
+ * calibration model reload (see runtime-memory-control.ts's calibrationModelsCached), so this refits itself
+ * from the live calibration_observations table on its own accord as real telemetry accumulates -- no separate
+ * training job to run by hand.
+ */
+export function buildJudgeRequirementModels(input: {
+  observations: readonly CalibrationObservationRecord[];
+  minSamples?: number;
+  l2?: number;
+  iterations?: number;
+  learningRate?: number;
+  createdAt?: number;
+  clock?: Clock;
+}): Record<string, JudgeRequirementModel> {
+  const samples = judgeRequirementSamplesFromObservations(input.observations);
+  const minSamples = Math.max(1, input.minSamples ?? 24);
+  if (samples.length < minSamples) return {};
+  const l2 = Math.max(0, input.l2 ?? 0.01);
+  const iterations = Math.max(1, Math.min(2_000, Math.floor(input.iterations ?? 320)));
+  const learningRate = Math.max(1e-4, Math.min(1, input.learningRate ?? 0.15));
+  const coefficients: Record<string, number> = Object.fromEntries(JUDGE_REQUIREMENT_TERMS.map(term => [term.paramId, term.bootstrap]));
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const gradient: Record<string, number> = Object.fromEntries(JUDGE_REQUIREMENT_TERMS.map(term => [term.paramId, 2 * l2 * ((coefficients[term.paramId] ?? term.bootstrap) - term.bootstrap)]));
+    for (const sample of samples) {
+      const weights = softmaxRecord(judgeRequirementLogitsFromFeatures(sample.requirementFeatures, coefficients), JUDGE_REQUIREMENT_QUALITY_KEYS);
+      const Q = JUDGE_REQUIREMENT_QUALITY_KEYS.reduce((sum, key) => sum + weights[key] * sample.qualityPositive[key], 0);
+      const error = sigmoid(Q) - (sample.outcome ? 1 : 0);
+      for (const term of JUDGE_REQUIREMENT_TERMS) {
+        const featureValue = sample.requirementFeatures[term.featureId] ?? 0;
+        const dLdLogit = error * weights[term.dimension] * (sample.qualityPositive[term.dimension] - Q);
+        gradient[term.paramId] = (gradient[term.paramId] ?? 0) + dLdLogit * featureValue;
+      }
+    }
+    const decayedRate = learningRate / samples.length / Math.sqrt(1 + iteration / 40);
+    for (const term of JUDGE_REQUIREMENT_TERMS) {
+      coefficients[term.paramId] = finiteCoefficient((coefficients[term.paramId] ?? term.bootstrap) - decayedRate * (gradient[term.paramId] ?? 0));
+    }
+  }
+  const trainingLoss = judgeRequirementLoss({ samples, coefficients, l2 });
+  const createdAt = resolveCreatedAt(input.createdAt, input.clock, latestCreatedAt(input.observations));
+  const modelBody = { taskClass: CALIBRATION_TASK_CLASS_IDS.generalCognition, coefficients, sampleCount: samples.length, trainingLoss };
+  const modelHash = hashText(canonicalStringify(modelBody));
+  const model: JudgeRequirementModel = {
+    schema: "scce.judge_requirement_model.v1",
+    id: `judge.requirement.model.${modelHash}`,
+    taskClass: CALIBRATION_TASK_CLASS_IDS.generalCognition,
+    coefficients,
+    sampleCount: samples.length,
+    trainingLoss,
+    modelHash,
+    createdAt
+  };
+  return { [CALIBRATION_TASK_CLASS_IDS.generalCognition]: model };
+}
+
+export function judgeRequirementModelFor(input: { modelSet?: CalibrationModelSet; taskClass?: string }): JudgeRequirementModel | undefined {
+  if (!input.modelSet) return undefined;
+  return input.modelSet.judgeRequirementModels?.[input.taskClass ?? CALIBRATION_TASK_CLASS_IDS.generalCognition];
+}
+
+/**
+ * What judge.ts actually calls: bootstrap coefficients shrunk toward the learned model as real sample count
+ * grows (continuous blend, no cliff at a threshold -- see blendTargetSamples), so a handful of early
+ * observations nudge behavior slightly and a few hundred turns' worth converges toward the fitted model.
+ * Falls back to pure bootstrap (blend 0) with no model at all, so cold-start behavior is unchanged from before
+ * this existed.
+ */
+export function judgeRequirementWeights(input: {
+  requirement: TurnRequirementField;
+  modelSet?: CalibrationModelSet;
+  taskClass?: string;
+  blendTargetSamples?: number;
+}): {
+  weights: Record<JudgeRequirementQualityKey, number>;
+  coefficients: Record<string, number>;
+  learned: boolean;
+  sampleCount: number;
+  blend: number;
+  modelId?: string;
+} {
+  const taskClass = input.taskClass ?? CALIBRATION_TASK_CLASS_IDS.generalCognition;
+  const model = judgeRequirementModelFor({ modelSet: input.modelSet, taskClass });
+  const sampleCount = model?.sampleCount ?? 0;
+  const blendTargetSamples = Math.max(1, input.blendTargetSamples ?? 200);
+  const blend = model ? clamp01(sampleCount / blendTargetSamples) : 0;
+  const coefficients = Object.fromEntries(JUDGE_REQUIREMENT_TERMS.map(term => {
+    const learnedValue = model?.coefficients[term.paramId];
+    const value = typeof learnedValue === "number" && Number.isFinite(learnedValue)
+      ? term.bootstrap + blend * (learnedValue - term.bootstrap)
+      : term.bootstrap;
+    return [term.paramId, value];
+  }));
+  const features = derivedJudgeRequirementFeatures(input.requirement);
+  const weights = softmaxRecord(judgeRequirementLogitsFromFeatures(features, coefficients), JUDGE_REQUIREMENT_QUALITY_KEYS);
+  return { weights, coefficients, learned: blend > 0, sampleCount, blend, modelId: model?.id };
+}
+
+export function judgeRequirementObservation(input: {
+  requirement: TurnRequirementField;
+  qualityPositive: Record<JudgeRequirementQualityKey, number>;
+  outcome: boolean;
+  sourceTraceId?: string;
+  sourceRecordId?: string;
+  createdAt?: number;
+  clock?: Clock;
+}): CalibrationObservationRecord {
+  const requirementFeatures = derivedJudgeRequirementFeatures(input.requirement);
+  return calibrationObservationRecord({
+    calibrationId: CALIBRATION_IDS.judgeRequirementWeights,
+    subsystemId: CALIBRATION_SUBSYSTEM_IDS.candidate,
+    taskClass: CALIBRATION_TASK_CLASS_IDS.generalCognition,
+    rawScore: mean(JUDGE_REQUIREMENT_QUALITY_KEYS.map(key => input.qualityPositive[key])),
+    outcome: input.outcome,
+    finalOutcome: input.outcome ? "outcome.positive" : "outcome.negative",
+    sourceTraceId: input.sourceTraceId,
+    sourceRecordId: input.sourceRecordId,
+    createdAt: input.createdAt,
+    clock: input.clock,
+    metadata: toJsonValue({
+      schema: "scce.judge_requirement.observation.v1",
+      requirementFeatures,
+      qualityPositive: input.qualityPositive
+    })
+  });
+}
+
 export function calibrationObservationsFromDialogueOutcome(input: {
   result: DialogueCalibrationResult;
   outcome: DialogueCalibrationOutcome;
@@ -604,15 +910,21 @@ export function buildCalibrationModelSet(input: {
     minPairs: input.minPoints,
     createdAt
   });
+  const judgeRequirementModels = buildJudgeRequirementModels({
+    observations: input.observations,
+    createdAt
+  });
   return {
     schema: "scce.calibration.model_set.v1",
     id: `calibration.model_set.${hashText(canonicalStringify({
       models: Object.keys(models).sort(),
       creativePreferenceModels: Object.values(creativePreferenceModels).map(model => model.modelHash).sort(),
+      judgeRequirementModels: Object.values(judgeRequirementModels).map(model => model.modelHash).sort(),
       createdAt
     }))}`,
     models,
     creativePreferenceModels,
+    judgeRequirementModels,
     observationCount: input.observations.length,
     createdAt
   };
