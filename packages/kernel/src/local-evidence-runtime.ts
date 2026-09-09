@@ -906,6 +906,27 @@ export function proposeSourceExactEvidenceAnswer(input: {
 }
 
 
+/**
+ * The one sentence immediately before the answering material within its own span: enough to resolve what an
+ * anaphoric answering sentence ("the mission", "he", a bare continuation) refers to, without reaching past the local
+ * context into a sentence about something else the article also discusses. Matching is by prefix/substring, since
+ * the answering text can be a whole sentence or a focused clause cut from one. Pure.
+ */
+function precedingSentenceContext(span: EvidenceSpan, answeringText: string): string {
+  const tidyAnswer = tidySurfaceText(answeringText).trim();
+  if (!tidyAnswer) return "";
+  const spanSentences = splitSurfaceSentences(tidySurfaceText(String(span.text ?? span.textPreview ?? "")));
+  const index = spanSentences.findIndex(sentence => {
+    if (!sentence) return false;
+    const probeLength = Math.min(sentence.length, tidyAnswer.length, 40);
+    if (probeLength < 12) return sentence === tidyAnswer;
+    return sentence.slice(0, probeLength) === tidyAnswer.slice(0, probeLength)
+      || tidyAnswer.includes(sentence)
+      || sentence.includes(tidyAnswer);
+  });
+  return index > 0 ? spanSentences[index - 1]! : "";
+}
+
 /** Corpus-oriented truth: an answer must carry a third of the request's content units, in its sentences or its source title; a passage sharing none of them is a different topic, however well it scores lexically. Pure. */
 export function answerCoversRequest(
   sentences: readonly string[],
@@ -918,11 +939,10 @@ export function answerCoversRequest(
   // A lone short cased run (a sentence-initial question word) is not a name.
   // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
   // reaching for the Moon and the mission that landed on it.
-  const named = namedSubjectAnchors(requestText)
+  const namedGroups = namedSubjectAnchors(requestText)
     .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
-    .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5)
-    .flat();
-  const subjectUnits = named.length ? named : contentUnits.filter(unit => [...unit].length >= 6);
+    .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
+  const subjectUnits = namedGroups.length ? namedGroups.flat() : contentUnits.filter(unit => [...unit].length >= 6);
   if (!subjectUnits.length) return true;
   // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
   const surfaceUnits = memoizedSurfaceUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
@@ -949,14 +969,32 @@ export function answerCoversRequest(
   // born in Zurich in July 1910" answered when Einstein was born, because the article is about Einstein and the
   // sentence carries "born".
   const relationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
-  const sentenceUnits = memoizedSurfaceUnits(sentences.join(" ")).map(stripOuterPriorSeparators);
-  const subjectInSentence = (unit: string) => sentenceUnits.some(surfaceUnit => surfaceUnit === unit
-    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+  const answeringText = sentences.join(" ");
+  const sentenceUnits = memoizedSurfaceUnits(answeringText).map(stripOuterPriorSeparators);
   const relationCarried = relationUnits.every(unit => sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+  const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
+    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+  // Real prose names its subject once and continues by anaphora ("the mission", omission, a bare pronoun): requiring
+  // the literal name in every answering sentence rejected most of an article after its lead. Measured live: "Commander
+  // Neil Armstrong and Lunar Module Pilot ... landed the Lunar Module 'Eagle'" carries the relation and never repeats
+  // "Apollo 11" -- the sentence before it does, and that is where a reader resolves the subject too.
+  //
+  // The answering sentence's own subject match stays the original rule exactly -- a surname alone still answers for
+  // its subject, as it always could. Widening to the one preceding sentence applies only when the answering text
+  // names nothing of the subject at all, and there the WHOLE named anchor must be present together, not just one of
+  // its units: "In May 1904, their son Hans Albert was born in Bern, Switzerland" sits one sentence before Eduard's
+  // birth and carries the bare token "Albert", which is not the same evidence a full "Albert Einstein" repeated
+  // nearby would be. A single shared given name between two different people must not pass this gate.
+  const subjectInAnsweringText = subjectUnits.some(unitPresentIn(sentenceUnits));
+  const contextUnits = memoizedSurfaceUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
+  const subjectGroups = namedGroups.length ? namedGroups : [subjectUnits];
+  const subjectSatisfied = subjectInAnsweringText || subjectGroups.some(group => group.every(unitPresentIn(contextUnits)));
   // A name's parts are redundant (Einstein names Albert Einstein); a numeric qualifier is not (Apollo does not name
-  // Apollo 11), so every numeric unit of the subject must be in the sentence.
-  const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => sentenceUnits.includes(unit));
-  return subjectUnits.some(subjectInSentence) && numericQualifiersPresent && relationCarried;
+  // Apollo 11), so every numeric unit of the subject must be in the answering text or the one sentence before it --
+  // checked in the widened context regardless of whether a bare name already matched there, since that is exactly
+  // what tells "Apollo" alone apart from "Apollo 11".
+  const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => contextUnits.includes(unit));
+  return subjectSatisfied && numericQualifiersPresent && relationCarried;
 }
 
 /**
