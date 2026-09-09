@@ -10,7 +10,8 @@ import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { ensureSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
-import { requestSentenceSequences, surfaceRequestOrderedAdjacentPairFraction } from "./local-evidence-runtime.js";
+import { answerCoversRequest, requestContentEvidenceUnits, requestSentenceSequences, surfaceRequestOrderedAdjacentPairFraction } from "./local-evidence-runtime.js";
+import { requestClosedClassWords } from "./closed-class-words.js";
 
 export interface EvidenceGroundedAnswer {
   answer: string;
@@ -69,10 +70,27 @@ export function composeEvidenceGroundedAnswer(input: {
     locale: input.locale
   });
   const evidenceIds = [...new Set([...referencedIds, ...realized.evidenceIds.map(String)])];
-  const evidenceSurface = input.allowDirectSourceSurface
-    ? evidenceAnswerSurface(input.requestText, referencedEvidence.length ? referencedEvidence : input.evidence, maxSentences)
+  const gateSpans = referencedEvidence.length ? referencedEvidence : input.evidence;
+  const evidenceSurfaceRaw = input.allowDirectSourceSurface
+    ? evidenceAnswerSurface(input.requestText, gateSpans, maxSentences)
     : "";
-  const realizedSurface = usableAnswerSurface(realized.text);
+  const realizedSurfaceRaw = usableAnswerSurface(realized.text);
+  // Real bug, confirmed live: this composer's realized/evidence surfaces were never checked against the same
+  // answerhood gate local-evidence-runtime and mouth.ts's own surfaces already pass -- so text that merely scored
+  // well lexically (shared the subject's name plus some other date, some other sentence) could stand in as the
+  // answer even though no sentence of it actually carries the relation asked about, bound to the subject. Gated
+  // the same way mouth.ts's window fallback is: the whole surface must cover the request, and once a relation can
+  // be told apart from scaffolding, at least one of its own sentences must carry that relation on its own.
+  const closedClass = requestClosedClassWords({
+    requestText: input.requestText,
+    models: input.languageMemory?.models ?? [],
+    patterns: input.languageMemory?.importedPatterns ?? [],
+    authority: undefined
+  });
+  const coverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
+  const relationRequired = closedClass.size > 0;
+  const realizedSurface = surfaceAnswersRequest(realizedSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired) ? realizedSurfaceRaw : "";
+  const evidenceSurface = surfaceAnswersRequest(evidenceSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired) ? evidenceSurfaceRaw : "";
   // Real bug, confirmed live: for "when did X die?", the realizer's
   // sentence-scoring picked a genuinely unrelated sentence that merely
   // scored well lexically (shared the subject's name plus some date), not
@@ -82,7 +100,7 @@ export function composeEvidenceGroundedAnswer(input: {
   // needs the same real, evidence-derived answer, not a heuristic guess.
   // Only overrides for recognizably temporal questions; never fabricates,
   // never overrides a real answer with a worse one otherwise.
-  const temporalAnswer = extractTemporalAnswerFromEvidence(input.requestText, referencedEvidence.length ? referencedEvidence : input.evidence);
+  const temporalAnswer = extractTemporalAnswerFromEvidence(input.requestText, gateSpans);
   const answer = temporalAnswer || realizedSurface || evidenceSurface;
   return {
     answer,
@@ -240,6 +258,18 @@ function hashText(text: string): string {
   let hash = 2166136261;
   for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
   return (hash >>> 0).toString(16);
+}
+
+/** The same answerhood gate mouth.ts's window fallback already passes: the surface as a whole must cover the
+ *  request, and once a relation can be told apart from scaffolding, at least one of the surface's own sentences
+ *  must carry that relation bound to the subject on its own -- a multi-sentence surface that only covers the
+ *  request as a bag of units across disjoint sentences is not one fact. Pure. */
+function surfaceAnswersRequest(surface: string, spans: readonly EvidenceSpan[], units: readonly string[], requestText: string, relationRequired: boolean): boolean {
+  if (!surface || !units.length || !spans.length) return true;
+  if (!spans.some(span => answerCoversRequest([surface], span, units, requestText, { relationRequired }))) return false;
+  if (!relationRequired) return true;
+  const sentences = splitSurfaceSentences(surface);
+  return spans.some(span => sentences.some(sentence => answerCoversRequest([sentence], span, units, requestText, { relationRequired: true })));
 }
 
 function usableAnswerSurface(text: string): string {
