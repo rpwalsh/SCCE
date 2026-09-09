@@ -5,6 +5,7 @@ import type { CandidateField, CandidateSurface } from "./candidate.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
 import { isDegenerateBareSurface } from "./surface-linguistics.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
+import { CALIBRATION_TASK_CLASS_IDS, judgeRequirementWeights, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   functionalCandidateGateFailures,
   type FunctionalSelectionGate
@@ -18,6 +19,14 @@ export interface JudgeDecision {
   /** The hard gate as a typed score: 1 where a candidate cleared it, 0 with the named failures where it did not. */
   guardTrace: ScoreTrace[];
   audit: JsonValue;
+  /** Only set by selectForRequirementField -- what a caller needs to record a real judge-coefficient-learning observation, without re-deriving the selected candidate's quality vector. */
+  requirementSnapshot?: {
+    requirement: TurnRequirementField;
+    quality: Record<PositiveQualityKey, number>;
+    learned: boolean;
+    sampleCount: number;
+    blend: number;
+  };
 }
 
 function candidateGuardTrace(candidateId: string, failures: readonly string[], boundary: string): ScoreTrace {
@@ -49,6 +58,9 @@ export function createJudge(options: JudgeOptions = {}) {
       /** Off by default -- see selectForRequirementField's doc comment. Only an explicit shadow-evaluation/learning run should set this. */
       explorationSamplingEnabled?: boolean;
       functionalGate?: FunctionalSelectionGate;
+      /** Feeds the learned judge-requirement-weight model in place of (blended with) the 2026-07-12 bootstrap coefficients -- see calibration-spine.ts's judgeRequirementWeights. */
+      calibrationModelSet?: CalibrationModelSet;
+      calibrationTaskClass?: string;
     }): JudgeDecision {
       if (!input.field.candidates.length) throw new Error("judge received no candidates");
       if (input.requirementField) return selectForRequirementField({ ...input, requirementField: input.requirementField, random });
@@ -132,9 +144,16 @@ function selectForRequirementField(input: {
    */
   explorationSamplingEnabled?: boolean;
   functionalGate?: FunctionalSelectionGate;
+  calibrationModelSet?: CalibrationModelSet;
+  calibrationTaskClass?: string;
   random: () => number;
 }): JudgeDecision {
-  const weights = requirementPositiveWeights(input.requirementField);
+  const learnedWeights = judgeRequirementWeights({
+    requirement: input.requirementField,
+    modelSet: input.calibrationModelSet,
+    taskClass: input.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.generalCognition
+  });
+  const weights = learnedWeights.weights;
   const penalties = requirementPenaltyWeights(input.requirementField);
   const temperature = requirementTemperature(input.requirementField);
   const rows = input.field.candidates.map(candidate => {
@@ -192,6 +211,13 @@ function selectForRequirementField(input: {
     rejected: ranked.filter(row => row !== selected).map(row => ({ candidate: row.candidate, score: row.score, reasons: row.reasons })),
     scores: ranked.map(row => ({ candidateId: row.candidate.id, score: row.score, reasons: row.reasons })),
     guardTrace: ranked.map(row => candidateGuardTrace(row.candidate.id, row.hardFailures, "judge.requirementField")),
+    requirementSnapshot: {
+      requirement: input.requirementField,
+      quality: selected.quality,
+      learned: learnedWeights.learned,
+      sampleCount: learnedWeights.sampleCount,
+      blend: learnedWeights.blend
+    },
     audit: toJsonValue({
       schema: "scce.requirement_aware_judge.v1",
       coefficientModel: "judge.requirement.bootstrap.2026-07-12.v1",
@@ -205,6 +231,12 @@ function selectForRequirementField(input: {
       temperatureBounds: [0.08, 0.45],
       positiveWeights: weights,
       penaltyWeights: penalties,
+      learnedCoefficients: {
+        active: learnedWeights.learned,
+        modelId: learnedWeights.modelId ?? null,
+        sampleCount: learnedWeights.sampleCount,
+        blend: learnedWeights.blend
+      },
       rows: ranked.map(row => ({
         candidateId: row.candidate.id,
         kind: row.candidate.kind,
@@ -218,43 +250,6 @@ function selectForRequirementField(input: {
       }))
     })
   };
-}
-
-function requirementPositiveWeights(requirement: TurnRequirementField): Record<PositiveQualityKey, number> {
-  const averageRequirement = mean([
-    requirement.externalTruthAuthority,
-    requirement.sourceDependence,
-    requirement.noveltyDemand,
-    requirement.inferentialDepth,
-    requirement.semanticPreservation,
-    requirement.executableArtifactDemand,
-    requirement.dialogueDependence,
-    requirement.formatConstraintStrength
-  ]);
-  const logits: Record<PositiveQualityKey, number> = {
-    truthSupport: 0.10 + 2.20 * requirement.externalTruthAuthority,
-    sourceFidelity: 0.05 + 1.45 * requirement.sourceDependence + 0.75 * requirement.externalTruthAuthority,
-    requirementCoverage: 0.25 + 1.45 * averageRequirement,
-    novelty: 0.05 + 2.15 * requirement.noveltyDemand,
-    semanticPreservation: 0.05 + 2.10 * requirement.semanticPreservation,
-    transformationQuality: 0.05 + 1.45 * requirement.surfaceTransformation + 0.55 * requirement.semanticPreservation,
-    inferentialContinuity: 0.10 + 1.95 * requirement.inferentialDepth,
-    explanatoryPower: 0.05 + 1.35 * requirement.inferentialDepth + 0.35 * requirement.causalReasoningDemand,
-    executableCompleteness: 0.05 + 2.20 * requirement.executableArtifactDemand + 0.45 * requirement.actionCommitment,
-    dialogueContinuity: 0.05 + 2.10 * requirement.dialogueDependence,
-    languageQuality: 0.30 + 0.55 * requirement.audienceAdaptation,
-    usefulness: 0.25 + 0.60 * requirement.noveltyDemand + 0.70 * requirement.executableArtifactDemand,
-    coherence: 0.50 + 0.65 * requirement.inferentialDepth,
-    uncertaintyCalibration: 0.10 + 1.40 * requirement.externalTruthAuthority + 0.35 * requirement.uncertaintyTolerance,
-    formatFit: 0.05 + 2.00 * requirement.formatConstraintStrength,
-    styleFit: 0.10 + 1.20 * requirement.audienceAdaptation,
-    directness: 0.20 + 0.75 * (1 - requirement.brevityDetailBalance),
-    structure: 0.20 + 0.80 * requirement.formatConstraintStrength + 0.55 * requirement.executableArtifactDemand
-  };
-  const maxLogit = Math.max(...Object.values(logits));
-  const exponentials = Object.fromEntries(POSITIVE_QUALITY_KEYS.map(key => [key, Math.exp(Math.max(-40, Math.min(40, logits[key] - maxLogit)))])) as Record<PositiveQualityKey, number>;
-  const total = Object.values(exponentials).reduce((sum, value) => sum + value, 0);
-  return Object.fromEntries(POSITIVE_QUALITY_KEYS.map(key => [key, total > 0 ? exponentials[key] / total : 1 / POSITIVE_QUALITY_KEYS.length])) as Record<PositiveQualityKey, number>;
 }
 
 function requirementPenaltyWeights(requirement: TurnRequirementField): Record<NegativeQualityKey, number> {
