@@ -62,6 +62,13 @@ node tools/reference-comparison-large.mjs --server=http://127.0.0.1:3873 --out=a
 The table it prints (correct / wrong / declined / fabrications / cited / mean latency) is the one to quote;
 the JSON keeps every answer verbatim.
 
+## The evaluation record
+
+`node tools/build-parity-site.mjs` writes `artifacts/parity-site/index.html`: a tabbed page (overview, chat,
+code, operations, acceptance, reproduce) generated only from artifacts the tools above wrote. Rebuild it after
+re-running the probes or the comparison, so the page and the numbers never diverge; the published copy is at
+https://claude.ai/code/artifact/62e9614b-f356-4c02-9c6a-d3c6d20ad65d.
+
 ## Screenshots
 
 `node tools/capture-screenshots.mjs` re-captures `docs/screenshots/workbench-*.png` with a headless Edge or
