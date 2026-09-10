@@ -124,6 +124,7 @@ import {
   DEFAULT_FACTUAL_SURFACE_EXTENT,
   createDeterministicMouth,
   createMouth,
+  surfaceCarriesInternalFeatureKeys,
   type MouthSemanticInput,
   type SpokenOutput
 } from "./mouth.js";
@@ -3714,7 +3715,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               });
               const duplicatesPriorSection = candidate.accepted
                 && checkAntiCopyGuard(candidate.text, priorSectionPassages, 8).violatesProtectedSpan;
-              if (candidate.accepted && !duplicatesPriorSection) {
+              // The learned models carry the request corpus's pattern keys; a section that reads "any:story about"
+              // (live 2026-09-10) is retried with the next seed and otherwise skipped, never spoken.
+              const carriesFeatureKeys = candidate.accepted && surfaceCarriesInternalFeatureKeys(candidate.text);
+              if (candidate.accepted && !duplicatesPriorSection && !carriesFeatureKeys) {
                 direct = candidate;
                 break;
               }
@@ -3724,7 +3728,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 counts: { chars: candidate.text.length },
                 support: {
                   goal: section.goal,
-                  reason: duplicatesPriorSection ? "duplicates-prior-section" : candidate.reason,
+                  head: candidate.text.slice(0, 120),
+                  reason: carriesFeatureKeys ? "carries-feature-keys" : duplicatesPriorSection ? "duplicates-prior-section" : candidate.reason,
                   generation: toJsonValue(candidate.generationAudit ?? null)
                 }
               });

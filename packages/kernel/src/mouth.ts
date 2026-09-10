@@ -6388,6 +6388,12 @@ function containsInternalSurfaceArtifact(text: string): boolean {
     containsInternalGraphFeatureSurface(text);
 }
 
+/** Whether a surface carries request-pattern feature keys or the pattern separator; for callers outside the mouth
+ *  (the creative section generator draws on the same learned models). Pure. */
+export function surfaceCarriesInternalFeatureKeys(text: string): boolean {
+  return containsInternalGraphFeatureSurface(text);
+}
+
 function containsInternalGraphFeatureSurface(text: string): boolean {
   // Request-pattern feature keys ("any:what", "start:what", "end:...") and the invisible separator the pattern
   // compiler joins them with are not language: a learned surface built from them read "what year did ⁣ any:what

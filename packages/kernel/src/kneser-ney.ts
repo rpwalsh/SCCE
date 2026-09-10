@@ -551,6 +551,12 @@ function assertCompiledKneserNey(model: KneserNeyModel): void {
   }
 }
 
+/** A request-pattern feature key ("any:story", "start:what") or the invisible separator the pattern compiler joins
+ *  them with: trained into a model beside real words, never a word to continue with. Pure. */
+export function isInternalFeatureSymbol(symbol: string): boolean {
+  return /^(?:any|start|end|sym|bi|tri|char):/u.test(symbol) || symbol.includes("⁣");
+}
+
 function activeSuccessors(model: KneserNeyModel, rawContext: readonly string[], maximum: number): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -558,14 +564,14 @@ function activeSuccessors(model: KneserNeyModel, rawContext: readonly string[], 
   for (let start = 0; start < context.length && out.length < maximum; start += 1) {
     const key = gramKey(context.slice(start));
     for (const symbol of ownSuccessors(model.successorIndex, key)) {
-      if (seen.has(symbol)) continue;
+      if (seen.has(symbol) || isInternalFeatureSymbol(symbol)) continue;
       seen.add(symbol);
       out.push(symbol);
       if (out.length >= maximum) break;
     }
   }
   for (const symbol of model.baseContinuations) {
-    if (seen.has(symbol)) continue;
+    if (seen.has(symbol) || isInternalFeatureSymbol(symbol)) continue;
     seen.add(symbol);
     out.push(symbol);
     if (out.length >= maximum) break;
