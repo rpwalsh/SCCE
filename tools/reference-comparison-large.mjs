@@ -19,6 +19,12 @@ const configPath = args.get("config") ?? process.env.SCCE_CONFIG ?? "scce.config
 const outputPath = args.get("out") ?? "artifacts/parity-dataset/reference-comparison-large.json";
 const compareModel = args.get("compare") ?? "qwen2.5:3b";
 const modelEndpoint = args.get("endpoint") ?? "http://127.0.0.1:11434";
+// --model-from=<prior report.json>: the model's side is copied row by row from that run instead of asked again,
+// so SCCE can be re-measured after a change without the ~90-minute model pass. The row records where it came from.
+const modelFromPath = args.get("model-from");
+const priorModelRows = modelFromPath
+  ? new Map(JSON.parse(readFileSync(path.resolve(modelFromPath), "utf8")).rows.map(row => [row.question, row.model]))
+  : undefined;
 
 if (!process.env.SCCE_DATABASE_URL) {
   try {
@@ -287,7 +293,10 @@ try {
       evidence: result.evidence?.length ?? 0,
       cited: /source:/iu.test(scceAnswer)
     };
-    const model = await askModel(question.text, articles.get(question.article) ?? "");
+    const priorModel = priorModelRows?.get(question.id);
+    const model = priorModel
+      ? { answer: String(priorModel.answer ?? ""), durationMs: priorModel.durationMs ?? 0, cited: false, verdictSource: `carried from ${modelFromPath}` }
+      : await askModel(question.text, articles.get(question.article) ?? "");
 
     const statesExpected = (answer) => {
       const parts = String(question.expect).split(/[\s,]+/u).filter(Boolean);
@@ -305,7 +314,11 @@ try {
       answerable: question.answerable,
       expect: question.expect ?? null,
       scce: { ...scce, ...score(scce.answer), answer: scce.answer.slice(0, 220) },
-      model: { ...model, ...score(model.answer), answer: model.answer.slice(0, 220) }
+      // A carried row keeps its recorded verdicts: its answer is the 220-character record, not the full reply,
+      // and re-scoring a truncated answer once turned correct verdicts into wrong ones.
+      model: priorModel
+        ? { ...priorModel, verdictSource: model.verdictSource }
+        : { ...model, ...score(model.answer), answer: model.answer.slice(0, 220) }
     });
 
     const row = rows[rows.length - 1];

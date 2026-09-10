@@ -587,7 +587,11 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const primaryTitle = Boolean(primaryAnchor) && (evidenceTitleDistinctAnchorMatches(span, [primaryAnchor!]) || evidenceExactSourceAnchorMatches(span, [primaryAnchor!]));
     const sourceAffinityBoost = titleMatches ? 3 * titleRequestCoverage * (primaryTitle ? 1 : 0.7) : 0;
     let contentBoostIndex = -1;
-    if (titleMatches && contentRequestUnits.size) {
+    // Only the document's opening block has a lead to transfer from: in a mid-article chunk the first two
+    // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
+    // content word -- "The Athens area encompasses a variety of terrain ... the capital is the only major city in
+    // Europe" beat "'Athens' is the capital and largest city of Greece" by exactly that (live 2026-09-10).
+    if (titleMatches && contentRequestUnits.size && documentOpeningSpan(span)) {
       // Fragments (lowercase-initial in a cased script -- markup or
       // splitting leftovers) are ineligible to receive the transferred
       // boost: a glued image-caption block was winning the transfer on a
@@ -686,11 +690,26 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // in the atom's leading role, a passing mention lands in a trailing one. Preference, not a weight -- when no
   // candidate predicates about the anchor the original ordering stands, so this can only reorder, never exclude.
   // Bounded: compiling propositions is turn-time work, and only sentences already near the top can win anyway.
-  const predicating = anchored.anchors.length && !openingRow
-    ? rows.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
-      .filter(row => covers(row) && sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
+  // Among the top covering sentences, what a sentence says of the request comes first: the one carrying the most
+  // of the request's relation units wins outright ("Her contributions included publishing an algorithm" over the
+  // lead, for "what did she contribute?"). Predication about the subject and then the document's opening block
+  // only break ties among sentences that cover equally -- the opening block states the standing fact, the body
+  // its history ("From 1826 to 1846, Tuscaloosa served as Alabama's capital" outranked the lead's Montgomery, and
+  // "The Athens area encompasses ..." outranked "'Athens' is the capital and largest city of Greece", live
+  // 2026-09-10). Preferences, never exclusions: the original order stands where nothing separates candidates.
+  const relationRankUnits = coverageUnits.filter(unit => !subjectUnitSet.has(unit));
+  const relationCoverage = (row: { sentence: string }) => {
+    const units = memoizedSurfaceUnits(row.sentence).map(stripOuterPriorSeparators);
+    return relationRankUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length;
+  };
+  const covering = !openingRow ? rows.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT).filter(covers) : [];
+  const fullestCoverage = Math.max(0, ...covering.map(relationCoverage));
+  const fullest = covering.filter(row => relationCoverage(row) === fullestCoverage);
+  const predicating = anchored.anchors.length
+    ? fullest.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
     : [];
-  const selected = openingRow ?? predicating[0] ?? rows.find(covers);
+  const openingFirst = (list: typeof rows) => [...list.filter(row => documentOpeningSpan(row.span)), ...list.filter(row => !documentOpeningSpan(row.span))];
+  const selected = openingRow ?? openingFirst(predicating)[0] ?? openingFirst(fullest)[0] ?? rows.find(covers);
   if (!selected) return undefined;
   // Learned response-form sentence budget (lexical-gap fix for
   // enumeration-shaped requests): a request like "list the main characters
@@ -739,6 +758,20 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const window = tidySentences.slice(start, start + sentenceBudget);
     if (window.length > 1 && tidySpan.includes(window.join(" "))) {
       answerSentences = window;
+    }
+  }
+  // A sentence that carries the request's relation but names its subject only by anaphora ("Her contributions
+  // included publishing an algorithm...") is read with the sentence that names her: the two are spoken together,
+  // contiguous and verified as a substring the same way the window above is. The subject test is the one
+  // answerCoversRequest resolves through the preceding sentence; here that sentence becomes part of the answer.
+  if (answerSentences.length === 1 && !sentenceNamesRequestSubject(answerSentences[0]!, input.requestText)) {
+    const tidySpan = tidySurfaceText(selected.span.text);
+    const tidySentences = splitSurfaceSentences(tidySpan);
+    const matchIndex = tidySentences.findIndex(sentence => sentence.includes(selected.sentence) || selected.sentence.includes(sentence));
+    const preceding = matchIndex > 0 ? tidySentences[matchIndex - 1] : undefined;
+    if (preceding && sentenceNamesRequestSubject(preceding, input.requestText) && isProseSentence(preceding)) {
+      const pair = [preceding, tidySentences[matchIndex]!];
+      if (tidySpan.includes(pair.join(" "))) answerSentences = pair;
     }
   }
   const plan: LocalEvidenceAnswerPlan = {
@@ -840,7 +873,12 @@ export function proposeSourceExactEvidenceAnswer(input: {
     ? rankedSentences.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
       .filter(sentence => sentencePredicatesAboutAnchors(sentence, anchored.anchors))
     : [];
-  const preferredRanked = predicatingRanked.length ? predicatingRanked : rankedSentences;
+  // A preference, as the comment below says, so a reorder: the sentences that predicate about the subject lead and
+  // the rest follow. Dropping the rest silently cut "Who was Ada Lovelace, and what did she contribute?" to its
+  // first sentence once the lead was recognised as predicating (2026-09-10).
+  const preferredRanked = predicatingRanked.length
+    ? [...predicatingRanked, ...rankedSentences.filter(sentence => !predicatingRanked.includes(sentence))]
+    : rankedSentences;
   const sentences = planNearDuplicate || titleAnswersRequest || !anchored.anchors.length
     ? preferredRanked
     : preferredRanked.map(sentence => {
@@ -1019,7 +1057,19 @@ export function answerCoversRequest(
   const relationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
   const answeringText = sentences.join(" ");
   const sentenceUnits = memoizedSurfaceUnits(answeringText).map(stripOuterPriorSeparators);
-  const relationCarried = relationUnits.every(unit => sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+  const missingRelationUnits = relationUnits.filter(unit => !sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+  // A request that ends on a category ("...the capital of which country?", "...indigenous to which country?") is
+  // answered by a member of that category, and the member's sentence does not repeat the category: "'Athens' is the
+  // capital and largest city of Greece" never says "country". The one relation unit allowed to be absent is the
+  // request's last content unit, and only when the sentence names something cased the request did not -- the
+  // member. Every other relation unit is still required, so a sentence about the subject that merely shares a word
+  // with the request does not pass (the fabrication case this gate exists for).
+  const lastContentUnit = contentUnits[contentUnits.length - 1];
+  const categoryMemberAnswer = missingRelationUnits.length === 1
+    && relationUnits.length >= 2
+    && missingRelationUnits[0] === lastContentUnit
+    && sentenceNamesEntityOutsideRequest(answeringText, requestText);
+  const relationCarried = missingRelationUnits.length === 0 || categoryMemberAnswer;
   const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
     || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
   // Real prose names its subject once and continues by anaphora ("the mission", omission, a bare pronoun): requiring
@@ -1045,6 +1095,30 @@ export function answerCoversRequest(
   return subjectSatisfied && numericQualifiersPresent && relationCarried;
 }
 
+/** Whether a sentence names the request's subject itself: every unit of one named anchor is present (by identity or
+ *  inflection), the same test answerCoversRequest applies before it widens to the preceding sentence. Pure. */
+function sentenceNamesRequestSubject(sentence: string, requestText: string): boolean {
+  const groups = namedSubjectAnchors(requestText)
+    .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
+    .filter(units => units.length > 0);
+  if (!groups.length) return true;
+  const units = memoizedSurfaceUnits(sentence).map(stripOuterPriorSeparators);
+  const present = (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
+    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+  return groups.some(group => group.every(present));
+}
+
+/** A cased word inside the sentence (not its first) whose normalized form the request does not contain: the member a
+ *  category question is answered with ("Greece", "Japan", "Maurya"). Cased scripts only; uncased scripts never pass. */
+function sentenceNamesEntityOutsideRequest(sentence: string, requestText: string): boolean {
+  const requestUnits = new Set(memoizedSurfaceUnits(requestText).map(stripOuterPriorSeparators).map(unit => normalizePriorKey(unit)));
+  const words = surfaceWords(sentence).map(stripOuterPriorSeparators).filter(Boolean);
+  return words.some((word, index) => index > 0
+    && hasUppercaseLetter(word)
+    && [...word].length >= 3
+    && !requestUnits.has(normalizePriorKey(word)));
+}
+
 /**
  * Two surfaces share a stem when one matches the other by identity or inflection, or when their common prefix is at
  * least four code points and most of the longer surface: commanded/commander, land/landed, develop/developing. A
@@ -1057,6 +1131,11 @@ export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolea
   if ([...unit].length >= 5 && requestUnitMatchesSurface(unit, surfaceUnit)) return true;
   const left = [...unit];
   const right = [...surfaceUnit];
+  // The same one-letter rule as requestUnitMatchesSurface: "capita" shares no stem with "capital".
+  if ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.abs(left.length - right.length) === 1) {
+    const tail = (left.length > right.length ? unit : surfaceUnit).slice(Math.min(unit.length, surfaceUnit.length));
+    if (/\p{L}/u.test(tail)) return tail === "s";
+  }
   let shared = 0;
   while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
   return shared >= 4 && shared / Math.max(left.length, right.length) >= 0.6;
@@ -1902,7 +1981,18 @@ const SURFACE_UNITS_MEMO_MAX = 100_000;
   }
   const minLength = Math.min(unit.length, surfaceUnit.length);
   const maxLength = Math.max(unit.length, surfaceUnit.length);
-  const prefixCompatible = (unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && minLength / Math.max(1, maxLength) >= 0.72;
+  const prefixRelated = unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit);
+  // One character is not an inflection unless it is a plural: "capita" is not "capital" and "Borna" is not
+  // "born" (both live 2026-09-10, answering "the capital of Afghanistan" with per-capita aid). Decided here, before
+  // similarity, which would accept a one-letter difference on any word long enough.
+  const longer = unit.length > surfaceUnit.length ? unit : surfaceUnit;
+  const tail = longer.slice(minLength);
+  if (prefixRelated && tail.length === 1 && /\p{L}/u.test(tail)) {
+    const value = tail === "s";
+    if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, value);
+    return value;
+  }
+  const prefixCompatible = prefixRelated && minLength / Math.max(1, maxLength) >= 0.72;
   const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
   if (memoKey !== undefined) {
     if (requestUnitMatchMemo.size >= REQUEST_UNIT_MATCH_MEMO_MAX) requestUnitMatchMemo.clear();
@@ -2233,7 +2323,16 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   // often just the subject plus a neighbouring request word, and dropping the one-unit subject leaves only phrases
   // that occur nowhere. "What did Einstein discover?" admitted against `einstein discover` and `did einstein`,
   // matched no title, and admitted 0 of 36 spans that had matched `einstein` exactly.
-  const subjectAnchors = anchored.anchors.filter(anchor => anchorIsRequestSubjectUnit(anchor, anchored.anchors));
+  // The request's own named subject is a subject anchor whether or not every phrase carries it: "Athens is the
+  // capital of which country?" forms "capital which country" and "which country", so the every-phrase test refused
+  // "athens", the only anchor its article is titled with, and admitted nothing (live 2026-09-10).
+  const namedSubjectSingles = namedSubjectAnchors(requestText)
+    .map(anchor => normalizePriorKey(anchor))
+    .filter(anchor => splitPriorUnits(anchor).filter(Boolean).length === 1 && [...anchor].length >= 3 && !genericQuestionSignal(anchor));
+  const subjectAnchors = uniqueKernelStrings([
+    ...namedSubjectSingles,
+    ...anchored.anchors.filter(anchor => anchorIsRequestSubjectUnit(anchor, anchored.anchors))
+  ]);
   const admissionAnchors = specificAnchors.length || subjectAnchors.length
     ? uniqueKernelStrings([...specificAnchors, ...subjectAnchors])
     : anchored.anchors;
@@ -2526,6 +2625,16 @@ const ANCHOR_PREDICATION_RERANK_LIMIT = 8;
 function sentencePredicatesAboutAnchors(sentence: string, anchors: readonly string[]): boolean {
   const normalizedAnchors = anchors.map(anchor => normalizePriorKey(anchor)).filter(Boolean);
   if (!normalizedAnchors.length) return false;
+  // A sentence that opens on the anchor predicates about it by construction ("'Athens' is the capital and largest
+  // city of Greece"): the proposition compiler leaves a sentence-initial subject out of the leading role, so every
+  // encyclopedic lead failed this test while "The Athens area encompasses..." passed it (live 2026-09-10).
+  const sentenceUnits = splitPriorUnits(normalizePriorKey(sentence))
+    .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(Boolean);
+  if (normalizedAnchors.some(anchor => {
+    const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
+    return anchorUnits.length > 0 && anchorUnits.every((unit, index) => sentenceUnits[index] === unit);
+  })) return true;
   for (const atom of atomizeText({ text: sentence, source: SEMANTIC_SOURCE.CLAIM, maxAtoms: 2 })) {
     const leading = atom.roles[0];
     if (!leading) continue;
@@ -3514,7 +3623,11 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       const contentRequestUnits = new Set([...requestUnits].filter(unit =>
         !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)) && unit !== leadingScaffolding));
       let contentBoostIndex = -1;
-      if (titleMatches && contentRequestUnits.size) {
+      // Only the document's opening block has a lead to transfer from: in a mid-article chunk the first two
+    // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
+    // content word -- "The Athens area encompasses a variety of terrain ... the capital is the only major city in
+    // Europe" beat "'Athens' is the capital and largest city of Greece" by exactly that (live 2026-09-10).
+    if (titleMatches && contentRequestUnits.size && documentOpeningSpan(span)) {
         const coverage = sentences
           .map((sentence, index) => ({
             index,

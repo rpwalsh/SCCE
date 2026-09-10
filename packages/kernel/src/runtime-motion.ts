@@ -3,7 +3,7 @@
 import { type CandidateField, type CandidateSurface } from "./candidate.js";
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
-import { jsonRecord, kernelNumber, kernelString, kernelStringArray, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { formatSurfaceMessage } from "./localization.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
@@ -528,7 +528,10 @@ export function runtimeMotionCandidateField(input: {
   sourceSurfaces: readonly string[] = [],
   sourceUris: readonly string[] = []
 ): string {
-  const normalizedTopic = cognitiveTopicForRequest(requestText);
+  // The subject the request names is what was not found: "No grounded source for: Greek goddess" named the
+  // question's phrase, not Apollo (live 2026-09-10).
+  const namedSubject = namedSubjectAnchors(requestText)[0];
+  const normalizedTopic = namedSubject && [...namedSubject].length >= 3 ? namedSubject : cognitiveTopicForRequest(requestText);
   const topic = requestSurfaceCase(normalizedTopic, requestText);
   const slotSurfaces = unresolvedSlots
     .map(runtimeMotionSlotSurface)
