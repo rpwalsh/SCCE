@@ -735,6 +735,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     renderTerminal();
     renderTrace();
     renderRuntimeStatus();
+    // The status dot reflects the runtime, not a guess: one readiness check on load, and again when a turn ends.
+    get('/api/ready').then(r => setRuntimeStatus({ ready: Boolean(r && r.ok) })).catch(() => setRuntimeStatus({ ready: false }));
     refreshApprovals().catch(() => {});
     resumeStoredTurn().catch(() => {});
     prompt.focus();
