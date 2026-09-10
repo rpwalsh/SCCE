@@ -398,6 +398,76 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (applied) showAppliedReceipt(applied);
     }),
+    vscode.languages.registerCodeActionsProvider(
+      { scheme: "file" },
+      new ScceQuickFixProvider(),
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+    ),
+    vscode.commands.registerCommand("scce.quickFix", async (uri: vscode.Uri, diagnostic: vscode.Diagnostic) => {
+      const code = diagnosticNumericCode(diagnostic);
+      if (code === undefined) return;
+      const scopedStatus = await run("workspace.status", "Load quick-fix scope", false, activeClient => serverBoundWorkspace(activeClient));
+      if (!scopedStatus) return;
+      const statusResult = scopedStatus.status;
+      const relativePath = workspaceRelativePath(scopedStatus.binding.folder, uri);
+      if (!relativePath) {
+        void vscode.window.showErrorMessage("SCCE: this file is outside the bound workspace.");
+        return;
+      }
+      const generation = await run(
+        "workspace.patch.plan.request",
+        "Plan SCCE quick fix",
+        false,
+        activeClient => activeClient.workspaceCodingPatchPlan({
+          workspaceId: statusResult.workspace.id,
+          expectedWorkspaceUpdatedAt: statusResult.workspace.updatedAt,
+          requestId: `vscode-quickfix-${randomUUID()}`,
+          requestText: diagnostic.message,
+          requestedPaths: [relativePath],
+          diagnosticCodes: [code]
+        })
+      );
+      if (!generation) return;
+      if (generation.kind === "unresolved") {
+        const reasons = generation.reasonIds.join(", ");
+        output.appendLine(`[${new Date().toISOString()}] Quick fix was not resolved: ${reasons}`);
+        void vscode.window.showInformationMessage(`SCCE found no unique admissible compiler action for this diagnostic. Reason IDs: ${reasons}`);
+        return;
+      }
+      let reviewedWorkspace: BoundOpenWorkspace;
+      try {
+        reviewedWorkspace = await openPatchPlanPreview(patchPreview, statusResult.workspace.rootPath, generation.plan);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`[${new Date().toISOString()}] Quick-fix preview failed: ${message}`);
+        void vscode.window.showErrorMessage(`SCCE: ${message}`);
+        return;
+      }
+      const reviewed = await vscode.window.showWarningMessage(
+        "Review the opened before/after diff, then confirm whether to continue.",
+        { detail: `No files were changed during preview. Plan ${generation.plan.planHash}` },
+        "Continue to approval",
+        "Cancel"
+      );
+      if (reviewed !== "Continue to approval") return;
+      const applied = await run(
+        "workspace.patch",
+        "Apply SCCE quick fix",
+        true,
+        async activeClient => {
+          const currentStatus = await activeClient.workspaceStatus();
+          if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("the server's active workspace changed after coding-plan review");
+          const currentWorkspace = await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
+          assertSameWorkspacePhysicalBinding(reviewedWorkspace, currentWorkspace);
+          return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, currentStatus.workspace.rootPath, reviewedWorkspace, generation.plan);
+        },
+        {
+          message: `Apply ${generation.plan.operations.length} verified fix operation(s) to this file?`,
+          detail: `${codingPlanReviewSummary(generation)}\n\nThe server will verify all content hashes, stage the workspace, run ${DEFAULT_PATCH_VALIDATION_POLICY_ID}, require a separate capability authorization, and commit only after validation passes.`
+        }
+      );
+      if (applied) showAppliedReceipt(applied);
+    }),
     vscode.commands.registerCommand("scce.workspace.applyPatchPlan", async () => {
       const boundStatus = await run("workspace.status", "Bind reviewed patch workspace", false, async activeClient => {
         const workspaceStatus = await activeClient.workspaceStatus();
@@ -547,6 +617,44 @@ async function chooseLocalWorkspacePathForInitialization(): Promise<string | und
     }
   );
   return selected?.folder.uri.fsPath;
+}
+
+/**
+ * Native VS Code quick fixes for any diagnostic carrying a numeric code (the compiler-owned lane's own
+ * admission requirement -- see workspaceCodingPatchPlan). One action per diagnostic in range; the label
+ * names the diagnostic itself, not a generic "fix with SCCE" that would tell a user nothing about what
+ * they are about to run.
+ */
+class ScceQuickFixProvider implements vscode.CodeActionProvider {
+  provideCodeActions(document: vscode.TextDocument, _range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext): vscode.CodeAction[] {
+    const actions: vscode.CodeAction[] = [];
+    for (const diagnostic of context.diagnostics) {
+      const code = diagnosticNumericCode(diagnostic);
+      if (code === undefined) continue;
+      const action = new vscode.CodeAction(`SCCE: Fix "${diagnostic.message}"`, vscode.CodeActionKind.QuickFix);
+      action.diagnostics = [diagnostic];
+      action.command = { command: "scce.quickFix", title: "Fix with SCCE", arguments: [document.uri, diagnostic] };
+      actions.push(action);
+    }
+    return actions;
+  }
+}
+
+function diagnosticNumericCode(diagnostic: vscode.Diagnostic): number | undefined {
+  const code = diagnostic.code;
+  if (typeof code === "number") return code;
+  if (typeof code === "object" && code !== null && typeof code.value === "number") return code.value;
+  return undefined;
+}
+
+/** Workspace-relative, forward-slash path matching the server's own `source.path` shape, or undefined outside the bound folder. */
+function workspaceRelativePath(folder: vscode.WorkspaceFolder, uri: vscode.Uri): string | undefined {
+  if (uri.scheme !== "file") return undefined;
+  const relativePath = vscode.workspace.asRelativePath(uri, false);
+  const resolvedFolder = resolve(folder.uri.fsPath);
+  const resolvedFile = resolve(uri.fsPath);
+  if (!sameFileSystemPath(resolvedFile.slice(0, resolvedFolder.length), resolvedFolder)) return undefined;
+  return relativePath.split("\\").join("/");
 }
 
 async function serverBoundWorkspace(activeClient: ScceClient): Promise<{

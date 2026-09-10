@@ -4,7 +4,7 @@ export type UiMessageKey = keyof typeof UI_MESSAGES_EN_US | string;
 
 export const UI_MESSAGES_EN_US = {
   "app.lang": "en",
-  "app.title": "SCCE v3 Workbench",
+  "app.title": "SCCE",
   "app.subtitle": "Postgres-only cognitive runtime",
   "activity.explorer": "Explorer",
   "activity.search": "Search",
@@ -119,6 +119,7 @@ export const UI_MESSAGES_EN_US = {
   "workbench.pane.database": "Database",
   "workbench.pane.connectors": "Connectors",
   "error.prefix": "ERROR",
+  "chat.declined": "I don't have grounded evidence for that in what I've ingested, so I won't guess.",
   "approval.required": "approval-required",
   "ui.message.db.verify": "Verify database",
   "ui.message.ingest.started": "Ingest started",
