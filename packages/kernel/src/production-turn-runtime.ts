@@ -3826,6 +3826,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           break;
         }
       }
+      // A candidate whose absence of a surface reflects a real, already-computed contradiction against the
+      // request's own premise (proof-calculus.ts's existing contradiction-pressure threshold, 0.2 -- not a new
+      // number) is a different failure from "nothing was found": real evidence WAS found and cited, it simply
+      // cannot lexically restate a premise the evidence itself contradicts, which is exactly what the coverage
+      // gate every other realization path requires to prevent fabrication. Measured live: "Why did Apollo 11
+      // land on Mars?" retrieved and cited the real Apollo 11 landing evidence, computed a real contradiction
+      // score, and returned silence -- the honest, cited evidence was sitting there and never spoken. Letting
+      // it stand as the answer invents nothing: it is the same admitted span text every other source-bound path
+      // in this function already trusts, bounded to its first sentences the same way local-evidence quoting is.
+      if (!spoken.text.trim() && judged.selected.scores.contradiction > 0.2 && selectedEvidence.length > 0) {
+        const citedIds = new Set((judged.selected.evidenceIds ?? []).map(String));
+        const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id))) ?? selectedEvidence[0];
+        const spanText = tidySurfaceText(String(contradictedSpan?.text ?? contradictedSpan?.textPreview ?? ""));
+        const boundedText = splitSurfaceSentences(spanText).slice(0, 2).join(" ").trim();
+        if (contradictedSpan && boundedText) {
+          kernelTrace({
+            stage: "mouth.contradiction_fallback",
+            label: "kernel.turn",
+            counts: { answerChars: boundedText.length },
+            support: { selectedCandidateId: judged.selected.id, contradiction: judged.selected.scores.contradiction, evidenceId: String(contradictedSpan.id) }
+          });
+          spoken = { ...spoken, text: boundedText, evidenceRefs: [contradictedSpan.id] };
+        }
+      }
       // Real citation, not a stylistic flourish: an evidence-grounded
       // factual/reasoned answer -- quoted or synthesized, doesn't matter
       // which -- must carry a real source name and, when one is
