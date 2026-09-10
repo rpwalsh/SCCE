@@ -124,8 +124,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     .small-btn:hover { color:var(--text); }
     .json, .flow { padding:10px 12px; font:11.5px/1.5 Consolas, monospace; color:#d7dae0; white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; }
     .flow { color:#c3e88d; }
-    .statusbar { flex:none; height:22px; background:#0e639c; display:flex; align-items:center; gap:16px; padding:0 12px; font-size:11px; color:#fff; overflow:hidden; }
-    .statusbar .pill { opacity:0.95; white-space:nowrap; }
+    .topbar .brand .dot.busy { background:var(--warn); box-shadow:0 0 0 3px rgba(231,198,100,0.15); }
+    .topbar .brand .dot.down { background:var(--bad); box-shadow:0 0 0 3px rgba(255,107,107,0.15); }
     .palette { position:fixed; inset:60px auto auto 50%; transform:translateX(-50%); width:min(680px, calc(100vw - 28px)); background:var(--panel2); border:1px solid var(--line); box-shadow:0 18px 48px rgba(0,0,0,.42); border-radius:8px; display:none; z-index:20; }
     .palette.open { display:block; }
     .palette input { width:100%; height:42px; background:var(--panel); color:var(--text); border:0; border-bottom:1px solid var(--line); border-radius:8px 8px 0 0; padding:0 12px; font:13px inherit; outline:0; }
@@ -142,8 +142,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
 <body>
   <div class="app">
     <div class="topbar">
-      <div class="brand"><span class="dot"></span><span>${escapeHtml(uiText("app.title"))}</span></div>
-      <div class="origin">${escapeHtml(serverUrl)}</div>
+      <div class="brand"><span class="dot" id="status-dot"></span><span>${escapeHtml(uiText("app.title"))}</span></div>
+      <div class="origin" id="status-runtime" title="${escapeHtml(serverUrl)}"></div>
       <div class="spacer"></div>
       <div class="badge" id="approvals-badge"></div>
       <button class="iconbtn" id="dev-toggle" title="${escapeHtml(uiText("app.developer_panel"))}" aria-label="${escapeHtml(uiText("app.developer_panel"))}">&#9881;</button>
@@ -160,7 +160,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         </div>
         <div class="composer-wrap">
           <div class="composer">
-            <textarea id="prompt" rows="1" placeholder="${escapeHtml(uiText("composer.placeholder"))}">${escapeHtml(uiText("prompt.default"))}</textarea>
+            <textarea id="prompt" rows="1" placeholder="${escapeHtml(uiText("composer.placeholder"))}"></textarea>
             <button id="send">${escapeHtml(uiText("button.send"))}</button>
           </div>
         </div>
@@ -212,12 +212,6 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           </div>
         </div>
       </aside>
-    </div>
-    <div class="statusbar">
-      <span class="pill">${escapeHtml(uiText("status.product"))}</span>
-      <span class="pill">${escapeHtml(uiText("status.postgres"))}</span>
-      <span class="pill">${escapeHtml(uiText("status.math"))}</span>
-      <span class="pill" id="status-runtime"></span>
     </div>
   </div>
   <div class="palette" id="palette"><input id="palette-input" aria-label="${escapeHtml(uiText("palette.aria"))}" /><div class="palette-list" id="palette-list"></div></div>
@@ -422,13 +416,19 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     }
     function setInspector(value) {
       apply({ type: 'inspector.set', value });
-      setInspector(workbench.inspector);
+      renderInspector();
+    }
+    function renderInspector() {
+      inspector.textContent = JSON.stringify(workbench.inspector, null, 2);
     }
     function renderRuntimeStatus() {
       const pill = document.getElementById('status-runtime');
-      if (!pill) return;
-      const readiness = workbench.status.ready ? t('status.runtime.ready') : t('status.runtime.unknown');
-      pill.textContent = readiness + ' - ' + (workbench.status.requestInFlight ? t('status.runtime.busy') : t('status.runtime.idle'));
+      const dot = document.getElementById('status-dot');
+      if (!pill || !dot) return;
+      const busy = Boolean(workbench.status.requestInFlight);
+      pill.textContent = busy ? t('status.runtime.busy') : (workbench.status.ready ? '' : t('status.runtime.unknown'));
+      dot.classList.toggle('busy', busy);
+      dot.classList.toggle('down', !busy && !workbench.status.ready);
     }
     function setRuntimeStatus(status) { apply({ type: 'status.patch', status }); renderRuntimeStatus(); }
     async function postTurnStream(url, body, onFrame) {
@@ -492,7 +492,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         setInspector({ dialogue: result.dialogue, proof: result.entailment?.proof, actionGraph: result.actionGraph });
       } catch (error) {
         hideTyping(); setSending(false);
-        add('error', t('error.prefix') + ' ' + error.message);
+        if (String(error.message).includes('runtime declined')) add('scce', t('chat.declined'));
+        else add('error', t('error.prefix') + ' ' + error.message);
       }
     }
     async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw new Error(JSON.stringify(j)); return j; }
@@ -719,7 +720,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         await refreshApprovals();
       } catch (e) {
         hideTyping(); setSending(false); runningTaskId = '';
-        add('error', t('error.prefix') + ' ' + e.message);
+        if (String(e.message).includes('runtime declined')) add('scce', t('chat.declined'));
+        else add('error', t('error.prefix') + ' ' + e.message);
       }
     };
     document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
