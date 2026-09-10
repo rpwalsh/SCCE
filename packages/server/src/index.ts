@@ -19,7 +19,7 @@ const OPERATOR_SURFACE_MESSAGES = {
   "learning.need.evidence": "Needs more supporting evidence before this can be answered from the corpus: {text}",
   "learning.need.contradiction": "Sources disagree on this claim and the conflict is unresolved: {claim}",
   "learning.need.language": "Needs language material for {script} before this surface can be produced: {reason}",
-  "runtime.motion.no_grounded_source": "I don't have a grounded source about {topic} in what I've ingested, so I won't guess."
+  "runtime.motion.no_grounded_source": "No grounded source in the ingested corpus for: {topic}."
 } as const;
 
 async function main(): Promise<void> {

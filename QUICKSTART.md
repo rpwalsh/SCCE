@@ -65,7 +65,16 @@ npx @vscode/vsce package --no-dependencies
 from `packages/vscode`, then install the generated `.vsix` via VS Code's
 "Install from VSIX". The SCCE chat view connects to the local server.
 
+**Browser workbench**: open `http://127.0.0.1:3873/`. It is a chat; the gear opens the developer panel with the
+evidence tree, approvals, settings, the proof inspector and the turn trace. A question can travel in the link:
+`http://127.0.0.1:3873/?q=Who%20is%20Ada%20Lovelace%3F` asks on arrival. `/api/ready` reports `ok: true` once
+warmup has hydrated the resident graph and language memory (two to three minutes on the full brain); it answers
+instantly while warming and never runs a table scan on the request path.
+
 **CLI**: `pnpm scce` exposes the same runtime from the terminal.
+
+**Demo script**: [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md) — what to ask, what each answer shows, and the
+commands that reproduce every quoted number (`tools/live-probe.mjs`, `tools/reference-comparison-large.mjs --server`).
 
 ## What to look for
 

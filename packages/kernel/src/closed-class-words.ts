@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { KneserNeyModel } from "./kneser-ney.js";
-import { jsonRecord } from "./kernel-answer-primitives.js";
+import { jsonRecord, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { isRequestRequirementPattern } from "./request-requirement-learning.js";
 import type { LanguagePatternRecord } from "./storage.js";
 
@@ -51,6 +51,12 @@ export function requestClosedClassWords(input: {
   const opening = input.requestText.normalize("NFC").toLocaleLowerCase().split(/[^\p{L}\p{M}\p{N}'’-]+/u).filter(Boolean).slice(0, 2);
   const out = new Set(scaffolding);
   for (const word of opening) if (corpus.has(word)) out.add(word);
+  // The request corpus teaches its frames with real subjects in them ("Who was Ada Lovelace?"), so the subjects'
+  // words arrive here as scaffolding literals; the moment that corpus was ingested, "Who is Ada Lovelace?" dropped
+  // its only anchor group as scaffolding and retrieved nothing. What this request names is never its scaffolding.
+  for (const anchor of namedSubjectAnchors(input.requestText)) {
+    for (const unit of anchor.toLocaleLowerCase().split(/\s+/u)) out.delete(unit);
+  }
   return out;
 }
 

@@ -111,7 +111,9 @@ import {
   sessionContextEvidenceEnabled,
   sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest,
   evidenceSpanProvenanceTitle,
+  evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
+  requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
@@ -252,6 +254,7 @@ import type {
   EvidenceSpan,
   GraphSlice,
   GraphSnapshot,
+  SourceVersionId,
   JsonValue,
   OwnerInput,
   PolicyProfile,
@@ -1161,7 +1164,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ? discourseObject.evidenceIds
           : runtimeEvidenceIdsFromMetadata(input.metadata)
         : []);
-      const discourseEvidenceBound = explicitContextEvidenceIds.size > 0;
+      let discourseEvidenceBound = explicitContextEvidenceIds.size > 0;
       const allowSemanticFrameEvidence = deps.evaluationCondition?.flags.disableLanguageMemory !== true
         && deps.evaluationCondition?.flags.disableLearnedSemantics !== true;
       const typedIngestProjector = createTypedIngestProjector({ idFactory, hasher });
@@ -1217,6 +1220,38 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           evidence: graphSlice.evidence.length
         }
       });
+      // A follow-up names no subject of its own: "where and when was he born?" after a turn about Einstein searched
+      // the corpus for "born", admitted the Borna Reichstag constituency, and answered 18 January 1871. The discourse
+      // object already names the turn this one continues; it binds when the request's own search found no source
+      // titled with what the request named. A request that names a subject the corpus holds ("Tell me about Paris")
+      // keeps its own retrieval; one that names none, or names something the corpus has no article for ("what did
+      // he win the Nobel Prize for?"), continues the conversation -- and the answerhood gate still requires the
+      // bound sentence to carry the request's own units, so a subject the bound article never mentions declines.
+      if (!discourseEvidenceBound && discourseObject?.evidenceIds.length
+        && !evidenceTitledForRequestSubject(input.text, graphSlice.evidence.filter(span => !String(span.id).startsWith("evidence_session_")))) {
+        const discourseBoundStarted = Date.now();
+        const boundSlice = await graphForEvidenceIds([...discourseObject.evidenceIds]).catch(() => undefined);
+        if (boundSlice && boundSlice.evidence.length) {
+          // The carrier turn's spans are the chunks that answered it, not the subject's definition: "where and when
+          // was he born?" bound to the inventions chunk and dated a son's birth. The bound sources' opening blocks
+          // come along, so a follow-up can reach the lead the way a fresh question does.
+          const boundSourceIds = uniqueKernelStrings(boundSlice.evidence.map(span => String(span.sourceVersionId))).slice(0, 3);
+          const openingBlocks = deps.storage.evidence.openingEvidenceForSourceVersions
+            ? await deps.storage.evidence.openingEvidenceForSourceVersions(boundSourceIds.map(id => id as SourceVersionId)).catch(() => [] as EvidenceSpan[])
+            : [];
+          const boundEvidence = mergeEvidenceSpans([...boundSlice.evidence, ...openingBlocks.filter(span => !isUnparsedMarkupText(String(span.text ?? "")))]);
+          graphSlice = { ...boundSlice, evidence: boundEvidence };
+          for (const span of boundEvidence) explicitContextEvidenceIds.add(String(span.id));
+          discourseEvidenceBound = true;
+        }
+        kernelTrace({
+          stage: "graph.resolve.discourse_bound",
+          label: "kernel.turn.graph_slice",
+          durationMs: Date.now() - discourseBoundStarted,
+          counts: { evidence: boundSlice?.evidence.length ?? 0 },
+          support: { objectId: discourseObject.objectId, bound: discourseEvidenceBound, bindingConfidence: discourseObject.bindingConfidence }
+        });
+      }
       // The resident slice is a latency optimization, not a corpus. The server sets `fastLocalEvidenceAnswer` on
       // every API turn, so `residentOnly` was permanently on and the durable corpus was unreachable through the
       // product's own API: asked "Who was Ada Lovelace?" against a brain holding her article, the HTTP path
@@ -1263,7 +1298,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const ftrlShadowRankingPromise = requestedAuthority === "creative"
         ? Promise.resolve(undefined)
         : ftrlShadowRankingForFeatures(graphRetrievalFeatures(retrievalText)).catch(() => undefined);
-      const semanticFrameBoundEvidenceIds = new Set(graphSlice.semanticFrameBoundEvidenceIds ?? []);
+      // Discourse-bound evidence is explicitly bound by the turn it continues, the same standing a matched semantic
+      // frame gives a span: admission and the answer proposer accept it without a title that matches the request.
+      const semanticFrameBoundEvidenceIds = new Set([
+        ...(graphSlice.semanticFrameBoundEvidenceIds ?? []),
+        ...(discourseEvidenceBound ? [...explicitContextEvidenceIds] : [])
+      ]);
       let graph = graphSlice.graph;
       // What the owner taught this session enters the same typed ingestion durable evidence enters.
       //
@@ -1853,7 +1893,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const evidenceSelectionPool = proofSelectedEvidence.length
         ? mergeEvidenceSpans([...proofSelectedEvidence, ...metadataSelectedEvidence])
         : promoted;
-      let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds));
+      // A subject-only request is answered by the subject's own opening block; relevance ranking prefers the chunks
+      // that repeat the name most ("What is acupuncture?" selected the injection and licensing chunks over the
+      // definition), so the titled opening block, when the pool holds one, leads the selection.
+      const rankedForRequest = evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
+      const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => unit !== requestLeadingScaffoldingUnit(input.text)).every(unit =>
+        namedSubjectAnchors(input.text).some(anchor => anchor.toLocaleLowerCase().split(/\s+/u).includes(unit)));
+      const titledOpeningSpan = subjectOnlyRequest
+        ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
+        : undefined;
+      let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
+        ? uniqueRecordsById([titledOpeningSpan, ...rankedForRequest], Math.max(2, rankedForRequest.length))
+        : rankedForRequest);
       const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence]);
       const selectedTemporalCandidateEvidence = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
       const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalCandidateEvidence)
@@ -3602,10 +3653,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           protectedPassages: selectedEvidence.slice(0, 8).map(span => ({ sourceId: String(span.id), text: span.text })),
           castSubjectIds: creativeCastSubjectIds
         });
+        // A creative turn reaches generation only after retrieval and a cold role hydration, by which time the
+        // initial-response budget is spent and every section was refused ("empty realization", live 2026-09-10).
+        // The visible response has already been streamed; the story itself gets its own bounded allowance.
+        const extendedGenerationStarted = Date.now();
         extendedGenerationRun = await runExtendedGeneration({
           session: extendedSession,
           realizeSection: async (section, _index, priorSectionTexts, conditioning) => {
-            if (deadlineCheckpoint("runtime.mouth.extended_section", 1_000)?.allowed === false) return { text: "" };
+            const sectionDecision = deadlineCheckpoint("runtime.mouth.extended_section", 1_000);
+            const creativeAllowance = requestedAuthority === "creative" && Date.now() - extendedGenerationStarted < CREATIVE_GENERATION_ALLOWANCE_MS;
+            if (sectionDecision?.allowed === false && !creativeAllowance) return { text: "" };
             // The real established-facts conditioning (narrative-state.ts)
             // tells this section which cast members already appeared --
             // still-unintroduced members are boosted harder so the whole
@@ -4979,6 +5036,8 @@ const TURN_REQUIREMENT_FLUSH_STEPS = 16;
 
 /** What the durable retrieval escalation must be able to spend before the deadline guard refuses it. */
 const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
+/** How long a creative turn may keep realizing sections after the initial-response budget is spent. Bounded. */
+const CREATIVE_GENERATION_ALLOWANCE_MS = 12_000;
 
 function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAuthority: string): EvidenceSpan[] {
   if (requestedAuthority === "program") return [...pool];

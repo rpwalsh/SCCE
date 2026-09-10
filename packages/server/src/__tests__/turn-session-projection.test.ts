@@ -159,7 +159,7 @@ describe("turn session metadata projection", () => {
     expect(runtime.initialResponseDeadline).toMatchObject({
       schema: "scce.initial_visible_response.v1",
       clock: "node.performance.v1",
-      budgetMs: 5_000
+      budgetMs: 10_000
     });
     expect(runtime).not.toHaveProperty("deadline");
 
@@ -183,7 +183,7 @@ describe("turn session metadata projection", () => {
     expect(frames[0]).toMatchObject({
       schema: "scce.turn_stream.v1",
       type: "accepted",
-      initialVisibleResponseDeadlineMs: 5_000
+      initialVisibleResponseDeadlineMs: 10_000
     });
     expect(frames[0]?.taskId).toEqual(expect.any(String));
     expect(frames[0]?.streamUrl).toContain("/api/turn/task/");

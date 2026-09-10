@@ -143,7 +143,11 @@ unsupported-content block are real and tested; a deliberate attack suite does no
 20 to 50 cognitive transitions, measuring state growth, correctness, provenance, planning coherence, retrieval,
 latency and memory stability.
 **Pass:** degradation is graceful rather than catastrophic.
-**Today:** not covered.
+**Today:** harnessed. `tools/long-horizon-gate.mjs --turns=N` runs N turns in one process against the live brain
+and records, per turn, wall-clock, what language memory delivered, evidence admitted, whether an answer was
+produced, and resident memory (`artifacts/long-horizon-gate.json`); `tools/build-parity-site.mjs` renders the
+record. First measurement 2026-09-08 on the 22M-row brain: resident 421 → 1,241 MB across six turns, turns
+2.7-14.4 s. The gate's own criterion is graceful decline, so the number per turn is what a reader judges.
 
 ### 17. State portability
 Create state on A, export canonical durable state, restore on B, re-run the tests.
@@ -170,7 +174,14 @@ A genuinely novel task requiring understanding, retrieval, graph construction, e
 learning, planning, tool use, interpretation, realization and persistence, with at least one induced failure, no
 test-specific hooks and no human intervention.
 **Pass:** it completes and produces the trace, state and provenance artifacts showing how.
-**Today:** not covered.
+**Today:** harnessed. `tools/full-system-one-shot.mjs` invents a corpus about subjects that do not exist,
+ingests it into a schema created for the run and dropped after, and asks the same question before ingest (must
+fail) and after (must answer from the ingested text) -- the negative control that locates the moment of
+acquisition and closes the "a cache already knew this" objection. Seventeen named capabilities are checked by
+event identity, not count, and the answer assertion is provenance-bound (the value must appear in the answer and
+in the evidence the turn carried). Output: `artifacts/full-system-one-shot.json`; the exit code is non-zero when
+a required stage fails. First run 2026-09-08: 12/13 required stages, the miss being
+`realization.answers_specific_value` (asked a temperature the corpus states, it returned the subject's definition).
 
 ---
 

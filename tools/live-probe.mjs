@@ -25,7 +25,7 @@ for (const text of questions) {
     const response = await fetch(`${serverUrl}/api/turn`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, ...(sessionId ? { session: { sessionId } } : {}) })
+      body: JSON.stringify({ text, ...(sessionId ? { sessionId, conversationId: sessionId } : {}) })
     });
     payload = await response.json();
     payload.__status = response.status;
@@ -45,6 +45,27 @@ for (const text of questions) {
 const total = rows.reduce((sum, row) => sum + row.elapsedMs, 0);
 const answered = rows.filter(row => row.status === 200 && row.answer && row.evidence > 0).length;
 console.log(`\n${rows.length} questions, ${answered} answered with evidence, mean ${Math.round(total / rows.length)}ms, max ${Math.max(...rows.map(row => row.elapsedMs))}ms`);
+
+// --json=<path> records the run verbatim, so a report can be generated from what was measured.
+const jsonIndex = args.findIndex(arg => arg.startsWith("--json="));
+if (jsonIndex >= 0) {
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const target = args[jsonIndex].slice("--json=".length);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, `${JSON.stringify({
+    schema: "scce.live_probe.v1",
+    generatedAt: new Date().toISOString(),
+    serverUrl,
+    session: sessionId ?? null,
+    questions: rows.length,
+    answeredWithEvidence: answered,
+    meanMs: Math.round(total / rows.length),
+    maxMs: Math.max(...rows.map(row => row.elapsedMs)),
+    rows
+  }, null, 2)}\n`, "utf8");
+  console.log(`wrote ${target}`);
+}
 
 function stageSummary(traceFile) {
   if (typeof traceFile !== "string") return [];
