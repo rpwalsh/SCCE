@@ -119,7 +119,6 @@ export const UI_MESSAGES_EN_US = {
   "workbench.pane.database": "Database",
   "workbench.pane.connectors": "Connectors",
   "error.prefix": "ERROR",
-  "chat.declined": "I don't have grounded evidence for that in what I've ingested, so I won't guess.",
   "approval.required": "approval-required",
   "ui.message.db.verify": "Verify database",
   "ui.message.ingest.started": "Ingest started",

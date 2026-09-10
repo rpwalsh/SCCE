@@ -76,6 +76,28 @@ The live brain holds 22,259 sources across 23,512 versions, 64,223 evidence span
 
 It counts 1,670 exports: 1,178 reached from a real entry point, 461 module-internal helpers, and 31 unreached. Of the unreached, 17 are implemented, tested capabilities not yet called from a runtime path; 13 of those carry a written engineering reason, and **none has no caller anywhere**. The figure is tracked as it falls: 183 at the start of this pass, 67 a day ago, 17 today. The tool matches names as words rather than through the type system, so the unreached figure is a lower bound.
 
+### Chat surface, measured 2026-09-10
+
+The same live brain, asked over the product's own HTTP API with `tools/live-probe.mjs` (the twelve questions in
+`tools/probe-questions.txt`; every line reproduces against a running server):
+
+- Turn latency went from **81 s** to a **7–10 s** mean. The cause was not the kernel: every readiness poll ran an
+  exact `COUNT(*)` over a 15.1M-row / 34 GB table on the request path, one more scan per poll that arrived mid-scan,
+  and ~40 scans at once per call — `pg_stat_activity` showed 17 concurrent scans and the connection pool exhausted.
+  Readiness now answers from a single-flight, stale-while-revalidate cache and never scans on the request path.
+- "Who is X?" answers from X's own article: the subject's opening block is fetched whenever admission kept only
+  mid-article chunks, a sentence-initial capital is no longer read as a name (`What is acupuncture?` had anchored
+  `what`), connectors keep `Alfred the Great` and `Joan of Arc` whole, and the factual admission gate no longer
+  counts the request's own question word and punctuation as unproven obligations — which had let a bare dialogue
+  continuation echoing the subject ("Aphrodite") win over a supported, cited sentence.
+- A false premise is corrected from evidence (`Did Apollo 11 land on Mars?` answers with the Moon landing), and a
+  question the corpus cannot ground declines instead of echoing the question back.
+- A follow-up that names its subject only by pronoun binds to the turn it continues instead of searching the corpus
+  for its verb (`where and when was he born?` had answered from the Borna Reichstag constituency article).
+
+[`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md) is the operator's script: how to start it, what to ask, what each
+answer demonstrates, and the one command that reproduces every number.
+
 ### Live release gate
 
 `pnpm release:gate` runs seven prompts against the running server and checks each answer structurally — evidence
@@ -188,8 +210,15 @@ Everything below is captured from the real runtime answering against its live br
 ### 1. Browser workbench (HTTP API)
 
 - [30-second demo video](docs/media/scce-demo-30s.mp4) — source-cited answers with the live evidence trace expanded (recorded in real time, played back at 6.4×).
-- ![Workbench chat with source-cited answers](docs/screenshots/workbench-chat.png)
+- ![Workbench chat with a source-cited answer](docs/screenshots/workbench-chat.png)
+- ![A false premise corrected from the evidence](docs/screenshots/workbench-false-premise.png)
+- ![A question the corpus cannot ground, declined](docs/screenshots/workbench-decline.png)
 - ![Evidence trace details expanded on an answer](docs/screenshots/workbench-evidence-details.png)
+
+The workbench is a chat: product name and a status dot in the header, the conversation, a composer. The gear opens
+the developer panel (evidence tree, approvals, settings, inspector, trace). A question can travel in the link —
+`http://127.0.0.1:3873/?q=Who%20is%20Ada%20Lovelace%3F` asks on arrival — which is also how
+`tools/capture-screenshots.mjs` re-captures the pictures above against the running server.
 
 A real turn against the live brain — request, and the answer verbatim including its citation:
 
@@ -228,10 +257,11 @@ scce.workspace.ask             SCCE: Ask About Workspace
 scce.workspace.status          SCCE: Show Read-Only Workspace Status
 scce.workspace.codingRequest   SCCE: Plan and Apply Coding Request
 scce.workspace.applyPatchPlan  SCCE: Apply Reviewed Patch Transaction
+scce.quickFix                  SCCE: Fix with SCCE (code action on a diagnostic)
 scce.tasks.clear               SCCE: Clear Task Timeline
 ```
 
-Coding requests return an unauthorized, unexecuted plan; nothing is written to the workspace until a reviewed patch transaction is explicitly applied.
+Coding requests return an unauthorized, unexecuted plan; nothing is written to the workspace until a reviewed patch transaction is explicitly applied. The quick fix is the same path from the editor: a diagnostic's lightbulb offers **Fix with SCCE**, the plan is previewed, and it is applied through the same hash-verified, approval-gated patch transaction.
 
 ### 3. Command line
 

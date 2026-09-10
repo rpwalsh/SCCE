@@ -1,0 +1,7 @@
+# One session: a subject, then follow-ups that name it only by pronoun, then creative requests about it.
+Who was Albert Einstein and what did he invent?
+where and when was he born?
+what did he win the Nobel Prize for?
+write me a short story about him
+Who is Ada Lovelace?
+what did she write about the analytical engine?

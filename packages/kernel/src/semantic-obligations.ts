@@ -338,7 +338,9 @@ export function extractTemporalAnswerFromEvidence(claimText: string, evidence: r
   if (sequences.length && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, sequences))) return undefined;
   const wantsDeath = DEATH_QUESTION_PATTERN.test(claimText) && !BIRTH_QUESTION_PATTERN.test(claimText);
   for (const span of evidence) {
-    const text = span.textPreview || span.text || "";
+    // The full span, not its preview: the preview of the Apollo 11 lead ends before "July 20, 1969, at 20:17 UTC"
+    // reaches the date, and "when did Apollo 11 land" was answered "20:17".
+    const text = span.text || span.textPreview || "";
     if (!text) continue;
     const all = extractSemanticItems(text, "evidence", span).filter(item => item.kind === "temporal");
     // A reference list carries dates that belong to the citation, not to the subject: this corpus answered
