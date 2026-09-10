@@ -18,11 +18,14 @@ import { startDreamCycle } from "./dream-cycle.js";
 const OPERATOR_SURFACE_MESSAGES = {
   "learning.need.evidence": "Needs more supporting evidence before this can be answered from the corpus: {text}",
   "learning.need.contradiction": "Sources disagree on this claim and the conflict is unresolved: {claim}",
-  "learning.need.language": "Needs language material for {script} before this surface can be produced: {reason}"
+  "learning.need.language": "Needs language material for {script} before this surface can be produced: {reason}",
+  "runtime.motion.no_grounded_source": "I don't have a grounded source about {topic} in what I've ingested, so I won't guess."
 } as const;
 
 async function main(): Promise<void> {
   registerMessageBundle("en", OPERATOR_SURFACE_MESSAGES);
+  // Turns arrive without a locale more often than with one; the default bundle is what they read.
+  registerMessageBundle("und", OPERATOR_SURFACE_MESSAGES);
   const trace = createTrace('server.start');
   const configPath = parseConfigPath(process.argv.slice(2)) ?? "scce.config.json";
   const config = await readScceRuntimeConfig(configPath);

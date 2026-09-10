@@ -523,15 +523,38 @@ function surfaceStatistics(surface: string): SurfaceStatistics {
   };
 }
 
-function scoreSurfaceDistribution(input: SurfaceStatistics, distribution: SurfaceDistribution): Omit<LanguageProfileClusterSurfaceMatch, "cluster"> {
-  if (input.signalCount === 0) return { score: 0, trigramCoverage: 0, repertoireCoverage: 0, shapeCoverage: 0 };
-  const learnedTrigrams = new Map(distribution.charNgrams
+// The learned side of the surface score is a pure function of the distribution's arrays, and every cluster is
+// scored against every request: rebuilding it per call normalized and re-indexed every cluster's trigrams on
+// every turn (seconds of CPU and GC on a 394-profile brain, measured as the surface-cluster seed stage).
+const learnedTrigramIndex = new WeakMap<SurfaceDistribution["charNgrams"], { trigrams: Map<string, number>; repertoire: Set<string> }>();
+const learnedShapeIndex = new WeakMap<SurfaceDistribution["symbolShapes"], Map<string, number>>();
+
+function learnedTrigramsFor(charNgrams: SurfaceDistribution["charNgrams"]): { trigrams: Map<string, number>; repertoire: Set<string> } {
+  const cached = learnedTrigramIndex.get(charNgrams);
+  if (cached) return cached;
+  const trigrams = new Map(charNgrams
     .filter(row => row.ngram.normalize("NFC") === row.ngram && Number.isFinite(row.count) && row.count > 0)
     .map(row => [row.ngram.toLowerCase(), row.count]));
-  const learnedShapes = new Map(distribution.symbolShapes
+  const repertoire = new Set([...trigrams.keys()].flatMap(ngram => [...ngram]).filter(char => /[\p{Letter}\p{Mark}\p{Number}]/u.test(char)));
+  const built = { trigrams, repertoire };
+  learnedTrigramIndex.set(charNgrams, built);
+  return built;
+}
+
+function learnedShapesFor(symbolShapes: SurfaceDistribution["symbolShapes"]): Map<string, number> {
+  const cached = learnedShapeIndex.get(symbolShapes);
+  if (cached) return cached;
+  const shapes = new Map(symbolShapes
     .filter(row => Number.isFinite(row.count) && row.count > 0)
     .map(row => [row.shape, row.count]));
-  const learnedRepertoire = new Set([...learnedTrigrams.keys()].flatMap(ngram => [...ngram]).filter(char => /[\p{Letter}\p{Mark}\p{Number}]/u.test(char)));
+  learnedShapeIndex.set(symbolShapes, shapes);
+  return shapes;
+}
+
+function scoreSurfaceDistribution(input: SurfaceStatistics, distribution: SurfaceDistribution): Omit<LanguageProfileClusterSurfaceMatch, "cluster"> {
+  if (input.signalCount === 0) return { score: 0, trigramCoverage: 0, repertoireCoverage: 0, shapeCoverage: 0 };
+  const { trigrams: learnedTrigrams, repertoire: learnedRepertoire } = learnedTrigramsFor(distribution.charNgrams);
+  const learnedShapes = learnedShapesFor(distribution.symbolShapes);
   const trigramCoverage = weightedInputCoverage(input.trigrams, learnedTrigrams);
   const repertoireCoverage = setCoverage(input.repertoire, learnedRepertoire);
   const shapeCoverage = weightedInputCoverage(input.shapes, learnedShapes);

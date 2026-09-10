@@ -561,8 +561,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const titleMatches = anchored.anchors.length > 0
       && evidenceTitleDistinctAnchorMatches(span, anchored.anchors);
     const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
+    // Net of the title, the learned closed class, and the short word the request opens with: "What is
+    // acupuncture?" transferred the lead boost to whichever deep sentence happened to contain "what".
+    const leadingScaffolding = requestLeadingScaffoldingUnit(input.requestText);
     const contentRequestUnits = new Set([...requestUnits].filter(unit =>
-      ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))));
+      ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))
+      && !input.closedClassWords?.has(unit)
+      && unit !== leadingScaffolding));
     // Cross-span source affinity: content-net overlap is asymmetric across
     // sources (request words inside THIS span's title are excluded here
     // but count as "content" for a sibling source whose title lacks them
@@ -625,7 +630,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       // markup or splitting noise (verified live: an image-caption tail
       // "as Captain James T. Kirk in action, ..." outranked the article's
       // real cast sentence). Uncased scripts are exempt by construction.
-      const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
+      const fragmentPenalty = (lowercaseInitialFragment(sentence) ? 1.2 : 0) + (danglingTailFragment(sentence) ? 1.2 : 0);
       // Same near-duplicate dominance as bestEvidenceSentences.
       const nearDuplicateFraction = proposeSequences.reduce((best, sequence) =>
         Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits)), 0);
@@ -654,10 +659,24 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
-  const coverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit));
+  const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(input.requestText);
+  const coverageUnits = requestContentEvidenceUnits(input.requestText)
+    .filter(unit => !input.closedClassWords?.has(unit) && unit !== leadingScaffoldingUnit);
   const relationRequired = Boolean(input.closedClassWords?.size);
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
     row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, { relationRequired });
+  // A request that names its subject and asks nothing else is answered by the subject's own opening sentence when
+  // a titled source has one: an encyclopedic lead predicates about its subject by construction, even when it names
+  // the subject in a longer form the anchor test cannot see ("Augusta Ada King, Countess of Lovelace ... also known
+  // as Ada Lovelace" lost the predication check to a Starfield trivia bullet, live 2026-09-10).
+  // The named subject's own units, not every derived anchor phrase: derived anchors carry neighbouring request words
+  // ("played benjamin sisko"), which would make a relation look like part of the name.
+  const subjectUnitSet = new Set(namedSubjectAnchors(input.requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
+  const openingRow = definitional
+    ? rows.find(row => covers(row) && row.index <= 1 && documentOpeningSpan(row.span) && anchored.anchors.length > 0
+      && evidenceTitleDistinctAnchorMatches(row.span, anchored.anchors))
+    : undefined;
   // Two sentences can both name the subject while only one says anything about it. Nothing above separates them:
   // "The character was portrayed by Sylvie Briggs, alongside characterisations of Charles Babbage and Noor Inayat
   // Khan." beat "Charles Babbage and Ada Lovelace conceived the first programmable computer" by 0.056 for "Who was
@@ -666,11 +685,11 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // in the atom's leading role, a passing mention lands in a trailing one. Preference, not a weight -- when no
   // candidate predicates about the anchor the original ordering stands, so this can only reorder, never exclude.
   // Bounded: compiling propositions is turn-time work, and only sentences already near the top can win anyway.
-  const predicating = anchored.anchors.length
+  const predicating = anchored.anchors.length && !openingRow
     ? rows.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
       .filter(row => covers(row) && sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
     : [];
-  const selected = predicating[0] ?? rows.find(covers);
+  const selected = openingRow ?? predicating[0] ?? rows.find(covers);
   if (!selected) return undefined;
   // Learned response-form sentence budget (lexical-gap fix for
   // enumeration-shaped requests): a request like "list the main characters
@@ -879,6 +898,28 @@ export function proposeSourceExactEvidenceAnswer(input: {
   return Boolean(leadChar)
     && leadChar.toLocaleLowerCase() !== leadChar.toLocaleUpperCase()
     && leadChar !== leadChar.toLocaleUpperCase();
+}
+
+/** The short word a request opens with, normalized: "who", "what", "does", "tell" -- scaffolding by position and
+ *  length, the same rule the subject-anchor primitive applies, so no word list and no language assumption. */
+ function requestLeadingScaffoldingUnit(requestText: string): string | undefined {
+  const first = requestText.trim().split(/\s+/u)[0] ?? "";
+  const unit = normalizePriorKey(stripOuterPriorSeparators(first));
+  return unit && [...unit].length <= 5 ? unit : undefined;
+}
+
+/** A sentence that ends on a comma, a bare conjunction-length word after a comma, or no terminal mark at all:
+ *  the splitter stopped at a line break or a stripped citation, not at the end of a claim. Structural only. */
+ function danglingTailFragment(sentence: string): boolean {
+  const trimmed = sentence.trim();
+  if (!trimmed) return true;
+  const last = [...trimmed].pop() ?? "";
+  if (/[.!?…;:"”'’)\]»]/u.test(last)) return false;
+  if (/[,\-–—(\[«]$/u.test(trimmed)) return true;
+  const words = trimmed.split(/\s+/u);
+  const lastWord = words[words.length - 1] ?? "";
+  // The final word is short and lowercase after a comma-bearing clause: "... , Andrew Jackson and".
+  return trimmed.includes(",") && [...lastWord].length <= 3 && lastWord === lastWord.toLocaleLowerCase();
 }
 
 
@@ -1913,6 +1954,28 @@ export function evidenceSpanProvenanceTitle(span: EvidenceSpan): string {
   return evidenceTitle(span);
 }
 
+/** Wikitable rows and template calls that survived ingestion as "prose": never an answer surface, never admissible evidence. */
+export function isUnparsedMarkupText(text: string): boolean {
+  const pipeCount = (text.match(/\|/gu) ?? []).length;
+  if (pipeCount >= 3) return true;
+  return /\|style=|background:#|\{\{|\}\}/u.test(text);
+}
+
+export function spanIsUnparsedMarkup(span: EvidenceSpan): boolean {
+  return isUnparsedMarkupText(String(span.text ?? span.textPreview ?? ""));
+}
+
+/** True when some span's source title names one of the request's own named subjects. A resident shortcut that
+ *  cannot show this is a tangential mention, and must not preempt the corpus search that can find the subject's article. */
+export function evidenceTitledForRequestSubject(text: string, spans: readonly EvidenceSpan[]): boolean {
+  const anchors = namedSubjectAnchors(text).map(anchor => normalizePriorKey(anchor)).filter(anchor => anchor.length >= 3);
+  if (!anchors.length) return true;
+  return spans.some(span => {
+    const title = normalizePriorKey(evidenceTitle(span));
+    return title.length > 0 && anchors.some(anchor => title.includes(anchor));
+  });
+}
+
  function evidenceTitle(span: EvidenceSpan): string {
   const provenance = jsonRecord(span.provenance);
   const metadata = jsonRecord(provenance.metadata);
@@ -2294,7 +2357,14 @@ function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): bool
   const firstTitlePosition = firstTitleUnitPosition(requestUnits, titleUnits);
   if (!matchedTitleUnits.length) return false;
   if (matchedTitleUnits.length >= 2 && firstTitlePosition <= 2) return true;
-  const nonTitleUnits = requestUnits.filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)));
+  // What the request asks beyond naming the title: the same four-letter content rule evidenceContentAnchorFitsRequest
+  // uses, so a short interrogative is not a unit the span has to contain. "Who is Aphrodite?" required the word "who"
+  // inside the span, and the article's own opening block -- which does not say "who" -- was the one span it dropped.
+  const nonTitleUnits = requestUnits
+    .filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)))
+    .filter(unit => [...unit].length >= 4 || hasUncasedNonLatinLetter(unit));
+  // A request that only names the title is answered by the titled source itself.
+  if (!nonTitleUnits.length) return matchedTitleUnits.length >= 1;
   const sourceSurface = sourceTextSurface(evidenceWindowText(span), 3200);
   const nonTitleOverlap = requestUnitOverlapForSurface(sourceSurface, new Set(nonTitleUnits));
   const singleLateTitleOverlapFloor = titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1;
@@ -3383,8 +3453,9 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       // the request's actual content terms (verified live in run-f: "Who
       // played Captain James T. Kirk / Benjamin Sisko" both returned the
       // article opener without the actor's name).
+      const leadingScaffolding = requestLeadingScaffoldingUnit(requestText);
       const contentRequestUnits = new Set([...requestUnits].filter(unit =>
-        !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))));
+        !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)) && unit !== leadingScaffolding));
       let contentBoostIndex = -1;
       if (titleMatches && contentRequestUnits.size) {
         const coverage = sentences
@@ -3414,7 +3485,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
           ? 4
           : 0;
-        const fragmentPenalty = lowercaseInitialFragment(sentence) ? 1.2 : 0;
+        const fragmentPenalty = (lowercaseInitialFragment(sentence) ? 1.2 : 0) + (danglingTailFragment(sentence) ? 1.2 : 0);
         // Near-duplicated source sentence must outrank titleLead(4)+affinity(<=3).
         const nearDuplicateFraction = requestSequences.reduce((best, sequence) =>
           Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnitSet)), 0);

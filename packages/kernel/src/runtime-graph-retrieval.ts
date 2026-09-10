@@ -24,7 +24,9 @@ import {
   sourceIdentityAdmissibleEvidenceForRequest,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
-  trailingInitialismTokensForAnchor
+  trailingInitialismTokensForAnchor,
+  evidenceTitledForRequestSubject,
+  spanIsUnparsedMarkup
 } from "./local-evidence-runtime.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
 import { anchorFeatureSet, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
@@ -54,7 +56,8 @@ import type {
   GraphSlice,
   JsonValue,
   OwnerInput,
-  SourceTrust
+  SourceTrust,
+  SourceVersionId
 } from "./types.js";
 
 
@@ -351,7 +354,7 @@ export function createRuntimeGraphRetrieval(options: {
       if (residentOnly) {
         const residentHot = await hotNeighborhoodIfResident();
         if (residentHot) {
-          const hotAnchoredEvidence = sourceAnchoredEvidenceFromHot(residentHot, text);
+          const hotAnchoredEvidence = await withOpeningBlocks(text, sourceAnchoredEvidenceFromHot(residentHot, text));
           const hotSlice = hotAnchoredEvidence.length
             ? graphSliceFromHotEvidence(residentHot, hotAnchoredEvidence, features, topicTerms)
             : undefined;
@@ -726,14 +729,15 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const promoted = dropContainerSpans(proseCandidates
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof
-        && !isControlCorpusSpan(span)));
+        && !isControlCorpusSpan(span)
+        && !spanIsUnparsedMarkup(span)));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
       promoted,
       semanticFrameBoundEvidenceIds
     );
-    const evidence = anchored.evidence.slice(0, 24);
+    const evidence = await withOpeningBlocks(text, anchored.evidence.slice(0, 24));
     kernelTrace({
       stage: "graph.resolve.anchor_admissibility",
       label: "kernel.sourceAnchoredEvidenceForText",
@@ -1436,7 +1440,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       .map(id => hot.evidenceById.get(id))
       .filter((span): span is EvidenceSpan => Boolean(span));
     const candidates = indexedEvidence
-      .filter(span => evidenceProofBoundary(span).certifiesFactualProof);
+      .filter(span => evidenceProofBoundary(span).certifiesFactualProof && !spanIsUnparsedMarkup(span));
     // sourceAnchoredEvidenceForRequest's generic fallback ("selected") only
     // requires loose content/anchor overlap, not an exact or
     // title-distinct match -- the full DB-backed path already guards
@@ -1461,9 +1465,38 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // result for such a request if it actually contains the named source.
     const initialismTokens = requestInitialismCandidates(text, sourceEvidenceAnchorsForRequest(text));
     if (initialismTokens.length && !indexedAnchored.evidence.some(span => evidenceTitleInitialismMatches(span, initialismTokens))) return [];
+    // Live 2026-09-10: "Who is Albert Einstein?" against a 350-node resident set returned one tangential mention,
+    // which short-circuited the corpus search that holds his article, and the turn echoed the subject back.
+    if (!evidenceTitledForRequestSubject(text, indexedAnchored.evidence)) return [];
     return evidenceForRequest(text, indexedAnchored.evidence).slice(0, 24);
   }
 
+
+  /** Adds the opening block of each source titled with the request's subject, when admission kept only mid-article
+   *  chunks of it. Live 2026-09-10: "Who is Aphrodite?" admitted spans at char 69499 and 36769 of her own article
+   *  (feminist poets; Ovid) and echoed the subject back; the block that says who she is starts at char 0. One indexed
+   *  point lookup per source, at most three sources, so the resident path can afford it too. */
+  async function withOpeningBlocks(text: string, spans: readonly EvidenceSpan[]): Promise<EvidenceSpan[]> {
+    const fetchOpening = deps.storage.evidence.openingEvidenceForSourceVersions;
+    if (!fetchOpening || !spans.length) return [...spans];
+    const titledSources = uniqueKernelStrings(spans
+      .filter(span => evidenceTitledForRequestSubject(text, [span]))
+      .map(span => String(span.sourceVersionId))).slice(0, 3);
+    const missing = titledSources.filter(sourceVersionId =>
+      !spans.some(span => String(span.sourceVersionId) === sourceVersionId && Number(span.charStart ?? -1) === 0));
+    if (!missing.length) return [...spans];
+    const openingStarted = Date.now();
+    const opening = (await fetchOpening(missing.map(id => id as SourceVersionId)).catch(() => [] as EvidenceSpan[]))
+      .filter(span => evidenceProofBoundary(span).certifiesFactualProof && !spanIsUnparsedMarkup(span));
+    kernelTrace({
+      stage: "graph.resolve.opening_block",
+      label: "kernel.sourceAnchoredEvidenceForText",
+      durationMs: Date.now() - openingStarted,
+      counts: { sources: missing.length, admitted: opening.length }
+    });
+    if (!opening.length) return [...spans];
+    return mergeEvidenceSpans([...opening, ...spans]).slice(0, 24);
+  }
 
   function graphSliceFromHotEvidence(hot: HotGraphNeighborhood, anchoredEvidence: readonly EvidenceSpan[], features: string[], topicTerms: string[]): RuntimeGraphSliceValue | undefined {
     const queryFeatures = uniqueKernelStrings([
