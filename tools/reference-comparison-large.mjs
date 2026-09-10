@@ -215,11 +215,16 @@ await client.connect();
 await client.query("set statement_timeout to '180s'");
 const schema = config.database.schema;
 
+// Resolved through the source's canonical URI (a 23k-row table, indexed) and the span's source id: the previous
+// provenance_json filter scanned the 5.4GB evidence table once per article and spent half an hour verifying.
 const articleText = async title => {
+  const uriTail = `/${encodeURIComponent(title.replace(/ /gu, "_"))}`;
   const rows = await client.query(
-    `select text_content from ${schema}.evidence_spans
-     where provenance_json->>'title' = $1 and status = 'promoted' order by char_start limit 40`,
-    [title]
+    `select es.text_content from ${schema}.evidence_spans es
+     join ${schema}.sources s on s.id = es.source_id
+     where s.canonical_uri like 'wikipedia://%' and s.canonical_uri like $1 and es.status = 'promoted'
+     order by es.char_start limit 40`,
+    [`%${uriTail}`]
   );
   return rows.rows.map(row => String(row.text_content)).join("\n");
 };
