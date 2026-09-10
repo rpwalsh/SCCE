@@ -1909,7 +1909,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const rankedForRequest = evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
       const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => unit !== requestLeadingScaffoldingUnit(input.text)).every(unit =>
         namedSubjectAnchors(input.text).some(anchor => anchor.toLocaleLowerCase().split(/\s+/u).includes(unit)));
-      const titledOpeningSpan = subjectOnlyRequest
+      // Any request that names a titled subject keeps that source's opening block in the selection, not only a
+      // subject-only one: the lead states the standing fact and relevance ranking dropped it for "Athens is the
+      // capital of which country?" (two deeper chunks selected, the lead never ranked, live 2026-09-10). The
+      // sentence rankers still decide; this only guarantees the lead is among what they see.
+      const titledOpeningSpan = subjectOnlyRequest || namedSubjectAnchors(input.text).length
         ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
         : undefined;
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan

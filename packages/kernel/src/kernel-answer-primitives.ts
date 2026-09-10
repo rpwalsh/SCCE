@@ -77,9 +77,13 @@ export function genericQuestionSignal(unit: string): boolean {
   // Only fires when casing is entirely absent from the input, so a normally-cased request is completely
   // unaffected -- length is the substitute anchor signal (matching the >=3-character single-word floor
   // namedSourceAnchorSpecificEnough already applies downstream), not a new, weaker acceptance rule.
-  return uniqueKernelStrings(surfaceEntityRunsCaseless(text).map(run => withoutLeadingRequestScaffolding(run, text)))
-    .filter(Boolean)
-    .slice(0, 8);
+  // The run that is the request's own opening word leads: a request that opens on its subject ("athens is the
+  // capital of which country") is about that word, not about the phrase its question words form.
+  const opening = normalizePriorKey(surfaceWords(text).map(stripOuterPriorSeparators).filter(Boolean)[0] ?? "");
+  const runs = uniqueKernelStrings(surfaceEntityRunsCaseless(text).map(run => withoutLeadingRequestScaffolding(run, text)))
+    .filter(Boolean);
+  const openingRun = [...opening].length >= 4 ? runs.find(run => normalizePriorKey(run) === opening) : undefined;
+  return (openingRun ? [openingRun, ...runs.filter(run => run !== openingRun)] : runs).slice(0, 8);
 }
 
 /** Cased runs that survive one short lowercase connector between cased words: "Alfred the Great", "Joan of Arc",
@@ -130,6 +134,9 @@ function casedEntityRunsWithConnectors(text: string): string[] {
 function sentenceInitialSingleWordRun(run: string, text: string): boolean {
   const words = surfaceWords(text).map(stripOuterPriorSeparators).filter(Boolean);
   if (words.length < 2 || normalizePriorKey(words[0]!) !== normalizePriorKey(run)) return false;
+  // The same length bound the run builder applies: "Athens is the capital of which country?" opens on its subject,
+  // and dropping it left "which country" as the anchor (live 2026-09-10, six declines in the reference comparison).
+  if ([...words[0]!].length > 5) return false;
   const next = words[1]!;
   return next[0] !== undefined && next[0] === next[0].toLocaleLowerCase() && next[0] !== next[0].toLocaleUpperCase();
 }
