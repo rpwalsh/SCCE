@@ -17,7 +17,7 @@ import type { TurnRequirementField } from "./turn-requirements.js";
 import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
-import { answerCoversRequest, requestContentEvidenceUnits, requestLeadingScaffoldingUnit } from "./local-evidence-runtime.js";
+import { answerCoversRequest, evidenceTitledForRequestSubject, requestContentEvidenceUnits, requestLeadingScaffoldingUnit } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
@@ -822,7 +822,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
             ...languagePriorLeakageHits(bounded, input, priorPieces),
             ...unanchoredImportedPriorHits(candidate, input),
-            ...requestCoverageHits(bounded, candidate, input, nearDuplicatePreservation)
+            ...requestCoverageHits(bounded, candidate, input, nearDuplicatePreservation),
+            // Generated prose cut at its budget mid-word ("...the analytical engine wri") is not a surface any
+            // selection chain may fall through to; measured live on "Who was Ada Lovelace?".
+            ...(candidate.generation && generatedSurfaceUnfinished(bounded) ? ["surface.reject.unfinished_generation"] : [])
           ]);
         const adjustedFit = forbiddenHits.length ? candidate.fit * 0.1 : candidate.fit;
         return { ...candidate, fit: adjustedFit, text: bounded, correction: corrected, preservation, score, forbiddenHits };
@@ -869,8 +872,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           externallyFactual: semanticAnswerState!.certificationBoundary.externalFactCertification
         })
         : undefined;
+      // Generated prose that stopped at its budget rather than at a boundary is unfinished ("...the analytical
+      // engine wri"): measured live, a near-copy of the Ada Lovelace lead cut mid-word survived the contract check.
       const semanticRhetoricalCandidateVerified = semanticRhetoricalCandidate && semanticRealizationContract
         && candidateSurvivesRealizationContract(semanticRhetoricalCandidate.text, semanticRealizationContract).survives
+        && !generatedSurfaceUnfinished(semanticRhetoricalCandidate.text)
         ? semanticRhetoricalCandidate
         : undefined;
       const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
@@ -1458,8 +1464,14 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const contractVerifiedCandidateAnswer = Boolean(input.realizationContract && input.selectedCandidate?.answer
         && (candidateIsVerifiedBoundValue(input.selectedCandidate.answer, input.realizationContract)
           || candidateSurvivesRealizationContract(input.selectedCandidate.answer, input.realizationContract).survives));
+      // An enumeration answers by its members: the cast of a series cannot repeat "characters", and the article
+      // titled with the subject is what binds it. "who were the characters in Andromeda?" had the cast list and
+      // spoke nothing because no member carried the request's words.
+      const enumerationAnswer = (surface: string) => surface === input.selectedCandidate?.answer && isEntitySaladSurface(surface)
+        && deterministicSpans.some(span => evidenceTitledForRequestSubject(input.requestText ?? "", [span]));
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
         || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
+        || enumerationAnswer(surface)
         || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) }));
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
         && (terminalRuntimeMotionSelected
@@ -1487,7 +1499,8 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           }))
         }
       });
-      const normalizedSelectedText = tidySurface(selectedText);
+      // The deterministic path skipped repairSurfaceReadability, so "(; 10 December 1815" reached the answer.
+      const normalizedSelectedText = collapseEmptyBracketLead(tidySurface(selectedText));
       const readableSelectedText = dominantConstructForce(plan.constructForces) === "ProgramConstruct"
         || hasStructuredSurfaceShape(normalizedSelectedText)
         ? normalizedSelectedText
@@ -6376,7 +6389,11 @@ function containsInternalSurfaceArtifact(text: string): boolean {
 }
 
 function containsInternalGraphFeatureSurface(text: string): boolean {
-  return /(?:^|\s)(?:sym:[^\s|]+|bi:[^\s|]+\|[^\s|]+|tri:[^\s|]+\|[^\s|]+\|[^\s|]+|char:\S+)(?:$|\s)/u.test(text);
+  // Request-pattern feature keys ("any:what", "start:what", "end:...") and the invisible separator the pattern
+  // compiler joins them with are not language: a learned surface built from them read "what year did ⁣ any:what
+  // ⁣ start:what ⁣ What is Alaska's official state dinosaur?" (live 2026-09-10).
+  return /(?:^|\s)(?:sym:[^\s|]+|bi:[^\s|]+\|[^\s|]+|tri:[^\s|]+\|[^\s|]+\|[^\s|]+|char:\S+|(?:any|start|end):\S+)(?:$|\s)/u.test(text)
+    || /⁣/u.test(text);
 }
 
 function containsStructuredCandidateTelemetry(text: string): boolean {
@@ -7006,6 +7023,12 @@ function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {
  * word from the surface. Real effect beyond reading: the runtime coherence debris check treats "(;" as source
  * leakage and demotes an otherwise well-grounded answer to insufficient support. Pure.
  */
+/** Long generated prose with no terminal mark at its end stopped at a budget, not a sentence. Pure. */
+function generatedSurfaceUnfinished(text: string): boolean {
+  const trimmed = text.trim();
+  return [...trimmed].length >= 120 && !/[.!?…。！？"”'’)\]»]$/u.test(trimmed);
+}
+
 function collapseEmptyBracketLead(text: string): string {
   return text.replace(/([([{\u3010\uff08])\s*[;,:\u3001\uff0c\uff1b]+\s*/gu, "$1");
 }

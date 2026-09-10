@@ -656,7 +656,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     });
   })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence))
+    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence) && !cliticOpeningFragment(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
@@ -894,6 +894,12 @@ export function proposeSourceExactEvidenceAnswer(input: {
 }
 
 
+/** A chunk cut inside a word leaves its clitic as the opening: "'s well-developed ferry system". Never a sentence. */
+export function cliticOpeningFragment(sentence: string): boolean {
+  // One or two letters after the apostrophe and then a boundary: 's, 't, 'll, 're. A quoted title ("'Star Trek...") is not one.
+  return /^['’]\p{L}{1,2}(?!\p{L})/u.test(sentence.trimStart());
+}
+
  function lowercaseInitialFragment(sentence: string): boolean {
   const leadChar = [...sentence][0] ?? "";
   return Boolean(leadChar)
@@ -1088,8 +1094,10 @@ export function localEvidenceAnswerIsQuotationRecall(candidate: LocalEvidenceAns
 }
 
 export function localEvidenceAnswerClaimSurface(candidate: LocalEvidenceAnswerCandidate): string {
+  // Members of a collection are separated as a list; a run of sentences reads on.
+  const separator = candidate.plan.kindId === LOCAL_ANSWER_KIND_IDS.collection ? ", " : " ";
   return sourceTextSurface(
-    localEvidenceAnswerProofExcerpts(candidate).map(excerpt => excerpt.text).join(" "),
+    localEvidenceAnswerProofExcerpts(candidate).map(excerpt => excerpt.text).join(separator),
     12000
   );
 }
@@ -1551,8 +1559,33 @@ function sourceConflictAnswerPlan(
 
 
 export function temporalCounterexampleExpected(requestText: string, evidence: readonly EvidenceSpan[]): boolean {
+  const subject = temporalCounterexampleSubject(requestText, evidence);
+  if (!subject || !requestDerivedPolaritySlots(requestText, subject.title)) return false;
+  return temporalCounterexampleConceptUnits(requestText, subject.title).size > 0;
+}
+
+/** Sources titled with the concept a premise attributes to its subject, taken from the retrieval pool that title
+ *  admission kept out: "did martha washington invent ... flags" needs the Flag article to date the practice against
+ *  her lifespan, and cross-title admission refuses it by design. Only for a request expecting a counterexample. */
+export function temporalConceptTitledEvidence(requestText: string, admitted: readonly EvidenceSpan[], pool: readonly EvidenceSpan[]): EvidenceSpan[] {
+  const subject = temporalCounterexampleSubject(requestText, admitted);
+  if (!subject) return [];
+  const conceptUnits = [...temporalCounterexampleConceptUnits(requestText, subject.title)].filter(unit => [...unit].length >= 4);
+  if (!conceptUnits.length) return [];
+  const admittedIds = new Set(admitted.map(span => String(span.id)));
+  return pool
+    .filter(span => !admittedIds.has(String(span.id)))
+    .filter(span => {
+      const title = evidenceTitle(span);
+      return title && normalizePriorKey(title) !== subject.key && !containedTitlePair(subject.title, title)
+        && titleAnchorUnits(title).some(titleUnit => conceptUnits.some(unit => titleAnchorUnitMatches(unit, titleUnit)));
+    })
+    .slice(0, 8);
+}
+
+ function temporalCounterexampleSubject(requestText: string, evidence: readonly EvidenceSpan[]): { span: EvidenceSpan; title: string; key: string; lifespan: { birthYear: number; deathYear: number } } | undefined {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
-  if (!anchors.length) return false;
+  if (!anchors.length) return undefined;
   const requestUnits = requestUnitSet(requestText);
   const subject = evidence
     // A lifespan is read from the document's opening block only: a mid-article chunk carries other people's years
@@ -1567,8 +1600,7 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
     // biography in for "Who was Albert Einstein and what did he invent?" and dated a "counterexample" against it.
     .filter(row => row.title && row.lifespan && (row.anchorFit > 0 || (!namedSubjectAnchors(requestText).length && row.requestOverlap >= 2)))
     .sort((left, right) => right.anchorFit - left.anchorFit || right.requestOverlap - left.requestOverlap || left.title.localeCompare(right.title))[0];
-  if (!subject || !requestDerivedPolaritySlots(requestText, subject.title)) return false;
-  return temporalCounterexampleConceptUnits(requestText, subject.title).size > 0;
+  return subject?.lifespan ? { span: subject.span, title: subject.title, key: subject.key, lifespan: subject.lifespan } : undefined;
 }
 
 
@@ -1989,8 +2021,15 @@ export function evidenceTitledForRequestSubject(text: string, spans: readonly Ev
   // Whole units, not substrings: "born" is inside "Borna Reichstag constituency", and that match kept a pronoun
   // follow-up on the wrong article.
   return spans.some(span => {
-    const title = ` ${splitPriorUnits(normalizePriorKey(evidenceTitle(span))).filter(Boolean).join(" ")} `;
-    return title.trim().length > 0 && anchors.some(anchor => title.includes(` ${splitPriorUnits(anchor).filter(Boolean).join(" ")} `));
+    const titleUnits = splitPriorUnits(normalizePriorKey(evidenceTitle(span))).filter(Boolean);
+    if (!titleUnits.length) return false;
+    const title = ` ${titleUnits.join(" ")} `;
+    return anchors.some(anchor => {
+      const phrase = ` ${splitPriorUnits(anchor).filter(Boolean).join(" ")} `;
+      // An uncased request has no name to cut at, so its anchor is a phrase that carries the title whole:
+      // "martha washington invent the concept" names Martha Washington. A one-unit title ("Flag") is not a subject.
+      return title.includes(phrase) || (titleUnits.length >= 2 && phrase.includes(title));
+    });
   });
 }
 
@@ -3532,7 +3571,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       });
     })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence))
+    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence) && !cliticOpeningFragment(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
