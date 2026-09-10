@@ -4,6 +4,7 @@ import { type CandidateField, type CandidateSurface } from "./candidate.js";
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
 import { jsonRecord, kernelNumber, kernelString, kernelStringArray, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { formatSurfaceMessage } from "./localization.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
 import { type InventionConstruct } from "./prediction.js";
@@ -541,6 +542,13 @@ export function runtimeMotionCandidateField(input: {
     .slice(0, 3);
   const boundedLead = [...topic].slice(0, 120).join("").trim();
   const boundedDetail = detail.map(value => [...value].slice(0, 80).join("").trim()).filter(Boolean);
+  // With nothing found and nothing to ask, the topic alone is an echo of the request ("Aphrodite", live
+  // 2026-09-10), and the mouth speaks a terminal motion surface verbatim. Say what happened instead, when the
+  // operator has registered a surface for it; a runtime with no message bundle keeps the bare focus.
+  if (!boundedDetail.length && boundedLead) {
+    const declined = formatSurfaceMessage("runtime.motion.no_grounded_source", { topic: boundedLead });
+    if (declined.trim()) return ensureUnicodeSurfaceSentence(declined.trim());
+  }
   const semanticSurface = uniqueKernelStrings([boundedLead, ...boundedDetail]).filter(Boolean).join(": ");
   return ensureUnicodeSurfaceSentence(semanticSurface);
 }

@@ -735,6 +735,12 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     refreshApprovals().catch(() => {});
     resumeStoredTurn().catch(() => {});
     prompt.focus();
+    // A shareable link that asks on arrival: /?q=Who%20is%20Ada%20Lovelace%3F
+    const linkedQuestion = new URLSearchParams(location.search).get('q');
+    if (linkedQuestion && linkedQuestion.trim()) {
+      prompt.value = linkedQuestion.trim(); autoGrow();
+      setTimeout(() => sendButton.click(), 250);
+    }
   </script>
 </body>
 </html>`;

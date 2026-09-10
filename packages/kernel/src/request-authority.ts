@@ -190,18 +190,28 @@ function factualCandidateAdmissionFailures(candidate: CandidateSurface): string[
   if ((candidate.missedRequirementIds?.length ?? 0) > 0) failures.push("missed-required-output");
   if (candidate.boundaries.includes("unsupported-factual-claim")) failures.push("unsupported-factual-claim");
 
-  const unresolved = candidate.boundaries
-    .map(boundary => /^underdetermined-obligations:(\d+)$/u.exec(boundary)?.[1])
-    .filter((value): value is string => value !== undefined)
-    .map(Number)
-    .filter(Number.isFinite)
-    .reduce((max, value) => Math.max(max, value), 0);
+  const boundaryCount = (pattern: RegExp): number | undefined => {
+    const values = candidate.boundaries
+      .map(boundary => pattern.exec(boundary)?.[1])
+      .filter((value): value is string => value !== undefined)
+      .map(Number)
+      .filter(Number.isFinite);
+    return values.length ? values.reduce((max, value) => Math.max(max, value), 0) : undefined;
+  };
+  // Content obligations when the proof reports them; the total (which counts the request's own shape) otherwise.
+  const unresolved = boundaryCount(/^underdetermined-content-obligations:(\d+)$/u)
+    ?? boundaryCount(/^underdetermined-obligations:(\d+)$/u)
+    ?? 0;
   // Measured on the live brain and the anchoring fixtures: answers that were right left 1 obligation open over 2
   // spans (Lincoln, Einstein) and 3 over 1 span (a discourse-bound pronoun follow-up); the ones that were wrong left
   // 9 over 2 (an Apollo launch sentence for who commanded it) and 34 over 2 (a 725-character window for a shoe size).
   // Three open obligations per span separates every case seen so far.
   const evidenceCount = Math.max(1, candidate.evidenceIds.length);
-  if (unresolved > Math.max(1, evidenceCount * 3)) {
+  // A verbatim excerpt of admitted evidence cannot be overwhelmed by obligations about its own atoms: the source
+  // says exactly this. The count grows with claim length, not with doubt -- a 273-character opening sentence left
+  // 21 open over 2 spans and lost to a dialogue continuation ("acupuncture", live 2026-09-10).
+  const sourceExact = candidate.boundaries.includes("source-excerpt-exact");
+  if (!sourceExact && unresolved > Math.max(1, evidenceCount * 3)) {
     failures.push(`proof-obligations-overwhelm-evidence:${unresolved}/${candidate.evidenceIds.length}`);
   }
 

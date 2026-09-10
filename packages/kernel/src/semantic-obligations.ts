@@ -779,7 +779,13 @@ function boundaryReasons(input: {
   out.push(...input.admission.reasons);
   for (const item of input.contradicted.slice(0, 8)) out.push(`contradicted-${item.kind}:${hash32(item.claimText).toString(16)}`);
   for (const item of input.missing.filter(item => criticalKind(item.kind)).slice(0, 8)) out.push(`missing-${item.kind}:${hash32(item.claimText).toString(16)}`);
-  if (input.underdetermined.length) out.push(`underdetermined-obligations:${input.underdetermined.length}`);
+  if (input.underdetermined.length) {
+    out.push(`underdetermined-obligations:${input.underdetermined.length}`);
+    // The request's own shape -- its question word, its punctuation, its role topology, the transform -- is an
+    // obligation no evidence can discharge. "Who is Aphrodite?" left 9 open over 2 spans with the right answer in
+    // hand; only the ones that name content are a claim about the world, and only they are counted here.
+    out.push(`underdetermined-content-obligations:${input.underdetermined.filter(contentObligation).length}`);
+  }
   if (input.scores.relationCompatibility < 0.25) out.push("relation-compatibility-low");
   if (input.scores.faithfulnessLCB < 0.12) out.push("faithfulness-lcb-low");
   return out;
@@ -878,6 +884,14 @@ function requiredKind(kind: SemanticObligationKind): boolean {
 
 function criticalKind(kind: SemanticObligationKind): boolean {
   return kind === "entity" || kind === "quantity" || kind === "temporal" || kind === "symbol" || kind === "negation" || kind === "source_version";
+}
+
+/** An obligation that names content: a critical kind or a predicate, whose claim text carries a real word
+ *  (four letters, or any letter outside the Latin script) rather than a question word or a punctuation mark. */
+function contentObligation(obligation: SemanticObligationRecord): boolean {
+  if (!criticalKind(obligation.kind) && obligation.kind !== "predicate") return false;
+  const text = obligation.claimText ?? "";
+  return /\p{L}{4,}/u.test(text) || /\p{N}{2,}/u.test(text) || /(?=\p{L})[^\p{Script=Latin}]/u.test(text);
 }
 
 function relationForObligation(obligation: SemanticObligationRecord): SemanticProofMapping["relation"] {

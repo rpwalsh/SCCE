@@ -111,6 +111,7 @@ import {
   sessionContextEvidenceEnabled,
   sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest,
   evidenceSpanProvenanceTitle,
+  isUnparsedMarkupText,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected
 } from "./local-evidence-runtime.js";
@@ -1337,8 +1338,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // Empty audit over a titleless pool: identity admission can never bind
       // workspace-file spans, so fall back to the titleless spans the graph
       // slice already content-admitted; titled corpora keep strict abstention.
+      // Session spans are titleless too, and this fallback is how an earlier question's spans became the pool for
+      // an unrelated later one (Ada Lovelace spans admitted for "Who is Albert Einstein?", live 2026-09-10). A
+      // session span stays only when it carries something the request actually asks about.
+      const fallbackContentUnits = requestContentEvidenceUnits(input.text).map(unit => unit.toLocaleLowerCase());
+      const sessionSpanMentionsRequest = (span: EvidenceSpan): boolean => {
+        if (!String(span.id).startsWith("evidence_session_")) return true;
+        const spanText = String(span.text ?? span.textPreview ?? "").toLocaleLowerCase();
+        return fallbackContentUnits.some(unit => unit.length >= 3 && spanText.includes(unit));
+      };
       const auditFallbackEvidence = sourceAnchorAudit.required && !sourceAnchorAudit.evidence.length
-        ? evidence.filter(span => !evidenceSpanProvenanceTitle(span)).slice(0, 24)
+        ? evidence.filter(span => !evidenceSpanProvenanceTitle(span) && sessionSpanMentionsRequest(span)).slice(0, 24)
         : [];
       let admissibleEvidence = sourceAnchorAudit.required
         ? (sourceAnchorAudit.evidence.length ? sourceAnchorAudit.evidence : auditFallbackEvidence)
@@ -4986,12 +4996,6 @@ function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAu
  * three or more pipe characters, or any of the literal markup tokens below, is well past what real prose
  * carries.
  */
-function isUnparsedMarkupText(text: string): boolean {
-  const pipeCount = (text.match(/\|/gu) ?? []).length;
-  if (pipeCount >= 3) return true;
-  return /\|style=|background:#|\{\{|\}\}/u.test(text);
-}
-
 function trimToSentenceBoundary(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const sentences = splitSurfaceSentences(text);

@@ -644,6 +644,12 @@ export interface EvidenceStore {
   getEvidence(id: EvidenceId): Promise<EvidenceSpan | null>;
   getEvidenceBatch(ids: EvidenceId[]): Promise<EvidenceSpan[]>;
   searchEvidence(query: EvidenceQuery): Promise<EvidenceSearchResult[]>;
+  /**
+   * The promoted opening block (charStart 0) of each source version: the block that states what the source's
+   * subject is. Anchor search ranks by feature overlap, so a "Who is X?" request routinely retrieves mid-article
+   * chunks that mention X and never the lead that defines X. Optional: fixture stores need not implement it.
+   */
+  openingEvidenceForSourceVersions?(sourceVersionIds: readonly SourceVersionId[]): Promise<EvidenceSpan[]>;
   sourceVersionsForEvidence(ids: EvidenceId[]): Promise<SourceVersion[]>;
   /**
    * Resolve source versions whose stored content hash matches one of the

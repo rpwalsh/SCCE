@@ -244,15 +244,34 @@ for (const question of QUESTIONS) {
 }
 process.stdout.write(`\n${usable.length} of ${QUESTIONS.length} questions verified against the corpus\n`);
 
-const runtime = createNodeRuntime(config);
-const warmup = await runtime.kernel.warmup({ languageLimit: 64 }).catch(() => undefined);
-process.stdout.write(`warmup ${Math.round(warmup?.totalMs ?? 0)}ms, language models=${warmup?.language?.models ?? 0}\n`);
+// --server=http://127.0.0.1:3873 asks the running product over its own API instead of an in-process runtime: the
+// path an operator actually exercises, with no second warmup. A 422 "runtime declined" is a decline, not a failure.
+const serverUrl = args.get("server");
+const runtime = serverUrl ? undefined : createNodeRuntime(config);
+if (runtime) {
+  const warmup = await runtime.kernel.warmup({ languageLimit: 64 }).catch(() => undefined);
+  process.stdout.write(`warmup ${Math.round(warmup?.totalMs ?? 0)}ms, language models=${warmup?.language?.models ?? 0}\n`);
+} else {
+  process.stdout.write(`asking the live server at ${serverUrl}\n`);
+}
+
+const askScce = async text => {
+  if (runtime) return runtime.kernel.turn({ text });
+  const response = await fetch(`${serverUrl}/api/turn`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+  if (response.status === 422) return { answer: "", epistemicForce: "declined", evidence: [] };
+  if (!response.ok) throw new Error(`server ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  return response.json();
+};
 
 const rows = [];
 try {
   for (const question of usable) {
     const started = Date.now();
-    const result = await runtime.kernel.turn({ text: question.text });
+    const result = await askScce(question.text);
     const scceAnswer = String(result.answer ?? "");
     const scce = {
       answer: scceAnswer,
@@ -296,7 +315,7 @@ try {
     }
   }
 } finally {
-  await runtime.close?.().catch(() => undefined);
+  await runtime?.close?.().catch(() => undefined);
   await client.end().catch(() => undefined);
 }
 

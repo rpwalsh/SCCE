@@ -51,6 +51,19 @@ const INITIAL_VISIBLE_RESPONSE_SCHEMA = "scce.initial_visible_response.v1" as co
 const hydratedRuntimeReadyByStorage = new WeakMap<object, { marker: HydratedRuntimeMarker; verifiedAt: number; epoch: number }>();
 const hydratedRuntimeEpochByStorage = new WeakMap<object, number>();
 const dialoguePersistenceTails = new Map<string, Promise<void>>();
+// The judge refits its coefficients on a 120s cycle; the dialogue bridge reads the same observations, so it shares
+// that cadence instead of pulling and refitting the calibration table on every turn.
+const CALIBRATION_MODELS_CACHE_MS = 120_000;
+const calibrationModelsCacheByRuntime = new WeakMap<ApiContext["runtime"], { loadedAt: number; value: Promise<Awaited<ReturnType<typeof loadCalibrationModelSet>>> }>();
+
+function cachedCalibrationModels(context: ApiContext): Promise<Awaited<ReturnType<typeof loadCalibrationModelSet>>> {
+  const cached = calibrationModelsCacheByRuntime.get(context.runtime);
+  if (cached && Date.now() - cached.loadedAt < CALIBRATION_MODELS_CACHE_MS) return cached.value;
+  const value = loadCalibrationModelSet({ store: context.runtime.storage.dialogueMemory, minPoints: 2, createdAt: Date.now() });
+  calibrationModelsCacheByRuntime.set(context.runtime, { loadedAt: Date.now(), value });
+  value.catch(() => calibrationModelsCacheByRuntime.delete(context.runtime));
+  return value;
+}
 
 /** Test-only accessor -- exposes the real map's current size without exposing the map itself. */
 export function dialoguePersistenceTailsSizeForTest(): number {
@@ -297,6 +310,7 @@ async function dispatch(
     // when a caller most needs a fast answer.
     if (!warmupSatisfied(warmup)) {
       invalidateHydratedRuntimeReadiness(context);
+      if (warmup.phase === "running") primePostgresStatus(context);
       return json({ ok: false, warmup, postgres: undefined, exactCounts: false, serverUrl: context.config.server.url, manifest: ROUTES.length }, 503);
     }
     const postgres = await cachedPostgresStatus(context);
@@ -767,12 +781,12 @@ async function dispatch(
           runtimeControl: requestTiming.turnExecution
         } : {})
       });
+      traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
       if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(422, "runtime declined: no admissible answer surface");
-      const calibrationModels = await loadCalibrationModelSet({
-        store: context.runtime.storage.dialogueMemory,
-        minPoints: 2,
-        createdAt: Date.now()
-      });
+      const calibrationStarted = Date.now();
+      const calibrationModels = await cachedCalibrationModels(context);
+      traceEvent(trace, { stage: "turn.calibration.loaded", label: "api.turn", durationMs: Date.now() - calibrationStarted, counts: { observations: calibrationModels.observationCount } });
+      const bridgeStarted = Date.now();
       const dialogue = buildTurnDialogueBridge({
         requestText: turn.text,
         result,
@@ -784,6 +798,7 @@ async function dispatch(
         calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
         outcomeMemory: dialogueOutcomeMemory
       });
+      traceEvent(trace, { stage: "turn.dialogue.bridged", label: "api.turn", durationMs: Date.now() - bridgeStarted });
       const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
         const [, cognitiveShadow, storedSession] = await Promise.all([
           persistDialogueTurn({
@@ -3450,7 +3465,11 @@ function warmupSatisfied(warmup: RuntimeStartupReadinessSnapshot): boolean {
 // and schema version do not change on a 60s timescale in a running
 // server; a mutation route that could change them invalidates the
 // readiness marker explicitly.
-const POSTGRES_STATUS_CACHE_MS = 60_000;
+// Live-measured 2026-09-10 against scce3_runtime: ngram_observations alone is 15.1M rows / 34GB, so one exact
+// scan takes minutes, not seconds. Anything refreshed on the request path at that cost starves every turn query
+// behind it; the counts are served stale and refreshed off the request path (see cachedPostgresStatus).
+const POSTGRES_STATUS_CACHE_MS = 10 * 60_000;
+const POSTGRES_STATUS_FAILED_RETRY_MS = 5_000;
 // Keyed by context.runtime, not the ApiContext object itself: index.ts's
 // http.createServer callback builds a FRESH ApiContext object literal on
 // every single request (runtime/config/startupReadiness are captured
@@ -3461,17 +3480,46 @@ const POSTGRES_STATUS_CACHE_MS = 60_000;
 // once per server process and reused for every request; it is also
 // constructed once per test fixture, so cache isolation across tests
 // that build their own runtime still holds.
-const postgresStatusCacheByRuntime = new WeakMap<ApiContext["runtime"], { loadedAt: number; value: JsonValue }>();
+const postgresStatusCacheByRuntime = new WeakMap<ApiContext["runtime"], { loadedAt: number; ttlMs: number; value: JsonValue }>();
+// Single-flight: pg_stat_activity showed 17 concurrent COUNT(*) scans of the 34GB table, one per readiness poll
+// that arrived while the first scan was still running, because the cache was only written after it finished.
+const postgresStatusInFlightByRuntime = new WeakMap<ApiContext["runtime"], Promise<JsonValue>>();
+
+function loadPostgresStatus(context: ApiContext): Promise<JsonValue> {
+  const inFlight = postgresStatusInFlightByRuntime.get(context.runtime);
+  if (inFlight) return inFlight;
+  const startedAt = Date.now();
+  const load = (context.runtime.storage.status
+    ? context.runtime.storage.status()
+    : context.runtime.storage.verify().then(verify => ({ ...verify, countSemantics: "unavailable", tableCounts: {} } as JsonValue)))
+    .then(value => {
+      postgresStatusCacheByRuntime.set(context.runtime, {
+        loadedAt: startedAt,
+        ttlMs: healthOk(value) ? POSTGRES_STATUS_CACHE_MS : POSTGRES_STATUS_FAILED_RETRY_MS,
+        value
+      });
+      return value;
+    })
+    .finally(() => postgresStatusInFlightByRuntime.delete(context.runtime));
+  postgresStatusInFlightByRuntime.set(context.runtime, load);
+  return load;
+}
+
+/** Start the exact-count scan while warmup is still running so the first readiness answer after warmup is served
+ *  from cache instead of paying the scan on the request path. Single-flight keeps this to one scan per process. */
+function primePostgresStatus(context: ApiContext): void {
+  if (postgresStatusCacheByRuntime.has(context.runtime) || postgresStatusInFlightByRuntime.has(context.runtime)) return;
+  void loadPostgresStatus(context).catch(() => undefined);
+}
 
 async function cachedPostgresStatus(context: ApiContext): Promise<JsonValue> {
-  const now = Date.now();
   const cached = postgresStatusCacheByRuntime.get(context.runtime);
-  if (cached && now - cached.loadedAt < POSTGRES_STATUS_CACHE_MS) return cached.value;
-  const value = context.runtime.storage.status
-    ? await context.runtime.storage.status()
-    : { ...(await context.runtime.storage.verify()), countSemantics: "unavailable", tableCounts: {} };
-  postgresStatusCacheByRuntime.set(context.runtime, { loadedAt: now, value });
-  return value;
+  if (cached) {
+    // Stale-while-revalidate: a poll never waits on a scan once one answer exists; the refresh runs off the request path.
+    if (Date.now() - cached.loadedAt >= cached.ttlMs) void loadPostgresStatus(context).catch(() => undefined);
+    return cached.value;
+  }
+  return loadPostgresStatus(context);
 }
 
 function healthOk(value: unknown): boolean {
