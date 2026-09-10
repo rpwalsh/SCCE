@@ -182,6 +182,9 @@ event identity, not count, and the answer assertion is provenance-bound (the val
 in the evidence the turn carried). Output: `artifacts/full-system-one-shot.json`; the exit code is non-zero when
 a required stage fails. First run 2026-09-08: 12/13 required stages, the miss being
 `realization.answers_specific_value` (asked a temperature the corpus states, it returned the subject's definition).
+Re-run 2026-09-10 after the chat-path repairs: 12/13 again, same miss; a mid-session regression to 10/13 (the
+mouth required the request's opening word "what" in the answer on a corpus whose learned closed class has no
+question words) was caught by this gate and fixed the same hour, which is the gate doing its job.
 
 ---
 
