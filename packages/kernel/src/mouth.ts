@@ -17,7 +17,7 @@ import type { TurnRequirementField } from "./turn-requirements.js";
 import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
-import { answerCoversRequest, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
+import { answerCoversRequest, requestContentEvidenceUnits, requestLeadingScaffoldingUnit } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
@@ -6925,7 +6925,11 @@ function mouthCoverageUnits(input: SpeakInput): string[] {
   // A translation carries the source, not the request; it is judged by preservation, not coverage.
   if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
   const closedClass = mouthClosedClass(input);
-  return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
+  // The request's opening word is scaffolding by position and length (the same rule the answer proposers apply): a
+  // brain trained on a small corpus has no "what" in its learned closed class, and the full-system gate then
+  // rejected "The Kelvinge threshold is the point at which..." for not containing the word "what".
+  const leadingScaffolding = requestLeadingScaffoldingUnit(input.requestText);
+  return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit) && unit !== leadingScaffolding);
 }
 
 /** The learned closed class the mouth judges coverage with: the role language's models plus the request scaffolding. Pure. */
