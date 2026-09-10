@@ -160,7 +160,7 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeRequestCorroborated, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -3835,12 +3835,60 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // score, and returned silence -- the honest, cited evidence was sitting there and never spoken. Letting
       // it stand as the answer invents nothing: it is the same admitted span text every other source-bound path
       // in this function already trusts, bounded to its first sentences the same way local-evidence quoting is.
+      //
+      // The span spoken must be the one the winning candidate actually cited, never a stand-in. The previous
+      // `?? selectedEvidence[0]` fallback fired whenever `judged.selected.evidenceIds` was empty or didn't
+      // overlap `selectedEvidence` -- exactly the signature of a genuinely unsupported request (no fact exists
+      // for the asked-about attribute at all, e.g. "What was Durrani's shoe size?") rather than a real, lexically-
+      // blocked contradiction -- and spoke an arbitrary, topically unrelated span as if it were the contradicted
+      // one. Measured live across seven cases: real cited biography/lead-sentence text with zero relation to the
+      // asked attribute (shoe size, blood type, favorite tea), and once the wrong entity's evidence entirely (a
+      // ship named "Alexander" answering a question about Alexander the Great). A candidate with no genuinely
+      // cited, selected span has no contradicted span to speak and must fall through to abstention, not guess.
       if (!spoken.text.trim() && judged.selected.scores.contradiction > 0.2 && selectedEvidence.length > 0) {
         const citedIds = new Set((judged.selected.evidenceIds ?? []).map(String));
-        const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id))) ?? selectedEvidence[0];
+        const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id)));
         const spanText = tidySurfaceText(String(contradictedSpan?.text ?? contradictedSpan?.textPreview ?? ""));
         const boundedText = splitSurfaceSentences(spanText).slice(0, 2).join(" ").trim();
-        if (contradictedSpan && boundedText) {
+        // Two independent reasons the cited span must not be trusted here, checked before either one is
+        // allowed to speak.
+        //
+        // (1) Some corpus spans are unparsed source markup (wikitext tables in particular: "|style=",
+        // "background:#", bare "|" cell separators) that ingestion never stripped. That is not prose a
+        // contradiction can be voiced in -- measured live on "Ahmad Shah Durrani's shoe size", where this
+        // exact fallback spoke a raw table row.
+        //
+        // (2) A span can be clean prose about the right subject and still answer nothing the request asked --
+        // measured live across six cases: "What was Lincoln's pocket watch serial number?" cited his religious
+        // views, "Bell's blood type?" cited his birth-and-career opening sentence, and so on, because the
+        // candidate's own cited evidence shared the subject and nothing else. The subject alone is not evidence
+        // of relevance -- it is true of nearly every sentence in that person's article. What distinguishes a
+        // real premise contradiction (the Apollo-11-landed-on-Mars case this fallback exists for: the evidence
+        // is centrally about the same landing being asked about, just not the false detail) from these misses
+        // is whether the span relates to anything the request asked about *beyond* who or what it names --
+        // requestContentEvidenceUnits with the request's own named-subject words stripped out, the same
+        // subject-minus-content pattern local-evidence-runtime.ts's localAnswerRelationText already uses to
+        // keep a relation hash from degenerating into a whole sentence. No overlap on what is left means the
+        // span was never about the question, only about its subject.
+        const subjectWords = new Set(namedSubjectAnchors(input.text).flatMap(anchor => anchor.toLocaleLowerCase().split(/\s+/u)).filter(Boolean));
+        const relationUnits = requestContentEvidenceUnits(input.text).filter(unit => !subjectWords.has(unit.toLocaleLowerCase()));
+        const boundedTextLower = boundedText.toLocaleLowerCase();
+        const relatesBeyondSubject = relationUnits.length === 0 || relationUnits.some(unit => boundedTextLower.includes(unit.toLocaleLowerCase()));
+        if (boundedText && isUnparsedMarkupText(boundedText)) {
+          kernelTrace({
+            stage: "mouth.contradiction_fallback.rejected_markup",
+            label: "kernel.turn",
+            counts: { answerChars: boundedText.length },
+            support: { selectedCandidateId: judged.selected.id, evidenceId: contradictedSpan ? String(contradictedSpan.id) : null }
+          });
+        } else if (boundedText && !relatesBeyondSubject) {
+          kernelTrace({
+            stage: "mouth.contradiction_fallback.rejected_subject_only",
+            label: "kernel.turn",
+            counts: { answerChars: boundedText.length, relationUnits: relationUnits.length },
+            support: { selectedCandidateId: judged.selected.id, evidenceId: contradictedSpan ? String(contradictedSpan.id) : null }
+          });
+        } else if (contradictedSpan && boundedText) {
           kernelTrace({
             stage: "mouth.contradiction_fallback",
             label: "kernel.turn",
@@ -4931,6 +4979,19 @@ function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAu
 }
 
 /** The longest prefix of `text` ending at a sentence boundary within `limit` characters, or "" when none does. Pure. */
+/**
+ * A cheap, structural check for unparsed source markup rather than prose -- wikitext table syntax in
+ * particular (`|style=`, `background:#`, bare `|` cell separators), which ingestion did not strip and which
+ * no realization path should ever speak as if it were an answer. Density-based, not a specific-string match:
+ * three or more pipe characters, or any of the literal markup tokens below, is well past what real prose
+ * carries.
+ */
+function isUnparsedMarkupText(text: string): boolean {
+  const pipeCount = (text.match(/\|/gu) ?? []).length;
+  if (pipeCount >= 3) return true;
+  return /\|style=|background:#|\{\{|\}\}/u.test(text);
+}
+
 function trimToSentenceBoundary(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const sentences = splitSurfaceSentences(text);
