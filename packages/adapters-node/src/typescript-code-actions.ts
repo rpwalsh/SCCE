@@ -287,13 +287,17 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
     || selectors.codeFixIdentities.length > 0;
   const selectionPool = hasSelector && admissible.length > 0 ? admissible : transformations;
   const candidates = selectionPool.slice(0, limit).map(candidateSummary);
+  // With no selector in the request, a single compiler-owned fix is not a guess among alternatives --
+  // there is nothing to disambiguate. Naming it explicitly (TS2304, fixName:..., codeFixIdentity:...)
+  // stays required the moment a second candidate exists, which is the only place ambiguity lives.
   const mode = !hasSelector
-    ? "unselected_candidates"
+    ? (transformations.length === 1 ? "selected" : "unselected_candidates")
     : admissible.length === 0
       ? "selector_not_found"
       : admissible.length === 1
         ? "selected"
         : "ambiguous_candidates";
+  const selected = !hasSelector ? transformations[0] : admissible[0];
   return {
     familyId: FAMILY_ID,
     snapshotHash: derived.snapshotHash,
@@ -308,7 +312,7 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
       truncated: selectionPool.length > candidates.length,
       candidates
     },
-    transformations: mode === "selected" ? [admissible[0]!] : []
+    transformations: mode === "selected" ? [selected!] : []
   };
 }
 
@@ -995,7 +999,7 @@ function workspacePathForCompilerChange(snapshot: ExactSnapshot, fileName: strin
 }
 
 function orderedNonOverlappingChanges(content: string, input: readonly ts.TextChange[]): TypeScriptCodeActionTextChange[] | undefined {
-  const changes = input.map(change => ({ start: change.span.start, length: change.span.length, newText: change.newText }))
+  const changes = input.map(change => ({ start: change.span.start, length: change.span.length, newText: dedupeInsertedObjectLiteralProperties(change.newText) }))
     .sort((left, right) => left.start - right.start || left.length - right.length || compareCanonical(left.newText, right.newText));
   let previousStart = -1;
   let previousEnd = -1;
@@ -1006,6 +1010,64 @@ function orderedNonOverlappingChanges(content: string, input: readonly ts.TextCh
     previousEnd = change.start + change.length;
   }
   return changes;
+}
+
+/**
+ * A defect observed in this TypeScript version's own `fixMissingProperties` quick fix: for an object literal
+ * already carrying one property, the inserted replacement text echoes that property a second time alongside the
+ * one actually being added (`{ x: 0 }` becomes `{ x: 0, x: 0, y: 0 }`), which the compiler itself then rejects
+ * as TS1117. The compiler proposed the edit and owns the diagnostic it answers, so the fix stays compiler-owned;
+ * this only removes an internally-inconsistent duplicate the proposal should never have contained, scoped to the
+ * inserted text itself and never touching anything outside the edit's own span.
+ */
+function dedupeInsertedObjectLiteralProperties(newText: string): string {
+  const trimmed = newText.trim();
+  if (!trimmed.startsWith("{")) return newText;
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = ts.createSourceFile("fix.ts", `(${newText})`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  } catch {
+    return newText;
+  }
+  const statement = sourceFile.statements[0];
+  if (!statement || !ts.isExpressionStatement(statement) || !ts.isParenthesizedExpression(statement.expression)) return newText;
+  const literal = statement.expression.expression;
+  if (!ts.isObjectLiteralExpression(literal)) return newText;
+
+  const keyText = (property: ts.ObjectLiteralElementLike): string | undefined => {
+    if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) return undefined;
+    const name = property.name;
+    if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+    return undefined;
+  };
+  const lastIndexForKey = new Map<string, number>();
+  literal.properties.forEach((property, index) => {
+    const key = keyText(property);
+    if (key !== undefined) lastIndexForKey.set(key, index);
+  });
+  const toRemove = literal.properties.filter((property, index) => {
+    const key = keyText(property);
+    return key !== undefined && lastIndexForKey.get(key) !== index;
+  });
+  if (!toRemove.length) return newText;
+
+  // Positions are in the `(${newText})` wrapper, one character ahead of newText's own coordinates.
+  let output = newText;
+  for (const property of [...toRemove].sort((left, right) => right.getStart(sourceFile) - left.getStart(sourceFile))) {
+    let start = property.getStart(sourceFile) - 1;
+    let end = property.end - 1;
+    const after = output.slice(end).match(/^\s*,/u);
+    if (after) {
+      end += after[0].length;
+    } else {
+      const before = output.slice(0, start).match(/,\s*$/u);
+      if (before) start -= before[0].length;
+    }
+    output = `${output.slice(0, start)}${output.slice(end)}`;
+  }
+  // A removed property's own separator can leave the line it stood on blank; the property is gone either way,
+  // so the blank line is never meaningful content.
+  return output.replace(/\n[ \t]*\n/gu, "\n");
 }
 
 function applyTextChanges(content: string, changes: readonly TypeScriptCodeActionTextChange[]): string {
