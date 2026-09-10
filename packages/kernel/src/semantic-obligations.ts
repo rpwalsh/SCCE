@@ -337,7 +337,10 @@ export function extractTemporalAnswerFromEvidence(claimText: string, evidence: r
   const sequences = requestSentenceSequences(claimText);
   if (sequences.length && evidence.some(span => spanContainsRequestNearDuplicateSentence(span, sequences))) return undefined;
   const wantsDeath = DEATH_QUESTION_PATTERN.test(claimText) && !BIRTH_QUESTION_PATTERN.test(claimText);
-  for (const span of evidence) {
+  // The opening block first: it carries the subject's own dates. A follow-up bound to the chunk that answered the
+  // previous turn read a patent date ("11 November 1930") as when Einstein was born.
+  const ordered = [...evidence].sort((left, right) => Number(left.charStart ?? Number.MAX_SAFE_INTEGER) - Number(right.charStart ?? Number.MAX_SAFE_INTEGER));
+  for (const span of ordered) {
     // The full span, not its preview: the preview of the Apollo 11 lead ends before "July 20, 1969, at 20:17 UTC"
     // reaches the date, and "when did Apollo 11 land" was answered "20:17".
     const text = span.text || span.textPreview || "";
