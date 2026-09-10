@@ -1284,7 +1284,11 @@ describe("kernel local evidence source anchoring", () => {
     expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":true');
   });
 
-  it("does not admit a different-title content mention without a matched semantic-frame route", async () => {
+  // Binding-sentence admission: a differently titled source whose one sentence carries every content anchor of the
+  // request ("Captain ... Kirk was known for ...") is the sentence that answers, the same rule that lets the Deep
+  // Space Nine article answer "Who played Sisko?". This case only ever abstained because the request's own question
+  // word ("What") was mis-read as a content anchor the sentence had to contain.
+  it("admits a different-title source whose sentence binds every content anchor of the request", async () => {
     const clock = createClock({ fixedTime: 6_825, stepMs: 1 });
     const hasher = createHasher();
     const kirkMention = evidenceSpan({
@@ -1296,10 +1300,11 @@ describe("kernel local evidence source anchoring", () => {
       alpha: 0.99
     });
     const fixture = storageFixture({ evidence: [kirkMention], semanticFrames: [] });
-    expect(proposeSourceExactEvidenceAnswer({
+    const proposal = proposeSourceExactEvidenceAnswer({
       requestText: "What was Captain Kirk known for?",
       selectedEvidence: [kirkMention]
-    })).toBeUndefined();
+    });
+    expect(proposal?.plan.proofExcerpts?.[0]?.text).toContain("commanding the starship Enterprise");
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -1311,9 +1316,8 @@ describe("kernel local evidence source anchoring", () => {
 
     const result = await kernel.turn({ text: "What was Captain Kirk known for?" });
 
-    expect(result.evidence.map(span => String(span.id))).not.toContain(String(kirkMention.id));
-    expect(result.answer).not.toContain("commanding the starship Enterprise");
-    expect(JSON.stringify(result.actionGraph)).toContain('"sourceAnchorMatched":false');
+    expect(result.evidence.map(span => String(span.id))).toContain(String(kirkMention.id));
+    expect(result.answer).toContain("commanding the starship Enterprise");
   });
 
   it("transfers the title-lead boost to a deeper sentence that strictly better covers the request's non-anchor content terms (sealed-eval q5 shape)", () => {

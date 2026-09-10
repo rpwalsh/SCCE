@@ -325,17 +325,23 @@ export class PostgresStorageAdapter implements ScceStorage {
       ]);
       const counts: Record<string, number> = {};
       const countErrors: string[] = [];
-      const countResults = await Promise.all(POSTGRES_REQUIRED_TABLES.map(async table => {
-        if (!verify.tables.includes(table)) return { table };
+      // Sequential on purpose: ~40 exact scans launched at once (one is a 34GB table) took the whole connection
+      // pool and queued every turn query behind them. Status is a background refresh; it must never own the pool.
+      const countResults: Array<{ table: string; count?: number; error?: string }> = [];
+      for (const table of POSTGRES_REQUIRED_TABLES) {
+        if (!verify.tables.includes(table)) {
+          countResults.push({ table });
+          continue;
+        }
         try {
           const rows = await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${this.table(table)}`);
           const count = Number(rows[0]?.count);
           if (!Number.isSafeInteger(count) || count < 0) throw new Error("invalid exact row count");
-          return { table, count };
+          countResults.push({ table, count });
         } catch (error) {
-          return { table, error: `exact count failed for ${table}: ${error instanceof Error ? error.message : String(error)}` };
+          countResults.push({ table, error: `exact count failed for ${table}: ${error instanceof Error ? error.message : String(error)}` });
         }
-      }));
+      }
       for (const result of countResults) {
         if (result.count !== undefined) counts[result.table] = result.count;
         if (result.error) countErrors.push(result.error);
@@ -1417,6 +1423,17 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       if (ids.length === 0) return [];
       const access = storage.informationAccessPredicate("evidence", 2);
       const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} evidence WHERE id=ANY($1) AND ${access.sql}`, [ids, ...access.params]);
+      return rows.map(rowToEvidence);
+    },
+    async openingEvidenceForSourceVersions(sourceVersionIds) {
+      if (sourceVersionIds.length === 0) return [];
+      const access = storage.informationAccessPredicate("evidence", 2);
+      const rows = await storage.query<EvidenceRow>(
+        `SELECT * FROM ${storage.table("evidence_spans")} evidence
+         WHERE source_version_id=ANY($1) AND char_start=0 AND status='promoted' AND id LIKE 'evidence_span.%' AND ${access.sql}
+         ORDER BY alpha DESC, observed_at DESC`,
+        [sourceVersionIds, ...access.params]
+      );
       return rows.map(rowToEvidence);
     },
     async searchEvidence(query: EvidenceQuery) {
