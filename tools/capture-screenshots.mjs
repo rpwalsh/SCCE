@@ -92,7 +92,9 @@ async function open(url) {
 
 async function answered(session) {
   const { result } = await session.send("Runtime.evaluate", {
-    expression: "(() => { const typing = document.querySelector('.typing'); const rows = document.querySelectorAll('.row.scce, .row.notice, .row.error'); return JSON.stringify({ typing: Boolean(typing), rows: rows.length, inFlight: document.body.textContent.includes('request in flight') }); })()",
+    // The topbar's runtime status can read "request in flight" after the answer has rendered, so the page's
+    // text is not the signal; the typing row disappearing and an answer/notice/error row existing are.
+    expression: "(() => { const typing = document.querySelector('.typing'); const rows = document.querySelectorAll('.row.scce, .row.notice, .row.error'); return JSON.stringify({ typing: Boolean(typing), rows: rows.length, inFlight: false }); })()",
     returnByValue: true
   });
   const state = JSON.parse(result.value);
