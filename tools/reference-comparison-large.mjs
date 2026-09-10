@@ -182,10 +182,12 @@ const QUESTIONS = [
 
 const normalize = value => String(value).replace(/\s+/gu, " ").trim().toLowerCase();
 
+// SCCE's own decline is the operator notice "No grounded source in the ingested corpus for: ..."; scoring it as a
+// fabrication would count a refusal as an invention.
 const declines = answer => {
   const spoken = normalize(answer);
   if (!spoken) return true;
-  return /(do not|does not|doesn't|don't|no (information|mention|reference|record)|not (mentioned|found|provided|present|specified|available|contain|include)|cannot|can't|unable|unknown|not enough|isn't (mentioned|specified)|no specific)/u.test(spoken);
+  return /(do not|does not|doesn't|don't|no (information|mention|reference|record|grounded source)|not (mentioned|found|provided|present|specified|available|contain|include)|cannot|can't|unable|unknown|not enough|isn't (mentioned|specified)|no specific)/u.test(spoken);
 };
 
 const askModel = async (question, context) => {

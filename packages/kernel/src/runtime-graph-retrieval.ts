@@ -24,6 +24,7 @@ import {
   sourceIdentityAdmissibleEvidenceForRequest,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
+  temporalConceptTitledEvidence,
   trailingInitialismTokensForAnchor,
   evidenceTitledForRequestSubject,
   evidenceSpanProvenanceTitle,
@@ -747,14 +748,22 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       promoted,
       semanticFrameBoundEvidenceIds
     );
-    const evidence = await withOpeningBlocks(text, anchored.evidence.slice(0, 24));
+    const admittedEvidence = await withOpeningBlocks(text, anchored.evidence.slice(0, 24));
+    // A premise that attributes a concept to a person is answered by two sources: the person's, for the lifespan,
+    // and the concept's, for the date the practice predates it. Cross-title admission keeps the second out by
+    // design, so it is re-admitted only when the first says a counterexample is expected.
+    const conceptEvidence = temporalCounterexampleExpected(text, admittedEvidence)
+      ? temporalConceptTitledEvidence(text, admittedEvidence, promoted)
+      : [];
+    const evidence = conceptEvidence.length ? mergeEvidenceSpans([...admittedEvidence, ...conceptEvidence]).slice(0, 24) : admittedEvidence;
     kernelTrace({
       stage: "graph.resolve.anchor_admissibility",
       label: "kernel.sourceAnchoredEvidenceForText",
       counts: {
         candidates: evidenceResults.length,
         promoted: promoted.length,
-        admitted: evidence.length
+        admitted: evidence.length,
+        concept: conceptEvidence.length
       },
       support: {
         sourceAnchoringRequired: anchored.required,
@@ -854,6 +863,19 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
    *  corpus's "died", so the relation never seeded or scored and ranking fell back to subject-only relevance --
    *  the EPR-paradox and Zionist-movement paragraphs won on other shared words while "He died in the Princeton
    *  Hospital ... on 18 April 1955" was never reachable on the relation at all. Pure. */
+  /** The learned bare forms a unit inflects ("flags" -> "flag", "nations" -> "nation"): vocabulary entries the unit
+   *  extends by at most two characters, shortest first. The inverse of learnedMorphologicalSiblings; same corpus. */
+  function learnedStemForms(unit: string, models: readonly KneserNeyModel[]): string[] {
+    if ([...unit].length < 5 || !models.length) return [];
+    const stems = new Set<string>();
+    for (const model of models) {
+      for (const candidate of model.vocabulary) {
+        if (candidate.length >= 4 && candidate.length < unit.length && unit.startsWith(candidate) && unit.length - candidate.length <= 2) stems.add(candidate);
+      }
+    }
+    return [...stems].sort((left, right) => left.length - right.length).slice(0, 2);
+  }
+
   function learnedMorphologicalSiblings(unit: string, models: readonly KneserNeyModel[]): string[] {
     if ([...unit].length < 3 || !models.length) return [];
     const siblings = new Set<string>();
@@ -960,6 +982,31 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         learnedMorphologicalSiblings(normalizePriorKey(feature.slice("anchor:sym:".length)), languageModels).map(variant => `anchor:sym:${variant}`));
       const mergedSymFeatures = uniqueKernelStrings([...symFeatures, ...learnedSymFeatures, ...trailingFeatures]);
       if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
+    }
+    // The concept a premise attributes to its subject is a source of its own. "did martha washington invent the
+    // concept of using flags to represent nations?" searched five phrase groups (using|flags, flags|to, ...) and
+    // never the word "flags", so the Flag article that dates the practice before her birth was not in the pool and
+    // the temporal counterexample could not form. One group of the request's content symbols outside its leading
+    // anchor, widened by the corpus's own morphology (flags -> flag); a group can only add candidates.
+    // Ranked by the corpus's own unigram counts, rarest first: the rare term is what the premise is about ("flags",
+    // not "using"). Each of the two rarest gets its own group, led by its shortest learned stem ("flag") so the
+    // title seeding finds the article titled with it rather than only the sentences that inflect it.
+    const leadingAnchorUnits = new Set(splitPriorUnits(normalizePriorKey(anchors[0] ?? "")).filter(Boolean));
+    const corpusCount = (unit: string) => languageModels.reduce((sum, model) => sum + (model.unigramCounts[unit] ?? 0), 0);
+    const conceptUnits = uniqueKernelStrings(splitPriorUnits(normalizePriorKey(text))
+      .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+      .filter(Boolean))
+      .filter(unit => !leadingAnchorUnits.has(unit) && !genericQuestionSignal(unit) && [...unit].length >= 4)
+      .sort((left, right) => corpusCount(left) - corpusCount(right) || [...right].length - [...left].length)
+      .slice(0, 2);
+    for (const unit of conceptUnits) {
+      const forms = uniqueKernelStrings([
+        ...learnedStemForms(unit, languageModels),
+        unit,
+        ...learnedMorphologicalSiblings(unit, languageModels)
+      ]);
+      const conceptFeatures = forms.map(form => `anchor:sym:${form}`);
+      if (!groups.some(group => conceptFeatures.every(feature => group.includes(feature)))) groups.push(conceptFeatures);
     }
     // One extra group of the request's longest uncovered adjacent bigrams:
     // when a famous anchor dominates the top-4 groups, the discriminative
