@@ -4,6 +4,7 @@ import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { isProseSentence } from "./evidence-gist.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
@@ -655,7 +656,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     });
   })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    .filter(row => row.sentence.length >= 24 || row.nearDuplicate)
+    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
@@ -675,7 +676,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
   const openingRow = definitional
     ? rows.find(row => covers(row) && row.index <= 1 && documentOpeningSpan(row.span) && anchored.anchors.length > 0
-      && evidenceTitleDistinctAnchorMatches(row.span, anchored.anchors))
+      && evidenceTitleDistinctAnchorMatches(row.span, anchored.anchors) && isProseSentence(row.sentence))
     : undefined;
   // Two sentences can both name the subject while only one says anything about it. Nothing above separates them:
   // "The character was portrayed by Sylvie Briggs, alongside characterisations of Charles Babbage and Noor Inayat
@@ -902,7 +903,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
 
 /** The short word a request opens with, normalized: "who", "what", "does", "tell" -- scaffolding by position and
  *  length, the same rule the subject-anchor primitive applies, so no word list and no language assumption. */
- function requestLeadingScaffoldingUnit(requestText: string): string | undefined {
+export function requestLeadingScaffoldingUnit(requestText: string): string | undefined {
   const first = requestText.trim().split(/\s+/u)[0] ?? "";
   const unit = normalizePriorKey(stripOuterPriorSeparators(first));
   return unit && [...unit].length <= 5 ? unit : undefined;
@@ -1444,13 +1445,15 @@ function sourceConflictAnswerPlan(
   const orderedRequestUnits = requestUnitsFromText(requestText);
   const subject = evidence
     .map(span => ({ span, title: evidenceTitle(span), key: normalizePriorKey(evidenceTitle(span)) }))
-    .map(row => ({ ...row, lifespan: lifespanYears(row.span) }))
+    .map(row => ({ ...row, lifespan: documentOpeningSpan(row.span) ? lifespanYears(row.span) : undefined }))
     .map(row => ({
       ...row,
       anchorFit: row.title && row.lifespan && anchors.some(anchor => temporalSubjectAnchorMatches(row.key, anchor)) ? 1 : 0,
       requestOverlap: evidenceRequestUnitOverlap(row.span, requestUnits)
     }))
-    .filter(row => row.title && row.lifespan && (row.anchorFit > 0 || row.requestOverlap >= 2))
+    // A request that names its subject takes only a source titled with it: word overlap put a 1935-1976
+    // biography in for "Who was Albert Einstein and what did he invent?" and dated a "counterexample" against it.
+    .filter(row => row.title && row.lifespan && (row.anchorFit > 0 || (!namedSubjectAnchors(requestText).length && row.requestOverlap >= 2)))
     .sort((left, right) => right.anchorFit - left.anchorFit || right.requestOverlap - left.requestOverlap || left.title.localeCompare(right.title))[0];
   if (!subject) return undefined;
   const lifespan = subject.lifespan;
@@ -1552,13 +1555,17 @@ export function temporalCounterexampleExpected(requestText: string, evidence: re
   if (!anchors.length) return false;
   const requestUnits = requestUnitSet(requestText);
   const subject = evidence
-    .map(span => ({ span, title: evidenceTitle(span), key: normalizePriorKey(evidenceTitle(span)), lifespan: lifespanYears(span) }))
+    // A lifespan is read from the document's opening block only: a mid-article chunk carries other people's years
+    // ("(1935–1976)" inside the Albert Einstein article dated an anachronism against him).
+    .map(span => ({ span, title: evidenceTitle(span), key: normalizePriorKey(evidenceTitle(span)), lifespan: documentOpeningSpan(span) ? lifespanYears(span) : undefined }))
     .map(row => ({
       ...row,
       anchorFit: row.title && row.lifespan && anchors.some(anchor => temporalSubjectAnchorMatches(row.key, anchor)) ? 1 : 0,
       requestOverlap: evidenceRequestUnitOverlap(row.span, requestUnits)
     }))
-    .filter(row => row.title && row.lifespan && (row.anchorFit > 0 || row.requestOverlap >= 2))
+    // A request that names its subject takes only a source titled with it: word overlap put a 1935-1976
+    // biography in for "Who was Albert Einstein and what did he invent?" and dated a "counterexample" against it.
+    .filter(row => row.title && row.lifespan && (row.anchorFit > 0 || (!namedSubjectAnchors(requestText).length && row.requestOverlap >= 2)))
     .sort((left, right) => right.anchorFit - left.anchorFit || right.requestOverlap - left.requestOverlap || left.title.localeCompare(right.title))[0];
   if (!subject || !requestDerivedPolaritySlots(requestText, subject.title)) return false;
   return temporalCounterexampleConceptUnits(requestText, subject.title).size > 0;
@@ -1958,7 +1965,16 @@ export function evidenceSpanProvenanceTitle(span: EvidenceSpan): string {
 export function isUnparsedMarkupText(text: string): boolean {
   const pipeCount = (text.match(/\|/gu) ?? []).length;
   if (pipeCount >= 3) return true;
-  return /\|style=|background:#|\{\{|\}\}/u.test(text);
+  if (/\|style=|background:#|\{\{|\}\}/u.test(text)) return true;
+  // A section heading alone ("==== Einstein as an inventor ====") names a section; it states nothing.
+  const trimmed = text.trim();
+  return /^=+\s*[^=]+\s*=+$/u.test(trimmed) || /^\[\[[^\]]*\]\]$/u.test(trimmed);
+}
+
+/** A heading-only or otherwise markup-only sentence has no claim in it; used where a single sentence is chosen. */
+export function isHeadingOnlySurface(sentence: string): boolean {
+  const trimmed = sentence.trim();
+  return /^=+\s*[^=]+\s*=+\s*$/u.test(trimmed) || /^=+\s*[^=]+$/u.test(trimmed) && trimmed.length < 80;
 }
 
 export function spanIsUnparsedMarkup(span: EvidenceSpan): boolean {
@@ -1970,9 +1986,11 @@ export function spanIsUnparsedMarkup(span: EvidenceSpan): boolean {
 export function evidenceTitledForRequestSubject(text: string, spans: readonly EvidenceSpan[]): boolean {
   const anchors = namedSubjectAnchors(text).map(anchor => normalizePriorKey(anchor)).filter(anchor => anchor.length >= 3);
   if (!anchors.length) return true;
+  // Whole units, not substrings: "born" is inside "Borna Reichstag constituency", and that match kept a pronoun
+  // follow-up on the wrong article.
   return spans.some(span => {
-    const title = normalizePriorKey(evidenceTitle(span));
-    return title.length > 0 && anchors.some(anchor => title.includes(anchor));
+    const title = ` ${splitPriorUnits(normalizePriorKey(evidenceTitle(span))).filter(Boolean).join(" ")} `;
+    return title.trim().length > 0 && anchors.some(anchor => title.includes(` ${splitPriorUnits(anchor).filter(Boolean).join(" ")} `));
   });
 }
 
@@ -3514,7 +3532,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       });
     })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    .filter(row => row.sentence.length >= 24 || row.nearDuplicate)
+    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
@@ -3525,16 +3543,29 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   // Doctor Who credit), while "Charles Babbage and Ada Lovelace conceived the first programmable computer" ranked
   // below the cut and never reached the answer. Stable partition of a bounded prefix: nothing is dropped, and when
   // no candidate predicates about the anchor the order is untouched.
-  const rerankable = anchors.length && !candidates[0]?.nearDuplicate
+  // Same rule as proposeSourceExactEvidenceAnswer: a request that only names its subject is answered by the titled
+  // source's opening sentence, which predicates about its subject by construction even when it names it in a
+  // longer form the anchor test cannot see. This ranker is the one the fast local-evidence plan actually uses, and
+  // it sent "Who is Ada Lovelace?" to a Starfield trivia bullet while her article's lead sat in the pool.
+  const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(requestText);
+  const coverageUnits = requestContentEvidenceUnits(requestText).filter(unit => unit !== leadingScaffoldingUnit);
+  const subjectUnitSet = new Set(namedSubjectAnchors(requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
+  const openingRow = definitional && !candidates[0]?.nearDuplicate
+    ? candidates.find(row => row.index <= 1 && documentOpeningSpan(row.span) && anchors.length > 0 && evidenceTitleDistinctAnchorMatches(row.span, anchors) && isProseSentence(row.sentence))
+    : undefined;
+  const rerankable = anchors.length && !candidates[0]?.nearDuplicate && !openingRow
     ? candidates.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
     : [];
-  const ranked = rerankable.length
-    ? [
-      ...rerankable.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
-      ...rerankable.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
-      ...candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT)
-    ]
-    : candidates;
+  const ranked = openingRow
+    ? [openingRow, ...candidates.filter(row => row !== openingRow && String(row.span.id) === String(openingRow.span.id))]
+    : rerankable.length
+      ? [
+        ...rerankable.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
+        ...rerankable.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
+        ...candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT)
+      ]
+      : candidates;
   const selected = selectEvidenceSentenceRows(ranked, ranked[0]?.nearDuplicate ? 1 : limit);
   // Adjacent sentences read in document order, whatever order they were
   // scored in (run-f emitted "It acquired the retronym... 'Star Trek' is

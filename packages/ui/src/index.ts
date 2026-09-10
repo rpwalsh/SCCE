@@ -67,6 +67,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     .row.owner .bubble { background:var(--bubble-owner); color:#fff; border-bottom-right-radius:3px; }
     .row.scce .bubble { background:var(--panel2); border:1px solid var(--line); border-bottom-left-radius:3px; }
     .row.error .bubble { background:#3a1e1e; border:1px solid #5a2b2b; color:#ffb4b4; }
+    .row.notice { justify-content:flex-start; }
+    .row.notice .bubble { background:transparent; border:1px dashed var(--line); color:var(--muted); font-size:13px; }
     .bubble p { margin:0 0 8px; }
     .bubble p:last-child { margin-bottom:0; }
     .bubble pre { background:rgba(0,0,0,0.28); padding:9px 11px; border-radius:6px; overflow-x:auto; margin:6px 0; }
@@ -492,7 +494,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         setInspector({ dialogue: result.dialogue, proof: result.entailment?.proof, actionGraph: result.actionGraph });
       } catch (error) {
         hideTyping(); setSending(false);
-        if (String(error.message).includes('runtime declined')) add('scce', t('chat.declined'));
+        if (String(error.message).includes('runtime declined')) add('notice', error.message);
         else add('error', t('error.prefix') + ' ' + error.message);
       }
     }
@@ -710,7 +712,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           if (typeof frame.answer === 'string' && answerHasSpeech(frame.answer)) showAnswerPreview(frame.answer);
         });
         hideTyping(); setSending(false); runningTaskId = '';
-        add('scce', turnSurface(r), turnDetail(r));
+        // The runtime's own force decides how the surface reads: a non-assertive continuation is a notice, not an answer.
+        add(r.assistantForce === 'insufficient_support' && !(r.evidence || []).length ? 'notice' : 'scce', turnSurface(r), turnDetail(r));
         renderEvidence(r);
         addLearningControls(r, text);
         addFeedbackControls(r.dialogue, text);
@@ -720,7 +723,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         await refreshApprovals();
       } catch (e) {
         hideTyping(); setSending(false); runningTaskId = '';
-        if (String(e.message).includes('runtime declined')) add('scce', t('chat.declined'));
+        if (String(e.message).includes('runtime declined')) add('notice', e.message);
         else add('error', t('error.prefix') + ' ' + e.message);
       }
     };

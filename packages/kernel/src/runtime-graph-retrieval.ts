@@ -26,6 +26,7 @@ import {
   temporalCounterexampleExpected,
   trailingInitialismTokensForAnchor,
   evidenceTitledForRequestSubject,
+  evidenceSpanProvenanceTitle,
   spanIsUnparsedMarkup
 } from "./local-evidence-runtime.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
@@ -577,13 +578,22 @@ export function createRuntimeGraphRetrieval(options: {
     const titleUnits = anchorGroupTitleUnits(group);
     // A prose question's hits are the prose hits: four source comments carrying "Lovelace born" satisfied this
     // search, were dropped as code afterwards, and the symbol fallback that would have found the article never ran.
-    const usable = (rows: Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>) => proseOnly ? rows.filter(item => !spanIsSourceCode(item.span)) : rows;
-    const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
+    // Control corpora (request-requirement, creative-event bootstraps) and the workspace's own titleless documents
+    // repeat a subject's name far more densely than its article does, and took every result slot the moment the
+    // request corpus was ingested: "Who is Ada Lovelace?" retrieved eleven spans and her article was not among them.
+    // Over-fetch, drop control spans before ranking, and let titled sources precede titleless ones.
+    const usable = (rows: Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>) => {
+      const kept = (proseOnly ? rows.filter(item => !spanIsSourceCode(item.span)) : rows).filter(item => !isControlCorpusSpan(item.span));
+      const titled = kept.filter(item => evidenceSpanProvenanceTitle(item.span));
+      const titleless = kept.filter(item => !evidenceSpanProvenanceTitle(item.span));
+      return [...titled, ...titleless].slice(0, 32);
+    };
+    const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 64, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
       : []));
-    return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 32, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
+    return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 64, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
   }
 
   /** Every unit a group's features are made of. Pure. */
@@ -1440,7 +1450,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       .map(id => hot.evidenceById.get(id))
       .filter((span): span is EvidenceSpan => Boolean(span));
     const candidates = indexedEvidence
-      .filter(span => evidenceProofBoundary(span).certifiesFactualProof && !spanIsUnparsedMarkup(span));
+      .filter(span => evidenceProofBoundary(span).certifiesFactualProof && !spanIsUnparsedMarkup(span) && !isControlCorpusSpan(span));
     // sourceAnchoredEvidenceForRequest's generic fallback ("selected") only
     // requires loose content/anchor overlap, not an exact or
     // title-distinct match -- the full DB-backed path already guards

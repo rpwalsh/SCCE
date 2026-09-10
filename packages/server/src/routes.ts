@@ -46,7 +46,9 @@ type TurnPersistence = {
 type ScceTraceHandle = Parameters<typeof traceEvent>[0];
 
 const HYDRATED_RUNTIME_READY_TTL_MS = 5 * 60 * 1000;
-const INITIAL_VISIBLE_RESPONSE_DEADLINE_MS = 5_000;
+// The owner's per-turn contract is ten seconds; the earlier 5s budget was spent before the mouth ran on every
+// served turn (measured 2026-09-10: "mouth.realize.learned ... response_deadline_elapsed" on all twelve probes).
+const INITIAL_VISIBLE_RESPONSE_DEADLINE_MS = 10_000;
 const INITIAL_VISIBLE_RESPONSE_SCHEMA = "scce.initial_visible_response.v1" as const;
 const hydratedRuntimeReadyByStorage = new WeakMap<object, { marker: HydratedRuntimeMarker; verifiedAt: number; epoch: number }>();
 const hydratedRuntimeEpochByStorage = new WeakMap<object, number>();
