@@ -3,7 +3,6 @@
 cd "$(dirname "$0")/.."
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { \$_.CommandLine -like '*server/dist/index.js*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" 2>/dev/null
 sleep 3
-rm -rf .scce/traces
 SCCE_TRACE=1 nohup node packages/server/dist/index.js > .tmp-server.log 2>&1 &
 sleep 8
 for i in $(seq 1 30); do

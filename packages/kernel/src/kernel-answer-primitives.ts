@@ -62,7 +62,42 @@ export function genericQuestionSignal(unit: string): boolean {
 
 
  function namedPriorSurfaceRuns(text: string): string[] {
-  return uniqueKernelStrings(surfaceEntityRuns(text)).slice(0, 8);
+  const cased = uniqueKernelStrings(surfaceEntityRuns(text)).slice(0, 8);
+  if (cased.length || hasUppercaseLetter(text)) return cased;
+  // Case carries no signal in a request that never capitalizes anything -- a real, common way to type
+  // ("who is ada lovelace"), not a degenerate one. surfaceEntityRuns's whole extraction is gated on
+  // hasPriorAnchorSignal (case or non-Latin script), so an all-lowercase Latin request produced zero
+  // anchors regardless of what it actually named: measured live, "who is ada lovelace" retrieved nothing
+  // for its real subject and fell back to whatever loosely matched the bare word "lovelace" (unrelated
+  // pop-culture mentions), realizing a one-word non-answer despite the corpus holding a full biography.
+  // Only fires when casing is entirely absent from the input, so a normally-cased request is completely
+  // unaffected -- length is the substitute anchor signal (matching the >=3-character single-word floor
+  // namedSourceAnchorSpecificEnough already applies downstream), not a new, weaker acceptance rule.
+  return uniqueKernelStrings(surfaceEntityRunsCaseless(text)).slice(0, 8);
+}
+
+function surfaceEntityRunsCaseless(text: string): string[] {
+  const out: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    if (current.length) out.push(current.join(" "));
+    current = [];
+  };
+  for (const raw of surfaceWords(text)) {
+    const word = stripOuterPriorSeparators(raw);
+    if (!word) continue;
+    if (current.length > 0 && /^\p{Number}+$/u.test(word)) {
+      current.push(word);
+      continue;
+    }
+    if (splitPriorUnits(normalizePriorKey(word)).some(unit => unit.length >= 3)) {
+      current.push(word);
+      continue;
+    }
+    flush();
+  }
+  flush();
+  return out;
 }
 
 
