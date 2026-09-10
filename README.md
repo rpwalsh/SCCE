@@ -81,7 +81,8 @@ It counts 1,670 exports: 1,178 reached from a real entry point, 461 module-inter
 The same live brain, asked over the product's own HTTP API with `tools/live-probe.mjs` (the twelve questions in
 `tools/probe-questions.txt`; every line reproduces against a running server):
 
-- Turn latency went from **81 s** to a **7–10 s** mean. The cause was not the kernel: every readiness poll ran an
+- Turn latency went from **81 s** to a **6.1 s** mean (max 10.1 s; 11 of the 12 questions answered with cited
+  evidence, the twelfth declined because the corpus holds no article for it). The cause was not the kernel: every readiness poll ran an
   exact `COUNT(*)` over a 15.1M-row / 34 GB table on the request path, one more scan per poll that arrived mid-scan,
   and ~40 scans at once per call — `pg_stat_activity` showed 17 concurrent scans and the connection pool exhausted.
   Readiness now answers from a single-flight, stale-while-revalidate cache and never scans on the request path.
@@ -94,6 +95,13 @@ The same live brain, asked over the product's own HTTP API with `tools/live-prob
   question the corpus cannot ground declines instead of echoing the question back.
 - A follow-up that names its subject only by pronoun binds to the turn it continues instead of searching the corpus
   for its verb (`where and when was he born?` had answered from the Borna Reichstag constituency article).
+- Against `qwen2.5:3b` on the same machine, 99 corpus-verified questions (50 answerable, 49 verifiably not), the
+  model handed the article in its prompt and SCCE retrieving from its whole corpus
+  (`tools/reference-comparison-large.mjs --server`): on the unanswerable half SCCE declined 44/49 and invented 5,
+  the model declined 45/49 and invented 4; on the answerable half the model is well ahead, 47/50 to SCCE's 19/50,
+  with SCCE declining 20 it could have answered and answering 11 wrongly. SCCE cited a source on 28 rows and took
+  8.8 s per question to the model's 42.3 s; the model cites nothing. Recall on relation questions is the open gap
+  and is reported as one. The full per-question record is in `artifacts/parity-dataset/`.
 
 [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md) is the operator's script: how to start it, what to ask, what each
 answer demonstrates, and the one command that reproduces every number. `node tools/build-parity-site.mjs`
@@ -105,9 +113,14 @@ https://claude.ai/code/artifact/62e9614b-f356-4c02-9c6a-d3c6d20ad65d.
 
 `pnpm release:gate` runs seven prompts against the running server and checks each answer structurally — evidence
 binding, mouth realization, semantic-answer shape, single source version, novel-unit counts, repeated-trigram ratio,
-wiki debris, and a hard 10-second turn deadline. Six of the seven pass. The seventh, a false-premise question, answers
-from its article's external-links block instead of refuting the premise with a dated counterexample; it is a known
-open defect, reproducible with one command.
+wiki debris, and a hard 10-second turn deadline. All seven pass on the final 2026-09-10 build (3.3–6.6 s each,
+recorded in `artifacts/release-gate.json` and shown on the evaluation site's acceptance tab).
+The false-premise case (`did martha washington invent the concept of using flags to represent nations?`) is
+answered as a dated counterexample from two sources -- 13th-century maritime flags against her 1731 birth -- because
+retrieval now searches the concept a premise attributes to its subject (`flags`, led by its learned stem `flag`) and
+holds that source for the counterexample alone, never for the answer pool. A cast-list question is answered by its
+members, comma-separated; the runtime declining a turn (HTTP 422) is recorded as a case result, not a harness
+crash.
 
 The turn deadline is enforced at stage boundaries: a stage that overruns its budget yields to a bounded alternative
 and the turn completes degraded rather than running past the contract.

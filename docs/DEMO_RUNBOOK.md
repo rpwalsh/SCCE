@@ -41,8 +41,10 @@ Everything here runs against the real `scce3_runtime` brain over the product's o
 | `Who is Albert Einstein?` | A biographical sentence from the Albert Einstein article, cited | Retrieval from a 1.7M-node graph over 80k spans, answered from the subject's own article |
 | `Who was Alfred the Great?` | The article's opening definition, cited | Multi-word names with connectors ("the", "of") are one subject, not two |
 | `Did Apollo 11 land on Mars?` | The Apollo 11 lead: it landed on the Moon | A false premise is corrected from evidence, not agreed with |
-| `What is the capital of Greece?` | "I don't have a grounded source about Greece in what I've ingested, so I won't guess." | No source, no answer: the corpus holds Athens but no Greece article, and it says so instead of inventing |
-| `What was Albert Einstein's shoe size?` | A decline | The unanswerable half of the reference comparison: fabrication is the failure mode the design refuses |
+| `did martha washington invent the concept of using flags to represent nations?` | A dated counterexample from two sources: 13th-century maritime flags, cited from *National flag* beside her 1731–1802 lifespan from *Martha Washington* | A premise that attributes a practice to a person is refuted by dating the practice before her, from the concept's own article |
+| `who were the characters in gene rodenberry's Andromeda?` | The cast list, comma-separated, cited from the series article | An enumeration is answered by its members, and a misspelt name still binds to the article |
+| `What is the capital of Greece?` | A grey notice: "No grounded source in the ingested corpus for: capital of Greece." | No source, no answer: the corpus holds Athens but no Greece article, and the notice says so instead of inventing. The wording is an operator message, not a sentence the engine speaks as its own |
+| `What was Albert Einstein's shoe size?` | A grey notice: "runtime declined: no admissible answer surface" (the server's HTTP 422, rendered as a notice, not as a message from the engine) | The unanswerable half of the reference comparison: fabrication is the failure mode the design refuses |
 | Click **Details** under any answer | The proof object: obligations, evidence bindings, contradiction and support mass | Every answer carries its own audit; nothing here is a model's opinion of itself |
 
 Ask in either casing; `who is ada lovelace` works the same as `Who is Ada Lovelace?`.

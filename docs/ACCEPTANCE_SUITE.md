@@ -186,6 +186,17 @@ Re-run 2026-09-10 after the chat-path repairs: 12/13 again, same miss; a mid-ses
 mouth required the request's opening word "what" in the answer on a corpus whose learned closed class has no
 question words) was caught by this gate and fixed the same hour, which is the gate doing its job.
 
+**Live release gate (served path).** `pnpm release:gate` (`tools/release-gate.mjs`) asks seven prompts of the
+running server and checks each answer structurally: evidence binding, mouth realization, semantic-answer shape,
+single source version, novel-unit counts, repeated-trigram ratio, wiki debris, a temporal counterexample where the
+prompt is a false premise, and the 10-second turn deadline. A turn the runtime declines (HTTP 422) is recorded as
+a failed case, not a harness crash. 2026-09-10, final build: 7/7, 2.8–5.4 s per prompt. The four cases that failed
+earlier that day and what fixed them: the false-premise prompt (retrieval never searched the concept the premise
+attributes to its subject, so the Flag article could not date the practice before Martha Washington's birth); the
+cast-list prompt (an enumeration cannot repeat the request's category word, so coverage refused the right answer);
+two Ada prompts (a template hole left "(; 10 December 1815" in the spoken sentence, and a generated near-copy of
+her lead cut mid-word survived the contract check).
+
 ---
 
 ## Gate 2 — Engineering Complete
