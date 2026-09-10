@@ -4054,6 +4054,9 @@ function isAtomicBoundaryGlyph(value: string): boolean {
  */
 function looksLikeInternalIdentifierSurface(value: string): boolean {
   if (value.includes("://")) return true;
+  // Request-pattern feature keys and their separator, whatever store they were learned into (units, frames,
+  // observations): every generation piece passes here, and "any:story about" was assembled from one.
+  if (patternKeyIsFeatureKey(value)) return true;
   if (/^(?:source|stream|profile|evidence|corpus_role|language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)[._][A-Za-z0-9_.:-]{6,}/iu.test(value)) return true;
   // A long run of hex-shaped characters is a hash/digest, not a word.
   if (/[0-9a-f]{16,}/iu.test(value)) return true;
@@ -4417,10 +4420,16 @@ const PATTERN_PROVENANCE_FIELD_NAMES = new Set([
   "languageAliases", "schema", "forceClass", "evidenceId", "index"
 ]);
 
+/** A compiled request pattern counts feature keys ("any:story ⁣ start:write"), not phrases; handed to generation as
+ *  pieces they were spoken ("any:story about", live 2026-09-10). Pure. */
+function patternKeyIsFeatureKey(key: string): boolean {
+  return /(?:^|\s)(?:any|start|end|sym|bi|tri|char):/u.test(key) || key.includes("⁣");
+}
+
 function patternKeys(pattern: LanguagePatternRecord): string[] {
   const json = jsonRecord(pattern.patternJson);
   const counts = jsonRecord(json.counts);
-  const keys = Object.keys(counts);
+  const keys = Object.keys(counts).filter(key => !patternKeyIsFeatureKey(key));
   if (keys.length) return keys.slice(0, 64);
   return Object.entries(json)
     .filter(([key, value]) => typeof value === "string" && !PATTERN_PROVENANCE_FIELD_NAMES.has(key))

@@ -495,6 +495,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
               CORPUS_ROLE_IDS.publicDomainProse
             )
           ));
+          // A creative turn hydrates the prose role keyed by language identity and role; the cluster hydrations
+          // above sit under a different key, so the first creative request on a fresh server still paid a 13s
+          // cold hydration inside a 36s turn (live 2026-09-10). Same call, same key the turn will look up.
+          const spokenIdentity = languageIdentityRuntime.identities().slice().sort((a, b) => b.profileCount - a.profileCount)[0];
+          if (spokenIdentity) {
+            await hydrateSurfaceLanguageMemoryCached(languageLimit, creativeClusters[0], "warmup-creative-language", CORPUS_ROLE_IDS.publicDomainProse, "", { languageId: spokenIdentity.id })
+              .catch(error => { failures.push(`creative language warmup failed: ${error instanceof Error ? error.message : String(error)}`); });
+          }
           const creativeEvents = creativeLanguages.flatMap(language =>
             language.state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? [])
           );
