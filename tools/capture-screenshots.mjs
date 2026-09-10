@@ -6,8 +6,9 @@
 // and the typing indicator is gone, then screenshots. No extra dependencies; Node's own WebSocket is used.
 //   node tools/capture-screenshots.mjs                       -> docs/screenshots/workbench-*.png
 //   SCCE_SERVER_URL=http://127.0.0.1:3873 node tools/capture-screenshots.mjs --wait=90000
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 
 const args = new Map(process.argv.slice(2).filter(a => a.startsWith("--")).map(a => { const [k, v] = a.slice(2).split("="); return [k, v ?? "1"]; }));
@@ -35,9 +36,11 @@ const shots = [
   { file: "workbench-decline.png", question: "What was Albert Einstein's shoe size?" }
 ];
 
+// A throwaway profile in the OS temp directory, removed on exit: never inside the repository.
+const profileDir = mkdtempSync(path.join(os.tmpdir(), "scce-capture-"));
 const child = spawn(browser, [
   "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
-  `--remote-debugging-port=${port}`, "--window-size=1280,820", `--user-data-dir=${path.resolve(outDir, ".capture-profile")}`, "about:blank"
+  `--remote-debugging-port=${port}`, "--window-size=1280,820", `--user-data-dir=${profileDir}`, "about:blank"
 ], { stdio: "ignore" });
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -117,4 +120,6 @@ try {
   }
 } finally {
   child.kill();
+  await sleep(500);
+  rmSync(profileDir, { recursive: true, force: true });
 }
