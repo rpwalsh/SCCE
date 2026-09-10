@@ -96,7 +96,10 @@ The same live brain, asked over the product's own HTTP API with `tools/live-prob
   for its verb (`where and when was he born?` had answered from the Borna Reichstag constituency article).
 
 [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md) is the operator's script: how to start it, what to ask, what each
-answer demonstrates, and the one command that reproduces every number.
+answer demonstrates, and the one command that reproduces every number. `node tools/build-parity-site.mjs`
+renders the evaluation record — chat, code, operations, acceptance — as one page from the recorded artifacts
+alone (`artifacts/parity-site/index.html`); the published copy lives at
+https://claude.ai/code/artifact/62e9614b-f356-4c02-9c6a-d3c6d20ad65d.
 
 ### Live release gate
 
