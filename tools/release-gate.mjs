@@ -275,7 +275,8 @@ async function runCase(testCase) {
   const evidence = Array.isArray(response.evidence) ? response.evidence : [];
   const lowerAnswer = answer.toLocaleLowerCase();
   const failures = [];
-  if (!answer.trim()) failures.push("empty answer");
+  if (response.declined) failures.push(`runtime declined (${response.httpStatus}): ${response.error}`);
+  else if (!answer.trim()) failures.push("empty answer");
   if (typeof testCase.maxElapsedMs === "number" && elapsedMs > testCase.maxElapsedMs) failures.push(`elapsed time ${Math.round(elapsedMs)}ms above ${testCase.maxElapsedMs}ms`);
   if (typeof testCase.minChars === "number" && answer.length < testCase.minChars) failures.push(`answer length ${answer.length} below ${testCase.minChars}`);
   if (typeof testCase.maxChars === "number" && answer.length > testCase.maxChars) failures.push(`answer length ${answer.length} above ${testCase.maxChars}`);
@@ -312,6 +313,12 @@ async function postJson(url, body) {
     body: JSON.stringify(body)
   });
   const text = await response.text();
+  // A 422 is the runtime declining the turn; it is a recorded case result, not a harness fault.
+  if (response.status === 422) {
+    let declined;
+    try { declined = JSON.parse(text); } catch { declined = { error: text.slice(0, 500) }; }
+    return { answer: "", evidence: [], declined: true, httpStatus: 422, error: declined.error ?? "runtime declined" };
+  }
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 500)}`);
   return JSON.parse(text);
 }

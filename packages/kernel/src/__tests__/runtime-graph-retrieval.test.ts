@@ -261,8 +261,9 @@ describe("runtime hot graph retrieval", () => {
     // sourceAnchorRetrievalFeatureGroups) -- "Charles Babbage" yields
     // three specific multi-word anchor candidates here; each bigram that
     // matches nothing is retried by its own symbols (searchAnchorGroup), so
-    // an empty store sees two searches per anchor, six in all.
-    expect(fixture.searchEvidence).toHaveBeenCalledTimes(6);
+    // an empty store sees two searches per anchor, six in all, plus the request's one concept group ("known",
+    // the content unit outside the subject anchor), which is searched and retried the same way: eight.
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(8);
   });
 
   it("rejects cross-title mention evidence before hydrating a factual graph slice", async () => {

@@ -115,7 +115,9 @@ import {
   isUnparsedMarkupText,
   requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
-  temporalCounterexampleExpected
+  temporalCounterexampleExpected,
+  temporalConceptTitledEvidence,
+  cliticOpeningFragment
 } from "./local-evidence-runtime.js";
 import { formatSurfaceMessage, localeFromMetadata } from "./localization.js";
 import {
@@ -1424,6 +1426,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             && (keptSources.has(String(span.sourceVersionId)) || (evidenceSpanProvenanceTitle(span) !== undefined && keptTitles.has(evidenceSpanProvenanceTitle(span)))))
         ], admissibleEvidence.length);
       }
+      // A premise attributing a concept to a person needs the concept's own source beside the person's, and neither
+      // title identity nor the subject's community admits it. Retrieval kept it; here it is held for the temporal
+      // counterexample only -- admitted into the answer pool, the Flag article's definition answered the question
+      // about Martha Washington (live), and admitted before the community walk, the walk kept it and dropped her.
+      const temporalConceptEvidence = sourceAnchorAudit.required && admissibleEvidence.length && temporalCounterexampleExpected(input.text, admissibleEvidence)
+        ? temporalConceptTitledEvidence(input.text, admissibleEvidence, evidence)
+        : [];
       if (sourceAnchorAudit.required && admissibleEvidence.length) graph = graphFilteredToEvidence(graph, admissibleEvidence);
       kernelTrace({
         stage: "graph.resolve.pool_admission",
@@ -1905,12 +1914,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
         ? uniqueRecordsById([titledOpeningSpan, ...rankedForRequest], Math.max(2, rankedForRequest.length))
         : rankedForRequest);
-      const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence]);
-      const selectedTemporalCandidateEvidence = evidenceBatchFromSlice(temporalEvidencePool, selectedEvidence.map(span => span.id)) ?? selectedEvidence;
+      // With a concept source held for it, the counterexample is dated over the whole pool, not the two spans
+      // relevance ranking kept for the answer: the subject's opening block carries the lifespan and the concept's
+      // chunk carries the earlier date, and neither ranks for the request's words.
+      const temporalEvidencePool = mergeEvidenceSpans([...admissibleEvidence, ...metadataEvidence, ...temporalConceptEvidence]);
+      const temporalCandidateIds = (temporalConceptEvidence.length ? temporalEvidencePool : selectedEvidence).map(span => span.id);
+      const selectedTemporalCandidateEvidence = evidenceBatchFromSlice(temporalEvidencePool, temporalCandidateIds) ?? selectedEvidence;
       const durableTemporalEvidence = temporalCounterexampleExpected(input.text, selectedTemporalCandidateEvidence)
-        ? await deps.storage.evidence.getEvidenceBatch(selectedEvidence.map(span => span.id))
+        ? await deps.storage.evidence.getEvidenceBatch(temporalCandidateIds)
         : [];
-      const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, selectedEvidence.map(span => span.id))
+      const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, temporalCandidateIds)
         ?? selectedTemporalCandidateEvidence;
       let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
       // Plan item 212 (read-back): consolidation (211) was write-only until
@@ -3916,7 +3929,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         const citedIds = new Set((judged.selected.evidenceIds ?? []).map(String));
         const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id)));
         const spanText = tidySurfaceText(String(contradictedSpan?.text ?? contradictedSpan?.textPreview ?? ""));
-        const boundedText = splitSurfaceSentences(spanText).slice(0, 2).join(" ").trim();
+        // A chunk cut inside a sentence opens with the tail of one ("'s well-developed ferry system..."): a fragment,
+        // never the first thing spoken. Measured live on "Alaska's official state dinosaur".
+        const spanSentences = splitSurfaceSentences(spanText);
+        const wholeSentences = spanSentences.length > 1 && (cliticOpeningFragment(spanSentences[0] ?? "") || /^\p{Ll}/u.test((spanSentences[0] ?? "").trimStart()))
+          ? spanSentences.slice(1)
+          : spanSentences;
+        const boundedText = wholeSentences.slice(0, 2).join(" ").trim();
         // Two independent reasons the cited span must not be trusted here, checked before either one is
         // allowed to speak.
         //
