@@ -25,6 +25,7 @@ const probeChat = read("artifacts/live-probe-chat.json");
 const probeFollowups = read("artifacts/live-probe-followups.json");
 const oneShot = read("artifacts/full-system-one-shot.json");
 const longHorizon = read("artifacts/long-horizon-gate.json");
+const releaseGate = read("artifacts/release-gate.json");
 
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const seconds = ms => `${(Number(ms) / 1000).toFixed(1)}s`;
@@ -104,6 +105,12 @@ function selfRepairBlock() {
 // ---- acceptance ---------------------------------------------------------------------------------------------------
 function acceptanceBlock() {
   const parts = [];
+  if (releaseGate) {
+    const cases = releaseGate.cases ?? [];
+    const passed = cases.filter(c => c.ok).length;
+    parts.push(`<h3>Live release gate — served path</h3><p class="muted">${passed}/${cases.length} prompts against the running server · each answer checked structurally: evidence binding, mouth realization, semantic-answer shape, single source version, novel-unit counts, repeated-trigram ratio, wiki debris, a dated counterexample where the prompt is a false premise, and the 10-second turn deadline · a turn the runtime declines is a failed case, not a harness fault</p>
+      <div class="table-scroll"><table><thead><tr><th>case</th><th>prompt</th><th>result</th><th>time</th><th>evidence</th><th>answer</th></tr></thead><tbody>${cases.map(c => `<tr><td class="case">${esc(c.id)}</td><td class="q">${esc(c.prompt ?? "")}</td><td>${c.ok ? pill("good", "pass") : pill("bad", "fail")}</td><td class="mono">${seconds(c.elapsedMs ?? 0)}</td><td class="mono">${c.evidenceCount ?? c.evidence ?? ""}</td><td class="ans-cell">${esc(String(c.answer ?? "")).slice(0, 220)}${c.failures?.length ? `<div class="muted">${esc(c.failures.join("; ")).slice(0, 200)}</div>` : ""}</td></tr>`).join("")}</tbody></table></div>`);
+  } else parts.push(`<p class="muted">Live release gate: not recorded.</p>`);
   if (oneShot) {
     const stages = oneShot.stages ?? [];
     const required = stages.filter(s => s.required);
@@ -263,6 +270,7 @@ node tools/live-probe.mjs --session --file tools/probe-followups.txt --json=arti
 node tools/reference-comparison-large.mjs --server=http://127.0.0.1:3873 --out=artifacts/parity-dataset/reference-comparison-live.json
 node tools/code-repair-benchmark.mjs                 # seeded defects, both systems
 node tools/self-repair-benchmark.mjs                 # SCCE's own modules
+node tools/release-gate.mjs --json > artifacts/release-gate.json   # live release gate, served path
 node tools/full-system-one-shot.mjs --trace          # acceptance gate 20
 node tools/long-horizon-gate.mjs --turns=20          # acceptance gate 16
 node tools/build-parity-site.mjs                     # this page, from the artifacts above</pre>
@@ -289,4 +297,4 @@ node tools/build-parity-site.mjs                     # this page, from the artif
 
 mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
 writeFileSync(path.resolve(outPath), html, "utf8");
-console.log(`wrote ${outPath} (${html.length} chars) from: ${[live && "reference-comparison-live", before && "reference-comparison-large", codeRepair && "code-repair", selfRepair && "self-repair", probeChat && "live-probe-chat", probeFollowups && "live-probe-followups", oneShot && "full-system-one-shot", longHorizon && "long-horizon-gate"].filter(Boolean).join(", ")}`);
+console.log(`wrote ${outPath} (${html.length} chars) from: ${[live && "reference-comparison-live", before && "reference-comparison-large", codeRepair && "code-repair", selfRepair && "self-repair", probeChat && "live-probe-chat", probeFollowups && "live-probe-followups", oneShot && "full-system-one-shot", longHorizon && "long-horizon-gate", releaseGate && "release-gate"].filter(Boolean).join(", ")}`);
