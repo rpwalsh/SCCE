@@ -931,8 +931,15 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // any request generating five or more phrase anchors -- which is most of them -- so the rule above had never
     // reached a query. The subject is the group most likely to find the source, so it goes first and the phrase
     // anchors fill the remaining budget.
-    const candidateAnchors = uniqueKernelStrings([...subsumedSubjectAnchors, ...specificAnchors].length
-      ? [...subsumedSubjectAnchors, ...specificAnchors]
+    // The request's named subject is searched whether or not any phrase anchor carries it: "Athens is the capital
+    // of which country?" forms the phrases "capital which country" and "which country", none containing Athens,
+    // so the carrying rule above restored nothing and the only source that answers was never queried (live
+    // 2026-09-10: six declines in the reference comparison, all questions that open on their subject).
+    const namedSubjectSingles = namedSubjectAnchors(text)
+      .map(anchor => normalizePriorKey(anchor))
+      .filter(anchor => splitPriorUnits(anchor).filter(Boolean).length === 1 && [...anchor].length >= 3 && !genericQuestionSignal(anchor));
+    const candidateAnchors = uniqueKernelStrings([...namedSubjectSingles, ...subsumedSubjectAnchors, ...specificAnchors].length
+      ? [...namedSubjectSingles, ...subsumedSubjectAnchors, ...specificAnchors]
       : anchors).slice(0, 5);
     const groups: string[][] = [];
     for (const anchor of candidateAnchors) {
