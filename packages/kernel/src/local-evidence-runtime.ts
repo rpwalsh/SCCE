@@ -1086,7 +1086,15 @@ export function answerCoversRequest(
   const subjectInAnsweringText = subjectUnits.some(unitPresentIn(sentenceUnits));
   const contextUnits = memoizedSurfaceUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
   const subjectGroups = namedGroups.length ? namedGroups : [subjectUnits];
-  const subjectSatisfied = subjectInAnsweringText || subjectGroups.some(group => group.every(unitPresentIn(contextUnits)));
+  // A titled source's opening block is about its title by construction, and states the standing fact anaphorically:
+  // "Baku is the capital and largest city", "Tirana is the capital ... in the country", "Alabama's capital is
+  // Montgomery". Requiring the name inside those sentences declined the article's own definition of its subject.
+  // Only the opening block: "Their son Eduard was born in Zurich" sits at charStart 8182 of the Einstein article and
+  // is still rejected, which is the fabrication this gate exists to stop.
+  const titledOpeningBlock = documentOpeningSpan(span) && evidenceTitledForRequestSubject(requestText, [span]);
+  const subjectSatisfied = subjectInAnsweringText
+    || titledOpeningBlock
+    || subjectGroups.some(group => group.every(unitPresentIn(contextUnits)));
   // A name's parts are redundant (Einstein names Albert Einstein); a numeric qualifier is not (Apollo does not name
   // Apollo 11), so every numeric unit of the subject must be in the answering text or the one sentence before it --
   // checked in the widened context regardless of whether a bare name already matched there, since that is exactly
