@@ -88,6 +88,12 @@ describe("answerhood gate", () => {
     expect(answerCoversRequest([lead], apollo, ["apollo", "land", "mars"], "Why did Apollo 11 land on Mars?", { relationRequired: true })).toBe(true);
   });
 
+  it("does not read a lowercase description after a capitalised question word as a name, real corpus shape", () => {
+    const acupuncture = span("evidence:acupuncture", "Acupuncture", "unused");
+    const beliefs = "Several different and sometimes conflicting belief systems emerged regarding acupuncture.";
+    expect(answerCoversRequest([beliefs], acupuncture, ["single", "named", "inventor", "acupuncture"], "Who is the single named inventor of acupuncture?", { relationRequired: true })).toBe(false);
+  });
+
   it("lets a named member stand in only for a category the request introduces, not for an attribute of its subject", () => {
     const athens = span("evidence:athens", "Athens", "unused");
     expect(answerCoversRequest(["'Athens' is the capital and largest city of Greece."], athens, ["athens", "capital", "country"], "Athens is the capital of which country?", { relationRequired: true })).toBe(true);

@@ -1053,9 +1053,13 @@ export function answerCoversRequest(
   // A lone short cased run (a sentence-initial question word) is not a name.
   // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
   // reaching for the Moon and the mission that landed on it.
-  const namedGroups = namedSubjectAnchors(requestText)
+  const allNamedGroups = namedSubjectAnchors(requestText)
     .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
     .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
+  // A phrase the request left uncased names the subject only when the source is titled with it: "the single named inventor" is not.
+  const casedRequestUnits = new Set(surfaceWords(requestText).filter(hasUppercaseLetter).map(word => normalizePriorKey(stripOuterPriorSeparators(word))));
+  const titleUnits = new Set(memoizedSurfaceUnits(evidenceTitle(span)).map(stripOuterPriorSeparators));
+  const namedGroups = allNamedGroups.filter(units => units.some(unit => casedRequestUnits.has(unit)) || units.every(unit => titleUnits.has(unit)));
   const subjectUnits = namedGroups.length ? namedGroups.flat() : contentUnits.filter(unit => [...unit].length >= 6);
   if (!subjectUnits.length) return true;
   // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
