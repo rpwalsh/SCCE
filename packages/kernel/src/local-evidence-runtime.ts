@@ -803,7 +803,18 @@ export function proposeSourceExactEvidenceAnswer(input: {
       nearDuplicate: selected.nearDuplicate,
       responseSentenceBudget: sentenceBudget,
       proofEnrichmentOptional: true,
-      fakeEvidenceForbidden: true
+      fakeEvidenceForbidden: true,
+      // Which preference chose the winner, and every covering sentence it beat: a wrong pick is then read, not re-derived.
+      selectedBy: openingRow ? "definitional_opening" : predicating.includes(selected) ? "predicating" : fullest.includes(selected) ? "fullest_relation" : "first_covering",
+      competitors: covering.map(row => ({
+        spanId: String(row.span.id),
+        index: row.index,
+        head: row.sentence.slice(0, 80),
+        score: row.score,
+        relation: relationCoverage(row),
+        opening: documentOpeningSpan(row.span),
+        predicates: fullest.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT).includes(row) ? predicating.includes(row) : null
+      }))
     })
   };
   return {

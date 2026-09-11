@@ -1449,8 +1449,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         },
         support: {
           required: sourceAnchorAudit.required,
-          anchors: sourceAnchorAudit.anchors.slice(0, 8),
-          spans: evidence.slice(0, 8).map(span => ({ id: String(span.id).slice(-12), chars: [...String(span.text ?? "")].length, window: [...String(span.retrievalWindow ?? span.text ?? "")].length, admitted: admissibleEvidence.includes(span) }))
+          // Every pooled span with its full id: an eight-span cap hid the span a wrong answer came from.
+          anchors: sourceAnchorAudit.anchors,
+          spans: evidence.map(span => ({ id: String(span.id), charStart: span.charStart ?? null, chars: [...String(span.text ?? "")].length, window: [...String(span.retrievalWindow ?? span.text ?? "")].length, admitted: admissibleEvidence.includes(span) }))
         }
       });
       // Two subjects named in one request have a temporal relation, and until now nothing computed it.
@@ -1707,7 +1708,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         },
         support: {
           planId: answerProposal?.plan.planId ?? null,
-          evidenceIds: answerProposal?.evidence.map(span => String(span.id)) ?? []
+          evidenceIds: answerProposal?.evidence.map(span => String(span.id)) ?? [],
+          audit: answerProposal?.plan.audit ?? null
         }
       });
       const emptySupportBundle = () => ({
