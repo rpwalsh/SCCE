@@ -1913,12 +1913,36 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // subject-only one: the lead states the standing fact and relevance ranking dropped it for "Athens is the
       // capital of which country?" (two deeper chunks selected, the lead never ranked, live 2026-09-10). The
       // sentence rankers still decide; this only guarantees the lead is among what they see.
+      // Searched in the admitted pool, not only in what relevance ranking kept: both collections above are already
+      // downstream of that ranking, so the lead this exists to rescue was never among the spans it looked at
+      // ("What is acupuncture?" admitted the definition and selected the injection and licensing chunks).
       const titledOpeningSpan = subjectOnlyRequest || namedSubjectAnchors(input.text).length
-        ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
+        ? [...evidenceSelectionPool, ...promoted, ...admissibleEvidence.filter(span => span.status === "promoted")]
+          .find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
         : undefined;
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
         ? uniqueRecordsById([titledOpeningSpan, ...rankedForRequest], Math.max(2, rankedForRequest.length))
         : rankedForRequest);
+      kernelTrace({
+        stage: "candidate.selected_evidence",
+        label: "kernel.turn",
+        counts: {
+          spans: selectedEvidence.length,
+          ranked: rankedForRequest.length,
+          titledOpening: titledOpeningSpan ? 1 : 0,
+          pool: evidenceSelectionPool.length,
+          promoted: promoted.length,
+          subjectOnly: subjectOnlyRequest ? 1 : 0
+        },
+        support: {
+          spans: selectedEvidence.map(span => ({ id: String(span.id).slice(-12), charStart: span.charStart ?? null, chars: [...String(span.text ?? "")].length })),
+          // Why the titled opening block was or was not among them: every opening span the search could see.
+          openings: [...evidenceSelectionPool, ...promoted]
+            .filter(span => Number(span.charStart ?? -1) === 0)
+            .slice(0, 6)
+            .map(span => ({ id: String(span.id).slice(-12), titled: evidenceTitledForRequestSubject(input.text, [span]) }))
+        }
+      });
       // With a concept source held for it, the counterexample is dated over the whole pool, not the two spans
       // relevance ranking kept for the answer: the subject's opening block carries the lifespan and the concept's
       // chunk carries the earlier date, and neither ranks for the request's words.
