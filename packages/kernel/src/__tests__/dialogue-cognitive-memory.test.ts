@@ -122,6 +122,24 @@ describe("durable dialogue cognitive memory v2", () => {
     await expect(memory.latest(first.conversationId)).resolves.toEqual(second);
   });
 
+  it("reads the compare-and-set head alone when it is valid", async () => {
+    const state = cognitiveState({ turnId: "turn.02", turnIndex: 2 });
+    const queries: Array<{ headSchema?: string; limit?: number }> = [];
+    const memory = createDialogueCognitiveMemoryV2({
+      hasher: createHasher(),
+      store: {
+        async compareAndPutInteractionState() { throw new Error("not used"); },
+        async listInteractionStates(query) {
+          queries.push({ headSchema: query?.headSchema, limit: query?.limit });
+          return [dialogueCognitiveStateInteractionRecordV2({ state, createdAt: 7, hasher: createHasher() })];
+        }
+      }
+    });
+
+    await expect(memory.latest(state.conversationId)).resolves.toEqual(state);
+    expect(queries).toEqual([{ headSchema: "scce.dialogue_cognitive_state.v2", limit: 1 }]);
+  });
+
   it("rejects inconsistent referent, topic, binding, and turn links", () => {
     const valid = cognitiveState();
     const extraTopic = { ...valid.topics[0]!, id: "topic.extra", referentIds: [valid.referents[0]!.id] };
