@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rmdir, unlink, writeFile } from "node:fs/promises";
 import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -290,7 +290,9 @@ try {
     if (runtime && !keepSchema) await runtime.storage.query?.(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
   } catch { /* the schema is disposable; a failed drop is not a gate result */ }
   await runtime?.close?.().catch(() => undefined);
-  await rm(fixtureRoot, { recursive: true, force: true }).catch(() => undefined);
+  // Only the files this run wrote, then the directory if it is empty: never a recursive delete.
+  for (const document of [...DOCUMENTS, CONTRADICTION]) await unlink(path.join(fixtureRoot, document.name)).catch(() => undefined);
+  await rmdir(fixtureRoot).catch(() => undefined);
 }
 
 const required = stages.filter(entry => entry.required);
