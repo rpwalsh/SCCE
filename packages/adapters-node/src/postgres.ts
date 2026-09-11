@@ -1117,6 +1117,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_workspace_files_hash ON ${q}.workspace_source_files(workspace_id,content_hash)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_workspace_reports_kind ON ${q}.workspace_reports(workspace_id,report_kind,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_interaction_state_conversation ON ${q}.interaction_state_records(conversation_id,created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_interaction_state_head ON ${q}.interaction_state_records(conversation_id,((state_json->>'turnIndex')::numeric) DESC,created_at DESC,id DESC) WHERE state_json->>'schema'='scce.dialogue_cognitive_state.v2' AND jsonb_typeof(state_json->'turnIndex')='number'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_dialogue_policy_conversation ON ${q}.dialogue_policy_decision_records(conversation_id,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_outcome_conversation ON ${q}.conversation_outcome_records(conversation_id,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_conversation_outcome_prompt ON ${q}.conversation_outcome_records(prompt_hash,created_at DESC)`,
@@ -4980,8 +4981,11 @@ function createDialogueMemoryStore(storage: PostgresStorageAdapter): DialogueMem
       const where: string[] = [];
       if (query.conversationId) { params.push(query.conversationId); where.push(`conversation_id=$${params.length}`); }
       if (query.turnId) { params.push(query.turnId); where.push(`turn_id=$${params.length}`); }
+      // The compare-and-set head order, served by the partial head index instead of a scan of every stored state.
+      if (query.headSchema) { params.push(query.headSchema); where.push(`state_json->>'schema'=$${params.length}`, `jsonb_typeof(state_json->'turnIndex')='number'`); }
+      const order = query.headSchema ? "(state_json->>'turnIndex')::numeric DESC, created_at DESC, id DESC" : "created_at DESC";
       params.push(query.limit ?? 100);
-      return (await storage.query<InteractionStateRow>(`SELECT * FROM ${storage.table("interaction_state_records")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT $${params.length}`, params)).map(rowToInteractionState);
+      return (await storage.query<InteractionStateRow>(`SELECT * FROM ${storage.table("interaction_state_records")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${order} LIMIT $${params.length}`, params)).map(rowToInteractionState);
     },
     async listPolicyDecisions(query = {}) {
       const params: unknown[] = [];

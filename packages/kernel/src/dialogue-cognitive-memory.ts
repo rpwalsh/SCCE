@@ -25,6 +25,8 @@ export interface DialogueCognitiveMemoryV2 {
   latest(conversationId: string): Promise<DialogueCognitiveStateV2 | undefined>;
 }
 
+const DIALOGUE_STATE_SCHEMA_V2 = "scce.dialogue_cognitive_state.v2";
+
 export function createDialogueCognitiveMemoryV2(input: {
   store: Pick<DialogueMemoryStore, "compareAndPutInteractionState" | "listInteractionStates">;
   hasher: Hasher;
@@ -39,7 +41,7 @@ export function createDialogueCognitiveMemoryV2(input: {
       )) throw new Error("dialogue cognitive state predecessor is not monotonic");
       const record = dialogueCognitiveStateInteractionRecordV2({ state, createdAt, hasher: input.hasher });
       const result = await input.store.compareAndPutInteractionState(record, {
-        stateSchema: "scce.dialogue_cognitive_state.v2",
+        stateSchema: DIALOGUE_STATE_SCHEMA_V2,
         expectedStateId: expectedPreviousState?.id ?? null,
         expectedTurnIndex: expectedPreviousState?.turnIndex ?? null,
         nextStateId: state.id,
@@ -49,19 +51,25 @@ export function createDialogueCognitiveMemoryV2(input: {
     },
     async latest(conversationId) {
       if (!nonemptyId(conversationId)) return undefined;
-      const records = (await input.store.listInteractionStates({ conversationId, limit: readLimit }))
-        .map(record => ({ record, state: dialogueCognitiveStateFromInteractionRecordV2(record, input.hasher) }))
-        .filter((row): row is { record: InteractionStateRecord; state: DialogueCognitiveStateV2 } => (
-          row.state?.conversationId === conversationId
-        ))
-        .sort((left, right) => (
-          right.state.turnIndex - left.state.turnIndex
-          || right.record.createdAt - left.record.createdAt
-          || compareCodePoints(right.record.id, left.record.id)
-        ));
-      return records[0]?.state;
+      // The head the compare-and-set keeps, read alone first: validating the newest 256 states moved 294 MB per turn.
+      return newestValidState(await input.store.listInteractionStates({ conversationId, headSchema: DIALOGUE_STATE_SCHEMA_V2, limit: 1 }), conversationId, input.hasher)
+        ?? newestValidState(await input.store.listInteractionStates({ conversationId, limit: readLimit }), conversationId, input.hasher);
     }
   };
+}
+
+/** The valid state with the highest turn index, then the newest, then the greatest id. Pure. */
+function newestValidState(records: readonly InteractionStateRecord[], conversationId: string, hasher: Hasher): DialogueCognitiveStateV2 | undefined {
+  return records
+    .map(record => ({ record, state: dialogueCognitiveStateFromInteractionRecordV2(record, hasher) }))
+    .filter((row): row is { record: InteractionStateRecord; state: DialogueCognitiveStateV2 } => (
+      row.state?.conversationId === conversationId
+    ))
+    .sort((left, right) => (
+      right.state.turnIndex - left.state.turnIndex
+      || right.record.createdAt - left.record.createdAt
+      || compareCodePoints(right.record.id, left.record.id)
+    ))[0]?.state;
 }
 
 export function dialogueCognitiveStateInteractionRecordV2(input: {

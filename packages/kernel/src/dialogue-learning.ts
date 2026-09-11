@@ -601,7 +601,15 @@ export function createInMemoryDialogueMemoryStore(seed?: {
     putResponseCandidate: async record => { candidates.set(record.id, record); },
     putTargetProfilePattern: async record => { targetProfilePatterns.set(record.id, record); },
     putCalibrationObservation: async record => { calibrationObservations.set(record.id, record); },
-    listInteractionStates: async query => newest([...interactionStates.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId)), query?.limit ?? 100, record => record.createdAt),
+    listInteractionStates: async query => {
+      const matching = [...interactionStates.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId));
+      if (!query?.headSchema) return newest(matching, query?.limit ?? 100, record => record.createdAt);
+      const state = (record: typeof matching[number]) => record.stateJson && typeof record.stateJson === "object" && !Array.isArray(record.stateJson) ? record.stateJson as Record<string, unknown> : {};
+      return matching
+        .filter(record => state(record).schema === query.headSchema && typeof state(record).turnIndex === "number")
+        .sort((left, right) => Number(state(right).turnIndex) - Number(state(left).turnIndex) || right.createdAt - left.createdAt || (right.id > left.id ? 1 : right.id < left.id ? -1 : 0))
+        .slice(0, query.limit ?? 100);
+    },
     listPolicyDecisions: async query => newest([...policyDecisions.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId)), query?.limit ?? 100, record => record.createdAt),
     listResponseCandidates: async query => newest([...candidates.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId) && (!query?.policyDecisionId || record.policyDecisionId === query.policyDecisionId)), query?.limit ?? 100, record => record.createdAt),
     listConversationOutcomes: async query => newest([...outcomes.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId)), query?.limit ?? 100, record => Date.parse(record.createdAt)),
