@@ -68,7 +68,6 @@ export * from "./assistant-force.js";
 export * from "./surface-realizer.js";
 export * from "./surface-quality.js";
 export * from "./surface-linguistics.js";
-export { requestContentEvidenceUnits, requestUnitSharesStem } from "./local-evidence-runtime.js";
 export * from "./language-construction.js";
 export * from "./language-construction-memory.js";
 export * from "./graph-surface-alignment.js";

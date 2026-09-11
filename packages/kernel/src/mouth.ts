@@ -17,7 +17,7 @@ import type { TurnRequirementField } from "./turn-requirements.js";
 import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
-import { answerCoversRequest, evidenceTitledForRequestSubject, requestContentEvidenceUnits, requestLeadingScaffoldingUnit, requestUnitSharesStem } from "./local-evidence-runtime.js";
+import { answerCoversRequest, evidenceTitledForRequestSubject, requestContentEvidenceUnits, requestLeadingScaffoldingUnit } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
@@ -870,7 +870,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? compileRealizationContract(input.requestText ?? "", semanticCoreFact, {
           certified: semanticAnswerState!.certificationBoundary.directEvidenceCount > 0,
           externallyFactual: semanticAnswerState!.certificationBoundary.externalFactCertification
-        }, mouthClosedClass(input))
+        })
         : undefined;
       // Generated prose that stopped at its budget rather than at a boundary is unfinished ("...the analytical
       // engine wri"): measured live, a near-copy of the Ada Lovelace lead cut mid-word survived the contract check.
@@ -879,10 +879,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         && !generatedSurfaceUnfinished(semanticRhetoricalCandidate.text)
         ? semanticRhetoricalCandidate
         : undefined;
-      // Generation that failed its contract never speaks for a sourced answer ("Anglicanism originated which country The original book...").
-      const unverifiedGenerationAllowed = input.requestedAuthority !== "factual" && input.requestedAuthority !== "reasoned";
-      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? (unverifiedGenerationAllowed ? semanticRhetoricalCandidate : undefined) ?? (semanticAnswerState
-        ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length && (unverifiedGenerationAllowed || candidate !== semanticRhetoricalCandidate))
+      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
+        ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
         : undefined);
       const structuredConstructCandidate = generatedConstructSurface(input.construct) && !creativeRequested
         ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
@@ -1469,16 +1467,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       // An enumeration answers by its members: the cast of a series cannot repeat "characters", and the article
       // titled with the subject is what binds it. "who were the characters in Andromeda?" had the cast list and
       // spoke nothing because no member carried the request's words.
-      // Only for a request whose learned response form is a list: a crew roster answered "the blood type of the crew".
-      const enumerationRequest = (input.requirementField?.responseForm?.surfaceLayout?.sentencesPerBlock ?? 1) > 1;
-      // Members answer the category, not an attribute of the members: at most one request word may go uncarried.
-      const enumerationTitleText = deterministicSpans.map(span => String(jsonRecord(span.provenance).title ?? jsonRecord(jsonRecord(span.provenance).metadata).title ?? "")).join(" ");
-      const enumerationUncarried = (surface: string) => {
-        const carried = promptSurfaceUnits(`${surface} ${enumerationTitleText}`).map(unit => unit.toLocaleLowerCase());
-        return deterministicUnits.filter(unit => !carried.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length;
-      };
-      const enumerationAnswer = (surface: string) => enumerationRequest && surface === input.selectedCandidate?.answer && isEntitySaladSurface(surface)
-        && enumerationUncarried(surface) <= 1
+      const enumerationAnswer = (surface: string) => surface === input.selectedCandidate?.answer && isEntitySaladSurface(surface)
         && deterministicSpans.some(span => evidenceTitledForRequestSubject(input.requestText ?? "", [span]));
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
         || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
