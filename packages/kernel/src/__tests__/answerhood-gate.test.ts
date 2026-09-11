@@ -26,6 +26,21 @@ describe("answerhood gate", () => {
     expect(answerCoversRequest([landing], apollo, ["apollo", "land", "moon"], "When did Apollo 11 land on the Moon?", { relationRequired: true })).toBe(true);
   });
 
+  it("lets the title name the subject inside the titled source's own opening block", () => {
+    // The standing fact an article states about its subject is written anaphorically in its lead, and the request
+    // asks for exactly that: measured live, all three of these declined while their article's lead was in the pool.
+    const azerbaijan = openingBlock("evidence:azerbaijan", "Azerbaijan", "'Azerbaijan' is a transcontinental country at the boundary of Western Asia and Eastern Europe. Baku is the capital and largest city.");
+    const baku = "Baku is the capital and largest city.";
+    expect(answerCoversRequest([baku], azerbaijan, ["capital", "azerbaijan"], "What is the capital of Azerbaijan?", { relationRequired: true })).toBe(true);
+    // Same sentence, same article, a chunk from the middle of it: the lead is what binds the subject, not the title.
+    const body = span("evidence:azerbaijan-body", "Azerbaijan", "unused");
+    expect(answerCoversRequest([baku], body, ["capital", "azerbaijan"], "What is the capital of Azerbaijan?", { relationRequired: true })).toBe(false);
+    // The guard this must not weaken: Eduard's birth sits deep in the Einstein article, never in its opening block.
+    const einsteinBody = span("evidence:einstein-body", "Albert Einstein", "unused");
+    const eduard = "Their son Eduard was born in Zurich in July 1910.";
+    expect(answerCoversRequest([eduard], einsteinBody, ["albert", "einstein", "born"], "When was Albert Einstein born?", { relationRequired: true })).toBe(false);
+  });
+
   it("binds the relation to the subject in the sentence itself, not to the article title", () => {
     const einstein = span("evidence:einstein", "Albert Einstein", "unused");
     const units = ["albert", "einstein", "born"];
@@ -87,6 +102,11 @@ describe("answerhood gate", () => {
     expect(open.reasonIds).toContain("assistant_force.unresolved_obligations");
   });
 });
+
+/** A source's opening block: the same span, carrying the offset that says it opens the document. */
+function openingBlock(id: string, title: string, text: string): EvidenceSpan {
+  return { ...span(id, title, text), charStart: 0 } as EvidenceSpan;
+}
 
 function span(id: string, title: string, text: string): EvidenceSpan {
   return {
