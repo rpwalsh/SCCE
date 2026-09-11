@@ -2155,7 +2155,9 @@ export let admissionTierDiagnostics: Record<string, unknown> = {};
 export function sourceAnchoredEvidenceForRequest(
   requestText: string,
   evidence: readonly EvidenceSpan[],
-  semanticFrameBoundEvidenceIds?: ReadonlySet<string>
+  semanticFrameBoundEvidenceIds?: ReadonlySet<string>,
+  /** The request's learned scaffolding: never a unit a source has to contain. */
+  closedClassWords?: ReadonlySet<string>
 ): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   const initialismTokens = requestInitialismCandidates(requestText, anchors);
@@ -2192,10 +2194,10 @@ export function sourceAnchoredEvidenceForRequest(
   // corpus holding her article, the live system answered with the 27-character text of an earlier question in the
   // same session, because an echo of the request matches the request better than a real sentence does.
   evidence = evidence.filter(span => !String(span.id).startsWith("evidence_session_"));
-  const primaryAnchor = primarySourceAnchorForRequest(requestText, evidence);
+  const primaryAnchor = primarySourceAnchorForRequest(requestText, evidence, closedClassWords);
   const primaryAnchorUnits = primaryAnchor ? splitPriorUnits(primaryAnchor).filter(Boolean) : [];
   const primaryEvidence = primaryAnchor
-    ? primaryEvidenceForSourceAnchor(primaryAnchor, requestText, evidence)
+    ? primaryEvidenceForSourceAnchor(primaryAnchor, requestText, evidence, closedClassWords)
     : [];
   const semanticFrameBoundEvidence = semanticFrameBoundEvidenceIds?.size
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
@@ -2228,7 +2230,7 @@ export function sourceAnchoredEvidenceForRequest(
     && !contentMentionEvidence.length
     && !semanticFrameBoundEvidence.length) return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: [] };
   const primaryExact = primaryAnchor
-    ? evidence.filter(span => evidenceExactSourceAnchorMatches(span, [primaryAnchor]) && evidenceAnchorFitForRequest(span, requestText))
+    ? evidence.filter(span => evidenceExactSourceAnchorMatches(span, [primaryAnchor]) && evidenceAnchorFitForRequest(span, requestText, closedClassWords))
     : [];
   if (primaryAnchor && primaryExact.length && requestContentEvidenceUnits(requestText).length <= 3) {
     return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: uniqueEvidenceById([...primaryExact, ...semanticFrameBoundEvidence]) };
@@ -2238,11 +2240,11 @@ export function sourceAnchoredEvidenceForRequest(
   }
   const exact = evidence.filter(span => (
     (evidenceExactSourceAnchorMatches(span, contentAnchors) || evidenceTitleDistinctAnchorMatches(span, contentAnchors)) &&
-    evidenceAnchorFitForRequest(span, requestText)
+    evidenceAnchorFitForRequest(span, requestText, closedClassWords)
   ));
   const selected = evidence.filter(span => (
     (evidenceSourceMatchesAnchors(span, contentAnchors) || evidenceTitleDistinctAnchorMatches(span, contentAnchors)) &&
-    evidenceAnchorFitForRequest(span, requestText)
+    evidenceAnchorFitForRequest(span, requestText, closedClassWords)
   ));
   // Which tier admitted, not just how many: "the wrong span was admitted" and "the right span was never retrieved"
   // are indistinguishable from a count, and every admission bug this file has had was a question of which rule fired.
@@ -2304,7 +2306,9 @@ export function sourceAnchoredEvidenceForRequest(
 export function sourceIdentityAdmissibleEvidenceForRequest(
   requestText: string,
   evidence: readonly EvidenceSpan[],
-  semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set()
+  semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set(),
+  /** The request's learned scaffolding: never a unit a source has to contain. */
+  closedClassWords?: ReadonlySet<string>
 ): { required: boolean; anchors: string[]; evidence: EvidenceSpan[] } {
   // Reset first: the tiers are written at the final return, so an early return left the previous call's values in
   // place and a trace read them as this turn's.
@@ -2312,7 +2316,8 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   const anchored = sourceAnchoredEvidenceForRequest(
     requestText,
     evidence,
-    semanticFrameBoundEvidenceIds
+    semanticFrameBoundEvidenceIds,
+    closedClassWords
   );
   if (!anchored.required) return anchored;
   // Generic single-unit anchors admitted unrelated articles by title; match
@@ -2489,30 +2494,41 @@ function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): bool
 }
 
 
- function primaryEvidenceForSourceAnchor(primaryAnchor: string, requestText: string, evidence: readonly EvidenceSpan[]): EvidenceSpan[] {
+ function primaryEvidenceForSourceAnchor(primaryAnchor: string, requestText: string, evidence: readonly EvidenceSpan[], closedClassWords?: ReadonlySet<string>): EvidenceSpan[] {
   const exact = evidence.filter(span =>
     evidenceExactSourceAnchorMatches(span, [primaryAnchor]) &&
-    evidenceAnchorFitForRequest(span, requestText)
+    evidenceAnchorFitForRequest(span, requestText, closedClassWords)
   );
   const primaryAnchorUnits = splitPriorUnits(primaryAnchor).filter(Boolean);
   if (primaryAnchorUnits.length === 1 && exact.length) return exact;
   return evidence.filter(span => {
     const titleMatched = evidenceExactSourceAnchorMatches(span, [primaryAnchor]) || evidenceTitleDistinctAnchorMatches(span, [primaryAnchor]);
-    if (titleMatched && evidenceAnchorFitForRequest(span, requestText)) return true;
+    if (titleMatched && evidenceAnchorFitForRequest(span, requestText, closedClassWords)) return true;
     return primaryAnchorUnits.length >= 2 && evidenceMatchesSourceAnchor(span, primaryAnchor);
   });
 }
 
 
- function evidenceAnchorFitForRequest(span: EvidenceSpan, requestText: string): boolean {
+/** The values the last anchor-fit decision was made from, for tracing. Diagnostic only; nothing reads it to decide. */
+let anchorFitDiagnostics: Record<string, unknown> = {};
+
+export function lastAnchorFitDiagnostics(): Record<string, unknown> {
+  return anchorFitDiagnostics;
+}
+
+export function evidenceAnchorFitForRequest(span: EvidenceSpan, requestText: string, closedClassWords?: ReadonlySet<string>): boolean {
   const titleUnits = sourceTitleAnchorFitUnitSet(span);
-  if (!titleUnits.size) return true;
-  const requestUnits = requestAnchorFitUnits(requestText);
-  if (!requestUnits.length) return true;
+  const requestUnits = requestAnchorFitUnits(requestText, closedClassWords);
+  const decided = (fits: boolean, reason: string, extra: Record<string, unknown> = {}): boolean => {
+    anchorFitDiagnostics = { fits, reason, span: String(span.id).slice(-12), titleUnits: [...titleUnits], requestUnits, ...extra };
+    return fits;
+  };
+  if (!titleUnits.size) return decided(true, "untitled_source");
+  if (!requestUnits.length) return decided(true, "no_request_units");
   const matchedTitleUnits = [...titleUnits].filter(titleUnit => requestUnits.some(unit => requestUnitMatchesSurface(unit, titleUnit)));
   const firstTitlePosition = firstTitleUnitPosition(requestUnits, titleUnits);
-  if (!matchedTitleUnits.length) return false;
-  if (matchedTitleUnits.length >= 2 && firstTitlePosition <= 2) return true;
+  if (!matchedTitleUnits.length) return decided(false, "no_title_unit_matched", { firstTitlePosition });
+  if (matchedTitleUnits.length >= 2 && firstTitlePosition <= 2) return decided(true, "title_units_lead_request", { matchedTitleUnits, firstTitlePosition });
   // What the request asks beyond naming the title: the same four-letter content rule evidenceContentAnchorFitsRequest
   // uses, so a short interrogative is not a unit the span has to contain. "Who is Aphrodite?" required the word "who"
   // inside the span, and the article's own opening block -- which does not say "who" -- was the one span it dropped.
@@ -2520,12 +2536,18 @@ function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): bool
     .filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)))
     .filter(unit => [...unit].length >= 4 || hasUncasedNonLatinLetter(unit));
   // A request that only names the title is answered by the titled source itself.
-  if (!nonTitleUnits.length) return matchedTitleUnits.length >= 1;
+  if (!nonTitleUnits.length) return decided(matchedTitleUnits.length >= 1, "request_names_title_only", { matchedTitleUnits, firstTitlePosition });
   const sourceSurface = sourceTextSurface(evidenceWindowText(span), 3200);
   const nonTitleOverlap = requestUnitOverlapForSurface(sourceSurface, new Set(nonTitleUnits));
   const singleLateTitleOverlapFloor = titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1;
-  if (matchedTitleUnits.length >= 1 && nonTitleOverlap >= singleLateTitleOverlapFloor) return true;
-  return titleUnits.size > 1 && firstTitlePosition <= 2 && matchedTitleUnits.length / Math.max(1, titleUnits.size) >= 0.67;
+  if (matchedTitleUnits.length >= 1 && nonTitleOverlap >= singleLateTitleOverlapFloor) {
+    return decided(true, "non_title_overlap_met", { matchedTitleUnits, firstTitlePosition, nonTitleUnits, nonTitleOverlap, floor: singleLateTitleOverlapFloor });
+  }
+  return decided(
+    titleUnits.size > 1 && firstTitlePosition <= 2 && matchedTitleUnits.length / Math.max(1, titleUnits.size) >= 0.67,
+    "title_majority_fallback",
+    { matchedTitleUnits, firstTitlePosition, nonTitleUnits, nonTitleOverlap, floor: singleLateTitleOverlapFloor }
+  );
 }
 
 
@@ -2536,10 +2558,13 @@ function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): bool
 }
 
 
- function requestAnchorFitUnits(text: string): string[] {
+ function requestAnchorFitUnits(text: string, closedClassWords?: ReadonlySet<string>): string[] {
+  // The request's learned scaffolding is not a unit a source must contain. "What is the capital of Albania?" made
+  // "what" a content unit, and with the title late in the request the overlap floor is two: the article's own lead
+  // block says "capital" and never says "what", so it was dropped while body chunks that happen to say both passed.
   return splitPriorUnits(normalizePriorKey(text.replace(/[?!.]+$/u, "")))
     .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter(unit => unit.length >= 3 && !genericQuestionSignal(unit));
+    .filter(unit => unit.length >= 3 && !genericQuestionSignal(unit) && !closedClassWords?.has(unit));
 }
 
 
@@ -2665,7 +2690,7 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
   return row.exactTitleMatches > 0 && row.exactTitleMatches <= SUBJECT_ANCHOR_TITLE_MATCH_BOUND;
 }
 
- function primarySourceAnchorForRequest(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined {
+ function primarySourceAnchorForRequest(requestText: string, evidence: readonly EvidenceSpan[], closedClassWords?: ReadonlySet<string>): string | undefined {
   // The subject owns the request, but the anchor that names it is often longer than the capitalised part
   // ("Voynich manuscript" for the name "Voynich"), so keep every anchor built on a named subject and drop
   // only the instruction phrases that name none.
@@ -2677,7 +2702,7 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
       let completeSourceMatches = 0;
       let supportMass = 0;
       for (const span of evidence) {
-        if (!evidenceAnchorFitForRequest(span, requestText)) continue;
+        if (!evidenceAnchorFitForRequest(span, requestText, closedClassWords)) continue;
         const exactTitle = evidenceExactSourceAnchorMatches(span, [anchor]);
         const sourceUnits = splitPriorUnits(normalizePriorKey(evidenceSourceAnchorSurface(span))).filter(Boolean);
         const completeSourceMatch = sourceAnchorPhraseContains(sourceUnits, anchorUnits);

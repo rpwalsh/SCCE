@@ -1377,7 +1377,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // The single admission authority the answer proposers already use, so the pool the turn keeps is the pool
         // the answer may draw from. The stricter title-only audit kept the Deep Space Nine article out of
         // "Who played Sisko?" while the proposers would have admitted it on its binding sentence.
-        : sourceIdentityAdmissibleEvidenceForRequest(requestedAuthority === "creative" ? subjectRetrievalText : input.text, evidence, semanticFrameBoundEvidenceIds);
+        : sourceIdentityAdmissibleEvidenceForRequest(requestedAuthority === "creative" ? subjectRetrievalText : input.text, evidence, semanticFrameBoundEvidenceIds, requestClosedClassWords());
       // Empty audit over a titleless pool: identity admission can never bind
       // workspace-file spans, so fall back to the titleless spans the graph
       // slice already content-admitted; titled corpora keep strict abstention.
@@ -1623,7 +1623,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // NOT be forced through this machinery as if it were a claim. Which
       // candidates/claims actually consume this is decided per-unit later
       // by assistantForceDecision, not by skipping the computation itself.
-      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds).slice(0, turnProofEvidenceLimit));
+      // The titled source's opening block, rescued once for every path that reads evidence: relevance ranking drops
+      // the lead that states the standing fact ("Baku is the capital and largest city" never reached the proposer,
+      // so "What is the capital of Azerbaijan?" declined while its own article's lead block was admitted).
+      const admittedTitledOpeningSpan = namedSubjectAnchors(input.text).length
+        ? admissibleEvidence.find(span => span.status === "promoted" && Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
+        : undefined;
+      const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
+      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, (admittedTitledOpeningSpan
+        ? uniqueRecordsById([admittedTitledOpeningSpan, ...rankedSupportEvidence], Math.max(2, rankedSupportEvidence.length))
+        : rankedSupportEvidence).slice(0, turnProofEvidenceLimit));
       const proofNodes = graph.nodes;
       const proofEdges = graph.edges;
       // The learned response form's surface layout supplies the sentence
@@ -1916,10 +1925,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // Searched in the admitted pool, not only in what relevance ranking kept: both collections above are already
       // downstream of that ranking, so the lead this exists to rescue was never among the spans it looked at
       // ("What is acupuncture?" admitted the definition and selected the injection and licensing chunks).
-      const titledOpeningSpan = subjectOnlyRequest || namedSubjectAnchors(input.text).length
-        ? [...evidenceSelectionPool, ...promoted, ...admissibleEvidence.filter(span => span.status === "promoted")]
-          .find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
-        : undefined;
+      const titledOpeningSpan = admittedTitledOpeningSpan ?? (subjectOnlyRequest || namedSubjectAnchors(input.text).length
+        ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
+        : undefined);
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
         ? uniqueRecordsById([titledOpeningSpan, ...rankedForRequest], Math.max(2, rankedForRequest.length))
         : rankedForRequest);
