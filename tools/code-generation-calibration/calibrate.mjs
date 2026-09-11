@@ -90,7 +90,8 @@ await mkdir(path.dirname(outPath), { recursive: true });
 await writeFile(outPath, `${JSON.stringify({
   schema: "scce.code_generation_calibration.v1",
   generatedAt: new Date().toISOString(),
-  root,
+  // Repo-relative, so a committed report never carries the path of the machine that generated it.
+  root: path.relative(process.cwd(), root).split(path.sep).join("/"),
   extension,
   corpusFiles: train.length,
   heldOutFiles: heldOut.length,
