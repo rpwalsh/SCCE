@@ -185,6 +185,15 @@ a required stage fails. First run 2026-09-08: 12/13 required stages, the miss be
 Re-run 2026-09-10 after the chat-path repairs: 12/13 again, same miss; a mid-session regression to 10/13 (the
 mouth required the request's opening word "what" in the answer on a corpus whose learned closed class has no
 question words) was caught by this gate and fixed the same hour, which is the gate doing its job.
+Re-run 2026-09-11: 13/13, with the harness's corpus and assertions unchanged. The miss had three causes, none of
+them the subject anaphor it was first attributed to. On a two-document corpus the learned closed class was the whole
+vocabulary ("threshold", "brindle"), so the request's "what" and "does" stood as relation words the answer had to
+contain; a corpus closed class now counts only when it is a minority of the vocabulary, and below that the gate
+applies its coverage quota. The ranking tie-break counted only words of four letters or more, so "sits" -- the one
+word the value sentence shares with the request -- never counted. And two sentence rankers cut to two sentences
+before preferring the one carrying the relation, then joined sentences out of document order, which the excerpt rule
+correctly refused. The recorded run is `artifacts/full-system-one-shot.json` (2026-09-11T08:08:40Z). The harness's
+cleanup now removes the files it wrote and then the empty directory, never a recursive delete.
 
 **Live release gate (served path).** `pnpm release:gate` (`tools/release-gate.mjs`) asks seven prompts of the
 running server and checks each answer structurally: evidence binding, mouth realization, semantic-answer shape,
