@@ -113,7 +113,6 @@ import {
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
-  answerCoversRequest,
   requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
@@ -140,7 +139,7 @@ import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits, tidySur
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
-import { deriveClosedClassWords, languageClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
+import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -1449,9 +1448,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         },
         support: {
           required: sourceAnchorAudit.required,
-          // Every pooled span with its full id: an eight-span cap hid the span a wrong answer came from.
-          anchors: sourceAnchorAudit.anchors,
-          spans: evidence.map(span => ({ id: String(span.id), charStart: span.charStart ?? null, chars: [...String(span.text ?? "")].length, window: [...String(span.retrievalWindow ?? span.text ?? "")].length, admitted: admissibleEvidence.includes(span) }))
+          anchors: sourceAnchorAudit.anchors.slice(0, 8),
+          spans: evidence.slice(0, 8).map(span => ({ id: String(span.id).slice(-12), chars: [...String(span.text ?? "")].length, window: [...String(span.retrievalWindow ?? span.text ?? "")].length, admitted: admissibleEvidence.includes(span) }))
         }
       });
       // Two subjects named in one request have a temporal relation, and until now nothing computed it.
@@ -1641,7 +1639,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
         closedClassWords: requestClosedClassWords(),
-        languageClosedClassWords: languageClosedClassWords(authorityLanguage.state.models ?? []),
         ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
           ? { responseSentenceBudget: responseFormSentences }
           : {})
@@ -1708,8 +1705,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         },
         support: {
           planId: answerProposal?.plan.planId ?? null,
-          evidenceIds: answerProposal?.evidence.map(span => String(span.id)) ?? [],
-          audit: answerProposal?.plan.audit ?? null
+          evidenceIds: answerProposal?.evidence.map(span => String(span.id)) ?? []
         }
       });
       const emptySupportBundle = () => ({
@@ -2000,8 +1996,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             sessionContextEvidence,
             explicitContextEvidenceIds,
             semanticFrameBoundEvidenceIds,
-            closedClassWords: requestClosedClassWords(),
-            languageClosedClassWords: languageClosedClassWords(authorityLanguage.state.models ?? [])
+            closedClassWords: requestClosedClassWords()
           })
         : undefined;
       // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.
@@ -2399,13 +2394,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // separately. Never fabricates: returns undefined (falls through to
       // whichever branch's real answer) for anything that isn't a
       // recognizable temporal question.
-      // The value comes from the sentence the relation-first ranker certified, not the first date in the spans ("when did the war end" read its start).
-      const certifiedSurfaceSpan = longPathBasisAnswer && answerSurface.answer
-        ? [{ ...selectedEvidence[0]!, text: answerSurface.answer, textPreview: answerSurface.answer, charStart: 0 }]
-        : undefined;
-      const temporalAnswerValue = (certifiedSurfaceSpan && selectedEvidence.length
-        ? extractTemporalAnswerFromEvidence(input.text, certifiedSurfaceSpan)
-        : undefined) ?? extractTemporalAnswerFromEvidence(input.text, selectedEvidence);
+      const temporalAnswerValue = extractTemporalAnswerFromEvidence(input.text, selectedEvidence);
       const proofAnswer = temporalAnswerValue || answerSurface.answer;
       // A recognizable temporal question already yields a bare bound VALUE here (a date, not a whole
       // sentence) -- exactly the subject/relation/value triple a realization contract needs, and cheaper to
@@ -2463,7 +2452,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const realizationSourceFact = temporalConstructFact
         ?? (boundConstructFacts ? [...boundConstructFacts.facts].sort((left, right) => right.score - left.score)[0] : undefined);
       const realizationContract = realizationSourceFact
-        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary, requestClosedClassWords())
+        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary)
         : undefined;
       kernelTrace({
         stage: "candidate.realization_contract",
@@ -3978,13 +3967,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // span was never about the question, only about its subject.
         const subjectWords = new Set(namedSubjectAnchors(input.text).flatMap(anchor => anchor.toLocaleLowerCase().split(/\s+/u)).filter(Boolean));
         const relationUnits = requestContentEvidenceUnits(input.text).filter(unit => !subjectWords.has(unit.toLocaleLowerCase()));
-        // The answerhood gate every other path passes: one request word inside another ("crew" in "crewed") spoke the
-        // Apollo 11 lead for a question about coffee. A contradicted premise still passes as the category it names.
-        const fallbackClosedClass = requestClosedClassWords();
-        const fallbackUnits = requestContentEvidenceUnits(input.text)
-          .filter(unit => !fallbackClosedClass.has(unit) && unit !== requestLeadingScaffoldingUnit(input.text));
-        const relatesBeyondSubject = relationUnits.length === 0 || (contradictedSpan !== undefined
-          && answerCoversRequest([boundedText], contradictedSpan, fallbackUnits, input.text, { relationRequired: fallbackClosedClass.size > 0 }));
+        const boundedTextLower = boundedText.toLocaleLowerCase();
+        const relatesBeyondSubject = relationUnits.length === 0 || relationUnits.some(unit => boundedTextLower.includes(unit.toLocaleLowerCase()));
         if (boundedText && isUnparsedMarkupText(boundedText)) {
           kernelTrace({
             stage: "mouth.contradiction_fallback.rejected_markup",

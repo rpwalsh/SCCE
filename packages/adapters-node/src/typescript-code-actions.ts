@@ -10,23 +10,12 @@ import {
   canonicalTypeScriptDiagnosticIdentity,
   canonicalWorkspaceCompilerCandidateSetId,
   canonicalWorkspaceCompilerCommandIdentity,
-  requestContentEvidenceUnits,
-  requestUnitSharesStem,
-  surfaceWords,
   type WorkspaceCompilerAnalyzerBinding
 } from "@scce/kernel";
 import ts from "typescript";
 import { resolveTypeScriptCommandLane, verifyTypeScriptCommandLaneSourceBinding } from "./typescript-command-lane.js";
 
 const FAMILY_ID = "repair.family.typescript.code_action.v1" as const;
-
-/** Whether the request's own words are carried by the compiler's description of a fix or of the defect it repairs. Pure. */
-function requestCarriedByFix(requestText: string, transformation: TypeScriptCodeActionTransformation): boolean {
-  const units = requestContentEvidenceUnits(requestText);
-  if (!units.length) return false;
-  const fixUnits = surfaceWords(`${transformation.codeFix.description} ${transformation.diagnostic.message}`).map(word => word.toLocaleLowerCase());
-  return units.some(unit => fixUnits.some(fixUnit => requestUnitSharesStem(unit, fixUnit)));
-}
 const DEFAULT_MAX_EDITS = 32;
 const MAX_EDITS = 128;
 const MAX_ACTION_FILES = 32;
@@ -298,11 +287,11 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
     || selectors.codeFixIdentities.length > 0;
   const selectionPool = hasSelector && admissible.length > 0 ? admissible : transformations;
   const candidates = selectionPool.slice(0, limit).map(candidateSummary);
-  // With no selector, a lone fix is applied only when the request's own words are carried by what the compiler
-  // says the fix does; "tidy this file up" names no fix, so it is offered rather than applied.
-  const requestNamesLoneFix = transformations.length === 1 && requestCarriedByFix(input.requestText, transformations[0]!);
+  // With no selector in the request, a single compiler-owned fix is not a guess among alternatives --
+  // there is nothing to disambiguate. Naming it explicitly (TS2304, fixName:..., codeFixIdentity:...)
+  // stays required the moment a second candidate exists, which is the only place ambiguity lives.
   const mode = !hasSelector
-    ? (requestNamesLoneFix ? "selected" : "unselected_candidates")
+    ? (transformations.length === 1 ? "selected" : "unselected_candidates")
     : admissible.length === 0
       ? "selector_not_found"
       : admissible.length === 1

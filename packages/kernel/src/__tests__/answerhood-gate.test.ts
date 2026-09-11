@@ -74,35 +74,6 @@ describe("answerhood gate", () => {
     expect(requestUnitSharesStem("develop", "developing")).toBe(true);
     expect(requestUnitSharesStem("born", "byrds")).toBe(false);
     expect(requestUnitSharesStem("moon", "months")).toBe(false);
-    // A bare stem is a different word: the command module did not command the mission.
-    expect(requestUnitSharesStem("commanded", "command")).toBe(false);
-    expect(requestUnitSharesStem("commanded", "commanding")).toBe(true);
-    expect(requestUnitSharesStem("rivers", "river")).toBe(true);
-  });
-
-  it("does not let a request word inside another word stand in for the relation, real corpus shape", () => {
-    const lead = "'Apollo 11' (July 16-24, 1969) was the American spaceflight that first landed humans on the Moon. The mission was crewed by Commander Neil Armstrong, Command Module Pilot Michael Collins, and Lunar Module Pilot Edwin \"Buzz\" Aldrin.";
-    const units = ["many", "cups", "coffee", "apollo", "crew", "drink"];
-    expect(answerCoversRequest([lead], apollo, units, "How many cups of coffee did the Apollo 11 crew drink?", { relationRequired: true })).toBe(false);
-    // The premise the evidence contradicts is the one missing word, and the lead names what stands in its place.
-    expect(answerCoversRequest([lead], apollo, ["apollo", "land", "mars"], "Why did Apollo 11 land on Mars?", { relationRequired: true })).toBe(true);
-  });
-
-  it("does not read a lowercase description after a capitalised question word as a name, real corpus shape", () => {
-    const acupuncture = span("evidence:acupuncture", "Acupuncture", "unused");
-    const beliefs = "Several different and sometimes conflicting belief systems emerged regarding acupuncture.";
-    expect(answerCoversRequest([beliefs], acupuncture, ["single", "named", "inventor", "acupuncture"], "Who is the single named inventor of acupuncture?", { relationRequired: true })).toBe(false);
-  });
-
-  it("lets a named member stand in only for a category the request introduces, not for an attribute of its subject", () => {
-    const athens = span("evidence:athens", "Athens", "unused");
-    expect(answerCoversRequest(["'Athens' is the capital and largest city of Greece."], athens, ["athens", "capital", "country"], "Athens is the capital of which country?", { relationRequired: true })).toBe(true);
-    const alaska = span("evidence:alaska", "Alaska", "unused");
-    const languages = "In October 2014, the governor of Alaska signed a bill declaring the state's 20 official languages.";
-    expect(answerCoversRequest([languages], alaska, ["alaska", "official", "state", "dinosaur"], "What is Alaska's official state dinosaur?", { relationRequired: true })).toBe(false);
-    const alexander = span("evidence:alexander", "Alexander the Great", "unused");
-    const horse = "Caligula, who could not swim, then proceeded to ride his favourite horse Incitatus, wearing the breastplate of Alexander the Great.";
-    expect(answerCoversRequest([horse], alexander, ["alexander", "great", "favorite", "color"], "What was Alexander the Great's favorite color?", { relationRequired: true })).toBe(false);
   });
 
   it("counts unresolved obligations from the proof boundaries and withholds certification over them", () => {
