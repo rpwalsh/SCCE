@@ -757,6 +757,18 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
   const preferenceSnapshotIds = canonicalStringSetV2(previousState?.preferenceSnapshotIds ?? []);
   const correctionIds = canonicalStringSetV2(previousState?.correctionIds ?? []);
   const historyDigestIds = uniqueStrings([...(previousState?.historyDigestIds ?? []), observation.id]).slice(-config.maxHistoryDigests);
+  // What the state's history window no longer holds, it no longer carries: unretired referents grew one state to 3.6 MB.
+  const windowStart = observation.turnIndex - config.maxHistoryDigests + 1;
+  const activeTopicSet = new Set(activeTopicIds);
+  const consideredReferentIds = new Set(bindings.flatMap(binding => [binding.referentId, ...binding.alternatives.map(alternative => alternative.referentId)]));
+  const retainedReferents = refreshedReferents.filter(referent => referent.lastMentionTurnIndex >= windowStart
+    || consideredReferentIds.has(referent.id)
+    || activeTopicSet.has(referent.topicId));
+  const retainedTopicIds = new Set(retainedReferents.map(referent => referent.topicId));
+  const retained = repairDiscourseTopologyV2(
+    retainedReferents,
+    refreshedTopics.filter(topic => retainedTopicIds.has(topic.id) || activeTopicSet.has(topic.id) || topic.lastTurnIndex >= windowStart)
+  );
   const canonicalUnresolvedMentionIds = canonicalStringSetV2(unresolvedMentionIds);
   const sessionId = observation.sessionId ?? previousState?.sessionId;
   const stateContent = {
@@ -766,8 +778,8 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
     turnId: observation.turnId,
     turnIndex: observation.turnIndex,
     activeTopicIds,
-    referents: refreshedReferents,
-    topics: refreshedTopics,
+    referents: retained.referents,
+    topics: retained.topics,
     bindings,
     unresolvedMentionIds: canonicalUnresolvedMentionIds,
     openSlotIds,
