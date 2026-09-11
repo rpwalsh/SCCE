@@ -51,9 +51,12 @@ describe("candidateSurvivesRealizationContract", () => {
   });
 
   it("accepts a candidate that carries the subject, the relation, and the bound value", () => {
+    // The learned request closed class, as the production callers pass it: question scaffolding is not a relation.
     const contract = compileRealizationContract(
       "When did Apollo 11 land on the Moon?",
-      fact({ predicate: "landed on the Moon on", object: "July 20, 1969" })
+      fact({ predicate: "landed on the Moon on", object: "July 20, 1969" }),
+      undefined,
+      new Set(["when", "did"])
     );
     const result = candidateSurvivesRealizationContract(
       "Apollo 11 landed on the Moon on July 20, 1969.",
