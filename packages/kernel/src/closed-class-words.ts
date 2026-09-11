@@ -47,12 +47,10 @@ export function requestClosedClassWords(input: {
   limit?: number;
 }): Set<string> {
   const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority) });
-  const corpus = corpusClosedClass(input.models ?? [], input.limit);
-  // Most-continued words are a closed class only as a minority of the vocabulary; two documents made "threshold" one.
-  const corpusSeparates = corpus.words.size < corpus.vocabulary - corpus.words.size;
+  const corpus = deriveClosedClassWords({ models: input.models ?? [], limit: input.limit });
   const opening = input.requestText.normalize("NFC").toLocaleLowerCase().split(/[^\p{L}\p{M}\p{N}'’-]+/u).filter(Boolean).slice(0, 2);
   const out = new Set(scaffolding);
-  if (corpusSeparates) for (const word of opening) if (corpus.words.has(word)) out.add(word);
+  for (const word of opening) if (corpus.has(word)) out.add(word);
   // The request corpus teaches its frames with real subjects in them ("Who was Ada Lovelace?"), so the subjects'
   // words arrive here as scaffolding literals; the moment that corpus was ingested, "Who is Ada Lovelace?" dropped
   // its only anchor group as scaffolding and retrieved nothing. What this request names is never its scaffolding.
@@ -62,31 +60,12 @@ export function requestClosedClassWords(input: {
   return out;
 }
 
-/** The corpus's closed class, or nothing when a corpus too small to separate one would name its content words. Pure. */
-export function languageClosedClassWords(models: readonly KneserNeyModel[], limit?: number): Set<string> {
-  const corpus = corpusClosedClass(models, limit);
-  return corpus.words.size < corpus.vocabulary - corpus.words.size ? corpus.words : new Set();
-}
-
 export function deriveClosedClassWords(input: {
   models?: readonly KneserNeyModel[];
   constructions?: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[];
   limit?: number;
 }): Set<string> {
-  const out = corpusClosedClass(input.models ?? [], input.limit).words;
-  for (const construction of input.constructions ?? []) {
-    for (const part of construction.parts ?? []) {
-      if (part.kind !== "literal") continue;
-      const surface = String(part.surface ?? "").trim().toLocaleLowerCase();
-      if (surface && !/\s/u.test(surface) && isWordSymbol(surface)) out.add(surface);
-    }
-  }
-  return out;
-}
-
-/** The models' most-continued words and the size of the word vocabulary they were ranked from. Pure. */
-function corpusClosedClass(models: readonly KneserNeyModel[], limitInput?: number): { words: Set<string>; vocabulary: number } {
-  const limit = Math.max(1, limitInput ?? 96);
+  const limit = Math.max(1, input.limit ?? 96);
   // Ranked by how many distinct contexts a word follows, not by how often it occurs.
   //
   // Raw frequency was the proxy for closed class, and on a partially trained corpus it ranks the wrong things.
@@ -102,7 +81,7 @@ function corpusClosedClass(models: readonly KneserNeyModel[], limitInput?: numbe
   // small to carry continuations at all.
   const totals = new Map<string, number>();
   let continuations = 0;
-  for (const model of models) {
+  for (const model of input.models ?? []) {
     for (const [symbol, contexts] of Object.entries(model.continuationCounts ?? {})) {
       if (!isWordSymbol(symbol)) continue;
       totals.set(symbol, (totals.get(symbol) ?? 0) + contexts);
@@ -110,7 +89,7 @@ function corpusClosedClass(models: readonly KneserNeyModel[], limitInput?: numbe
     }
   }
   if (!continuations) {
-    for (const model of models) {
+    for (const model of input.models ?? []) {
       for (const [symbol, count] of Object.entries(model.unigramCounts ?? {})) {
         if (!isWordSymbol(symbol)) continue;
         totals.set(symbol, (totals.get(symbol) ?? 0) + count);
@@ -118,7 +97,15 @@ function corpusClosedClass(models: readonly KneserNeyModel[], limitInput?: numbe
     }
   }
   const ranked = [...totals.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
-  return { words: new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase())), vocabulary: totals.size };
+  const out = new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase()));
+  for (const construction of input.constructions ?? []) {
+    for (const part of construction.parts ?? []) {
+      if (part.kind !== "literal") continue;
+      const surface = String(part.surface ?? "").trim().toLocaleLowerCase();
+      if (surface && !/\s/u.test(surface) && isWordSymbol(surface)) out.add(surface);
+    }
+  }
+  return out;
 }
 
 
