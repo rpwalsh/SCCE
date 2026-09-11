@@ -78,11 +78,12 @@ export interface SemanticRealizationContract {
 }
 
 /** The request's relation units, with its subject anchors removed: the same subject/relation split answerCoversRequest already makes, reused rather than re-derived. Pure. */
-export function requestRelationUnits(requestText: string): string[] {
+export function requestRelationUnits(requestText: string, closedClassWords?: ReadonlySet<string>): string[] {
   if (!requestText) return [];
   const subjectUnits = new Set(namedSubjectAnchors(requestText)
     .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
-  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit));
+  // The request's learned scaffolding ("when", "did") is not a relation an answer restates.
+  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit) && !closedClassWords?.has(unit));
 }
 
 function epistemicForceFromFact(fact: SemanticAnswerConstructFact, certificationBoundary?: RealizationCertificationBoundary): RealizationEpistemicForce {
@@ -102,14 +103,15 @@ function epistemicForceFromFact(fact: SemanticAnswerConstructFact, certification
 export function compileRealizationContract(
   requestText: string,
   fact: SemanticAnswerConstructFact,
-  certificationBoundary?: RealizationCertificationBoundary
+  certificationBoundary?: RealizationCertificationBoundary,
+  closedClassWords?: ReadonlySet<string>
 ): SemanticRealizationContract {
   const evidenceIds = fact.evidenceIds ?? [];
   const factText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ").trim();
   const requiredAtoms = factText
     ? atomizeText({ text: factText, source: SEMANTIC_SOURCE.CLAIM, evidenceIds: evidenceIds as EvidenceId[] })
     : [];
-  const relationUnits = requestRelationUnits(requestText);
+  const relationUnits = requestRelationUnits(requestText, closedClassWords);
   const requiredRelationUnits = relationUnits.length ? relationUnits : requestContentEvidenceUnits(fact.predicate);
   const requestedSlotId = fact.requestedSlotId ?? fact.questionSlotId;
   return {

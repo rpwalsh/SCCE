@@ -870,7 +870,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? compileRealizationContract(input.requestText ?? "", semanticCoreFact, {
           certified: semanticAnswerState!.certificationBoundary.directEvidenceCount > 0,
           externallyFactual: semanticAnswerState!.certificationBoundary.externalFactCertification
-        })
+        }, mouthClosedClass(input))
         : undefined;
       // Generated prose that stopped at its budget rather than at a boundary is unfinished ("...the analytical
       // engine wri"): measured live, a near-copy of the Ada Lovelace lead cut mid-word survived the contract check.
