@@ -4097,6 +4097,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       timingParts.mouthMs = Date.now() - mouthStarted;
       timingStageStarted = Date.now();
+      // Elapsed ms at each step to validation: a 6 s stall here fired no trace event at all.
+      const validationWindowStarted = Date.now();
+      const validationWindow: Record<string, number> = {};
+      const markValidationWindow = (step: string) => { validationWindow[step] = Date.now() - validationWindowStarted; };
       if (correctionRules.length) events.push(await append(eventFactory.create({ episodeId, typeId: "CorrectionApplied", payload: { summary: correctionMemory.summarize(correctionRules), trace: spoken.realizationTrace.corrections } })));
       const certifiedPcaReport = pca.certify({ answer, evidence: selectedEvidence, force: pcaForceForMouthSurface(spoken, judged.selected.force) });
       let pcaReport = longPathBasisAnswer
@@ -4108,6 +4112,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : certifiedPcaReport;
       let validation = validationBuilder.build({ construct: spokenConstructGraph, entailment: answerEntailment, buildTest, pca: pcaReport as unknown as JsonValue });
       let rawEmission = emissionEngine.emit({ construct: spokenConstructGraph, validation, entailment: answerEntailment, answer, pca: pcaReport as unknown as JsonValue });
+      markValidationWindow("certified");
       let answerRevisionTrace: JsonValue | undefined;
       const sourceStructuralCreativeSurface = Boolean(
         selectedInvention
@@ -4216,6 +4221,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           });
         }
       }
+      markValidationWindow("revised");
       const emissionAssistantForce = assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,
@@ -4249,6 +4255,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         mouthHardViolationIds: spoken.hardSurfaceViolationIds
       });
       const runtimeCoherenceTrace = toJsonValue(runtimeCoherence);
+      markValidationWindow("coherence");
       // assistantForceAfter === "insufficient_support" alone no longer
       // triggers this whole-turn recovery loop: thin/absent evidence is a
       // citation concern, honestly reflected in the answer's force label,
@@ -4320,8 +4327,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           })));
         }
       }
+      markValidationWindow("replan");
       await deps.storage.constructs.putValidation(validation);
+      markValidationWindow("putValidation");
       events.push(await append(eventFactory.create({ episodeId, typeId: "ValidationGraphBuilt", payload: validation })));
+      markValidationWindow("appendValidation");
       // A grounded label needs a spoken surface: when the mouth admitted none, the turn is insufficient support.
       const groundedLabel = runtimeCoherence.assistantForceAfter === "source_grounded_answer" || runtimeCoherence.assistantForceAfter === "certified_fact";
       // Composed code, and whether anything actually built it.
@@ -4358,9 +4368,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         assistantForce: emission.assistantForce
       });
       await deps.storage.constructs.putEmission(emission);
+      markValidationWindow("putEmission");
       events.push(await append(eventFactory.create({ episodeId, typeId: "RuntimeCoherenceDecided", payload: runtimeCoherenceTrace })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { assistantForce: runtimeCoherence.assistantForceAfter, assistantForceBeforeCoherence: mouthAssistantForce.force, assistantForceTrace: mouthAssistantForce.audit, surfacePlan: spoken.surfacePlan, trace: spoken.realizationTrace, inspectRefs: spoken.inspectRefs, evidenceRefs: spoken.evidenceRefs, uncertainty: spoken.uncertainty, answerRevision: answerRevisionTrace ?? null, runtimeCoherence: runtimeCoherenceTrace } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: { ...emission, assistantForceTrace: emissionAssistantForce.audit, runtimeCoherence: runtimeCoherenceTrace } })));
+      markValidationWindow("appendEmission");
+      kernelTrace({ stage: "runtime.validation.window", label: "kernel.turn", durationMs: Date.now() - validationWindowStarted, counts: validationWindow });
       markTiming("validationMs");
       deadlineCheckpoint("runtime.validation.complete", 0);
       const actionGraph = actionGraphBuilder.build({ episodeId, plans: capabilityPlans, emission, policy });

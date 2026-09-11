@@ -42,6 +42,7 @@ type DialogueShadowPersistence = Awaited<ReturnType<typeof persistDialogueCognit
 type TurnPersistence = {
   readonly cognitiveShadow: DialogueShadowPersistence;
   readonly sessionAudit?: JsonValue;
+  readonly timing: Record<string, number>;
 };
 type ScceTraceHandle = Parameters<typeof traceEvent>[0];
 
@@ -802,27 +803,32 @@ async function dispatch(
       });
       traceEvent(trace, { stage: "turn.dialogue.bridged", label: "api.turn", durationMs: Date.now() - bridgeStarted });
       const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
+        // Elapsed ms until each write settles, from the moment this turn's persistence starts.
+        const persistenceStarted = Date.now();
+        const timing: Record<string, number> = {};
+        const timed = <T>(step: string, work: Promise<T>): Promise<T> => work.then(value => { timing[step] = Date.now() - persistenceStarted; return value; });
         const [, cognitiveShadow, storedSession] = await Promise.all([
-          persistDialogueTurn({
+          timed("dialogueTurnMs", persistDialogueTurn({
             store: context.runtime.storage.dialogueMemory,
             result: dialogue.pragmatics,
             answerGraphHash: dialogue.answerGraphHash,
             now: Date.now()
-          }),
-          persistDialogueCognitiveShadowV2({
+          })),
+          timed("cognitiveShadowMs", persistDialogueCognitiveShadowV2({
             context,
             conversationId,
             sessionId,
             requestText: turn.text,
             result,
             now: Date.now()
-          }),
-          sessionId
+          })),
+          timed("sessionPairMs", sessionId
             ? persistConversationTurnPair(context, sessionId, turn, result)
-            : Promise.resolve(undefined)
+            : Promise.resolve(undefined))
         ]);
         return {
           cognitiveShadow,
+          timing,
           ...(storedSession === undefined ? {} : { sessionAudit: storedSession })
         };
       });
@@ -1651,7 +1657,7 @@ function observeDeferredDialoguePersistence(trace: ScceTraceHandle, persistence:
     traceEvent(trace, {
       stage: "dialogue.persistence.completed",
       label: "api.turn.dialogue",
-      counts: { queued: 0, persisted: cognitiveShadow.counts.persisted ?? 0 },
+      counts: { queued: 0, persisted: cognitiveShadow.counts.persisted ?? 0, ...persisted.timing },
       support: { status: cognitiveShadow.warning ? "completed_with_warning" : "completed", mode: "deferred_ordered" },
       ...(cognitiveShadow.warning ? { warnings: [cognitiveShadow.warning] } : {})
     });
@@ -1698,7 +1704,12 @@ async function persistDialogueCognitiveShadowV2(input: {
       store: input.context.runtime.storage.dialogueMemory,
       hasher
     });
+    // Elapsed ms at each phase: this deferred work coincided with 6 s stalls in unrelated turns.
+    const phaseStarted = Date.now();
+    const phases: Record<string, number> = {};
+    const phase = (step: string) => { phases[step] = Date.now() - phaseStarted; };
     const previousState = await memory.latest(input.conversationId);
+    phase("latestMs");
     const proofEvidenceIds = uniqueServerStrings(input.result.entailment.proof.evidenceIds.map(String));
     const graph: GraphSlice = proofEvidenceIds.length
       ? await input.context.runtime.storage.graph.getSlice({
@@ -1709,6 +1720,7 @@ async function persistDialogueCognitiveShadowV2(input: {
         allowLatestFallback: false
       })
       : { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [] } };
+    phase("sliceMs");
     const projection = projectProofBearingDialogueTurnV2({
       conversationId: input.conversationId,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -1721,9 +1733,10 @@ async function persistDialogueCognitiveShadowV2(input: {
       previousState,
       hasher
     });
+    phase("projectMs");
     if (projection.status === "not_observed") {
       return {
-        counts: { evidence: proofEvidenceIds.length, graphNodes: graph.nodes.length, persisted: 0 },
+        counts: { evidence: proofEvidenceIds.length, graphNodes: graph.nodes.length, persisted: 0, ...phases },
         support: {
           schema: projection.schema,
           status: projection.status,
@@ -1741,14 +1754,17 @@ async function persistDialogueCognitiveShadowV2(input: {
       provenanceBindings: projection.provenanceBindings,
       hasher
     });
+    phase("resolveMs");
     const persistence = await memory.persist(resolution.state, input.now, previousState ?? null);
+    phase("persistMs");
     return {
       counts: {
         evidence: proofEvidenceIds.length,
         graphNodes: graph.nodes.length,
         mentions: projection.observation.mentions.length,
         routeSignals: projection.routeSignals.length,
-        persisted: persistence.result.stored ? 1 : 0
+        persisted: persistence.result.stored ? 1 : 0,
+        ...phases
       },
       support: {
         schema: projection.schema,
