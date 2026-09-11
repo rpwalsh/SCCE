@@ -1,7 +1,7 @@
 {
  "schema": "scce.code_generation_calibration.v1",
  "generatedAt": "2026-09-08T00:22:21.612Z",
- "root": "C:\\Users\\react\\fuggit\\packages\\kernel\\src",
+ "root": "packages/kernel/src",
  "extension": ".ts",
  "corpusFiles": 116,
  "heldOutFiles": 24,
