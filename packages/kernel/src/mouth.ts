@@ -879,8 +879,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         && !generatedSurfaceUnfinished(semanticRhetoricalCandidate.text)
         ? semanticRhetoricalCandidate
         : undefined;
-      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? semanticRhetoricalCandidate ?? (semanticAnswerState
-        ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
+      // A sourced answer never speaks generation that failed its contract ("Anglicanism originated which country The original book...").
+      const unverifiedGenerationAllowed = input.requestedAuthority !== "factual" && input.requestedAuthority !== "reasoned";
+      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? (unverifiedGenerationAllowed ? semanticRhetoricalCandidate : undefined) ?? (semanticAnswerState
+        ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length && (unverifiedGenerationAllowed || candidate !== semanticRhetoricalCandidate))
         : undefined);
       const structuredConstructCandidate = generatedConstructSurface(input.construct) && !creativeRequested
         ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length)
@@ -998,7 +1000,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         workspaceDraftCandidate ??
         learnedCreativeProposal ??
         realizedCreativeCandidate ??
-        (energySelected && !energySelected.forbiddenHits.length && !energySelectedIsBlockedKernelCandidate ? energySelected : undefined);
+        (energySelected && !energySelected.forbiddenHits.length && !energySelectedIsBlockedKernelCandidate
+          && (unverifiedGenerationAllowed || !energySelected.id.startsWith("candidate:generated:")) ? energySelected : undefined);
       const selectedEnergy = energyRows.find(row => row.candidate.id === selected?.id)?.result;
       // Real gap this trace closes: nothing previously exposed WHICH of Mouth's own candidate lanes won or why
       // one was skipped -- a bare bound value silently winning via plannerSelectedCandidate (the raw kernel
