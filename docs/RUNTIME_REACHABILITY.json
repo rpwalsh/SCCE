@@ -1,18 +1,18 @@
 {
- "generatedAt": "2026-09-08T07:30:15.493Z",
+ "generatedAt": "2026-09-11T09:24:26.429Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1691,
-  "reached": 1213,
-  "internalHelpersOnly": 461,
-  "orphans": 17,
+  "exports": 1727,
+  "reached": 1238,
+  "internalHelpersOnly": 471,
+  "orphans": 18,
   "declaredConstants": 0,
   "compatibilityAliases": 1,
   "legacyMigration": 0,
   "hostContracts": 1,
-  "testOnlyHelpers": 8,
-  "implementedButUncalled": 15,
-  "ofWhichCoveredByTestsOnly": 8,
+  "testOnlyHelpers": 9,
+  "implementedButUncalled": 16,
+  "ofWhichCoveredByTestsOnly": 9,
   "ofWhichNoCallerAnywhere": 0,
   "ofWhichDeliberatelyUnwired": 14
  },
@@ -45,6 +45,15 @@
    "deliberatelyUnwired": "Produces the exact form judge.ts's looksLikeStructuredTelemetry penalises: raw JSON carrying scce.surface.candidate.v1 reaching an answer is what that guard exists to catch. Artifacts are file-shaped (FileArtifact), so there is no structured-surface channel for it either. Wiring it would create surfaces the judge is built to downrank.",
    "hostContract": false,
    "testOnly": false
+  },
+  {
+   "name": "languageProfileSignature",
+   "file": "packages/kernel/src/language-identity.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "addMatrix",
