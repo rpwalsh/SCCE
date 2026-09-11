@@ -455,6 +455,7 @@ export function localEvidenceAnswerSurface(input: {
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
   closedClassWords?: ReadonlySet<string>;
+  languageClosedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   if (input.translationTarget) return undefined;
   const plan = localEvidenceAnswerPlan(input);
@@ -488,6 +489,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   responseSentenceBudget?: number;
   /** The learned closed class (role language plus request scaffolding); when present, the relation asked about is required. */
   closedClassWords?: ReadonlySet<string>;
+  /** The corpus's own closed class, used only to rank; empty when the corpus is too small to separate one. */
+  languageClosedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!promoted.length) return undefined;
@@ -697,16 +700,22 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // its history ("From 1826 to 1846, Tuscaloosa served as Alabama's capital" outranked the lead's Montgomery, and
   // "The Athens area encompasses ..." outranked "'Athens' is the capital and largest city of Greece", live
   // 2026-09-10). Preferences, never exclusions: the original order stands where nothing separates candidates.
-  const relationRankUnits = coverageUnits.filter(unit => !subjectUnitSet.has(unit));
+  // Ranking may count short relation words the gate's four-letter rule drops ("sit", "die"), unless the corpus says they are function words.
+  const relationRankUnits = uniqueKernelStrings([
+    ...coverageUnits,
+    ...requestContentAnchorUnits(input.requestText).filter(unit => unit !== leadingScaffoldingUnit
+      && !input.closedClassWords?.has(unit) && !input.languageClosedClassWords?.has(unit))
+  ]).filter(unit => !subjectUnitSet.has(unit));
   const relationCoverage = (row: { sentence: string }) => {
     const units = memoizedSurfaceUnits(row.sentence).map(stripOuterPriorSeparators);
     return relationRankUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length;
   };
-  const covering = !openingRow ? rows.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT).filter(covers) : [];
+  // Every covering sentence competes on relation and opening block; only the costly predication test is bounded.
+  const covering = !openingRow ? rows.filter(covers) : [];
   const fullestCoverage = Math.max(0, ...covering.map(relationCoverage));
   const fullest = covering.filter(row => relationCoverage(row) === fullestCoverage);
   const predicating = anchored.anchors.length
-    ? fullest.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
+    ? fullest.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT).filter(row => sentencePredicatesAboutAnchors(row.sentence, anchored.anchors, input.languageClosedClassWords))
     : [];
   const openingFirst = (list: typeof rows) => [...list.filter(row => documentOpeningSpan(row.span)), ...list.filter(row => !documentOpeningSpan(row.span))];
   const selected = openingRow ?? openingFirst(predicating)[0] ?? openingFirst(fullest)[0] ?? rows.find(covers);
@@ -816,6 +825,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
   closedClassWords?: ReadonlySet<string>;
+  /** The corpus's own closed class, used only to order sentences; empty when the corpus is too small to separate one. */
+  languageClosedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
@@ -858,7 +869,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
     return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
   }
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
-  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
+  const planRelationUnits = localPlanRelationUnits(input.requestText, input.closedClassWords, input.languageClosedClassWords);
+  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true, planRelationUnits, input.languageClosedClassWords);
   // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
   // in: "Who played Sisko?" was answered with a 443-character sentence about Roddenberry and space stations whose
   // final clause was "Benjamin Sisko (played by Avery Brooks)". anchorFocusedAnswerSurface existed for exactly this
@@ -871,7 +883,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // the corpus actually wrote, then focus whichever survives.
   const predicatingRanked = anchored.anchors.length && !planNearDuplicate
     ? rankedSentences.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
-      .filter(sentence => sentencePredicatesAboutAnchors(sentence, anchored.anchors))
+      .filter(sentence => sentencePredicatesAboutAnchors(sentence, anchored.anchors, input.languageClosedClassWords))
     : [];
   // A preference, as the comment below says, so a reorder: the sentences that predicate about the subject lead and
   // the rest follow. Dropping the rest silently cut "Who was Ada Lovelace, and what did she contribute?" to its
@@ -892,8 +904,24 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // sentence stating what Babbage did ranked below them -- and this plan, not the exact-sentence proposal, is what
   // preferredLocalEvidenceAnswer selected and the mouth spoke. Preference, never exclusion: when nothing predicates
   // about the anchor the ranked order stands unchanged.
-  const answerSurfaceSentences = sentences;
   const planCoverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit));
+  // The sentence carrying the relation leads: the citation budget keeps the first sentence, and "Apollo 11 was
+  // launched by a Saturn V rocket" was what survived of a surface whose later sentence carried the relation.
+  const planRelationCoverage = (sentence: string) => {
+    const units = memoizedSurfaceUnits(sentence).map(stripOuterPriorSeparators);
+    return planRelationUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length;
+  };
+  // Starts at the fullest sentence rather than reordering, so the surface stays a contiguous excerpt.
+  const sentenceCoverage = sentences.map(planRelationCoverage);
+  const fullestCoverage = Math.max(0, ...sentenceCoverage);
+  const fullestIndex = sentenceCoverage.indexOf(fullestCoverage);
+  const fromFullest = planNearDuplicate || !fullestCoverage || fullestIndex <= 0
+    ? sentences
+    : sentences.slice(fullestIndex);
+  // A factual answer is one span's own words: sentences that do not join into a contiguous excerpt answer with the fullest alone.
+  const joinsContiguously = fromFullest.length <= 1
+    || answerEvidence.some(span => tidySurfaceText(String(span.text ?? span.textPreview ?? "")).includes(tidySurfaceText(fromFullest.join(" "))));
+  const answerSurfaceSentences = joinsContiguously ? fromFullest : [sentences[Math.max(0, fullestIndex)]!];
   if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size) }))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
@@ -1068,6 +1096,7 @@ export function answerCoversRequest(
   const categoryMemberAnswer = missingRelationUnits.length === 1
     && relationUnits.length >= 2
     && missingRelationUnits[0] === lastContentUnit
+    && requestIntroducesCategory(requestText, lastContentUnit, contentUnits, subjectUnits)
     && sentenceNamesEntityOutsideRequest(answeringText, requestText);
   const relationCarried = missingRelationUnits.length === 0 || categoryMemberAnswer;
   const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
@@ -1108,6 +1137,26 @@ function sentenceNamesRequestSubject(sentence: string, requestText: string): boo
   return groups.some(group => group.every(present));
 }
 
+/**
+ * Whether the request asks for a member of a category it introduces itself ("...of which country?"), rather than for
+ * an attribute of its subject ("Alaska's official state dinosaur", "Alexander the Great's favorite color"): the run of
+ * request words ending at the category must not hold the subject unless the subject was already named before it.
+ * Only the first reading lets a named member stand in for the category word. Pure.
+ */
+function requestIntroducesCategory(requestText: string, categoryUnit: string | undefined, contentUnits: readonly string[], subjectUnits: readonly string[]): boolean {
+  if (!categoryUnit) return false;
+  const words = surfaceWords(requestText).map(stripOuterPriorSeparators).map(word => normalizePriorKey(word)).filter(Boolean);
+  const matchesUnit = (word: string, unit: string) => word === unit || (word.startsWith(unit) && [...unit].length >= 3);
+  const end = words.map((word, index) => (matchesUnit(word, categoryUnit) ? index : -1)).reduce((best, index) => Math.max(best, index), -1);
+  if (end < 0) return true;
+  // A run member is any word the request's scaffolding did not claim: a long word outside the content units was.
+  const inRun = (word: string) => [...word].length > 2 && ([...word].length < 4 || contentUnits.some(unit => matchesUnit(word, unit)) || subjectUnits.some(unit => matchesUnit(word, unit)));
+  let start = end;
+  while (start > 0 && inRun(words[start - 1]!)) start--;
+  const holdsSubject = (from: number, to: number) => words.slice(from, to).some(word => subjectUnits.some(unit => matchesUnit(word, unit)));
+  return !holdsSubject(start, end + 1) || holdsSubject(0, start);
+}
+
 /** A cased word inside the sentence (not its first) whose normalized form the request does not contain: the member a
  *  category question is answered with ("Greece", "Japan", "Maurya"). Cased scripts only; uncased scripts never pass. */
 function sentenceNamesEntityOutsideRequest(sentence: string, requestText: string): boolean {
@@ -1128,6 +1177,8 @@ function sentenceNamesEntityOutsideRequest(sentence: string, requestText: string
 export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
+  // A bare stem does not carry an inflected relation: "commander" answers "commanded", "command module" does not.
+  if (unit.length > surfaceUnit.length && unit.startsWith(surfaceUnit)) return unit.slice(surfaceUnit.length) === "s";
   if ([...unit].length >= 5 && requestUnitMatchesSurface(unit, surfaceUnit)) return true;
   const left = [...unit];
   const right = [...surfaceUnit];
@@ -2516,14 +2567,17 @@ function evidenceContentMentionsAnchor(span: EvidenceSpan, anchor: string): bool
   // What the request asks beyond naming the title: the same four-letter content rule evidenceContentAnchorFitsRequest
   // uses, so a short interrogative is not a unit the span has to contain. "Who is Aphrodite?" required the word "who"
   // inside the span, and the article's own opening block -- which does not say "who" -- was the one span it dropped.
+  // The leading interrogative is scaffolding too: "what" fuzzily matched "that", admitting only chunks that said "that".
+  const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(requestText);
   const nonTitleUnits = requestUnits
+    .filter(unit => unit !== leadingScaffoldingUnit)
     .filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)))
     .filter(unit => [...unit].length >= 4 || hasUncasedNonLatinLetter(unit));
   // A request that only names the title is answered by the titled source itself.
   if (!nonTitleUnits.length) return matchedTitleUnits.length >= 1;
   const sourceSurface = sourceTextSurface(evidenceWindowText(span), 3200);
   const nonTitleOverlap = requestUnitOverlapForSurface(sourceSurface, new Set(nonTitleUnits));
-  const singleLateTitleOverlapFloor = titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1;
+  const singleLateTitleOverlapFloor = Math.min(nonTitleUnits.length, titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1);
   if (matchedTitleUnits.length >= 1 && nonTitleOverlap >= singleLateTitleOverlapFloor) return true;
   return titleUnits.size > 1 && firstTitlePosition <= 2 && matchedTitleUnits.length / Math.max(1, titleUnits.size) >= 0.67;
 }
@@ -2622,7 +2676,7 @@ const ANCHOR_PREDICATION_RERANK_LIMIT = 8;
  * computer" places the anchor in the leading role, while "The character was portrayed by Sylvie Briggs, alongside
  * characterisations of Charles Babbage and Noor Inayat Khan." places it in a trailing one.
  */
-function sentencePredicatesAboutAnchors(sentence: string, anchors: readonly string[]): boolean {
+function sentencePredicatesAboutAnchors(sentence: string, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): boolean {
   const normalizedAnchors = anchors.map(anchor => normalizePriorKey(anchor)).filter(Boolean);
   if (!normalizedAnchors.length) return false;
   // A sentence that opens on the anchor predicates about it by construction ("'Athens' is the capital and largest
@@ -2635,7 +2689,7 @@ function sentencePredicatesAboutAnchors(sentence: string, anchors: readonly stri
     const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
     return anchorUnits.length > 0 && anchorUnits.every((unit, index) => sentenceUnits[index] === unit);
   })) return true;
-  for (const atom of atomizeText({ text: sentence, source: SEMANTIC_SOURCE.CLAIM, maxAtoms: 2 })) {
+  for (const atom of atomizeText({ text: sentence, source: SEMANTIC_SOURCE.CLAIM, maxAtoms: 2, closedClassWords })) {
     const leading = atom.roles[0];
     if (!leading) continue;
     const leadingSurface = normalizePriorKey(leading.normalized || leading.value);
@@ -3562,7 +3616,18 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 }
 
 
- function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false): string[] {
+ /** Request words a sentence can carry beyond naming the subject, short ones included unless a closed class claims them. Pure. */
+function localPlanRelationUnits(requestText: string, closedClassWords?: ReadonlySet<string>, languageClosedClassWords?: ReadonlySet<string>): string[] {
+  const leading = requestLeadingScaffoldingUnit(requestText);
+  const subjectUnits = new Set(namedSubjectAnchors(requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  return uniqueKernelStrings([
+    ...requestContentEvidenceUnits(requestText).filter(unit => !closedClassWords?.has(unit)),
+    ...requestContentAnchorUnits(requestText).filter(unit => !closedClassWords?.has(unit) && !languageClosedClassWords?.has(unit))
+  ]).filter(unit => unit !== leading && !subjectUnits.has(unit));
+}
+
+
+function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, relationUnits: readonly string[] = [], closedClassWords?: ReadonlySet<string>): string[] {
   // Mirrors proposeSourceExactEvidenceAnswer's ranking contract exactly
   // (see the long notes there): sentences are ranked IN tidySurfaceText
   // space so every returned surface is a verbatim substring of its span
@@ -3709,12 +3774,19 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const rerankable = anchors.length && !candidates[0]?.nearDuplicate && !openingRow
     ? candidates.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
     : [];
+  // What a sentence says of the request leads; predication only breaks ties ("The threshold sits at 412 kelvin" was cut behind the lead).
+  const relationCoverage = (sentence: string) => {
+    const units = memoizedSurfaceUnits(sentence).map(stripOuterPriorSeparators);
+    return relationUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length;
+  };
   const ranked = openingRow
     ? [openingRow, ...candidates.filter(row => row !== openingRow && String(row.span.id) === String(openingRow.span.id))]
     : rerankable.length
       ? [
-        ...rerankable.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
-        ...rerankable.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
+        ...rerankable
+          .map((row, index) => ({ row, index, relation: relationCoverage(row.sentence), predicates: sentencePredicatesAboutAnchors(row.sentence, anchors, closedClassWords) }))
+          .sort((left, right) => right.relation - left.relation || Number(right.predicates) - Number(left.predicates) || left.index - right.index)
+          .map(item => item.row),
         ...candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT)
       ]
       : candidates;

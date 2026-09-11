@@ -267,6 +267,8 @@ export function atomizeText(input: {
   proofBoundaryReason?: string;
   /** Source surfaces a claim may be grounded in, which decides its modality. Ignored for evidence and graph atoms. */
   groundingSurfaces?: readonly string[];
+  /** The learned closed class: a function word is never a proposition's predicate. */
+  closedClassWords?: ReadonlySet<string>;
 }): SemanticAtom[] {
   const hasher = input.hasher ?? createHasher();
   const dimensions = Math.max(16, Math.floor(input.dimensions ?? 64));
@@ -288,7 +290,7 @@ export function atomizeText(input: {
     const predicateHypotheses = inferRelationHypotheses({
       symbols,
       model: relationModel,
-      candidate: semanticSymbol
+      candidate: symbol => semanticSymbol(symbol) && !input.closedClassWords?.has(symbol.toLocaleLowerCase())
     });
     const predicateSymbol = predicateHypotheses[0];
     if (!predicateSymbol) continue;

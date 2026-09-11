@@ -113,6 +113,7 @@ import {
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
+  answerCoversRequest,
   requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
@@ -139,7 +140,7 @@ import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits, tidySur
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
-import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
+import { deriveClosedClassWords, languageClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -1639,6 +1640,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
         closedClassWords: requestClosedClassWords(),
+        languageClosedClassWords: languageClosedClassWords(authorityLanguage.state.models ?? []),
         ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
           ? { responseSentenceBudget: responseFormSentences }
           : {})
@@ -1996,7 +1998,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             sessionContextEvidence,
             explicitContextEvidenceIds,
             semanticFrameBoundEvidenceIds,
-            closedClassWords: requestClosedClassWords()
+            closedClassWords: requestClosedClassWords(),
+            languageClosedClassWords: languageClosedClassWords(authorityLanguage.state.models ?? [])
           })
         : undefined;
       // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.
@@ -2452,7 +2455,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const realizationSourceFact = temporalConstructFact
         ?? (boundConstructFacts ? [...boundConstructFacts.facts].sort((left, right) => right.score - left.score)[0] : undefined);
       const realizationContract = realizationSourceFact
-        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary)
+        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary, requestClosedClassWords())
         : undefined;
       kernelTrace({
         stage: "candidate.realization_contract",
@@ -3967,8 +3970,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // span was never about the question, only about its subject.
         const subjectWords = new Set(namedSubjectAnchors(input.text).flatMap(anchor => anchor.toLocaleLowerCase().split(/\s+/u)).filter(Boolean));
         const relationUnits = requestContentEvidenceUnits(input.text).filter(unit => !subjectWords.has(unit.toLocaleLowerCase()));
-        const boundedTextLower = boundedText.toLocaleLowerCase();
-        const relatesBeyondSubject = relationUnits.length === 0 || relationUnits.some(unit => boundedTextLower.includes(unit.toLocaleLowerCase()));
+        // The answerhood gate every other path passes: one request word inside another ("crew" in "crewed") spoke the
+        // Apollo 11 lead for a question about coffee. A contradicted premise still passes as the category it names.
+        const fallbackClosedClass = requestClosedClassWords();
+        const fallbackUnits = requestContentEvidenceUnits(input.text)
+          .filter(unit => !fallbackClosedClass.has(unit) && unit !== requestLeadingScaffoldingUnit(input.text));
+        const relatesBeyondSubject = relationUnits.length === 0 || (contradictedSpan !== undefined
+          && answerCoversRequest([boundedText], contradictedSpan, fallbackUnits, input.text, { relationRequired: fallbackClosedClass.size > 0 }));
         if (boundedText && isUnparsedMarkupText(boundedText)) {
           kernelTrace({
             stage: "mouth.contradiction_fallback.rejected_markup",
