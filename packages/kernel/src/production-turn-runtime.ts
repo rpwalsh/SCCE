@@ -2452,7 +2452,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const realizationSourceFact = temporalConstructFact
         ?? (boundConstructFacts ? [...boundConstructFacts.facts].sort((left, right) => right.score - left.score)[0] : undefined);
       const realizationContract = realizationSourceFact
-        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary)
+        ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary, requestClosedClassWords())
         : undefined;
       kernelTrace({
         stage: "candidate.realization_contract",
