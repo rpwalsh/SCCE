@@ -522,6 +522,34 @@ describe("typed discourse resolver v2", () => {
     expect(result.context.contradictionIds).toEqual([]);
   });
 
+  it("retires a referent last mentioned before the state's history window, and keeps it inside the window", () => {
+    const live = makeReferent({ id: "ref.live", nodeIds: ["node.live"], topicId: "topic.live" });
+    const stale = makeReferent({ id: "ref.stale", nodeIds: ["node.stale"], topicId: "topic.stale" });
+    const input = {
+      previousState: previousState({
+        referents: [live, stale],
+        topics: [makeTopic("topic.live", live.nodeIds, [live.id]), makeTopic("topic.stale", stale.nodeIds, [stale.id])],
+        activeTopicIds: ["topic.live"]
+      }),
+      observation: makeObservation({
+        id: "obs.window",
+        turnId: "turn.window",
+        turnIndex: 4,
+        mentions: [makeMention({ id: "mention.window", candidateReferentIds: [live.id] })]
+      }),
+      routeSignals: [{ mentionId: "mention.window", referentId: live.id, graphRouteCoherence: 1 }]
+    } satisfies ResolveDiscourseStateV2Input;
+
+    const narrow = resolveWithProof({ ...input, config: { maxHistoryDigests: 2 } });
+    const wide = resolveWithProof(input);
+
+    expect(narrow.context.admittedBindings[0]?.referentId).toBe(live.id);
+    expect(narrow.state.referents.map(referent => referent.id)).toEqual([live.id]);
+    expect(narrow.state.topics.map(topic => topic.id)).toEqual(["topic.live"]);
+    expect(narrow.state.id).toBe(deriveDialogueCognitiveStateIdV2(narrow.state));
+    expect(wide.state.referents.map(referent => referent.id)).toEqual([live.id, stale.id]);
+  });
+
   it("repairs topic backlinks, refreshes admitted topics, and derives observation and state ids from content", () => {
     const selected = makeReferent({ id: "ref.topic-a", nodeIds: ["node.topic-a"], topicId: "topic.a" });
     const other = makeReferent({ id: "ref.topic-b", nodeIds: ["node.topic-b"], topicId: "topic.b" });
