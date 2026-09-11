@@ -2397,7 +2397,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // separately. Never fabricates: returns undefined (falls through to
       // whichever branch's real answer) for anything that isn't a
       // recognizable temporal question.
-      const temporalAnswerValue = extractTemporalAnswerFromEvidence(input.text, selectedEvidence);
+      // The value comes from the sentence the relation-first ranker certified, not the first date in the spans ("when did the war end" read its start).
+      const certifiedSurfaceSpan = longPathBasisAnswer && answerSurface.answer
+        ? [{ ...selectedEvidence[0]!, text: answerSurface.answer, textPreview: answerSurface.answer, charStart: 0 }]
+        : undefined;
+      const temporalAnswerValue = (certifiedSurfaceSpan && selectedEvidence.length
+        ? extractTemporalAnswerFromEvidence(input.text, certifiedSurfaceSpan)
+        : undefined) ?? extractTemporalAnswerFromEvidence(input.text, selectedEvidence);
       const proofAnswer = temporalAnswerValue || answerSurface.answer;
       // A recognizable temporal question already yields a bare bound VALUE here (a date, not a whole
       // sentence) -- exactly the subject/relation/value triple a realization contract needs, and cheaper to
