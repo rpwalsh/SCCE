@@ -746,7 +746,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
       promoted,
-      semanticFrameBoundEvidenceIds
+      semanticFrameBoundEvidenceIds,
+      requestScaffolding
     );
     const admittedEvidence = await withOpeningBlocks(text, anchored.evidence.slice(0, 24));
     // A premise that attributes a concept to a person is answered by two sources: the person's, for the lifespan,
