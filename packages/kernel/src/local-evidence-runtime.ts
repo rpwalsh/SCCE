@@ -5,6 +5,7 @@ import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { isProseSentence } from "./evidence-gist.js";
+import { traceEvent } from "./debug/trace.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
@@ -880,6 +881,16 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const preferredRanked = predicatingRanked.length
     ? [...predicatingRanked, ...rankedSentences.filter(sentence => !predicatingRanked.includes(sentence))]
     : rankedSentences;
+  // Which sentences the plan ranked and which of them predicate about the anchor: the answer only ever shows the survivors.
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "local_evidence.plan.rank",
+    label: "kernel.turn",
+    support: {
+      anchors: anchored.anchors.slice(0, 4),
+      ranked: rankedSentences.slice(0, 10).map(sentence => sentence.slice(0, 80)),
+      predicating: predicatingRanked.slice(0, 10).map(sentence => sentence.slice(0, 80))
+    }
+  });
   const sentences = planNearDuplicate || titleAnswersRequest || !anchored.anchors.length
     ? preferredRanked
     : preferredRanked.map(sentence => {
@@ -3675,6 +3686,20 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           || right.fullOverlap - left.fullOverlap
           || left.index - right.index)[0];
         if (best && best.contentOverlap > leadContent) contentBoostIndex = best.index;
+        traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+          stage: "local_evidence.coverage",
+          label: "kernel.turn",
+          support: {
+            contentUnits: [...contentRequestUnits],
+            requestUnits: [...requestUnits],
+            leadContent,
+            contentBoostIndex,
+            top: [...coverage]
+              .sort((left, right) => right.contentOverlap - left.contentOverlap || right.fullOverlap - left.fullOverlap || left.index - right.index)
+              .slice(0, 6)
+              .map(row => ({ index: row.index, content: row.contentOverlap, full: row.fullOverlap, text: (sentences[row.index] ?? "").slice(0, 70) }))
+          }
+        });
       }
       return sentences.map((sentence, index): EvidenceSentenceRow => {
         const features = featureSet(sentence, 256);
