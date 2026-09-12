@@ -1042,7 +1042,16 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           learnedConstructionCandidateId: learnedConstructionCandidate?.id ?? null,
           reversibleConstructionCandidateId: reversibleConstructionCandidate?.id ?? null,
           antiUnifiedConstructionCandidateId: antiUnifiedConstructionCandidate?.id ?? null,
-          semanticLearnedCandidateId: semanticLearnedCandidate?.id ?? null
+          semanticLearnedCandidateId: semanticLearnedCandidate?.id ?? null,
+          unverifiedGenerationAllowed,
+          semanticRhetoricalVerified: Boolean(semanticRhetoricalCandidateVerified),
+          semanticRhetoricalText: semanticRhetoricalCandidate?.text.slice(0, 180) ?? null,
+          semanticDirectEvidenceText: semanticDirectEvidenceCandidate?.text.slice(0, 180) ?? null,
+          semanticCoreFactSubject: semanticCoreFact?.subject ?? null,
+          semanticCoreFactPredicate: semanticCoreFact?.predicate ?? null,
+          semanticCoreFactObject: semanticCoreFact?.object ?? null,
+          semanticContractRelationUnits: semanticRealizationContract?.requiredRelationUnits ?? null,
+          semanticContractAtomCount: semanticRealizationContract?.requiredAtoms.length ?? null
         }
       });
       markMouthPhase("candidate_selection");

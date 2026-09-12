@@ -3486,6 +3486,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             requestText: input.text,
             brainMarker: brain,
             hasher,
+            closedClassWords: requestClosedClassWords(),
             additionalFacts: temporalConstructFact ? [temporalConstructFact] : undefined
           })
           : assembly.constructGraph;
