@@ -4223,10 +4223,12 @@ export function attachLocalEvidenceAnswerConstruct(input: {
    *  completeLearnedFactCoverage requires exactly one relation/one answer slot, and this fact is strictly more
    *  precise than the quote it was extracted from, so there is nothing to gain from carrying both. */
   additionalFacts?: readonly SemanticAnswerConstructFact[];
+  /** The request's learned scaffolding; without it the request's interrogative survives into the fact predicate. */
+  closedClassWords?: ReadonlySet<string>;
 }): ConstructGraph {
   const facts = input.additionalFacts?.length
     ? [...input.additionalFacts]
-    : localEvidenceAnswerFacts(input.plan, input.requestText, input.hasher);
+    : localEvidenceAnswerFacts(input.plan, input.requestText, input.hasher, input.closedClassWords);
   if (!facts.length) return input.construct;
   const marker = jsonRecord(input.brainMarker);
   const evidenceIds = uniqueKernelStrings(input.plan.evidence.map(span => String(span.id)));
@@ -4298,14 +4300,14 @@ export function attachLocalEvidenceAnswerConstruct(input: {
 
 
 // Request relation minus subject anchors, so predicate hashes to a relation word ("born"), not a whole sentence.
-function localAnswerRelationText(requestText: string): string {
+function localAnswerRelationText(requestText: string, closedClassWords?: ReadonlySet<string>): string {
   if (!requestText) return "";
   const subjectUnits = new Set(namedSubjectAnchors(requestText)
     .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
-  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit)).join(" ");
+  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit) && !closedClassWords?.has(unit)).join(" ");
 }
 
-function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }): SemanticAnswerConstructFact[] {
+function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }, closedClassWords?: ReadonlySet<string>): SemanticAnswerConstructFact[] {
   if (plan.kindId === LOCAL_ANSWER_KIND_IDS.collection) {
     const subject = localEvidenceSelectedSubject(plan, requestText);
     return stringArrayFromSlot(plan.slotSurfaces[LOCAL_ANSWER_SLOT_IDS.memberList]).map((member, index) => localEvidenceSemanticFact({
@@ -4364,7 +4366,7 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
     }));
     return facts;
   }
-  const relationText = localAnswerRelationText(requestText);
+  const relationText = localAnswerRelationText(requestText, closedClassWords);
   return localEvidenceFactSurfaces(plan, requestText).map((sentence, index) => localEvidenceSemanticFact({
     subject: localEvidenceSelectedSubject(plan, requestText),
     predicate: relationText || sentence,
