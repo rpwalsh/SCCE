@@ -6,6 +6,7 @@ import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { isProseSentence } from "./evidence-gist.js";
 import { traceEvent } from "./debug/trace.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
@@ -589,7 +590,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // The primary anchor's own article carries the topic; another titled source that also fits gets most, not all, of the affinity.
     const primaryAnchor = anchored.anchors[0];
     const primaryTitle = Boolean(primaryAnchor) && (evidenceTitleDistinctAnchorMatches(span, [primaryAnchor!]) || evidenceExactSourceAnchorMatches(span, [primaryAnchor!]));
-    const sourceAffinityBoost = titleMatches ? 3 * titleRequestCoverage * (primaryTitle ? 1 : 0.7) : 0;
+    const sourceAffinityBoost = titleMatches ? calibrated("ranking.source_affinity_weight") * titleRequestCoverage * (primaryTitle ? 1 : calibrated("ranking.exact.source_affinity_secondary_title_factor")) : 0;
     let contentBoostIndex = -1;
     // Only the document's opening block has a lead to transfer from: in a mid-article chunk the first two
     // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
@@ -626,12 +627,12 @@ export function proposeSourceExactEvidenceAnswer(input: {
       const unitOverlap = titleMatches && contentRequestUnits.size
         ? requestUnitOverlapForSurface(sentence, contentRequestUnits)
         : requestUnitOverlapForSurface(sentence, requestUnits);
-      const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? 0.54 : 0;
+      const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? calibrated("ranking.anchor_boost") : 0;
       // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units); see
       // the coverage-transfer note above for when it moves off the lead.
       const titleLeadBoost = titleMatches
         && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentOpeningSpan(span) && index <= 1))
-        ? 4
+        ? calibrated("ranking.title_lead_boost")
         : 0;
       // Sentence-completeness prior: in cased scripts a well-formed
       // sentence opens with an uppercase letter, digit, or opening
@@ -639,25 +640,25 @@ export function proposeSourceExactEvidenceAnswer(input: {
       // markup or splitting noise (verified live: an image-caption tail
       // "as Captain James T. Kirk in action, ..." outranked the article's
       // real cast sentence). Uncased scripts are exempt by construction.
-      const fragmentPenalty = (lowercaseInitialFragment(sentence) ? 1.2 : 0) + (danglingTailFragment(sentence) ? 1.2 : 0);
+      const fragmentPenalty = (lowercaseInitialFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0) + (danglingTailFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0);
       // Same near-duplicate dominance as bestEvidenceSentences.
       const nearDuplicateFraction = proposeSequences.reduce((best, sequence) =>
         Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits)), 0);
-      const nearDuplicateBoost = nearDuplicateFraction >= 0.5 && !promotedSessionEvidence(span)
-        ? 12 * nearDuplicateFraction
+      const nearDuplicateBoost = nearDuplicateFraction >= calibrated("ranking.near_duplicate_fraction_floor") && !promotedSessionEvidence(span)
+        ? calibrated("ranking.near_duplicate_weight") * nearDuplicateFraction
         : 0;
       return {
         span,
         sentence,
         index,
         nearDuplicate: nearDuplicateBoost > 0,
-        score: unitOverlap * 0.92
-          + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * 0.35
+        score: unitOverlap * calibrated("ranking.unit_overlap_weight")
+          + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * calibrated("ranking.lexical_similarity_weight")
           + anchorBoost
           + titleLeadBoost
           + sourceAffinityBoost
           + nearDuplicateBoost
-          + Math.max(0, 0.16 - index * 0.018)
+          + Math.max(0, calibrated("ranking.exact.source_order_bonus") - index * calibrated("ranking.exact.source_order_decay"))
           - fastAnswerLongSentencePenalty(sentence)
           - fragmentPenalty
       };
@@ -862,7 +863,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED) {
     return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
   }
-  if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
+  if (contradiction >= calibrated("plan.contradiction_block") || (contradiction >= calibrated("plan.contradiction_unanchored_block") && !answerAnchoredEvidence.length)) return undefined;
   const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true, input.closedClassWords, input.functionSymbols);
   // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
   // in: "Who played Sisko?" was answered with a 443-character sentence about Roddenberry and space stations whose
@@ -914,7 +915,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
   const explicitContextBound = answerEvidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
-  if (!evidenceBound && !answerSessionBound && relevance < 0.035) return undefined;
+  if (!evidenceBound && !answerSessionBound && relevance < calibrated("plan.relevance_floor")) return undefined;
   return {
     planId: "ans.plan.31a6c2f8",
     kindId: LOCAL_ANSWER_KIND_IDS.evidenceBoundary,
@@ -1151,7 +1152,7 @@ function sentenceNamesEntityOutsideRequest(sentence: string, requestText: string
 export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
-  if ([...unit].length >= 5 && requestUnitMatchesSurface(unit, surfaceUnit)) return true;
+  if ([...unit].length >= calibrated("units.stem_direct_match_min_length") && requestUnitMatchesSurface(unit, surfaceUnit)) return true;
   const left = [...unit];
   const right = [...surfaceUnit];
   // The same one-letter rule as requestUnitMatchesSurface: "capita" shares no stem with "capital".
@@ -1161,7 +1162,7 @@ export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolea
   }
   let shared = 0;
   while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
-  return shared >= 4 && shared / Math.max(left.length, right.length) >= 0.6;
+  return shared >= calibrated("units.stem_shared_prefix_min") && shared / Math.max(left.length, right.length) >= calibrated("units.stem_shared_ratio_floor");
 }
 
 export function requestContentEvidenceUnits(requestText: string): string[] {
@@ -1285,7 +1286,7 @@ export function localEvidenceAnswerProofExcerpts(
   const sourceLabelRows = rows.filter(row => row.sectionAffinity > 0 && row.names.length >= 2);
   const listRichRows = rows.filter(row => row.names.length >= 4 && row.delimiterMass >= 0.28);
   if (!sourceLabelRows.length) return undefined;
-  if (contradiction >= 0.72 && !sourceLabelRows.length) return undefined;
+  if (contradiction >= calibrated("plan.contradiction_block") && !sourceLabelRows.length) return undefined;
   const answerRows = (sourceLabelRows.length ? sourceLabelRows : listRichRows.length ? listRichRows : rows)
     .sort((left, right) => right.sectionAffinity - left.sectionAffinity || right.names.length - left.names.length || right.score - left.score);
   const selectedNames: string[] = [];
@@ -2036,8 +2037,8 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
     if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, true);
     return true;
   }
-  const prefixCompatible = prefixRelated && minLength / Math.max(1, maxLength) >= 0.72;
-  const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
+  const prefixCompatible = prefixRelated && minLength / Math.max(1, maxLength) >= calibrated("units.prefix_ratio_floor");
+  const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= calibrated("units.similarity_floor");
   if (memoKey !== undefined) {
     if (requestUnitMatchMemo.size >= REQUEST_UNIT_MATCH_MEMO_MAX) requestUnitMatchMemo.clear();
     requestUnitMatchMemo.set(memoKey, value);
@@ -2051,9 +2052,9 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
   if (left === right) return 1;
   const minLength = Math.min(left.length, right.length);
   const maxLength = Math.max(left.length, right.length);
-  if (left.length >= 4 && right.length >= 4 && (left.includes(right) || right.includes(left)) && minLength / Math.max(1, maxLength) >= 0.72) return 0.82;
-  const distance = boundedEditDistance(left, right, 3);
-  if (distance > 3 || maxLength <= 0) return 0;
+  if (left.length >= 4 && right.length >= 4 && (left.includes(right) || right.includes(left)) && minLength / Math.max(1, maxLength) >= calibrated("units.containment_ratio_floor")) return calibrated("units.containment_similarity");
+  const distance = boundedEditDistance(left, right, calibrated("units.edit_distance_cap"));
+  if (distance > calibrated("units.edit_distance_cap") || maxLength <= 0) return 0;
   return kernelClamp01(1 - distance / maxLength);
 }
 
@@ -2095,17 +2096,17 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
       const namedSpecificity = fastAnswerNamedSurfaceMass(complete);
       const pointDateSpecificity = historicalMarkersInText(complete).some(marker => /^\p{Number}{3,4}$/u.test(marker.surface.trim())) ? 1 : 0;
       const repetitionPressure = kernelClamp01(((sentenceKeyCounts.get(completeKey) ?? 1) - 1) / 3);
-      const score = 0.18 * conceptCoverage
-        + 0.16 * breadth
-        + 0.16 * distinctness
-        + 0.20 * precedingProximity
-        + 0.18 * temporalNeighborhood
-        + 0.07 * sourceOrder
-        + 0.05 * lengthFitness
-        - 0.10 * numericSpecificity
-        - 0.10 * namedSpecificity
-        - 0.22 * pointDateSpecificity
-        - 0.18 * repetitionPressure;
+      const score = calibrated("temporal_context.concept_coverage_weight") * conceptCoverage
+        + calibrated("temporal_context.breadth_weight") * breadth
+        + calibrated("temporal_context.distinctness_weight") * distinctness
+        + calibrated("temporal_context.preceding_proximity_weight") * precedingProximity
+        + calibrated("temporal_context.temporal_neighborhood_weight") * temporalNeighborhood
+        + calibrated("temporal_context.source_order_weight") * sourceOrder
+        + calibrated("temporal_context.length_fitness_weight") * lengthFitness
+        - calibrated("temporal_context.numeric_specificity_penalty") * numericSpecificity
+        - calibrated("temporal_context.named_specificity_penalty") * namedSpecificity
+        - calibrated("temporal_context.point_date_specificity_penalty") * pointDateSpecificity
+        - calibrated("temporal_context.repetition_pressure_penalty") * repetitionPressure;
       return { sentence: complete, index, overlap, score };
     })
     .filter(row => row.sentence && row.overlap > 0 && row.sentence.length >= 24 && normalizePriorKey(row.sentence) !== counterKey)
@@ -2680,7 +2681,7 @@ export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
 const SUBJECT_ANCHOR_TITLE_MATCH_BOUND = 4;
 
 /** How far down the ranked sentences the predication check runs. Compiling propositions is turn-time work. */
-const ANCHOR_PREDICATION_RERANK_LIMIT = 8;
+const ANCHOR_PREDICATION_RERANK_LIMIT = calibrated("ranking.anchor_predication_rerank_limit");
 
 /**
  * Whether the sentence says something ABOUT the anchor, rather than merely naming it.
@@ -3681,7 +3682,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         ? titleUnitList.filter(titleUnit =>
           [...requestUnits].some(unit => requestUnitMatchesSurface(unit, titleUnit))).length / titleUnitList.length
         : 0;
-      const sourceAffinityBoost = titleMatches && !singleSpan ? 3 * titleRequestCoverage : 0;
+      const sourceAffinityBoost = titleMatches && !singleSpan ? calibrated("ranking.source_affinity_weight") * titleRequestCoverage : 0;
       // Content-net scoring + coverage transfer, identical in doctrine to
       // proposeSourceExactEvidenceAnswer (see the notes there): without
       // it, the boosted article lead beats the deeper sentence carrying
@@ -3735,23 +3736,23 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       }
       return sentences.map((sentence, index): EvidenceSentenceRow => {
         const features = featureSet(sentence, 256);
-        const lexical = weightedJaccard(requestFeatures, features) + (singleSpan ? 0 : weightedJaccard(requestFeatures, span.features) * 0.35);
+        const lexical = weightedJaccard(requestFeatures, features) + (singleSpan ? 0 : weightedJaccard(requestFeatures, span.features) * calibrated("ranking.lexical_similarity_weight"));
         const unitOverlap = titleMatches && contentRequestUnits.size
           ? requestUnitOverlapForSurface(sentence, contentRequestUnits, functionSymbols)
           : requestUnitOverlapForSurface(sentence, scaffoldingFreeRequestUnits, functionSymbols);
         const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(sentence, orderedRequestUnits);
-        const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? 0.54 : 0;
+        const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? calibrated("ranking.anchor_boost") : 0;
         const titleLeadBoost = titleMatches
           && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentOpeningSpan(span) && index <= 1))
           && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
-          ? 4
+          ? calibrated("ranking.title_lead_boost")
           : 0;
-        const fragmentPenalty = (lowercaseInitialFragment(sentence) ? 1.2 : 0) + (danglingTailFragment(sentence) ? 1.2 : 0);
+        const fragmentPenalty = (lowercaseInitialFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0) + (danglingTailFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0);
         // Near-duplicated source sentence must outrank titleLead(4)+affinity(<=3).
         const nearDuplicateFraction = requestSequences.reduce((best, sequence) =>
           Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnitSet)), 0);
-        const nearDuplicateBoost = nearDuplicateFraction >= 0.5 && !promotedSessionEvidence(span)
-          ? 12 * nearDuplicateFraction
+        const nearDuplicateBoost = nearDuplicateFraction >= calibrated("ranking.near_duplicate_fraction_floor") && !promotedSessionEvidence(span)
+          ? calibrated("ranking.near_duplicate_weight") * nearDuplicateFraction
           : 0;
         return {
           span,
@@ -3760,15 +3761,15 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           index,
           unitOverlap,
           nearDuplicate: nearDuplicateBoost > 0,
-          score: unitOverlap * 0.92
-            + lexical * 0.35
-            + pairOverlap * 0.16
+          score: unitOverlap * calibrated("ranking.unit_overlap_weight")
+            + lexical * calibrated("ranking.lexical_similarity_weight")
+            + pairOverlap * calibrated("ranking.best.pair_overlap_weight")
             + nearDuplicateBoost
-            + span.alpha * 0.12
+            + span.alpha * calibrated("ranking.best.evidence_alpha_weight")
             + anchorBoost
             + titleLeadBoost
             + sourceAffinityBoost
-            + Math.max(0, 0.18 - index * 0.015)
+            + Math.max(0, calibrated("ranking.best.source_order_bonus") - index * calibrated("ranking.best.source_order_decay"))
             - fastAnswerLongSentencePenalty(sentence)
             - fragmentPenalty
         };
