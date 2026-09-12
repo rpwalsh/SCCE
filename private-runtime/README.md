@@ -57,6 +57,26 @@ evaluation harnesses, and train its own calibration from its own operation.
 What it does not inherit is this instance's accumulated calibration, learned state and tuning.
 The public engine is not crippled. It is uncalibrated at birth.
 
+## Open work: the bootstrap table
+
+The private side of this split already has an addressing scheme. Twelve calibration ids route
+through `calibration-spine.ts` today — `candidateMass`, `judgeRequirementWeights`, `proofSupport`,
+`proofContradiction`, `mouthSurfaceFit`, `retrievalHybridRecall` among them — and
+`calibrateRuntimeScore` resolves a fitted model for an id when observations exist, falling back
+when they do not. Two of the twelve currently have observations.
+
+The public side does not yet exist. 4,354 decimal literals sit inline across 153 source files,
+concentrated in `mouth.ts` (108), `language-memory-runtime.ts` (107), `walsh-surface-energy.ts`
+(104), `graph-edge-quality.ts` (88) and `local-evidence-runtime.ts` (83). A handful of house
+values recur across unrelated subsystems — `0.18` 214 times, `0.72` 182, `0.25` 179 — which is the
+signature of hand-tuning rather than measurement, and 239 sites already self-label
+`uncalibrated`, `bootstrap` or `provisional`.
+
+The intended shape is a public bootstrap table giving each of those constants a stable id and a
+declared meaning, so that a fitted value from `private-runtime/calibration/` overrides it by id
+rather than by editing source. Until then every constant is simultaneously the public default and
+the production value, which is the condition this boundary exists to end.
+
 ## Note on history
 
 Fitted calibration reports and one localhost credential were removed from git history on
