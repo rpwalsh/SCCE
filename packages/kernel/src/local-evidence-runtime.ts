@@ -508,7 +508,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const anchored = sourceIdentityAdmissibleEvidenceForRequest(
     input.requestText,
     promoted,
-    input.semanticFrameBoundEvidenceIds ?? new Set()
+    input.semanticFrameBoundEvidenceIds ?? new Set(),
+    input.closedClassWords
   );
   const evidence = anchored.required ? anchored.evidence : promoted;
   if (!evidence.length) return undefined;
@@ -837,7 +838,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     : collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
   if (collection) return collection;
   // Single admission authority (same fix as proposeSourceExactEvidenceAnswer).
-  const anchored = sourceIdentityAdmissibleEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds ?? new Set());
+  const anchored = sourceIdentityAdmissibleEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds ?? new Set(), input.closedClassWords);
   const answerAnchoredEvidence = anchored.evidence;
   const explicitContextEvidence = input.explicitContextEvidenceIds?.size
     ? evidence.filter(span => input.explicitContextEvidenceIds?.has(String(span.id)))
