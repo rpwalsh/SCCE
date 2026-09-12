@@ -1051,7 +1051,7 @@ export function answerCoversRequest(
   const matches = (unit: string) => surfaceUnits.some(surfaceUnit => [...unit].length < 5 ? surfaceUnit === unit : requestUnitMatchesSurface(unit, surfaceUnit));
   // A subject matches by identity or inflection only: similarity let "Majorian" stand in for "Bajoran".
   const subjectMatches = (unit: string) => surfaceUnits.some(surfaceUnit => surfaceUnit === unit
-    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= calibrated("units.prefix_ratio_floor")));
   // Aboutness and answerhood are two different questions. The subject may be bound by the title (that is what an
   // article about the subject is); the relation asked about must be carried by the sentence itself. With the learned
   // request scaffolding stripped from the units, what remains after the subject is exactly that relation: "commanded"
@@ -1087,7 +1087,7 @@ export function answerCoversRequest(
     && sentenceNamesEntityOutsideRequest(answeringText, requestText);
   const relationCarried = missingRelationUnits.length === 0 || categoryMemberAnswer;
   const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
-    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= calibrated("units.prefix_ratio_floor")));
   // Real prose names its subject once and continues by anaphora ("the mission", omission, a bare pronoun): requiring
   // the literal name in every answering sentence rejected most of an article after its lead. Measured live: "Commander
   // Neil Armstrong and Lunar Module Pilot ... landed the Lunar Module 'Eagle'" carries the relation and never repeats
@@ -1128,7 +1128,7 @@ function sentenceNamesRequestSubject(sentence: string, requestText: string): boo
   if (!groups.length) return true;
   const units = memoizedSurfaceUnits(sentence).map(stripOuterPriorSeparators);
   const present = (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
-    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= 0.72));
+    || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= calibrated("units.prefix_ratio_floor")));
   return groups.some(group => group.every(present));
 }
 
@@ -3002,7 +3002,7 @@ function anchorIsRequestSubjectUnit(anchor: string, anchors: readonly string[]):
   if (unit === titleUnit) return true;
   const minLength = Math.min(unit.length, titleUnit.length);
   const maxLength = Math.max(unit.length, titleUnit.length);
-  return (unit.startsWith(titleUnit) || titleUnit.startsWith(unit)) && minLength / Math.max(1, maxLength) >= 0.72;
+  return (unit.startsWith(titleUnit) || titleUnit.startsWith(unit)) && minLength / Math.max(1, maxLength) >= calibrated("units.prefix_ratio_floor");
 }
 
 

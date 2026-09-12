@@ -12,7 +12,7 @@ import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -322,6 +322,21 @@ async function dispatch(
     if (ok) rememberHydratedRuntimeMarker(context, postgres);
     else invalidateHydratedRuntimeReadiness(context);
     return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
+  }
+  // Calibration surface, off unless SCCE_ALLOW_CALIBRATION_API=1. A fitter has to evaluate one id at many
+  // values; restarting the server for each turns a fit into an overnight job and changes nothing else about
+  // the measurement. Values are installed exactly as a production profile installs them, and ids no call site
+  // reads are reported rather than applied.
+  if (req.method === "POST" && url.pathname === "/api/calibrations") {
+    if (process.env.SCCE_ALLOW_CALIBRATION_API !== "1") return json({ error: "calibration api disabled" }, 404);
+    const body = await readBody(req) as { calibrations?: Record<string, number>; reset?: boolean };
+    if (body?.reset) clearProdCalibrations();
+    const result = body?.calibrations ? installProdCalibrations(body.calibrations) : { installed: [], ignored: [] };
+    return json({ ok: true, installed: result.installed, ignored: result.ignored, active: prodCalibrationIds() });
+  }
+  if (req.method === "GET" && url.pathname === "/api/calibrations") {
+    if (process.env.SCCE_ALLOW_CALIBRATION_API !== "1") return json({ error: "calibration api disabled" }, 404);
+    return json({ ok: true, active: prodCalibrationIds(), searchable: CALIBRATION_SEARCH_IDS.length });
   }
   if (req.method === "POST" && url.pathname === "/api/db/init") {
     await context.runtime.storage.migrate();
