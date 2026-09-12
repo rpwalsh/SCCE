@@ -4300,11 +4300,15 @@ export function attachLocalEvidenceAnswerConstruct(input: {
 
 
 // Request relation minus subject anchors, so predicate hashes to a relation word ("born"), not a whole sentence.
-function localAnswerRelationText(requestText: string, closedClassWords?: ReadonlySet<string>): string {
-  if (!requestText) return "";
+function localAnswerRelationUnits(requestText: string, closedClassWords?: ReadonlySet<string>): string[] {
+  if (!requestText) return [];
   const subjectUnits = new Set(namedSubjectAnchors(requestText)
     .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
-  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit) && !closedClassWords?.has(unit)).join(" ");
+  return requestContentEvidenceUnits(requestText).filter(unit => !subjectUnits.has(unit) && !closedClassWords?.has(unit));
+}
+
+function localAnswerRelationText(requestText: string, closedClassWords?: ReadonlySet<string>): string {
+  return localAnswerRelationUnits(requestText, closedClassWords).join(" ");
 }
 
 function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }, closedClassWords?: ReadonlySet<string>): SemanticAnswerConstructFact[] {
@@ -4366,14 +4370,24 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
     }));
     return facts;
   }
-  const relationText = localAnswerRelationText(requestText, closedClassWords);
-  return localEvidenceFactSurfaces(plan, requestText).map((sentence, index) => localEvidenceSemanticFact({
+  const relationUnits = localAnswerRelationUnits(requestText, closedClassWords);
+  const relationText = relationUnits.join(" ");
+  const surfaces = localEvidenceFactSurfaces(plan, requestText);
+  // The fact the contract is compiled from is the one whose own surface carries the request's relation, not
+  // whichever sentence the document opened with.
+  const relationOverlaps = relationUnits.length
+    ? surfaces.map(sentence => requestUnitOverlapForSurface(sentence, new Set(relationUnits)))
+    : [];
+  const bestRelationOverlap = relationOverlaps.length ? Math.max(...relationOverlaps) : 0;
+  const coreIndex = bestRelationOverlap > 0 ? relationOverlaps.indexOf(bestRelationOverlap) : 0;
+  return surfaces.map((sentence, index) => localEvidenceSemanticFact({
     subject: localEvidenceSelectedSubject(plan, requestText),
     predicate: relationText || sentence,
     object: sentence,
     relationId: LOCAL_ANSWER_RELATION_IDS.sourceQuote,
     evidence: plan.evidence,
     index,
+    coreIndex,
     hasher
   }));
 }
@@ -4400,6 +4414,8 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
   relationId: string;
   evidence: readonly EvidenceSpan[];
   index: number;
+  /** Which fact answers the request; position 0 only when nothing carries the request's relation. */
+  coreIndex?: number;
   hasher: { digestHex(input: string | Uint8Array): string };
 }): SemanticAnswerConstructFact {
   const subject = cleanSourceAnswerSurface(input.subject);
@@ -4424,7 +4440,7 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
     evidenceIds,
     roleId: input.relationId,
     relationRoleId: input.relationId,
-    questionSlotImportance: input.index === 0 ? "core" : "secondary",
+    questionSlotImportance: input.index === (input.coreIndex ?? 0) ? "core" : "secondary",
     questionSlotScore: Math.max(0.42, 0.9 - input.index * 0.08),
     questionSlotReasonIds: [input.relationId],
     // Real bug, confirmed live: mouth.ts's learnedFactRouteAdmissible (the gate construction-bundle

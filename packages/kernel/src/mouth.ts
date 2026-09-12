@@ -881,7 +881,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         : undefined;
       // A sourced answer never speaks generation that failed its contract ("Anglicanism originated which country The original book...").
       const unverifiedGenerationAllowed = input.requestedAuthority !== "factual" && input.requestedAuthority !== "reasoned";
-      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? semanticRhetoricalCandidateVerified ?? semanticDirectEvidenceCandidate ?? (unverifiedGenerationAllowed ? semanticRhetoricalCandidate : undefined) ?? (semanticAnswerState
+      // A sourced request speaks its evidence: the contract is compiled from the same fact the lattice renders, so the lattice satisfies it by echoing the request's own relation ("Azerbaijan capital Baku is the capital...").
+      const semanticGraphCandidate = semanticTemporalCounterexampleCandidate ?? semanticLearnedCandidate ?? (unverifiedGenerationAllowed ? semanticRhetoricalCandidateVerified : undefined) ?? semanticDirectEvidenceCandidate ?? (unverifiedGenerationAllowed ? semanticRhetoricalCandidate : undefined) ?? (semanticAnswerState
         ? scoredCandidates.find(candidate => !candidate.forbiddenHits.length && (unverifiedGenerationAllowed || candidate !== semanticRhetoricalCandidate))
         : undefined);
       const structuredConstructCandidate = generatedConstructSurface(input.construct) && !creativeRequested
