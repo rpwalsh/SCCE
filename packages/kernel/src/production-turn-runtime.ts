@@ -3609,10 +3609,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           hasSemanticConstruct: Boolean(semanticAnswerConstructFacts(spokenConstructGraph))
         }
       });
+      // A sourced request speaks its evidence, not a generation of it. This was decided by the response deadline:
+      // measured on "What is the capital of Japan?", the first turn after a restart missed the budget, fell back to
+      // the deterministic mouth and answered "Tokyo is the country's capital and largest city"; every warm turn had
+      // time to generate and answered "Japan what capital With a population of over 123 million...". Same evidence,
+      // same selected candidate -- only the clock differed. The same predicate mouth.ts already uses to refuse
+      // unverified generation decides it here, so latency can no longer choose between a proof and a paraphrase.
+      const sourcedAuthority = requestedAuthority === "factual" || requestedAuthority === "reasoned";
       const realizeOnce = (realizationInput: typeof speakInput) => evaluationComponent(
         "learned-mouth",
         "mouth.realize",
-        () => learnedMouthDecision?.allowed === false
+        () => learnedMouthDecision?.allowed === false || sourcedAuthority
           ? deterministicMouth.speak(realizationInput)
           : mouth.speak(realizationInput),
         () => deterministicMouth.speak(realizationInput)

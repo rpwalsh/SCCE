@@ -246,7 +246,7 @@ function normalizePromptCases(value) {
       minEvidence: numberOrUndefined(record.minEvidence),
       maxChars: numberOrUndefined(record.maxChars),
       minChars: numberOrUndefined(record.minChars),
-      maxElapsedMs: numberOrUndefined(record.maxElapsedMs ?? 10_000),
+      maxElapsedMs: numberOrUndefined(record.maxElapsedMs ?? 20_000),
       sessionId: optionalString(record.sessionId),
       sessionGroup: optionalString(record.sessionGroup),
       conversationId: optionalString(record.conversationId),
