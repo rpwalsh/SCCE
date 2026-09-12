@@ -975,6 +975,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let requestedAuthority = authorityProjection.requestedAuthority;
       // The learned closed class for this request: the language's function words plus the request scaffolding the
       // interaction corpus taught for this authority. What it leaves of the request is the subject and the relation.
+      // The corpus's own function symbols, ranked by continuation count: "'" continues 1305 distinct contexts in
+      // the live wikipedia model and "s" only 11, which is how "Kenya's" is read as naming Kenya without a suffix rule.
+      let corpusFunctionSymbolsCache: Set<string> | undefined;
+      const corpusFunctionSymbols = () => (corpusFunctionSymbolsCache ??= deriveClosedClassWords({ models: authorityLanguage.state.models ?? [] }));
       const requestClosedClassWords = () => requestClosedClassWordsFor({
         requestText: input.text,
         models: authorityLanguage.state.models ?? [],
@@ -2028,7 +2032,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             sessionContextEvidence,
             explicitContextEvidenceIds,
             semanticFrameBoundEvidenceIds,
-            closedClassWords: requestClosedClassWords()
+            closedClassWords: requestClosedClassWords(),
+            functionSymbols: corpusFunctionSymbols()
           })
         : undefined;
       // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.

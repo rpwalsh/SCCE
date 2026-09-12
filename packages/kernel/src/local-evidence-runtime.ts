@@ -456,6 +456,8 @@ export function localEvidenceAnswerSurface(input: {
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
   closedClassWords?: ReadonlySet<string>;
+  /** Symbols the corpus itself treats as function material, ranked by Kneser-Ney continuation counts. */
+  functionSymbols?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   if (input.translationTarget) return undefined;
   const plan = localEvidenceAnswerPlan(input);
@@ -818,6 +820,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   explicitContextEvidenceIds?: ReadonlySet<string>;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
   closedClassWords?: ReadonlySet<string>;
+  functionSymbols?: ReadonlySet<string>;
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
@@ -860,7 +863,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
   }
   if (contradiction >= 0.72 || (contradiction >= 0.45 && !answerAnchoredEvidence.length)) return undefined;
-  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true);
+  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true, input.closedClassWords, input.functionSymbols);
   // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
   // in: "Who played Sisko?" was answered with a 443-character sentence about Roddenberry and space stations whose
   // final clause was "Benjamin Sisko (played by Avery Brooks)". anchorFocusedAnswerSurface existed for exactly this
@@ -1991,10 +1994,27 @@ const SURFACE_UNITS_MEMO_MAX = 100_000;
   return units;
 }
 
- function requestUnitMatchesSurface(unit: string, surfaceUnit: string): boolean {
+
+/**
+ * Whether the corpus itself treats `remainder` as function material -- the trailing symbols separating a surface
+ * form from the unit inside it. Decomposed greedily against the learned closed class (ranked by Kneser-Ney
+ * continuation counts, per corpus, in any script), so no suffix list and no similarity threshold decides it:
+ * whitespace-only unit splitting glues these symbols on, and the prefix ratio missed "kenya" inside "kenya's"
+ * by 5/7 = 0.714 against 0.72, which is why Kenya answered with Mombasa (live 2026-09-12).
+ */
+function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, functionSymbols?: ReadonlySet<string>): boolean {
+  if (!remainder || !functionSymbols?.size) return false;
+  // Affix-like: shorter than the unit it hangs off, so another whole word glued on is not read as one.
+  if (remainder.length >= unit.length) return false;
+  for (const symbol of functionSymbols) {
+    if (remainder.startsWith(symbol)) return true;
+  }
+  return false;
+}
+ function requestUnitMatchesSurface(unit: string, surfaceUnit: string, functionSymbols?: ReadonlySet<string>): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
-  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${unit}${surfaceUnit}` : undefined;
+  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${functionSymbols?.size ?? 0}${unit}${surfaceUnit}` : undefined;
   if (memoKey !== undefined) {
     const cached = requestUnitMatchMemo.get(memoKey);
     if (cached !== undefined) return cached;
@@ -2011,6 +2031,10 @@ const SURFACE_UNITS_MEMO_MAX = 100_000;
     const value = tail === "s";
     if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, value);
     return value;
+  }
+  if (prefixRelated && remainderIsLearnedFunctionMaterial(unit, longer.slice(minLength), functionSymbols)) {
+    if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, true);
+    return true;
   }
   const prefixCompatible = prefixRelated && minLength / Math.max(1, maxLength) >= 0.72;
   const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= 0.72;
@@ -2089,11 +2113,11 @@ const SURFACE_UNITS_MEMO_MAX = 100_000;
 }
 
 
- function requestUnitOverlapForSurface(surface: string, requestUnits: ReadonlySet<string>): number {
+ function requestUnitOverlapForSurface(surface: string, requestUnits: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>): number {
   const surfaceUnits = memoizedSurfaceUnits(surface).filter(unit => unit.length >= 4);
   let overlap = 0;
   for (const unit of requestUnits) {
-    if (surfaceUnits.some(surfaceUnit => requestUnitMatchesSurface(unit, surfaceUnit))) overlap++;
+    if (surfaceUnits.some(surfaceUnit => requestUnitMatchesSurface(unit, surfaceUnit, functionSymbols))) overlap++;
   }
   return overlap;
 }
@@ -3607,7 +3631,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 }
 
 
- function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false): string[] {
+ function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, closedClassWords?: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>): string[] {
   // Mirrors proposeSourceExactEvidenceAnswer's ranking contract exactly
   // (see the long notes there): sentences are ranked IN tidySurfaceText
   // space so every returned surface is a verbatim substring of its span
@@ -3672,12 +3696,17 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
     // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
     // content word -- "The Athens area encompasses a variety of terrain ... the capital is the only major city in
     // Europe" beat "'Athens' is the capital and largest city of Greece" by exactly that (live 2026-09-10).
+      // The tie-break counted the request's own interrogative: "most of what is now Kenya" scored a third unit
+      // for a historical sentence over "Kenya's capital and largest city is Nairobi." (live 2026-09-12).
+      const scaffoldingFreeRequestUnits = closedClassWords?.size
+        ? new Set([...requestUnits].filter(unit => !closedClassWords.has(unit)))
+        : requestUnits;
     if (titleMatches && contentRequestUnits.size && documentOpeningSpan(span)) {
         const coverage = sentences
           .map((sentence, index) => ({
             index,
-            contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits),
-            fullOverlap: requestUnitOverlapForSurface(sentence, requestUnits)
+            contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits, functionSymbols),
+            fullOverlap: requestUnitOverlapForSurface(sentence, scaffoldingFreeRequestUnits, functionSymbols)
           }))
           .filter(row => !lowercaseInitialFragment(sentences[row.index] ?? ""));
         const leadContent = Math.max(0, ...coverage.filter(row => row.index <= 1).map(row => row.contentOverlap));
@@ -3691,7 +3720,10 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           label: "kernel.turn",
           support: {
             contentUnits: [...contentRequestUnits],
-            requestUnits: [...requestUnits],
+            requestUnits: [...scaffoldingFreeRequestUnits],
+            closedClassSize: closedClassWords?.size ?? 0,
+            functionSymbolCount: functionSymbols?.size ?? 0,
+            remainderProbe: remainderIsLearnedFunctionMaterial("kenya", String.fromCharCode(39) + "s", functionSymbols),
             leadContent,
             contentBoostIndex,
             top: [...coverage]
@@ -3705,8 +3737,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         const features = featureSet(sentence, 256);
         const lexical = weightedJaccard(requestFeatures, features) + (singleSpan ? 0 : weightedJaccard(requestFeatures, span.features) * 0.35);
         const unitOverlap = titleMatches && contentRequestUnits.size
-          ? requestUnitOverlapForSurface(sentence, contentRequestUnits)
-          : requestUnitOverlapForSurface(sentence, requestUnits);
+          ? requestUnitOverlapForSurface(sentence, contentRequestUnits, functionSymbols)
+          : requestUnitOverlapForSurface(sentence, scaffoldingFreeRequestUnits, functionSymbols);
         const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(sentence, orderedRequestUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? 0.54 : 0;
         const titleLeadBoost = titleMatches
