@@ -143,3 +143,22 @@ scce.config.local.json
 # Local schema-variant configs for corpus experiments; the tracked variants are the shipped ones.
 scce.fresh.config.json
 scce.realtest.config.json
+
+# Fitted production state, not architecture.
+#
+# The boundary: what proves the architecture is public -- interfaces, proof semantics, the
+# fitting algorithms themselves and their source-disjoint holdout acceptance. What is withheld
+# is the RESULT of the expensive fitting run against the production corpus: the parameters that
+# actually won. A reader can verify that calibration exists and how it is accepted; the tuned
+# profile that produces the best numbers is a controlled asset.
+#
+# This does not unpublish anything already committed -- history keeps it. It stops the forward
+# stream of evolving production tuning and learned state.
+/private/
+/config/*.production.json
+/config/*.calibration.json
+/checkpoints/
+/brains/
+/learned-state/
+tools/proof-calibration/report*.json
+tools/code-generation-calibration/report*.json
