@@ -4,6 +4,8 @@
 
 Sovereign intelligence on ordinary hardware.
 
+TL:DR? Proof Package is built and published for review at http://rpwalsh.com
+
 SCCE ingests evidence, builds durable knowledge, reasons, plans, acts, and learns — without a foundation-model runtime.
 
 No language model anywhere. Evidence, proof, planning and wording are graph-native and corpus-learned. No vector-database RAG loop. No GPU cluster. No cloud dependency at inference. The only declared model is an optional CLIP visual embedder, off by default (`models.declared.json`).
