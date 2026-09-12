@@ -1,9 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
+import { readFile } from "node:fs/promises";
 import { createNodeRuntime, readScceRuntimeConfig } from "@scce/adapters-node";
 import { drainDeferredDialoguePersistence, handleRequest, serverPatchValidationRuntime } from "./routes.js";
-import { registerMessageBundle, createTrace, traceEvent } from "@scce/kernel";
+import { installProdCalibrations, registerMessageBundle, createTrace, traceEvent } from "@scce/kernel";
 import { createRuntimeStartupReadiness, startRuntimeSurface } from "./startup.js";
 import { startDreamCycle } from "./dream-cycle.js";
 
@@ -22,6 +23,43 @@ const OPERATOR_SURFACE_MESSAGES = {
   "runtime.motion.no_grounded_source": "No grounded source in the ingested corpus for: {topic}."
 } as const;
 
+
+/**
+ * Installs the production calibration profile if this instance has one.
+ *
+ * Fitted values are not in the repository (private-runtime/README.md): a public clone finds no file here and
+ * runs on the public bootstrap table, which is the intended behaviour and not an error. A malformed or stale
+ * profile is reported rather than applied -- installProdCalibrations ignores ids no call site reads.
+ */
+async function installProdCalibrationProfile(trace: ReturnType<typeof createTrace>): Promise<void> {
+  const path = process.env.SCCE_PROD_CALIBRATIONS ?? "private-runtime/calibration/prod-calibrations.json";
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    traceEvent(trace, { stage: "server.calibration", label: "prod.absent", support: { path, using: "public_bootstrap" } });
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    traceEvent(trace, { stage: "server.calibration", label: "prod.unreadable", support: { path }, warnings: [String((error as Error)?.message ?? error)] });
+    return;
+  }
+  const values = (parsed as { calibrations?: Record<string, number> })?.calibrations ?? parsed;
+  if (!values || typeof values !== "object") {
+    traceEvent(trace, { stage: "server.calibration", label: "prod.unreadable", support: { path }, warnings: ["no calibration object"] });
+    return;
+  }
+  const result = installProdCalibrations(values as Record<string, number>);
+  traceEvent(trace, {
+    stage: "server.calibration",
+    label: "prod.installed",
+    support: { path, installed: result.installed, ignored: result.ignored },
+    counts: { installed: result.installed.length, ignored: result.ignored.length }
+  });
+}
 async function main(): Promise<void> {
   registerMessageBundle("en", OPERATOR_SURFACE_MESSAGES);
   // Turns arrive without a locale more often than with one; the default bundle is what they read.
@@ -29,6 +67,7 @@ async function main(): Promise<void> {
   const trace = createTrace('server.start');
   const configPath = parseConfigPath(process.argv.slice(2)) ?? "scce.config.json";
   const config = await readScceRuntimeConfig(configPath);
+  await installProdCalibrationProfile(trace);
   const runtime = createNodeRuntime(config);
   const startupReadiness = createRuntimeStartupReadiness();
   const patchValidation = serverPatchValidationRuntime(config);
