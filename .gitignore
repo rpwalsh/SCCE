@@ -162,3 +162,8 @@ scce.realtest.config.json
 /learned-state/
 tools/proof-calibration/report*.json
 tools/code-generation-calibration/report*.json
+
+# Private runtime mount: the engine is public, the accumulated intelligence is not.
+# Contents are withheld; the README stays so the boundary is visible in the public repo.
+/private-runtime/*
+!/private-runtime/README.md
