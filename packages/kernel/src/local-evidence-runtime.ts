@@ -3746,11 +3746,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const ranked = openingRow
     ? [openingRow, ...candidates.filter(row => row !== openingRow && String(row.span.id) === String(openingRow.span.id))]
     : rerankable.length
-      ? [
-        ...rerankable.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
-        ...rerankable.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
-        ...candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT)
-      ]
+      ? predicationPreferredOrder(rerankable, anchors, candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT))
       : candidates;
   const selected = selectEvidenceSentenceRows(ranked, ranked[0]?.nearDuplicate ? 1 : limit);
   // Adjacent sentences read in document order, whatever order they were
@@ -3759,6 +3755,50 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   return [...selected]
     .sort((left, right) => String(left.span.id).localeCompare(String(right.span.id)) || left.index - right.index)
     .map(item => item.sentence);
+}
+
+
+/**
+ * How much of a score difference the document-position prior alone can account for: the ranker adds at most
+ * `0.18 - index * 0.015` for where a sentence sits, so two rows differing by less than the spread of that term
+ * across the candidates carry the same content and differ only in placement. Derived from the ranker's own term. Pure.
+ */
+function positionPriorSpread(rows: readonly EvidenceSentenceRow[]): number {
+  const priors = rows.map(row => Math.max(0, 0.18 - row.index * 0.015));
+  return priors.length ? Math.max(...priors) - Math.min(...priors) : 0;
+}
+
+/** Highest-scoring first, ties in the order they were ranked in: a preference must not lose the ranking. Pure. */
+function sortedByScore(rows: readonly EvidenceSentenceRow[]): EvidenceSentenceRow[] {
+  return [...rows].sort((left, right) => right.score - left.score
+    || left.index - right.index
+    || String(left.span.id).localeCompare(String(right.span.id)));
+}
+
+/**
+ * Predication is a tie-break, never an override. Hoisting every predicating row above every other discarded the
+ * ranker's own scores: measured, "The Bryges were also present in central Albania" (4.762) was promoted over
+ * "Tirana is the capital and largest city in the country" (8.206) purely for opening on the anchor. Tied means the
+ * ranker did not separate them -- same coverage, and a score gap no wider than the document-position prior. Pure.
+ */
+function predicationPreferredOrder(
+  rerankable: readonly EvidenceSentenceRow[],
+  anchors: readonly string[],
+  rest: readonly EvidenceSentenceRow[]
+): EvidenceSentenceRow[] {
+  const ordered = sortedByScore(rerankable);
+  const best = ordered[0];
+  if (!best) return [...ordered, ...rest];
+  const tied = ordered.filter(row => row.unitOverlap === best.unitOverlap
+    && Math.abs(row.score - best.score) <= positionPriorSpread(rerankable));
+  if (tied.length < 2) return [...ordered, ...rest];
+  const tiedRows = new Set(tied);
+  return [
+    ...tied.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
+    ...tied.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
+    ...ordered.filter(row => !tiedRows.has(row)),
+    ...rest
+  ];
 }
 
 
