@@ -26,6 +26,7 @@ const probeFollowups = read("artifacts/live-probe-followups.json");
 const oneShot = read("artifacts/full-system-one-shot.json");
 const longHorizon = read("artifacts/long-horizon-gate.json");
 const releaseGate = read("artifacts/release-gate.json");
+const capitals = read("artifacts/parity-dataset/capitals.json");
 
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const seconds = ms => `${(Number(ms) / 1000).toFixed(1)}s`;
@@ -38,6 +39,32 @@ const verdict = (row, side) => {
 };
 const modelName = live?.compareModel ?? before?.compareModel ?? "qwen2.5:3b";
 const generated = new Date().toISOString().slice(0, 10);
+
+// ---- capitals: the relation-question probe ---------------------------------------------------------------
+// Verdicts are read from the answer TEXT, never a substring test: Peru names Lima only as the capital of a
+// 16th-century viceroyalty, which a /Lima/ probe scores as correct and a reader does not.
+const CAPITAL_VERDICTS = {
+  "What is the capital of Japan?": ["good", "correct", "Names Tokyo as the capital. Fixed 2026-09-12; every warm repeat previously answered \"Japan what capital With a population of...\"."],
+  "What is the capital of Albania?": ["good", "correct", "Names Tirana, after a lead sentence about landscapes."],
+  "What is the capital of Alabama?": ["good", "correct", "Names Montgomery in the first clause."],
+  "What is the capital of Azerbaijan?": ["good", "correct", "Names Baku, after a lead sentence about Persian rule."],
+  "What is the capital of Armenia?": ["good", "correct", "Names Yerevan, after a lead sentence about borders."],
+  "What is the capital of Peru?": ["neutral", "unresolved", "Names Lima only inside the sentence about the 16th-century Viceroyalty of Peru, not as the country's capital. Counted here as unresolved, not correct."],
+  "What is the capital of Kenya?": ["bad", "wrong", "Names Mombasa, capital of the British East Africa Protectorate 1889-1907. Nairobi is present in the same evidence span and loses the lead-boost tie-break."]
+};
+
+function capitalsBlock() {
+  if (!capitals) return '<p class="muted">Capitals probe: not recorded.</p>';
+  const rows = capitals.rows.map(row => {
+    const [cls, label, note] = CAPITAL_VERDICTS[row.text] ?? ["neutral", "not scored", ""];
+    return '<tr><td class="q">' + esc(row.text) + '</td><td>' + pill(cls, label)
+      + '<div class="muted">' + esc(note) + '</div></td><td class="ans-cell">'
+      + esc(String(row.answer).replace(/ Source:.*$/, "").replace(/\s+/g, " ").slice(0, 240))
+      + '</td><td class="mono">' + seconds(row.elapsedMs) + '</td></tr>';
+  }).join("");
+  return '<div class="table-scroll"><table class="wide"><thead><tr><th>question</th><th>verdict</th><th>answer (verbatim, truncated)</th><th>time</th></tr></thead><tbody>'
+    + rows + '</tbody></table></div>';
+}
 
 // ---- chat: reference comparison ------------------------------------------------------------------------------
 function comparisonBlock(report, label) {
@@ -218,7 +245,11 @@ const html = `<title>SCCE Evaluation</title>
     ${comparisonBlock(live, "After the 2026-09-10 fixes (live server)")}
     ${live?.rescored ? `<p class="muted">Rescored ${esc(live.rescored.at.slice(0, 16).replace("T", " "))} UTC: ${esc(live.rescored.rule)}. The recorded answers and timings are the run's own.</p>` : ""}
     ${comparisonBlock(before, "Before (in-process runtime, 2026-09-10 00:19)")}
-    ${live ? `<div class="callout"><strong>Read this table both ways.</strong> On the ${live.unanswerable} questions the article cannot answer, SCCE declined ${live.scce.declined} and invented ${live.scce.fabrications}; ${esc(modelName)}, with the article in its prompt, declined ${live.model.declined} and invented ${live.model.fabrications}. On the ${live.answerable} answerable questions ${esc(modelName)} is well ahead: ${live.model.correct} correct to SCCE's ${live.scce.correct}, with SCCE declining ${live.scce.declinedWhenAnswerable} it could have answered and answering ${live.scce.wrong} wrongly. SCCE's answers carry a citation on ${live.scce.cited} rows and take ${seconds(live.scce.meanMs)} on average against ${seconds(live.model.meanMs)}; the model cites nothing. Recall on relation questions ("what is the capital of", "who wrote") is the open gap, and it is shown here rather than trimmed.${before ? ` Before the day's fixes the same harness recorded ${before.scce.correct} correct and ${before.scce.fabrications} fabrications for SCCE.` : ""}</div>` : ""}
+    ${live ? `<div class="callout"><strong>Read this table both ways.</strong> On the ${live.unanswerable} questions the article cannot answer, SCCE declined ${live.scce.declined} and invented ${live.scce.fabrications}; ${esc(modelName)}, with the article in its prompt, declined ${live.model.declined} and invented ${live.model.fabrications}. On the ${live.answerable} answerable questions ${esc(modelName)} is well ahead: ${live.model.correct} correct to SCCE's ${live.scce.correct}, with SCCE declining ${live.scce.declinedWhenAnswerable} it could have answered and answering ${live.scce.wrong} wrongly. SCCE's answers carry a citation on ${live.scce.cited} rows and take ${seconds(live.scce.meanMs)} on average against ${seconds(live.model.meanMs)}; the model cites nothing. Recall on relation questions ("what is the capital of", "who wrote") was the open gap; the table below this one tracks it directly and is the current state of that work.${before ? ` Before the day's fixes the same harness recorded ${before.scce.correct} correct and ${before.scce.fabrications} fabrications for SCCE.` : ""}</div>` : ""}
+    <h3>Relation questions, tracked directly</h3>
+    <p class="intro">The open gap named above, measured on the running server rather than described. Each verdict is read from the answer text: a substring test scores Peru correct, and it is not.</p>
+    ${capitalsBlock()}
+    ${capitals ? `<p class="muted">Recorded ${esc(capitals.generatedAt.slice(0, 16).replace("T", " "))} UTC, ${capitals.questions} questions, mean ${seconds(capitals.meanMs)}, max ${seconds(capitals.maxMs)}.</p>` : ""}
     <h3>Every question, both answers</h3>
     ${comparisonRows(live)}
     ${probeBlock(probeChat, "Twelve chat questions on the live brain")}
@@ -252,6 +283,14 @@ const html = `<title>SCCE Evaluation</title>
       <li>The factual admission gate no longer counts the request's own question word and punctuation as unproven obligations, which had let a bare echo of the subject win over a supported, cited sentence.</li>
       <li>A follow-up that names its subject only by pronoun binds to the turn it continues instead of searching the corpus for its verb.</li>
       <li>A question the corpus cannot ground is declined as a notice, never echoed back as an answer.</li>
+    </ul>
+    <h3>Answer selection, 2026-09-12</h3>
+    <p class="intro">Two defects in how the answering fact is built, both found by tracing the live server rather than by reading the code. Each was measured before and after, and the release gate ran on each.</p>
+    <ul class="plain">
+      <li><strong>The request's own interrogative became the fact's predicate.</strong> "What is the capital of Japan?" compiled the fact {Japan, "what capital", &lt;an unrelated lead sentence&gt;}, and the answer read "Japan what capital With a population of over 123 million...". The derivation filtered the subject out of the request's units but not the learned closed class. It also suppressed the verbatim answer lane entirely: that candidate must preserve its fact's arguments intact, and no real sentence contains "what capital".</li>
+      <li><strong>The fact the answer is built from was chosen by array position.</strong> Whichever sentence came first was marked "core", so on any titled article the opening sentence answered every question about that subject. The core fact is now the one whose own surface carries the request's relation, measured by overlap; position decides only when nothing carries it.</li>
+      <li><strong>Generated prose satisfied its own check by quoting the question.</strong> Promoting the right fact exposed a third: the rhetorical lattice renders subject + predicate + object, and its predicate is the request's relation text, so Azerbaijan answered "Azerbaijan capital Baku is the capital and largest city". That candidate is admitted by a contract compiled from the same fact it renders, so it passed by echoing the request. A sourced request now speaks its evidence; generation is unchanged everywhere else.</li>
+      <li>Result: Japan answers "Tokyo is the country's capital and largest city" on repeat turns, where every warm turn before this was malformed. Kenya remains wrong and Peru unresolved, both diagnosed in the table on the Chat tab.</li>
     </ul>
   </section>
 
