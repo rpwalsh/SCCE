@@ -66,6 +66,8 @@ export interface EvidenceQuery {
   status?: "promoted" | "quarantined" | "any";
   /** Provenance sourceKind values to leave out of the candidate set, e.g. developer_intelligence for a prose question. */
   excludeSourceKinds?: string[];
+  /** Provenance forceClass values to leave out before ranking: a class that can never certify is scored and then discarded. */
+  excludeForceClasses?: string[];
   /**
    * Normalized units of the subject the request names. A span whose source is *titled* with the subject is ranked
    * ahead of one that merely mentions it. Without this, a one-unit subject scores identically on every span that

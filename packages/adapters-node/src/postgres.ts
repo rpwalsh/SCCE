@@ -1601,6 +1601,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            FROM (
              SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
                     ${titleMatchExpression("evidence", 4 + access.params.length)} AS title_match,
+                    ${titleExactExpression("evidence", 4 + access.params.length)} AS title_exact,
                     (evidence.char_start = 0) AS opening_block
              FROM candidate_hits hits
              JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
@@ -1608,7 +1609,9 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              WHERE ${evidenceStatusCondition("evidence", query.status)}
                AND ${access.sql}
                AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
-             ORDER BY title_match DESC,
+               AND ${forceClassExclusion("evidence", 5 + access.params.length)}
+             ORDER BY title_exact DESC,
+                      title_match DESC,
                       opening_block DESC,
                       hits.score DESC,
                       hits.overlap_count DESC,
@@ -1619,7 +1622,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              LIMIT $2
            ) top
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=top.id
-           ORDER BY top.title_match DESC,
+           ORDER BY top.title_exact DESC,
+                    top.title_match DESC,
                     top.opening_block DESC,
                     top.score DESC,
                     top.overlap_count DESC,
@@ -1627,7 +1631,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                     CASE WHEN top.status='promoted' THEN 0 WHEN top.status='pending' THEN 1 ELSE 2 END ASC,
                     top.alpha DESC,
                     top.observed_at DESC`,
-          [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? [], query.titleUnits ?? []]
+          [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? [], query.titleUnits ?? [], query.excludeForceClasses ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
@@ -5436,6 +5440,25 @@ function titleMatchExpression(alias: string, parameter: number): string {
   return `(cardinality($${parameter}::text[]) > 0 AND ${alias}.provenance_json->>'title' IS NOT NULL
     AND (SELECT bool_and(lower(${alias}.provenance_json->>'title') LIKE '%' || unit || '%')
          FROM unnest($${parameter}::text[]) AS unit))`;
+}
+
+/** The source *named* by the subject, not merely one whose title contains it. Substring title_match is true for every
+ *  "Japanese submarine I-40" and "Japan Society ...", so it stops discriminating and BM25's length term then picks the
+ *  shortest stub: measured, "What is the capital of Japan?" ranked 32 such spans and never the Japan article. */
+function titleExactExpression(alias: string, parameter: number): string {
+  return `(cardinality($${parameter}::text[]) > 0
+    AND lower(COALESCE(${alias}.provenance_json->>'title', ${alias}.provenance_json->'metadata'->>'title', ''))
+        = array_to_string($${parameter}::text[], ' '))`;
+}
+
+/** Measured on this corpus: 25,889 of 73,209 scored spans carry a class that can never certify, so BM25 pays for them and
+ *  the turn drops them afterwards. Excluded here, before ranking; an empty list is a no-op through the cardinality guard. */
+function forceClassExclusion(alias: string, parameter: number): string {
+  return `(cardinality($${parameter}::text[]) = 0 OR COALESCE(
+    ${alias}.provenance_json->>'forceClass',
+    ${alias}.provenance_json->'metadata'->>'forceClass',
+    ''
+  ) <> ALL($${parameter}::text[]))`;
 }
 
 /** A prose question must not draw its candidates from source code: 38,232 promoted spans are the owner's own
