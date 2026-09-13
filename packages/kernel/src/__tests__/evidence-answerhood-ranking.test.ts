@@ -52,6 +52,21 @@ describe("evidence ranking by answerhood", () => {
     expect(byAnswerhood).toHaveLength(2);
   });
 
+  it("never gives the answerhood lead to the source's own front matter", () => {
+    // Treasure Island's chapter index led this ordering because the titles it lists carry the subject and the
+    // relation between them. It compresses the source's vocabulary and explains none of its structure.
+    const index = span({
+      id: "evidence:moby:index",
+      alpha: 0.99,
+      charStart: 0,
+      identity: "herman melville pequod ahab ishmael queequeg",
+      text: "MOBY-DICK; or, THE WHALE. CONTENTS. The Pequod Meets The Virgin. The Captain's Quarter-Deck. "
+        + "The Pequod Meets The Rose-Bud. The Captain and the Carpenter."
+    });
+    const ranked = evidenceForRequest(request, [index, binding], new Set(), new Set(), new Set(), closedClass);
+    expect(String(ranked[0]?.id)).toBe("evidence:moby:binding");
+  });
+
   it("leaves the order alone when the answerhood test does not discriminate", () => {
     // Neither chunk answers: ordering falls through to relevance exactly as before, and nothing is dropped.
     const silent = [
@@ -63,7 +78,8 @@ describe("evidence ranking by answerhood", () => {
   });
 });
 
-function span(input: { id: string; alpha: number; text: string }): EvidenceSpan {
+function span(input: { id: string; alpha: number; text: string; charStart?: number; identity?: string }): EvidenceSpan {
+  const charStart = input.charStart ?? 176542;
   return {
     id: input.id as EvidenceId,
     sourceVersionId: `${input.id}:v1` as SourceVersionId,
@@ -71,14 +87,15 @@ function span(input: { id: string; alpha: number; text: string }): EvidenceSpan 
     textPreview: input.text,
     status: "promoted",
     alpha: input.alpha,
-    charStart: 176542,
+    charStart,
     features: [],
     provenance: {
       uri: `fixture://${input.id}`,
       title: "Moby Dick",
+      ...(input.identity ? { identity: input.identity } : {}),
       sourceVersionId: `${input.id}:v1`,
       byteRange: [0, input.text.length],
-      charRange: [176542, 176542 + input.text.length],
+      charRange: [charStart, charStart + input.text.length],
       metadata: { title: "Moby Dick" }
     }
   } as unknown as EvidenceSpan;

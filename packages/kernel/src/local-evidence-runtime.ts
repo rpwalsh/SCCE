@@ -142,6 +142,12 @@ function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly stri
  */
 function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, coverageUnits: readonly string[]): boolean {
   if (!coverageUnits.length) return false;
+  // A source's front matter states nothing about its subject, so no sentence of it answers. Treasure Island's
+  // chapter index led this ordering because the titles it lists carry "treasure island" and "ship" between them:
+  // it compresses the source's own vocabulary beautifully and explains none of its structure, which is exactly the
+  // material `joint-objective.md` forbids promoting. An article's lead is untouched -- it has no identity of its
+  // own, so this predicate is false for every Wikipedia opening block in the corpus.
+  if (spanIsSourceFrontMatter(span)) return false;
   const text = String(span.text ?? span.textPreview ?? "");
   if (!text) return false;
   if (!answerCoversRequest([text], span, coverageUnits, requestText, { relationRequired: true })) return false;
