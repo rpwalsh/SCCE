@@ -4366,7 +4366,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               text: String(span.text ?? span.textPreview ?? "")
             })),
             closedClass: corpusFunctionSymbols(),
-            maxChars: DEFAULT_FACTUAL_SURFACE_EXTENT
+            maxChars: DEFAULT_FACTUAL_SURFACE_EXTENT,
+            // The summary is the last thing the turn can say, and it was chosen without ever reading the request:
+            // "Athens is the capital of which country?" rejected the article's own "Athens is the capital and largest
+            // city of Greece" upstream and then spoke the city's metro network from here, which settles strictly less
+            // of the same request. What the request asks past the source's identity orders the sentences first.
+            relationUnits: requestRelationBeyondSourceIdentity(input.text, identityBound[0]!, corpusFunctionSymbols())
           })
           : undefined;
         // A summary answers one question -- what is this source about -- and identity binding only establishes that

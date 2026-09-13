@@ -46,6 +46,8 @@ export interface SourceSummarySentence {
   readonly text: string;
   readonly order: number;
   readonly centrality: number;
+  /** How much of the asked relation this sentence settles, in this source's own inverse-sentence-frequency. */
+  readonly askedRelation: number;
 }
 
 /** Quantized to integers for the Otsu split, which histograms a bounded range. */
@@ -107,7 +109,7 @@ export function unwrapTypographicLineBreaks(text: string): string {
     .join("\n\n");
 }
 
-export function centralSentences(text: string, closedClass: ReadonlySet<string>): SourceSummarySentence[] {
+export function centralSentences(text: string, closedClass: ReadonlySet<string>, relationUnits: readonly string[] = []): SourceSummarySentence[] {
   const segments = splitSurfaceSentences(unwrapTypographicLineBreaks(text))
     .map(sentence => sentence.trim())
     .filter(Boolean);
@@ -115,12 +117,28 @@ export function centralSentences(text: string, closedClass: ReadonlySet<string>)
   // A source that closes most of its segments has an apparatus wherever it did not; one that closes few is not
   // punctuated prose at all, and every segment it has is all it has.
   const sentences = closedSegments.length > segments.length - closedSegments.length ? closedSegments : segments;
-  if (sentences.length < 2) return sentences.map((sentence, order) => ({ text: sentence, order, centrality: 1 }));
+  if (sentences.length < 2) return sentences.map((sentence, order) => ({ text: sentence, order, centrality: 1, askedRelation: 0 }));
 
   // Content units per sentence: what the language uses as scaffolding carries no aboutness.
   const unitsPer = sentences.map(sentence => corpusIdentityUnits(sentence).filter(unit => !closedClass.has(unit)));
   const sentenceFrequency = new Map<string, number>();
   for (const units of unitsPer) for (const unit of new Set(units)) sentenceFrequency.set(unit, (sentenceFrequency.get(unit) ?? 0) + 1);
+
+  // What the request asks past the source's own identity, scored by how much each sentence settles it rather than by
+  // how much it resembles it. A relation unit the source states in every sentence separates no two of them and is
+  // worth exactly log(1) = 0 here, so an interrogative or any other ubiquitous unit cannot order this pool; a unit
+  // the source states in few sentences is what distinguishes those from the rest. Zero for every sentence when the
+  // request asks nothing past the source, and zero for every sentence when the source states none of it.
+  const askedUnits = new Set(relationUnits.map(unit => unit.normalize("NFC").toLocaleLowerCase()).filter(Boolean));
+  const askedRelationWeight = (units: readonly string[]): number => {
+    if (!askedUnits.size) return 0;
+    let weight = 0;
+    for (const unit of new Set(units)) {
+      if (!askedUnits.has(unit)) continue;
+      weight += Math.log(sentences.length / (sentenceFrequency.get(unit) ?? 1));
+    }
+    return weight;
+  };
 
   // Inverse sentence frequency: a unit every sentence uses distinguishes none of them.
   const allWeight = (units: readonly string[]): number => {
@@ -181,7 +199,7 @@ export function centralSentences(text: string, closedClass: ReadonlySet<string>)
       }
     }
   }
-  if (!observed.length) return keptSentences.map((sentence, index) => ({ text: sentence, order: sourceOrder[index]!, centrality: 0 }));
+  if (!observed.length) return keptSentences.map((sentence, index) => ({ text: sentence, order: sourceOrder[index]!, centrality: 0, askedRelation: askedRelationWeight(keptUnits[index]!) }));
 
   // An edge exists where the similarity is in the upper class of what this source's sentences actually reach. A
   // fixed cut-off would summarize a technical manual and a novel by the same standard; they share no scale. Shared
@@ -202,7 +220,8 @@ export function centralSentences(text: string, closedClass: ReadonlySet<string>)
   return keptSentences.map((sentence, index) => ({
     text: sentence,
     order: sourceOrder[index]!,
-    centrality: peak > 0 ? (centrality[index] ?? 0) / peak : 0
+    centrality: peak > 0 ? (centrality[index] ?? 0) / peak : 0,
+    askedRelation: askedRelationWeight(keptUnits[index]!)
   }));
 }
 
@@ -215,16 +234,24 @@ export function summarizeSource(input: {
   text: string;
   closedClass: ReadonlySet<string>;
   maxChars: number;
+  /** What the request asks past this source's own identity. Absent for a summary no request is waiting on. */
+  relationUnits?: readonly string[];
 }): string {
-  const scored = centralSentences(input.text, input.closedClass);
+  const scored = centralSentences(input.text, input.closedClass, input.relationUnits ?? []);
   if (!scored.length) return "";
   const values = scored.map(sentence => Math.round(sentence.centrality * OTSU_SCALE)).filter(value => value > 0);
   // Which sentences are central is the same kind of question as which similarities are edges, answered the same way.
   const threshold = values.length >= 2 ? concentrationThreshold(values, OTSU_SCALE) / OTSU_SCALE : 0;
   const central = scored.filter(sentence => sentence.centrality >= threshold && sentence.centrality > 0);
-  const chosen = (central.length ? central : scored)
-    .slice()
-    .sort((left, right) => right.centrality - left.centrality);
+  // Centrality answers "what is this source about". When a request is waiting on the summary, the sentences that
+  // settle what it asked come first, and a sentence that settles it is considered even where centrality dropped it:
+  // the Athens article's own "Athens is the capital and largest city of Greece" lost to its metro network, which
+  // names no country at all. Every ordering term is zero for every sentence when the source states none of the asked
+  // relation or states all of it everywhere, and the summary is then exactly the one centrality alone produced.
+  const settling = scored.filter(sentence => sentence.askedRelation > 0);
+  const pool = central.length ? central : scored;
+  const chosen = [...new Set([...pool, ...settling])]
+    .sort((left, right) => right.askedRelation - left.askedRelation || right.centrality - left.centrality);
   const kept: SourceSummarySentence[] = [];
   const spoken = new Set<string>();
   let used = 0;
@@ -264,6 +291,8 @@ export function summarizeAdmittedSource(input: {
   spans: readonly { sourceKey: string; text: string }[];
   closedClass: ReadonlySet<string>;
   maxChars: number;
+  /** What the request asks past this source's own identity, so the summary leads with what settles it. */
+  relationUnits?: readonly string[];
 }): SourceSummaryExcerpt | undefined {
   const perSource = new Map<string, number[]>();
   for (let index = 0; index < input.spans.length; index += 1) {
@@ -274,7 +303,7 @@ export function summarizeAdmittedSource(input: {
   const positions = [...perSource.values()].sort((left, right) => right.length - left.length)[0] ?? [];
   if (!positions.length) return undefined;
   const texts = positions.map(position => input.spans[position]!.text);
-  const summary = summarizeSource({ text: texts.join("\n\n"), closedClass: input.closedClass, maxChars: input.maxChars });
+  const summary = summarizeSource({ text: texts.join("\n\n"), closedClass: input.closedClass, maxChars: input.maxChars, relationUnits: input.relationUnits });
   if (!summary) return undefined;
   const comparable = texts.map(text => collapseSurfaceWhitespace(text));
   const sentences = splitSurfaceSentences(summary).map(sentence => collapseSurfaceWhitespace(sentence)).filter(Boolean);
