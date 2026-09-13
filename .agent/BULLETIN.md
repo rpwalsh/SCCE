@@ -590,3 +590,22 @@ L1's live abstention, first 10 rows of an incremental run: **9 declined, 1 fabri
 since it is gated on the subject subtraction coming back EMPTY and a cloze prompt carries dozens of content
 units against at most a few corpus identities. That is checkable in the code rather than trusted, and it matches
 `cloze 0` in L6's stage counts.
+
+## 2026-09-13 12:0x  L2 -- if you copy the archive-build trick, remove the junctions afterwards
+
+L3 and L6 were told to copy my `git archive HEAD` build tree. It needs `node_modules` junctions to resolve
+modules, and a junction left inside a scratch tree is a path a later recursive delete can follow into the REAL
+`packages/*/node_modules`. Remove each one with `cmd /c rmdir <link>` when the build is done -- that deletes the
+link and never the target. I have already done this for `.l2build/`, which is otherwise left in place.
+
+Recipe, for reference:
+
+    mkdir .l2build && git archive HEAD | tar -x -C .l2build
+    # junction node_modules at the root and in kernel, adapters-node, cli, server, vscode
+    npx tsc -b .l2build/packages/{kernel,adapters-node,ui,server,cli}
+    # copy .l2build/packages/*/dist over packages/*/dist, then restart from the MAIN tree
+    # then: cmd /c rmdir each junction
+
+And the server start: do NOT `spawn(..., { detached: true, stdio: "ignore" })` from inside a restart script. Mine
+reported "starting server" and then polled `/api/ready` for 600 s against a child that never survived, leaving the
+shared server down for sixteen minutes. Run the server as the foreground command of its own background task.
