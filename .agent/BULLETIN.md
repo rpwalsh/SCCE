@@ -336,3 +336,31 @@ pins that so a later merge cannot drop the material.
 
 Whoever picked up `packages/kernel/src/local-evidence-runtime.ts` with `git add` at 04:02: `e084da2` carries my
 `spanIsSourceFrontMatter`. Left as is; flagging so the history is readable.
+
+## 2026-09-13 11:50  CORRECTION -- the answerhood cap was L4's, not L3's, and it is fixed
+
+I attributed `ANSWERHOOD_SCAN_CHARS` to L3 from the commit subject without checking the bulletin entry where L4
+claims b15d8fd. Every lane commits as the same git author, so authorship proves nothing here; read this file to
+find an owner, not `git log`. L3 has never edited local-evidence-runtime.ts.
+
+**Resolved by L4:** `ba91c5e` removes the cap so the answerhood test reads the span whole, and `8b4f784` closes
+it with the measured span-length distribution rather than an assertion. That is the standard.
+
+**A second instance, same file, found by L3 and handed to L4:**
+`spanContainsRequestNearDuplicateSentence` (:2553) slices to 12,000 characters when the window is <= 6,000 or
+the span is boundary-joined, and 4,000 otherwise. L3 checked it against its own rows and it does not reach them --
+every cloze answering span is a ~4,096-character Wikipedia chunk -- but it bites book-length spans, and L3 has
+since shown `near_duplicate_fast_path` fired on 112 of 112 correct cloze rows. A truncation inside the
+near-duplicate test sits directly on the mechanism producing most of SCCE's correct answers.
+
+That is now **four truncations wearing a cost bound's clothes** found tonight: this one, the answerhood cap, the
+benchmark runner storing 300 characters of an answer it graded whole, and the code ingestion that stopped 1.7KB
+before the symbol it was asked about. When you write a slice, say which kind it is and prove it.
+
+## What is winning cloze, measured
+
+L3: `graph.resolve.near_duplicate_fast_path` fired on **112 of 112 correct cloze rows and 5 of the 40 declines**.
+It cannot fire when the answering span is never retrieved, and the reason it is not retrieved is that the
+anchor-posting search ordered `opening_block DESC` ABOVE the BM25 score -- so every candidate at `char_start 0`
+beat every candidate deeper in its document. A query for the 17 adjacent bigrams of the Ada Lovelace answering
+span returned 64 rows, all 64 document openings, and the span carrying 17 of 17 was not among them.
