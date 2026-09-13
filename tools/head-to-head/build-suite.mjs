@@ -48,6 +48,8 @@ function loadSealed() {
       add({
         id: `sealed:${row.questionId}`,
         workload: gold.unanswerable ? "abstention" : (row.category ?? "cloze"),
+        // The sealed corpus is an export of Wikipedia article text (star-trek, star-trek-tos, star-trek-ds9, ada-lovelace).
+        corpus: "wikipedia",
         prompt: row.prompt,
         gold: {
           requiredStrings: gold.requiredStrings ?? [],
@@ -82,6 +84,7 @@ function loadReferenceComparison() {
     add({
       id: `reference:${question.id}`,
       workload: question.answerable ? "factual" : "abstention",
+      corpus: "wikipedia",
       prompt: question.text,
       article: question.article,
       gold: {
@@ -111,6 +114,7 @@ function loadRelations() {
     add({
       id: `relation:capital-${id}`,
       workload: "relation",
+      corpus: "wikipedia",
       prompt,
       gold: { requiredStrings: [expect], acceptedAnswers: [expect], forbiddenStrings: [], unanswerable: false },
       source: "tools/head-to-head/build-suite.mjs"
@@ -121,49 +125,30 @@ function loadRelations() {
 
 // ---- 3b. heterogeneous sources: books and source files, graded -----------------------------------------------
 // Every corpus is knowledge. These items are answerable only from a Gutenberg text or from the ingested source tree,
-// never from a Wikipedia article, so a wiki-only retrieval path scores zero here. Gold is a fact of the text itself.
-const BOOK_ITEMS = [
-  ["moby-narrator", "Who narrates Moby-Dick?", { acceptedAnswers: ["Ishmael"] }],
-  ["moby-captain", "Who is the captain of the Pequod in Moby-Dick?", { acceptedAnswers: ["Ahab"] }],
-  ["moby-ship", "What is the name of the ship in Moby-Dick?", { acceptedAnswers: ["Pequod"] }],
-  ["darcy", "Who is Mr Darcy?", { acceptedAnswers: ["Darcy"], forbiddenStrings: ["band", "album", "rock"] }],
-  ["harker", "Where does Jonathan Harker travel to in Dracula?", { acceptedAnswers: ["Transylvania", "Castle Dracula", "Bistritz"] }],
-  ["frankenstein", "Who created the creature in Frankenstein?", { acceptedAnswers: ["Victor", "Frankenstein"] }],
-  ["watson", "Who is Sherlock Holmes's companion?", { acceptedAnswers: ["Watson"] }],
-  ["dorian-painter", "Who painted the portrait of Dorian Gray?", { acceptedAnswers: ["Hallward", "Basil"] }],
-  ["thornfield", "Where does Jane Eyre work as a governess?", { acceptedAnswers: ["Thornfield"] }],
-  ["hispaniola", "What is the name of the ship in Treasure Island?", { acceptedAnswers: ["Hispaniola"] }],
-  ["toto", "What is the name of Dorothy's dog in The Wonderful Wizard of Oz?", { acceptedAnswers: ["Toto"] }],
-  ["kansas", "Where does Dorothy live in The Wonderful Wizard of Oz?", { acceptedAnswers: ["Kansas"] }]
-];
-const CODE_ITEMS = [
-  ["best-evidence-sentences", "Which file defines bestEvidenceSentences?", ["local evidence runtime", "local-evidence-runtime"]],
-  ["code-request-signal", "Which file defines codeRequestSignal?", ["code request", "code-request"]],
-  ["closed-class", "Which file defines deriveClosedClassWords?", ["closed class words", "closed-class-words"]],
-  ["replan", "Which file defines the replan function?", ["task replanning", "task-replanning"]],
-  ["task-snapshot", "Which file defines syncTaskResumptionSnapshotForTurn?", ["task resumption turn request", "task-resumption-turn-request"]],
-  ["program-planner", "Which file defines createProgramPlanner?", ["program planner", "program-planner"]]
-];
+// never from a Wikipedia article, so a wiki-only retrieval path scores zero here. Gold is a fact of the text itself,
+// and each item carries the corpus document and the quote that supports it so a verdict is checkable by hand.
 function loadHeterogeneous() {
-  for (const [id, prompt, gold] of BOOK_ITEMS) {
+  const path = "tools/datasets/nonwiki-qa.json";
+  if (!existsSync(path)) return 0;
+  const dataset = JSON.parse(readFileSync(path, "utf8"));
+  for (const question of dataset.questions) {
     add({
-      id: `book:${id}`,
-      workload: "book",
-      prompt,
-      gold: { requiredStrings: [], acceptedAnswers: gold.acceptedAnswers, forbiddenStrings: gold.forbiddenStrings ?? [], unanswerable: false },
-      source: "tools/head-to-head/build-suite.mjs"
+      id: `${question.corpus === "code" ? "code" : "book"}:${question.id}`,
+      workload: question.corpus === "code" ? "code" : "book",
+      corpus: question.corpus,
+      kind: question.kind,
+      prompt: question.prompt,
+      gold: {
+        requiredStrings: question.requiredStrings ?? [],
+        acceptedAnswers: question.acceptedAnswers ?? [],
+        forbiddenStrings: question.forbiddenStrings ?? [],
+        unanswerable: false
+      },
+      support: question.support,
+      source: path
     });
   }
-  for (const [id, prompt, accepted] of CODE_ITEMS) {
-    add({
-      id: `code:${id}`,
-      workload: "code",
-      prompt,
-      gold: { requiredStrings: [], acceptedAnswers: accepted, forbiddenStrings: [], unanswerable: false },
-      source: "tools/head-to-head/build-suite.mjs"
-    });
-  }
-  return BOOK_ITEMS.length + CODE_ITEMS.length;
+  return dataset.questions.length;
 }
 
 // ---- 4. conversational probes: no gold, scored only for latency and energy -----------------------------------
@@ -174,6 +159,7 @@ function loadProbes() {
   lines.forEach((prompt, index) => add({
     id: `probe:${index + 1}`,
     workload: "conversational",
+    corpus: "none",
     prompt,
     gold: { requiredStrings: [], acceptedAnswers: [], forbiddenStrings: [], unanswerable: false, ungraded: true },
     source: path
@@ -192,12 +178,20 @@ const counts = {
 const byWorkload = {};
 for (const item of items) byWorkload[item.workload] = (byWorkload[item.workload] ?? 0) + 1;
 
+// Per corpus, counting only graded items: one total across Wikipedia, books and code hides which corpus is unmeasured.
+const gradedByCorpus = {};
+for (const item of items) {
+  if (item.gold.ungraded) continue;
+  gradedByCorpus[item.corpus ?? "unlabelled"] = (gradedByCorpus[item.corpus ?? "unlabelled"] ?? 0) + 1;
+}
+
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, JSON.stringify({
   schema: "scce.head_to_head_suite.v1",
   generatedAt: new Date().toISOString(),
   total: items.length,
   byWorkload,
+  gradedByCorpus,
   sourceCounts: counts,
   // Graded items decide correctness; ungraded ones are carried for latency and energy only, and are never
   // counted as correct or wrong.
@@ -208,5 +202,9 @@ writeFileSync(outPath, JSON.stringify({
 console.log(`suite: ${items.length} items (${items.filter(i => !i.gold.ungraded).length} graded)`);
 for (const [workload, count] of Object.entries(byWorkload).sort((a, b) => b[1] - a[1])) {
   console.log(`  ${workload.padEnd(16)} ${count}`);
+}
+console.log("graded by corpus:");
+for (const [corpus, count] of Object.entries(gradedByCorpus).sort((a, b) => b[1] - a[1])) {
+  console.log(`  ${corpus.padEnd(16)} ${count}`);
 }
 console.log(`wrote ${outPath}`);

@@ -20,7 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { score } from "./grade.mjs";
+import { score, summarizeVerdicts, formatPerCorpus } from "./grade.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i++) {
@@ -138,7 +138,7 @@ console.log(`${items.length} items, systems: ${only}`);
 console.log(`battery: ${batteryStart ? (batteryStart.onBattery ? `on battery, ${batteryStart.remainingMwh} mWh` : "on AC -- energy delta will be reported as null") : "unavailable"}\n`);
 
 for (const [index, item] of items.entries()) {
-  const row = { id: item.id, workload: item.workload, prompt: item.prompt };
+  const row = { id: item.id, workload: item.workload, corpus: item.corpus ?? "unlabelled", prompt: item.prompt };
   if (only === "both" || only === "scce") {
     const before = sampleProcesses();
     const result = await askScce(item.prompt);
@@ -174,23 +174,9 @@ for (const [index, item] of items.entries()) {
 const batteryEnd = sampleBattery();
 
 function summarize(side) {
-  const scored = rows.filter(row => row[side] && row[side].verdict !== "ungraded");
   const cpu = rows.map(row => row[side]?.cpuSeconds).filter(v => typeof v === "number");
-  // Per corpus: a wiki-only retrieval path scores zero on book and code rows while the total still looks healthy.
-  const byWorkload = {};
-  for (const row of scored) {
-    const bucket = byWorkload[row.workload] ??= { items: 0, correct: 0 };
-    bucket.items += 1;
-    if (row[side].verdict === "correct") bucket.correct += 1;
-  }
   return {
-    items: scored.length,
-    byWorkload,
-    correct: scored.filter(r => r[side].verdict === "correct").length,
-    wrong: scored.filter(r => r[side].verdict === "wrong").length,
-    declinedWhenAnswerable: scored.filter(r => r[side].verdict === "declined_when_answerable").length,
-    declined: scored.filter(r => r[side].verdict === "declined").length,
-    fabricated: scored.filter(r => r[side].verdict === "fabricated").length,
+    ...summarizeVerdicts(rows, side),
     meanMs: Math.round(rows.reduce((sum, r) => sum + (r[side]?.ms ?? 0), 0) / Math.max(1, rows.length)),
     wallSecondsPerItem: Number((rows.reduce((sum, r) => sum + (r[side]?.ms ?? 0), 0) / Math.max(1, rows.length) / 1000).toFixed(2)),
     cpuSecondsTotal: Number(cpu.reduce((sum, v) => sum + v, 0).toFixed(2)),
@@ -226,6 +212,9 @@ for (const [label, side] of [["SCCE", summary.scce], [model, summary.reference]]
   if (!side) continue;
   console.log(`\n${label}: ${side.correct} correct, ${side.wrong} wrong, ${side.declinedWhenAnswerable} declined when answerable, ${side.fabricated} fabricated`);
   console.log(`  ${side.meanMs}ms mean, ${side.cpuSecondsPerItem}s CPU per item, ${side.cpuSecondsTotal}s CPU total`);
-  console.log(`  ${Object.entries(side.byWorkload).map(([workload, b]) => `${workload} ${b.correct}/${b.items}`).join(", ")}`);
+  console.log(`  workload: ${Object.entries(side.byWorkload).map(([workload, b]) => `${workload} ${b.correct}/${b.items}`).join(", ")}`);
+  // The number that matters for a multi-corpus claim: books and code are reported apart from Wikipedia.
+  console.log("  per corpus:");
+  for (const line of formatPerCorpus(side.byCorpus)) console.log(line);
 }
 console.log(`\nwrote ${outPath}`);
