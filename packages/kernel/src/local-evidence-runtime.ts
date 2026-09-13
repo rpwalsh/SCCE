@@ -1190,14 +1190,28 @@ export function answerCoversRequest(
   // side when the caller's coverage units are already a subset of the subject ("Who won the 1998 FIFA World
   // Cup?" reached here as {fifa, world}), and the definition of the tournament answered who won one of them.
   // A sentence carrying nothing of the asked relation supports every candidate value for it equally, so it
-  // discriminates nothing and settles nothing. When the subtraction empties, the obligation is re-derived
-  // against what the corpus says the source itself is about, and the request's remainder past that is required.
-  // Re-derived only for a caller holding the language's own closed class, for the same reason the relation is only
-  // required there: without one, "what" is indistinguishable from "commanded" and the obligation is a guess.
+  // discriminates nothing and settles nothing.
+  //
+  // When the subtraction empties, the subject is taken from the SOURCE instead of from the request: the corpus's
+  // own title and derived identity for this document are what it says the document is about, and the request's
+  // content past that is the relation. That holds with no runtime corpus signal primed at all, which is the
+  // condition the whole-content-run anchor comes from in the first place -- and identity priming has already been
+  // observed absent or a turn stale in production, so the gate must not depend on it. Only where the corpus is
+  // silent about the source too (no title, no identity) is the request re-read, and then only for a caller
+  // holding the language's own closed class: without one, "what" is indistinguishable from "commanded".
   const subtractedRelationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
-  const relationUnits = subtractedRelationUnits.length || !options.languageClosedClassWords?.size
+  const sourceIdentityUnits = subtractedRelationUnits.length
+    ? []
+    : memoizedSurfaceUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
+  const sourceSubjectUnits = contentUnits.filter(unit => sourceIdentityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
+  const beyondSourceSubject = sourceSubjectUnits.length ? contentUnits.filter(unit => !sourceSubjectUnits.includes(unit)) : [];
+  const relationUnits = subtractedRelationUnits.length
     ? subtractedRelationUnits
-    : requestRelationBeyondSourceIdentity(requestText, span, options.languageClosedClassWords);
+    : beyondSourceSubject.length
+      ? beyondSourceSubject
+      : options.languageClosedClassWords?.size
+        ? requestRelationBeyondSourceIdentity(requestText, span, options.languageClosedClassWords)
+        : [];
   const answeringText = sentences.join(" ");
   const sentenceUnits = memoizedSurfaceUnits(answeringText).map(stripOuterPriorSeparators);
   const missingRelationUnits = relationUnits.filter(unit => !sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
@@ -1229,9 +1243,13 @@ export function answerCoversRequest(
   // its units: "In May 1904, their son Hans Albert was born in Bern, Switzerland" sits one sentence before Eduard's
   // birth and carries the bare token "Albert", which is not the same evidence a full "Albert Einstein" repeated
   // nearby would be. A single shared given name between two different people must not pass this gate.
-  const subjectInAnsweringText = subjectUnits.some(unitPresentIn(sentenceUnits));
+  // Where the source named the subject, it names it here too: an anchor that swallowed the whole request would
+  // otherwise be satisfied by the relation word itself -- "Their son Eduard was born in Zurich" carries "born",
+  // and "born" was inside the anchor, so the sentence counted as naming Einstein.
+  const answerSubjectUnits = sourceSubjectUnits.length ? sourceSubjectUnits : subjectUnits;
+  const subjectInAnsweringText = answerSubjectUnits.some(unitPresentIn(sentenceUnits));
   const contextUnits = memoizedSurfaceUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
-  const subjectGroups = namedGroups.length ? namedGroups : [subjectUnits];
+  const subjectGroups = sourceSubjectUnits.length ? [sourceSubjectUnits] : namedGroups.length ? namedGroups : [subjectUnits];
   // A titled source's opening block is about its title by construction, and states the standing fact anaphorically:
   // "Baku is the capital and largest city", "Tirana is the capital ... in the country", "Alabama's capital is
   // Montgomery". Requiring the name inside those sentences declined the article's own definition of its subject.
@@ -4882,4 +4900,23 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
 export function evidenceIdentityBeyondTitle(span: EvidenceSpan): boolean {
   const identity = evidenceIdentity(span);
   return identity.trim().length > 0 && normalizePriorKey(identity) !== normalizePriorKey(evidenceTitle(span));
+}
+
+/**
+ * A source's front matter: the opening block of a source that names itself, which is where its apparatus lives.
+ *
+ * An article's opening block is its definitional lead and answers about its subject; a book's is its title page,
+ * licence and chapter index, which recur across every book of the same lane and state nothing about the story.
+ * Both facts are already known here -- the opening-block pin refuses exactly this span and the relevance boost
+ * excludes it -- and the two answer-of-last-resort lanes asked neither, so "Where does Jonathan Harker travel to
+ * in Dracula?" was answered with the Project Gutenberg licence header and "What is the name of the ship in
+ * Treasure Island?" with three lines of the chapter table of contents (live 2026-09-13).
+ *
+ * Structural and language-free by construction: it names no phrase, no lane and no markup dialect. The
+ * complementary surface measure in `structural-residue.ts` does not reach this material -- measured on those two
+ * answers it scores 0.005 and 0.063, well inside prose -- because a licence header IS fluent prose. What
+ * disqualifies it is where it sits in a source that has an identity of its own, not how it reads. Pure.
+ */
+export function spanIsSourceFrontMatter(span: EvidenceSpan): boolean {
+  return Number(span.charStart ?? -1) === 0 && evidenceIdentityBeyondTitle(span);
 }
