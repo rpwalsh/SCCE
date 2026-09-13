@@ -1532,6 +1532,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     },
     async searchEvidence(query: EvidenceQuery) {
       const features = evidenceQueryFeatures(query.features ?? []);
+      const openingBlockPrior = query.openingBlockPrior !== false;
       if (features.length && features.every(isEvidenceAnchorFeature) && !query.sourceId && !query.sourceVersionId) {
         const access = storage.informationAccessPredicate("evidence", 3);
         // Okapi BM25 ranking over anchor postings, with presence-only term
@@ -1703,27 +1704,11 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
                AND ${access.sql}
                AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
                AND ${forceClassExclusion("evidence", 5 + access.params.length)}
-             ORDER BY title_exact DESC,
-                      title_match DESC,
-                      opening_block DESC,
-                      hits.score DESC,
-                      hits.overlap_count DESC,
-                      hits.first_feature_ord ASC,
-                      CASE WHEN evidence.status='promoted' THEN 0 WHEN evidence.status='pending' THEN 1 ELSE 2 END ASC,
-                      evidence.alpha DESC,
-                      evidence.observed_at DESC
+             ORDER BY ${evidenceRankOrder({ rank: "", score: "hits.", row: "evidence.", openingBlockPrior })}
              LIMIT $2
            ) top
            JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=top.id
-           ORDER BY top.title_exact DESC,
-                    top.title_match DESC,
-                    top.opening_block DESC,
-                    top.score DESC,
-                    top.overlap_count DESC,
-                    top.first_feature_ord ASC,
-                    CASE WHEN top.status='promoted' THEN 0 WHEN top.status='pending' THEN 1 ELSE 2 END ASC,
-                    top.alpha DESC,
-                    top.observed_at DESC`,
+           ORDER BY ${evidenceRankOrder({ rank: "top.", score: "top.", row: "top.", openingBlockPrior })}`,
           [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? [], query.titleUnits ?? [], query.excludeForceClasses ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
@@ -5603,6 +5588,32 @@ function ginIndexableFeatures(features: readonly string[]): string[] {
     bytes += size;
   }
   return kept;
+}
+
+/**
+ * Rank keys for the anchor-posting search, in order.
+ *
+ * `opening_block` is a positional prior, and it sat above the BM25 score, so every candidate at char_start 0 beat
+ * every candidate deeper in its document whatever the score said. That is right for a request that asks ABOUT a
+ * subject -- the lead states what the document is -- and exactly wrong for a request that quotes one of the
+ * corpus's own sentences, which is answered wherever that sentence sits. Measured on this corpus: the span
+ * carrying "She became fascinated with the machine ... to visit Babbage" holds 17 of the request's 18 adjacent
+ * bigrams and did not appear in the top 64 of a query for all 17, because unrelated document openings carrying one
+ * of them outranked it. Callers that do not say otherwise keep the prior. Pure.
+ */
+export function evidenceRankOrder(input: { rank: string; score: string; row: string; openingBlockPrior: boolean }): string {
+  const { rank, score, row, openingBlockPrior } = input;
+  return [
+    `${rank}title_exact DESC`,
+    `${rank}title_match DESC`,
+    ...(openingBlockPrior ? [`${rank}opening_block DESC`] : []),
+    `${score}score DESC`,
+    `${score}overlap_count DESC`,
+    `${score}first_feature_ord ASC`,
+    `CASE WHEN ${row}status='promoted' THEN 0 WHEN ${row}status='pending' THEN 1 ELSE 2 END ASC`,
+    `${row}alpha DESC`,
+    `${row}observed_at DESC`
+  ].join(",\n                      ");
 }
 
 /** A source titled with the subject the request names, ranked ahead of one that only mentions it. An empty unit
