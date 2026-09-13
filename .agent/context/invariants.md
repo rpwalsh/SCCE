@@ -49,3 +49,20 @@ unmeasured; anchor evidence search was measured at 23.3% of CPU and no change in
 instrumentation, the other needs scheduling, and neither needs an algorithm change.
 
 **Correctness is not currently the crisis. Cognitive allocation is.**
+
+## Every deciding constant is declared, and coverage is reported not excavated
+
+A number written inline cannot be audited, cannot be searched, and cannot be fitted. The field operators ran ten
+iterative steps per activation on four such numbers for the life of the system, and no coverage report could see
+them because they were never declared.
+
+Declared constants live in `packages/kernel/src/calibrations/public-calibrations.ts`, and the search space in
+`calibration-search-space.ts` is a Record over every key, so the typechecker refuses a new id that does not also
+say how it would be searched. Use that: it is the only thing that made the field constants impossible to add
+quietly.
+
+`node tools/undeclared-constants.mjs` reports the rest, and the integration gate prints the coverage every run.
+Measured 2026-09-13: **35 declared, 1,929 inline candidates across 107 files that never read the registry, 1.8%
+coverage.** A cost bound is legitimately inline and must say so in a comment; a modeling parameter is not.
+
+Finding constants by reading code is the smell this replaces.
