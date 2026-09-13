@@ -879,3 +879,60 @@ makes L2's reversed-order experiment cheaper to interpret.
 character answer store, `ANSWERHOOD_SCAN_CHARS`, the 4,000-character near-duplicate slice, and now `?? 0` on an
 absent key -- four measurement defects, every one of them making the system look different from how it is.
 Before quoting a number from this harness, check what it does when the thing it measures is absent.
+
+## 2026-09-13 22:1x  B-THRESHOLDS -- the class-B headline instance is real, latent, and runs the other way
+
+Committed `c5e4862`, kernel-only, offline, no dist emitted and no lock taken. Full write-up in
+`.agent/findings/B-THRESHOLDS.md`.
+
+**Three corrections that matter to other lanes.**
+
+1. **`ef9409c` does not reach `SUBJECT_COMMUNITY_EPSILON`.** `scoreGraphEdgesWithRelationPotential`
+   (relation-potential.ts:321) returns `Object.freeze({ ...edge, alpha: scoredAlpha })` -- new objects, input
+   array unmutated -- inside `fieldEngine.activate`, which the turn calls ~150 lines AFTER
+   `evidenceInSubjectCommunity` at production-turn-runtime.ts:1576. The community walk has never seen a
+   rescaled alpha. The mechanism is real; the attribution is not.
+
+2. **The direction in `bug-classes.md` is inverted.** Smaller edge weights mean smaller weighted degrees, so
+   `residual/degree` is LARGER, so MORE nodes clear epsilon. One 400-node slice, one epsilon of 1e-4, nothing
+   changed but a uniform multiplier: x100 gives 19 pushes over 15 nodes; x0.002 gives 10,414 pushes over 400.
+   A 500x weight shrink is a 4x CPU increase, not a narrowing.
+
+3. **`retrieval.ts:428` is not clear, and it is also inert.** The 03:1x and 10:32 notes cleared it as reading
+   `span.alpha`. True of `alphaScore`, false of `graphScore`: `graphEvidenceSignals` (retrieval.ts:305) sets an
+   edge's mass to `edge.alpha * edge.weight`, the transition weight itself. It happens not to matter for a
+   different reason -- see below. A variable's name is not a reachability check.
+
+**What I fixed.** `mostPushableNode` compared `residual / weighted-out-degree` against a fixed epsilon, so a
+uniform rescale of the caller's weights moved where the walk stops. Degree is now measured in units of the
+graph's own mean edge weight, which on a uniform-weight graph is exactly the unweighted degree count
+Andersen-Chung-Lang define the criterion on. Five new assertions in `ppr-local-push.test.ts`, all five fail
+without it; no existing assertion touched; 20/20 green; `tsc --noEmit` clean.
+
+**Do not credit a benchmark row to this.** From the authoritative run's own trace, the live graph slice is at
+most **16 nodes / 32 edges** over 290 turns, and at that size the walk reaches every reachable node at every
+scale -- identical membership, only the push count moves. The community admission that IS firing (64 turns, 521
+spans dropped) is decided by slice membership, not epsilon. Prediction on record: **no row changes.** A row that
+does change falsifies that and should be reported.
+
+**hybridRecall is trace-only in a production turn, and three of my four starting points are dead.**
+`production-turn-runtime.ts:1677` uses `roleRetrieval` for the `retrievalRoles` contract field, a trace count
+and an event payload; the retrieval that decides is `semanticMemory.search`. So retrieval.ts's BM25 parameters,
+its `0.38/0.24/0.22/0.16` blend, its role thresholds and its `roleConfidence` constants cannot change an answer.
+`graphSeeds` (retrieval.ts:233) has **no consumer anywhere in the repo** -- kernel, server, ui, adapters, cli or
+tools. `semantic-memory-index.ts:636` builds display strings. `compileCorpusIndex` from the same file IS live.
+
+**Handing over, with measurements.**
+
+- **`field.ts:400` `clean.length < 4`** decides what the field treats as content, and it is live all the way to
+  `composeEvidenceGroundedAnswer`. Over the 311 prompts it keeps `with:197 from:184 this:168 only:165 what:77
+  which:44` as information-bearing and drops `who:35 ada:19 how:9` -- including the given name of a benchmark
+  subject. `deriveClosedClassWords` is the instrument that replaces it and its own comment makes the argument
+  ("'a' and 'i' continue thousands and stay closed-class at one character"). The fix needs the hydrated closed
+  class threaded into `createAlphaFieldEngine`, whose only production construction is
+  production-turn-runtime.ts:49 -- not mine to touch. Whoever owns that call site: say the word and I will make
+  the `field.ts` half.
+- **`launch-contract.ts:294-296`** looks unowned and is the biggest unclaimed instance of this class I saw:
+  `contradiction > 0.4`, `support >= 0.78`, `faithfulnessLcb >= 0.65` decide `truthState`, which
+  `assistant-force.ts:166/229` consumes to decide the force class. Three absolute constants on three learned
+  quantities, and unlike everything above, consumed.
