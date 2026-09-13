@@ -156,6 +156,53 @@ function flushTurn(events, outEv) {
       if (hit > 0) r.basisTouching++;
     }
   }
+  if (args.has('anchor-skip')) flushAnchor(events, outEv, basis, cpuPerWall, lastInput);
+}
+
+// --anchor-skip: per-invocation record of the anchor evidence search, the state knowable BEFORE it,
+// and whether its output reached the turn's claim basis. Read-only, same events.
+const anchorRows = [];
+let lastInput = '';
+function flushAnchor(events, outEv, basis, cpuPerWall, inputText) {
+  const has = st => events.some(e => e.stage === st);
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.stage !== 'graph.resolve.anchor_evidence_search') continue;
+    const s = ev.support || {}, c = ev.counts || {};
+    let adm = null;
+    for (let j = i + 1; j < events.length; j++) {
+      if (events[j].stage === 'graph.resolve.anchor_admissibility') { adm = events[j]; break; }
+      if (events[j].stage === 'graph.resolve.anchor_evidence_search') break;
+    }
+    const as = adm?.support || {}, ac = adm?.counts || {};
+    const admittedIds = (as.admitted || []).map(x => norm(String(x?.id ?? x)));
+    const poolIds = (as.pool || []).map(x => norm(String(x?.id ?? x)));
+    const gatheredIds = (s.gatheredHeads || []).map(x => norm(String(x)));
+    const hits = ids => Boolean(basis && basis.size && ids.some(y => [...basis].some(x => sameId(x, y))));
+    anchorRows.push({
+      traceId: outEv.traceId, text: inputText || '',
+      ms: Number(ev.durationMs || 0), cpuMs: Number(ev.durationMs || 0) * cpuPerWall,
+      groups: Number(c.groups ?? (s.anchorFeatureGroups || []).length),
+      features: Number(c.features || 0),
+      dropped: Number(s.droppedScaffoldingGroups || 0),
+      gathered: Number(s.gathered ?? c.results ?? 0),
+      afterProse: Number(s.afterProseFilter ?? c.results ?? 0),
+      symGroups: (s.anchorFeatureGroups || []).filter(g => g.some(u => String(u).startsWith('anchor:sym:'))).length,
+      biOnlyGroups: (s.anchorFeatureGroups || []).filter(g => g.every(u => String(u).startsWith('anchor:bi:'))).length,
+      admitted: adm ? Number(ac.admitted || 0) : null,
+      promoted: adm ? Number(ac.promoted || 0) : null,
+      candidates: adm ? Number(ac.candidates || 0) : null,
+      concept: adm ? Number(ac.concept || 0) : null,
+      identityAbsent: Boolean(as.sourceIdentityBoundEvidenceAbsent),
+      basisSize: basis ? basis.size : 0,
+      basisHitsAdmitted: hits(admittedIds),
+      basisHitsPool: hits(poolIds),
+      basisHitsGathered: hits(gatheredIds),
+      hotNeighborhood: has('graph.resolve.near_duplicate_fast_path'),
+      openingBlock: has('graph.resolve.opening_block'),
+      poolAdmitted: (() => { const p = events.find(e => e.stage === 'graph.resolve.pool_admission'); return p ? Number(p.counts?.admitted || 0) : null; })(),
+    });
+  }
 }
 
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort();
@@ -168,7 +215,7 @@ for (const f of use) {
     if (!line.trim()) continue;
     lineCount++;
     let ev; try { ev = JSON.parse(line); } catch { continue; }
-    if (ev.stage === 'turn.input') { buf = []; continue; }
+    if (ev.stage === 'turn.input') { buf = []; lastInput = typeof ev.input === 'string' ? ev.input : ''; continue; }
     buf.push(ev);
     if (ev.stage === 'turn.output') { flushTurn(buf, ev); buf = []; }
   }
@@ -230,3 +277,96 @@ console.log('         on decisiveness; n/a where the operator logs no hypothesis
 console.log('ms/inv   wall ms, blank where the operator emits no durationMs (cost not instrumented).');
 const noDur = rows.filter(r => r.noDuration === r.n && r.n > 0).map(r => r.id);
 if (noDur.length) console.log(`\nNO DURATION RECORDED (cost unmeasurable from traces): ${noDur.join(', ')}`);
+
+if (args.has('anchor-skip')) {
+  const R = anchorRows;
+  const cpuTotalAll = [...acc.values()].reduce((a, r) => a + r.cpuMs, 0) || 1;
+  const cpu = R.reduce((a, r) => a + r.cpuMs, 0);
+  const f1 = (n, d = 1) => (Number.isFinite(n) ? n.toFixed(d) : '-');
+  console.log('\n== anchor evidence search: per-invocation ==');
+  console.log(`invocations=${R.length} cpu_s=${f1(cpu / 1000)} (${f1(100 * cpu / cpuTotalAll)}% of attributable) mean_ms=${f1(R.reduce((a, r) => a + r.ms, 0) / (R.length || 1))}`);
+  const admKnown = R.filter(r => r.admitted !== null);
+  const basisKnown = R.filter(r => r.basisSize > 0);
+  console.log(`with paired admissibility=${admKnown.length}  with non-empty claim basis=${basisKnown.length}`);
+  console.log(`gathered==afterProseFilter in ${R.filter(r => r.gathered === r.afterProse).length}/${R.length} (this is what T12's 100%% no-change measured: the code-span filter, NOT the search)`);
+  const hist = {};
+  for (const r of admKnown) { const k = r.admitted === 0 ? 'admitted=0' : r.basisHitsAdmitted ? 'admitted>0 & reached basis' : 'admitted>0 & basis untouched'; hist[k] = (hist[k] || 0) + 1; }
+  console.log('outcome: ' + Object.entries(hist).map(([k, v]) => `${k}=${v}`).join('  '));
+  // Outcome under test: "this invocation could not have improved the proof" = nothing it admitted reached the claim basis.
+  const useful = r => r.admitted > 0 && r.basisHitsAdmitted;
+  const P = {
+    'A groups==0': r => r.groups === 0,
+    'B no symbol group (symGroups==0)': r => r.symGroups === 0,
+    'C groups==0 OR symGroups==0': r => r.groups === 0 || r.symGroups === 0,
+    'D repeat request text (seen earlier)': null,
+    'E gathered==0': r => r.gathered === 0,
+    'F afterProse==0': r => r.afterProse === 0,
+    'G features<=1': r => r.features <= 1,
+    'H droppedScaffoldingGroups>0': r => r.dropped > 0,
+  };
+  const seen = new Set(); const repeat = new Map();
+  for (const r of R) { const k = r.text.trim().toLowerCase(); repeat.set(r, seen.has(k)); seen.add(k); }
+  P['D repeat request text (seen earlier)'] = r => repeat.get(r);
+  const scope = admKnown.filter(r => r.basisSize > 0);
+  console.log(`\nconfusion over ${scope.length} invocations that have BOTH a paired admissibility event and a non-empty claim basis`);
+  console.log('precondition'.padEnd(38) + 'pred_skip  true_skip  FALSE_SKIP  cpu_s_saved  %cpu_sys  precision');
+  for (const [name, fn] of Object.entries(P)) {
+    const sel = scope.filter(fn);
+    const bad = sel.filter(useful);
+    const saved = sel.reduce((a, r) => a + r.cpuMs, 0) / 1000;
+    console.log(name.padEnd(38) + String(sel.length).padEnd(11) + String(sel.length - bad.length).padEnd(11) + String(bad.length).padEnd(12) + f1(saved).padEnd(13) + f1(100 * saved * 1000 / cpuTotalAll).padEnd(10) + (sel.length ? f1(100 * (sel.length - bad.length) / sel.length) + '%' : '-'));
+  }
+  const u = scope.filter(useful);
+  console.log(`\nbase rate: useful (admitted evidence reached the claim basis) = ${u.length}/${scope.length} = ${f1(100 * u.length / (scope.length || 1))}%  cpu_s=${f1(u.reduce((a, r) => a + r.cpuMs, 0) / 1000)}`);
+  const nu = scope.filter(r => !useful(r));
+  console.log(`not useful = ${nu.length}  cpu_s=${f1(nu.reduce((a, r) => a + r.cpuMs, 0) / 1000)} (${f1(100 * nu.reduce((a, r) => a + r.cpuMs, 0) / cpuTotalAll)}% of attributable CPU)`);
+  console.log(`of the not-useful: admitted=0 in ${nu.filter(r => r.admitted === 0).length}, identityAbsent in ${nu.filter(r => r.identityAbsent).length}, gathered=0 in ${nu.filter(r => r.gathered === 0).length}`);
+  if (args.get('anchor-json')) fs.writeFileSync(args.get('anchor-json'), JSON.stringify(R, null, 1));
+}
+
+if (args.has('anchor-skip')) {
+  const R = anchorRows;
+  const f1 = (n, d = 1) => (Number.isFinite(n) ? n.toFixed(d) : '-');
+  const cpuTotalAll = [...acc.values()].reduce((a, r) => a + r.cpuMs, 0) || 1;
+  // Is the search a pure function of the request? Group identical request texts and ask whether the
+  // gathered/admitted cardinalities are stable. Stability is the precondition a memo would need.
+  const byText = new Map();
+  for (const r of R) { const k = r.text.trim().toLowerCase(); if (!byText.has(k)) byText.set(k, []); byText.get(k).push(r); }
+  const groups = [...byText.values()].filter(g => g.length > 1);
+  const stable = groups.filter(g => g.every(r => r.gathered === g[0].gathered && r.admitted === g[0].admitted));
+  const repeatCpu = groups.reduce((a, g) => a + g.slice(1).reduce((b, r) => b + r.cpuMs, 0), 0);
+  console.log('REPEATSn'.replace('n',''));
+  console.log(`distinct request texts=${byText.size}  texts asked more than once=${groups.length}  repeat invocations=${R.length - byText.size}`);
+  console.log(`repeat-invocation cpu=${f1(repeatCpu / 1000)}s = ${f1(100 * repeatCpu / cpuTotalAll)}% of attributable CPU`);
+  console.log(`repeat groups with IDENTICAL gathered AND admitted counts across every repeat: ${stable.length}/${groups.length}`);
+  const unstable = groups.filter(g => !stable.includes(g)).slice(0, 5);
+  for (const g of unstable) console.log(`  unstable: ${JSON.stringify(g[0].text).slice(0, 54)} gathered=[${g.map(r => r.gathered).join(',')}] admitted=[${g.map(r => r.admitted).join(',')}]`);
+  // Turns that produced no claim basis at all: how much did the search cost them?
+  const noBasis = R.filter(r => r.basisSize === 0);
+  console.log(`invocations on turns with NO claim basis: ${noBasis.length}  cpu=${f1(noBasis.reduce((a, r) => a + r.cpuMs, 0) / 1000)}s (${f1(100 * noBasis.reduce((a, r) => a + r.cpuMs, 0) / cpuTotalAll)}%)  of those, admitted>0 in ${noBasis.filter(r => r.admitted > 0).length}`);
+  const byGroups = new Map();
+  for (const r of R) { const k = Math.min(r.groups, 6); if (!byGroups.has(k)) byGroups.set(k, []); byGroups.get(k).push(r); }
+  console.log('ms per invocation by anchor-group count: ' + [...byGroups.entries()].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}:${f1(v.reduce((a, r) => a + r.ms, 0) / v.length)}ms(n=${v.length})`).join(' '));
+}
+
+if (args.has('anchor-skip')) {
+  const f1 = (n, d = 1) => (Number.isFinite(n) ? n.toFixed(d) : '-');
+  const cpuTotalAll = [...acc.values()].reduce((a, r) => a + r.cpuMs, 0) || 1;
+  // Same process (one traceId = one server run, so one in-memory slice cache and one corpus state):
+  // a second identical request there is the only repeat whose result is identical BY CONSTRUCTION.
+  const perTrace = new Map();
+  let sameProcRepeats = 0, sameProcCpu = 0, sameProcIdentical = 0, sameProcDiffer = 0;
+  for (const r of anchorRows) {
+    const k = r.traceId + '|' + r.text.trim().toLowerCase();
+    if (perTrace.has(k)) {
+      sameProcRepeats++; sameProcCpu += r.cpuMs;
+      const first = perTrace.get(k);
+      if (first.gathered === r.gathered && first.admitted === r.admitted) sameProcIdentical++; else sameProcDiffer++;
+    } else perTrace.set(k, r);
+  }
+  console.log(`same-process repeat invocations of an identical request: ${sameProcRepeats}  cpu=${f1(sameProcCpu / 1000)}s (${f1(100 * sameProcCpu / cpuTotalAll)}% of attributable)`);
+  console.log(`  of those, identical gathered+admitted as the first: ${sameProcIdentical}  differing: ${sameProcDiffer}`);
+  // Oracle ceiling: skip every invocation whose admitted evidence never reached a claim basis.
+  const oracle = anchorRows.filter(r => !(r.admitted > 0 && r.basisHitsAdmitted));
+  console.log(`ORACLE ceiling (not achievable, needs the future): skip ${oracle.length}/${anchorRows.length} invocations = ${f1(oracle.reduce((a, r) => a + r.cpuMs, 0) / 1000)}s = ${f1(100 * oracle.reduce((a, r) => a + r.cpuMs, 0) / cpuTotalAll)}% of attributable CPU`);
+}
