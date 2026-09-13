@@ -151,12 +151,13 @@ function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, c
   // ordering is for that population, and it is inert on a pool of articles, which is 21,915 of the corpus's
   // 23,421 sources -- so it also does not spend the scan on them.
   if (!evidenceIdentityBeyondTitle(span)) return false;
-  // A source's front matter states nothing about its subject, so no sentence of it answers. Treasure Island's
-  // chapter index led this ordering because the titles it lists carry "treasure island" and "ship" between them:
-  // it compresses the source's own vocabulary beautifully and explains none of its structure, which is exactly the
-  // material `joint-objective.md` forbids promoting. An article's lead is untouched -- it has no identity of its
-  // own, so this predicate is false for every Wikipedia opening block in the corpus.
-  if (spanIsSourceFrontMatter(span)) return false;
+  // Sentence granularity, never span. A whole-span front-matter guard stood here and it cost a real answer: a
+  // Gutenberg book's opening block holds the licence, the chapter index AND the first page of the work, so
+  // refusing the block refused "Dorothy lived in the midst of the great Kansas prairies, with Uncle Henry" --
+  // the sentence that answers where Dorothy lives (live 2026-09-13, the row stayed declined). Measured on the
+  // real opening blocks with the request's real units, the sentence test needs no such guard: of Oz's opening
+  // block exactly one sentence passes and it is the answering one, and of Treasure Island's and Dracula's none
+  // does, because a chapter index carries the title and not what the request asks past it.
   const text = String(span.text ?? span.textPreview ?? "");
   if (!text) return false;
   if (!answerCoversRequest([text], span, coverageUnits, requestText, { relationRequired: true })) return false;
@@ -1214,12 +1215,26 @@ export function answerCoversRequest(
   // observed absent or a turn stale in production, so the gate must not depend on it. Only where the corpus is
   // silent about the source too (no title, no identity) is the request re-read, and then only for a caller
   // holding the language's own closed class: without one, "what" is indistinguishable from "commanded".
-  const subtractedRelationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
+  //
+  // The subtraction reads the subject the way every other comparison in this function reads a unit -- by shared
+  // stem, not by string identity. An exact match left an inflected form of the subject sitting in the relation:
+  // "Who was Albert Einstein's dentist?" against the article titled "Albert Einstein" kept "einstein's" as an
+  // obligation, the lead sentence satisfied it by saying "Einstein", and a two-unit obligation with one unit
+  // missing is exactly the shape the category-member escape below lets through. The subject cannot be the thing
+  // that proves the relation was answered.
+  const subtractedRelationUnits = contentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit)));
   const sourceIdentityUnits = subtractedRelationUnits.length
     ? []
     : memoizedSurfaceUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
   const sourceSubjectUnits = contentUnits.filter(unit => sourceIdentityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
-  const beyondSourceSubject = sourceSubjectUnits.length ? contentUnits.filter(unit => !sourceSubjectUnits.includes(unit)) : [];
+  // An obligation names what the ANSWER must carry, so the request's own opening scaffolding and the language's
+  // closed class come off it here too: "When did the American Revolutionary War end?" reached the gate as
+  // {what, year, american, revolutionary} and would otherwise have demanded that the answer restate "what".
+  const beyondSourceSubject = sourceSubjectUnits.length
+    ? contentUnits.filter(unit => !sourceSubjectUnits.includes(unit)
+      && unit !== requestLeadingScaffoldingUnit(requestText)
+      && !options.languageClosedClassWords?.has(unit))
+    : [];
   const relationUnits = subtractedRelationUnits.length
     ? subtractedRelationUnits
     : beyondSourceSubject.length
@@ -1240,6 +1255,10 @@ export function answerCoversRequest(
   const lastContentUnit = subtractedRelationUnits.length
     ? contentUnits[contentUnits.length - 1]
     : relationUnits[relationUnits.length - 1];
+  // The escape excuses the category the answer replaces, never the relation itself: it requires a second relation
+  // unit, which the sentence must therefore be carrying. That is what the subject leaking into the obligation
+  // defeated -- with "einstein's" counted as a carried relation unit beside "dentist", the Einstein lead was
+  // exactly this shape, and the escape is how it answered who his dentist was on the live server.
   const categoryMemberAnswer = missingRelationUnits.length === 1
     && relationUnits.length >= 2
     && missingRelationUnits[0] === lastContentUnit
@@ -2711,8 +2730,19 @@ export function requestSentenceSequences(text: string): string[][] {
   // restate a short evidence sentence, a cloze never ends with "?".
   if (endsWithUnicodeQuestionMark(text.trim())) return [];
   const whole = orderedSequenceUnits(text);
+  // A clause boundary offers its parts as sequences of their own, alongside the whole sentence.
+  //
+  // A request that frames a quotation puts the frame and the quotation in ONE sentence, because a colon does not
+  // end a sentence. The coverage fraction is then measured against the frame's pairs as well, and the frame's
+  // pairs are in no corpus sentence, so a short quotation can never reach the floor however exactly the corpus
+  // carries it: measured on seven cloze rows whose quoted body is 5-9 units inside a 16-20 unit sentence, the
+  // answering span is retrieved and ranked first and the near-duplicate test still refuses it. Sequences are only
+  // ADDED here, and `spanContainsRequestNearDuplicateSentence` accepts on any one of them, so no span that
+  // matched before stops matching; the three-matched-pair floor in the fraction is what keeps a short part from
+  // matching on nothing.
   const sequences = splitSurfaceSentences(text)
-    .map(sentence => orderedSequenceUnits(sentence))
+    .flatMap(sentence => [sentence, ...splitSurfaceClauses(sentence)])
+    .map(part => orderedSequenceUnits(part))
     .filter(sequence => sequence.length >= 4);
   if (whole.length >= 4 && !sequences.length) return [whole];
   return sequences;
