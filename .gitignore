@@ -173,3 +173,7 @@ tools/code-generation-calibration/report*.json
 /coderepair*.json
 /selfrepair*.json
 /headtohead.json
+
+# Internal planning and self-review. Candid falsified-claim documents, same category as the decision log.
+/PROMISE_GAP_PLAN.md
+/REVIEW_20260912.md
