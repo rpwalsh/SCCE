@@ -102,7 +102,108 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Wave damping. Unjustified. */
   "field.wave_damping": 0.08,
   /** Spectral partition power iterations per activation. Unjustified; the most expensive of the three. */
-  "field.spectral_partition_iterations": 6
+  "field.spectral_partition_iterations": 6,
+
+  // --- judge.ts: candidate scoring and requirement-driven penalty weights
+  // requirementPenaltyWeights: each penalty is a floor plus requirement-scaled terms. The floor is what the
+  // penalty costs a candidate when the turn asks for none of that property at all.
+  /** Contradiction penalty when the turn demands no external truth. judge.ts requirementPenaltyWeights. */
+  "judge.contradiction_penalty_floor": 0.28,
+  /** How much demanded external-truth authority raises the contradiction penalty. judge.ts requirementPenaltyWeights. */
+  "judge.contradiction_penalty_authority_weight": 0.54,
+  /** How much demanded inferential depth raises the contradiction penalty. judge.ts requirementPenaltyWeights. */
+  "judge.contradiction_penalty_inferential_depth_weight": 0.16,
+  /** Unsupported-fact penalty when the turn demands no external truth. judge.ts requirementPenaltyWeights. */
+  "judge.unsupported_fact_penalty_floor": 0.36,
+  /** How much demanded external-truth authority raises the unsupported-fact penalty. judge.ts requirementPenaltyWeights. */
+  "judge.unsupported_fact_penalty_authority_weight": 0.62,
+  /** How much demanded source dependence raises the unsupported-fact penalty. judge.ts requirementPenaltyWeights. */
+  "judge.unsupported_fact_penalty_source_dependence_weight": 0.22,
+  /** Stale-source penalty when the turn depends on no source. judge.ts requirementPenaltyWeights. */
+  "judge.stale_source_penalty_floor": 0.30,
+  /** How much demanded source dependence raises the stale-source penalty. judge.ts requirementPenaltyWeights. */
+  "judge.stale_source_penalty_source_dependence_weight": 0.35,
+  /** How much demanded executable artifact raises the stale-source penalty. judge.ts requirementPenaltyWeights. */
+  "judge.stale_source_penalty_executable_demand_weight": 0.25,
+
+  /** Executable-artifact demand at or above which a failed validation fails the candidate outright. judge.ts candidate gate. */
+  "judge.executable_artifact_demand_floor": 0.65,
+
+  // Proof sub-score: a normalized set, must continue to sum to 1. judge.ts scoreCandidate.
+  /** Weight of epistemic force (proved/observed/...) in the proof sub-score. judge.ts scoreCandidate. */
+  "judge.proof_epistemic_force_weight": 0.35,
+  /** Weight of evidential support in the proof sub-score. judge.ts scoreCandidate. */
+  "judge.proof_support_weight": 0.28,
+  /** Weight of faithfulness to the evidence in the proof sub-score. judge.ts scoreCandidate. */
+  "judge.proof_faithfulness_weight": 0.22,
+  /** Weight of how much of the evidence the answer covers, in the proof sub-score. judge.ts scoreCandidate. */
+  "judge.proof_evidence_coverage_weight": 0.15,
+
+  // Field sub-score: a normalized set, must continue to sum to 1. judge.ts scoreCandidate.
+  /** Weight of alpha pressure (field urgency) in the field sub-score. judge.ts scoreCandidate. */
+  "judge.field_alpha_pressure_weight": 0.38,
+  /** Weight of actionability in the field sub-score. judge.ts scoreCandidate. */
+  "judge.field_actionability_weight": 0.25,
+  /** Weight of realizability in the field sub-score. judge.ts scoreCandidate. */
+  "judge.field_realizability_weight": 0.2,
+  /** Weight of novelty in the field sub-score. judge.ts scoreCandidate. */
+  "judge.field_novelty_weight": 0.17,
+
+  // Risk sub-score: a normalized set, must continue to sum to 1. judge.ts scoreCandidate.
+  /** Weight of measured contradiction in the risk sub-score. judge.ts scoreCandidate. */
+  "judge.risk_contradiction_weight": 0.6,
+  /** Weight of the candidate declaring boundaries in the risk sub-score. judge.ts scoreCandidate. */
+  "judge.risk_boundary_weight": 0.25,
+  /** Weight of a restrictive policy alpha-risk ceiling in the risk sub-score. judge.ts scoreCandidate. */
+  "judge.risk_policy_ceiling_weight": 0.15,
+
+  // Final factual candidate score. Not normalized: the two penalties are subtracted. judge.ts scoreCandidate.
+  /** Weight of the proof sub-score in the final candidate score. judge.ts scoreCandidate. */
+  "judge.total_proof_weight": 0.32,
+  /** Weight of the field sub-score in the final candidate score. judge.ts scoreCandidate. */
+  "judge.total_field_weight": 0.24,
+  /** Weight of the validation-graph score in the final candidate score. judge.ts scoreCandidate. */
+  "judge.total_validation_weight": 0.2,
+  /** Weight of realizability in the final candidate score. judge.ts scoreCandidate. */
+  "judge.total_realizability_weight": 0.12,
+  /** Weight of the candidate's surface mass in the final candidate score. judge.ts scoreCandidate. */
+  "judge.total_mass_weight": 0.12,
+  /** How much the risk sub-score is subtracted from the final candidate score. judge.ts scoreCandidate. */
+  "judge.total_risk_penalty": 0.42,
+
+  // A candidate that is not creative, scored under a creative request: only these three residual terms apply.
+  /** Residual weight of surface mass when a candidate mismatches a creative request. judge.ts scoreCreativeCandidate. */
+  "judge.creative_mismatch_mass_weight": 0.12,
+  /** Residual weight of actionability when a candidate mismatches a creative request. judge.ts scoreCreativeCandidate. */
+  "judge.creative_mismatch_actionability_weight": 0.08,
+  /** Residual weight of realizability when a candidate mismatches a creative request. judge.ts scoreCreativeCandidate. */
+  "judge.creative_mismatch_realizability_weight": 0.08,
+
+  // Fallback creative selection score, used only when the creative lane supplied none of its own.
+  /** Weight of how much of the request's constraints the creative surface covers. judge.ts scoreCreativeCandidate. */
+  "judge.creative_constraint_coverage_weight": 0.28,
+  /** Weight of graph coherence in the fallback creative selection score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_coherence_weight": 0.22,
+  /** Weight of novelty in the fallback creative selection score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_novelty_weight": 0.20,
+  /** Weight of language realizability in the fallback creative selection score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_language_weight": 0.15,
+  /** Weight of usefulness in the fallback creative selection score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_usefulness_weight": 0.15,
+  /** How much measured risk is subtracted from the fallback creative selection score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_risk_penalty": 0.30,
+  /** How much repetition is subtracted from the fallback creative selection score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_repetition_penalty": 0.20,
+  /** How much an unsupported factual assertion is subtracted from a creative score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_fake_authority_penalty": 0.50,
+
+  // Final creative candidate score: a normalized set, must continue to sum to 1. judge.ts scoreCreativeCandidate.
+  /** Weight of the creative selection score in the final creative candidate score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_total_selection_weight": 0.72,
+  /** Weight of surface mass in the final creative candidate score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_total_mass_weight": 0.16,
+  /** Weight of the validation-graph score in the final creative candidate score. judge.ts scoreCreativeCandidate. */
+  "judge.creative_total_validation_weight": 0.12
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;
