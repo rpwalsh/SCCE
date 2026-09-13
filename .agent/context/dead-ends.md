@@ -112,3 +112,26 @@ grounds that the persisted relation graph is an independent channel. The mandato
 The six requested ablations (FULL / ORTHOGRAPHY ONLY / GRAPH ONLY / SHUFFLED GRAPH / SAME-SOURCE ONLY /
 NO REALIZATION QUOTIENT) were **not run**: four of the six are undefined without a prose predicate layer and would
 have produced numbers with no referent. Building that layer is an ingestion task, not a morphology task.
+
+## Operator economics: a retracted headline
+
+**DEAD — "anchor evidence search consumes 23.3% of CPU and changes nothing in 100% of runs".** It was a counter
+defect, and it was repeated for hours before it was caught. The economics pass scored the operator on `gathered`
+and `afterProseFilter`, which bracket only the code-span prose filter running AFTER the search, not the search.
+They are equal in 2,248 of 2,252 invocations, so a microsecond filter wore a 3.7-second search's CPU number.
+
+The truth: of 1,488 invocations with a paired admissibility event and a non-empty claim basis, 1,408 — 94.6% —
+admitted evidence that reached the answer's final claim basis. Not-useful invocations number 80, worth 0.7% of
+attributable CPU. Every candidate skip precondition false-skips above 94 percent; the largest-saving one would
+have cost 83 percent of answered turns the evidence their answer was scored on, invisibly to a
+changed-the-answer metric.
+
+**The lesson, not the number: an operator sharing a trace stage with its neighbours cannot be given an economics
+verdict.** `graph.resolve` held five operators separated only by a label, which is also how PowerWalk looked
+expensive until it was split out and measured at 5.4 ms. Before any ROI claim, give the operator its own
+before and after counters. That includes claims made by this file.
+
+**OPEN — the real lever.** Cost tracks per-group fan-out: six or more groups mean 6,361 ms over 924 invocations,
+one group 1,431 ms. Bounding groups is a recall-versus-cost modeling parameter and belongs in the calibration
+registry. Memoization is weaker than it looks: only 52 of 252 repeated request texts returned identical results,
+so a memo needs a corpus-state validity key that `logicalCacheKey` deliberately omits.

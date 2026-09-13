@@ -6,7 +6,8 @@ Ranked by threat to the claim that bounded cognition replaces a model.
    query diffusion, relation potential and language memory does not hurt the benchmark, and some removals improve
    it. Closing this needs tasks that REQUIRE each component, not a re-run of the same suite.
 2. **9 of 40 declined when answerable** in the measured head-to-head. The ceiling is 38, not 29. Worth more than
-   any latency work.
+   any latency work, and now the single largest recoverable block: the anchor-search "waste" that looked bigger
+   was a counter defect, retracted in dead-ends.md.
 3. **The coding lane emits no algorithm.** It builds and runs real JavaScript with a working repair loop, but the
    requested function arrives as a checked contract, not an implementation.
 4. **1 of 56 calibration ids is genuinely fitted**, and the learning loop has no negative signal.
