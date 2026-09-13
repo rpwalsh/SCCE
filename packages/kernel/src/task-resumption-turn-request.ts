@@ -174,6 +174,27 @@ export function taskResumptionSnapshotForTurn(input: {
  * concrete behavior item 218 asks for ("reloading a persisted task state
  * ... produces the same eligible next actions").
  */
+/** Re-persists a snapshot whose task graph this turn changed (a replan after a failed build, completions after a
+ *  passing one), so the next turn resumes from what the build proved rather than from the pre-build plan. */
+export async function persistTaskGraphForTurn(
+  store: TaskResumptionSnapshotStore,
+  previous: TaskResumptionSnapshot,
+  input: { taskGraph: TaskResumptionSnapshot["taskGraph"]; workingMemory: WorkingMemoryState; capturedAt: number; hasher: Hasher }
+): Promise<TaskResumptionSnapshot> {
+  const snapshot = captureTaskResumptionSnapshot({
+    goalId: previous.goalId,
+    taskGraph: input.taskGraph,
+    workingMemory: input.workingMemory,
+    openHypotheses: previous.openHypotheses,
+    artifactIds: previous.artifactIds,
+    receiptIds: previous.receiptIds,
+    capturedAt: input.capturedAt,
+    hasher: input.hasher
+  });
+  await store.putSnapshot({ id: snapshot.id, goalId: snapshot.goalId, snapshotJson: toJsonValue(snapshot), capturedAt: snapshot.capturedAt });
+  return snapshot;
+}
+
 export async function syncTaskResumptionSnapshotForTurn(
   store: TaskResumptionSnapshotStore,
   input: {

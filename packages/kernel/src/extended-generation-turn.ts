@@ -140,7 +140,7 @@ export function buildExtendedGenerationPlan(input: {
       kind: "section",
       parentId: documentId,
       order: index + 1,
-      goal: sectionGoal(input.requestText, index, input.sectionTarget),
+      goal: sectionGoal(input.requestText),
       requiredCoverageIds: coverageIds[index] ? [coverageIds[index]!] : [],
       ...(previousId ? { rhetoricalDependsOnIds: [previousId] } : {})
     });
@@ -149,11 +149,16 @@ export function buildExtendedGenerationPlan(input: {
   return plan;
 }
 
-function sectionGoal(requestText: string, index: number, total: number): string {
+function sectionGoal(requestText: string): string {
   // Position-relative goal only. Deliberately not a genre template or an
   // English narrative-beat vocabulary -- the realizer, not this planner,
   // decides what the section says.
-  return `${requestText} [part ${index + 1} of ${total}]`;
+  //
+  // The position used to be appended to the goal TEXT as "[part n of m]", and the realizer conditions generation
+  // on the goal, so the bookkeeping was spoken: "Blacksmith who forgets his own part 1 to my own will or
+  // conscience" (live 2026-09-12). Position is already carried structurally by the plan node order and id, which
+  // is where a planner detail belongs; the goal text is only what the section is about.
+  return requestText;
 }
 
 export interface ExtendedGenerationSectionRealization {

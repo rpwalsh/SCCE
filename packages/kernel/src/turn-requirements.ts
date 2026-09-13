@@ -425,7 +425,23 @@ export function requestSubjectText(requestText: string, field: Pick<TurnRequirem
   if (!spans.length) return requestText;
   const keep = chars.map(() => true);
   for (const [start, end] of spans) for (let index = Math.max(0, start); index < Math.min(chars.length, end); index++) keep[index] = false;
-  const remainder = chars.filter((_, index) => keep[index]).join("").replace(/\s+/gu, " ").trim();
+  // Whole words only. A pattern span need not land on a word boundary, and masking by character cut letters out of
+  // the middle of words: "a sailor" became "a ailor" and "blacksmith" became "black mith", which then became the
+  // story's cast (live 2026-09-12). A word is dropped when the span covers any of it, and kept otherwise, so the
+  // remainder is always a sequence of the request's own words.
+  let cursor = 0;
+  const remainder = requestText
+    .split(/(\s+)/u)
+    .map(token => {
+      const start = cursor;
+      cursor += [...token].length;
+      if (!token.trim()) return token;
+      const covered = [...token].some((_, offset) => keep[start + offset] === false);
+      return covered ? "" : token;
+    })
+    .join("")
+    .replace(/\s+/gu, " ")
+    .trim();
   return remainder.split(" ").filter(Boolean).length >= 2 ? remainder : requestText;
 }
 

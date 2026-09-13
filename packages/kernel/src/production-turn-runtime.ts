@@ -109,7 +109,7 @@ import {
   requestSentenceSequences,
   runtimeEvidenceWindowsForRequest,
   sessionContextEvidenceEnabled,
-  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest,
+  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest, evidenceIdentityBindsRequest, evidenceIdentityBeyondTitle,
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
@@ -134,7 +134,7 @@ import {
   expandPowerWalkSeedAnchors
 } from "./powerwalk.js";
 import { createPredictionLayer } from "./prediction.js";
-import { clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
+import { anchorSymbolUnits, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits, tidySurfaceText } from "./surface-linguistics.js";
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
@@ -144,7 +144,8 @@ import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestFor
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
-import { syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
+import { persistTaskGraphForTurn, syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
+import { programIntentForTurn } from "./program-intent.js";
 import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { nodeCanExecute, replan } from "./task-replanning.js";
@@ -166,7 +167,7 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { admissionTierDiagnostics, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeRequestCorroborated, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -212,8 +213,12 @@ import { createFunctionalSelfModel } from "./self.js";
 import { consolidateSemanticClaims, type SemanticClaimObservation } from "./semantic-memory-consolidation.js";
 import { createSemanticMemoryIndex } from "./semantic-memory-index.js";
 import { createSemanticProofSystem } from "./semantic-proof-system.js";
-import type { ScceKernelDeps } from "./storage.js";
+import { isRequestRequirementPattern } from "./request-requirement-learning.js";
+import type { LanguagePatternRecord, ScceKernelDeps } from "./storage.js";
 import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
+import { surfaceEchoesPrompt } from "./creative-section-realization.js";
+import { primeCorpusIdentityForTurn } from "./corpus-identity-runtime.js";
+import { createTurnSignals } from "./turn-signals.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
@@ -478,6 +483,26 @@ export function createProductionTurnRuntime(options: {
   let turnRequirementModel: TurnRequirementCoefficientModel | undefined;
   let turnRequirementModelDirtySteps = 0;
   let turnRequirementModelFlush: Promise<void> | undefined;
+
+  let requestControlPatterns: LanguagePatternRecord[] | undefined;
+  /**
+   * The routing patterns that carry the requirement coefficients, held for the process.
+   *
+   * These decide which lane answers every turn, and they were reaching the turn only when the language-memory
+   * hydration happened to take the durable path: under a stage-budget overrun it falls back to a resident
+   * hydration and finally to an empty one, which carries none. Measured 2026-09-12 on the live server --
+   * `controlPatterns: 0, activations: 1` -- so every request resolved each requirement dimension to its own
+   * intercept. noveltyDemand's intercept is negative, so no request could ever be routed creative: the same
+   * prompt scored noveltyDemand 1.0 and authority "creative" the moment these 416 rows were present. Routing
+   * control is not corpus content and must not be hostage to a corpus-hydration budget.
+   */
+  async function requestControlPatternsCached(): Promise<LanguagePatternRecord[]> {
+    if (requestControlPatterns) return requestControlPatterns;
+    requestControlPatterns = await deps.storage.languageMemory
+      .listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+      .catch(() => [] as LanguagePatternRecord[]);
+    return requestControlPatterns;
+  }
 
   async function turnRequirementModelCached(): Promise<TurnRequirementCoefficientModel> {
     if (turnRequirementModel) return turnRequirementModel;
@@ -833,12 +858,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: { identities: languageIdentityRuntime.identities().length, coverage: requestLanguage?.coverage ?? 0 },
         support: { languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
       });
+      // What the turn can actually afford to wait, not a fixed constant. The hydration continues and caches itself
+      // either way (single-flight, see surface-language-runtime), so time spent waiting past what the turn has left
+      // buys nothing: a coding turn spent 8s here, received zero models, and then had none of the 5s its build
+      // needed. Whatever a reservation holds back is already excluded from this.
+      const languageHydrationBudgetMs = Math.min(
+        LANGUAGE_MEMORY_DURABLE_ESCALATION_MS,
+        Math.max(0, runtimeDeadline?.computeRemainingMs() ?? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS)
+      );
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
         () => withStageBudget(
           hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }),
-          LANGUAGE_MEMORY_DURABLE_ESCALATION_MS,
+          languageHydrationBudgetMs,
           () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId })
             .catch(() => emptySurfaceLanguageMemory()),
           overrun => kernelTrace({
@@ -936,10 +969,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const inheritedRuntimeMotion = runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
       const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
+      // Routing control first, and from its own cache when hydration did not carry it.
+      const turnRequestControlPatterns = authorityLanguage.requestControlPatterns.length
+        ? authorityLanguage.requestControlPatterns
+        : await requestControlPatternsCached();
       const requestRequirementLanguageState: LanguageMemoryRuntimeState = {
         ...authorityLanguage.state,
         importedPatterns: uniqueRecordsById([
-          ...authorityLanguage.requestControlPatterns,
+          ...turnRequestControlPatterns,
           ...authorityLanguage.state.importedPatterns
         ], 2048)
       };
@@ -959,6 +996,31 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         model: await turnRequirementModelCached()
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
+      // Why the turn is routed where it is. The requirement field decides the authority, the authority decides
+      // which lane answers, and nothing recorded whether the routing patterns that carry the requirement
+      // coefficients had even been hydrated: offline they put noveltyDemand at 1.0 and authority at creative for
+      // "write a short story...", while the live turn routed factual and retrieved an encyclopedia article.
+      kernelTrace({
+        stage: "turn.authority.projection",
+        label: "kernel.turn",
+        counts: {
+          controlPatterns: turnRequestControlPatterns.length,
+          importedPatterns: requestRequirementLanguageState.importedPatterns.length,
+          activations: (requirementField.activationsUsed ?? []).length
+        },
+        support: {
+          requestedAuthority: authorityProjection.requestedAuthority,
+          projectedAuthority: authorityProjection.projectedAuthority,
+          scoreMargin: authorityProjection.scoreMargin,
+          explicit: Boolean(explicitAuthority),
+          noveltyDemand: requirementField.noveltyDemand,
+          sourceDependence: requirementField.sourceDependence,
+          externalTruthAuthority: requirementField.externalTruthAuthority,
+          responseFormId: requirementField.responseForm?.id ?? null,
+          creativeSkipsRetrieval: authorityProjection.requestedAuthority === "creative" && requirementField.sourceDependence <= requirementField.noveltyDemand / 4,
+          scores: authorityProjection.scores
+        }
+      });
       // Applied after the projection, deliberately: naming two subjects says the answer must be composed, not that
       // the request stopped being factual. Folding it in earlier pushed `projectRequestAuthority` from factual to
       // reasoned on a two-subject question, which is a different claim than the one this signal is making.
@@ -977,13 +1039,40 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // interaction corpus taught for this authority. What it leaves of the request is the subject and the relation.
       // The corpus's own function symbols, ranked by continuation count: "'" continues 1305 distinct contexts in
       // the live wikipedia model and "s" only 11, which is how "Kenya's" is read as naming Kenya without a suffix rule.
-      let corpusFunctionSymbolsCache: Set<string> | undefined;
-      const corpusFunctionSymbols = () => (corpusFunctionSymbolsCache ??= deriveClosedClassWords({ models: authorityLanguage.state.models ?? [] }));
-      const requestClosedClassWords = () => requestClosedClassWordsFor({
+      // One record of what is true about this turn, read by every gate that needs it rather than approximated at
+      // each one. See turn-signals.ts: the day this was written, six separate decisions were reading a local
+      // stand-in for a fact that already had a function one call away.
+      //
+      // Rebuilt when the turn reprojects its authority, because the request's own scaffolding is authority-scoped;
+      // everything inside is derived on first use, so rebuilding costs nothing that is not asked for again.
+      let turnSignals = createTurnSignals({
         requestText: input.text,
+        authority: requestedAuthority,
+        requirementField,
         models: authorityLanguage.state.models ?? [],
-        patterns: authorityLanguage.requestControlPatterns,
-        authority: requestedAuthority
+        patterns: turnRequestControlPatterns
+      });
+      const refreshTurnSignals = (): void => {
+        turnSignals = createTurnSignals({
+          requestText: input.text,
+          authority: requestedAuthority,
+          requirementField,
+          models: authorityLanguage.state.models ?? [],
+          patterns: turnRequestControlPatterns
+        });
+      };
+      const corpusFunctionSymbols = () => turnSignals.functionSymbols;
+      const requestClosedClassWords = () => turnSignals.closedClassWords;
+      // What this request names is decided by the corpus, not by its orthography. Measured once per distinct run
+      // and cached for the process, so a warm turn asks the database nothing.
+      await primeCorpusIdentityForTurn({
+        requestText: input.text,
+        // The corpus's whole closed class, not the request-scoped one: that one applies the corpus signal only to a
+        // request's opening words, so "now tell me the plot of moby dick" kept "now tell me the plot" as content and
+        // offered thirty-six runs. Which units a language uses as scaffolding is a fact about the language.
+        closedClass: turnSignals.functionSymbols,
+        evidence: deps.storage.evidence,
+        onTrace: record => kernelTrace({ stage: "turn.corpus_identity", ...record })
       });
       let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
       let operatorActivations = activateCognitiveOperators({
@@ -1156,17 +1245,24 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // language-neutrally (a question mark, not an English verb list). Evidence must then be
       // anchored, or the turn falls to the code mouth / offer-to-learn arm.
       const baseRetrievalText = retrievalTextForTurn(input);
-      const retrievalText = requestedAuthority === "program" && !/[?？؟]s*$/u.test(baseRetrievalText) ? `${baseRetrievalText}?` : baseRetrievalText;
+      const retrievalText = requestedAuthority === "program" && !/[?？؟]\s*$/u.test(baseRetrievalText) ? `${baseRetrievalText}?` : baseRetrievalText;
       // A creative request's learned instruction spans are not its subject: retrieval and admission read the remainder.
-      const subjectRetrievalText = requestedAuthority === "creative" ? requestSubjectText(retrievalText, requirementField) : retrievalText;
+      const subjectRetrievalText = requestedAuthority === "creative" ? turnSignals.subjectText : retrievalText;
       const sessionEvidence = mergeEvidenceSpans([...currentOwnerSessionEvidence(input), ...sessionEvidenceFromMetadata(input.metadata)]);
       const metadataEvidence = await evidenceFromTurnMetadata(input.metadata);
       const metadataEvidenceIds = new Set([
         ...metadataEvidence.map(span => String(span.id)),
         ...(discourseObject?.evidenceIds ?? [])
       ]);
+      // A follow-up that names nobody is bound to what the conversation established -- that is what a follow-up
+      // IS, not a feature a caller opts into. The binding used to require `sessionContextEvidence` in metadata, so
+      // the server built a discourse object from its own stored turns and the turn then ignored it: "What did he
+      // discover?", asked after a correct Einstein answer, searched the whole corpus for the verb and answered out
+      // of Frankenstein (live 2026-09-12). The opt-in still governs the broader case of injecting a session's
+      // evidence into a request that names its own subject, where it is a caller's choice and not a pronoun.
       const sessionContextEvidence = sessionContextEvidenceEnabled(input.metadata);
-      const explicitContextEvidenceIds = new Set(sessionContextEvidence
+      const anaphoricFollowUp = Boolean(discourseObject?.evidenceIds.length) && turnSignals.namedSubjects.length === 0;
+      const explicitContextEvidenceIds = new Set(sessionContextEvidence || anaphoricFollowUp
         ? discourseObject?.evidenceIds.length
           ? discourseObject.evidenceIds
           : runtimeEvidenceIdsFromMetadata(input.metadata)
@@ -1175,6 +1271,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const allowSemanticFrameEvidence = deps.evaluationCondition?.flags.disableLanguageMemory !== true
         && deps.evaluationCondition?.flags.disableLearnedSemantics !== true;
       const typedIngestProjector = createTypedIngestProjector({ idFactory, hasher });
+      // Learned, not guessed: authority creative with no source dependence.
+      // A request that quotes a sentence is recall even when it projects creative, and recall needs its source: the
+      // skip must not remove the evidence the quotation-recall override depends on.
+      const creativeRequestNeedsNoRetrieval = turnSignals.sentenceSequences.length === 0
+        && turnSignals.namedSubjects.length === 0
+        && requestedAuthority === "creative"
+        && requirementField.sourceDependence <= requirementField.noveltyDemand / 4
+        && !discourseEvidenceBound
+        && metadataEvidenceIds.size === 0
+        && explicitContextEvidenceIds.size === 0;
       const graphSliceStarted = Date.now();
       let graphSlice = await evaluationComponent(
         "graph",
@@ -1182,7 +1288,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         () => evaluationComponent(
           "shard-router",
           "graph.resolve.shard-router",
-          () => discourseEvidenceBound
+          // A request to write, whose own learned requirement says it does not depend on sources, is not a corpus
+          // query. Measured 2026-09-12: the graph slice took 10.3s of a 20.6s creative turn, the response
+          // deadline then elapsed, the learned mouth was refused, and a fallback stitched twelve sections out of
+          // the request text. sourceDependence is the learned quantity that says so, so it is what gates this.
+          () => creativeRequestNeedsNoRetrieval
+            ? graphForEvidenceIds([])
+            : discourseEvidenceBound
             ? graphForEvidenceIds([...metadataEvidenceIds])
             : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
@@ -1267,7 +1379,35 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // an abstention. When nothing durable survives, and the deadline still allows it, the search actually runs.
       const durableSliceEvidence = (slice: typeof graphSlice): number => slice.evidence
         .filter(span => !String(span.id).startsWith("evidence_session_") && !isCodeEvidenceSpan(span)).length;
-      if (fastRuntimeBudget && !discourseEvidenceBound && durableSliceEvidence(graphSlice) === 0) {
+      // "Carries evidence" is not "carries this subject". Asked "Who is Mr Darcy?", the resident neighbourhood
+      // held eight durable spans about a rock band, so the count above was non-zero and the corpus holding the
+      // novel was never searched. When the request names a subject, the resident slice is sufficient only if
+      // something in it is bound by that subject's own source identity (live 2026-09-12).
+      const subjectNamed = turnSignals.anchors.length > 0;
+      const identityBoundResident = (slice: typeof graphSlice): number => slice.evidence
+        .filter(span => !String(span.id).startsWith("evidence_session_")
+          && turnSignals.identityBinds(span)).length;
+      // A request that quotes a sentence is answered by the span holding that sentence, and by nothing else. The
+      // resident slice is left over from whatever the previous request was about, so "carries durable evidence"
+      // says nothing about whether it carries THIS request. Measured 2026-09-12: the same sealed cloze question
+      // answered correctly as the first request of a process and returned a two-word fragment as the fifth, after
+      // four questions about an unrelated subject warmed the slice.
+      const residentSliceAnswersSubject = durableSliceEvidence(graphSlice) > 0
+        && (!subjectNamed || identityBoundResident(graphSlice) > 0)
+        && (!turnSignals.sentenceSequences.length || turnSignals.quotesSource(graphSlice.evidence));
+      // A request to write does not need the corpus searched for it. Escalating anyway spent the whole turn
+      // budget on retrieval, so the learned mouth -- the one that speaks the prose models -- was refused for
+      // want of time and an extended-generation fallback stitched the request's own words into eleven sections
+      // (measured 2026-09-12: "Short passage of further suffering I saw laid my hand. Sailor leaving harbour").
+      // The resident slice still serves a creative request that wants grounding; what it must not do is spend the
+      // turn's whole budget searching the corpus for a request to write. Measured: graphSlice 5.3s of a 15.5s
+      // creative turn, after which the learned mouth was refused with 0 ms remaining.
+      // The same holds for a request to write a program, and the measurement is the same one: a coding turn spent
+      // 5s here and 6.5s in the semantic retrieval it leads to, reached its build step 19.5s into a 10s budget with
+      // the deadline long gone, and answered with prose about the request instead of a built program. What the
+      // request depends on is projected, not assumed -- a program request measures a source dependence of ~1e-7.
+      const authoredAnswerNeedsNoSources = requestedAuthority === "creative" || requestedAuthority === "program";
+      if (fastRuntimeBudget && !discourseEvidenceBound && !residentSliceAnswersSubject && !authoredAnswerNeedsNoSources) {
         const escalationStarted = Date.now();
         const allowed = deadlineCheckpoint("kernel.turn.durable_retrieval_escalation", DURABLE_RETRIEVAL_ESCALATION_MS)?.allowed !== false;
         if (allowed) {
@@ -1278,7 +1418,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
             residentOnly: false
           }).catch(() => undefined);
-          if (durableSlice && durableSliceEvidence(durableSlice) > 0) graphSlice = durableSlice;
+          // Keep the durable slice when it reaches the subject, or when the resident one held nothing durable at all.
+          if (durableSlice && durableSliceEvidence(durableSlice) > 0
+            && (identityBoundResident(durableSlice) > 0 || durableSliceEvidence(graphSlice) === 0)) graphSlice = durableSlice;
           kernelTrace({
             stage: "graph.resolve.durable_escalation",
             label: "kernel.turn.graph_slice",
@@ -1353,7 +1495,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
         : proseOnlyWhenNotACodeRequest(
           mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]).filter(span => !isControlCorpusSpan(span) && (requestedAuthority !== "program" || isCodeEvidenceSpan(span))),
-          requestedAuthority
+          requestedAuthority,
+          input.text
         );
       // Sealed-corpus allowlist (trusted in-process runtimeControl, like
       // signal): every downstream evidence consumer -- proof support,
@@ -1382,6 +1525,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // the answer may draw from. The stricter title-only audit kept the Deep Space Nine article out of
         // "Who played Sisko?" while the proposers would have admitted it on its binding sentence.
         : sourceIdentityAdmissibleEvidenceForRequest(requestedAuthority === "creative" ? subjectRetrievalText : input.text, evidence, semanticFrameBoundEvidenceIds, requestClosedClassWords());
+      // The turn's own admission, traced separately from retrieval's: both call the same authority over different
+      // pools, and a turn that admitted nothing here after retrieval admitted plenty was indistinguishable.
+      kernelTrace({
+        stage: "turn.source_anchor_audit",
+        label: "kernel.turn",
+        counts: { evidence: evidence.length, admitted: sourceAnchorAudit.evidence.length },
+        support: {
+          required: sourceAnchorAudit.required,
+          anchors: sourceAnchorAudit.anchors.slice(0, 6),
+          tiers: admissionTierDiagnostics,
+          promotedIn: evidence.filter(span => span.status === "promoted").length,
+          promotedAdmitted: sourceAnchorAudit.evidence.filter(span => span.status === "promoted").length
+        }
+      });
       // Empty audit over a titleless pool: identity admission can never bind
       // workspace-file spans, so fall back to the titleless spans the graph
       // slice already content-admitted; titled corpora keep strict abstention.
@@ -1630,13 +1787,44 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // The titled source's opening block, rescued once for every path that reads evidence: relevance ranking drops
       // the lead that states the standing fact ("Baku is the capital and largest city" never reached the proposer,
       // so "What is the capital of Azerbaijan?" declined while its own article's lead block was admitted).
+      // The opening block leads only when it can answer. An article's lead states the subject's standing facts; a
+      // book's opening block is its title page, and pinning it answered "Where does Jane Eyre work as a governess?"
+      // with the frontispiece. So the pin holds for a request that asks only about the subject, and otherwise only
+      // when the opening carries something the request asks beyond the subject's own name (live 2026-09-12).
+      const openingPinContentUnits = requestContentEvidenceUnits(input.text)
+        .map(unit => unit.toLocaleLowerCase())
+        .filter(unit => !namedSubjectAnchors(input.text).some(anchor => anchor.toLocaleLowerCase().split(/\s+/u).includes(unit)));
+      const openingSpanAnswersRequest = (span: EvidenceSpan): boolean => {
+        // The pin exists for a source whose opening block IS its definitional lead -- an encyclopedia article,
+        // whose identity is its title. A source that carries identity of its own (a book, a paper, a file) opens
+        // with front matter: Treasure Island opened with its title page, the mouth found no speakable sentence in
+        // it, and the turn returned no answer surface at all (live 2026-09-12). There the ranker decides.
+        if (evidenceIdentityBeyondTitle(span)) return false;
+        if (!openingPinContentUnits.length) return true;
+        const surface = new Set(anchorSymbolUnits(String(span.text ?? span.textPreview ?? "")));
+        return openingPinContentUnits.some(unit => surface.has(unit));
+      };
       const admittedTitledOpeningSpan = namedSubjectAnchors(input.text).length
-        ? admissibleEvidence.find(span => span.status === "promoted" && Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
+        ? admissibleEvidence.find(span => span.status === "promoted" && Number(span.charStart ?? -1) === 0
+          && evidenceTitledForRequestSubject(input.text, [span]) && openingSpanAnswersRequest(span))
         : undefined;
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
       const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, (admittedTitledOpeningSpan
         ? uniqueRecordsById([admittedTitledOpeningSpan, ...rankedSupportEvidence], Math.max(2, rankedSupportEvidence.length))
         : rankedSupportEvidence).slice(0, turnProofEvidenceLimit));
+      // Between admission and the proof: relevance ranking and windowing each return a list, and a turn that
+      // admitted evidence and proved nothing gave no way to tell which of them emptied it.
+      kernelTrace({
+        stage: "turn.support_candidates",
+        label: "kernel.turn",
+        counts: {
+          admissible: admissibleEvidence.length,
+          promoted: admissibleEvidence.filter(span => span.status === "promoted").length,
+          ranked: rankedSupportEvidence.length,
+          candidates: supportCandidates.length
+        },
+        support: { titledOpening: Boolean(admittedTitledOpeningSpan), limit: turnProofEvidenceLimit }
+      });
       const proofNodes = graph.nodes;
       const proofEdges = graph.edges;
       // The learned response form's surface layout supplies the sentence
@@ -1647,7 +1835,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // source expresses only as instances ("list the main characters"
       // vs. a lead that names them without ever saying "characters").
       const responseFormSentences = requirementField.responseForm?.surfaceLayout?.sentencesPerBlock;
-      const answerProposal = proposeSourceExactEvidenceAnswer({
+      let answerProposal = proposeSourceExactEvidenceAnswer({
         requestText: input.text,
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
@@ -1659,7 +1847,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // Quotation recall: the request near-duplicates a remembered sentence, so it is recall whatever the pre-retrieval projection said.
       // Memory decides an undecided projection: a covering evidence answer under a thin creative margin is recall too.
       const memoryDecidesAuthority = Boolean(answerProposal) && authorityProjection.scoreMargin < 0.12;
-      if (requestedAuthority === "creative" && !explicitAuthority && (localEvidenceAnswerIsQuotationRecall(answerProposal) || memoryDecidesAuthority)) {
+      // Recall outranks any projection, not just a creative one. The rule was written for creative because that is
+      // the only place the projection ever landed while the routing patterns were unreachable; once they hydrate,
+      // "Complete this sentence ... answering with the missing text only" projects TRANSLATION (high semantic
+      // preservation, high surface transformation), and 28 sealed cloze questions that had answered from their own
+      // source sentence stopped doing so (165/168 -> 137/168, measured 2026-09-12). A request that near-duplicates
+      // a remembered sentence is recall whatever else it looks like; an explicit authority still wins.
+      const projectionIsRecallEligible = requestedAuthority !== "factual" && requestedAuthority !== "program" && requestedAuthority !== "action";
+      // The plan audit marks near-duplication only when the ranker took that path. The stronger fact is upstream of
+      // any plan: the request quotes a sentence and an admitted span contains it. A cloze prompt is exactly that,
+      // and without this the override could not fire for the 26 sealed questions whose plan was a transformation.
+      const requestQuotesAdmittedSource = turnSignals.quotesSource(admissibleEvidence);
+      if (projectionIsRecallEligible && !explicitAuthority
+        && (localEvidenceAnswerIsQuotationRecall(answerProposal) || requestQuotesAdmittedSource || memoryDecidesAuthority)) {
         requirementField = deriveTurnRequirementField({
           requestText: input.text,
           explicitRequirements: [
@@ -1672,6 +1872,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           contextContribution: requirementContextFromMetadata(input.metadata)
         });
         requestedAuthority = "factual";
+        refreshTurnSignals();
+        // The proposal was compiled under the projected authority, and the projection was wrong: a translation
+        // plan extracts a bound value ("the cgi defiant") where recall returns the source sentence the request
+        // quotes. Recompiling under the corrected authority is the whole point of correcting it.
+        answerProposal = proposeSourceExactEvidenceAnswer({
+          requestText: input.text,
+          selectedEvidence: supportCandidates,
+          semanticFrameBoundEvidenceIds,
+          closedClassWords: requestClosedClassWords(),
+          ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
+            ? { responseSentenceBudget: responseFormSentences }
+            : {})
+        }) ?? answerProposal;
         requestedAuthorityDecision = toJsonValue({ ...jsonRecord(requestedAuthorityDecision), requestedAuthority, selectedAuthority: requestedAuthority, revision: "quotation_recall" });
         kernelTrace({
           stage: "candidate.proposal.quotation_recall",
@@ -1930,7 +2143,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // downstream of that ranking, so the lead this exists to rescue was never among the spans it looked at
       // ("What is acupuncture?" admitted the definition and selected the injection and licensing chunks).
       const titledOpeningSpan = admittedTitledOpeningSpan ?? (subjectOnlyRequest || namedSubjectAnchors(input.text).length
-        ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]))
+        ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]) && openingSpanAnswersRequest(span))
         : undefined);
       let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
         ? uniqueRecordsById([titledOpeningSpan, ...rankedForRequest], Math.max(2, rankedForRequest.length))
@@ -2153,7 +2366,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const candidateHydrateDecision = deadlineCheckpoint("runtime.candidates.language_hydrate", 5_000);
       // A near-duplicate turn quotes, it does not generate: no threshold can
       // bound a 55s stage, so the quote regime skips durable hydration.
-      const turnSequences = requestSentenceSequences(input.text);
+      const turnSequences = turnSignals.sentenceSequences;
       const nearDuplicateTurn = turnSequences.length > 0
         && selectedEvidence.some(span => spanContainsRequestNearDuplicateSentence(span, turnSequences));
       const candidateHydrateResidentOnly = fastRuntimeBudget || nearDuplicateTurn || candidateHydrateDecision?.allowed === false;
@@ -2320,16 +2533,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const surfaceLanguageModels = surfaceLanguage.models;
       // A translation speaks the target language, so its language memory is scoped to the target profile rather than to
       // the cluster the request surface selected.
-      // The learned request-requirement patterns ride along: they are what the interaction corpus taught about request
-      // scaffolding ("who", "when"), which an encyclopedic role corpus never asks and so never ranks as closed class.
+      // Request-requirement patterns route a turn; they are never spoken.
+      //
+      // They used to ride along in this state because they carry what the interaction corpus taught about request
+      // scaffolding ("who", "when"), which an encyclopedic corpus never ranks as closed class. But this is the
+      // state generation realizes from, so their surfaces became generated text: asked for a story, the engine
+      // answered "story about a - - a page story about - - a", which is four routing surfaces ("story",
+      // "story about", "page story about", "page") spoken as prose. The closed-class derivation that wanted them
+      // receives them directly instead, so a control pattern stays out of the material a sentence is built from.
       const surfaceLanguageMemory = translationTarget && productionTranslationPlan?.targetProfile
         ? scopeLanguageMemoryStateToProfile(surfaceLanguage.state, productionTranslationPlan.targetProfile)
         : {
           ...surfaceLanguage.state,
-          importedPatterns: uniqueRecordsById([
-            ...authorityLanguage.requestControlPatterns,
-            ...surfaceLanguage.state.importedPatterns
-          ], 4096)
+          importedPatterns: surfaceLanguage.state.importedPatterns.filter(pattern => !isRequestRequirementPattern(pattern))
         };
       if (requestedAuthority === "creative") {
         creativeRequestFrame = compileCreativeRequestFrameFromCompatibilityModels({
@@ -2476,7 +2692,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           questionSlotScore: 1
         }
         : undefined;
-      const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now() });
+      // One structured intent per turn: derived from the projected authority and the structural code signal, read by
+      // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
+      const programIntent = programIntentForTurn({ requestedAuthority, codeSignal, evidence: selectedEvidence });
+      const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent });
       // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() (and, downstream,
       // cognitive-planner.ts's one-hop draft) can attempt real generation, verified against what the request
       // actually asked, before reaching for source-exact text. Two independent sources, tried in order: the
@@ -2759,7 +2978,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         })();
       }
       const candidateApprovalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
-      const candidateActionPlans = candidateConstructSeed.program || candidateConstructSeed.artifacts.length
+      const candidateActionPlans = candidateConstructSeed.program || candidateConstructSeed.artifacts.length || programIntent
         ? toolCognition.plan({
           episodeId,
           request: input.text,
@@ -3270,7 +3489,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let answer = "";
       const capabilityPlans: CapabilityPlan[] = [];
       const approvalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
-      const construct = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailment, evidence: selectedEvidence, createdAt: clock.now() });
+      let construct = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailment, evidence: selectedEvidence, createdAt: clock.now(), programIntent, program: candidateConstructSeed.program });
       // Plan items 217-218: a real, durably-persisted long-horizon task-
       // resumption snapshot (deps.storage.taskResumption, real Postgres-
       // backed store), built from this turn's own already-real task
@@ -3362,10 +3581,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           await deps.approvals?.observePending(plan);
           events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityPlanned", payload: plan })));
           const permission = plan.permission as { allowed?: boolean; dryRun?: boolean; reason?: string };
-          const buildTestDecision = permission.allowed && !permission.dryRun
-            ? deadlineCheckpoint("build_test.execute", 5_000)
-            : undefined;
-          if (permission.allowed && !permission.dryRun && buildTestDecision?.allowed !== false) {
+          // No predicted duration gates this. It was gated on an invented five seconds, which is both longer than
+          // the kernel's whole budget and not a measurement of anything: the build was refused on every coding turn
+          // ever run, and the turn answered with prose about the request instead of the program it had planned.
+          // For a program request the built, tested program is the answer, so it runs.
+          if (permission.allowed && !permission.dryRun) {
             events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: capability.id, planId: plan.id } })));
             const executiveDispatch = deps.executive
               ? await dispatchBuildTestThroughExecutive({ deps, episodeId, construct, capabilityId: capability.id, planId: String(plan.id), hasher, clock })
@@ -3381,13 +3601,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             // bare call -- the real capability still runs exactly once
             // either way; this only adds proven-sequence provenance
             // (skillId, sourceEpisodeIds) to the trace.
+            // Acceptance test B declares a first-attempt defect on the request; absent, nothing is injected.
+            const buildTestMetadata = input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? (input.metadata as Record<string, JsonValue>).buildTest : undefined;
+            const buildFaultInjection = buildTestMetadata && typeof buildTestMetadata === "object" && !Array.isArray(buildTestMetadata) && typeof (buildTestMetadata as Record<string, JsonValue>).faultInjection === "string"
+              ? String((buildTestMetadata as Record<string, JsonValue>).faultInjection)
+              : undefined;
             const compiledBuildTestSkill = await compileBuildTestSkillFromLedger(deps.storage.events);
             if (compiledBuildTestSkill) {
               events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillCompiled", payload: toJsonValue(compiledBuildTestSkill) })));
             }
             let proceduralSkillExecution: JsonValue | undefined;
             if (!executiveDispatch && compiledBuildTestSkill) {
-              const skillRun = await executeBuildTestSkill({ skill: compiledBuildTestSkill, episodeId, construct, executeProgram: deps.buildTest.executeProgram });
+              const skillRun = await executeBuildTestSkill({ skill: compiledBuildTestSkill, episodeId, construct, executeProgram: run => deps.buildTest.executeProgram({ ...run, faultInjection: buildFaultInjection }) });
               buildTest = skillRun.buildTest;
               proceduralSkillExecution = toJsonValue({
                 skillId: compiledBuildTestSkill.id,
@@ -3396,40 +3621,44 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 rolledBack: skillRun.execution.rolledBack
               });
             }
-            buildTest = buildTest ?? executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct });
+            buildTest = buildTest ?? executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct, faultInjection: buildFaultInjection });
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
-            events.push(await append(eventFactory.create({ episodeId, typeId: "BuildExecuted", payload: { code: buildTest.build.code, durationMs: buildTest.build.durationMs, stderrHash: hasher.digestHex(buildTest.build.stderr) } })));
-            events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { code: buildTest.test.code, passed: buildTest.passed, repairAttempted: buildTest.repairAttempted } })));
-            events.push(await append(eventFactory.create({ episodeId, typeId: buildTest.passed ? "CapabilitySucceeded" : "CapabilityFailed", payload: { capabilityId: capability.id, planId: plan.id, passed: buildTest.passed } })));
-            // Plan items 180-181: a failing build/test is a real, concrete
-            // "meaningful observation" -- direct evidence that whatever
-            // this construct's own task-decomposition plan claimed about
-            // TEST_BEHAVIOR/BUILD_NOT_PRECLAIMED (code-learning.ts's own
-            // named condition ids for exactly this) no longer holds. Only
-            // those two specific conditions are invalidated, never the
-            // unrelated ones (path containment, secret material, etc.) a
-            // failing build has no real bearing on. taskResumptionSnapshot
-            // (computed earlier this same turn) already has this turn's
-            // real graph; replanning reuses every node whose own claims
-            // this failure doesn't touch, rather than restarting the plan.
-            if (!buildTest.passed && taskResumptionSnapshot) {
-              taskReplanning = replan(taskResumptionSnapshot.taskGraph, {
-                invalidatedConditionIds: [CODE_CONSTRAINT.TEST_BEHAVIOR, CODE_CONSTRAINT.BUILD_NOT_PRECLAIMED]
-              });
-            }
-            // The mirror of the replan above: a passing build is the evidence those same claimed conditions now hold,
-            // so the nodes that claimed them are completed here rather than left open forever.
-            if (buildTest.passed && taskResumptionSnapshot) {
-              taskCompletion = completeConditionsProvenByBuild(taskResumptionSnapshot.taskGraph);
-              if (taskCompletion.completed.length) {
-                taskResumptionSnapshot = { ...taskResumptionSnapshot, taskGraph: taskCompletion.graph };
+            // Every attempt is observed: a failure replans the task graph, a repair becomes the construct's state, and
+            // the attempt that passes completes what it proved. The adapter bounds this to one repair per turn.
+            const buildAttempts = buildTest.attempts?.length ? buildTest.attempts : [{ build: buildTest.build, test: buildTest.test, artifacts: buildTest.artifacts }];
+            for (const [attempt, run] of buildAttempts.entries()) {
+              const attemptPassed = run.build.code === 0 && run.test.code === 0;
+              if (attempt > 0) {
+                construct = { ...construct, artifacts: run.artifacts };
+                events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramRepaired", payload: toJsonValue({ attempt, artifacts: run.artifacts.map(artifact => ({ path: artifact.path, hash: artifact.contentHash })) }) })));
+              }
+              events.push(await append(eventFactory.create({ episodeId, typeId: "BuildExecuted", payload: { attempt, code: run.build.code, durationMs: run.build.durationMs, stderrHash: hasher.digestHex(run.build.stderr) } })));
+              events.push(await append(eventFactory.create({ episodeId, typeId: "TestExecuted", payload: { attempt, code: run.test.code, passed: attemptPassed, repairAttempted: buildTest.repairAttempted } })));
+              if (!attemptPassed && taskResumptionSnapshot) {
+                taskReplanning = replan(taskResumptionSnapshot.taskGraph, {
+                  invalidatedConditionIds: [CODE_CONSTRAINT.TEST_BEHAVIOR, CODE_CONSTRAINT.BUILD_NOT_PRECLAIMED]
+                });
+                // The replanned graph is what the next attempt and the next turn resume from; unpersisted it was only a report.
+                taskResumptionSnapshot = await persistTaskGraphForTurn(deps.storage.taskResumption, taskResumptionSnapshot, { taskGraph: taskReplanning.graph, workingMemory: candidateWorkingMemory, capturedAt: clock.now(), hasher });
                 events.push(await append(eventFactory.create({
                   episodeId,
-                  typeId: "TaskNodeCompleted",
-                  payload: toJsonValue({ completed: taskCompletion.completed, blocked: taskCompletion.blocked })
+                  typeId: "TaskReplanned",
+                  payload: toJsonValue({ attempt, snapshotId: taskResumptionSnapshot.id, reused: taskReplanning.reusedNodeIds, invalidated: taskReplanning.invalidatedNodeIds, blocked: taskReplanning.blockedNodeIds })
                 })));
               }
+              if (attemptPassed && taskResumptionSnapshot) {
+                taskCompletion = completeConditionsProvenByBuild(taskResumptionSnapshot.taskGraph);
+                if (taskCompletion.completed.length) {
+                  taskResumptionSnapshot = await persistTaskGraphForTurn(deps.storage.taskResumption, taskResumptionSnapshot, { taskGraph: taskCompletion.graph, workingMemory: candidateWorkingMemory, capturedAt: clock.now(), hasher });
+                  events.push(await append(eventFactory.create({
+                    episodeId,
+                    typeId: "TaskNodeCompleted",
+                    payload: toJsonValue({ attempt, completed: taskCompletion.completed, blocked: taskCompletion.blocked })
+                  })));
+                }
+              }
             }
+            events.push(await append(eventFactory.create({ episodeId, typeId: buildTest.passed ? "CapabilitySucceeded" : "CapabilityFailed", payload: { capabilityId: capability.id, planId: plan.id, passed: buildTest.passed } })));
             if (proceduralSkillExecution) {
               events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillExecuted", payload: proceduralSkillExecution })));
             }
@@ -3453,8 +3682,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               payload: {
                 capabilityId: capability.id,
                 planId: plan.id,
-                reason: buildTestDecision?.allowed === false ? "runtime-deadline-reserve" : permission.reason ?? "approval-required",
-                ...(buildTestDecision ? { deadlineDecision: toJsonValue(buildTestDecision) } : {})
+                reason: permission.reason ?? "approval-required",
               }
             })));
           }
@@ -3605,13 +3833,28 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // tightens this gate's requirement (measured ~2-4ms vs. the previous
       // 750ms placeholder), so it can only become *more* permissive, never
       // less, for any caller already relying on the old budget.
-      const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", estimateKneserNeyGenerationCostMs(64));
+      const learnedMouthDecisionByDeadline = deadlineCheckpoint("mouth.realize.learned", estimateKneserNeyGenerationCostMs(64));
+      // A request to write prefers a late answer to a prompt-echoing one, within a bound.
+      //
+      // The deadline is a latency contract for an interactive answer, and for retrieval it is the right contract:
+      // an evidence answer that arrives late is worth less than one that arrives now. Generation is not
+      // retrieval. Measured 2026-09-12: every creative turn exceeded the response deadline upstream, the learned
+      // mouth was refused, and a fallback lane stitched the request text into twelve sections. Refusing the only
+      // lane that can write, to meet a clock, produces a worse answer at every latency.
+      //
+      // Bounded by the same allowance the section realizer already honours, rather than exempted outright: an
+      // unbounded lane is how a turn becomes a hang, and "creative" must not be a way to opt out of every clock.
+      const creativeRealizationAllowed = requestedAuthority === "creative"
+        && Date.now() - turnStarted < CREATIVE_GENERATION_ALLOWANCE_MS;
+      const learnedMouthDecision = creativeRealizationAllowed ? undefined : learnedMouthDecisionByDeadline;
       kernelTrace({
         stage: "mouth.realize.decision",
         label: "kernel.turn",
         support: {
           learnedMouthAllowed: learnedMouthDecision?.allowed !== false,
-          decision: toJsonValue(learnedMouthDecision ?? null),
+          creativeRealizationExempt: requestedAuthority === "creative",
+          deadlineWouldRefuse: learnedMouthDecisionByDeadline?.allowed === false,
+          decision: toJsonValue(learnedMouthDecisionByDeadline ?? null),
           hasSemanticConstruct: Boolean(semanticAnswerConstructFacts(spokenConstructGraph))
         }
       });
@@ -3685,8 +3928,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // actually about; without this, word choice has nothing but the
         // corpus itself to lean on and drifts into whichever novel the
         // continuation model happens to favor.
+        // A prior turn is not source material. The session span for a creative turn holds the request itself, so
+        // building the topic vocabulary from selectedEvidence fed the instruction back in as the thing to write
+        // about: sections opened "Sailor leaving harbour ...", "Short story about ..." because those were the
+        // highest-weighted topic units (live 2026-09-12). Corpus spans only; an empty result is honest.
+        const creativeSourceEvidence = selectedEvidence.filter(span =>
+          !String(span.id).startsWith("evidence_session_") && !String(span.id).startsWith("source_session_"));
         const creativeTopicVocabulary = [...new Set(
-          selectedEvidence.slice(0, 12).flatMap(span => surfaceUnits(collapseSurfaceWhitespace(span.text).toLocaleLowerCase()))
+          creativeSourceEvidence.slice(0, 12).flatMap(span => surfaceUnits(collapseSurfaceWhitespace(span.text).toLocaleLowerCase()))
         )].filter(unit => unit.length >= 4).slice(0, 96);
         // The document's persistent cast, derived once from the whole
         // request (not the per-section goal): this is what
@@ -3700,13 +3949,57 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // discourse object was bound. This falls back to that, not to a
         // heuristic: no cast at all is the honest result when neither
         // signal resolves.
-        const creativeCastSubjectIds = properNounEntityAnchors(input.text).length
-          ? properNounEntityAnchors(input.text).slice(0, 3)
-          : properNounEntityAnchors(selectedEvidence.slice(0, 3).map(span => span.text).join(" ")).slice(0, 3);
+        const creativeSubjectText = turnSignals.subjectText;
+        // The cast comes from the SUBJECT, never the raw request. Measured 2026-09-12: the cast of
+        // "Write a short story about a blacksmith who forgets his own name" was
+        // ["blacksmith who forgets his own name", "short story about", "blacksmith who forgets his own"], and the
+        // cast becomes requiredTerms -- so every section was REQUIRED to contain the phrase "short story about".
+        // The engine was not echoing the prompt, it was obeying a cast list built out of it.
+        // A cast member is a nominal head, not a relative clause. The anchor for this request was the whole clause
+        // "blacksmith who forgets his own name", and as a required term it stapled onto every sentence
+        // ("Blacksmith who forgets his own at that moment I saw a grim smile"). The corpus own closed class marks
+        // where the clause starts -- "who" continues thousands of contexts -- so each anchor is cut at its first
+        // function word. Learned from continuation counts, so it holds for any language the brain has modelled.
+        // The corpus-wide function symbols, not the request-scoped set: the question is whether a unit is function
+        // material in the language, and the request-scoped set is too small to contain "who" or "his", which left the
+        // cast as the clause "blacksmith who forgets his own".
+        // Derived from the models this turn actually speaks with. corpusFunctionSymbols() reads the authority
+        // hydration, which for a creative turn can be empty, and an empty closed class silently kept the whole
+        // clause as the cast.
+        const castClosedClass = surfaceLanguageMemory.models.length
+          ? deriveClosedClassWords({ models: surfaceLanguageMemory.models })
+          : corpusFunctionSymbols();
+        // An anchor containing function material anywhere after its first unit is a phrase, not a name: its head
+        // is the first unit ("sailor leaving harbour at dawn" -> "sailor"). One that contains none is a name and
+        // survives whole ("Jane Eyre"). The closed class is the corpus own, by continuation count.
+        const nominalHead = (anchor: string): string => {
+          const units = anchor.split(/\s+/u).filter(Boolean);
+          if (units.length <= 1) return units[0] ?? "";
+          const phrase = units.slice(1).some(unit => castClosedClass.has(unit.toLocaleLowerCase()));
+          return phrase ? units[0]! : units.join(" ");
+        };
+        const creativeCastSubjectIds = uniqueKernelStrings(
+          (properNounEntityAnchors(creativeSubjectText).length
+            ? properNounEntityAnchors(creativeSubjectText)
+            : properNounEntityAnchors(creativeSourceEvidence.slice(0, 3).map(span => span.text).join(" ")))
+            .map(anchor => nominalHead(anchor))
+            .filter(Boolean)
+        ).slice(0, 3);
+        // The section goals are the SUBJECT, not the instruction. Each section goal was the whole request plus
+        // "[part n of m]", so every section began by realizing the words "Write a short story about", and the
+        // answer read "Sailor leaving harbour; ... Short story about ..." (live 2026-09-12). requestSubjectText
+        // removes the spans the routing patterns matched -- the instruction -- leaving what the story is about.
+        // It could only ever do that once those patterns actually hydrated, which is the same defect that kept
+        // every turn from being routed creative at all.
         const extendedSession = extendedGenerationSessionForTurn({
-          requestText: input.text,
+          requestText: creativeSubjectText,
           sectionTarget: extendedGeneration.sectionTarget,
-          protectedPassages: selectedEvidence.slice(0, 8).map(span => ({ sourceId: String(span.id), text: span.text })),
+          // A prior turn is not source material. The session span carrying this very request (72 characters of
+          // it, measured) was being handed to generation as a protected passage and as conditioning, so the
+          // request came back out inside the story.
+          protectedPassages: creativeSourceEvidence
+            .slice(0, 8)
+            .map(span => ({ sourceId: String(span.id), text: span.text })),
           castSubjectIds: creativeCastSubjectIds
         });
         // A creative turn reaches generation only after retrieval and a cold role hydration, by which time the
@@ -3751,7 +4044,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 narrativeConditioning: priorSectionTexts.slice(-2),
                 topicVocabulary: sectionTopicVocabulary,
                 resolvedCastSubjectIds: creativeCastSubjectIds,
-                casingSourceTexts: selectedEvidence.slice(0, 4).map(span => span.text),
+                casingSourceTexts: creativeSourceEvidence.slice(0, 4).map(span => span.text),
                 attempt,
                 generationExtent: 180
               });
@@ -4059,6 +4352,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       answer = spoken.text;
       if (!answer.trim()) answer = "";
+      // A turn never speaks the request back. This is the last gate before the answer leaves the kernel, and it is
+      // unconditional: the lane-level echo guards each cover their own lane, and the program lane went around all
+      // of them -- "Write a JavaScript function that computes time dilation..." was answered with exactly itself
+      // (live 2026-09-12). Echoing is worse than declining, because a decline is honest and an echo looks like an
+      // answer. Every lane that could speak has already had its turn by here, so there is nothing left to prefer.
+      if (answer.trim() && surfaceEchoesPrompt(answer, input.text)) {
+        kernelTrace({
+          stage: "turn.output.prompt_echo_refused",
+          label: "kernel.turn",
+          counts: { answerChars: answer.length },
+          support: { selectedCandidateId: judged.selected.id, kind: judged.selected.kind, assistantForce: selectedAssistantForce.force }
+        });
+        answer = "";
+      }
       answer = withCitation(answer, spoken);
       // calibration_observations had zero rows for every non-translation dimension; record one for real turns.
       // Real bug, confirmed live (Apollo-11 landing-date turn): "non-empty answer + low self-contradiction" is
@@ -5118,12 +5425,14 @@ const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
 /** How long a creative turn may keep realizing sections after the initial-response budget is spent. Bounded. */
 const CREATIVE_GENERATION_ALLOWANCE_MS = 12_000;
 
-function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAuthority: string): EvidenceSpan[] {
+function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAuthority: string, requestText = ""): EvidenceSpan[] {
   if (requestedAuthority === "program") return [...pool];
+  // A source file that declares the identifier the request names is evidence about it: "Which file defines
+  // bestEvidenceSentences?" is a factual question whose only source is code (live 2026-09-12, declined).
   // Unconditional, with no keep-what-we-have fallback: a factual request whose only candidate is source code has
   // no evidence, and abstaining is the correct outcome. The fallback was not hypothetical -- "Who was Ada
   // Lovelace?" reached a pool of exactly one span, a comment in `mouth.ts`, and answered from it.
-  return pool.filter(span => !isCodeEvidenceSpan(span));
+  return pool.filter(span => !isCodeEvidenceSpan(span) || (requestText !== "" && evidenceIdentityBindsRequest(span, requestText)));
 }
 
 /** The longest prefix of `text` ending at a sentence boundary within `limit` characters, or "" when none does. Pure. */
@@ -5157,6 +5466,7 @@ function trimToSentenceBoundary(text: string, limit: number): string {
  * it is left to finish and populate the cache the next turn will hit, with its rejection absorbed so a late failure
  * cannot surface as an unhandled rejection long after the turn returned.
  */
+
 function withStageBudget<T>(work: Promise<T>, budgetMs: number, fallback: () => Promise<T>, onOverrun?: (elapsedMs: number) => void): Promise<T> {
   const started = Date.now();
   let settled = false;

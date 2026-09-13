@@ -4,6 +4,7 @@ import ts from "typescript";
 import {
   basename,
   clamp01,
+  codeLanguageForPath,
   createSourceCodeFileFacts,
   extensionOf,
   normalizePath,
@@ -473,7 +474,10 @@ function parseManifestFacts(normalizedPath: string, text: string): SourcePackage
   if (ext === ".json") return parseJsonManifestFacts(text);
   if (ext === ".toml" || ext === ".ini") return parseSectionedKeyValueManifestFacts(text, normalizedPath);
   if (ext === ".xml") return parseXmlLikeManifestFacts(text, normalizedPath);
-  if (looksLikeDependencyList(normalizedPath, text)) return parseLineListManifestFacts(text, normalizedPath);
+  // A manifest is a declared file, not a shape found in text: content-sniffing one out of arbitrary prose is
+  // how every novel in the corpus reached the source parser (2026-09-12). The name check inside
+  // looksLikeDependencyList still recognises requirements/lock files by what they are called.
+  if (isDeclaredDependencyFile(normalizedPath, text)) return parseLineListManifestFacts(text, normalizedPath);
   return undefined;
 }
 
@@ -877,27 +881,49 @@ function xmlTagName(tag: string): string {
   return out.join("");
 }
 
-function looksLikeDependencyList(normalizedPath: string, text: string): boolean {
+/** A requirements or lock file, recognised by what the file is called rather than by what its lines look like. */
+function isDeclaredDependencyFile(normalizedPath: string, text: string): boolean {
   const file = basename(normalizedPath).toLocaleLowerCase();
   if (file.includes("depend") || file.includes("lock") || file.includes("require")) return true;
-  let dependencyLike = 0;
-  for (const line of textLines(text).slice(0, 200)) {
-    const name = dependencyNameFromRequirement(stripComment(line).trim());
-    if (name) dependencyLike++;
-  }
-  return dependencyLike >= 5;
+  // A requirements file is one whose lines are requirements -- nearly all of them. The test used to accept five
+  // matching lines out of two hundred, and a bare requirement is a bare word, so every novel in the corpus
+  // matched and was parsed as a manifest (2026-09-12). The proportion is the property; the count was not.
+  const lines = textLines(text).slice(0, 200).map(line => stripComment(line).trim()).filter(Boolean);
+  if (lines.length < 2) return false;
+  return lines.filter(line => dependencyNameFromRequirement(line)).length * 2 > lines.length;
 }
 
+/**
+ * Whether a document is source code.
+ *
+ * The file's declared type answers this, and a declaration is metadata rather than a guess about content:
+ * ".ts" is TypeScript and ".txt" is text in every human language, so this holds for a corpus in any script.
+ * Shape-guessing is what went wrong: the previous test asked whether three lines held an identifier and two
+ * held a delimiter, which every prose document on earth satisfies, and the structural parser duly reported 257
+ * calls and 48 declarations in A Tale of Two Cities (2026-09-12).
+ *
+ * An undeclared document still gets a real answer, from the one structural property that separates the two
+ * without reference to any language's vocabulary: bracket structure. Code is written in balanced delimiters and
+ * uses them constantly -- every call, block, index and parameter list -- so a source file carries brackets on the
+ * order of one per line and closes every one it opens. Prose carries almost none: measured over this corpus, the
+ * fifteen novels average 0.02 brackets per line and the kernel's own TypeScript averages 3.6. The test is the
+ * ratio and the balance together, because either alone is forgeable -- a table of parenthesised asides has
+ * density without balance, and a document with two brackets balances trivially.
+ */
 function looksStructurallyLikeSource(text: string): boolean {
-  const lines = textLines(text).slice(0, 400);
-  let lexemeLines = 0;
-  let structuralLines = 0;
+  const lines = textLines(text).slice(0, 400).filter(line => line.trim());
+  if (!lines.length) return false;
+  let brackets = 0;
+  let depth = 0;
+  let unbalanced = 0;
   for (const line of lines) {
-    const lexemes = lexLine(line, 0);
-    if (lexemes.some(lexeme => lexeme.kind === "identifier")) lexemeLines++;
-    if (lexemes.some(lexeme => lexeme.kind === "delimiter" || lexeme.kind === "operator")) structuralLines++;
+    for (const char of line) {
+      if (char === "(" || char === "[" || char === "{") { brackets++; depth++; }
+      else if (char === ")" || char === "]" || char === "}") { brackets++; depth--; if (depth < 0) { unbalanced++; depth = 0; } }
+    }
   }
-  return lexemeLines >= 3 && structuralLines >= 2;
+  // Closes what it opens, and uses delimiters the way code does rather than the way an aside does.
+  return unbalanced === 0 && Math.abs(depth) <= 1 && brackets >= lines.length;
 }
 
 function parserFor(normalizedPath: string, mediaType: string): SourceCodeFileFacts["parser"] {
@@ -932,6 +958,8 @@ export function sourceFactsTextAdmissible(mediaType: string, text: string): bool
 function isProbablySourceLike(normalizedPath: string, mediaType: string, text: string): boolean {
   const lower = mediaType.toLocaleLowerCase();
   if (NON_SOURCE_TEXT_MEDIA.some(media => lower.startsWith(media))) return false;
+  // The path's declared formal language, from the one table the request side also reads.
+  if (codeLanguageForPath(normalizedPath)) return true;
   if (lower.includes("javascript") || lower.includes("typescript") || lower.startsWith("text/x-")) return true;
   if (parseManifestFacts(normalizedPath, text)) return true;
   return looksStructurallyLikeSource(text);

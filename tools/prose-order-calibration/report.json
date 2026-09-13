@@ -1,0 +1,91 @@
+{
+ "schema": "scce.prose_order_calibration.v1",
+ "generatedAt": "2026-09-12T20:13:29.878Z",
+ "root": "corpus/gutenberg",
+ "corpusBooks": 11,
+ "corpusSymbols": 200000,
+ "heldOutBooks": [
+  "a-tale-of-two-cities.txt",
+  "heart-of-darkness.txt",
+  "pride-and-prejudice.txt",
+  "the-war-of-the-worlds.txt"
+ ],
+ "passagesPerBook": 8,
+ "passageSymbols": 60,
+ "vocabularyLimit": 8192,
+ "discount": 0.75,
+ "rows": [
+  {
+   "order": 2,
+   "logPerplexity": 5.2332,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 314
+  },
+  {
+   "order": 3,
+   "logPerplexity": 5.3022,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 1351
+  },
+  {
+   "order": 4,
+   "logPerplexity": 5.3672,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 3134
+  },
+  {
+   "order": 5,
+   "logPerplexity": 5.3868,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 4822
+  },
+  {
+   "order": 6,
+   "logPerplexity": 5.3948,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 6533
+  },
+  {
+   "order": 7,
+   "logPerplexity": 5.3948,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 7583
+  },
+  {
+   "order": 8,
+   "logPerplexity": 5.3948,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 7465
+  },
+  {
+   "order": 9,
+   "logPerplexity": 5.3948,
+   "coverage": 1,
+   "symbols": 1888,
+   "vocabulary": 8192,
+   "trainMs": 7423
+  }
+ ],
+ "best": {
+  "order": 2,
+  "logPerplexity": 5.2332,
+  "coverage": 1,
+  "symbols": 1888,
+  "vocabulary": 8192,
+  "trainMs": 314
+ }
+}

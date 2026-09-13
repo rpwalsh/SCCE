@@ -20,13 +20,15 @@ interface ProgramActivationDecision {
 
 export function createProgramGraphBuilder(options: { idFactory: IdFactory; hasher: Hasher }) {
   return {
-    build(input: { episodeId: EpisodeId; text: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; createdAt: number; programIntent?: ProgramConstructIntent }): ConstructGraph {
+    // `program`: an already-synthesized graph to keep (the proposal the judge selected), so the post-judge construct
+    // carries the same program identity the candidates were planned over instead of a second, independent synthesis.
+    build(input: { episodeId: EpisodeId; text: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; createdAt: number; programIntent?: ProgramConstructIntent; program?: ProgramGraph }): ConstructGraph {
       const activation = programActivation(input.text, input.entailment, input.evidence, input.programIntent);
       const shouldEmitProgram = activation.activate;
       const artifacts: FileArtifact[] = [];
       let program: ProgramGraph | undefined;
-      if (shouldEmitProgram) {
-        program = synthesizeProgramGraph(input, options.idFactory, options.hasher);
+      if (shouldEmitProgram || input.program) {
+        program = input.program ?? synthesizeProgramGraph(input, options.idFactory, options.hasher);
         artifacts.push(...program.files);
       }
       const families = constructFamilies(input, activation);
@@ -209,7 +211,7 @@ function hasDrivePrefix(path: string): boolean {
   return cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122;
 }
 
-function hasEngineeringCorpusMetadata(span: EvidenceSpan): boolean {
+export function hasEngineeringCorpusMetadata(span: EvidenceSpan): boolean {
   const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, JsonValue> : {};
   const metadata = provenance.metadata && typeof provenance.metadata === "object" && !Array.isArray(provenance.metadata) ? provenance.metadata as Record<string, JsonValue> : {};
   return Boolean(metadata.engineeringCorpus || metadata.repositoryFacts || metadata.sourceCode);

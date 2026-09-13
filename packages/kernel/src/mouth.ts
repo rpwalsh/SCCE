@@ -825,7 +825,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ...requestCoverageHits(bounded, candidate, input, nearDuplicatePreservation),
             // Generated prose cut at its budget mid-word ("...the analytical engine wri") is not a surface any
             // selection chain may fall through to; measured live on "Who was Ada Lovelace?".
-            ...(candidate.generation && generatedSurfaceUnfinished(bounded) ? ["surface.reject.unfinished_generation"] : [])
+            ...(generationStoppedAtExtent(candidate.generation) ? ["surface.reject.unfinished_generation"] : [])
           ]);
         const adjustedFit = forbiddenHits.length ? candidate.fit * 0.1 : candidate.fit;
         return { ...candidate, fit: adjustedFit, text: bounded, correction: corrected, preservation, score, forbiddenHits };
@@ -872,11 +872,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           externallyFactual: semanticAnswerState!.certificationBoundary.externalFactCertification
         }, mouthClosedClass(input))
         : undefined;
-      // Generated prose that stopped at its budget rather than at a boundary is unfinished ("...the analytical
+      // Generated prose that stopped at its extent rather than at a boundary is unfinished ("...the analytical
       // engine wri"): measured live, a near-copy of the Ada Lovelace lead cut mid-word survived the contract check.
       const semanticRhetoricalCandidateVerified = semanticRhetoricalCandidate && semanticRealizationContract
         && candidateSurvivesRealizationContract(semanticRhetoricalCandidate.text, semanticRealizationContract).survives
-        && !generatedSurfaceUnfinished(semanticRhetoricalCandidate.text)
+        && !generationStoppedAtExtent(semanticRhetoricalCandidate.generation)
         ? semanticRhetoricalCandidate
         : undefined;
       // A sourced answer never speaks generation that failed its contract ("Anglicanism originated which country The original book...").
@@ -1052,7 +1052,18 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           semanticCoreFactPredicate: semanticCoreFact?.predicate ?? null,
           semanticCoreFactObject: semanticCoreFact?.object ?? null,
           semanticContractRelationUnits: semanticRealizationContract?.requiredRelationUnits ?? null,
-          semanticContractAtomCount: semanticRealizationContract?.requiredAtoms.length ?? null
+          semanticContractAtomCount: semanticRealizationContract?.requiredAtoms.length ?? null,
+          // Why a lane lost, per candidate: an empty answer with one raw candidate was otherwise unexplainable.
+          candidates: energyRows.slice(0, 8).map(row => ({
+            id: row.candidate.id,
+            valid: row.result.valid,
+            hardViolations: row.result.hardViolations.slice(0, 4),
+            forbiddenHits: byCandidateId.get(row.candidate.id)?.forbiddenHits.slice(0, 4) ?? [],
+            evidenceIds: byCandidateId.get(row.candidate.id)?.evidenceIds.length ?? 0,
+            text: byCandidateId.get(row.candidate.id)?.text.slice(0, 200) ?? null,
+            tail: byCandidateId.get(row.candidate.id)?.text.slice(-40) ?? null,
+            length: byCandidateId.get(row.candidate.id)?.text.length ?? 0
+          }))
         }
       });
       markMouthPhase("candidate_selection");
@@ -6980,7 +6991,13 @@ function mouthClosedClass(input: SpeakInput): Set<string> {
 
 /** Whether the relation asked about can be required of a surface: only a learned closed class can name it. Pure. */
 function mouthRelationRequired(input: SpeakInput): boolean {
-  return mouthClosedClass(input).size > 0;
+  // The language's closed class, not the request-scoped one. The request-scoped set applies the corpus signal only
+  // to a request's opening two words and then removes whatever the request names, so it is empty for exactly the
+  // requests that most need the relation gate: "What did he discover?" produced an empty set, fell to the loose
+  // quota, and declined an answer it had already retrieved and ranked first (live, turn 2 of six). Which units a
+  // language uses as scaffolding is a property of the language, and reading it by word position assumes the
+  // question word comes first, which is false in every verb-final language.
+  return deriveClosedClassWords({ models: input.languageMemory?.models ?? [] }).size > 0;
 }
 
 /** An owner assertion bound as session evidence is confirmed by restating it; it is not a question to cover or an echo to reject. Pure. */
@@ -7042,10 +7059,11 @@ function creativeSemanticDriftHits(text: string, input: SpeakInput): string[] {
  * word from the surface. Real effect beyond reading: the runtime coherence debris check treats "(;" as source
  * leakage and demotes an otherwise well-grounded answer to insufficient support. Pure.
  */
-/** Long generated prose with no terminal mark at its end stopped at a budget, not a sentence. Pure. */
-function generatedSurfaceUnfinished(text: string): boolean {
-  const trimmed = text.trim();
-  return [...trimmed].length >= 120 && !/[.!?…。！？"”'’)\]»]$/u.test(trimmed);
+/** The generator's own stop reason: a discourse that ran to its symbol extent stopped at a budget, not at a boundary.
+ *  A completed discourse with no terminal mark -- a list of paths and commands -- is finished; a punctuation test
+ *  rejected exactly those (three program and typed-evidence surfaces spoke nothing). Pure. */
+function generationStoppedAtExtent(generation: LanguageGenerationResult | undefined): boolean {
+  return generation?.stoppedBy === "generation_extent";
 }
 
 function collapseEmptyBracketLead(text: string): string {

@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Hasher, JsonValue } from "./types.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
+import { corpusNamedIdentities } from "./corpus-identity.js";
 
 export const DISCOURSE_SIGNAL_IDS = {
   currentSurfaceSparse: "disc.signal.2b6c4a91",
@@ -69,13 +70,31 @@ export function buildDiscourseObjectState(input: BuildDiscourseObjectStateInput)
   const recencyMass = clamp01(1 - turnDistance / 12);
   const evidenceMass = clamp01(Math.log1p(carrier.evidenceIds.length) / Math.log1p(8));
   const sparseMass = clamp01(1 - surface.specificityMass);
-  const bindingConfidence = clamp01(sparseMass * 0.58 + recencyMass * 0.18 + evidenceMass * 0.22);
+  // Whether the request names a subject of its own, which is the fact this binding turns on.
+  //
+  // Specificity mass counts content words, and a follow-up can be full of them while naming nobody: "What did he
+  // discover?" scored specific enough to stand alone, so nothing was inherited and the turn searched the corpus
+  // for the verb -- anchors ["discover", "did discover"], twelve admitted spans cut to one irrelevant one, then a
+  // decline (live 2026-09-12, turn 2 of a four-turn conversation). A request naming no subject cannot stand alone
+  // whatever its word count; one naming its own does not need to inherit another.
+  // Only a run the corpus carries as a whole source identity counts here. Retrieval anchors on any content run,
+  // which is right for widening a search and wrong for this: "Explain relativity." offers the content run
+  // "explain relativity" and names no subject the corpus is titled with, so it stays on the conversation's
+  // subject instead of starting a new one about the imperative verb.
+  const namesOwnSubject = corpusNamedIdentities(input.currentText).length > 0;
+  const bindingConfidence = clamp01(
+    (namesOwnSubject ? sparseMass : Math.max(sparseMass, 0.78)) * 0.58 + recencyMass * 0.18 + evidenceMass * 0.22
+  );
   const signalIds = [
     ...(surface.specificityMass < 0.72 ? [DISCOURSE_SIGNAL_IDS.currentSurfaceSparse] : [DISCOURSE_SIGNAL_IDS.currentSurfaceSpecific]),
     DISCOURSE_SIGNAL_IDS.priorEvidenceCarrier,
     ...(carrier.evidenceIds.length ? [DISCOURSE_SIGNAL_IDS.evidenceContinuity] : [])
   ];
-  if (surface.specificityMass >= 0.72 || bindingConfidence < 0.45) return undefined;
+  // A request naming its own subject is not a follow-up, however sparse; one naming none is, however dense. The
+  // word count had a veto over that and used it: "now tell me the plot of moby dick" names a subject the corpus is
+  // titled with, scored sparse on its four scaffolding words, inherited Einstein and declined -- while the same
+  // request in a fresh session answered (live, turn 4 of six). The fact decides alone.
+  if (namesOwnSubject || bindingConfidence < 0.45) return undefined;
   const objectBasis = {
     sessionId: input.sessionId ?? null,
     selectedTurnId: carrier.id,

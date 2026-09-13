@@ -368,7 +368,9 @@ export function createLanguageAcquisitionEngine(options: { idFactory: IdFactory 
       const symbols = symbolizeData(input.text).slice(0, 10000);
       const shapeCounts = count(symbols.map(symbolShape));
       const ngrams = count(charNgrams(chars.join("").toLowerCase(), 3));
-      const kneserNey = trainKneserNey(symbols, { order: 6, discount: 0.75, vocabularyLimit: 12000 });
+      // Order 6 over 10k symbols is identical to order 4 and costs more: no 6-gram context recurs even in the
+      // whole prose corpus (tools/prose-order-calibration).
+      const kneserNey = trainKneserNey(symbols, { order: 4, discount: 0.75, vocabularyLimit: 12000 });
       const ngramProfile = prose.analyze(input.text);
       const values = [...ngrams.values()];
       const direction = directionFrom(chars);

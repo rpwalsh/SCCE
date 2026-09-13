@@ -113,6 +113,7 @@ export const EVENT_TYPES = [
   "SymbolPatternLearned",
   "SegmentationSpacingObserved",
   "TaskNodeCompleted",
+  "TaskReplanned",
   "CorrectionConflictDetected",
   "FieldSeeded",
   "FieldActivated",
@@ -140,6 +141,7 @@ export const EVENT_TYPES = [
   "FileGraphBuilt",
   "SourceEmitted",
   "BuildExecuted",
+  "ProgramRepaired",
   "TestExecuted",
   "ExecutiveCapabilityDispatched",
   "CounterfactualSimulated",
@@ -761,6 +763,8 @@ export interface BuildTestResult {
   repairApplied: boolean;
   passed: boolean;
   artifacts: FileArtifact[];
+  /** Each attempt in order when more than one ran: the original and the repaired build. */
+  attempts?: Array<{ build: BuildTestResult["build"]; test: BuildTestResult["test"]; artifacts: FileArtifact[] }>;
 }
 
 export interface ForecastState {

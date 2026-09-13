@@ -20,6 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { score } from "./grade.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i++) {
@@ -84,29 +85,6 @@ const cpuDelta = (before, after, key) =>
   before && after && typeof before[key] === "number" && typeof after[key] === "number"
     ? Number((after[key] - before[key]).toFixed(3))
     : null;
-
-// ---- scoring ------------------------------------------------------------------------------------------------
-const normalize = value => String(value).replace(/\s+/gu, " ").trim().toLowerCase();
-const declines = answer => {
-  const spoken = normalize(answer);
-  if (!spoken) return true;
-  return /(do not|does not|doesn't|don't|no (information|mention|reference|record|grounded source)|not (mentioned|found|provided|present|specified|available|contain|include)|cannot|can't|unable|unknown|not enough|isn't (mentioned|specified)|no specific)/u.test(spoken);
-};
-function score(item, answer) {
-  const spoken = normalize(answer);
-  const declined = declines(answer);
-  if (item.gold.ungraded) return { verdict: "ungraded", declined };
-  if (item.gold.unanswerable) return { verdict: declined ? "declined" : "fabricated", declined };
-  const forbidden = (item.gold.forbiddenStrings ?? []).some(s => spoken.includes(normalize(s)));
-  const required = (item.gold.requiredStrings ?? []);
-  const accepted = (item.gold.acceptedAnswers ?? []);
-  const hasRequired = required.length
-    ? required.every(s => normalize(s).split(/[\s,]+/u).filter(Boolean).every(part => spoken.includes(part)))
-    : accepted.some(s => spoken.includes(normalize(s)));
-  if (forbidden) return { verdict: "wrong", declined };
-  if (hasRequired) return { verdict: "correct", declined };
-  return { verdict: declined ? "declined_when_answerable" : "wrong", declined };
-}
 
 // ---- systems ------------------------------------------------------------------------------------------------
 async function askScce(prompt) {
@@ -198,16 +176,29 @@ const batteryEnd = sampleBattery();
 function summarize(side) {
   const scored = rows.filter(row => row[side] && row[side].verdict !== "ungraded");
   const cpu = rows.map(row => row[side]?.cpuSeconds).filter(v => typeof v === "number");
+  // Per corpus: a wiki-only retrieval path scores zero on book and code rows while the total still looks healthy.
+  const byWorkload = {};
+  for (const row of scored) {
+    const bucket = byWorkload[row.workload] ??= { items: 0, correct: 0 };
+    bucket.items += 1;
+    if (row[side].verdict === "correct") bucket.correct += 1;
+  }
   return {
     items: scored.length,
+    byWorkload,
     correct: scored.filter(r => r[side].verdict === "correct").length,
     wrong: scored.filter(r => r[side].verdict === "wrong").length,
     declinedWhenAnswerable: scored.filter(r => r[side].verdict === "declined_when_answerable").length,
     declined: scored.filter(r => r[side].verdict === "declined").length,
     fabricated: scored.filter(r => r[side].verdict === "fabricated").length,
     meanMs: Math.round(rows.reduce((sum, r) => sum + (r[side]?.ms ?? 0), 0) / Math.max(1, rows.length)),
+    wallSecondsPerItem: Number((rows.reduce((sum, r) => sum + (r[side]?.ms ?? 0), 0) / Math.max(1, rows.length) / 1000).toFixed(2)),
     cpuSecondsTotal: Number(cpu.reduce((sum, v) => sum + v, 0).toFixed(2)),
-    cpuSecondsPerItem: cpu.length ? Number((cpu.reduce((sum, v) => sum + v, 0) / cpu.length).toFixed(2)) : null
+    cpuSecondsPerItem: cpu.length ? Number((cpu.reduce((sum, v) => sum + v, 0) / cpu.length).toFixed(2)) : null,
+    peakRssMb: Math.max(0, ...rows.map(r => r[side]?.rssMb ?? 0)) || null,
+    // Stated, not inferred: SCCE runs no accelerator and calls no API, and this harness would record it if it did.
+    gpuSecondsPerItem: 0,
+    apiTokensPerItem: 0
   };
 }
 
@@ -235,5 +226,6 @@ for (const [label, side] of [["SCCE", summary.scce], [model, summary.reference]]
   if (!side) continue;
   console.log(`\n${label}: ${side.correct} correct, ${side.wrong} wrong, ${side.declinedWhenAnswerable} declined when answerable, ${side.fabricated} fabricated`);
   console.log(`  ${side.meanMs}ms mean, ${side.cpuSecondsPerItem}s CPU per item, ${side.cpuSecondsTotal}s CPU total`);
+  console.log(`  ${Object.entries(side.byWorkload).map(([workload, b]) => `${workload} ${b.correct}/${b.items}`).join(", ")}`);
 }
 console.log(`\nwrote ${outPath}`);

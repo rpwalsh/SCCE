@@ -1,16 +1,31 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { corpusIdentityGeneration, corpusNamedRuns } from "./corpus-identity.js";
 import { hasUncasedNonLatinLetter, hasUppercaseLetter, surfaceWords } from "./surface-linguistics.js";
 import type { JsonValue } from "./types.js";
 
 
 
 
+// Pure in its text, and called from inside per-span filters: one request's derivation ran once per candidate row.
+const namedSubjectAnchorsByText = new Map<string, string[]>();
+let memoizedGeneration = -1;
+
 export function namedSubjectAnchors(text: string): string[] {
-  return namedPriorSurfaceRuns(text)
+  // The answer is derived from the corpus signal, so it survives only as long as that signal does.
+  if (memoizedGeneration !== corpusIdentityGeneration()) {
+    namedSubjectAnchorsByText.clear();
+    memoizedGeneration = corpusIdentityGeneration();
+  }
+  const memoized = namedSubjectAnchorsByText.get(text);
+  if (memoized) return memoized;
+  const derived = namedPriorSurfaceRuns(text)
     .map(normalizePriorKey)
     .filter(namedSourceAnchorSpecificEnough)
     .sort((left, right) => splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length);
+  if (namedSubjectAnchorsByText.size >= 512) namedSubjectAnchorsByText.clear();
+  namedSubjectAnchorsByText.set(text, derived);
+  return derived;
 }
 
 
@@ -61,121 +76,19 @@ export function genericQuestionSignal(unit: string): boolean {
 
 
 
- function namedPriorSurfaceRuns(text: string): string[] {
-  // A sentence-initial capital is not a name signal: "What is acupuncture?" named "what" as its subject, which then
-  // anchored retrieval, admission and the runtime-motion surface ("what acupuncture") to a question word.
-  const cased = uniqueKernelStrings(casedEntityRunsWithConnectors(text))
-    .filter(run => !sentenceInitialSingleWordRun(run, text))
-    .slice(0, 8);
-  if (cased.length) return cased;
-  // Case carries no signal in a request that never capitalizes anything -- a real, common way to type
-  // ("who is ada lovelace"), not a degenerate one. surfaceEntityRuns's whole extraction is gated on
-  // hasPriorAnchorSignal (case or non-Latin script), so an all-lowercase Latin request produced zero
-  // anchors regardless of what it actually named: measured live, "who is ada lovelace" retrieved nothing
-  // for its real subject and fell back to whatever loosely matched the bare word "lovelace" (unrelated
-  // pop-culture mentions), realizing a one-word non-answer despite the corpus holding a full biography.
-  // Only fires when casing is entirely absent from the input, so a normally-cased request is completely
-  // unaffected -- length is the substitute anchor signal (matching the >=3-character single-word floor
-  // namedSourceAnchorSpecificEnough already applies downstream), not a new, weaker acceptance rule.
-  // The run that is the request's own opening word leads: a request that opens on its subject ("athens is the
-  // capital of which country") is about that word, not about the phrase its question words form.
-  const opening = normalizePriorKey(surfaceWords(text).map(stripOuterPriorSeparators).filter(Boolean)[0] ?? "");
-  const runs = uniqueKernelStrings(surfaceEntityRunsCaseless(text).map(run => withoutLeadingRequestScaffolding(run, text)))
-    .filter(Boolean);
-  const openingRun = [...opening].length >= 4 ? runs.find(run => normalizePriorKey(run) === opening) : undefined;
-  return (openingRun ? [openingRun, ...runs.filter(run => run !== openingRun)] : runs).slice(0, 8);
+/**
+ * What the request names when the corpus has not spoken: its content units, whole.
+ *
+ * This was a capitalization reader -- cased runs joined across short connectors, a sentence-initial capital shed,
+ * a five-character bound on what counted as an opening word, and a length-based fallback for uncased input. It
+ * decided that "What did he discover?" names the verb and that "Explain relativity." names the imperative, and
+ * in Korean, Japanese, Chinese, Hebrew, Arabic or Devanagari it had no signal to read at all. corpus-identity.ts
+ * answers the question from the corpus instead, in any script; this remains only for the moment before any
+ * corpus signal exists, and it guesses in no language's favour.
+ */
+function namedPriorSurfaceRuns(text: string): string[] {
+  return corpusNamedRuns(text);
 }
-
-/** Cased runs that survive one short lowercase connector between cased words: "Alfred the Great", "Joan of Arc",
- *  "Vasco da Gama" are one name, and surfaceEntityRuns broke them at the connector -- "Alfred the Great" became the
- *  anchors "alfred" and "great", which admitted the Alfred Hitchcock article (live 2026-09-10). The request's own
- *  short opening word followed by a connector ("Who is Aphrodite") is scaffolding, and is shed. */
-function casedEntityRunsWithConnectors(text: string): string[] {
-  const words = surfaceWords(text).map(stripOuterPriorSeparators).filter(Boolean);
-  const cased = (word: string) => hasUppercaseLetter(word) || hasUncasedNonLatinLetter(word);
-  const out: string[] = [];
-  let current: string[] = [];
-  let pendingConnector: string | undefined;
-  const flush = () => {
-    if (current.length) out.push(current.join(" "));
-    current = [];
-    pendingConnector = undefined;
-  };
-  // The request's short opening word followed by a lowercase word is the sentence's capital on a question or
-  // instruction word ("Who was", "Tell me"); it never starts a name. "Ada Lovelace was" keeps its first word.
-  const openingWord = words[0];
-  const openingIsScaffolding = openingWord !== undefined && words.length >= 2
-    && [...openingWord].length <= 5 && !cased(words[1]!) && words[1] === words[1]!.toLocaleLowerCase();
-  for (let index = openingIsScaffolding ? 1 : 0; index < words.length; index++) {
-    const word = words[index]!;
-    if (cased(word) || (current.length > 0 && /^\p{Number}+$/u.test(word))) {
-      if (pendingConnector) current.push(pendingConnector);
-      pendingConnector = undefined;
-      current.push(word);
-      continue;
-    }
-    // A connector joins a name to one more cased word ("Joan of Arc", "Alfred the Great"); it does not fuse two
-    // names into a phrase ("Benjamin Sisko in Star Trek ..."), which names nothing the corpus is titled with.
-    const next = words[index + 1];
-    const afterNext = words[index + 2];
-    if (current.length > 0 && !pendingConnector && [...word].length <= 3 && word === word.toLocaleLowerCase()
-      && next !== undefined && cased(next) && (afterNext === undefined || !cased(afterNext))) {
-      pendingConnector = word;
-      continue;
-    }
-    flush();
-  }
-  flush();
-  return out.filter(Boolean);
-}
-
-/** The text's first word alone, followed by a lowercase word: "Who is", "What did", "Explain the" -- a question or
- *  instruction word wearing the sentence's capital, not a name. A two-word run ("Ada Lovelace was") stays. */
-function sentenceInitialSingleWordRun(run: string, text: string): boolean {
-  const words = surfaceWords(text).map(stripOuterPriorSeparators).filter(Boolean);
-  if (words.length < 2 || normalizePriorKey(words[0]!) !== normalizePriorKey(run)) return false;
-  // The same length bound the run builder applies: "Athens is the capital of which country?" opens on its subject,
-  // and dropping it left "which country" as the anchor (live 2026-09-10, six declines in the reference comparison).
-  if ([...words[0]!].length > 5) return false;
-  const next = words[1]!;
-  return next[0] !== undefined && next[0] === next[0].toLocaleLowerCase() && next[0] !== next[0].toLocaleUpperCase();
-}
-
-/** Without case, length is the only signal: the short words a request opens with ("who", "does", "what") are
- *  scaffolding, so they are shed from the run that starts the text until a longer word begins it. */
-function withoutLeadingRequestScaffolding(run: string, text: string): string {
-  const words = surfaceWords(text).map(stripOuterPriorSeparators).filter(Boolean);
-  const runWords = run.split(/\s+/u).filter(Boolean);
-  if (!words.length || !runWords.length || normalizePriorKey(words[0]!) !== normalizePriorKey(runWords[0]!)) return run;
-  let start = 0;
-  while (start < runWords.length && [...runWords[start]!].length <= 5) start++;
-  return runWords.slice(start).join(" ");
-}
-
-function surfaceEntityRunsCaseless(text: string): string[] {
-  const out: string[] = [];
-  let current: string[] = [];
-  const flush = () => {
-    if (current.length) out.push(current.join(" "));
-    current = [];
-  };
-  for (const raw of surfaceWords(text)) {
-    const word = stripOuterPriorSeparators(raw);
-    if (!word) continue;
-    if (current.length > 0 && /^\p{Number}+$/u.test(word)) {
-      current.push(word);
-      continue;
-    }
-    if (splitPriorUnits(normalizePriorKey(word)).some(unit => unit.length >= 3)) {
-      current.push(word);
-      continue;
-    }
-    flush();
-  }
-  flush();
-  return out;
-}
-
 
 
  function splitPriorSurfaceWords(text: string): string[] {

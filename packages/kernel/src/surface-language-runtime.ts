@@ -110,6 +110,16 @@ const SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES = 5 * 1024 * 1024 * 1024
 const UNMEASURED_RECORD_BYTES = 16 * 1024 * 1024;
 const MEASURED_RECORD_SAMPLE = 4;
 
+/**
+ * What an entry weighs is its content, not the process heap's delta while it loaded.
+ *
+ * That delta was allowed to override this estimate, and it is measured across a hydration that takes a minute while
+ * the process serves other turns, so it charged one entry for every allocation anything made in that window:
+ * measured, four resident entries reported 4,669 MB against a 5 GB bound whose real content was about 70 MB of
+ * records each. Nothing could be cached alongside anything else, the prose and code clusters evicted each other on
+ * every turn, and "warm" never happened -- which is the whole reason a second identical question was slower and
+ * less able than it should be.
+ */
 function approximateRecordBytes(records: readonly unknown[]): number {
   if (!records.length) return 0;
   const sampleSize = Math.min(MEASURED_RECORD_SAMPLE, records.length);
@@ -204,6 +214,17 @@ export function createSurfaceLanguageRuntime(options: {
   const corpusRegistry = createCorpusRegistry(deps.corpusRegistry ?? []);
 
   const surfaceLanguageMemoryCache = new Map<string, { limit: number; loadedAt: number; value: Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>; approxEstimatedBytes: number }>();
+  /**
+   * One durable hydration per key at a time.
+   *
+   * A hydration of an unwarmed language takes 60-80s and a turn arrives every 20-30s, so each turn found an empty
+   * cache and started its own copy of the same work: measured, 38 lookups and 0 hits across six coding turns, none
+   * of which ever received a model. The turn's stage budget then abandons its copy at five seconds and proceeds
+   * with nothing, so a cold turn is not merely slower than a warm one, it is less able -- with no models it cannot
+   * derive a closed class, so it cannot tell a relation from scaffolding. Sharing the work makes the first turn
+   * pay once and every later turn hit.
+   */
+  const surfaceLanguageMemoryInFlight = new Map<string, Promise<Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>>>();
 
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
 
@@ -606,6 +627,21 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
 
+  /**
+   * Whether a hydration is worth keeping.
+   *
+   * A cache entry that carries no models is not a cheaper way to reach the same answer -- it is a different,
+   * worse answer, served to every later request that hits the same key. Measured 2026-09-12: one sealed cloze
+   * question answered correctly as the first request of a process and returned a two-word fragment as the fifth,
+   * because an early resident-only attempt stored an empty hydration and later turns were served it as a hit
+   * (`runtime.seed.language {models: 0, patterns: 0}` behind `language.cache.lookup hit-language`). Storing only
+   * hydrations that actually carry language keeps the cache answer-transparent: a hit and a miss differ in time,
+   * never in what the turn can say.
+   */
+  function hydrationWorthCaching(value: { state?: { models?: readonly unknown[] } } | undefined): boolean {
+    return (value?.state?.models?.length ?? 0) > 0;
+  }
+
   async function hydrateSurfaceLanguageMemoryCached(
     limit = 36,
     cluster?: LanguageProfileCluster,
@@ -637,15 +673,26 @@ export function createSurfaceLanguageRuntime(options: {
       }
       lookup(hydrationOptions.residentOnly ? "miss-resident" : "miss-durable");
       if (hydrationOptions.residentOnly) return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
-      const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId);
-      boundedSurfaceLanguageMemoryCacheSet(
-        surfaceLanguageMemoryCache,
-        languageKey,
-        { limit, loadedAt: now, value, approxEstimatedBytes: Math.max(approximateHydrationEstimatedBytes(value), value.measuredHeapBytes ?? 0) },
-        surfaceLanguageMemoryCacheMaxEntries,
-        surfaceLanguageMemoryCacheMaxEstimatedBytes
-      );
-      return value;
+      let pending = surfaceLanguageMemoryInFlight.get(languageKey);
+      if (!pending) {
+        pending = hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId)
+          .then(hydrated => {
+            if (hydrationWorthCaching(hydrated)) boundedSurfaceLanguageMemoryCacheSet(
+              surfaceLanguageMemoryCache,
+              languageKey,
+              { limit, loadedAt: clock.now(), value: hydrated, approxEstimatedBytes: approximateHydrationEstimatedBytes(hydrated) },
+              surfaceLanguageMemoryCacheMaxEntries,
+              surfaceLanguageMemoryCacheMaxEstimatedBytes
+            );
+            return hydrated;
+          });
+        // Cleared only after the store above has run, so a turn arriving late still joins rather than restarting.
+        void pending.catch(() => undefined).finally(() => {
+          if (surfaceLanguageMemoryInFlight.get(languageKey) === pending) surfaceLanguageMemoryInFlight.delete(languageKey);
+        });
+        surfaceLanguageMemoryInFlight.set(languageKey, pending);
+      }
+      return await pending;
     }
     if (preferredCorpusRoleId && preferredSurface.trim() && surfaceProfileCache) {
       // The role id ends the cache key, so it is matched as a suffix; the old "\u001f<role>\u001f" marker never matched.
@@ -705,10 +752,10 @@ export function createSurfaceLanguageRuntime(options: {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
     const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
-    boundedSurfaceLanguageMemoryCacheSet(
+    if (hydrationWorthCaching(value)) boundedSurfaceLanguageMemoryCacheSet(
       surfaceLanguageMemoryCache,
       cacheKey,
-      { limit, loadedAt: now, value, approxEstimatedBytes: Math.max(approximateHydrationEstimatedBytes(value), value.measuredHeapBytes ?? 0) },
+      { limit, loadedAt: now, value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
       surfaceLanguageMemoryCacheMaxEntries,
       surfaceLanguageMemoryCacheMaxEstimatedBytes
     );
