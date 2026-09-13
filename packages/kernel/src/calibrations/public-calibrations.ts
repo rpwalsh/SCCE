@@ -198,7 +198,84 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Connector reliability a tool episode must reach before it is retained as a reusable pattern. tool-cognition.ts learningSignalFor. */
   "tool_cognition.pattern_retention_reliability_floor": 0.62,
   /** Utility gain a tool episode must show before it is retained as a reusable pattern. tool-cognition.ts learningSignalFor. */
-  "tool_cognition.pattern_retention_utility_delta_floor": 0.28
+  "tool_cognition.pattern_retention_utility_delta_floor": 0.28,
+  // --- semantic obligations (semantic-obligations.ts). Evidence matching, obligation discharge and the
+  // entailment verdict that decides whether a claim may be spoken.
+  // The four match weights are one normalized set and must continue to sum to 1.
+  /** Share of lexical overlap in how well an evidence candidate supports an obligation. semantic-obligations.ts rankedMatch. */
+  "obligations.match_lexical_weight": 0.34,
+  /** Share of surrounding-context overlap in obligation support. semantic-obligations.ts rankedMatch. */
+  "obligations.match_context_weight": 0.25,
+  /** Share of feature-vector similarity in obligation support. semantic-obligations.ts rankedMatch. */
+  "obligations.match_vector_weight": 0.21,
+  /** Share of field mass on the candidate's evidence in obligation support. semantic-obligations.ts rankedMatch. */
+  "obligations.match_field_mass_weight": 0.2,
+  /** Support a differing constraint must reach before it is treated as conflicting with the claim's. semantic-obligations.ts contradictoryConstraint. */
+  "obligations.constraint_conflict_support_floor": 0.28,
+  /** Support a differing entity must reach before it is treated as contradicting the claim's. semantic-obligations.ts contradictoryEntity. */
+  "obligations.entity_conflict_support_floor": 0.46,
+  // The three transform-support weights are one normalized set and must continue to sum to 1.
+  /** Share of lexical overlap in how well a span supports a claim's transform obligation. semantic-obligations.ts transformObligations. */
+  "obligations.transform_support_lexical_weight": 0.45,
+  /** Share of feature-vector similarity in transform support. semantic-obligations.ts transformObligations. */
+  "obligations.transform_support_vector_weight": 0.35,
+  /** Share of the span's own alpha in transform support. semantic-obligations.ts transformObligations. */
+  "obligations.transform_support_alpha_weight": 0.2,
+  /** Safety-bearing: support at which a claim's transform obligation counts as discharged, which is one of the conditions for speaking the claim. semantic-obligations.ts transformObligations. */
+  "obligations.transform_satisfied_support_floor": 0.34,
+  /** Support below which a transform obligation is missing rather than merely underdetermined. semantic-obligations.ts transformObligations. */
+  "obligations.transform_underdetermined_support_floor": 0.16,
+  /** Safety-bearing: role fit at which a claim's role obligation counts as discharged by a span. semantic-obligations.ts roleObligations. */
+  "obligations.role_satisfied_fit_floor": 0.48,
+  /** Role fit below which the role obligation is missing rather than underdetermined. semantic-obligations.ts roleObligations. */
+  "obligations.role_underdetermined_fit_floor": 0.22,
+  // The three role-fit weights are one normalized set and must continue to sum to 1.
+  /** Share of token-shape similarity in how well two roles match. semantic-obligations.ts roleFit. */
+  "obligations.role_fit_shape_weight": 0.45,
+  /** Share of lexical overlap in role match. semantic-obligations.ts roleFit. */
+  "obligations.role_fit_lexical_weight": 0.25,
+  /** Share of feature-vector similarity in role match. semantic-obligations.ts roleFit. */
+  "obligations.role_fit_vector_weight": 0.3,
+  /** Contradiction surface and contradiction mass below which no latent contradiction obligation is raised; applied to both quantities. semantic-obligations.ts latentContradictionObligations. */
+  "obligations.latent_contradiction_floor": 0.42,
+  /** Safety-bearing: aggregate contradiction at which the entailment verdict becomes contradicted and the claim is not spoken. semantic-obligations.ts entailmentVerdict. */
+  "obligations.verdict_contradiction_floor": 0.42,
+  /** Safety-bearing: contradiction on a single contradicted obligation that is enough to make the whole verdict contradicted. semantic-obligations.ts entailmentVerdict. */
+  "obligations.verdict_item_contradiction_floor": 0.48,
+  /** Best support an unadmitted proof must still show for the verdict to be underdetermined rather than unknown. semantic-obligations.ts entailmentVerdict. */
+  "obligations.unadmitted_support_ceiling_floor": 0.18,
+  // The next five are the conjunction that admits an entailed verdict. Every one is safety-bearing: a claim is
+  // only spoken as entailed when all of them are met, so lowering any of them speaks weaker claims.
+  /** Role coverage an entailed verdict requires. semantic-obligations.ts entailmentVerdict. */
+  "obligations.entailment_role_coverage_floor": 0.42,
+  /** Structural coverage an entailed verdict requires. semantic-obligations.ts entailmentVerdict. */
+  "obligations.entailment_structural_coverage_floor": 0.72,
+  /** Relation compatibility an entailed verdict requires. semantic-obligations.ts entailmentVerdict. */
+  "obligations.entailment_relation_compatibility_floor": 0.34,
+  /** Transformation support an entailed verdict requires. semantic-obligations.ts entailmentVerdict. */
+  "obligations.entailment_transformation_support_floor": 0.34,
+  /** Lower confidence bound on faithfulness an entailed verdict requires. semantic-obligations.ts entailmentVerdict. */
+  "obligations.entailment_faithfulness_lcb_floor": 0.18,
+  /** Stability an entailed verdict requires. semantic-obligations.ts entailmentVerdict. */
+  "obligations.entailment_stability_floor": 0.42,
+  // Any one of the next three keeps a failed entailment at underdetermined instead of unknown.
+  /** Structural coverage that keeps a verdict underdetermined rather than unknown. semantic-obligations.ts entailmentVerdict. */
+  "obligations.underdetermined_structural_coverage_floor": 0.25,
+  /** Relation compatibility that keeps a verdict underdetermined rather than unknown. semantic-obligations.ts entailmentVerdict. */
+  "obligations.underdetermined_relation_compatibility_floor": 0.28,
+  /** Causal mass that keeps a verdict underdetermined rather than unknown. semantic-obligations.ts entailmentVerdict. */
+  "obligations.underdetermined_causal_mass_floor": 0.05,
+  /** Relation compatibility below which the proof reports relation-compatibility-low. semantic-obligations.ts proofWarnings. */
+  "obligations.relation_compatibility_warning_floor": 0.25,
+  /** Faithfulness lower bound below which the proof reports faithfulness-lcb-low. semantic-obligations.ts proofWarnings. */
+  "obligations.faithfulness_lcb_warning_floor": 0.12,
+  // The three contradiction-pressure weights are one normalized set and must continue to sum to 1.
+  /** Share of explicitly contradicted obligations in overall contradiction pressure. semantic-obligations.ts contradictionPressure. */
+  "obligations.contradiction_pressure_explicit_weight": 0.48,
+  /** Share of the field's contradiction surface in overall contradiction pressure. semantic-obligations.ts contradictionPressure. */
+  "obligations.contradiction_pressure_surface_weight": 0.32,
+  /** Share of the field's contradiction mass in overall contradiction pressure. semantic-obligations.ts contradictionPressure. */
+  "obligations.contradiction_pressure_mass_weight": 0.2
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;
