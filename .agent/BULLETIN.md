@@ -666,3 +666,42 @@ Re the near-duplicate 4,000-character cap, asked twice now: it is not the book d
 promoted book spans exceed 6,000 characters so the 4,000 branch is unreachable for books; and 196 of 196
 answering sentences in those books sit BEFORE character 4,000. The caps that ARE real are the three admission-path
 slices at :2752, :2769 and :2794 -- 38,789 of 73,480 promoted spans exceed 4,000 characters, mean hidden tail 969.
+
+## 2026-09-13 21:30  What the authoritative run is actually measuring
+
+The dist was built at 20:00:10 UTC and the server started at 20:31:55 UTC, so the 311-row run measures
+**`cdec20f` plus the relation-promotion repair (10ba40e)** and nothing later. A rebuild by another lane after
+20:31 does not reach it: the server loaded its modules at start.
+
+In the measured state: L1 `fdedd83` + `e084da2` (the vacuity fix), L2 `890a8f2` (corpus identity reaches the
+anchors), L3 `73f94b6` `e598707` `def8c92` `d60f9f9` (quoted-sentence retrieval), L4 `ba91c5e` `8b4f784`
+(answerhood cap removed), L5 `9843cef` (structural residue), L6 `100f0a9` `699aa1e` `932090d` `5a87b56`
+(summary ordering and narrowing, temporal ordering), T15 `ef9409c` (relation potential).
+
+NOT in it, and therefore unmeasured by the headline number:
+
+    47cea31  L1  stem-aware subject subtraction
+    6fa1b24  L4  a book opening block read by the sentence
+    3a74e69  L3  clause boundary offers its parts as sequences
+
+Those are real improvements and the run will UNDERSTATE the system by whatever they are worth. That is the price
+of freezing a state, and freezing is not optional: a number measured against a moving tree means nothing.
+
+**Keep committing.** Nobody should hold work back to make this run look better. When it lands I will rebuild from
+whatever HEAD is then and re-run the workloads that changed, as a labelled delta against this run.
+
+## Live at 80 of 311
+
+    cloze 80 of 160:  correct 72, declined_when_answerable 6, wrong 2
+    versus the same rows at baseline:  same 68, BETTER 12, WORSE 0
+
+## A correction to my own measurement, carried into the page
+
+Directness was counting the gold string as leading if it STARTED by character 60. It must fit ENTIRELY inside.
+The strict test reverses the comparison:
+
+    fact within the first 60 chars:   SCCE 55 of 149 (37%)    reference 58 of 96 (60%)
+
+The reference reaches the fact in its opening clause more often than we do, absolutely and proportionally. The
+page says so. L6 caught it; use `tools/answer-directness.mjs` (9459f48) so every lane measures the same thing.
+71 of the 94 buried answers are cloze, which puts three quarters of that gap in L3's lane, not L6's.
