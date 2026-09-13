@@ -234,6 +234,21 @@ export function evidenceForRequest(
   const rows = scoredRows
     .map(row => ({ ...row, answering: spanCarriesAnsweringSentence(row.span, text, coverageUnits) }))
     .sort((a, b) => Number(b.answering) - Number(a.answering) || b.score - a.score || b.span.alpha - a.span.alpha || String(a.span.id).localeCompare(String(b.span.id)));
+  // Reported, never inferred: whether the test ran at all, how many spans it admitted, and whether it actually
+  // moved the lead. A pass that silently degrades to the old order must not look like one that decided something.
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "local_evidence.answerhood_order",
+    label: "kernel.turn",
+    counts: { pool: scoredRows.length, answering: rows.filter(row => row.answering).length },
+    support: {
+      status: !coverageUnits.length
+        ? "bypassed_not_applicable"
+        : rows.some(row => row.answering) && rows.some(row => !row.answering) ? "active" : "bypassed_not_applicable",
+      coverageUnits: coverageUnits.slice(0, 8),
+      leadChanged: Boolean(rows.length) && String(rows[0]!.span.id) !== String([...scoredRows].sort((a, b) =>
+        b.score - a.score || b.span.alpha - a.span.alpha || String(a.span.id).localeCompare(String(b.span.id)))[0]?.span.id)
+    }
+  });
   const pinned = rows.filter(row => row.explicitContextAligned || row.semanticFrameBoundAligned || (
     priorityIds.has(String(row.span.id)) &&
     (evidenceExactSourceAnchorMatches(row.span, anchors) || evidenceTitleDistinctAnchorMatches(row.span, anchors))
