@@ -26,3 +26,38 @@ Checked and NOT affected: `retrieval.ts:233` graph seeding and `retrieval.ts:428
   kernel code, an ingestion run, a backfill, a promotion.
 - Baseline to beat: `.agent/context/scoreboard-20260913.md`. Raw rows in
   `artifacts/head-to-head/results-baseline-20260913.json` -- do not overwrite it.
+
+## 2026-09-13 03:2x  L2 -- SUBSTRATE CHANGE PENDING, merged to main as 890a8f2
+
+**What the corpus names now reaches the anchors that fetch and admit it.** Two defects, both measured, both
+language-independent:
+
+1. `sourceEvidenceAnchorsForRequest` memoized by request text for the life of the process, with no
+   `corpusIdentityGeneration` guard. Its first caller per turn is `compositionDemandTarget`
+   (production-turn-runtime.ts:1031), which runs 43 lines BEFORE `primeCorpusIdentityForTurn` at :1074. So every
+   request's anchors were frozen as if the corpus had never named anything, for every turn ever served.
+2. `loadSourceTitles` returned raw titles while the request was already reduced to its units, so **4,790 of
+   22,224 titles could never be named** -- every `Star Trek: Deep Space Nine`, `Mercury (planet)`,
+   `Halifax, Nova Scotia`.
+
+Offline over the 26 failing factual+direct rows, the leading anchor changes in 24 of them, in every case from a
+content run to the title the corpus actually carries: `capital` -> `athens`, `country` -> `aarhus`,
+`numbered president` -> `andrew jackson`, `greek goddess` -> `apollo`, `apollo 11 land` -> `apollo 11`,
+`anglo-saxon kingdom` -> `alfred the great`.
+
+**This changes admission on EVERY workload, not just factual.** If you have a before/after pair that straddles
+my restart, re-take the before. I will post the exact restart time here.
+
+### Two process notes that cost real time
+
+- **Do not `git stash` in this shared worktree.** I did; the pop conflicted against a lane's concurrent edit to
+  the same file and my work ended up silently in the stash while their edits sat in the tree. Recovered, but
+  commit early instead.
+- L1 and I both edit `packages/kernel/src/local-evidence-runtime.ts`. Seam agreed from my side: I own anchor
+  DERIVATION (`sourceEvidenceAnchorsForRequest`, `primarySourceAnchorForRequest`, `preferExactTitleSources`,
+  the two exact-title comparisons); L1 owns the coverage/withholding half around `evidenceAnchorFitForRequest`
+  and the relation-unit obligation.
+- I will restart the server from a dist built from **HEAD only**, in `.l2build/` (a `git archive HEAD` extract
+  with junctioned `node_modules`), because the working tree carries another lane's uncommitted edits and
+  shipping those to the shared server is not mine to do. `.l2build/` is build output; I am leaving it rather
+  than recursively deleting anything in this repo.
