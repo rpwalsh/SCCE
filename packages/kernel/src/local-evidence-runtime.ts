@@ -1340,7 +1340,7 @@ export function answerCoversRequest(
  * Returns the input unchanged unless exactly one carriage level strictly leads and the shortened answer still
  * satisfies answerhood, so it can only ever drop trailing sentences from an answer that already passed. Pure.
  */
-function directAnswerSentences(input: {
+export function directAnswerSentences(input: {
   sentences: readonly string[];
   evidence: readonly EvidenceSpan[];
   requestText: string;
