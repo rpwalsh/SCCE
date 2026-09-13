@@ -31,8 +31,17 @@
       "maxParseMs": 30000,
       "maxHeapMb": 384
     },
-    "allowedRoots": ["."],
-    "excludedPaths": ["node_modules", "dist", ".git", ".tmp", ".scce", "data/wiki"],
+    "allowedRoots": [
+      "."
+    ],
+    "excludedPaths": [
+      "node_modules",
+      "dist",
+      ".git",
+      ".tmp",
+      ".scce",
+      "data/wiki"
+    ],
     "tools": {
       "pdftotext": "pdftotext",
       "tesseract": "tesseract",
@@ -47,7 +56,10 @@
         "namespace": "wikipedia-kowiki",
         "python": "python",
         "decompressor": "bzip2",
-        "decompressorArgs": ["-dc", "{dumpPath}"],
+        "decompressorArgs": [
+          "-dc",
+          "{dumpPath}"
+        ],
         "maxPagesPerRun": 30000000,
         "maxBlocksPerRun": 0,
         "maxArticleChars": 160000,
@@ -58,25 +70,67 @@
         "ngramMaxCountersPerOrder": 96,
         "ngramVocabularyLimit": 8192,
         "skipRedirects": true,
-        "allowedNamespaces": [0]
+        "allowedNamespaces": [
+          0
+        ]
       }
     }
   },
   "connectors": {
     "web": {
       "enabled": true,
-      "allowedHosts": ["html.duckduckgo.com"],
+      "allowedHosts": [
+        "html.duckduckgo.com"
+      ],
       "maxBytes": 2000000,
-      "search": { "provider": "duckduckgo", "apiKey": "", "endpoint": "" }
+      "search": {
+        "provider": "duckduckgo",
+        "apiKey": "",
+        "endpoint": ""
+      }
     },
-    "outlook": { "enabled": false, "tenantId": "", "clientId": "", "accessToken": "" },
-    "youtube": { "enabled": false, "apiKey": "" },
-    "telephone": { "enabled": false, "provider": "twilio", "accountSid": "", "authToken": "", "fromNumber": "" }
+    "outlook": {
+      "enabled": false,
+      "tenantId": "",
+      "clientId": "",
+      "accessToken": ""
+    },
+    "youtube": {
+      "enabled": false,
+      "apiKey": ""
+    },
+    "telephone": {
+      "enabled": false,
+      "provider": "twilio",
+      "accountSid": "",
+      "authToken": "",
+      "fromNumber": ""
+    }
   },
   "security": {
     "localMasterKey": "",
     "mentalHealthRails": true,
-    "redactPublicConfig": true
+    "redactPublicConfig": true,
+    "informationAccess": {
+      "tenantId": "scce.local",
+      "principalId": "scce.local.owner",
+      "compartments": [
+        "scce.cognitive"
+      ],
+      "maximumExportClass": "restricted",
+      "explicitMergeAuthority": true
+    },
+    "defaultSourceInformationLabel": {
+      "tenantId": "scce.local",
+      "principals": [
+        "scce.local.owner"
+      ],
+      "compartments": [
+        "scce.cognitive"
+      ],
+      "exportClass": "confidential",
+      "mergePolicy": "same_owner"
+    }
   },
   "policy": {
     "allowMutation": false,
