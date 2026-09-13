@@ -41,7 +41,18 @@ for (const pkg of ["@scce/kernel", "@scce/adapters-node", "@scce/server"]) {
   checks.push({ id: `typecheck:${pkg}`, passed: result.code === 0, detail: result.code === 0 ? "clean" : result.stdout.split("\n").slice(0, 6).join(" | ") });
 }
 
-if (checks.every(check => check.passed)) {
+// Reported, never failed on: judging a cost bound from a modeling parameter is a person's call. But it is
+// reported on every integration, because the alternative is finding these by reading code one file at a time.
+const constants = await run("node", ["tools/undeclared-constants.mjs", "--min=3"]);
+const coverage = constants.stdout.match(/DECLARED_COVERAGE\s+([\d.]+)%/)?.[1];
+const inlineTotal = constants.stdout.match(/Total inline candidates:\s*(\d+)/)?.[1];
+checks.push({
+  id: "calibration-coverage",
+  passed: true,
+  detail: coverage ? `${coverage}% declared, ${inlineTotal} inline candidates (reported, not gated)` : "not measured"
+});
+
+if (checks.filter(check => check.id !== "calibration-coverage").every(check => check.passed)) {
   const capitals = await run("node", ["tools/capitals-probe.mjs"]);
   let named = 0;
   let total = 0;

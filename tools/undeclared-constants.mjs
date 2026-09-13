@@ -76,5 +76,13 @@ for (const row of ranked.slice(0, 30)) {
   console.log(`| ${row.file} | ${row.count} | ${row.declared ? "yes" : "NO"} | \`${String(sample?.text ?? "").replace(/\|/g, "/")}\` |`);
 }
 const undeclaredFiles = ranked.filter(row => !row.declared);
+const totalInline = ranked.reduce((sum, row) => sum + row.count, 0);
+// Coverage against the declared registry, so the number moves when someone declares a constant or adds one.
+const registry = readFileSync("packages/kernel/src/calibrations/public-calibrations.ts", "utf8");
+const declared = registry.match(/^\s*"[a-z_]+\.[a-z_0-9]+":/gim)?.length ?? 0;
+const coverage = declared + totalInline > 0 ? (declared / (declared + totalInline)) * 100 : 100;
 console.log(`\n**${undeclaredFiles.length} files carry deciding constants and never read the registry at all.**`);
-console.log(`Total inline candidates: ${ranked.reduce((sum, row) => sum + row.count, 0)}.`);
+console.log(`Total inline candidates: ${totalInline}. Declared calibrations: ${declared}.`);
+console.log(`\nDECLARED_COVERAGE ${coverage.toFixed(1)}%`);
+console.log(`\nA number written inline cannot be audited, searched or fitted. Reading code to find them is the smell`);
+console.log(`this replaces: run this, and declare whatever turns out to be a modeling parameter rather than a cost bound.`);
