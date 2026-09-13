@@ -109,7 +109,7 @@ import {
   requestSentenceSequences,
   runtimeEvidenceWindowsForRequest,
   sessionContextEvidenceEnabled,
-  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest, evidenceIdentityBindsRequest, evidenceIdentityBeyondTitle,
+  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest, evidenceIdentityBindsRequest, evidenceIdentityBeyondTitle, spanIsSourceFrontMatter,
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
@@ -4275,7 +4275,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // cited, selected span has no contradicted span to speak and must fall through to abstention, not guess.
       if (!spoken.text.trim() && judged.selected.scores.contradiction > 0.2 && selectedEvidence.length > 0) {
         const citedIds = new Set((judged.selected.evidenceIds ?? []).map(String));
-        const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id)));
+        // A book's opening block is its apparatus, not a claim it can be contradicted on.
+        const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id)) && !spanIsSourceFrontMatter(span));
         const spanText = tidySurfaceText(String(contradictedSpan?.text ?? contradictedSpan?.textPreview ?? ""));
         // A chunk cut inside a sentence opens with the tail of one ("'s well-developed ferry system..."): a fragment,
         // never the first thing spoken. Measured live on "Alaska's official state dinosaur".
@@ -4354,7 +4355,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // a source gets the abstention it got before. And every sentence spoken is checked back into an admitted
       // span, so the summary is an excerpt of this turn's own evidence or it is not said at all.
       if (!spoken.text.trim() && (requestedAuthority === "factual" || requestedAuthority === "reasoned") && selectedEvidence.length > 0) {
-        const identityBound = selectedEvidence.filter(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords()));
+        // What a source says about itself is an answer; what its publisher, printer and chapter index say about it
+        // is not, and on a book those are exactly the sentences the extractive summary ranks highest.
+        const identityBound = selectedEvidence.filter(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords())
+          && !spanIsSourceFrontMatter(span));
         const excerpt = identityBound.length
           ? summarizeAdmittedSource({
             spans: identityBound.map(span => ({
