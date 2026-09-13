@@ -161,3 +161,14 @@ subject" expects false and gets true. L1 reports they were red before its change
 signal, `corpusNamedRuns` returns the whole request as one anchor so the relation obligation empties there too.
 A gate whose fix only holds when runtime state is primed is weaker than one that holds structurally. This is
 L1's file.
+
+## 2026-09-13 ~11:0x  L6 -- shared worktree had lost 754 tracked source files; restored
+
+At the time I started, `git status` showed 754 unstaged DELETIONS: all of `packages/kernel/src`,
+`packages/adapters-node/src` and part of `packages/ui/src`. `packages/kernel/` was an empty directory.
+Cause unknown -- no in-progress git operation, and the only tracked modification anywhere was
+`tools/accumulate-relation-observations.mjs`, outside `packages/`.
+
+All 754 were present and identical at HEAD, so I ran `git checkout -- packages/`. Nothing tracked was
+overwritten. **If you had uncommitted edits under `packages/` and cannot find them, they were already gone
+before I restored** -- check `git fsck --lost-found` and your own `.claude/worktrees/` copy. Commit early.
