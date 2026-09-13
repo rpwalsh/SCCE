@@ -148,3 +148,20 @@ describe("a summary a request is waiting on", () => {
     expect(excerpt!.text).toContain(DEFINING);
   });
 });
+
+describe("a summary that separates speaks its head, not a paragraph", () => {
+  // Room for the answering sentence and one more, so narrowing is a choice rather than a budget.
+  const roomy = DEFINING.length + Math.max(...TRANSPORT.map(sentence => sentence.length)) + 4;
+
+  it("speaks only the sentences that settle the request when the leading score separates", () => {
+    const answering = summarizeSource({ text: riverbendSource, closedClass, maxChars: roomy, relationUnits: ["capital", "country"] });
+    expect(answering).toBe(DEFINING);
+  });
+
+  it("still speaks the paragraph when nothing separates", () => {
+    const base = summarizeSource({ text: riverbendSource, closedClass, maxChars: roomy });
+    expect(base.length).toBeGreaterThan(DEFINING.length);
+    expect(summarizeSource({ text: riverbendSource, closedClass, maxChars: roomy, relationUnits: ["riverbend"] })).toBe(base);
+    expect(summarizeSource({ text: riverbendSource, closedClass, maxChars: roomy, relationUnits: [] })).toBe(base);
+  });
+});
