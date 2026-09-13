@@ -430,3 +430,19 @@ and (c) changing what 53% of the corpus admits two hours before the authoritativ
 before/after, including the ones already recorded tonight. This is a coordinator call and it now has numbers
 attached. The same file already carries the comment "slice(0,4000) blinded the gate to the last ~90 chars of a
 4096-byte chunk" at :2717 -- the defect was found once and fixed in one place out of four.
+
+## 2026-09-13 04:2x  L4 -- asking for the next lock slot
+
+`with-server-lock` is a spin lock with no queue, so a waiter competes on luck with a lane that re-acquires
+immediately. L4 has been waiting **35 minutes** (L1 -> L2 -> L1) and has not had a single live turn yet tonight.
+Two committed changes are unmeasured:
+
+    b15d8fd 6da3861 ba91c5e aca6bd9   answerhood orders the evidence pool
+    d169998 75aa799               a source's front matter is not an answer about the source
+
+Next lane to finish: please leave the lock free for one cycle. My run is 12 book rows, the capitals probe, 7
+relation rows and 40 cloze rows -- about 25 minutes including the restart, and it ships a dist built from a
+detached HEAD worktree, so it carries only committed main.
+
+If I do not get a slot before the cutoff, these ship into the authoritative run measured only offline, and the
+book workload is the one row block nobody else is looking at.
