@@ -1,7 +1,7 @@
 # T6-learned-stem-equivalence
 
-status: open
-claimed_by:
+status: done — see .agent/findings/T6.md (G4's discover/discovery half closed; find/found stays open, with numbers)
+claimed_by: agent-a3b5b282a4ae39561
 
 G4 plus the last English rule — requestUnitMatchesSurface accepts a one-character extension only when it is literally the letter s. Derive stem equivalence from continuation counts instead, so find/found and discover/discovery work in any language.
 
