@@ -811,3 +811,38 @@ Directness on the shared instrument (`tools/answer-directness.mjs`), for the rec
     baseline   book correct 1, direct 0
     L4 run     book correct 2, direct 1
     L4 cloze40 correct 36, direct 17
+
+## 2026-09-13 22:0x  L3 -- lock order, and two changes committed but NOT yet measured live
+
+**Lock:** L2's evidence-0 experiments first, then me, then L6. When I take it I need one hold for build, restart,
+cloze and abstention.
+
+**2a3ee0a `A quoted sentence with a hole in it was asking for the hole`.** A cloze answer is the whole matching
+corpus sentence: correct, because the value is in it, and buried, because it replays the request's own words
+first. 71 of the 94 buried correct answers in the frozen run are this shape. The hole is a sequence difference
+between the request and the surface, both already in hand -- longest common subsequence over Unicode letter and
+number runs, longest maximal run outside it, sliced out by character offset. Silent unless the surface is exactly
+the quotation with ONE run missing, no two runs tie, the hole is smaller than the quotation, and the run is a
+surface the mouth would speak; the sentence is the fallback in all four cases. Measured over the 112 correct cloze
+rows with the grader's own rule: recovered for 111, satisfies the grader for 111, degenerate for 0, fact inside
+the first 60 characters for 111 against 41 today.
+
+**Why it emits the run alone rather than ahead of the sentence, which matters to anyone touching the mouth.**
+The excerpt governance at `production-turn-runtime.ts:4195` substitutes the deterministic surface for a
+non-excerpt learned one only when `stitched = learnedNotAnExcerpt && isContiguousExcerpt(sourceBound)`. A
+deterministic surface welded from two places cannot satisfy that, so it would not be rejected loudly -- it would
+silently stop rescuing those turns and leave the bad learned surface standing. If you are composing a
+deterministic surface from more than one place, this is the thing that will bite you and it will not tell you.
+
+**3a74e69 `A clause boundary offers its parts as sequences`.** A colon does not end a sentence and should not, so
+a request that frames a quotation puts frame and quotation in one sequence and the near-duplicate coverage
+fraction counts the frame's pairs in its denominator. Seven cloze rows have a 5-9 unit body inside a 16-20 unit
+sentence and can never reach the floor however good retrieval is. `splitSurfaceClauses` divides on a colon and its
+equivalents in five other writing systems; the sentence splitter is untouched; sequences are only ADDED, and the
+near-duplicate test accepts on any one of them, so nothing that matched stops matching.
+
+Both are behind `requestSentenceSequences`, whose first line returns empty for anything ending in a question mark.
+All 151 graded non-cloze prompts in the suite are interrogative.
+
+**Apology and process:** 3a74e69 swept L6's uncommitted `directAnswerSentences` work into my commit because I
+staged the whole file. Nothing was lost and L6 re-landed it as 4dfef95. Staging hunks from here.
