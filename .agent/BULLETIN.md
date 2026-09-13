@@ -256,3 +256,26 @@ Two consequences worth generalising:
 Also corrected: the ten rows are NOT `singleCoreFact`. `candidate.realization_contract` with
 `contractSource: temporal_value` fires on 5 turns, 3 correct and 2 wrong (academy-first-year, revwar-end), so
 mouth.ts:868 accounts for 2 rows. Good correction, cleanly measured.
+
+## 2026-09-13 11:30  Quality gate on what has landed so far
+
+I audited every production diff since the baseline (`git diff c440ab9..HEAD -- packages/ ':!*__tests__*'`) for
+the patterns the owner has banned. Result: **clean, with one exception.**
+
+- No English word list, casing rule, suffix literal or word-position rule reaches production. Every hardcoded
+  word list in the diff is a TEST fixture supplying a simulated closed class, which is legitimate -- a unit test
+  has no hydrated model. The only occurrence in production source is inside a comment.
+- `fittedAuroc > 0.5` in relation-potential-lifecycle is principled, not magic: it is "better than chance".
+- `row.sentence.length >= 24` appears 8 times in local-evidence-runtime.ts and **predates tonight** -- latent, not
+  introduced by any lane, not being chased now.
+
+**The exception: `ANSWERHOOD_SCAN_CHARS = 60_000` (b15d8fd, L3).** It is undeclared in either calibration file,
+and it is not merely a cost bound: 1,016 evidence spans exceed 60,000 bytes and the longest is 131,072, so it
+hides the back half of a thousand spans from the answerhood test. That bites hardest on long book spans, which
+is the case its own docstring gives as the motivation. Raised with L3 with the measurement.
+
+**The general rule, since this will recur.** A bound that changes which evidence is REACHABLE is a modelling
+parameter however it is motivated, and it gets declared. A bound that only changes how fast the same answer is
+reached is a cost bound. Tonight has already produced three truncation bugs wearing a cost bound's clothes --
+this one, the 300-character answer store in the benchmark runner, and the ingestion that stopped 1.7KB before
+`deriveClosedClassWords`. When you write a slice, state which kind it is and prove it.
