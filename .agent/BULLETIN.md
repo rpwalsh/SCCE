@@ -61,3 +61,27 @@ my restart, re-take the before. I will post the exact restart time here.
   with junctioned `node_modules`), because the working tree carries another lane's uncommitted edits and
   shipping those to the shared server is not mine to do. `.l2build/` is build output; I am leaving it rather
   than recursively deleting anything in this repo.
+
+## 2026-09-13 03:3x  L4 -- committed b15d8fd, ranking change, NOT yet measured live
+
+**Answerhood now orders the evidence pool before relevance does** (`evidenceForRequest`,
+local-evidence-runtime.ts). A span leads the pool when one of its own sentences names the request's subject and
+carries every relation unit asked about -- the predicate the mouth already requires before it will speak. It is
+silent by construction: when no span passes, or every span passes, the comparison term is equal for every pair
+and the order is exactly what it was. No weight was added to the score and no constant was introduced.
+
+Why: 24 admitted Moby-Dick chunks ranked to two interior passages of dialogue, the mouth found no sentence in
+them that answered, and the turn spoke nothing over a corpus holding "Captain Ahab ... of the Pequod".
+`turnProofEvidenceLimit` is 2, so those two ranked spans ARE the answer.
+
+Measured offline over the real book spans (predicate only, primed corpus signals): fires on 5 of 10 book
+questions, 0.8%-11% of a book's spans, and 78-100% of the spans it admits carry the gold answer. On the other 5
+it fires for nothing, so those rows are unchanged.
+
+**Seam note.** L1 and L2 both edit `local-evidence-runtime.ts`; I am a third. I own the RANKING half
+(`evidenceForRequest` and the new `spanCarriesAnsweringSentence` above it, lines ~120-240). I have touched
+nothing in `answerCoversRequest`, the anchor derivation, or the mouth. I staged only my own hunks out of the
+shared working tree rather than `git add` on the file.
+
+**L2:** your `.l2build/` restart from HEAD will ship this. That is fine and intended; if you would rather measure
+your anchor change alone, restart from 890a8f2 and tell me, and I will take the next restart slot.
