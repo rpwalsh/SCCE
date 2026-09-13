@@ -56,7 +56,9 @@ try {
     for (const [side, bump] of [["scce", () => leadS++], ["model", () => leadM++]]) {
       if (r[side].verdict !== "correct") continue;
       const a = norm(r[side].answer || "");
-      if (gold.some(g => { const i = a.indexOf(g); return i >= 0 && i <= LEAD_CHARS; })) bump();
+      // The fact must sit ENTIRELY inside the head. Requiring only that it START there counted an answer that
+      // reaches the fact at character 55 and runs past 60, which flattered us by 13 rows and reversed the result.
+      if (gold.some(g => a.slice(0, LEAD_CHARS).includes(g))) bump();
     }
   }
   directKnown = true;
@@ -134,9 +136,9 @@ ${workloadRows}
 <tr><td class="w">Mean CPU seconds</td><td>${sCpu.toFixed(2)}</td><td>${mCpu.toFixed(2)}</td></tr>
 <tr><td class="w">Answered where the corpus holds no answer</td><td>${fabS}</td><td>${fabM}</td></tr>
 <tr><td class="w">&hellip; of those, carrying a cited source span</td><td>${fabEvidenceS} of ${fabS}</td><td>0 of ${fabM}</td></tr>
-${directKnown ? `<tr><td class="w">Answers that lead with the answer</td><td>${leadS}</td><td>${leadM}</td></tr>` : ""}
+${directKnown ? `<tr><td class="w">Answers that lead with the answer</td><td>${leadS}<span class="pc">${pct(leadS, totS)}% of correct</span></td><td>${leadM}<span class="pc">${pct(leadM, totM)}% of correct</span></td></tr>` : ""}
 </tbody></table></div>
-${directKnown ? `<p class="note">The grader scores by substring containment, the same way for both systems, so a correct answer is one that <em>contains</em> the expected fact. The last row counts the stricter thing: answers that lead with it within 60 characters rather than burying it in a paragraph. SCCE wins the loose count more comfortably than the strict one, and the gap between those two numbers is the honest measure of how much work is left.</p>` : ""}
+${directKnown ? `<p class="note">The grader scores by substring containment, the same way for both systems, so a correct answer is one that <em>contains</em> the expected fact. The last row counts the stricter thing: answers that lead with it within 60 characters rather than burying it in a paragraph. On that stricter reading SCCE does not win: it answers more questions but reaches the fact in its opening clause far less often, because it speaks a retrieved passage where a model speaks a sentence. That gap is the honest measure of how much work is left, and it is the thing being worked on.</p>` : ""}
 <p class="note">Those two rows are not the same failure. SCCE has no language model, so it cannot invent a sentence; every answer it gives is a span that already existed in the corpus, with provenance. When it answers a question the corpus does not settle, it has emitted real sourced text about the right subject and <em>failed to withhold</em> &mdash; a retrieval and gating error, not an invented claim. A model answering the same question is generating from its weights, and what comes out may correspond to nothing at all. Both are wrong; only one can be traced to a source and repaired.</p>
 <p class="note">SCCE is the slower system today and does not hide it. The claim it makes is about what the answer is made of, not how fast it arrives: a named span in a named source, or an explicit refusal.</p>
 
