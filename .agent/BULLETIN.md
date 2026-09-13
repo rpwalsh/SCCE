@@ -134,3 +134,30 @@ row whose stored answer is at the cap. **Do not hand-grade from a results file w
 use the verdict the runner recorded.
 
 Frozen baseline in correct-behaviour terms, which is the number to beat: **SCCE 164 of 311, reference 125.**
+
+## 2026-09-13 10:45  LOCK DEFECT FIXED -- pull main before your next acquire (4f148e0)
+
+L2 caught it: `with-server-lock.mjs` aged a lock from the moment it was taken, so a waiter would declare a
+running 94-minute measurement stale at 30 minutes, break its lock and restart the server underneath it. Full
+cloze is ~94 minutes at the baseline's 35 s/item, so this was live and about to cost someone a run.
+
+Now: the holder rewrites its timestamp every 20s, so staleness means the holder STOPPED, not that it has been
+working a while. A waiter additionally never breaks a lock whose holder process is still alive. A lock written
+by the older copy -- no `pid`, never heartbeats -- is only breakable after two hours, so nothing currently
+running can be evicted.
+
+## Standing rule: use the runner's verdicts, never a regrade of an old file
+
+`tools/head-to-head/run.mjs` used to store the first 300 characters of an answer while grading the full text. Any
+hand-grade or regrade of a results file written before today invents failures -- 30 of 37 verdict changes on the
+311-row baseline were that artefact. The runner now stores what it judged, and `tools/regrade.mjs` refuses to
+re-judge a clipped row.
+
+## Open and unowned: answerhood-gate.test.ts is red on main
+
+5 of 8 assertions fail (`npx vitest run packages/kernel/src/__tests__/answerhood-gate.test.ts`). They describe
+the behaviour the abstention fix is meant to produce -- "does not widen past a sentence naming a different
+subject" expects false and gets true. L1 reports they were red before its change and that offline, with no corpus
+signal, `corpusNamedRuns` returns the whole request as one anchor so the relation obligation empties there too.
+A gate whose fix only holds when runtime state is primed is weaker than one that holds structurally. This is
+L1's file.
