@@ -218,7 +218,28 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "calculus.force_observed_support_floor": threshold(0.1, 0.95, [0.4, 0.62, 0.82]),
   "calculus.force_observed_lcb_floor": threshold(0.05, 0.9, [0.2, 0.36, 0.6]),
   "calculus.force_inferred_support_floor": threshold(0.05, 0.9, [0.18, 0.34, 0.55]),
-  "calculus.force_conjectured_support_floor": threshold(0.01, 0.7, [0.06, 0.12, 0.28])
+  "calculus.force_conjectured_support_floor": threshold(0.01, 0.7, [0.06, 0.12, 0.28]),
+  // --- translation (translation.ts). Frame alignment preservation, target selection and translation force.
+  "translation.preservation_semantic_weight": weight(0, 1, [0.14, 0.26, 0.45]),
+  "translation.preservation_topology_weight": weight(0, 1, [0.12, 0.22, 0.4]),
+  "translation.preservation_script_fit_weight": weight(0, 1, [0.1, 0.19, 0.35]),
+  "translation.preservation_evidence_mass_weight": weight(0, 1, [0.06, 0.11, 0.25]),
+  "translation.preservation_prior_boost_weight": weight(0, 1, [0.03, 0.06, 0.15]),
+  "translation.preservation_seed_overlap_weight": weight(0, 1, [0.05, 0.1, 0.22]),
+  "translation.preservation_construction_overlap_weight": weight(0, 1, [0.03, 0.06, 0.15]),
+  "translation.script_fit_mass_weight": weight(0, 1, [0.25, 0.45, 0.65]),
+  "translation.script_fit_profile_overlap_weight": weight(0, 1, [0.35, 0.55, 0.75]),
+  "translation.cluster_margin_floor": threshold(0.01, 0.7, [0.06, 0.12, 0.25, 0.45]),
+  "translation.direct_preservation_floor": threshold(0.3, 0.99, [0.55, 0.74, 0.9]),
+  "translation.approximate_preservation_floor": threshold(0.1, 0.95, [0.3, 0.48, 0.68]),
+  "translation.gloss_preservation_floor": threshold(0.02, 0.8, [0.08, 0.16, 0.35]),
+  "translation.aggregate_direct_share_floor": threshold(0.2, 0.99, [0.45, 0.7, 0.9]),
+  "translation.aggregate_direct_preservation_floor": threshold(0.2, 0.99, [0.5, 0.72, 0.9]),
+  "translation.aggregate_approximate_preservation_floor": threshold(0.1, 0.95, [0.28, 0.46, 0.66]),
+  "translation.aggregate_gloss_preservation_floor": threshold(0.02, 0.8, [0.06, 0.12, 0.3]),
+  "translation.uncertain_term_preservation_floor": threshold(0.05, 0.95, [0.28, 0.48, 0.68]),
+  "translation.semantic_score_preservation_weight": weight(0, 1, [0.35, 0.55, 0.75]),
+  "translation.semantic_score_energy_weight": weight(0, 1, [0.25, 0.45, 0.65])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */
