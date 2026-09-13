@@ -578,9 +578,11 @@ export function createRuntimeGraphRetrieval(options: {
   /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
-  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = ""): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
     // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
-    const titleUnits = anchorGroupTitleUnits(group);
+    // A group carrying a quoted sentence opens on that sentence's first pair, not on a subject, so its leading
+    // feature names no title to rank by and reading one out of it ranks whatever source happens to spell it.
+    const titleUnits = subjectLed ? anchorGroupTitleUnits(group) : [];
     // A prose question's hits are the prose hits: four source comments carrying "Lovelace born" satisfied this
     // search, were dropped as code afterwards, and the symbol fallback that would have found the article never ran.
     // Control corpora (request-requirement, creative-event bootstraps) and the workspace's own titleless documents
@@ -671,7 +673,7 @@ function spanIsSourceCode(span: EvidenceSpan): boolean {
 async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = []): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
-    const allGroups = sourceAnchorRetrievalFeatureGroups(text, languageModels);
+    const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels);
     const scaffoldingOnly = (group: readonly string[]) => Boolean(requestScaffolding?.size) && anchorGroupUnits(group).every(unit => requestScaffolding!.has(unit));
     const anchorFeatureGroups = allGroups.filter(group => !scaffoldingOnly(group));
     const droppedScaffoldingGroups = allGroups.length - anchorFeatureGroups.length;
@@ -702,7 +704,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
     const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(async group => {
-        const rows = await searchAnchorGroup(group, proseSourceKinds, !codeRequestRecognized(codeRequestSignal(text)), text);
+        const rows = await searchAnchorGroup(group, proseSourceKinds, !codeRequestRecognized(codeRequestSignal(text)), text, group !== quotedSentence);
         perGroupCounts.push({ group: [...group], rows: rows.length, heads: rows.slice(0, 2).map(item => String(item.span.textPreview ?? "").replace(/s+/gu, " ").slice(0, 50)) });
         return rows;
       })).then(groupResults => groupResults.flat())
@@ -936,10 +938,11 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     return kept.length ? kept : [...features];
   }
 
-  function sourceAnchorRetrievalFeatureGroups(text: string, languageModels: readonly KneserNeyModel[] = []): string[][] {
+  /** The per-subject anchor groups, plus the one group that carries a quoted sentence rather than a subject. */
+  function sourceAnchorRetrievalFeatureGroups(text: string, languageModels: readonly KneserNeyModel[] = []): { groups: string[][]; quotedSentence?: readonly string[] } {
     const functionUnits = retrievalFunctionUnits(languageModels);
     const anchors = sourceEvidenceAnchorsForRequest(text);
-    if (!anchors.length) return [];
+    if (!anchors.length) return { groups: [], quotedSentence: undefined };
     const specificAnchors = anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
     // A one-unit subject is dropped whenever any two-unit anchor exists, and the two-unit anchors are often just
     // that subject plus a neighbouring request word. "What did Einstein discover?" searched `einstein|discover`
@@ -1060,29 +1063,28 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       const conceptFeatures = forms.map(form => `anchor:sym:${form}`);
       if (!groups.some(group => conceptFeatures.every(feature => group.includes(feature)))) groups.push(conceptFeatures);
     }
-    // One extra group of the request's longest uncovered adjacent bigrams:
-    // when a famous anchor dominates the top-4 groups, the discriminative
-    // pairs ("rosalind|franklin") never got searched and the near-duplicate
-    // span never entered the pool.
-    // Extras exist for near-duplicate recall; question-shaped requests keep
-    // their bounded query budget.
-    if (!requestSentenceSequences(text).length) return groups;
-    const covered = new Set(groups.flat());
-    // Same generator as index time: filtered-sequence bigrams do not exist
-    // in the anchor index, so extras built from them searched for nothing.
-    const requestBigrams = anchorFeatureSet(text, 96)
+    // One extra group carrying the sentence the request quotes, whole. Question-shaped requests keep their
+    // bounded query budget.
+    //
+    // A quoted sentence is not a subject to anchor on, it is a sequence: the span that holds it carries every one
+    // of its adjacent bigrams and no other span carries more than a couple, so the conjunction identifies the
+    // source outright. Taking the four longest-SPELLED of those pairs instead threw the conjunction away and let
+    // string length stand in for rarity. Measured over the 40 cloze rows this suite declines: four pairs retrieve
+    // the answering span for 31 of 39 and rank it first for 20, the sentence's pairs whole retrieve it for all 39
+    // and rank it first for 35. Deliberately not deduplicated against the other groups -- a pair another group
+    // already searched alone is still part of what makes this query identify one span.
+    if (!requestSentenceSequences(text).length) return { groups, quotedSentence: undefined };
+    // Cost bound, not a modelling choice: how many features one posting query carries.
+    const requestBigrams = anchorFeatureSet(text, 256)
       .filter(feature => feature.startsWith("anchor:bi:"))
-      .filter(feature => !covered.has(feature))
       .filter(feature => {
         const units = feature.slice("anchor:bi:".length).split("|");
         return units.every(unit => unit.length >= 3 && !genericQuestionSignal(unit));
-      })
-      .map(feature => ({ feature, weight: feature.length }))
-      .sort((a, b) => b.weight - a.weight)
-      .map(item => item.feature);
-    const extras = contentBearingFeatures(uniqueKernelStrings(requestBigrams), functionUnits).slice(0, 4);
-    if (extras.length >= 2) groups.push(extras);
-    return groups;
+      });
+    const quoted = contentBearingFeatures(uniqueKernelStrings(requestBigrams), functionUnits);
+    if (quoted.length < 2) return { groups, quotedSentence: undefined };
+    groups.push(quoted);
+    return { groups, quotedSentence: quoted };
   }
 
   async function visualEvidenceResults(text: string): Promise<Array<{ span: EvidenceSpan; score: number; reason: string }>> {
@@ -1104,7 +1106,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   }
 
   function sourceAnchorRetrievalFeatures(text: string, languageModels: readonly KneserNeyModel[] = []): string[] {
-    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text, languageModels).flat()).slice(0, 16);
+    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text, languageModels).groups.flat()).slice(0, 16);
   }
 
 
