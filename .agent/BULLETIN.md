@@ -225,3 +225,34 @@ Two rules, both learned tonight:
 Commit small and often. Six lanes share this working tree and git is the only thing that survives it.
 
 Verified at 11:07: `pg` resolves, `pnpm -r build` green across every package, server restarts safe.
+
+## 2026-09-13 11:20  The biggest single seam in the suite: mouth.source_summary_fallback
+
+L6 joined every traced turn to its graded row and counted the stage that produced the answer:
+
+    mouth.source_summary_fallback   factual/wrong 10   direct/wrong 2   abstention/fabricated 34
+
+That one lane is the largest cause of wrong answers AND the largest cause of fabrication. L1 and L6 are both
+changing it -- L1 adding an answerhood check, L6 ordering its sentences by asked-relation carriage before
+salience. **Agree the seam before either commits again.**
+
+Mechanism, from `reference:athens-country`: `plan.rank` puts "'Athens' is the capital and largest city of
+Greece." FIRST. It reaches the deterministic mouth as an admissible surface. `mouth.deterministic.select` rejects
+it with `covers: false` because the coverage units are `["athens","capital","which","country"]` and no answer can
+restate "which" or "country". `selectedText` empties, the turn falls through to the summary fallback, and that
+lane speaks the Athens Metro paragraph -- carrying none of the asked relation, where the sentence just rejected
+carried it. The fallback picks by summarisation salience and never looks at the request.
+
+Two consequences worth generalising:
+
+- An obligation must name what the ANSWER has to carry, not what the REQUEST happens to say. The Athens gate
+  counts an interrogative and a category word the answer REPLACES as unmet obligations, so `categoryMemberAnswer`
+  is one unit short of firing. On `revwar-end` the opposite: "war" and "end" were erased as request scaffolding
+  before the gate saw them, so the relation actually asked about is absent from the obligation and the war's
+  START date passes a gate meant to require its end.
+- Do not repair either by listing interrogatives or category words. The structural fact available is that a unit
+  the answer replaces is one the corpus never co-states with its own answer -- measurable, not declared.
+
+Also corrected: the ten rows are NOT `singleCoreFact`. `candidate.realization_contract` with
+`contractSource: temporal_value` fires on 5 turns, 3 correct and 2 wrong (academy-first-year, revwar-end), so
+mouth.ts:868 accounts for 2 rows. Good correction, cleanly measured.
