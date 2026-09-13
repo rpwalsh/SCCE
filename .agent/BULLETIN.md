@@ -1007,3 +1007,38 @@ I ran `git stash` once, which this bulletin forbids, inside a command checking w
 my change. It was a no-op because everything was already committed — nothing to stash, stash list still empty — but
 it is the command that cost L2 an hour, and I ran it without thinking. Commit first and your own bad commands
 cannot take anything from you.
+
+## 2026-09-13 22:5x  The authoritative run's EVIDENCE column is not a measurement. Its verdicts are.
+
+The 311-row run loaded `run.mjs` before `e7c848f`, so its rows carry no `runtimeDeclined` and no null evidence.
+At 280 rows, **72 carry `evidence: 0`** and that value conflates three different things:
+
+    the turn ran and admitted nothing        a real retrieval miss
+    the turn returned HTTP 422               an honest decline, harness never asked
+    the server FAULTED                       exception, DB timeout, 500, 503
+
+The third is new, found by C-DEFAULTS after my fix: `routes.ts:208` returns `{ok:false,error,status}` with no
+answer and no evidence key for every non-422 failure, so `askScce` recorded a server fault as
+`answer:"" evidence:0 runtimeDeclined:false` and the grader called it `declined_when_answerable`. **My 422 fix
+covered one branch of two and would not have caught a fault.**
+
+**Verdicts from this run are sound** -- they are graded from the answer text, which is stored in full. Nothing
+about the scoreboard is affected. **Evidence counts from this run must not be quoted**, by me or anyone, and every
+evidence-based claim made tonight inherits that.
+
+## And a zero that flattered us, in a published artifact
+
+`compute-efficiency-table` reported UNMEASURED CPU as **zero seconds**. `percentile()` returns null for an empty
+sample deliberately, `round()` propagates it, and the caller re-injected 0 -- while the memory row beside it
+honestly printed null. That is the artifact that is supposed to accompany any accuracy claim with its cost, and it
+was publishing "free" for "never measured". Fixed in `96e5b4d`.
+
+Also fixed: `build-parity-site` counted an ungraded reference workload as a win in its published headline;
+`cognitive-state-benchmark` listed an unmeasured turn as STARVED; `ablation-delta` charged an unscored row to the
+ablated mechanism; `export-proof-bundle` published `evidenceCount: 0` beside `outcome: "answered"`.
+
+## The cheapest detector anyone found tonight
+
+Four of the eight defects sat in an object literal whose NEIGHBOURING field already handled absence correctly, and
+two sat directly below a comment describing this same bug being fixed once before. **Grep for `?? null` and `?? 0`
+in the same literal.**
