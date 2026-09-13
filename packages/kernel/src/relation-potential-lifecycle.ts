@@ -26,12 +26,24 @@ export interface RelationPotentialValidation {
   readonly holdoutCount: number;
   readonly holdoutPositiveCount: number;
   readonly fittedBrier: number;
+  /** Brier of the literal 1.0 the identity branch emits. */
   readonly identityConstantOneBrier: number;
-  readonly identityBaseRateBrier: number;
+  /** Brier of the best constant an identity runtime could actually have estimated, from data the fit also saw. */
+  readonly identityEstimatedPriorBrier: number;
+  /** Brier of a constant set from the held-out labels themselves. An oracle: reported, never the gate. */
+  readonly oracleHoldoutBaseRateBrier: number;
+  /** Held-out ranking of the transition weight the field engine computes, identity's ordering and the scored one. */
+  readonly identityTransitionOrderingAuroc: number;
+  readonly scoredTransitionOrderingAuroc: number;
   readonly fittedAuroc: number;
   /** Identity assigns one value to every edge, so its discrimination is 0.5 by construction. Recorded, not assumed. */
   readonly identityAuroc: number;
   readonly beatsIdentity: boolean;
+}
+
+export interface RelationPotentialHoldoutRow extends RelationPotentialExample {
+  /** What the field engine orders by with no model: weight * alpha, identity's own ordering. */
+  readonly baseTransitionWeight: number;
 }
 
 export interface RelationPotentialArtifactRecord {
@@ -53,32 +65,45 @@ export interface RelationPotentialModelStore {
   list(limit?: number): Promise<readonly RelationPotentialArtifactRecord[]>;
 }
 
-/** Scores a held-out set the fit never saw and compares it against the identity it would replace. */
+/**
+ * Scores a held-out set the fit never saw and compares it against the identity it would replace, on both things
+ * identity does: emit a constant, and leave the transition ordering at weight * alpha.
+ *
+ * `priorEstimate` must come from data the fit was allowed to see. A constant set from the held-out labels is an
+ * oracle no deployable runtime could match; it is computed and reported, and it is not the gate.
+ */
 export function validateRelationPotentialAgainstIdentity(
   model: RelationPotentialModel,
-  holdout: readonly RelationPotentialExample[],
-  datasetIdentity: string
+  holdout: readonly RelationPotentialHoldoutRow[],
+  datasetIdentity: string,
+  priorEstimate: number
 ): RelationPotentialValidation {
   assertValidRelationPotentialModel(model);
   if (!Array.isArray(holdout) || holdout.length < 2) throw new Error("relation-potential validation requires at least two held-out examples");
+  if (!Number.isFinite(priorEstimate) || priorEstimate <= 0 || priorEstimate >= 1) throw new Error("relation-potential validation requires a prior estimated from fitting data");
   const labels = holdout.map(row => row.label);
   const positives = labels.filter(label => label === 1).length;
   if (positives === 0 || positives === labels.length) throw new Error("relation-potential validation requires both label classes in the held-out set");
   const probabilities = holdout.map(row => scoreRelationPotential(model, row.features).calibrated);
-  const baseRate = positives / labels.length;
   const fittedBrier = meanSquaredError(probabilities, labels);
-  const identityConstantOneBrier = meanSquaredError(labels.map(() => 1), labels);
-  const identityBaseRateBrier = meanSquaredError(labels.map(() => baseRate), labels);
+  const identityEstimatedPriorBrier = meanSquaredError(labels.map(() => priorEstimate), labels);
   const fittedAuroc = auroc(probabilities, labels);
-  const beatsIdentity = fittedBrier < identityBaseRateBrier && fittedAuroc > 0.5;
+  const identityTransitionOrderingAuroc = auroc(holdout.map(row => row.baseTransitionWeight), labels);
+  const scoredTransitionOrderingAuroc = auroc(holdout.map((row, index) => row.baseTransitionWeight * (probabilities[index] ?? 0)), labels);
+  const beatsIdentity = fittedBrier < identityEstimatedPriorBrier
+    && fittedAuroc > 0.5
+    && scoredTransitionOrderingAuroc > identityTransitionOrderingAuroc;
   const body = {
     schema: RELATION_POTENTIAL_VALIDATION_SCHEMA,
     datasetIdentity,
     holdoutCount: labels.length,
     holdoutPositiveCount: positives,
     fittedBrier,
-    identityConstantOneBrier,
-    identityBaseRateBrier,
+    identityConstantOneBrier: meanSquaredError(labels.map(() => 1), labels),
+    identityEstimatedPriorBrier,
+    oracleHoldoutBaseRateBrier: meanSquaredError(labels.map(() => positives / labels.length), labels),
+    identityTransitionOrderingAuroc,
+    scoredTransitionOrderingAuroc,
     fittedAuroc,
     identityAuroc: 0.5,
     beatsIdentity
