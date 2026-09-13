@@ -54,6 +54,14 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   "ranking.near_duplicate_fraction_floor": 0.5,
   /** How many ranked sentences the anchor-predication preference may reorder. */
   "ranking.anchor_predication_rerank_limit": 8,
+  /**
+   * How many of a quoted sentence's adjacent pairs are searched, rarest first.
+   *
+   * It bounds cost and it decides what is reachable, so it is declared rather than written inline. Measured over
+   * the 40 declining cloze rows: 6 pairs rank the answering span first for 9 of 11, 10 pairs for 10 of 11, and
+   * the whole sentence for 35 of 39 at p50 10.7s per query against 237ms for four pairs.
+   */
+  "retrieval.quoted_sentence_query_features": 12,
 
   // --- ranker-specific: the two rankers claim to mirror each other and do not
   /** proposeSourceExactEvidenceAnswer: affinity multiplier when this is not the primary title. */

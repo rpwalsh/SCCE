@@ -55,6 +55,7 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "ranking.near_duplicate_weight": weight(0, 24, [4, 8, 12, 18]),
   "ranking.near_duplicate_fraction_floor": threshold(0.2, 0.9, [0.3, 0.4, 0.5, 0.65, 0.8]),
   "ranking.anchor_predication_rerank_limit": count(2, 24, [4, 8, 12, 16]),
+  "retrieval.quoted_sentence_query_features": count(2, 32, [6, 10, 12, 16, 24]),
 
   // --- ranker-specific
   "ranking.exact.source_affinity_secondary_title_factor": weight(0, 1, [0.4, 0.7, 0.85, 1]),
