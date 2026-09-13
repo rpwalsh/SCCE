@@ -95,7 +95,9 @@ for (let turn = 1; turn <= turnCount; turn++) {
     languagePatterns: language?.counts?.patterns ?? null,
     languageFrames: language?.counts?.semanticFrames ?? null,
     languageBudgetExceeded: budgetExceeded,
-    evidence: result?.evidence?.length ?? 0,
+    // null like the language counts above it: a turn that threw measured no evidence, and reporting 0 made a
+    // crashed turn read as a turn that ran over an empty pool.
+    evidence: result ? result.evidence.length : null,
     force: result?.epistemicForce ?? null,
     answered: Boolean(String(result?.answer ?? "").trim()),
     answerChars: String(result?.answer ?? "").length,
@@ -107,7 +109,7 @@ for (let turn = 1; turn <= turnCount; turn++) {
     `turn ${String(turn).padStart(3)} ${String(durationMs).padStart(6)}ms  `
     + `lang ${String(row.languagePatterns).padStart(5)}p/${String(row.languageFrames).padStart(5)}f`
     + `${budgetExceeded ? " OVER" : "     "}  `
-    + `ev ${String(row.evidence).padStart(2)}  ${row.answered ? "answered" : "SILENT  "}  `
+    + `ev ${(row.evidence === null ? "--" : String(row.evidence)).padStart(2)}  ${row.answered ? "answered" : "SILENT  "}  `
     + `rss ${String(row.residentMb).padStart(4)}mb  ${row.failure ? "FAIL " + row.failure : ""}\n`
   );
 }
@@ -134,9 +136,10 @@ const report = {
     maxMs: Math.max(...rows.map(row => row.durationMs))
   },
   memory: {
-    firstResidentMb: rows[0]?.residentMb ?? 0,
-    lastResidentMb: rows[rows.length - 1]?.residentMb ?? 0,
-    maxResidentMb: Math.max(...rows.map(row => row.residentMb))
+    // A run with no turns has no memory profile. Zeroes here would report a flat growth curve over no data.
+    firstResidentMb: rows.length ? rows[0].residentMb : null,
+    lastResidentMb: rows.length ? rows[rows.length - 1].residentMb : null,
+    maxResidentMb: rows.length ? Math.max(...rows.map(row => row.residentMb)) : null
   },
   rows
 };

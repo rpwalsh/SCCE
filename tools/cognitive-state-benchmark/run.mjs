@@ -172,8 +172,11 @@ function graphCountsFromTurn(body) {
     .filter(event => event.typeId === "GraphUpdated")
     .map(event => event.payload?.plan?.corpusRows)
     .filter(Boolean)
-    .at(-1) ?? {};
-  return { nodes: rows.nodeRows ?? 0, edges: rows.edgeRows ?? 0, evidence: rows.evidenceRows ?? 0 };
+    .at(-1);
+  // Same class as the bug above, one line down: with no event carrying corpusRows nothing was counted, and a
+  // count of zero is a starved graph while a count never taken is an unmeasured turn.
+  if (!rows) return { nodes: null, edges: null, evidence: null };
+  return { nodes: rows.nodeRows ?? null, edges: rows.edgeRows ?? null, evidence: rows.evidenceRows ?? null };
 }
 
 function isDeclination(answer) {
@@ -248,8 +251,11 @@ function report(rows) {
       + `  refused an answerable ${count("incorrect_refusal")}\n`);
     process.stdout.write(`  wall clock ${Math.round(totalMs)}ms total, ${Math.round(totalMs / Math.max(1, mine.length))}ms per question\n`);
   }
-  const starved = taughtGraph.filter(row => (row.nodes ?? 0) === 0);
-  process.stdout.write(`teaching turns: ${taughtGraph.length}, of which resolved an empty graph: ${starved.length}\n`);
+  const starved = taughtGraph.filter(row => row.nodes === 0);
+  const unmeasured = taughtGraph.filter(row => row.nodes === null || row.nodes === undefined);
+  process.stdout.write(`teaching turns: ${taughtGraph.length}, of which resolved an empty graph: ${starved.length}`
+    + `${unmeasured.length ? `, and ${unmeasured.length} never reported a graph size (not counted as starved)` : ""}\n`);
   if (starved.length) process.stdout.write(`  STARVED: ${starved.map(row => `${row.taskId}#${row.turnIndex}`).join(", ")}\n`);
+  if (unmeasured.length) process.stdout.write(`  UNMEASURED: ${unmeasured.map(row => `${row.taskId}#${row.turnIndex}`).join(", ")}\n`);
   process.stdout.write("\n");
 }

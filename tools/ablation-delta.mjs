@@ -34,8 +34,15 @@ const unanswerable = questionId => questions.get(questionId)?.gold?.unanswerable
 
 const bySystem = new Map();
 for (const row of objective) {
-  const system = bySystem.get(row.systemId) ?? { cloze: 0, clozeTotal: 0, abstention: 0, abstentionTotal: 0, missed: [] };
-  const hit = Number(row.exactScore ?? 0) >= 1;
+  const system = bySystem.get(row.systemId) ?? { cloze: 0, clozeTotal: 0, abstention: 0, abstentionTotal: 0, missed: [], unscored: [] };
+  // A row the scorer never scored is not a miss. Counting it as one charges the ablated mechanism for a gap in
+  // the scoring pass, and the delta between two conditions is then a difference in coverage, not in cognition.
+  if (row.exactScore === undefined || row.exactScore === null || !Number.isFinite(Number(row.exactScore))) {
+    system.unscored.push(row.questionId);
+    bySystem.set(row.systemId, system);
+    continue;
+  }
+  const hit = Number(row.exactScore) >= 1;
   if (unanswerable(row.questionId)) {
     system.abstentionTotal++;
     if (hit) system.abstention++;
@@ -66,9 +73,18 @@ const rows = [...bySystem.entries()]
     abstention: system.abstention,
     abstentionTotal: system.abstentionTotal,
     delta: total(system) - total(full),
-    newMisses: system.missed.filter(id => !full.missed.includes(id)).length
+    newMisses: system.missed.filter(id => !full.missed.includes(id)).length,
+    unscored: system.unscored.length
   }))
   .sort((left, right) => left.delta - right.delta);
+
+// A delta between two conditions scored over different question sets is a coverage difference wearing a
+// cognition difference's clothes. Say so loudly rather than letting the table imply both were scored whole.
+const unevenlyScored = [...bySystem.entries()].filter(([, system]) => system.unscored.length);
+if (unevenlyScored.length) {
+  process.stderr.write(`WARNING: ${unevenlyScored.map(([systemId, system]) => `${systemId} has ${system.unscored.length} unscored rows`).join(", ")}`
+    + `; those are excluded from every total here, so the deltas below compare different question sets\n`);
+}
 
 const questionCount = full.clozeTotal + full.abstentionTotal;
 const line = row => `| ${row.component} | ${row.total}/${questionCount} | ${row.cloze}/${row.clozeTotal} | ${row.abstention}/${row.abstentionTotal} | ${row.delta >= 0 ? "+" : ""}${row.delta} | ${row.newMisses} |`;

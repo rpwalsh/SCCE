@@ -96,7 +96,12 @@ function percentile(values, fraction) {
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1))];
 }
-const round = (value, places) => (value === null || !Number.isFinite(value) ? null : Number(value.toFixed(places)));
+const round = (value, places) => (value === null || value === undefined || !Number.isFinite(value) ? null : Number(value.toFixed(places)));
+/** Milliseconds to seconds, preserving the null `percentile` returns for an empty sample. `(x ?? 0) / 1000`
+ *  reported a cost nobody measured as zero seconds, which is the one direction that flatters this system. */
+const toSeconds = (value, places) => (value === null || value === undefined ? null : round(value / 1000, places));
+/** Max over an empty sample is unknown, not zero: `Math.max(0, ...none)` returns the floor it was seeded with. */
+const maxOf = values => (values.length ? Math.max(...values) : null);
 
 function summarize(turns) {
   const wall = turns.map(turn => turn.wallMs);
@@ -104,9 +109,9 @@ function summarize(turns) {
   const rss = turns.map(turn => turn.rssBytes);
   return {
     samples: turns.length,
-    cpuSeconds: { p50: round((percentile(cpu, 0.5) ?? 0) / 1000, 3), p95: round((percentile(cpu, 0.95) ?? 0) / 1000, 3), max: round(Math.max(0, ...cpu) / 1000, 3) },
-    wallSeconds: { p50: round((percentile(wall, 0.5) ?? 0) / 1000, 3), p95: round((percentile(wall, 0.95) ?? 0) / 1000, 3), max: round(Math.max(0, ...wall) / 1000, 3) },
-    peakResidentSetBytes: { p50: percentile(rss, 0.5), p95: percentile(rss, 0.95), max: Math.max(0, ...rss) },
+    cpuSeconds: { p50: toSeconds(percentile(cpu, 0.5), 3), p95: toSeconds(percentile(cpu, 0.95), 3), max: toSeconds(maxOf(cpu), 3) },
+    wallSeconds: { p50: toSeconds(percentile(wall, 0.5), 3), p95: toSeconds(percentile(wall, 0.95), 3), max: toSeconds(maxOf(wall), 3) },
+    peakResidentSetBytes: { p50: percentile(rss, 0.5), p95: percentile(rss, 0.95), max: maxOf(rss) },
     gpuSeconds: 0,
     apiTokens: 0,
     cpuPerWall: { p50: round(percentile(turns.filter(turn => turn.wallMs > 0).map(turn => turn.cpuMs / turn.wallMs), 0.5), 3), p95: round(percentile(turns.filter(turn => turn.wallMs > 0).map(turn => turn.cpuMs / turn.wallMs), 0.95), 3) }

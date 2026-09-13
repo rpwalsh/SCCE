@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { score, summarizeVerdicts, formatPerCorpus } from "./grade.mjs";
+import { interpretTurnResponse, meanOfMeasured, maxOfMeasured } from "./absence.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i++) {
@@ -95,15 +96,12 @@ async function askScce(prompt) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: prompt })
     });
-    if (response.status === 422) return { answer: "", ms: Date.now() - started, declinedByRuntime: true };
-    const payload = await response.json();
-    return {
-      answer: String(payload.answer ?? ""),
-      ms: Date.now() - started,
-      evidence: Array.isArray(payload.evidence) ? payload.evidence.length : 0
-    };
+    // A non-OK status that is not 422 returns {ok:false,error} with no answer and no evidence key, so reading a
+    // count of 0 out of it recorded a server fault as a decline over an empty pool. It is neither.
+    const payload = await response.json().catch(() => null);
+    return interpretTurnResponse({ status: response.status, payload, ms: Date.now() - started });
   } catch (error) {
-    return { answer: "", ms: Date.now() - started, error: String(error?.message ?? error) };
+    return { answer: "", ms: Date.now() - started, evidence: null, error: String(error?.message ?? error) };
   }
 }
 
@@ -152,6 +150,10 @@ for (const [index, item] of items.entries()) {
       // made a runtime refusal indistinguishable from a retrieval miss. Three lanes chased that difference.
       evidence: result.evidence ?? null,
       runtimeDeclined: result.declinedByRuntime === true,
+      // A fault is recorded beside the verdict, never instead of it: an empty answer from a 500 grades the same
+      // as an honest decline, and only this field says which of the two the row actually is.
+      httpStatus: result.httpStatus ?? null,
+      transportError: result.error ?? null,
       answer: result.answer.replace(/\s+/gu, " ")
     };
   }
@@ -178,13 +180,17 @@ const batteryEnd = sampleBattery();
 
 function summarize(side) {
   const cpu = rows.map(row => row[side]?.cpuSeconds).filter(v => typeof v === "number");
+  const meanMs = meanOfMeasured(rows.map(row => row[side]?.ms));
   return {
     ...summarizeVerdicts(rows, side),
-    meanMs: Math.round(rows.reduce((sum, r) => sum + (r[side]?.ms ?? 0), 0) / Math.max(1, rows.length)),
-    wallSecondsPerItem: Number((rows.reduce((sum, r) => sum + (r[side]?.ms ?? 0), 0) / Math.max(1, rows.length) / 1000).toFixed(2)),
-    cpuSecondsTotal: Number(cpu.reduce((sum, v) => sum + v, 0).toFixed(2)),
+    // Means over the rows that carry the measurement, null when none do. `sum(x ?? 0) / rows.length` reports a
+    // side nobody timed as 0 ms, which reads as instantaneous rather than as unmeasured.
+    meanMs: meanMs === null ? null : Math.round(meanMs),
+    wallSecondsPerItem: meanMs === null ? null : Number((meanMs / 1000).toFixed(2)),
+    cpuSecondsTotal: cpu.length ? Number(cpu.reduce((sum, v) => sum + v, 0).toFixed(2)) : null,
     cpuSecondsPerItem: cpu.length ? Number((cpu.reduce((sum, v) => sum + v, 0) / cpu.length).toFixed(2)) : null,
-    peakRssMb: Math.max(0, ...rows.map(r => r[side]?.rssMb ?? 0)) || null,
+    peakRssMb: maxOfMeasured(rows.map(r => r[side]?.rssMb)),
+    faults: rows.filter(r => typeof r[side]?.httpStatus === "number" && r[side].httpStatus !== 200 && r[side].httpStatus !== 422).length,
     // Stated, not inferred: SCCE runs no accelerator and calls no API, and this harness would record it if it did.
     gpuSecondsPerItem: 0,
     apiTokensPerItem: 0
