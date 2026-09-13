@@ -1,7 +1,8 @@
 # T2 Source summary quality and wiring
 
-status: open
-claimed_by:
+status: done
+claimed_by: worktree-agent-a2ad781442cbce732
+findings: .agent/findings/T2.md
 
 ## Problem
 

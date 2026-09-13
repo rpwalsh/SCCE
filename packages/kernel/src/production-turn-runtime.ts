@@ -184,6 +184,7 @@ import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } from "./types.js";
 import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
+import { summarizeAdmittedSource } from "./source-summary.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
 import type { RuntimeReplanMotion } from "./runtime-motion.js";
 import {
@@ -4322,6 +4323,49 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             support: { selectedCandidateId: judged.selected.id, contradiction: judged.selected.scores.contradiction, evidenceId: String(contradictedSpan.id) }
           });
           spoken = { ...spoken, text: boundedText, evidenceRefs: [contradictedSpan.id] };
+        }
+      }
+      // A source the request names, with nothing narrower to say about it.
+      //
+      // The corpus holds Moby Dick's full text and no article about it, so every narrower lane above fails by
+      // construction: the answerhood gate wants the request's relation in the answering sentence and a novel's
+      // prose never says "plot". What the source says about itself is still an answer, and it is the source's own
+      // sentences -- so this speaks them rather than declining a turn whose evidence is sitting right there.
+      //
+      // Three conditions keep it away from every turn the answerhood gate exists for. It runs last, so a narrower
+      // answer always wins: by here the learned lane, the deterministic lane, the realizable-candidate fallback and
+      // the contradiction fallback have all produced nothing. The evidence must be identity-bound -- the source is
+      // ABOUT what the request names, the same authority retrieval admitted on -- so a request that merely brushes
+      // a source gets the abstention it got before. And every sentence spoken is checked back into an admitted
+      // span, so the summary is an excerpt of this turn's own evidence or it is not said at all.
+      if (!spoken.text.trim() && (requestedAuthority === "factual" || requestedAuthority === "reasoned") && selectedEvidence.length > 0) {
+        const identityBound = selectedEvidence.filter(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords()));
+        const excerpt = identityBound.length
+          ? summarizeAdmittedSource({
+            spans: identityBound.map(span => ({
+              sourceKey: String(span.sourceVersionId ?? span.sourceId ?? ""),
+              text: String(span.text ?? span.textPreview ?? "")
+            })),
+            closedClass: corpusFunctionSymbols(),
+            maxChars: DEFAULT_FACTUAL_SURFACE_EXTENT
+          })
+          : undefined;
+        if (excerpt) {
+          const cited = excerpt.spokenFrom.map(position => identityBound[position]!);
+          kernelTrace({
+            stage: "mouth.source_summary_fallback",
+            label: "kernel.turn",
+            counts: { answerChars: excerpt.text.length, identityBound: identityBound.length, cited: cited.length },
+            support: { selectedCandidateId: judged.selected.id, sourceVersionId: String(cited[0]?.sourceVersionId ?? ""), evidenceIds: cited.slice(0, 4).map(span => String(span.id)) }
+          });
+          spoken = { ...spoken, text: excerpt.text, evidenceRefs: cited.map(span => span.id) };
+        } else if (identityBound.length) {
+          kernelTrace({
+            stage: "mouth.source_summary_fallback.withheld",
+            label: "kernel.turn",
+            counts: { identityBound: identityBound.length },
+            support: { selectedCandidateId: judged.selected.id, reason: "no-sentence-of-the-summary-is-an-excerpt-of-admitted-evidence" }
+          });
         }
       }
       // Real citation, not a stylistic flourish: an evidence-grounded
