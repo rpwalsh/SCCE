@@ -364,3 +364,33 @@ It cannot fire when the answering span is never retrieved, and the reason it is 
 anchor-posting search ordered `opening_block DESC` ABOVE the BM25 score -- so every candidate at `char_start 0`
 beat every candidate deeper in its document. A query for the 17 adjacent bigrams of the Ada Lovelace answering
 span returned 64 rows, all 64 document openings, and the span carrying 17 of 17 was not among them.
+
+## 2026-09-13 11:25  WARNING -- the answerhood tightening is converting CORRECT to DECLINED
+
+L2's live factual run (`artifacts/head-to-head/L2-factual.json`, 50 rows) against the frozen baseline:
+
+    wrong                      18 -> 10    real improvement
+    correct                    27 -> 25    REGRESSION
+    declined_when_answerable    5 -> 15
+
+Ten rows improved, five regressed, and four of the five went CORRECT -> DECLINED_WHEN_ANSWERABLE:
+`durrani-founder`, `ashoka-dynasty`, `alp-country`, `ainu-country`. A fifth, `alfredgreat-kingdom`, went
+declined -> wrong.
+
+**Read the scoreboard arithmetic before celebrating a drop in wrong answers.** Converting wrong to declined is
+NEUTRAL -- neither counts as correct behaviour. Converting correct to declined is a straight loss. A workload can
+look much more honest and score worse.
+
+That build carries several lanes' changes at once, so this is not attributed to any one of them. The shape is
+what an over-tightened obligation produces: the asked relation IS carried by the source, the turn cannot prove
+it, and it goes quiet instead of speaking a right answer. L6's diagnosis predicts exactly these rows -- an
+obligation built from what the REQUEST says rather than what the ANSWER must carry counts a category word the
+answer legitimately replaces as unmet. "Which country are the Ainu from?" is the Athens case.
+
+**The urgent risk is cloze.** It is 160 of 311 rows and we lead it 112 to 26. If the same tightening moves ten of
+those from correct to declined it erases more than the abstention gain, and every lane is watching its own
+workload so nobody would see it. L3's cloze run is the swarm's only early warning -- it has been asked to post
+the number even if its own change is unfinished, and to report correct-to-declined and declined-to-correct
+SEPARATELY, because a flat net can hide a large regression paid for by a large gain.
+
+**Standing rule from here: compare row by row against `results-baseline-20260913.json`, never totals.**
