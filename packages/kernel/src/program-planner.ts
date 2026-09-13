@@ -3,7 +3,7 @@
 import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramConstructIntent, ProgramGraph, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
-import { createCodeLearningEngine, type CodeImplementationBlueprint, type CodeKnowledgeGraph } from "./code-learning.js";
+import { createCodeLearningEngine, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph } from "./code-learning.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
 
@@ -124,8 +124,8 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const intent = intentFromShape(shape);
       const blueprint = code.blueprint({ target: shape.target.id, requestText: input.requestText, graph: codeGraph, entailment: input.entailment });
       const files = planFiles(shape);
-      const build = buildCommand(shape);
-      const test = testCommand(shape);
+      const build = buildCommand(shape, files);
+      const test = testCommand(shape, files);
       const planId = options.idFactory.semanticId("program_plan", { episodeId: input.episodeId, shape, files });
       const sourceEmission = sourceEmissionPlan({
         planId,
@@ -1239,7 +1239,8 @@ function planFiles(shape: ProgramShape): ProgramFilePlan[] {
   if (!nodeRuntime) return [
     ...common,
     { path: "source.program.json", role: "config", mediaType: "application/json", purpose: "source-derived language target and idiom memory", dependsOn: ["source.memory.json"], invariants: ["language open", "runtime explicit", "source evidence retained"] },
-    { path: entrypointFor(shape), role: "source", mediaType: mediaTypeForCodeFile(entrypointFor(shape)), purpose: "learned-language source entrypoint", dependsOn: ["source.program.json"], invariants: ["generated from source memory", "reviewable before build", "no hidden compatibility layer"] },
+    { path: EMITTED_PROGRAM_RUNTIME.sourcePath, role: "source", mediaType: EMITTED_PROGRAM_RUNTIME.mediaType, purpose: "request-declared call contracts over the planned operation", dependsOn: ["source.program.json"], invariants: ["standard library only", "declared contracts checked", "no network access"] },
+    { path: EMITTED_PROGRAM_RUNTIME.testPath, role: "test", mediaType: EMITTED_PROGRAM_RUNTIME.mediaType, purpose: "executable check of the emitted program", dependsOn: [EMITTED_PROGRAM_RUNTIME.sourcePath], invariants: ["imports the emitted program", "asserts declared contracts", "exits nonzero on failure"] },
     { path: "BUILDING.md", role: "doc", mediaType: "text/markdown", purpose: "runtime-specific build notes", dependsOn: ["source.program.json"], invariants: ["does not claim unrun build", "lists learned commands"] }
   ];
   return [
@@ -1279,8 +1280,10 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
   byPath.set("src/cli.ts", cliModule(plan, sourceMemory));
   byPath.set("src/command.ts", commandModule(plan, sourceMemory));
   if (plan.files.some(file => file.path === "source.program.json")) {
+    const contracts = declaredCallContracts(input.requestText);
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
-    byPath.set(entrypointFor(plan.intent.shape), learnedLanguageEntrypoint(plan, sourceMemory));
+    byPath.set(EMITTED_PROGRAM_RUNTIME.sourcePath, executableProgramModule(plan, contracts));
+    byPath.set(EMITTED_PROGRAM_RUNTIME.testPath, executableProgramTest(plan, contracts));
     byPath.set("BUILDING.md", buildNotes(plan));
   }
   return plan.files.map(filePlan => artifact(filePlan.path, filePlan.mediaType, byPath.get(filePlan.path) ?? "", filePlan.role, idFactory, hasher));
@@ -2195,23 +2198,262 @@ function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput): J
   });
 }
 
-function learnedLanguageEntrypoint(plan: ProgramPlan, memory: JsonValue): string {
-  const shape = plan.intent.shape;
-  const contract = {
-    target: shape.target,
-    memory,
-    operations: plan.blueprint.operations.slice(0, 24),
-    idioms: plan.codeGraph.idioms.slice(0, 24),
-    signals: plan.codeGraph.signals.slice(0, 48).map(signal => ({ kind: signal.kind, language: signal.language, text: signal.text, confidence: signal.confidence }))
+interface DeclaredCallContract {
+  name: string;
+  parameters: Array<{ name: string; type: string }>;
+  returnType: string;
+  /** Arguments matching every declared parameter type, or undefined when some type is not one the runtime can construct. */
+  sample?: JsonValue[];
+}
+
+/**
+ * Call contracts the request declares in its own text: an identifier bound to a balanced parameter list, with the
+ * type terms written beside the names. Punctuation decides -- nothing here reads a word.
+ */
+function declaredCallContracts(requestText: string, scanBytes = 8192, limit = 16): DeclaredCallContract[] {
+  // Cost bound: the balanced scan is quadratic on pathological nesting, so it reads a bounded prefix and keeps a bounded count.
+  const text = requestText.slice(0, scanBytes);
+  const out: DeclaredCallContract[] = [];
+  const seen = new Set<string>();
+  let cursor = 0;
+  while (cursor < text.length && out.length < limit) {
+    const identifier = readIdentifierRun(text, cursor);
+    if (!identifier) {
+      cursor += 1;
+      continue;
+    }
+    cursor = identifier.end;
+    if (text[cursor] !== "(") continue;
+    const group = readBalanced(text, cursor, "(", ")");
+    if (!group) continue;
+    cursor = group.end;
+    const parameters = declaredParameters(group.inner);
+    if (!parameters) continue;
+    const afterGroup = skipSpacesFrom(text, group.end);
+    const returnType = text[afterGroup] === ":" ? readTypeTerm(text, skipSpacesFrom(text, afterGroup + 1)) : "";
+    const declaresTypes = returnType.length > 0 || parameters.some(parameter => parameter.type.length > 0);
+    if (!declaresTypes || seen.has(identifier.value)) continue;
+    seen.add(identifier.value);
+    const sample = sampleArguments(parameters);
+    out.push({ name: identifier.value, parameters, returnType, ...(sample ? { sample } : {}) });
+  }
+  return out;
+}
+
+/** A parameter list is only a declaration when every entry is an identifier, optionally carrying a type term. */
+function declaredParameters(inner: string): Array<{ name: string; type: string }> | undefined {
+  const trimmed = inner.trim();
+  if (!trimmed) return [];
+  const parts = splitTopLevel(inner, ",");
+  const parameters: Array<{ name: string; type: string }> = [];
+  for (const part of parts) {
+    const start = skipSpacesFrom(part, 0);
+    const identifier = readIdentifierRun(part, start);
+    if (!identifier) return undefined;
+    const afterName = skipSpacesFrom(part, identifier.end);
+    if (afterName >= part.length) {
+      parameters.push({ name: identifier.value, type: "" });
+      continue;
+    }
+    if (part[afterName] !== ":") return undefined;
+    const typeStart = skipSpacesFrom(part, afterName + 1);
+    const type = readTypeTerm(part, typeStart);
+    if (!type || skipSpacesFrom(part, typeStart + type.length) < part.length) return undefined;
+    parameters.push({ name: identifier.value, type });
+  }
+  return parameters;
+}
+
+/** A type term: an identifier run, then any balanced generic argument list, then any number of collection markers. */
+function readTypeTerm(text: string, start: number): string {
+  if (start < 0 || start >= text.length) return "";
+  const identifier = readIdentifierRun(text, start);
+  if (!identifier) return "";
+  let end = identifier.end;
+  const generic = text[end] === "<" ? readBalanced(text, end, "<", ">") : undefined;
+  if (generic) end = generic.end;
+  while (text[end] === "[" && text[end + 1] === "]") end += 2;
+  return text.slice(start, end);
+}
+
+/**
+ * A value of the declared type, built only from terms the emitted runtime itself names. A type the runtime cannot
+ * construct yields nothing, and the emitted test then checks only that the contract was carried, never a guess.
+ */
+function sampleArguments(parameters: ReadonlyArray<{ name: string; type: string }>): JsonValue[] | undefined {
+  const samples: JsonValue[] = [];
+  for (const parameter of parameters) {
+    const sample = sampleForType(parameter.type);
+    if (sample === undefined) return undefined;
+    samples.push(sample);
+  }
+  return samples;
+}
+
+function sampleForType(type: string): JsonValue | undefined {
+  if (type.endsWith("[]")) {
+    const element = sampleForType(type.slice(0, -2));
+    return element === undefined ? undefined : [element];
+  }
+  if (type === "string") return "observed";
+  if (type === "number") return 1;
+  if (type === "boolean") return true;
+  return undefined;
+}
+
+function readIdentifierRun(text: string, start: number): { value: string; end: number } | undefined {
+  if (start >= text.length || !isIdentifierStart(text[start]!)) return undefined;
+  let end = start + 1;
+  while (end < text.length && isIdentifierLike(text[end]!)) end += 1;
+  return { value: text.slice(start, end), end };
+}
+
+function readBalanced(text: string, start: number, open: string, close: string): { inner: string; end: number } | undefined {
+  if (text[start] !== open) return undefined;
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === open) depth += 1;
+    else if (text[index] === close) {
+      depth -= 1;
+      if (depth === 0) return { inner: text.slice(start + 1, index), end: index + 1 };
+    }
+  }
+  return undefined;
+}
+
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (char === "(" || char === "[" || char === "{" || char === "<") depth += 1;
+    else if (char === ")" || char === "]" || char === "}" || char === ">") depth -= 1;
+    else if (char === separator && depth === 0) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+function skipSpacesFrom(text: string, start: number): number {
+  let index = start;
+  while (index < text.length && text[index]!.trim() === "") index += 1;
+  return index;
+}
+
+/**
+ * The emitted program: the contracts the request declared, the inputs the plan requires, and the operations the
+ * blueprint planned, in the module syntax of the runtime that is about to check and run it.
+ */
+function executableProgramModule(plan: ProgramPlan, contracts: readonly DeclaredCallContract[]): string {
+  const manifest = {
+    planId: plan.id,
+    entrypoint: EMITTED_PROGRAM_RUNTIME.sourcePath,
+    target: plan.intent.shape.target.label,
+    expectedFiles: plan.sourceEmission.expectedFiles,
+    artifactKinds: plan.sourceEmission.artifactKinds,
+    contracts: contracts.map(contract => ({ name: contract.name, parameters: contract.parameters, returnType: contract.returnType })),
+    probes: contracts.filter(contract => contract.sample).map(contract => ({ name: contract.name, arguments: contract.sample })),
+    requiredInputs: plan.intent.shape.requiredInputs,
+    requiredOutputs: plan.intent.shape.requiredOutputs,
+    requiredFields: requiredFields(plan.intent.shape),
+    operations: plan.blueprint.operations.map(operation => ({ id: operation.id, kind: operation.kind, path: operation.path, intent: operation.intent }))
   };
-  const lines = sourceCommentLines(shape.target.language, [
-    `SCCE source-derived target: ${shape.target.label}`,
-    `Runtime: ${shape.runtimeTarget}`,
-    `Entrypoint: ${shape.target.entrypoint}`,
-    `This file carries learned source memory for review before the next build/repair pass.`,
-    JSON.stringify(contract, null, 2)
-  ]);
-  return `${lines.join("\n")}\n`;
+  return `// Emitted for this request: the call contracts its text declares, over the fields the plan requires.
+export const programContract = ${JSON.stringify(manifest, null, 2)};
+
+export function describeShape(value) {
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    const elements = [...new Set(value.map(item => describeShape(item)))];
+    return elements.length === 1 ? \`\${elements[0]}[]\` : \`\${elements.join("|")}[]\`;
+  }
+  if (value === null) return "null";
+  return typeof value;
+}
+
+// An empty collection carries no element type, so it conforms to any declared collection.
+export function shapeSatisfies(shape, declared) {
+  if (!declared) return true;
+  return shape === declared || shape === "[]" && declared.endsWith("[]");
+}
+
+export function declaredContract(name) {
+  return programContract.contracts.find(contract => contract.name === name);
+}
+
+export function checkDeclaredCall(name, args) {
+  const contract = declaredContract(name);
+  if (!contract) return { ok: false, name, diagnostics: [{ code: "program.contract.undeclared", name }] };
+  const received = Array.isArray(args) ? args : [];
+  const diagnostics = [];
+  if (received.length !== contract.parameters.length) diagnostics.push({ code: "program.contract.arity", expected: contract.parameters.length, received: received.length });
+  for (const [index, parameter] of contract.parameters.entries()) {
+    const shape = describeShape(received[index]);
+    if (index < received.length && !shapeSatisfies(shape, parameter.type)) diagnostics.push({ code: "program.contract.parameter_shape", parameter: parameter.name, declared: parameter.type, received: shape });
+  }
+  return { ok: diagnostics.length === 0, name, declared: contract, diagnostics };
+}
+
+export function run(input) {
+  const records = Array.isArray(input && input.records) ? input.records : [];
+  const fieldCoverage = programContract.requiredFields.map(field => ({
+    field,
+    count: records.filter(record => record && record[field] !== undefined && record[field] !== null && record[field] !== "").length
+  }));
+  const diagnostics = fieldCoverage
+    .filter(item => item.count === 0)
+    .map(item => ({ code: "program.field.no_observed_values", field: item.field }));
+  return {
+    ok: records.length > 0 && diagnostics.length === 0,
+    recordCount: records.length,
+    fieldCoverage,
+    diagnostics,
+    contracts: programContract.contracts.map(contract => contract.name)
+  };
+}
+`;
+}
+
+/** The emitted test: every property the emitter must keep, exercised against the emitted program by running it. */
+function executableProgramTest(plan: ProgramPlan, contracts: readonly DeclaredCallContract[]): string {
+  const fields = requiredFields(plan.intent.shape);
+  const populated = Object.fromEntries(fields.map(field => [field, "observed"]));
+  return `import { strict as assert } from "node:assert";
+import { checkDeclaredCall, describeShape, programContract, run, shapeSatisfies } from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
+
+assert.equal(programContract.planId, ${JSON.stringify(plan.id)}, "emitted program lost its plan identity");
+assert.ok(programContract.expectedFiles.includes(programContract.entrypoint), "entrypoint is not one of the emitted files");
+assert.equal(programContract.contracts.length, ${contracts.length}, "emitted program lost a declared call contract");
+
+assert.equal(describeShape([]), "[]");
+assert.equal(describeShape(["a"]), "string[]");
+assert.equal(shapeSatisfies("[]", "string[]"), true);
+assert.equal(shapeSatisfies("number[]", "string[]"), false);
+
+for (const probe of programContract.probes) {
+  const accepted = checkDeclaredCall(probe.name, probe.arguments);
+  assert.ok(accepted.ok, \`declared call \${probe.name} rejected its own declared shapes: \${JSON.stringify(accepted.diagnostics)}\`);
+  const wrongArity = checkDeclaredCall(probe.name, [...probe.arguments, null]);
+  assert.equal(wrongArity.ok, false, \`declared call \${probe.name} accepted the wrong number of arguments\`);
+}
+assert.equal(checkDeclaredCall("", []).ok, false, "an undeclared call was accepted");
+
+const empty = run({ records: [] });
+assert.equal(empty.recordCount, 0);
+assert.equal(empty.ok, false, "an empty input reported coverage it does not have");
+assert.equal(run(null).recordCount, 0, "run is not total on absent input");
+
+const populated = run({ records: [${JSON.stringify(populated)}] });
+assert.equal(populated.recordCount, 1);
+assert.ok(populated.fieldCoverage.every(item => typeof item.count === "number"), "field coverage is not counted");
+assert.equal(populated.diagnostics.length, 0, \`observed fields still reported missing: \${JSON.stringify(populated.diagnostics)}\`);
+
+console.log(JSON.stringify({ ok: true, planId: programContract.planId, contracts: programContract.contracts.length, probes: programContract.probes.length, fields: programContract.requiredFields.length }));
+`;
 }
 
 function buildNotes(plan: ProgramPlan): string {
@@ -2227,13 +2469,8 @@ Build command: \`${plan.build.command} ${plan.build.args.join(" ")}\`
 
 Validation command: \`${plan.test.command} ${plan.test.args.join(" ")}\`
 
-The emitted source target is intentionally open. Its language, package manager, entrypoint, capabilities, dependencies, and operations come from the learned code graph and source program contract rather than a closed artifact menu.
+The target's language, package manager, capabilities, dependencies, and operations come from the learned code graph and source program contract rather than a closed artifact menu. Because no package toolchain was observed for that target, the emitted program is written for the runtime executing this engine, and the commands above are that runtime checking and running it.
 `;
-}
-
-function sourceCommentLines(language: string, lines: readonly string[]): string[] {
-  void language;
-  return lines.map(line => line);
 }
 
 function schemaMapping(plan: ProgramPlan): JsonValue {
@@ -2384,15 +2621,28 @@ function webAppModel(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
   });
 }
 
-function buildCommand(shape: ProgramShape): { command: string; args: string[]; cwd: string } {
-  return commandFromHints(shape, ["script.build", "script.validation"], "op.build");
+function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
+  const observed = commandFromHints(shape, ["script.build", "script.validation"]);
+  if (observed) return observed;
+  const source = emittedRuntimeFile(files, "source");
+  if (!source) return { command: "source-derived", args: ["op.build", shape.target.entrypoint], cwd: "." };
+  return { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [EMITTED_PROGRAM_RUNTIME.syntaxCheckFlag, source], cwd: "." };
 }
 
-function testCommand(shape: ProgramShape): { command: string; args: string[]; cwd: string } {
-  return commandFromHints(shape, ["script.validation", "script.build"], "op.validate");
+function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
+  const observed = commandFromHints(shape, ["script.validation", "script.build"]);
+  if (observed) return observed;
+  const test = emittedRuntimeFile(files, "test");
+  if (!test) return { command: "source-derived", args: ["op.validate", shape.target.entrypoint], cwd: "." };
+  return { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [test], cwd: "." };
 }
 
-function commandFromHints(shape: ProgramShape, preferredKinds: readonly string[], defaultActionId: string): { command: string; args: string[]; cwd: string } {
+/** The planned artifact the emitted runtime can load, which is what its own command has to name. */
+function emittedRuntimeFile(files: readonly ProgramFilePlan[], role: ProgramFilePlan["role"]): string | undefined {
+  return files.find(file => file.role === role && file.path.endsWith(EMITTED_PROGRAM_RUNTIME.moduleExtension))?.path;
+}
+
+function commandFromHints(shape: ProgramShape, preferredKinds: readonly string[]): { command: string; args: string[]; cwd: string } | undefined {
   const hints = commandHintsFromTarget(shape.target);
   const selected = preferredCommandHint(hints, preferredKinds) ?? hints[0];
   const manager = shape.target.packageManager;
@@ -2402,7 +2652,7 @@ function commandFromHints(shape: ProgramShape, preferredKinds: readonly string[]
   if (selected?.command && manager === "source-script") {
     return { command: "source-script", args: [selected.name, selected.command], cwd: "." };
   }
-  return { command: "source-derived", args: [defaultActionId, shape.target.entrypoint], cwd: "." };
+  return undefined;
 }
 
 function preferredCommandHint(hints: readonly CommandHint[], preferredKinds: readonly string[]): CommandHint | undefined {
@@ -2421,8 +2671,10 @@ function entrypointFor(shape: ProgramShape): string {
     if (hasCapability(shape.target, "capability:validated-transform")) return "src/transform.ts";
     if (hasCapability(shape.target, "capability:interface-runtime")) return "src/api-handler.ts";
     if (hasCapability(shape.target, "capability:pure-call")) return "src/index.ts";
+    return shape.target.entrypoint || "src/main.txt";
   }
-  return shape.target.entrypoint || "src/main.txt";
+  // No package toolchain was observed, so the entrypoint is the artifact this plan actually emits and runs.
+  return EMITTED_PROGRAM_RUNTIME.sourcePath;
 }
 
 function nodeRuntimeForShape(shape: ProgramShape): boolean {
