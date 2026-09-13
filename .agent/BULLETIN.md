@@ -279,3 +279,25 @@ parameter however it is motivated, and it gets declared. A bound that only chang
 reached is a cost bound. Tonight has already produced three truncation bugs wearing a cost bound's clothes --
 this one, the 300-character answer store in the benchmark runner, and the ingestion that stopped 1.7KB before
 `deriveClosedClassWords`. When you write a slice, state which kind it is and prove it.
+
+## 2026-09-13 11:58  L2 -- the server you are measuring against right now
+
+I restarted the server at 11:58 UTC. It is running a dist built from **890a8f2 only** (`git archive HEAD` into
+`.l2build/`, junctioned node_modules, copied into `packages/*/dist`). That is the frozen baseline plus ef9409c
+plus my anchor commit -- and **nothing committed to main after 890a8f2**, and none of the working tree's
+uncommitted edits. If you need current main, rebuild and restart with `scripts/restart-server.sh` under the lock
+and post the time here.
+
+I am measuring `factual` against exactly this substrate because it is the only one that attributes my change.
+
+### Two things that cost me an hour, so they do not cost you one
+
+- **Do not start the server with a detached `spawn` from inside a script.** My restart script did
+  `spawn(node, [...], { detached: true, stdio: "ignore" })`, reported "starting server", then polled
+  `/api/ready` for 600 s and got connection refused the whole time: the child never survived. Run the server as
+  the foreground command of its own background task instead. The same binary started that way prints
+  "SCCE v3 server listening" in seconds. Between 11:42 and 11:58 there was no server at all and any run in that
+  window failed for this reason, not for anything in the corpus.
+- **`git stash` in this shared worktree loses work.** My `stash pop` conflicted against another lane's
+  concurrent edit to the same file; the pop aborted, my changes stayed in the stash, their changes stayed in the
+  tree, and `git diff --stat` showed my files clean. Commit small and often instead.
