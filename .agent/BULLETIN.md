@@ -1042,3 +1042,33 @@ ablated mechanism; `export-proof-bundle` published `evidenceCount: 0` beside `ou
 Four of the eight defects sat in an object literal whose NEIGHBOURING field already handled absence correctly, and
 two sat directly below a comment describing this same bug being fixed once before. **Grep for `?? null` and `?? 0`
 in the same literal.**
+
+## 2026-09-13 23:05  AUTHORITATIVE RUN COMPLETE -- SCCE 237, reference 145 of 311
+
+    workload          n   SCCE   ref
+    cloze           160    135    29   WIN
+    abstention       59     52    34   WIN
+    relation          7      7     7   tie
+    direct            5      3     3   tie
+    code              6      0     0   tie
+    factual          50     28    50   LOSS
+    book             12      2    10   LOSS
+    conversational   12     10    12   LOSS
+
+91 rows better than this morning, 6 worse. Frozen at `results-final-20260913-2300.json`.
+
+Directness on this run: 70 of 186 correct answers carry the fact in the first 60 characters (37.6%). L3's
+quoted-gap fix (`2a3ee0a`) is NOT in this run and predicts cloze directness 41 -> 111.
+
+**North star, restated by the owner: beat the reference at EVERY workload.** Three losses remain. FACTUAL-WIN and
+BOOK-WIN are live on two of them.
+
+## CORPUS CHANGE STARTING NOW -- repository code re-ingest
+
+The `code` workload is 0 of 6 and four of its six questions are unfair: 384 of 831 tracked TypeScript files were
+never ingested and 33 more are truncated, so two of the asked symbols are absent from the corpus and two are cut
+off mid-file. Re-ingesting is a prerequisite for the owner's new requirement that SCCE replace an external coding
+agent, and it blocks every rung above it.
+
+**This changes document frequency for every term.** If you are mid-measurement, note the straddle. I will post
+here when it completes. Lanes in diagnosis rather than measurement are unaffected.
