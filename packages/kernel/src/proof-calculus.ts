@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { Claim, EpistemicForce, EvidenceId, EvidenceSpan, FieldState, GraphNode, Hasher, JsonValue, ProofGraphEdge, ProofGraphNode } from "./types.js";
 import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { assessStabilityAdjustedSupport, causalMinimumCoverCoding, hoeffdingLcb } from "./causal-math.js";
@@ -61,8 +62,8 @@ export function createProofCalculus(options: { hasher: Hasher }) {
     evaluate(input: { claim: Claim; evidence: EvidenceSpan[]; nodes: GraphNode[]; field: FieldState }): ProofCalculusResult {
       const nodeMass = new Map(input.field.ppf.map(item => [String(item.nodeId), item.mass]));
       const witnesses = input.evidence.map(span => witness(input.claim, span, input.nodes, nodeMass, options.hasher)).sort((a, b) => b.support - a.support).slice(0, 16);
-      const supportCandidates = witnesses.filter(item => item.support > 0.08);
-      const contradictionCandidates = witnesses.filter(item => item.contradiction > 0.12);
+      const supportCandidates = witnesses.filter(item => item.support > calibrated("calculus.witness_support_floor"));
+      const contradictionCandidates = witnesses.filter(item => item.contradiction > calibrated("calculus.witness_contradiction_floor"));
       const supporting = supportCandidates.filter(item => item.provenance > 0);
       const contradictions = contradictionCandidates.filter(item => item.provenance > 0);
       const semiring = aggregateProofSemiring({
@@ -191,9 +192,9 @@ function proofOperatorSummary(proofGraph: { nodes: ProofGraphNode[]; edges: Proo
 
 function operatorBoundaryReasons(input: ReturnType<typeof proofOperatorSummary>): string[] {
   const reasons: string[] = [];
-  if (input.flow.unmetFlowRatio > 0.62) reasons.push("proof.operator.flow_shortfall");
-  if (input.kirchhoff.totalImbalance > 0.72) reasons.push("proof.operator.conservation_pressure");
-  if (input.consistency.contradictionPressure > 0.32) reasons.push("proof.operator.consistency_pressure");
+  if (input.flow.unmetFlowRatio > calibrated("calculus.flow_shortfall_floor")) reasons.push("proof.operator.flow_shortfall");
+  if (input.kirchhoff.totalImbalance > calibrated("calculus.conservation_pressure_floor")) reasons.push("proof.operator.conservation_pressure");
+  if (input.consistency.contradictionPressure > calibrated("calculus.consistency_pressure_floor")) reasons.push("proof.operator.consistency_pressure");
   return reasons;
 }
 
@@ -207,7 +208,7 @@ function witness(claim: Claim, span: EvidenceSpan, nodes: GraphNode[], nodeMass:
   const contradiction = contradictionScore(claim, span);
   const provenance = provenanceScore(span);
   const transformScore = mean(transforms.map(transform => transform.confidence));
-  const support = clamp01(0.22 * coverage + 0.15 * vector + 0.18 * field + 0.2 * faithfulness + 0.15 * provenance + 0.1 * transformScore - 0.4 * contradiction);
+  const support = clamp01(calibrated("calculus.witness_coverage_weight") * coverage + calibrated("calculus.witness_vector_weight") * vector + calibrated("calculus.witness_field_mass_weight") * field + calibrated("calculus.witness_faithfulness_weight") * faithfulness + calibrated("calculus.witness_provenance_weight") * provenance + calibrated("calculus.witness_transform_weight") * transformScore - calibrated("calculus.witness_contradiction_penalty") * contradiction);
   const radius = Math.sqrt(Math.log(20) / (2 * Math.max(1, transforms.length + supportNodes.length + 1)));
   return {
     span,
@@ -407,11 +408,12 @@ function polarityOf(text: string): number {
 }
 
 function forceFrom(support: number, contradiction: number, lcb: number, independentGroupCount: number, leakage: number): EpistemicForce {
-  if (contradiction > 0.45 || leakage > 0.72) return "unknown";
-  if (support >= 0.82 && lcb >= 0.62 && independentGroupCount >= 2) return "proved";
-  if (support >= 0.62 && lcb >= 0.36) return "observed";
-  if (support >= 0.34) return "inferred";
-  if (support >= 0.12) return "conjectured";
+  if (contradiction > calibrated("calculus.force_unknown_contradiction_floor") || leakage > calibrated("calculus.force_unknown_leakage_floor")) return "unknown";
+  // independentGroupCount >= 2 is structural: "more than one independent source", not a tuned bound.
+  if (support >= calibrated("calculus.force_proved_support_floor") && lcb >= calibrated("calculus.force_proved_lcb_floor") && independentGroupCount >= 2) return "proved";
+  if (support >= calibrated("calculus.force_observed_support_floor") && lcb >= calibrated("calculus.force_observed_lcb_floor")) return "observed";
+  if (support >= calibrated("calculus.force_inferred_support_floor")) return "inferred";
+  if (support >= calibrated("calculus.force_conjectured_support_floor")) return "conjectured";
   return "invented";
 }
 
