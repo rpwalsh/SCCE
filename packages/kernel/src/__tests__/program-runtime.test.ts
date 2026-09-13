@@ -115,11 +115,17 @@ describe("ProgramGraph runtime and artifact emission", () => {
     const construct = buildProgram("build a csv transformer that emits json", [csv]);
     const program = required(construct.program);
 
-    expect(program.build.command).toBe("source-derived");
-    expect(program.test.command).toBe("source-derived");
-    expect(program.hydration?.validations.every(record => record.commandSource === "program.validation.command.source_derived")).toBe(true);
+    expect(["pnpm", "npm", "yarn", "bun"]).not.toContain(program.build.command);
+    expect(["pnpm", "npm", "yarn", "bun"]).not.toContain(program.test.command);
+    expect(program.build.args).not.toContain("run");
+    expect(program.test.args).not.toContain("run");
     expect(program.files.map(file => file.path)).not.toContain("package.json");
     expect(program.nodes.find(node => node.id === "program-hydration")).toBeTruthy();
+    // What is named instead is not a placeholder either: it is the emitted runtime, over the artifacts emitted here.
+    expect(program.build).toEqual({ command: "node", args: ["--check", "src/program.mjs"], cwd: "." });
+    expect(program.test).toEqual({ command: "node", args: ["test/program.test.mjs"], cwd: "." });
+    expect(program.files.map(file => file.path)).toEqual(expect.arrayContaining(["src/program.mjs", "test/program.test.mjs"]));
+    expect(program.hydration?.validations.every(record => record.command.args.every(arg => program.files.some(file => file.path === arg) || arg.startsWith("--")))).toBe(true);
   });
 
   it("emits a log parser when line-shaped diagnostic evidence is present", () => {
