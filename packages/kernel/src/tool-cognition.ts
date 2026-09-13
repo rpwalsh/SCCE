@@ -3,6 +3,7 @@
 import type { Capability, CapabilityCallId, CapabilityPlan, Clock, EpisodeId, EvidenceSpan, FieldState, Hasher, JsonValue, PolicyProfile } from "./types.js";
 import { clamp01, createClock, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import type { FunctionalSelectionGate } from "./functional-cognition.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 
 export type ToolIntentKind =
   | "observe"
@@ -222,12 +223,13 @@ function analyzeObjectives(request: string, evidence: readonly EvidenceSpan[], f
   const evidenceMass = evidence.length ? mean(evidence.map(span => clamp01(span.alpha))) : 0;
   const fieldMass = field ? mean([...field.ppf.map(item => item.mass), ...field.active.map(item => item.activation)].slice(0, 512)) : 0;
   const surfaces = field?.alphaTrace.surfaces;
-  const riskSurface = surfaces ? clamp01(0.35 * surfaces.risk + 0.25 * surfaces.contradiction + 0.2 * surfaces.drift + 0.2 * (1 - surfaces.bond)) : 0.35;
+  const riskSurface = surfaces ? clamp01(calibrated("tool_cognition.risk_surface_alpha_weight") * surfaces.risk + calibrated("tool_cognition.risk_surface_contradiction_weight") * surfaces.contradiction + calibrated("tool_cognition.risk_surface_drift_weight") * surfaces.drift + calibrated("tool_cognition.risk_surface_unbonded_weight") * (1 - surfaces.bond)) : calibrated("tool_cognition.risk_surface_default");
   const operations = operationPressures(request, features, actionCommitment);
   const objectives: ToolObjective[] = [];
-  const baseExpected = clamp01(0.25 + 0.45 * (1 - evidenceMass) + 0.2 * (1 - fieldMass) + 0.1 * riskSurface);
+  // 0.25 is the conventional half-share base, left inline.
+  const baseExpected = clamp01(0.25 + calibrated("tool_cognition.expected_evidence_gap_weight") * (1 - evidenceMass) + calibrated("tool_cognition.expected_field_gap_weight") * (1 - fieldMass) + calibrated("tool_cognition.expected_risk_weight") * riskSurface);
   const add = (kind: ToolIntentKind, pressure: number, label: string, patch: Partial<ToolObjective> = {}) => {
-    if (pressure <= 0.08) return;
+    if (pressure <= calibrated("tool_cognition.objective_pressure_floor")) return;
     const id = `objective_${hasher.digestHex(`${kind}:${label}:${features.slice(0, 96).join("|")}`).slice(0, 24)}`;
     objectives.push({
       id,
@@ -336,13 +338,13 @@ function scoreCapabilities(input: { objectives: ToolObjective[]; capabilities: C
     for (const capability of input.capabilities) {
       for (const phase of phasesFor(objective, capability, input.policy)) {
         const fit = capabilityFit(objective, capability, phase);
-        if (fit <= 0.04) continue;
+        if (fit <= calibrated("tool_cognition.capability_fit_floor")) continue;
         const risk = capabilityRisk(objective, capability, phase, input.policy);
         const evi = expectedValueOfInformation(objective, capability, phase, risk);
         const reversible = phase !== "commit" || !capability.mutates || capability.kind === "filesystem" || capability.kind === "process";
         const approvalMode = approvalModeFor(objective, capability, phase, risk, input.policy, input.operatorGrant);
         const configuredPenalty = capability.configured ? 1 : 0.25;
-        const utility = clamp01((0.55 * fit + 0.45 * evi) * configuredPenalty * (1 - risk * 0.42));
+        const utility = clamp01((calibrated("tool_cognition.utility_fit_weight") * fit + calibrated("tool_cognition.utility_evi_weight") * evi) * configuredPenalty * (1 - risk * calibrated("tool_cognition.utility_risk_discount")));
         scores.push({
           capabilityId: capability.id,
           objectiveId: objective.id,
@@ -390,7 +392,7 @@ function capabilityFit(objective: ToolObjective, capability: Capability, phase: 
     0.12;
   const phaseFit = phase === "read" ? 0.92 : phase === "prepare" ? 0.78 + objective.mutationPressure * 0.15 : 0.72 + objective.mutationPressure * 0.22;
   const metadataFit = metadataCapabilityFit(objective, capability);
-  return clamp01(0.62 * kindFit + 0.23 * phaseFit + 0.15 * metadataFit);
+  return clamp01(calibrated("tool_cognition.capability_fit_kind_weight") * kindFit + calibrated("tool_cognition.capability_fit_phase_weight") * phaseFit + calibrated("tool_cognition.capability_fit_metadata_weight") * metadataFit);
 }
 
 function metadataCapabilityFit(objective: ToolObjective, capability: Capability): number {
@@ -406,7 +408,7 @@ function capabilityRisk(objective: ToolObjective, capability: Capability, phase:
   const spend = objective.kind === "purchase" ? Math.min(1, policy.maxSpendCents <= 0 ? 1 : 0.65) : 0;
   const network = capability.kind === "network" || capability.kind === "youtube" || capability.kind === "outlook" || capability.kind === "telephone" ? objective.networkPressure : 0.08;
   const policyPenalty = policy.dryRunByDefault && phase === "commit" ? 0.18 : 0;
-  return clamp01(0.32 * capabilityRiskBase + 0.24 * mutation + 0.2 * privacy + 0.14 * network + 0.1 * spend + policyPenalty);
+  return clamp01(calibrated("tool_cognition.capability_risk_base_weight") * capabilityRiskBase + calibrated("tool_cognition.capability_risk_mutation_weight") * mutation + calibrated("tool_cognition.capability_risk_privacy_weight") * privacy + calibrated("tool_cognition.capability_risk_network_weight") * network + calibrated("tool_cognition.capability_risk_spend_weight") * spend + policyPenalty);
 }
 
 function expectedValueOfInformation(objective: ToolObjective, capability: Capability, phase: CapabilityPhase, risk: number): number {
@@ -418,16 +420,16 @@ function expectedValueOfInformation(objective: ToolObjective, capability: Capabi
     capability.kind === "outlook" || capability.kind === "telephone" ? objective.communicationPressure :
     capability.kind === "youtube" ? Math.max(objective.networkPressure, objective.requiredEvidence * 0.75) :
     0.2;
-  return clamp01((0.58 * phaseValue + 0.42 * connectorValue) * (1 - risk * 0.3));
+  return clamp01((calibrated("tool_cognition.evi_phase_weight") * phaseValue + calibrated("tool_cognition.evi_connector_weight") * connectorValue) * (1 - risk * calibrated("tool_cognition.evi_risk_discount")));
 }
 
 function approvalModeFor(objective: ToolObjective, capability: Capability, phase: CapabilityPhase, risk: number, policy: PolicyProfile, operatorGrant: boolean): ApprovalMode {
   if (!capability.configured) return "blocked_by_policy";
   if (risk > policy.alphaRiskCeiling) return "blocked_by_policy";
   if (phase === "commit" && !policy.allowMutation) return "blocked_by_policy";
-  const approvalNeeded = capability.requiresApproval || phase === "commit" || risk > 0.35 || objective.privacyPressure > 0.55 || objective.kind === "purchase";
+  const approvalNeeded = capability.requiresApproval || phase === "commit" || risk > calibrated("tool_cognition.approval_risk_ceiling") || objective.privacyPressure > calibrated("tool_cognition.approval_privacy_pressure_ceiling") || objective.kind === "purchase";
   if (!approvalNeeded) return "not_required";
-  if (operatorGrant && risk < Math.min(0.82, policy.alphaRiskCeiling) && objective.kind !== "purchase") return "temporary_operator_grant";
+  if (operatorGrant && risk < Math.min(calibrated("tool_cognition.operator_grant_risk_ceiling"), policy.alphaRiskCeiling) && objective.kind !== "purchase") return "temporary_operator_grant";
   return "explicit";
 }
 
@@ -440,8 +442,8 @@ function scoreReasons(objective: ToolObjective, capability: Capability, phase: C
     `approval=${approvalMode}`
   ];
   if (!capability.configured) reasons.push("capability is present but lacks connector configuration");
-  if (objective.privacyPressure > 0.55) reasons.push("privacy pressure raises approval requirement");
-  if (objective.mutationPressure > 0.55) reasons.push("mutation pressure requires two phase action handling");
+  if (objective.privacyPressure > calibrated("tool_cognition.approval_privacy_pressure_ceiling")) reasons.push("privacy pressure raises approval requirement");
+  if (objective.mutationPressure > calibrated("tool_cognition.mutation_pressure_two_phase_floor")) reasons.push("mutation pressure requires two phase action handling");
   return reasons;
 }
 
@@ -470,7 +472,7 @@ function selectCapabilityScores(
     if (covered.has(key)) continue;
     const currentPhaseCount = phaseCount.get(score.phase) ?? 0;
     if (score.phase === "commit" && currentPhaseCount >= Math.max(1, Math.ceil(policy.maxToolCalls / 3))) continue;
-    if (score.utility < 0.12 && selected.length > 0) continue;
+    if (score.utility < calibrated("tool_cognition.plan_utility_floor") && selected.length > 0) continue;
     selected.push(score);
     covered.add(key);
     phaseCount.set(score.phase, currentPhaseCount + 1);
@@ -521,8 +523,8 @@ function materializePlans(input: {
         risk: score.risk,
         fit: score.fit,
         evi: score.evi,
-        mutates: score.phase === "commit" || (objective?.mutationPressure ?? 0) > 0.4,
-        network: (objective?.networkPressure ?? 0) > 0.35,
+        mutates: score.phase === "commit" || (objective?.mutationPressure ?? 0) > calibrated("tool_cognition.risk_vector_mutation_floor"),
+        network: (objective?.networkPressure ?? 0) > calibrated("tool_cognition.risk_vector_network_floor"),
         privacy: objective?.privacyPressure ?? 0,
         reversible: score.reversible
       }),
@@ -564,7 +566,7 @@ function buildApprovalControls(plans: CapabilityPlan[], scores: CapabilityScore[
     const mode = permission.mode ?? score?.approvalMode ?? "explicit";
     if (mode === "not_required" || mode === "temporary_operator_grant") continue;
     const risk = score?.risk ?? 0.5;
-    const operatorGrantEligible = risk < 0.72 && plan.phase !== "commit";
+    const operatorGrantEligible = risk < calibrated("tool_cognition.operator_grant_eligibility_risk_ceiling") && plan.phase !== "commit";
     controls.push({
       id: `approval_${String(plan.id)}`,
       planId: plan.id,
@@ -600,7 +602,7 @@ function residualNeedsFor(objectives: ToolObjective[], selected: CapabilityScore
   }
   return objectives.flatMap(objective => {
     const chosen = selectedByObjective.get(objective.id) ?? [];
-    if (chosen.some(score => score.utility >= 0.28)) return [];
+    if (chosen.some(score => score.utility >= calibrated("tool_cognition.capability_gap_utility_floor"))) return [];
     const connectorHint = connectorHintForObjective(objective, capabilities);
     return [{
       objectiveId: objective.id,
@@ -641,12 +643,12 @@ function learningSignalFor(plan: ToolCognitionPlan, outcome: ToolOutcomeObservat
   const capabilityPlan = plan.capabilityPlans.find(item => item.id === outcome.planId);
   const objective = capabilityPlan ? objectiveFromPlanInput(capabilityPlan.input) : undefined;
   const success = outcome.status === "succeeded" ? 1 : outcome.status === "rolled_back" ? 0.35 : 0;
-  const produced = clamp01(0.45 * Math.min(1, outcome.evidenceProduced / 8) + 0.35 * Math.min(1, outcome.artifactsProduced / 4) + 0.2 * success);
+  const produced = clamp01(calibrated("tool_cognition.outcome_evidence_weight") * Math.min(1, outcome.evidenceProduced / 8) + calibrated("tool_cognition.outcome_artifact_weight") * Math.min(1, outcome.artifactsProduced / 4) + calibrated("tool_cognition.outcome_success_weight") * success);
   const spendPenalty = clamp01((outcome.spendCents ?? 0) / 5000);
   const durationPenalty = clamp01(outcome.durationMs / 120000);
-  const utilityDelta = clamp01(produced - 0.18 * spendPenalty - 0.08 * durationPenalty);
+  const utilityDelta = clamp01(produced - calibrated("tool_cognition.outcome_spend_penalty_weight") * spendPenalty - calibrated("tool_cognition.outcome_duration_penalty_weight") * durationPenalty);
   const riskDelta = clamp01((outcome.status === "failed" ? 0.22 : -0.08) + spendPenalty * 0.2 + (outcome.errorClass ? 0.1 : 0));
-  const connectorReliability = clamp01(0.55 * success + 0.45 * (1 - riskDelta));
+  const connectorReliability = clamp01(calibrated("tool_cognition.connector_reliability_success_weight") * success + calibrated("tool_cognition.connector_reliability_risk_weight") * (1 - riskDelta));
   const notes = [
     `status=${outcome.status}`,
     `evidence=${outcome.evidenceProduced}`,
@@ -660,7 +662,7 @@ function learningSignalFor(plan: ToolCognitionPlan, outcome: ToolOutcomeObservat
     utilityDelta,
     riskDelta,
     connectorReliability,
-    retainAsPattern: connectorReliability > 0.62 && utilityDelta > 0.28,
+    retainAsPattern: connectorReliability > calibrated("tool_cognition.pattern_retention_reliability_floor") && utilityDelta > calibrated("tool_cognition.pattern_retention_utility_delta_floor"),
     notes
   };
 }

@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type {
   Claim,
   EvidenceId,
@@ -396,7 +397,7 @@ function rankedMatch(item: SemanticItem, candidates: readonly SemanticItem[], fi
       const context = weightedJaccard(item.contextFeatures, candidate.contextFeatures);
       const vector = cosine01(stableVector(item.features, hasher, 96), stableVector(candidate.features, hasher, 96));
       const mass = candidate.span ? fieldMassByEvidence.get(String(candidate.span.id)) ?? candidate.span.alpha * 0.25 : 0;
-      const support = clamp01(0.34 * lexical + 0.25 * context + 0.21 * vector + 0.2 * mass);
+      const support = clamp01(calibrated("obligations.match_lexical_weight") * lexical + calibrated("obligations.match_context_weight") * context + calibrated("obligations.match_vector_weight") * vector + calibrated("obligations.match_field_mass_weight") * mass);
       const contradiction = candidate.kind === item.kind ? 0 : 0.18;
       return { candidate, support, contradiction };
     })
@@ -405,7 +406,7 @@ function rankedMatch(item: SemanticItem, candidates: readonly SemanticItem[], fi
 
 function contradictoryConstraint(item: SemanticItem, candidates: readonly SemanticItem[], fieldMassByEvidence: Map<string, number>, hasher: Hasher): EvidenceMatch | undefined {
   const ranked = rankedMatch(item, candidates, fieldMassByEvidence, hasher);
-  const nearContext = ranked.find(match => match.support >= 0.28 && match.candidate.normalized !== item.normalized);
+  const nearContext = ranked.find(match => match.support >= calibrated("obligations.constraint_conflict_support_floor") && match.candidate.normalized !== item.normalized);
   if (!nearContext) return undefined;
   const leftFamily = constraintFamily(item.normalized);
   const rightFamily = new Set(constraintFamily(nearContext.candidate.normalized));
@@ -423,7 +424,7 @@ function contradictoryConstraint(item: SemanticItem, candidates: readonly Semant
 
 function contradictoryEntity(item: SemanticItem, candidates: readonly SemanticItem[], fieldMassByEvidence: Map<string, number>, hasher: Hasher): EvidenceMatch | undefined {
   const ranked = rankedMatch(item, candidates, fieldMassByEvidence, hasher);
-  const nearContext = ranked.find(match => match.support >= 0.46 && match.candidate.normalized !== item.normalized);
+  const nearContext = ranked.find(match => match.support >= calibrated("obligations.entity_conflict_support_floor") && match.candidate.normalized !== item.normalized);
   if (!nearContext) return undefined;
   const sameShape = shapeSimilarity(tokenShape(item.normalized), tokenShape(nearContext.candidate.normalized)) >= 0.7;
   const contextCompatible = weightedJaccard(item.contextFeatures, nearContext.candidate.contextFeatures) >= 0.3;
@@ -502,7 +503,7 @@ function transformObligations(claim: Claim, evidence: readonly EvidenceSpan[], h
     .map(span => {
       const lexical = weightedJaccard(claimFeatures, span.features);
       const vector = cosine01(stableVector(claimFeatures, hasher, 96), stableVector(span.features, hasher, 96));
-      const support = clamp01(0.45 * lexical + 0.35 * vector + 0.2 * span.alpha);
+      const support = clamp01(calibrated("obligations.transform_support_lexical_weight") * lexical + calibrated("obligations.transform_support_vector_weight") * vector + calibrated("obligations.transform_support_alpha_weight") * span.alpha);
       return { span, support };
     })
     .sort((a, b) => b.support - a.support)
@@ -523,8 +524,8 @@ function transformObligations(claim: Claim, evidence: readonly EvidenceSpan[], h
   const best = ranked[0]!;
   const preservation = materialPreservation(claim.text, best.span.text || best.span.textPreview);
   const status: SemanticObligationStatus =
-    best.support >= 0.34 && preservation.blockingMissing.length === 0 ? "satisfied" :
-    best.support >= 0.16 || preservation.preserved.length > 0 ? "underdetermined" :
+    best.support >= calibrated("obligations.transform_satisfied_support_floor") && preservation.blockingMissing.length === 0 ? "satisfied" :
+    best.support >= calibrated("obligations.transform_underdetermined_support_floor") || preservation.preserved.length > 0 ? "underdetermined" :
     "missing";
   return [{
     id: `obligation:transform:${hash32(`${claim.normalized}:${best.span.id}`).toString(16)}`,
@@ -557,7 +558,7 @@ function roleObligations(claim: Claim, evidence: readonly EvidenceSpan[], hasher
       })
       .sort((a, b) => b.fit - a.fit);
     const best = candidates[0];
-    const status: SemanticObligationStatus = !best ? "missing" : best.fit >= 0.48 ? "satisfied" : best.fit >= 0.22 ? "underdetermined" : "missing";
+    const status: SemanticObligationStatus = !best ? "missing" : best.fit >= calibrated("obligations.role_satisfied_fit_floor") ? "satisfied" : best.fit >= calibrated("obligations.role_underdetermined_fit_floor") ? "underdetermined" : "missing";
     return {
       id: `obligation:role:${hash32(`${role.id}:${best?.span.id ?? "none"}`).toString(16)}`,
       kind: "role",
@@ -591,7 +592,7 @@ function roleFit(left: { shape: string; features: string[] }, right: { shape: st
   const shape = shapeSimilarity(left.shape, right.shape);
   const lexical = weightedJaccard(left.features, right.features);
   const vector = cosine01(stableVector(left.features, hasher, 64), stableVector(right.features, hasher, 64));
-  return clamp01(0.45 * shape + 0.25 * lexical + 0.3 * vector);
+  return clamp01(calibrated("obligations.role_fit_shape_weight") * shape + calibrated("obligations.role_fit_lexical_weight") * lexical + calibrated("obligations.role_fit_vector_weight") * vector);
 }
 
 function relationCompatibilityScore(claim: Claim, evidence: readonly EvidenceSpan[], hasher: Hasher): number {
@@ -680,7 +681,7 @@ function counterexampleTraces(obligations: readonly SemanticObligationRecord[], 
       reason: obligation.reason,
       audit: toJsonValue({ obligationId: obligation.id, metadata: obligation.metadata })
     }));
-  if (field.alphaTrace.surfaces.contradiction <= 0.42 && field.alphaTrace.contradictionMass <= 0.42) return explicit;
+  if (field.alphaTrace.surfaces.contradiction <= calibrated("obligations.latent_contradiction_floor") && field.alphaTrace.contradictionMass <= calibrated("obligations.latent_contradiction_floor")) return explicit;
   return [
     ...explicit,
     {
@@ -748,25 +749,25 @@ function semanticVerdict(input: {
   admission: ProofAdmission;
 }): SemanticEntailmentVerdict {
   if (!input.required.length) return "unknown";
-  if (input.contradiction >= 0.42 || input.required.some(item => item.status === "contradicted" && item.contradiction >= 0.48)) return "contradicted";
+  if (input.contradiction >= calibrated("obligations.verdict_contradiction_floor") || input.required.some(item => item.status === "contradicted" && item.contradiction >= calibrated("obligations.verdict_item_contradiction_floor"))) return "contradicted";
   const requiredCritical = input.required.filter(item => criticalKind(item.kind));
   const missingCritical = requiredCritical.filter(item => item.status === "missing" || item.status === "underdetermined").length;
   if (missingCritical > 0) return "underdetermined";
-  if (!input.admission.admitted) return input.admission.supportCeiling >= 0.18 ? "underdetermined" : "unknown";
+  if (!input.admission.admitted) return input.admission.supportCeiling >= calibrated("obligations.unadmitted_support_ceiling_floor") ? "underdetermined" : "unknown";
   const transformOk = input.required.filter(item => item.kind === "transform").every(item => item.status === "satisfied");
-  const roleOk = input.roleCoverage >= 0.42 && input.required.filter(item => item.kind === "role").every(item => item.status !== "missing");
+  const roleOk = input.roleCoverage >= calibrated("obligations.entailment_role_coverage_floor") && input.required.filter(item => item.kind === "role").every(item => item.status !== "missing");
   const predicateOk = input.required.filter(item => item.kind === "predicate").filter(item => item.status === "satisfied").length >= Math.min(3, Math.max(1, input.required.filter(item => item.kind === "predicate").length));
   if (
     transformOk &&
     roleOk &&
     predicateOk &&
-    input.structuralCoverage >= 0.72 &&
-    input.relationCompatibility >= 0.34 &&
-    input.transformationSupport >= 0.34 &&
-    input.faithfulnessLCB >= 0.18 &&
-    input.stability >= 0.42
+    input.structuralCoverage >= calibrated("obligations.entailment_structural_coverage_floor") &&
+    input.relationCompatibility >= calibrated("obligations.entailment_relation_compatibility_floor") &&
+    input.transformationSupport >= calibrated("obligations.entailment_transformation_support_floor") &&
+    input.faithfulnessLCB >= calibrated("obligations.entailment_faithfulness_lcb_floor") &&
+    input.stability >= calibrated("obligations.entailment_stability_floor")
   ) return "entailed";
-  if (input.structuralCoverage >= 0.25 || input.relationCompatibility >= 0.28 || input.causalMass >= 0.05) return "underdetermined";
+  if (input.structuralCoverage >= calibrated("obligations.underdetermined_structural_coverage_floor") || input.relationCompatibility >= calibrated("obligations.underdetermined_relation_compatibility_floor") || input.causalMass >= calibrated("obligations.underdetermined_causal_mass_floor")) return "underdetermined";
   return "unknown";
 }
 
@@ -791,8 +792,8 @@ function boundaryReasons(input: {
     // hand; only the ones that name content are a claim about the world, and only they are counted here.
     out.push(`underdetermined-content-obligations:${input.underdetermined.filter(contentObligation).length}`);
   }
-  if (input.scores.relationCompatibility < 0.25) out.push("relation-compatibility-low");
-  if (input.scores.faithfulnessLCB < 0.12) out.push("faithfulness-lcb-low");
+  if (input.scores.relationCompatibility < calibrated("obligations.relation_compatibility_warning_floor")) out.push("relation-compatibility-low");
+  if (input.scores.faithfulnessLCB < calibrated("obligations.faithfulness_lcb_warning_floor")) out.push("faithfulness-lcb-low");
   return out;
 }
 
@@ -872,7 +873,7 @@ function coverageForKind(obligations: readonly SemanticObligationRecord[], kind:
 
 function contradictionPressure(obligations: readonly SemanticObligationRecord[], field: FieldState): number {
   const explicit = obligations.filter(item => item.status === "contradicted").length / Math.max(1, obligations.length);
-  return clamp01(0.48 * explicit + 0.32 * field.alphaTrace.surfaces.contradiction + 0.2 * field.alphaTrace.contradictionMass);
+  return clamp01(calibrated("obligations.contradiction_pressure_explicit_weight") * explicit + calibrated("obligations.contradiction_pressure_surface_weight") * field.alphaTrace.surfaces.contradiction + calibrated("obligations.contradiction_pressure_mass_weight") * field.alphaTrace.contradictionMass);
 }
 
 function requiredKind(kind: SemanticObligationKind): boolean {

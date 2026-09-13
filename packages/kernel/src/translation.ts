@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { IdFactory } from "./ids.js";
 import type { EvidenceSpan, Hasher, JsonValue, LanguageProfile } from "./types.js";
 import type { SemanticFrameRecord, TranslationAlignmentRecord } from "./storage.js";
@@ -523,7 +524,7 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
     // than an isolated single-seed overlap -- 0 when no known construction
     // applies, never inflated.
     const constructionOverlap = constructionOverlapScore(source.symbols, constructionLookup);
-    const preservation = clamp01(0.26 * semantic + 0.22 * topology + 0.19 * scriptFit + 0.11 * evidenceMass + 0.06 * priorBoost + 0.10 * seedOverlap + 0.06 * constructionOverlap);
+    const preservation = clamp01(calibrated("translation.preservation_semantic_weight") * semantic + calibrated("translation.preservation_topology_weight") * topology + calibrated("translation.preservation_script_fit_weight") * scriptFit + calibrated("translation.preservation_evidence_mass_weight") * evidenceMass + calibrated("translation.preservation_prior_boost_weight") * priorBoost + calibrated("translation.preservation_seed_overlap_weight") * seedOverlap + calibrated("translation.preservation_construction_overlap_weight") * constructionOverlap);
     const force = forceFromPreservation(preservation, target.evidenceIds.length, priorBoost);
     const loss = {
       semantic: clamp01(1 - semantic),
@@ -741,7 +742,7 @@ function profileFit(frame: TranslationSemanticFrame, profile: LanguageProfile): 
     ...profile.charNgrams.slice(0, 128).map(item => `char:${item.ngram}`),
     ...profile.symbolShapes.slice(0, 64).map(item => `shape:${item.shape}`)
   ];
-  return clamp01(0.45 * scriptMass + 0.55 * weightedJaccard(frame.features, profileFeatures));
+  return clamp01(calibrated("translation.script_fit_mass_weight") * scriptMass + calibrated("translation.script_fit_profile_overlap_weight") * weightedJaccard(frame.features, profileFeatures));
 }
 
 export function selectTargetLanguageProfileCluster(
@@ -805,7 +806,7 @@ export function selectTargetLanguageProfileCluster(
   const selected = ranked[0];
   if (!selected || selected.score <= 0) return undefined;
   const margin = selected.score - (ranked[1]?.score ?? 0);
-  if (margin < 0.12) return undefined;
+  if (margin < calibrated("translation.cluster_margin_floor")) return undefined;
   return { ...selected, margin };
 }
 
@@ -864,9 +865,10 @@ function priorAlignmentBoost(sourceFrameId: string, targetFrameId: string, prior
 }
 
 function forceFromPreservation(preservation: number, evidenceCount: number, priorBoost: number): TranslationForce {
-  if (preservation >= 0.74 && evidenceCount > 0) return "direct";
-  if (preservation >= 0.48 || priorBoost >= 0.5) return "approximate";
-  if (preservation >= 0.16) return "gloss";
+  if (preservation >= calibrated("translation.direct_preservation_floor") && evidenceCount > 0) return "direct";
+  // priorBoost >= 0.5 is the conventional half-mass point, left inline.
+  if (preservation >= calibrated("translation.approximate_preservation_floor") || priorBoost >= 0.5) return "approximate";
+  if (preservation >= calibrated("translation.gloss_preservation_floor")) return "gloss";
   return "unknown";
 }
 
@@ -874,9 +876,9 @@ function aggregateForce(alignments: readonly TranslationFrameAlignment[]): Trans
   if (!alignments.length) return "unknown";
   const preservation = mean(alignments.map(item => item.preservation));
   const direct = alignments.filter(item => item.force === "direct").length / alignments.length;
-  if (direct >= 0.7 && preservation >= 0.72) return "direct";
-  if (preservation >= 0.46) return "approximate";
-  if (preservation >= 0.12) return "gloss";
+  if (direct >= calibrated("translation.aggregate_direct_share_floor") && preservation >= calibrated("translation.aggregate_direct_preservation_floor")) return "direct";
+  if (preservation >= calibrated("translation.aggregate_approximate_preservation_floor")) return "approximate";
+  if (preservation >= calibrated("translation.aggregate_gloss_preservation_floor")) return "gloss";
   return "unknown";
 }
 
@@ -1042,7 +1044,7 @@ function buildTranslationConstruct(input: {
       };
     });
   const uncertainTerms = input.alignments
-    .filter(alignment => alignment.force === "gloss" || alignment.force === "unknown" || alignment.preservation < 0.48)
+    .filter(alignment => alignment.force === "gloss" || alignment.force === "unknown" || alignment.preservation < calibrated("translation.uncertain_term_preservation_floor"))
     .flatMap(alignment => input.sourceFrames.find(frame => frame.id === alignment.sourceFrameId)?.symbols ?? [])
     .filter(symbol => symbol.length > 1)
     .slice(0, 64);
@@ -1069,7 +1071,7 @@ function buildTranslationConstruct(input: {
     preservationValidation,
     objective,
     evidenceRefs: input.targetEvidence.slice(0, 16).map(span => ({ evidenceId: String(span.id), sourceVersionId: String(span.sourceVersionId), alpha: span.alpha })),
-    semanticPreservationScore: clamp01(0.55 * input.emission.preservation + 0.45 * (1 - objective.energy))
+    semanticPreservationScore: clamp01(calibrated("translation.semantic_score_preservation_weight") * input.emission.preservation + calibrated("translation.semantic_score_energy_weight") * (1 - objective.energy))
   };
 }
 
