@@ -81,7 +81,13 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "temporal_context.numeric_specificity_penalty": weight(0, 0.5, [0.05, 0.1, 0.2]),
   "temporal_context.named_specificity_penalty": weight(0, 0.5, [0.05, 0.1, 0.2]),
   "temporal_context.point_date_specificity_penalty": weight(0, 0.6, [0.11, 0.22, 0.36]),
-  "temporal_context.repetition_pressure_penalty": weight(0, 0.6, [0.09, 0.18, 0.3])
+  "temporal_context.repetition_pressure_penalty": weight(0, 0.6, [0.09, 0.18, 0.3]),
+  // --- field operators. Iteration counts that run on every activation and were never declared until now.
+  // Searchable because their cost is linear in the count and nobody has shown what the value buys.
+  "field.heat_diffusion_steps": count(1, 8, [1, 2, 3, 5, 8]),
+  "field.wave_propagation_steps": count(1, 4, [1, 2, 3, 4]),
+  "field.wave_damping": weight(0, 0.4, [0.02, 0.08, 0.16, 0.32]),
+  "field.spectral_partition_iterations": count(2, 16, [2, 4, 6, 10, 16])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */

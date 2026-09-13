@@ -90,7 +90,19 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   "temporal_context.numeric_specificity_penalty": 0.10,
   "temporal_context.named_specificity_penalty": 0.10,
   "temporal_context.point_date_specificity_penalty": 0.22,
-  "temporal_context.repetition_pressure_penalty": 0.18
+  "temporal_context.repetition_pressure_penalty": 0.18,
+
+  // --- field operators (field.ts fieldOperatorTrace). Ten iterative operations run on EVERY activation.
+  // These four were written inline and never declared, so no coverage audit could see them and no fit could
+  // reach them. None is derived from anything: they are the values the operators were first written with.
+  /** Heat diffusion steps per activation. Unjustified; the operator's cost scales with it. */
+  "field.heat_diffusion_steps": 3,
+  /** Wave propagation steps per activation. Unjustified. */
+  "field.wave_propagation_steps": 1,
+  /** Wave damping. Unjustified. */
+  "field.wave_damping": 0.08,
+  /** Spectral partition power iterations per activation. Unjustified; the most expensive of the three. */
+  "field.spectral_partition_iterations": 6
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

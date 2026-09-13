@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { Clock, FieldState, GraphEdge, GraphNode, Hyperedge, InformationAccessContext } from "./types.js";
 import { clamp01, createClock, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createAlphaLayer } from "./alpha.js";
@@ -47,7 +48,7 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
     ? undefined
     : freezeRelationPotentialModel(options.relationPotentialModel);
   return {
-    activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; hyperedges?: Hyperedge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext; accessContext?: InformationAccessContext }): FieldState {
+    activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; hyperedges?: Hyperedge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext; accessContext?: InformationAccessContext; fieldOperatorDiagnostics?: boolean }): FieldState {
       const incidenceProjection = projectTypedIncidencesForActivation({
         nodes: input.nodes,
         edges: input.edges,
@@ -123,7 +124,12 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
       const active = ppf.slice(0, 64).map(item => ({ nodeId: item.nodeId, activation: item.mass }));
       const activeNodeIds = active.map(item => String(item.nodeId));
       const alphaTrace = createAlphaLayer(options).buildTrace({ nodes, edges: diffusionEdges, activeNodeIds, previous: input.previous?.alphaTrace });
-      const fieldOperators = fieldOperatorTrace(alphaTrace, ppf, input.previous);
+      // Heat, wave and spectral write ONLY to the diagnostics blob below; nothing in the turn reads them, so they
+      // cannot change an answer. Ten iterative operations per activation for a value no decision consumes, so they
+      // are opt-in now rather than unconditional. Promote one into a real operator if it can buy proof.
+      const fieldOperators = input.fieldOperatorDiagnostics || input.evaluation
+        ? fieldOperatorTrace(alphaTrace, ppf, input.previous)
+        : undefined;
       const causalMass = causal.discover({ nodes, edges: diffusionEdges, activeNodeIds: active.map(item => item.nodeId) });
       const greenPotential = solveGreenPotentialField({ nodes, edges: diffusionEdges, requestFeatures, seeds, activeNodeIds, ppf, alphaTrace });
       const importedPriorTrace = importedGraphPriorTrace(nodes, diffusionEdges, active, ppf);
@@ -145,7 +151,7 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
           .filter(row => row.contradictionMass > 0)
           .map(row => ({ nodeId: row.nodeId as GraphNode["id"], mass: row.contradictionMass, reserved: row.reserved }))
         : [];
-      return { requestFeatures, seeds, active, ppf, ...(contradictionMass.length ? { contradictionMass } : {}), ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, fieldOperators }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
+      return { requestFeatures, seeds, active, ppf, ...(contradictionMass.length ? { contradictionMass } : {}), ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, ...(fieldOperators ? { fieldOperators } : {}) }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
     }
   };
 }
@@ -284,18 +290,24 @@ function fieldOperatorTrace(alphaTrace: FieldState["alphaTrace"], ppf: FieldStat
   const nodes = bounded.nodes;
   const current = nodes.map(nodeId => mass.get(nodeId) ?? 0);
   const prior = nodes.map(nodeId => previousMass.get(nodeId) ?? 0);
-  const heat = heatDiffuse({ laplacian: bounded.laplacian, current, steps: 3 });
-  const wave = wavePropagate({ laplacian: bounded.laplacian, current: heat.values, previous: prior, damping: 0.08, steps: 1 });
-  const spectral = spectralPartition({ nodes, laplacian: bounded.normalizedLaplacian, iterations: 6 });
+  const heat = heatDiffuse({ laplacian: bounded.laplacian, current, steps: calibrated("field.heat_diffusion_steps") });
+  const wave = wavePropagate({ laplacian: bounded.laplacian, current: heat.values, previous: prior, damping: calibrated("field.wave_damping"), steps: calibrated("field.wave_propagation_steps") });
+  const spectral = spectralPartition({ nodes, laplacian: bounded.normalizedLaplacian, iterations: calibrated("field.spectral_partition_iterations") });
   return {
     schema: "scce.field_operators.v2",
     // Its own cost, so query diffusion can be scheduled on evidence rather than argued about.
     cost: {
-      status: "active" as const,
-      traced: true,
+      status: "diagnostic_only" as const,
+      // Measured, but NOT a first-class trace stage: this is why a trace-stage search concluded it did not exist.
+      measured: true,
+      traceStage: false,
       durationMs: performance.now() - startedMs,
       nodes: nodes.length,
-      iterations: { heat: 3, wave: 1, spectral: 6 }
+      iterations: {
+        heat: calibrated("field.heat_diffusion_steps"),
+        wave: calibrated("field.wave_propagation_steps"),
+        spectral: calibrated("field.spectral_partition_iterations")
+      }
     },
     heat: { energy: heat.energy, residual: heat.residual, topNodes: topFieldNodes(nodes, heat.values) },
     wave: { energy: wave.energy, momentum: wave.momentum, topNodes: topFieldNodes(nodes, wave.values) },

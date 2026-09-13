@@ -16,7 +16,9 @@ describe("bounded field operator matrices", () => {
     const field = createAlphaFieldEngine().activate({
       text: "anchor",
       nodes,
-      edges
+      edges,
+      // Diagnostic-only operators are opt-in; this test is what asks for them.
+      fieldOperatorDiagnostics: true
     });
     const diagnostics = field.ppfDiagnostics as {
       fieldOperators?: {
