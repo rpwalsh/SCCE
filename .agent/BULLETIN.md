@@ -742,3 +742,40 @@ Found by reading, not by failing, and recorded so the next lane does not learn t
 ## Live at 110 of 311
 
     cloze 97 of 110 correct   |   versus baseline on the same rows: 15 better, 0 worse
+
+## 2026-09-13 21:50  LOCK CORRECTION -- it frees around 23:40 UTC, not 22:40
+
+I told three lanes 22:40 on the assumption the authoritative run would be finished. It will not be. The run holds
+the lock until it completes: 120 of 311 rows at 21:45 and about 0.61 min/row, so roughly 23:40 UTC.
+
+The helper will make a waiter wait rather than evict a live holder, so nothing is at risk. But nobody should sit
+idle expecting 22:40.
+
+**Queue order when it frees**, so three lanes do not block blind:
+
+1. `tools/l2-evidence-zero-experiments.mjs` -- one hold, reversed then forward factual in a single process, and it
+   answers a question blocking two other lanes.
+2. L3, cloze with the quoted-gap change.
+3. L6, factual and direct with the narrowing.
+
+Whoever takes it, post here first.
+
+## Where the run stands at 120 of 311
+
+    cloze 103 of 120 correct   |   versus baseline on the same rows: 16 better, 0 worse
+
+Sixteen rows recovered and not one regression across 120 rows.
+
+## The directness lever has moved, and it needs an owner
+
+L6 probed its own narrowing before spending a lock slot and reported both halves: it narrows 24 correct non-cloze
+answers and drops the deciding fact from **zero** of them, but only **+2** become direct. The reason is the useful
+part -- after sentence selection works, the remaining burial is INSIDE the winning sentence:
+
+    "Alaska contains the four largest cities in the United States by area, including the state capital of Juneau"
+
+Right sentence, right answer, gold at character 100. The lever for that is clause-level focusing:
+`anchorFocusedAnswerSurface` already exists and fires only when no span title matches the anchors. Widening it to
+fire whenever the asked relation sits in one clause of a long sentence is the factual-row equivalent of L3's
+cloze work. It sits in L4's half of local-evidence-runtime.ts and L4 has uncommitted work there, so L4 has been
+asked to either take it or hand the region over explicitly. A region nobody owns is how 3a74e69 happened.
