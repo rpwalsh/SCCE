@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { corpusNamedIdentities } from "./corpus-identity.js";
+import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
 import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
@@ -1205,7 +1206,8 @@ export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolea
   // The same one-letter rule as requestUnitMatchesSurface: "capita" shares no stem with "capital".
   if ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.abs(left.length - right.length) === 1) {
     const tail = (left.length > right.length ? unit : surfaceUnit).slice(Math.min(unit.length, surfaceUnit.length));
-    if (/\p{L}/u.test(tail)) return tail === "s";
+    const verdict = /\p{L}/u.test(tail) ? corpusUnitFormVerdict(unit, surfaceUnit) : "silent";
+    if (verdict !== "silent") return verdict === "same";
   }
   let shared = 0;
   while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
@@ -2062,7 +2064,7 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
  function requestUnitMatchesSurface(unit: string, surfaceUnit: string, functionSymbols?: ReadonlySet<string>): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
-  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${functionSymbols?.size ?? 0}${unit}${surfaceUnit}` : undefined;
+  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${freeFormLexiconGeneration()}${functionSymbols?.size ?? 0}${unit}${surfaceUnit}` : undefined;
   if (memoKey !== undefined) {
     const cached = requestUnitMatchMemo.get(memoKey);
     if (cached !== undefined) return cached;
@@ -2070,13 +2072,17 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
   const minLength = Math.min(unit.length, surfaceUnit.length);
   const maxLength = Math.max(unit.length, surfaceUnit.length);
   const prefixRelated = unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit);
-  // One character is not an inflection unless it is a plural: "capita" is not "capital" and "Borna" is not
-  // "born" (both live 2026-09-10, answering "the capital of Afghanistan" with per-capita aid). Decided here, before
-  // similarity, which would accept a one-letter difference on any word long enough.
+  // One character is an inflection only when the corpus uses both surfaces as free forms: "capita" is a fragment of
+  // "per capita" and is not "capital", "Borna" is unattested and is not "born" (both live 2026-09-10, answering "the
+  // capital of Afghanistan" with per-capita aid). Decided here, before similarity, which would accept a one-letter
+  // difference on any word long enough.
   const longer = unit.length > surfaceUnit.length ? unit : surfaceUnit;
   const tail = longer.slice(minLength);
-  if (prefixRelated && tail.length === 1 && /\p{L}/u.test(tail)) {
-    const value = tail === "s";
+  const oneFormVerdict = prefixRelated && tail.length === 1 && /\p{L}/u.test(tail)
+    ? corpusUnitFormVerdict(unit, surfaceUnit)
+    : "silent";
+  if (oneFormVerdict !== "silent") {
+    const value = oneFormVerdict === "same";
     if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, value);
     return value;
   }
