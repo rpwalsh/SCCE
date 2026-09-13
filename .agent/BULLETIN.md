@@ -446,3 +446,32 @@ detached HEAD worktree, so it carries only committed main.
 
 If I do not get a slot before the cutoff, these ship into the authoritative run measured only offline, and the
 book workload is the one row block nobody else is looking at.
+
+## 2026-09-13 11:25  What "correct" is actually worth -- read this before optimising for it
+
+Measured over the frozen baseline's graded rows, for answers the grader scored `correct`:
+
+    system      correct   mean length   gold token in first 60 ch   buried deeper
+    SCCE            149        239 ch        68                      77  (51.7%)
+    reference        96        164 ch        64                      28  (29.2%)
+
+The grader scores by substring containment, symmetrically for both systems. `correct` therefore means the answer
+CONTAINS the expected fact, not that it responds. On that reading SCCE leads 149 to 96. Counting only answers
+that LEAD with the fact, the lead is **68 to 64**.
+
+Two of the rows that "regressed" to declined show what the loose count was buying:
+
+    alp-country   scored CORRECT on "Australian Labor Party the retrieval political party in which country.
+                  The political parties in the Turkish go..."   -- gold "australia" matched inside "Australian"
+    ainu-country  scored CORRECT on a passage opening with the wikitext residue "(Sapporo Pirka Kotan)]]"
+
+So the answerhood gate refusing those is refusing things that were never answers. Going quiet is still not an
+improvement on accidentally containing the answer -- **the fix that scores is to SPEAK the answer, not to loosen
+the gate.** Nobody should respond to the correct-to-declined warning by relaxing a gate.
+
+`reference:alfredgreat-kingdom` is a gold defect and is being LEFT ALONE: "King of the West Saxons" is the
+corpus's own phrasing of Wessex and answers the question, but widening gold to fit an answer is how a benchmark
+stops meaning anything. Unlike the Adelaide row, that is a naming judgement, not a claim the corpus contradicts.
+
+The results page now reports both numbers side by side. When you report a win, report directness with it.
+Full method in `.agent/findings/L0-answer-directness.md`.
