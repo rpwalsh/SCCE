@@ -83,6 +83,8 @@ interface ProductionTurnDeadline {
   readonly schema: typeof INITIAL_VISIBLE_RESPONSE_SCHEMA;
   readonly clock: "node.performance.v1";
   readonly budgetMs: number;
+  readonly budgetSource?: "otsu_fit_observed_turns" | "bootstrap";
+  readonly budgetObservations?: number;
   readonly startedMonotonicMs: number;
   readonly deadlineMonotonicMs: number;
 }
@@ -882,6 +884,9 @@ async function dispatch(
         productionDeadline,
         requestTiming.firstVisibleFrameMonotonicMs ?? performance.now()
       );
+      // Only turns that answered teach the budget. A turn that produced nothing says what failure costs, and
+      // fitting to failure would widen the deadline every time the system could not answer.
+      observeAnsweringTurnDuration(Number(deadlineStatus.elapsedMs), Boolean(String(result.answer ?? "").trim()));
       traceEvent(trace, {
         stage: "turn.deadline.observed",
         label: "api.turn",
@@ -1574,12 +1579,82 @@ function invalidatesHydratedRuntimeReadiness(method: string | undefined, pathnam
     || pathname === "/api/train";
 }
 
+/**
+ * What a turn is given to answer in, fitted to what answering has actually cost.
+ *
+ * This was a declared ten seconds. A deadline that is invented rather than measured is wrong in both directions at
+ * once: it refuses work the system needed in order to answer, and it waits on work that was never going to finish.
+ * The server already knows what an answer costs, because it times every turn it completes.
+ *
+ * Durations of turns that produced an answer are split into two classes by Otsu -- the same parameter-free split
+ * used for corpus concentration and language membership -- and the budget is the boundary. That admits the
+ * population that answers and cuts the tail that does not, without anyone choosing a percentile. Until enough turns
+ * have been observed the bootstrap below is used, and it is reported as a bootstrap rather than as a measurement.
+ */
+const answeringTurnDurationsMs: number[] = [];
+/** Cost bound on the observation window, not a modeling parameter: the fit reads recent behaviour, not all history. */
+const ANSWERING_TURN_WINDOW = 256;
+/** Below this many observations the split is noise, so the bootstrap stands. Two classes need members on both sides. */
+const ANSWERING_TURN_MINIMUM = 24;
+
+export function observeAnsweringTurnDuration(totalMs: number, answered: boolean): void {
+  if (!answered || !Number.isFinite(totalMs) || totalMs <= 0) return;
+  answeringTurnDurationsMs.push(totalMs);
+  if (answeringTurnDurationsMs.length > ANSWERING_TURN_WINDOW) answeringTurnDurationsMs.shift();
+}
+
+function fittedTurnBudgetMs(): { budgetMs: number; source: "otsu_fit_observed_turns" | "bootstrap"; observations: number } {
+  const observations = answeringTurnDurationsMs.length;
+  if (observations < ANSWERING_TURN_MINIMUM) {
+    return { budgetMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS, source: "bootstrap", observations };
+  }
+  const split = otsuSplit(answeringTurnDurationsMs);
+  // The boundary must still admit the slowest turn of the fast class, which is what the split means.
+  const admitted = answeringTurnDurationsMs.filter(value => value <= split);
+  const budgetMs = Math.ceil(Math.max(split, ...admitted));
+  return { budgetMs, source: "otsu_fit_observed_turns", observations };
+}
+
+/** Otsu's threshold: the split maximizing between-class variance of the observed values. Parameter-free. */
+function otsuSplit(values: readonly number[]): number {
+  const bins = 256;
+  let ceiling = 0;
+  for (const value of values) if (value > ceiling) ceiling = value;
+  if (!(ceiling > 0)) return INITIAL_VISIBLE_RESPONSE_DEADLINE_MS;
+  const histogram = new Array<number>(bins).fill(0);
+  for (const value of values) {
+    const bin = Math.min(bins - 1, Math.floor((value / ceiling) * bins));
+    histogram[bin] = (histogram[bin] ?? 0) + 1;
+  }
+  let weighted = 0;
+  for (let bin = 0; bin < bins; bin += 1) weighted += bin * (histogram[bin] ?? 0);
+  let belowWeight = 0;
+  let belowWeighted = 0;
+  let best = -1;
+  let bestBin = 0;
+  for (let bin = 0; bin < bins; bin += 1) {
+    belowWeight += histogram[bin] ?? 0;
+    if (!belowWeight) continue;
+    const aboveWeight = values.length - belowWeight;
+    if (!aboveWeight) break;
+    belowWeighted += bin * (histogram[bin] ?? 0);
+    const belowMean = belowWeighted / belowWeight;
+    const aboveMean = (weighted - belowWeighted) / aboveWeight;
+    const between = belowWeight * aboveWeight * (belowMean - aboveMean) * (belowMean - aboveMean);
+    if (between > best) { best = between; bestBin = bin; }
+  }
+  return ((bestBin + 1) / bins) * ceiling;
+}
+
 function createProductionTurnDeadline(startedMonotonicMs: number): ProductionTurnDeadline {
-  const deadlineMonotonicMs = startedMonotonicMs + INITIAL_VISIBLE_RESPONSE_DEADLINE_MS;
+  const fitted = fittedTurnBudgetMs();
+  const deadlineMonotonicMs = startedMonotonicMs + fitted.budgetMs;
   return {
     schema: INITIAL_VISIBLE_RESPONSE_SCHEMA,
     clock: "node.performance.v1",
-    budgetMs: INITIAL_VISIBLE_RESPONSE_DEADLINE_MS,
+    budgetMs: fitted.budgetMs,
+    budgetSource: fitted.source,
+    budgetObservations: fitted.observations,
     startedMonotonicMs,
     deadlineMonotonicMs
   };
