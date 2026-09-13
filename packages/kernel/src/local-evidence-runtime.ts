@@ -567,6 +567,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   responseSentenceBudget?: number;
   /** The learned closed class (role language plus request scaffolding); when present, the relation asked about is required. */
   closedClassWords?: ReadonlySet<string>;
+  /** Symbols the corpus itself treats as function material, ranked by Kneser-Ney continuation counts. */
+  functionSymbols?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
   markSourceLeadSpans(input.selectedEvidence);
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
@@ -752,7 +754,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     .filter(unit => !input.closedClassWords?.has(unit) && unit !== leadingScaffoldingUnit);
   const relationRequired = Boolean(input.closedClassWords?.size);
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
-    row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, { relationRequired });
+    row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, { relationRequired, languageClosedClassWords: input.functionSymbols });
   // A request that names its subject and asks nothing else is answered by the subject's own opening sentence when
   // a titled source has one: an encyclopedic lead predicates about its subject by construction, even when it names
   // the subject in a longer form the anchor test cannot see ("Augusta Ada King, Countess of Lovelace ... also known
@@ -988,7 +990,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // about the anchor the ranked order stands unchanged.
   const answerSurfaceSentences = sentences;
   const planCoverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit));
-  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size) }))) return undefined;
+  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size), languageClosedClassWords: input.functionSymbols }))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
@@ -1113,7 +1115,7 @@ export function answerCoversRequest(
   span: EvidenceSpan,
   contentUnits: readonly string[],
   requestText = "",
-  options: { relationRequired?: boolean } = {}
+  options: { relationRequired?: boolean; languageClosedClassWords?: ReadonlySet<string> } = {}
 ): boolean {
   // The request's subject: its named anchors when it has any, else its longer content units. A request with none (a pronoun follow-up) is covered by whatever it was bound to.
   // A lone short cased run (a sentence-initial question word) is not a name.
@@ -1160,7 +1162,23 @@ export function answerCoversRequest(
   // spreads widely removed "capital" -- the relation itself -- and "What is the capital of Peru?" was answered with
   // the country's landscape. A relation can be a common word; what separates "capital" from "plot" is that the
   // corpus predicates with one and not the other, which is a question for relation observations, not frequency.
-  const relationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
+  // An empty relation obligation is not a satisfied obligation.
+  //
+  // The subject here is the request's named anchors, and those anchors are its maximal content runs whenever the
+  // corpus attests no identity for them: "Albert Einstein's dentist" is one run, so the attribute asked about
+  // landed inside the subject and this subtraction returned nothing to require. Every sentence naming Einstein
+  // then passed -- the article's own lead answered who his dentist was. The same vacuum opens from the other
+  // side when the caller's coverage units are already a subset of the subject ("Who won the 1998 FIFA World
+  // Cup?" reached here as {fifa, world}), and the definition of the tournament answered who won one of them.
+  // A sentence carrying nothing of the asked relation supports every candidate value for it equally, so it
+  // discriminates nothing and settles nothing. When the subtraction empties, the obligation is re-derived
+  // against what the corpus says the source itself is about, and the request's remainder past that is required.
+  // Re-derived only for a caller holding the language's own closed class, for the same reason the relation is only
+  // required there: without one, "what" is indistinguishable from "commanded" and the obligation is a guess.
+  const subtractedRelationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
+  const relationUnits = subtractedRelationUnits.length || !options.languageClosedClassWords?.size
+    ? subtractedRelationUnits
+    : requestRelationBeyondSourceIdentity(requestText, span, options.languageClosedClassWords);
   const answeringText = sentences.join(" ");
   const sentenceUnits = memoizedSurfaceUnits(answeringText).map(stripOuterPriorSeparators);
   const missingRelationUnits = relationUnits.filter(unit => !sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
@@ -1170,7 +1188,10 @@ export function answerCoversRequest(
   // request's last content unit, and only when the sentence names something cased the request did not -- the
   // member. Every other relation unit is still required, so a sentence about the subject that merely shares a word
   // with the request does not pass (the fabrication case this gate exists for).
-  const lastContentUnit = contentUnits[contentUnits.length - 1];
+  // The re-derived obligation is read off the request, so its own last unit is the request's last content unit there.
+  const lastContentUnit = subtractedRelationUnits.length
+    ? contentUnits[contentUnits.length - 1]
+    : relationUnits[relationUnits.length - 1];
   const categoryMemberAnswer = missingRelationUnits.length === 1
     && relationUnits.length >= 2
     && missingRelationUnits[0] === lastContentUnit
@@ -1207,6 +1228,48 @@ export function answerCoversRequest(
   // what tells "Apollo" alone apart from "Apollo 11".
   const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => contextUnits.includes(unit));
   return subjectSatisfied && numericQualifiersPresent && relationCarried;
+}
+
+/**
+ * What a request asks beyond naming its subject, measured against what the corpus says the source is about.
+ *
+ * The source's own title and derived identity are the corpus's statement of the document's subject, so whatever
+ * the request still says past them is the relation asked about: "dentist" past "Albert Einstein", "1998" past
+ * "FIFA World Cup", "capital city" past "2020 Inner Mongolia protests". Empty exactly when the request asks about
+ * the subject itself, which the source's own definition answers ("What is alchemy?", "Who was Andrew Jackson?").
+ *
+ * The closed class must be the language's, not the request-scoped one: the request-scoped set folds in the
+ * interaction corpus's own construction literals, and that is what erased "1998" before the gate ever saw it.
+ * Pure.
+ */
+export function requestRelationBeyondSourceIdentity(
+  requestText: string,
+  span: EvidenceSpan,
+  closedClassWords?: ReadonlySet<string>
+): string[] {
+  const identityUnits = memoizedSurfaceUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`)
+    .map(stripOuterPriorSeparators)
+    .filter(Boolean);
+  const leadingScaffolding = requestLeadingScaffoldingUnit(requestText);
+  return requestContentEvidenceUnits(requestText).filter(unit =>
+    unit !== leadingScaffolding
+    && !closedClassWords?.has(unit)
+    && !identityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
+}
+
+/** Whether the evidence bears on the relation the request asks about, rather than only on the subject it names: the
+ *  D = 0 test, one span at a time. A surface carrying none of the asked relation supports every candidate value for
+ *  it equally, so it distinguishes nothing and is not an answer. Pure. */
+export function evidenceDiscriminatesAskedRelation(
+  surface: string,
+  span: EvidenceSpan,
+  requestText: string,
+  closedClassWords?: ReadonlySet<string>
+): boolean {
+  const relationUnits = requestRelationBeyondSourceIdentity(requestText, span, closedClassWords);
+  if (!relationUnits.length) return true;
+  const surfaceUnits = memoizedSurfaceUnits(surface).map(stripOuterPriorSeparators);
+  return relationUnits.every(unit => surfaceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
 }
 
 /** Whether a sentence names the request's subject itself: every unit of one named anchor is present (by identity or
