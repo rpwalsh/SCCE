@@ -2,22 +2,24 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 //
-// Finds deciding constants that are written inline instead of declared in the calibration registry.
+// Finds ARBITRARY MODELING CONSTANTS that are written inline instead of declared in the calibration registry.
 //
-// A number written inline cannot be audited, cannot be searched, and cannot be fitted: the field operators ran ten
-// iterative steps per activation for the life of the system on four such numbers, and no coverage report could see
-// them. This lists the rest.
+// Not every number is a calibration candidate. A slice bound, a batch limit, a convergence tolerance and an array
+// index are structure or cost, and abstracting them would be noise. What matters is the number somebody CHOSE:
+// a weight in a linear combination, or a threshold compared against a normalized score. Those decide behaviour,
+// nobody derived them, and while they sit inline they cannot be audited, searched or fitted.
 //
-// It reports CANDIDATES, not violations. A cost bound (a scan limit, a byte budget) is legitimately inline; a
-// modeling parameter is not. The distinction is judgement, so this ranks and a person decides.
+// The first version of this tool reported 1,929 "candidates" by counting every literal, which is exactly the kind
+// of number that gets a report ignored.
 //
-//   node tools/undeclared-constants.mjs [--min=2] [--path=packages/kernel/src]
+//   node tools/undeclared-constants.mjs [--min=2] [--path=packages/kernel/src] [--list]
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
 const root = flag("path", "packages/kernel/src");
 const minHits = Number(flag("min", 2));
+const listAll = process.argv.includes("--list");
 
 const files = [];
 const walk = dir => {
@@ -33,56 +35,67 @@ const walk = dir => {
 };
 walk(root);
 
-// A deciding constant reads as a comparison or a weight. Array indices, 0, 1, -1 and obvious identity values are
-// excluded: they are structure, not judgement.
-const COMPARISON = /([<>]=?|===|!==)\s*(-?\d+\.\d+|-?0?\.\d+|-?[2-9]\d*|-?1\d+)/g;
-const MULTIPLIER = /\*\s*(0?\.\d+)/g;
-const NAMED_UNJUSTIFIED = /\b(?:threshold|floor|ceiling|weight|damping|decay|ratio|bound|cap|limit|steps|iterations)\b\s*[:=]\s*(-?\d+\.?\d*)/gi;
+/**
+ * A calibration candidate is a decimal strictly inside (0,1) that is either:
+ *   WEIGHT     multiplied into an expression   `contradiction * 0.58`
+ *   THRESHOLD  compared against a score        `preservation >= 0.6`
+ *   BLEND      an additive term in a sum       `+ 0.28`
+ * Integers are excluded: in this codebase they are slice bounds, limits, counts and indices.
+ * Exponentials are excluded: 1e-10 is a convergence tolerance, not a judgement.
+ */
+const WEIGHT = /\*\s*(0\.\d+)\b/g;
+const THRESHOLD = /(?:[<>]=?|===)\s*(0\.\d+)\b/g;
+const BLEND = /[+-]\s*(0\.\d+)\s*[*)+,\]]/g;
+
+/** Names that mark a number as a bound on work rather than a modeling choice. */
+const COST_CONTEXT = /\b(limit|max|min|cap|budget|bytes|timeout|ms|slice|batch|size|count|tolerance|epsilon)\b/i;
 
 const hits = new Map();
+let costBounded = 0;
 for (const file of files) {
   const source = readFileSync(file, "utf8");
-  const declared = source.includes("calibrated(");
-  const lines = source.split(/\r?\n/);
-  for (const [index, line] of lines.entries()) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
-    // A line that already reads the registry is declared by definition.
+  const readsRegistry = source.includes("calibrated(");
+  for (const [index, raw] of source.split(/\r?\n/).entries()) {
+    const line = raw.trim();
+    if (line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
     if (line.includes("calibrated(")) continue;
-    for (const pattern of [COMPARISON, MULTIPLIER, NAMED_UNJUSTIFIED]) {
+    const found = new Set();
+    for (const [kind, pattern] of [["weight", WEIGHT], ["threshold", THRESHOLD], ["blend", BLEND]]) {
       pattern.lastIndex = 0;
       let match;
-      while ((match = pattern.exec(line))) {
-        const value = match[match.length - 1];
-        if (["0", "1", "-1", "2", "0.0", "1.0", "100"].includes(value)) continue;
-        const key = path.relative(".", file).replace(/\\/g, "/");
-        const row = hits.get(key) ?? { file: key, declared, samples: [], count: 0 };
-        row.count += 1;
-        if (row.samples.length < 4) row.samples.push({ line: index + 1, value, text: trimmed.slice(0, 96) });
-        hits.set(key, row);
-      }
+      while ((match = pattern.exec(line))) found.add(`${kind}:${match[1]}`);
     }
+    if (!found.size) continue;
+    if (COST_CONTEXT.test(line)) { costBounded += found.size; continue; }
+    const key = path.relative(".", file).replace(/\\/g, "/");
+    const row = hits.get(key) ?? { file: key, readsRegistry, count: 0, samples: [] };
+    row.count += found.size;
+    if (row.samples.length < (listAll ? 40 : 3)) row.samples.push({ line: index + 1, text: line.slice(0, 100) });
+    hits.set(key, row);
   }
 }
 
 const ranked = [...hits.values()].filter(row => row.count >= minHits).sort((left, right) => right.count - left.count);
-console.log(`# Undeclared constant candidates\n`);
-console.log(`Scanned ${files.length} files under ${root}. ${ranked.length} carry ${minHits} or more.\n`);
-console.log(`A cost bound is legitimately inline. A modeling parameter is not. This ranks; a person decides.\n`);
-console.log("| file | inline | reads registry | example |");
-console.log("| --- | ---: | :---: | --- |");
-for (const row of ranked.slice(0, 30)) {
-  const sample = row.samples[0];
-  console.log(`| ${row.file} | ${row.count} | ${row.declared ? "yes" : "NO"} | \`${String(sample?.text ?? "").replace(/\|/g, "/")}\` |`);
-}
-const undeclaredFiles = ranked.filter(row => !row.declared);
-const totalInline = ranked.reduce((sum, row) => sum + row.count, 0);
-// Coverage against the declared registry, so the number moves when someone declares a constant or adds one.
+const total = ranked.reduce((sum, row) => sum + row.count, 0);
 const registry = readFileSync("packages/kernel/src/calibrations/public-calibrations.ts", "utf8");
 const declared = registry.match(/^\s*"[a-z_]+\.[a-z_0-9]+":/gim)?.length ?? 0;
-const coverage = declared + totalInline > 0 ? (declared / (declared + totalInline)) * 100 : 100;
-console.log(`\n**${undeclaredFiles.length} files carry deciding constants and never read the registry at all.**`);
-console.log(`Total inline candidates: ${totalInline}. Declared calibrations: ${declared}.`);
+const coverage = declared + total > 0 ? (declared / (declared + total)) * 100 : 100;
+
+console.log(`# Arbitrary modeling constants written inline\n`);
+console.log(`Weights and thresholds in the unit interval that decide behaviour and were chosen by hand.`);
+console.log(`Slice bounds, limits, counts, indices and tolerances are excluded: ${costBounded} were skipped as cost bounds.\n`);
+console.log("| file | count | reads registry | example |");
+console.log("| --- | ---: | :---: | --- |");
+for (const row of ranked.slice(0, listAll ? ranked.length : 25)) {
+  console.log(`| ${row.file} | ${row.count} | ${row.readsRegistry ? "yes" : "NO"} | \`${String(row.samples[0]?.text ?? "").replace(/\|/g, "/")}\` |`);
+}
+if (listAll) {
+  console.log(`\n## Every site\n`);
+  for (const row of ranked) {
+    console.log(`### ${row.file}`);
+    for (const sample of row.samples) console.log(`- ${row.file}:${sample.line}  \`${sample.text.replace(/\|/g, "/")}\``);
+  }
+}
+console.log(`\n**${ranked.filter(row => !row.readsRegistry).length} files never read the registry.**`);
+console.log(`Arbitrary constants inline: ${total}. Declared calibrations: ${declared}.`);
 console.log(`\nDECLARED_COVERAGE ${coverage.toFixed(1)}%`);
-console.log(`\nA number written inline cannot be audited, searched or fitted. Reading code to find them is the smell`);
-console.log(`this replaces: run this, and declare whatever turns out to be a modeling parameter rather than a cost bound.`);
