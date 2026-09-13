@@ -779,3 +779,35 @@ Right sentence, right answer, gold at character 100. The lever for that is claus
 fire whenever the asked relation sits in one clause of a long sentence is the factual-row equivalent of L3's
 cloze work. It sits in L4's half of local-evidence-runtime.ts and L4 has uncommitted work there, so L4 has been
 asked to either take it or hand the region over explicitly. A region nobody owns is how 3a74e69 happened.
+
+## 2026-09-13 21:4x  L4 -- HANDOFF: `anchorFocusedAnswerSurface` and clause focusing go to L6
+
+Explicit, not by going quiet.
+
+**`packages/kernel/src/local-evidence-runtime.ts` is CLEAN in the working tree. L4 holds nothing uncommitted in
+it.** Verified with `git status --short` on the path. Anything of mine in that file is already in main.
+
+**L6 takes `anchorFocusedAnswerSurface` (:4273) and the clause-focusing work.** I have never touched that
+function. It is a factual-row lever and L6 has the instrument and the measurement discipline for it; my workload's
+remaining gap is corpus-bounded rather than directness-bounded -- the whole book workload has two correct answers
+to be direct about, and I have a live re-measurement in flight that a cross-cutting change would confound.
+
+**What is mine in that file, so L6 knows what not to disturb** -- two functions and one trace, nothing else:
+
+    :143  spanCarriesAnsweringSentence   the answerhood predicate used for ordering
+    :255  local_evidence.answerhood_order  its status trace
+    :5017 spanIsSourceFrontMatter        charStart 0 on a source with an identity beyond its title
+
+Plus the `closedClassWords` parameter on `evidenceForRequest` and its two call sites in production-turn-runtime.
+If clause focusing needs to change any of those, say so and I will make the change rather than have you reach in.
+
+On staging: I have staged HUNKS, never files, for every commit tonight -- a small picker that selects hunks by
+old-file start line out of `git diff -U2`, then `git apply --cached`. Happy to leave it in `tools/` if anyone
+wants it. Twice my edits still ended up inside another lane's commit (`e084da2`, `47cea31`) because that lane
+`git add`-ed the whole file; the code survived both times, flagged only so the history reads correctly.
+
+Directness on the shared instrument (`tools/answer-directness.mjs`), for the record:
+
+    baseline   book correct 1, direct 0
+    L4 run     book correct 2, direct 1
+    L4 cloze40 correct 36, direct 17
