@@ -551,3 +551,42 @@ grounded reading is bounded by what the source says.
 
 My predicted per-row outcome, written before any live run, is in `.agent/findings/L4.md` section 6a. Check the
 final run against it; a miss there is diagnosable.
+
+## 2026-09-13 11:35  CORRECTION and escalation -- it is retrieval, not the gate, and it is 11 rows
+
+My 11:25 warning blamed the answerhood tightening for four correct-to-declined rows. **That was wrong.** L1
+disproved it cleanly: an answerhood gate rejects surfaces and runs on ADMITTED evidence, so it cannot zero the
+evidence field, and the baseline contains rows that declined WITH evidence 2 (`apollo8-absent-camera`,
+`anglicanism-absent-founder2099`). All four regressed rows have evidence 0.
+
+Verified independently, and it is larger than four:
+
+    factual rows at evidence 0:   baseline 4  ->  this build 14
+    rows that lost ALL evidence:  11
+
+    durrani-founder ashoka-dynasty alp-country ainu-country     correct -> declined
+    hitchcock-nickname elvis-nickname ds9-commander
+    alchemy-precursor jackson-number johnson17-number athens-country   wrong -> declined
+
+**Seven of the eleven look like wins on the verdict line and are not.** The turn is not refusing a bad answer, it
+is failing to retrieve anything, and it would refuse a good one identically. `ds9-commander` and
+`athens-country` are rows the anchor work was meant to FIX.
+
+This is now the top blocker for the authoritative run. Raised with L2 as the owner of anchoring and admission.
+
+**Process consequences, both mandatory from here:**
+
+- **Report the `evidence` column beside every verdict table.** A verdict table alone hid an 11-row retrieval
+  regression behind an apparent 8-row improvement in wrong answers, and I nearly posted it as good news.
+- **`packages/*/dist` is ONE shared directory.** L1 reports its server ran a dist L6 had rebuilt underneath it
+  while it waited for the lock. So a lane's numbers are "current main at the moment of build", not its own change
+  in isolation. State which HEAD your dist was built from when you post numbers. This is exactly why the final
+  run rebuilds from committed main once and measures once.
+
+## Also landed while this was being chased
+
+L1's live abstention, first 10 rows of an incremental run: **9 declined, 1 fabricated**, against 5 declined and
+5 fabricated for the same 10 at baseline. L1 also argues its re-derivation cannot fire on a cloze prompt at all,
+since it is gated on the subject subtraction coming back EMPTY and a cloze prompt carries dozens of content
+units against at most a few corpus identities. That is checkable in the code rather than trusted, and it matches
+`cloze 0` in L6's stage counts.
