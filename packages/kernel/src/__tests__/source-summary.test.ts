@@ -106,3 +106,45 @@ describe("summary of an admitted source", () => {
     expect(summarizeAdmittedSource({ spans: [], closedClass, maxChars: 560 })).toBeUndefined();
   });
 });
+
+// The Athens shape, measured live 2026-09-13: an article whose central mass is its transport network, and one
+// sentence that states what the request asked. The summary is the turn's last lane, and it chose without ever
+// reading the request.
+const DEFINING = "Riverbend is the capital and largest city of Thessaly.";
+const TRANSPORT = [
+  "The Riverbend tram network runs four tram lines through the inner districts, and every tram line carries riders through the inner districts each morning.",
+  "Riders reach the inner districts of Riverbend by tram line, and the tram network extends every tram line through the inner districts each year.",
+  "Every tram line of the Riverbend tram network carries riders through the inner districts, and the tram network runs four tram lines each morning.",
+  "The tram network of Riverbend runs riders through the inner districts, and four tram lines reach every inner district each morning."
+];
+const riverbendSource = [DEFINING, ...TRANSPORT].join("\n\n");
+
+describe("a summary a request is waiting on", () => {
+  // Room for exactly one of these sentences, so the order decides which one is spoken rather than the budget.
+  const budget = Math.max(...TRANSPORT.map(sentence => sentence.length)) + 2;
+
+  it("speaks what the request asks past the source before what the source is mostly about", () => {
+    const withoutRequest = summarizeSource({ text: riverbendSource, closedClass, maxChars: budget });
+    expect(withoutRequest).not.toContain(DEFINING);
+    const answering = summarizeSource({ text: riverbendSource, closedClass, maxChars: budget, relationUnits: ["capital", "country"] });
+    expect(answering).toContain(DEFINING);
+  });
+
+  it("is byte-identical to the centrality summary when the request asks nothing past the source", () => {
+    const base = summarizeSource({ text: riverbendSource, closedClass, maxChars: budget });
+    expect(summarizeSource({ text: riverbendSource, closedClass, maxChars: budget, relationUnits: [] })).toBe(base);
+    expect(summarizeSource({ text: riverbendSource, closedClass, maxChars: budget, relationUnits: ["harbour"] })).toBe(base);
+  });
+
+  it("is not ordered by a unit the source states in every sentence, which separates none of them", () => {
+    const base = summarizeSource({ text: riverbendSource, closedClass, maxChars: budget });
+    expect(summarizeSource({ text: riverbendSource, closedClass, maxChars: budget, relationUnits: ["riverbend"] })).toBe(base);
+  });
+
+  it("carries the asked relation through to the admitted-source excerpt", () => {
+    const spans = [DEFINING, ...TRANSPORT].map(text => ({ sourceKey: "riverbend", text }));
+    const excerpt = summarizeAdmittedSource({ spans, closedClass, maxChars: budget, relationUnits: ["capital", "country"] });
+    expect(excerpt).toBeDefined();
+    expect(excerpt!.text).toContain(DEFINING);
+  });
+});
