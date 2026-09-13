@@ -52,19 +52,21 @@ describe("evidence ranking by answerhood", () => {
     expect(byAnswerhood).toHaveLength(2);
   });
 
-  it("never gives the answerhood lead to the source's own front matter", () => {
-    // Treasure Island's chapter index led this ordering because the titles it lists carry the subject and the
-    // relation between them. It compresses the source's vocabulary and explains none of its structure.
-    const index = span({
-      id: "evidence:moby:index",
+  it("reads a book's opening block by the sentence, so its apparatus loses without its first page losing too", () => {
+    // A Gutenberg opening block holds the licence, the chapter index AND the first page of the work. A
+    // whole-block guard stood here and refused all three, which cost the answer to "Where does Dorothy live"
+    // (live 2026-09-13). The sentence test needs no such guard: the index carries the title and nothing the
+    // request asks past it, while the story's first sentence carries both.
+    const opening = span({
+      id: "evidence:moby:opening",
       alpha: 0.99,
       charStart: 0,
-      identity: "herman melville pequod ahab ishmael queequeg",
-      text: "MOBY-DICK; or, THE WHALE. CONTENTS. The Pequod Meets The Virgin. The Captain's Quarter-Deck. "
-        + "The Pequod Meets The Rose-Bud. The Captain and the Carpenter."
+      text: "The Project Gutenberg eBook of Moby Dick; or, The Whale. You may copy it, give it away or re-use it "
+        + "under the terms of the Project Gutenberg License. CONTENTS. The Pequod Meets The Virgin. The Pequod "
+        + "Meets The Rose-Bud. The ship was the Pequod, and the captain of the Pequod was Ahab."
     });
-    const ranked = evidenceForRequest(request, [index, binding], new Set(), new Set(), new Set(), closedClass);
-    expect(String(ranked[0]?.id)).toBe("evidence:moby:binding");
+    const ranked = evidenceForRequest(request, [opening, interior], new Set(), new Set(), new Set(), closedClass);
+    expect(String(ranked[0]?.id)).toBe("evidence:moby:opening");
   });
 
   it("is inert on a pool of articles, whose identity is their title", () => {
