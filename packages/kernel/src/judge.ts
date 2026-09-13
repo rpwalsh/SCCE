@@ -11,6 +11,7 @@ import {
   type FunctionalSelectionGate
 } from "./functional-cognition.js";
 import { guardScore, type ScoreTrace } from "./scoring/score-trace.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 
 export interface JudgeDecision {
   selected: CandidateSurface;
@@ -255,10 +256,10 @@ function selectForRequirementField(input: {
 function requirementPenaltyWeights(requirement: TurnRequirementField): Record<NegativeQualityKey, number> {
   return {
     repetition: clamp01(0.16 + 0.18 * requirement.noveltyDemand),
-    contradiction: clamp01(0.28 + 0.54 * requirement.externalTruthAuthority + 0.16 * requirement.inferentialDepth),
-    unsupportedFactRate: clamp01(0.36 + 0.62 * requirement.externalTruthAuthority + 0.22 * requirement.sourceDependence),
+    contradiction: clamp01(calibrated("judge.contradiction_penalty_floor") + calibrated("judge.contradiction_penalty_authority_weight") * requirement.externalTruthAuthority + calibrated("judge.contradiction_penalty_inferential_depth_weight") * requirement.inferentialDepth),
+    unsupportedFactRate: clamp01(calibrated("judge.unsupported_fact_penalty_floor") + calibrated("judge.unsupported_fact_penalty_authority_weight") * requirement.externalTruthAuthority + calibrated("judge.unsupported_fact_penalty_source_dependence_weight") * requirement.sourceDependence),
     fakeFactualAuthority: 1,
-    staleSourceRisk: clamp01(0.30 + 0.35 * requirement.sourceDependence + 0.25 * requirement.executableArtifactDemand),
+    staleSourceRisk: clamp01(calibrated("judge.stale_source_penalty_floor") + calibrated("judge.stale_source_penalty_source_dependence_weight") * requirement.sourceDependence + calibrated("judge.stale_source_penalty_executable_demand_weight") * requirement.executableArtifactDemand),
     testWeakening: 1,
     telemetryLeak: 0.84
   };
@@ -343,7 +344,7 @@ function candidateHardFailures(
   if (candidate.claimBases?.includes("action_result") && !candidateHasActionReceipt(candidate)) failures.push("action_result_without_receipt");
   if (requirement.actionCommitment >= 0.6 && candidate.kind === "action-preview" && candidate.claimBases?.includes("action_result")) failures.push("false_action_completion");
   if (
-    requirement.executableArtifactDemand >= 0.65
+    requirement.executableArtifactDemand >= calibrated("judge.executable_artifact_demand_floor")
     && executableCandidateFamily(candidate)
     && validation
     && !validation.passed
@@ -436,10 +437,10 @@ function scoreCandidate(candidate: CandidateSurface, policy: PolicyProfile, reas
   if (requestedAuthority === "creative") return scoreCreativeCandidate(candidate, reasons, validation, surfaceMass);
   const s = candidate.scores;
   const epistemic = forceScore(candidate.force);
-  const proof = clamp01(0.35 * epistemic + 0.28 * s.support + 0.22 * s.faithfulness + 0.15 * s.evidenceCoverage);
-  const field = clamp01(0.38 * s.alphaPressure + 0.25 * s.actionability + 0.2 * s.realizability + 0.17 * s.novelty);
+  const proof = clamp01(calibrated("judge.proof_epistemic_force_weight") * epistemic + calibrated("judge.proof_support_weight") * s.support + calibrated("judge.proof_faithfulness_weight") * s.faithfulness + calibrated("judge.proof_evidence_coverage_weight") * s.evidenceCoverage);
+  const field = clamp01(calibrated("judge.field_alpha_pressure_weight") * s.alphaPressure + calibrated("judge.field_actionability_weight") * s.actionability + calibrated("judge.field_realizability_weight") * s.realizability + calibrated("judge.field_novelty_weight") * s.novelty);
   const mass = clamp01(surfaceMass ?? 0);
-  const risk = clamp01(0.6 * s.contradiction + 0.25 * (candidate.boundaries.length ? 0.35 : 0) + 0.15 * Math.max(0, policy.alphaRiskCeiling < 0.5 ? 0.2 : 0));
+  const risk = clamp01(calibrated("judge.risk_contradiction_weight") * s.contradiction + calibrated("judge.risk_boundary_weight") * (candidate.boundaries.length ? 0.35 : 0) + calibrated("judge.risk_policy_ceiling_weight") * Math.max(0, policy.alphaRiskCeiling < 0.5 ? 0.2 : 0));
   const validationScore = validation ? mean(validation.checks.map(check => check.score)) * (validation.passed ? 1 : 0.55) : 0.7;
   if (candidate.force === "proved" || candidate.force === "observed") reasons.push("high-epistemic-force");
   if (candidate.kind === "ccr-extractive") reasons.push("extractive-grounding");
@@ -450,7 +451,7 @@ function scoreCandidate(candidate: CandidateSurface, policy: PolicyProfile, reas
   if (validation && !validation.passed) reasons.push("validation-not-passed");
   if (mass > 0) reasons.push(`candidate-mass=${mass.toFixed(3)}`);
   const telemetryPenalty = looksLikeStructuredTelemetry(candidate.answer) ? 0.72 : 0;
-  return clamp01(0.32 * proof + 0.24 * field + 0.2 * validationScore + 0.12 * s.realizability + 0.12 * mass - 0.42 * risk - telemetryPenalty);
+  return clamp01(calibrated("judge.total_proof_weight") * proof + calibrated("judge.total_field_weight") * field + calibrated("judge.total_validation_weight") * validationScore + calibrated("judge.total_realizability_weight") * s.realizability + calibrated("judge.total_mass_weight") * mass - calibrated("judge.total_risk_penalty") * risk - telemetryPenalty);
 }
 
 function scoreCreativeCandidate(candidate: CandidateSurface, reasons: string[], validation?: ValidationGraph, surfaceMass?: number): number {
@@ -461,7 +462,7 @@ function scoreCreativeCandidate(candidate: CandidateSurface, reasons: string[], 
   if (candidate.kind !== "creative-candidate" || candidate.force !== "invented") {
     reasons.push("requested-authority-mismatch");
     if (telemetryPenalty > 0) reasons.push("structured-telemetry-not-surface");
-    return clamp01(0.12 * mass + 0.08 * s.actionability + 0.08 * s.realizability - telemetryPenalty);
+    return clamp01(calibrated("judge.creative_mismatch_mass_weight") * mass + calibrated("judge.creative_mismatch_actionability_weight") * s.actionability + calibrated("judge.creative_mismatch_realizability_weight") * s.realizability - telemetryPenalty);
   }
   const constraintCoverage = clamp01(s.constraintCoverage ?? 0);
   const coherence = clamp01(s.graphCoherence ?? s.faithfulness);
@@ -473,7 +474,7 @@ function scoreCreativeCandidate(candidate: CandidateSurface, reasons: string[], 
   const fakeFact = clamp01(s.unsupportedFactualAssertion ?? 0);
   const selectionScore = typeof s.creativeSelectionScore === "number" && Number.isFinite(s.creativeSelectionScore)
     ? s.creativeSelectionScore
-    : 0.28 * constraintCoverage + 0.22 * coherence + 0.20 * novelty + 0.15 * language + 0.15 * usefulness - 0.30 * risk - 0.20 * repetition - 0.50 * fakeFact;
+    : calibrated("judge.creative_constraint_coverage_weight") * constraintCoverage + calibrated("judge.creative_coherence_weight") * coherence + calibrated("judge.creative_novelty_weight") * novelty + calibrated("judge.creative_language_weight") * language + calibrated("judge.creative_usefulness_weight") * usefulness - calibrated("judge.creative_risk_penalty") * risk - calibrated("judge.creative_repetition_penalty") * repetition - calibrated("judge.creative_fake_authority_penalty") * fakeFact;
   const normalizedSelection = clamp01((selectionScore + 1) / 2);
   reasons.push("creative-authority-fit", `constraint-coverage=${constraintCoverage.toFixed(3)}`, `coherence=${coherence.toFixed(3)}`, `novelty=${novelty.toFixed(3)}`, `language=${language.toFixed(3)}`, `usefulness=${usefulness.toFixed(3)}`);
   if (risk > 0.25) reasons.push("creative-risk-penalty");
@@ -483,7 +484,7 @@ function scoreCreativeCandidate(candidate: CandidateSurface, reasons: string[], 
   if (validation && !validation.passed) reasons.push("validation-not-passed");
   if (mass > 0) reasons.push(`candidate-mass=${mass.toFixed(3)}`);
   if (telemetryPenalty > 0) reasons.push("structured-telemetry-not-surface");
-  return clamp01(0.72 * normalizedSelection + 0.16 * mass + 0.12 * validationScore - telemetryPenalty);
+  return clamp01(calibrated("judge.creative_total_selection_weight") * normalizedSelection + calibrated("judge.creative_total_mass_weight") * mass + calibrated("judge.creative_total_validation_weight") * validationScore - telemetryPenalty);
 }
 
 function looksLikeStructuredTelemetry(answer: string): boolean {
