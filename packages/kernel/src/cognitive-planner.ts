@@ -793,17 +793,14 @@ function orderedCompositionDrafts(input: CognitivePlannerInput, operators: Activ
   });
 }
 
+// Program planning alone licenses a program proposal: an implementation request is artifact demand, not novelty
+// demand, and requiring the invention operator as well left every such turn with zero program proposals.
 function programDesignDrafts(input: CognitivePlannerInput, operators: ActivatedOperator[]): ProposalDraft[] {
   if (!operatorRequirementGate(
     input.requirements,
     operators,
     COGNITIVE_OPERATOR_IDS.programPlanning,
     [["executableArtifactDemand", 0.7]]
-  ) || !operatorRequirementGate(
-    input.requirements,
-    operators,
-    COGNITIVE_OPERATOR_IDS.invention,
-    [["noveltyDemand", 0.7]]
   )) return [];
   const relevant = operatorsForIds(operators, [COGNITIVE_OPERATOR_IDS.programPlanning, COGNITIVE_OPERATOR_IDS.invention]);
   return programGraphsForInput(input).slice(0, 3).flatMap((program): ProposalDraft[] => {

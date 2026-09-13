@@ -18,7 +18,7 @@ import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
-import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
+import { corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
 } from "./language.js";
@@ -484,7 +484,9 @@ export function createIngestionRuntime(options: {
             text: languageTrainingText,
             evidence: admittedSpans,
             createdAt: now,
-            maxOrder: 6,
+            // Measured, not assumed: orders 6 through 9 are identical on this corpus (no 6-gram context recurs) and
+            // cost several times the training; see tools/prose-order-calibration.
+            maxOrder: DEFAULT_NGRAM_SETTINGS.maxOrder,
             maxCountersPerOrder: 12000,
             vocabularyLimit: 24000,
             // THE ZERO-PRODUCING GATE. compileLanguageTrainingBatch gates

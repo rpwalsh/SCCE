@@ -119,6 +119,53 @@ function loadRelations() {
   return RELATION_ITEMS.length;
 }
 
+// ---- 3b. heterogeneous sources: books and source files, graded -----------------------------------------------
+// Every corpus is knowledge. These items are answerable only from a Gutenberg text or from the ingested source tree,
+// never from a Wikipedia article, so a wiki-only retrieval path scores zero here. Gold is a fact of the text itself.
+const BOOK_ITEMS = [
+  ["moby-narrator", "Who narrates Moby-Dick?", { acceptedAnswers: ["Ishmael"] }],
+  ["moby-captain", "Who is the captain of the Pequod in Moby-Dick?", { acceptedAnswers: ["Ahab"] }],
+  ["moby-ship", "What is the name of the ship in Moby-Dick?", { acceptedAnswers: ["Pequod"] }],
+  ["darcy", "Who is Mr Darcy?", { acceptedAnswers: ["Darcy"], forbiddenStrings: ["band", "album", "rock"] }],
+  ["harker", "Where does Jonathan Harker travel to in Dracula?", { acceptedAnswers: ["Transylvania", "Castle Dracula", "Bistritz"] }],
+  ["frankenstein", "Who created the creature in Frankenstein?", { acceptedAnswers: ["Victor", "Frankenstein"] }],
+  ["watson", "Who is Sherlock Holmes's companion?", { acceptedAnswers: ["Watson"] }],
+  ["dorian-painter", "Who painted the portrait of Dorian Gray?", { acceptedAnswers: ["Hallward", "Basil"] }],
+  ["thornfield", "Where does Jane Eyre work as a governess?", { acceptedAnswers: ["Thornfield"] }],
+  ["hispaniola", "What is the name of the ship in Treasure Island?", { acceptedAnswers: ["Hispaniola"] }],
+  ["toto", "What is the name of Dorothy's dog in The Wonderful Wizard of Oz?", { acceptedAnswers: ["Toto"] }],
+  ["kansas", "Where does Dorothy live in The Wonderful Wizard of Oz?", { acceptedAnswers: ["Kansas"] }]
+];
+const CODE_ITEMS = [
+  ["best-evidence-sentences", "Which file defines bestEvidenceSentences?", ["local evidence runtime", "local-evidence-runtime"]],
+  ["code-request-signal", "Which file defines codeRequestSignal?", ["code request", "code-request"]],
+  ["closed-class", "Which file defines deriveClosedClassWords?", ["closed class words", "closed-class-words"]],
+  ["replan", "Which file defines the replan function?", ["task replanning", "task-replanning"]],
+  ["task-snapshot", "Which file defines syncTaskResumptionSnapshotForTurn?", ["task resumption turn request", "task-resumption-turn-request"]],
+  ["program-planner", "Which file defines createProgramPlanner?", ["program planner", "program-planner"]]
+];
+function loadHeterogeneous() {
+  for (const [id, prompt, gold] of BOOK_ITEMS) {
+    add({
+      id: `book:${id}`,
+      workload: "book",
+      prompt,
+      gold: { requiredStrings: [], acceptedAnswers: gold.acceptedAnswers, forbiddenStrings: gold.forbiddenStrings ?? [], unanswerable: false },
+      source: "tools/head-to-head/build-suite.mjs"
+    });
+  }
+  for (const [id, prompt, accepted] of CODE_ITEMS) {
+    add({
+      id: `code:${id}`,
+      workload: "code",
+      prompt,
+      gold: { requiredStrings: [], acceptedAnswers: accepted, forbiddenStrings: [], unanswerable: false },
+      source: "tools/head-to-head/build-suite.mjs"
+    });
+  }
+  return BOOK_ITEMS.length + CODE_ITEMS.length;
+}
+
 // ---- 4. conversational probes: no gold, scored only for latency and energy -----------------------------------
 function loadProbes() {
   const path = "tools/probe-questions.txt";
@@ -138,6 +185,7 @@ const counts = {
   sealed: loadSealed(),
   reference: loadReferenceComparison(),
   relation: loadRelations(),
+  heterogeneous: loadHeterogeneous(),
   probe: loadProbes()
 };
 

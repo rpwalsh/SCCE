@@ -792,6 +792,10 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_embedding vector(512)`,
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_regions JSONB`,
+    // Computed once by the database from provenance: ranking reads a short column instead of decoding a 32 KB
+    // (max 882 KB) provenance document per candidate row, which measured 7-11s per anchor group. One statement: one
+    // table rewrite (each ADD COLUMN ... STORED rewrites the table; measured 12+ minutes on 7 GB).
+    `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS source_title TEXT GENERATED ALWAYS AS (lower(COALESCE(provenance_json->>'title', provenance_json->'metadata'->>'title', ''))) STORED, ADD COLUMN IF NOT EXISTS source_name TEXT GENERATED ALWAYS AS (btrim(lower(COALESCE(provenance_json->>'title', '') || ' ' || COALESCE(provenance_json->'metadata'->>'title', '') || ' ' || COALESCE(provenance_json->>'identity', '') || ' ' || COALESCE(provenance_json->'metadata'->>'identity', '')))) STORED`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, schema_id TEXT NOT NULL, relation_id TEXT NOT NULL, participant_ports JSONB NOT NULL, member_node_ids TEXT[] NOT NULL, qualifiers_json JSONB NOT NULL, modality_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
@@ -1436,6 +1440,78 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         [sourceVersionIds, ...access.params]
       );
       return rows.map(rowToEvidence);
+    },
+    async sourceIdentityArbitration(input) {
+      // Two leading parameters below, so the access predicate's own placeholders start at the third.
+      const access = storage.informationAccessPredicate("evidence", 3);
+      // Which of the corpus's own titles appear in this request. Asked in this direction it is one query whatever
+      // the request's length, and it needs no segmentation: a title matches inside unspaced text the same way it
+      // matches between spaces. Enumerating the request's sub-runs instead was quadratic -- 299 database
+      // measurements for one coding request in a single turn.
+      const normalized = String(input.text ?? "").normalize("NFC").toLocaleLowerCase().replace(IDENTITY_UNIT_SEPARATOR, " ").trim();
+      const surface = " " + normalized + " ";
+      const unspaced = normalized.length > 0 && !normalized.includes(" ");
+      const identityRows = normalized
+        ? await storage.query<{ title: string }>(
+            `SELECT title FROM (
+               SELECT DISTINCT evidence.source_title AS title
+               FROM ${storage.table("evidence_spans")} evidence
+               WHERE evidence.source_title <> '' AND ${access.sql}
+             ) titles
+             WHERE $1 LIKE '%' || ' ' || title || ' ' || '%'
+                OR ($2::boolean AND $1 LIKE '%' || title || '%')
+             ORDER BY length(title) DESC
+             LIMIT ${IDENTITY_MATCH_LIMIT}`,
+            [surface, unspaced, ...access.params]
+          )
+        : [];
+      const named = new Set(identityRows.map(row => row.title));
+      // Spread for the runs the corpus is not titled with, one round trip via a lateral join.
+      const candidates = [...new Set(input.runs.map(run => run.trim().toLocaleLowerCase()).filter(Boolean))]
+        .filter(run => !named.has(run));
+      const spread = new Map<string, number>();
+      if (candidates.length) {
+        const spreadRows = await storage.query<{ run: string; sources: number }>(
+          `SELECT candidate.run AS run, measured.sources AS sources
+           FROM unnest($1::text[]) AS candidate(run)
+           CROSS JOIN LATERAL (
+             SELECT count(DISTINCT source_id)::int AS sources FROM (
+               SELECT source_id FROM ${storage.table("evidence_spans")}
+               WHERE features @> (
+                 SELECT array_agg('sym:' || unit)
+                 FROM unnest(string_to_array(candidate.run, ' ')) AS unit
+                 WHERE unit <> ''
+               )
+               LIMIT ${SPREAD_SCAN_CAP}
+             ) sampled
+           ) measured`,
+          [candidates]
+        );
+        for (const row of spreadRows) spread.set(row.run, Number(row.sources ?? 0));
+      }
+      return { identities: [...named], spread };
+    },
+    async sourceSpreadDistribution(sampleSize: number) {
+      // The identity vocabulary sampled at random, then measured the same way a request's runs are, so the
+      // threshold derived from it is on the same scale as what it will be compared against.
+      const vocabulary = await storage.query<{ unit: string }>(
+        `SELECT unit FROM (
+           SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
+           FROM ${storage.table("evidence_spans")} WHERE source_title <> ''
+         ) units WHERE unit <> '' ORDER BY random() LIMIT $1`,
+        [Math.max(1, Math.trunc(sampleSize))]
+      );
+      const measured = await Promise.all(vocabulary.map(async row => {
+        const rows = await storage.query<{ sources: number }>(
+          `SELECT count(DISTINCT source_id)::int AS sources FROM (
+             SELECT source_id FROM ${storage.table("evidence_spans")}
+             WHERE features @> ARRAY[$1]::text[] LIMIT ${SPREAD_SCAN_CAP}
+           ) sampled`,
+          [`sym:${row.unit}`]
+        );
+        return Number(rows[0]?.sources ?? 0);
+      }));
+      return measured.filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
       const features = evidenceQueryFeatures(query.features ?? []);
@@ -2165,6 +2241,16 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
 }
 
 /** Evidence ids per graph lookup: small enough that the planner keeps using the GIN index. */
+/**
+ * Cost bound on a spread measurement, not a modeling parameter: it is the same for a request's runs and for the
+ * sampled distribution the threshold is derived from, so both sides of the comparison are measured on one scale.
+ * A unit the whole corpus uses saturates it, and saturation is the answer for such a unit.
+ */
+const SPREAD_SCAN_CAP = 1500;
+/** Unit separators the writing system supplies; a script that marks none yields a single unit. */
+const IDENTITY_UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’-]+/gu;
+/** Cost bound on the reversed identity scan; titles come back longest first, so the specific ones survive it. */
+const IDENTITY_MATCH_LIMIT = 24;
 const EVIDENCE_LOOKUP_GROUP = 32;
 
 async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuery): Promise<GraphNode[]> {
@@ -5437,8 +5523,10 @@ function ginIndexableFeatures(features: readonly string[]): string[] {
 /** A source titled with the subject the request names, ranked ahead of one that only mentions it. An empty unit
  *  list is a no-op, so every caller that does not name a subject ranks exactly as before. Pure. */
 function titleMatchExpression(alias: string, parameter: number): string {
-  return `(cardinality($${parameter}::text[]) > 0 AND ${alias}.provenance_json->>'title' IS NOT NULL
-    AND (SELECT bool_and(lower(${alias}.provenance_json->>'title') LIKE '%' || unit || '%')
+  // Title or derived identity: a book, a PDF or a source file arrives with no title, and its identity
+  // (source-identity.ts) is what names it. An empty concatenation matches nothing, as a NULL title did.
+  return `(cardinality($${parameter}::text[]) > 0 AND ${alias}.source_name <> ''
+    AND (SELECT bool_and(${alias}.source_name LIKE '%' || unit || '%')
          FROM unnest($${parameter}::text[]) AS unit))`;
 }
 
@@ -5447,8 +5535,7 @@ function titleMatchExpression(alias: string, parameter: number): string {
  *  shortest stub: measured, "What is the capital of Japan?" ranked 32 such spans and never the Japan article. */
 function titleExactExpression(alias: string, parameter: number): string {
   return `(cardinality($${parameter}::text[]) > 0
-    AND lower(COALESCE(${alias}.provenance_json->>'title', ${alias}.provenance_json->'metadata'->>'title', ''))
-        = array_to_string($${parameter}::text[], ' '))`;
+    AND ${alias}.source_title = array_to_string($${parameter}::text[], ' '))`;
 }
 
 /** Measured on this corpus: 25,889 of 73,209 scored spans carry a class that can never certify, so BM25 pays for them and

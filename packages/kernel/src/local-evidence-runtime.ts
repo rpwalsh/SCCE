@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { corpusNamedIdentities } from "./corpus-identity.js";
 import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
@@ -7,7 +8,7 @@ import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, js
 import { isProseSentence } from "./evidence-gist.js";
 import { traceEvent } from "./debug/trace.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
-import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
+import { anchorSymbolUnits, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
@@ -143,10 +144,14 @@ export function evidenceForRequest(
       // ("Sisko, played by Avery Brooks" for "Who played Sisko?") is about the subject, whatever its title says.
       // Without it the article was admitted and then dropped here on a 0.007 lexical overlap.
       const bindingSentenceAligned = anchorBindingSentenceAligned(span, anchors);
+      // Identity is alignment: a book, a paper or a source file is named by what it calls itself, not by a title
+      // that repeats the request. Without this the 24 admitted Moby-Dick spans scored 0 here and the turn, having
+      // admitted the book, proved nothing (live 2026-09-12).
       const anchorAligned = anchors.length > 0 && (
         evidenceExactSourceAnchorMatches(span, anchors) ||
         evidenceTitleDistinctAnchorMatches(span, anchors) ||
         evidenceSourceMatchesAnchors(span, anchors) ||
+        evidenceIdentityBindsAnchors(span, anchors) ||
         contentAnchorAligned ||
         bindingSentenceAligned
       );
@@ -174,7 +179,9 @@ export function evidenceForRequest(
       // title does not ("Who played Sisko?" against Star Trek: Deep Space Nine), the chunk whose sentence binds
       // that subject is the one that answers, and the opening must not outrank it.
       const titleAligned = anchors.length > 0 && (evidenceExactSourceAnchorMatches(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors) || evidenceSourceMatchesAnchors(span, anchors));
-      const openingBoost = titleAligned && span.charStart === 0 ? 0.03 : 0;
+      // Only where the opening block is the definitional lead: a source with its own identity opens with front
+      // matter, and boosting it put a title page ahead of every sentence of the book (live 2026-09-12).
+      const openingBoost = titleAligned && span.charStart === 0 && !evidenceIdentityBeyondTitle(span) ? 0.03 : 0;
       const bindingBoost = bindingSentenceAligned ? 0.06 : 0;
       return { span, score: rankedLexical + alphaBoost + sessionBoost + priorityBoost + initialismBoost + openingBoost + bindingBoost + Math.min(0.16, contentOverlap * 0.04), lexical, priorityAligned, explicitContextAligned, semanticFrameBoundAligned, anchorAligned, initialismAligned, sessionSpan, contentOverlap };
     })
@@ -446,6 +453,31 @@ function documentOpeningSpan(span: EvidenceSpan): boolean {
   return span.charStart === 0;
 }
 
+const sourceLeadSpans = new WeakMap<EvidenceSpan, boolean>();
+/** Per source, the admitted span carrying the largest share of the source's own identity units (title and derived
+ *  identity), the opening block on ties. A source with no identity beyond its title keeps its opening block as lead;
+ *  a book's licence header names the book and carries none of it, so a chapter is its lead. Relative, no threshold. */
+function markSourceLeadSpans(spans: readonly EvidenceSpan[]): void {
+  const best = new Map<string, { span: EvidenceSpan; coverage: number }>();
+  for (const span of spans) {
+    sourceLeadSpans.set(span, false);
+    const identity = evidenceIdentity(span);
+    if (!identity) { if (documentOpeningSpan(span)) sourceLeadSpans.set(span, true); continue; }
+    const units = [...new Set(anchorSymbolUnits(`${evidenceTitle(span)} ${identity}`))];
+    const text = new Set(anchorSymbolUnits(span.text));
+    const coverage = units.length ? units.filter(unit => text.has(unit)).length / units.length : 0;
+    const key = String(span.sourceVersionId ?? span.sourceId);
+    const current = best.get(key);
+    if (!current || coverage > current.coverage || (coverage === current.coverage && documentOpeningSpan(span) && !documentOpeningSpan(current.span))) best.set(key, { span, coverage });
+  }
+  for (const { span } of best.values()) sourceLeadSpans.set(span, true);
+}
+
+/** The span whose lead sentence may carry a source's title boost: its marked lead when identity was measured, else its opening block. */
+function documentLeadSpan(span: EvidenceSpan): boolean {
+  return sourceLeadSpans.get(span) ?? documentOpeningSpan(span);
+}
+
 export function localEvidenceAnswerSurface(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
@@ -493,6 +525,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   /** The learned closed class (role language plus request scaffolding); when present, the relation asked about is required. */
   closedClassWords?: ReadonlySet<string>;
 }): LocalEvidenceAnswerCandidate | undefined {
+  markSourceLeadSpans(input.selectedEvidence);
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!promoted.length) return undefined;
   // A request implying a temporal counterexample (e.g. "did X invent Y?"
@@ -596,7 +629,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
     // content word -- "The Athens area encompasses a variety of terrain ... the capital is the only major city in
     // Europe" beat "'Athens' is the capital and largest city of Greece" by exactly that (live 2026-09-10).
-    if (titleMatches && contentRequestUnits.size && documentOpeningSpan(span)) {
+    if (titleMatches && contentRequestUnits.size && documentLeadSpan(span)) {
       // Fragments (lowercase-initial in a cased script -- markup or
       // splitting leftovers) are ineligible to receive the transferred
       // boost: a glued image-caption block was winning the transfer on a
@@ -630,8 +663,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
       const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchored.anchors) ? calibrated("ranking.anchor_boost") : 0;
       // Must outweigh unitOverlap*0.92's realistic ceiling (~3 units); see
       // the coverage-transfer note above for when it moves off the lead.
+      // A book's opening block is a licence header, not a lead: the boost needs the opening to name the source.
       const titleLeadBoost = titleMatches
-        && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentOpeningSpan(span) && index <= 1))
+        && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentLeadSpan(span) && index <= 1))
+        && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
         ? calibrated("ranking.title_lead_boost")
         : 0;
       // Sentence-completeness prior: in cased scripts a well-formed
@@ -684,7 +719,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const subjectUnitSet = new Set(namedSubjectAnchors(input.requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
   const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
   const openingRow = definitional
-    ? rows.find(row => covers(row) && row.index <= 1 && documentOpeningSpan(row.span) && anchored.anchors.length > 0
+    ? rows.find(row => covers(row) && row.index <= 1 && documentLeadSpan(row.span) && anchored.anchors.length > 0
       && evidenceTitleDistinctAnchorMatches(row.span, anchored.anchors) && isProseSentence(row.sentence))
     : undefined;
   // Two sentences can both name the subject while only one says anything about it. Nothing above separates them:
@@ -713,7 +748,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const predicating = anchored.anchors.length
     ? fullest.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
     : [];
-  const openingFirst = (list: typeof rows) => [...list.filter(row => documentOpeningSpan(row.span)), ...list.filter(row => !documentOpeningSpan(row.span))];
+  const openingFirst = (list: typeof rows) => [...list.filter(row => documentLeadSpan(row.span)), ...list.filter(row => !documentLeadSpan(row.span))];
   const selected = openingRow ?? openingFirst(predicating)[0] ?? openingFirst(fullest)[0] ?? rows.find(covers);
   if (!selected) return undefined;
   // Learned response-form sentence budget (lexical-gap fix for
@@ -1041,7 +1076,15 @@ export function answerCoversRequest(
   // A lone short cased run (a sentence-initial question word) is not a name.
   // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
   // reaching for the Moon and the mission that landed on it.
-  const namedGroups = namedSubjectAnchors(requestText)
+  // A run the corpus carries as a source identity is the subject at any length. The five-character floor below was
+  // a stand-in for "long enough to be a name rather than a question word", and it swapped the roles of a
+  // four-letter one: "What is the capital of Peru?" made "capital" the subject and "peru" the relation, so the
+  // sentence naming Lima -- retrieved, ranked second -- failed coverage and the country's landscape answered
+  // instead (live 2026-09-12). The floor still applies where the corpus has said nothing.
+  const corpusIdentityGroups = corpusNamedIdentities(requestText)
+    .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean))
+    .filter(units => units.length > 0);
+  const namedGroups = corpusIdentityGroups.length ? corpusIdentityGroups : namedSubjectAnchors(requestText)
     .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
     .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
   const subjectUnits = namedGroups.length ? namedGroups.flat() : contentUnits.filter(unit => [...unit].length >= 6);
@@ -1070,6 +1113,10 @@ export function answerCoversRequest(
   // The sentence itself must name the subject it predicates about: with the title standing in, "Their son Eduard was
   // born in Zurich in July 1910" answered when Einstein was born, because the article is about Einstein and the
   // sentence carries "born".
+  // Corpus spread does NOT decide which of these is scaffolding. Tried and measured: dropping units the corpus
+  // spreads widely removed "capital" -- the relation itself -- and "What is the capital of Peru?" was answered with
+  // the country's landscape. A relation can be a common word; what separates "capital" from "plot" is that the
+  // corpus predicates with one and not the other, which is a question for relation observations, not frequency.
   const relationUnits = contentUnits.filter(unit => !subjectUnits.includes(unit));
   const answeringText = sentences.join(" ");
   const sentenceUnits = memoizedSurfaceUnits(answeringText).map(stripOuterPriorSeparators);
@@ -2125,7 +2172,7 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
 
 
 export function evidenceSpanProvenanceTitle(span: EvidenceSpan): string {
-  return evidenceTitle(span);
+  return evidenceTitle(span) || evidenceIdentity(span);
 }
 
 /** Wikitable rows and template calls that survived ingestion as "prose": never an answer surface, never admissible evidence. */
@@ -2172,6 +2219,37 @@ export function evidenceTitledForRequestSubject(text: string, spans: readonly Ev
   const provenance = jsonRecord(span.provenance);
   const metadata = jsonRecord(provenance.metadata);
   return kernelString(provenance.title) ?? kernelString(metadata.title) ?? "";
+}
+
+/** What the source is about, derived from its content at ingest (source-identity.ts); empty for sources that never got one. */
+ function evidenceIdentity(span: EvidenceSpan): string {
+  const provenance = jsonRecord(span.provenance);
+  const metadata = jsonRecord(provenance.metadata);
+  return kernelString(provenance.identity) ?? kernelString(metadata.identity) ?? "";
+}
+
+/**
+ * Whether the request's subject is what this source is about: every unit of some anchor, split the way the
+ * index split it, is present in the source's identity or title. A book has no title that names Mr Darcy, and
+ * an article that merely mentions him does; the identity is what tells the two apart. Units the request's
+ * learned scaffolding supplies are not required, and an anchor with nothing left binds nothing.
+ */
+/** Whether the source is about the subject this request names; see evidenceIdentityBindsAnchors. Pure. */
+export function evidenceIdentityBindsRequest(span: EvidenceSpan, requestText: string, closedClassWords?: ReadonlySet<string>): boolean {
+  const anchors = sourceEvidenceAnchorsForRequest(requestText);
+  return anchors.length > 0 && evidenceIdentityBindsAnchors(span, anchors, closedClassWords);
+}
+
+ function evidenceIdentityBindsAnchors(span: EvidenceSpan, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): boolean {
+  const identity = evidenceIdentity(span);
+  const title = evidenceTitle(span);
+  if (!identity && !title) return false;
+  const carried = new Set(anchorSymbolUnits(`${identity} ${title}`));
+  if (!carried.size) return false;
+  return anchors.some(anchor => {
+    const units = anchorSymbolUnits(anchor).filter(unit => [...unit].length >= 3 && !closedClassWords?.has(unit));
+    return units.length > 0 && units.every(unit => carried.has(unit));
+  });
 }
 
 
@@ -2263,6 +2341,9 @@ export function sourceAnchoredEvidenceForRequest(
   // span that lists it names it once among others. "Who was Charles Babbage?" bound to a Lovelace span naming him
   // once beside Noor Inayat Khan, in a paragraph that says "Lovelace" repeatedly -- the subject of that span is
   // plainly not Babbage, and counting says so.
+  // The source's own identity: what a book, a paper or a file calls itself, for corpora that carry no title
+  // naming their subject. Kept as a peer of the title tiers rather than a filter over them.
+  const identityBoundEvidence = evidence.filter(span => evidenceIdentityBindsAnchors(span, anchors, closedClassWords));
   const subjectOnlyRequest = requestContentEvidenceUnits(requestText).length <= 3;
   const contentMentionEvidence = contentBoundEvidence.length
     ? []
@@ -2273,6 +2354,7 @@ export function sourceAnchoredEvidenceForRequest(
     && !primaryEvidence.length
     && !contentBoundEvidence.length
     && !contentMentionEvidence.length
+    && !identityBoundEvidence.length
     && !semanticFrameBoundEvidence.length) return { required: true, anchors: uniqueKernelStrings([primaryAnchor, ...anchors]), evidence: [] };
   const primaryExact = primaryAnchor
     ? evidence.filter(span => evidenceExactSourceAnchorMatches(span, [primaryAnchor]) && evidenceAnchorFitForRequest(span, requestText, closedClassWords))
@@ -2301,6 +2383,7 @@ export function sourceAnchoredEvidenceForRequest(
     contentBound: contentBoundEvidence.length,
     contentMention: contentMentionEvidence.length,
     semanticFrameBound: semanticFrameBoundEvidence.length,
+    identityBound: identityBoundEvidence.length,
     subjectOnlyRequest,
     contentAnchors: contentAnchors.slice(0, 6)
   };
@@ -2309,10 +2392,11 @@ export function sourceAnchoredEvidenceForRequest(
     anchors: uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
     evidence: preferExactTitleSources(
       exact.length
-        ? uniqueEvidenceById([...primaryEvidence, ...exact, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence])
-        : uniqueEvidenceById([...primaryEvidence, ...contentBoundEvidence, ...contentMentionEvidence, ...selected, ...semanticFrameBoundEvidence]),
+        ? uniqueEvidenceById([...primaryEvidence, ...exact, ...contentBoundEvidence, ...contentMentionEvidence, ...identityBoundEvidence, ...selected, ...semanticFrameBoundEvidence])
+        : uniqueEvidenceById([...primaryEvidence, ...contentBoundEvidence, ...contentMentionEvidence, ...identityBoundEvidence, ...selected, ...semanticFrameBoundEvidence]),
       uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
-      semanticFrameBoundEvidenceIds
+      semanticFrameBoundEvidenceIds,
+      new Set(identityBoundEvidence.map(span => String(span.id)))
     )
   };
 }
@@ -2337,7 +2421,9 @@ export function sourceAnchoredEvidenceForRequest(
  function preferExactTitleSources(
   evidence: readonly EvidenceSpan[],
   anchors: readonly string[],
-  semanticFrameBoundEvidenceIds?: ReadonlySet<string>
+  semanticFrameBoundEvidenceIds?: ReadonlySet<string>,
+  /** Spans the source's own identity binds: a title match elsewhere does not unseat the source that IS the subject. */
+  identityBoundEvidenceIds?: ReadonlySet<string>
 ): EvidenceSpan[] {
   if (evidence.length < 2 || !anchors.length) return [...evidence];
   const exactTitled = evidence.filter(span => anchors.some(anchor => evidenceTitleExactlyMatchesAnchor(span, anchor)));
@@ -2345,7 +2431,10 @@ export function sourceAnchoredEvidenceForRequest(
   const frameBound = semanticFrameBoundEvidenceIds?.size
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
     : [];
-  return uniqueEvidenceById([...exactTitled, ...frameBound]);
+  const identityBound = identityBoundEvidenceIds?.size
+    ? evidence.filter(span => identityBoundEvidenceIds.has(String(span.id)))
+    : [];
+  return uniqueEvidenceById([...exactTitled, ...frameBound, ...identityBound]);
 }
 
 export function sourceIdentityAdmissibleEvidenceForRequest(
@@ -2392,6 +2481,7 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   const admitted = anchored.evidence.filter(span => (
     evidenceExactSourceAnchorMatches(span, admissionAnchors)
     || evidenceTitleDistinctAnchorMatches(span, admissionAnchors)
+    || evidenceIdentityBindsAnchors(span, admissionAnchors, closedClassWords)
     || semanticFrameBoundEvidenceIds.has(String(span.id))
     || spanContainsRequestNearDuplicateSentence(span, admissionSequences)
   ));
@@ -2400,12 +2490,14 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   // titled corpora keep the strict cross-title abstention guarantees.
   if (!admitted.length && evidence.length) {
     const titleless = evidence.filter(span => !evidenceTitle(span));
-    const contentAnchors = uniqueKernelStrings(anchored.anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))).filter(unit => [...unit].length >= 3);
+    // Split the way the index split the source: a substring test on "moby-dick" never found "Moby Dick".
+    const contentAnchors = uniqueKernelStrings(anchored.anchors.flatMap(anchor => anchorSymbolUnits(anchor)))
+      .filter(unit => [...unit].length >= 3 && !closedClassWords?.has(unit));
     const requiredHits = Math.min(2, contentAnchors.length);
     const scored = titleless
       .map(span => {
-        const surface = normalizePriorKey(String(span.text ?? span.textPreview ?? ""));
-        return { span, hits: contentAnchors.filter(anchor => surface.includes(anchor)).length };
+        const surface = new Set(anchorSymbolUnits(String(span.text ?? span.textPreview ?? "")));
+        return { span, hits: contentAnchors.filter(anchor => surface.has(anchor)).length };
       })
       .filter(row => row.hits >= requiredHits)
       .sort((left, right) => right.hits - left.hits);
@@ -2420,8 +2512,8 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
       const bound = titled
         .map(span => {
           const hits = splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""))
-            .map(sentence => normalizePriorKey(sentence))
-            .reduce((best, sentence) => Math.max(best, contentAnchors.filter(anchor => sentence.includes(anchor)).length), 0);
+            .map(sentence => new Set(anchorSymbolUnits(sentence)))
+            .reduce((best, sentence) => Math.max(best, contentAnchors.filter(anchor => sentence.has(anchor)).length), 0);
           return { span, hits };
         })
         .filter(row => row.hits >= Math.max(1, contentAnchors.length))
@@ -2656,7 +2748,19 @@ export function graphFilteredToEvidence(graph: GraphSlice, evidence: readonly Ev
 }
 
 
+const sourceEvidenceAnchorsByRequest = new Map<string, string[]>();
+
 export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
+  const memoized = sourceEvidenceAnchorsByRequest.get(requestText);
+  if (memoized) return memoized;
+  const derived = deriveSourceEvidenceAnchorsForRequest(requestText);
+  // Bounded: one turn asks about one request, and a server answers many.
+  if (sourceEvidenceAnchorsByRequest.size >= 512) sourceEvidenceAnchorsByRequest.clear();
+  sourceEvidenceAnchorsByRequest.set(requestText, derived);
+  return derived;
+}
+
+function deriveSourceEvidenceAnchorsForRequest(requestText: string): string[] {
   const named = namedSubjectAnchors(requestText)
     .sort((left, right) => splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length);
   const derived = derivedSourceAnchorPhrases(requestText);
@@ -3633,6 +3737,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 
 
  function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, closedClassWords?: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>): string[] {
+  markSourceLeadSpans(evidence);
   // Mirrors proposeSourceExactEvidenceAnswer's ranking contract exactly
   // (see the long notes there): sentences are ranked IN tidySurfaceText
   // space so every returned surface is a verbatim substring of its span
@@ -3651,6 +3756,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const requestSequences = requestSentenceSequences(requestText);
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
   const singleSpan = evidence.length === 1;
+  const rankFeatureRows: { sentence: string; f: Record<string, number> }[] = [];
   const candidates = evidence
     .flatMap(span => {
       const tidySpanText = tidySurfaceText(span.text);
@@ -3702,7 +3808,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       const scaffoldingFreeRequestUnits = closedClassWords?.size
         ? new Set([...requestUnits].filter(unit => !closedClassWords.has(unit)))
         : requestUnits;
-    if (titleMatches && contentRequestUnits.size && documentOpeningSpan(span)) {
+    if (titleMatches && contentRequestUnits.size && documentLeadSpan(span)) {
         const coverage = sentences
           .map((sentence, index) => ({
             index,
@@ -3743,7 +3849,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(sentence, orderedRequestUnits);
         const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? calibrated("ranking.anchor_boost") : 0;
         const titleLeadBoost = titleMatches
-          && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentOpeningSpan(span) && index <= 1))
+          && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentLeadSpan(span) && index <= 1))
           && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
           ? calibrated("ranking.title_lead_boost")
           : 0;
@@ -3754,6 +3860,23 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         const nearDuplicateBoost = nearDuplicateFraction >= calibrated("ranking.near_duplicate_fraction_floor") && !promotedSessionEvidence(span)
           ? calibrated("ranking.near_duplicate_weight") * nearDuplicateFraction
           : 0;
+        // Raw values, before any coefficient: the fitter needs the feature, not the weighted term.
+        rankFeatureRows.push({
+          sentence: sentence.slice(0, 160),
+          f: {
+            unitOverlap,
+            lexical,
+            pairOverlap,
+            alpha: span.alpha,
+            anchorMatch: anchorBoost > 0 ? 1 : 0,
+            titleLead: titleLeadBoost > 0 ? 1 : 0,
+            sourceAffinity: sourceAffinityBoost > 0 ? sourceAffinityBoost / Math.max(1e-9, calibrated("ranking.source_affinity_weight")) : 0,
+            nearDuplicateFraction: nearDuplicateBoost > 0 ? nearDuplicateFraction : 0,
+            sourceOrderIndex: index,
+            fragmentCount: (lowercaseInitialFragment(sentence) ? 1 : 0) + (danglingTailFragment(sentence) ? 1 : 0),
+            longSentencePenalty: fastAnswerLongSentencePenalty(sentence)
+          }
+        });
         return {
           span,
           sentence,
@@ -3780,6 +3903,11 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "local_evidence.rank_features",
+    label: "kernel.turn",
+    support: { request: requestText.slice(0, 160), rows: rankFeatureRows.slice(0, 40) }
+  });
   // The quoted sentence answers a quotation by itself (same doctrine as the source-exact window).
   // Among the top candidates, the ones that predicate about the requested subject go first -- before the limit cuts
   // the list, because a preference applied after truncation can only reorder sentences that already survived.
@@ -3796,7 +3924,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   const subjectUnitSet = new Set(namedSubjectAnchors(requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
   const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
   const openingRow = definitional && !candidates[0]?.nearDuplicate
-    ? candidates.find(row => row.index <= 1 && documentOpeningSpan(row.span) && anchors.length > 0 && evidenceTitleDistinctAnchorMatches(row.span, anchors) && isProseSentence(row.sentence))
+    ? candidates.find(row => row.index <= 1 && documentLeadSpan(row.span) && anchors.length > 0 && evidenceTitleDistinctAnchorMatches(row.span, anchors) && isProseSentence(row.sentence))
     : undefined;
   const rerankable = anchors.length && !candidates[0]?.nearDuplicate && !openingRow
     ? candidates.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
@@ -4580,4 +4708,11 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
   return last === "." || last === "!" || last === "?" || last === "\u3002" || last === "\uff01" || last === "\uff1f"
     ? chars.slice(0, -1).join("").trimEnd()
     : clean;
+}
+
+/** Whether a source carries identity of its own beyond its title: an encyclopedia article's identity IS its title,
+ *  while a book, a paper or a source file names itself in its content. Pure. */
+export function evidenceIdentityBeyondTitle(span: EvidenceSpan): boolean {
+  const identity = evidenceIdentity(span);
+  return identity.trim().length > 0 && normalizePriorKey(identity) !== normalizePriorKey(evidenceTitle(span));
 }

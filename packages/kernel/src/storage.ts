@@ -638,6 +638,17 @@ export interface EvidenceVisualSearchResult {
   regions: readonly (readonly number[])[];
 }
 
+/**
+ * What the corpus says about one request. `identities` are source titles found inside the request text, asked
+ * whole identity -- the corpus has a document about exactly this -- which is the precise answer to "does this
+ * request name a subject". `spread` is how many distinct sources carry every unit of the run, the continuous
+ * signal for a topic the corpus documents without titling. Neither asks about case, word length or segmentation.
+ */
+export interface CorpusIdentityArbitration {
+  readonly identities: readonly string[];
+  readonly spread: ReadonlyMap<string, number>;
+}
+
 export interface EvidenceStore {
   putSourceVersion(source: SourceVersion): Promise<void>;
   putEvidenceSpan(span: EvidenceSpan): Promise<void>;
@@ -646,6 +657,21 @@ export interface EvidenceStore {
   getEvidence(id: EvidenceId): Promise<EvidenceSpan | null>;
   getEvidenceBatch(ids: EvidenceId[]): Promise<EvidenceSpan[]>;
   searchEvidence(query: EvidenceQuery): Promise<EvidenceSearchResult[]>;
+  /**
+   * Which of these candidate runs the corpus carries as a source identity.
+   *
+   * The language-neutral form of "does this request name a subject": a name is a thing the corpus has a document
+   * about, which is a fact about the corpus and not about any script. The previous answer was Latin casing plus a
+   * five-character word-length bound -- it reported the verb as the subject of "What did he discover?", and it
+   * cannot work at all for Korean, Japanese, Hebrew, Arabic or any unspaced or uncased writing system.
+   * Optional: stores without source identity simply carry no names.
+   */
+  sourceIdentityArbitration?(input: { text: string; runs: readonly string[] }): Promise<CorpusIdentityArbitration>;
+  /**
+   * The corpus's own distribution of how many sources carry a unit, used to derive where concentration begins
+   * rather than declaring it. Sampled from the identity vocabulary, so it is a property of this corpus.
+   */
+  sourceSpreadDistribution?(sampleSize: number): Promise<number[]>;
   /**
    * The promoted opening block (charStart 0) of each source version: the block that states what the source's
    * subject is. Anchor search ranks by feature overlap, so a "Who is X?" request routinely retrieves mid-article
@@ -1142,7 +1168,8 @@ export interface FileIngestPort {
 }
 
 export interface BuildTestPort {
-  executeProgram(input: { episodeId: EpisodeId; construct: ConstructGraph }): Promise<BuildTestResult>;
+  /** `faultInjection`: a named defect applied to the first attempt only, so the repair path can be exercised live. */
+  executeProgram(input: { episodeId: EpisodeId; construct: ConstructGraph; faultInjection?: string }): Promise<BuildTestResult>;
 }
 
 export interface ConnectorPort {

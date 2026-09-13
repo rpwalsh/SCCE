@@ -6,7 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import mammoth from "mammoth";
-import { createHasher, normalizePath, toJsonValue, type JsonValue } from "@scce/kernel";
+import { createHasher, normalizePath, openingIdentityUnits, sourceTitleFromUri, toJsonValue, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { extractNodeSourceCodeFacts } from "./code-graph.js";
 import { extractWorkbookBytes } from "./spreadsheet.js";
@@ -142,6 +142,12 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
     structural: completeStructure,
     diagnostics,
     metadata: toJsonValue({
+      // Retrieval anchors a named subject to a source's title; Wikipedia supplies one and a file does not, so
+      // every book, note and source file was unreachable by name (45 Gutenberg texts, live 2026-09-12). The
+      // locator names the file, and the opening is where any format names itself.
+      title: sourceTitleFromUri(relativeUri),
+      // A source file is about what it declares, not about the words in its header.
+      identity: [...new Set([...openingIdentityUnits(normalized), ...(sourceCodeFacts?.declarations ?? []).map(declaration => declaration.name).filter(Boolean).slice(0, 96)])].join(" "),
       extractor: parser,
       attempts: attempts.map(attempt => ({ parser: attempt.parser, ok: attempt.ok, durationMs: attempt.durationMs, warnings: attempt.warnings.slice(0, 8), stderr: attempt.stderr?.slice(0, 500) ?? null })),
       structure: completeStructure,

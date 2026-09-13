@@ -5,6 +5,7 @@ import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./eva
 import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
+import { deriveClosedClassWords } from "./closed-class-words.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
@@ -22,6 +23,7 @@ import {
   sourceAnchoredEvidenceForRequest,
   sourceEvidenceAnchorsForRequest,
   sourceIdentityAdmissibleEvidenceForRequest,
+  evidenceIdentityBindsRequest,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
   temporalConceptTitledEvidence,
@@ -108,6 +110,8 @@ interface HotNeighborhoodClosureCandidate {
 
 // Hard resident-walk caps: environment sizing may enlarge the hydrated cache,
 // but a turn cannot enlarge this query frontier.
+/** Learned function material per hydrated model set: the derivation walks every unit the corpus knows. */
+const functionUnitsByModels = new WeakMap<object, ReadonlySet<string>>();
 const HOT_QUERY_RADIUS = 2;
 const HOT_QUERY_SEED_LIMIT = 24;
 const HOT_QUERY_NODE_LIMIT = 96;
@@ -574,7 +578,7 @@ export function createRuntimeGraphRetrieval(options: {
   /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
-  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = ""): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
     // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
     const titleUnits = anchorGroupTitleUnits(group);
     // A prose question's hits are the prose hits: four source comments carrying "Lovelace born" satisfied this
@@ -584,7 +588,8 @@ export function createRuntimeGraphRetrieval(options: {
     // request corpus was ingested: "Who is Ada Lovelace?" retrieved eleven spans and her article was not among them.
     // Over-fetch, drop control spans before ranking, and let titled sources precede titleless ones.
     const usable = (rows: Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>) => {
-      const kept = (proseOnly ? rows.filter(item => !spanIsSourceCode(item.span)) : rows).filter(item => !isControlCorpusSpan(item.span));
+      // A source file that declares the identifier the request names is about that request, code lane or not.
+      const kept = (proseOnly ? rows.filter(item => !spanIsSourceCode(item.span) || evidenceIdentityBindsRequest(item.span, text)) : rows).filter(item => !isControlCorpusSpan(item.span));
       const titled = kept.filter(item => evidenceSpanProvenanceTitle(item.span));
       const titleless = kept.filter(item => !evidenceSpanProvenanceTitle(item.span));
       return [...titled, ...titleless].slice(0, 32);
@@ -694,7 +699,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
     const anchoredEvidenceResults = anchorFeatureGroups.length
       ? await Promise.all(anchorFeatureGroups.map(async group => {
-        const rows = await searchAnchorGroup(group, proseSourceKinds, !codeRequestRecognized(codeRequestSignal(text)));
+        const rows = await searchAnchorGroup(group, proseSourceKinds, !codeRequestRecognized(codeRequestSignal(text)), text);
         perGroupCounts.push({ group: [...group], rows: rows.length, heads: rows.slice(0, 2).map(item => String(item.span.textPreview ?? "").replace(/s+/gu, " ").slice(0, 50)) });
         return rows;
       })).then(groupResults => groupResults.flat())
@@ -707,9 +712,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // that is not about code is answered from prose while any prose remains; a code request keeps everything.
     const evidenceResults = codeRequestRecognized(codeRequestSignal(text))
       ? gatheredResults
-      : (() => {
-        return gatheredResults.filter(item => !spanIsSourceCode(item.span));
-      })();
+      : gatheredResults.filter(item => !spanIsSourceCode(item.span) || evidenceIdentityBindsRequest(item.span, text));
     kernelTrace({
       stage: "graph.resolve.anchor_evidence_search",
       label: "kernel.sourceAnchoredEvidenceForText",
@@ -895,7 +898,36 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     return [...siblings].slice(0, 3);
   }
 
+  /** The corpus's own function material, by Kneser-Ney continuation count: the same derivation admission and
+   *  ranking use. A unigram feature over it identifies no source; a bigram of two of them identifies no source
+   *  either. A bigram with one content unit stays: "the|capital" has 1,156 postings against "the"'s 70,228. */
+  function retrievalFunctionUnits(languageModels: readonly KneserNeyModel[]): ReadonlySet<string> {
+    if (!languageModels.length) return new Set<string>();
+    // Derived once per hydrated model set: the walk is over every unit the corpus knows (322,259 here).
+    const cached = functionUnitsByModels.get(languageModels);
+    if (cached) return cached;
+    const derived = deriveClosedClassWords({ models: languageModels, limit: 160 });
+    functionUnitsByModels.set(languageModels, derived);
+    return derived;
+  }
+
+  /** Drops features that can only cost: every unit function material. Returns the input when nothing is left --
+   *  a request made entirely of function words still searches, as it did before. Pure. */
+  function contentBearingFeatures(features: readonly string[], functionUnits: ReadonlySet<string>): string[] {
+    if (!functionUnits.size) return [...features];
+    const kept = features.filter(feature => {
+      const units = feature.startsWith("anchor:bi:")
+        ? feature.slice("anchor:bi:".length).split("|")
+        : feature.startsWith("anchor:sym:")
+          ? [feature.slice("anchor:sym:".length)]
+          : [];
+      return !units.length || units.some(unit => !functionUnits.has(normalizePriorKey(unit)));
+    });
+    return kept.length ? kept : [...features];
+  }
+
   function sourceAnchorRetrievalFeatureGroups(text: string, languageModels: readonly KneserNeyModel[] = []): string[][] {
+    const functionUnits = retrievalFunctionUnits(languageModels);
     const anchors = sourceEvidenceAnchorsForRequest(text);
     if (!anchors.length) return [];
     const specificAnchors = anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
@@ -978,7 +1010,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
           return units.length >= 2 && units.reduce((sum, unit) => sum + [...normalizePriorKey(unit)].length, 0) >= 6;
         });
       if (phraseFeatures.length) {
-        groups.push(uniqueKernelStrings([...phraseFeatures.slice(0, 4), ...trailingFeatures]));
+        groups.push(contentBearingFeatures(uniqueKernelStrings([...phraseFeatures.slice(0, 4), ...trailingFeatures]), functionUnits));
         continue;
       }
       const symFeatures = ordered
@@ -990,7 +1022,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         .slice(0, 4);
       const learnedSymFeatures = symFeatures.flatMap(feature =>
         learnedMorphologicalSiblings(normalizePriorKey(feature.slice("anchor:sym:".length)), languageModels).map(variant => `anchor:sym:${variant}`));
-      const mergedSymFeatures = uniqueKernelStrings([...symFeatures, ...learnedSymFeatures, ...trailingFeatures]);
+      const mergedSymFeatures = contentBearingFeatures(uniqueKernelStrings([...symFeatures, ...learnedSymFeatures, ...trailingFeatures]), functionUnits);
       if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
     }
     // The concept a premise attributes to its subject is a source of its own. "did martha washington invent the
@@ -1038,7 +1070,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       .map(feature => ({ feature, weight: feature.length }))
       .sort((a, b) => b.weight - a.weight)
       .map(item => item.feature);
-    const extras = uniqueKernelStrings(requestBigrams).slice(0, 4);
+    const extras = contentBearingFeatures(uniqueKernelStrings(requestBigrams), functionUnits).slice(0, 4);
     if (extras.length >= 2) groups.push(extras);
     return groups;
   }

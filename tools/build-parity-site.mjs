@@ -27,7 +27,15 @@ const oneShot = read("artifacts/full-system-one-shot.json");
 const longHorizon = read("artifacts/long-horizon-gate.json");
 const releaseGate = read("artifacts/release-gate.json");
 const capitals = read("artifacts/parity-dataset/capitals.json");
+const headToHead = read("artifacts/head-to-head/results.json");
+const ablation = read("artifacts/head-to-head/ablation.json");
+const codingSpine = read("artifacts/coding-spine.json");
+const latency = read("artifacts/head-to-head/latency.json");
+const fictionVoice = read("artifacts/fiction-voice.json");
+const proseOrder = read("tools/prose-order-calibration/report-full.json");
 
+// A local file URI in a citation is shown from its repository-relative path: the machine's folder layout is not a result.
+const depath = value => String(value ?? "").replace(/file:\/\/\/\S*?\/(packages\/|tools\/|scripts\/|docs\/|demo-workspace\/)/gu, "$1");
 const esc = value => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const seconds = ms => `${(Number(ms) / 1000).toFixed(1)}s`;
 const pct = (num, den) => den ? `${Math.round((100 * num) / den)}%` : "—";
@@ -59,11 +67,94 @@ function capitalsBlock() {
     const [cls, label, note] = CAPITAL_VERDICTS[row.text] ?? ["neutral", "not scored", ""];
     return '<tr><td class="q">' + esc(row.text) + '</td><td>' + pill(cls, label)
       + '<div class="muted">' + esc(note) + '</div></td><td class="ans-cell">'
-      + esc(String(row.answer).replace(/ Source:.*$/, "").replace(/\s+/g, " ").slice(0, 240))
+      + esc(depath(row.answer).replace(/ Source:.*$/, "").replace(/\s+/g, " ").slice(0, 240))
       + '</td><td class="mono">' + seconds(row.elapsedMs) + '</td></tr>';
   }).join("");
   return '<div class="table-scroll"><table class="wide"><thead><tr><th>question</th><th>verdict</th><th>answer (verbatim, truncated)</th><th>time</th></tr></thead><tbody>'
     + rows + '</tbody></table></div>';
+}
+
+// ---- heterogeneous sources: books and code answer as Wikipedia does ------------------------------------------
+function heterogeneousBlock() {
+  if (!headToHead?.scce?.byWorkload) return '<p class="muted">Head-to-head suite by corpus: not recorded.</p>';
+  const reference = headToHead.reference?.byWorkload ?? {};
+  const rows = Object.entries(headToHead.scce.byWorkload).map(([workload, b]) => {
+    const r = reference[workload];
+    const lead = r ? (b.correct > r.correct ? pill('good', 'SCCE ahead') : b.correct === r.correct ? pill('neutral', 'level') : pill('bad', modelName + ' ahead')) : pill('neutral', 'reference not recorded');
+    return '<tr><td>' + esc(workload) + '</td><td class="mono">' + b.correct + ' / ' + b.items + '</td><td class="mono">' + pct(b.correct, b.items) + '</td><td class="mono">' + (r ? r.correct + ' / ' + r.items : '—') + '</td><td>' + lead + '</td></tr>';
+  }).join("");
+  const examples = (headToHead.rows ?? []).filter(row => (row.workload === "book" || row.workload === "code") && row.scce).slice(0, 18).map(row =>
+    '<tr><td class="q">' + esc(row.prompt) + '</td><td>' + pill(row.scce.verdict === "correct" ? "good" : row.scce.verdict === "wrong" ? "bad" : "neutral", row.scce.verdict.replaceAll("_", " "))
+    + '</td><td class="ans-cell">' + esc(depath(row.scce.answer ?? "").replace(/ Source:.*$/, "").replace(/\s+/g, " ").slice(0, 200)) + '</td><td class="mono">' + seconds(row.scce.ms) + '</td></tr>').join("");
+  return '<div class="table-scroll"><table><thead><tr><th>workload</th><th>SCCE correct</th><th>rate</th><th>' + esc(modelName) + ' closed-book</th><th>lead</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + (examples ? '<div class="table-scroll"><table class="wide"><thead><tr><th>book / code question</th><th>verdict</th><th>answer (verbatim, truncated)</th><th>time</th></tr></thead><tbody>' + examples + '</tbody></table></div>' : "");
+}
+
+// ---- coding spine: both acceptance chains, read from the event ledger --------------------------------------
+function codingSpineBlock() {
+  if (!codingSpine) return '<p class="muted">Coding-spine acceptance: not recorded.</p>';
+  const chain = (label, run) => '<tr><td>' + esc(label) + '</td><td>' + pill(run.verdict.passed ? "good" : "bad", run.verdict.passed ? "pass" : "fail")
+    + '</td><td class="mono">' + esc(Object.entries(run.verdict.checks).map(([k, v]) => (v ? "✓ " : "✗ ") + k).join("  ")) + '</td><td class="mono">' + seconds(run.elapsedMs) + '</td></tr>';
+  return '<div class="table-scroll"><table class="wide"><thead><tr><th>chain</th><th>verdict</th><th>events required, in order</th><th>time</th></tr></thead><tbody>'
+    + chain("A. clean implementation", codingSpine.a) + chain("B. declared first-attempt defect, repaired", codingSpine.b) + '</tbody></table></div>'
+    + '<p class="muted">Recorded ' + esc(codingSpine.generatedAt.slice(0, 16).replace("T", " ")) + ' UTC. Request: ' + esc(codingSpine.request) + '</p>';
+}
+
+// ---- ablation: does each piece of the math earn its place? -------------------------------------------------
+function ablationBlock() {
+  if (!ablation) return '<p class="muted">Ablation on the head-to-head suite: not recorded.</p>';
+  const rows = Object.entries(ablation.conditions).map(([id, c]) => {
+    const cells = Object.entries(c.byWorkload).map(([w, b]) => esc(w) + ' ' + b.fullCorrect + '→' + b.ablatedCorrect + '/' + b.items).join(", ");
+    const cls = c.lost > c.gained && c.signTest.p < 0.05 ? "good" : c.lost > c.gained ? "neutral" : "bad";
+    const label = c.lost > c.gained && c.signTest.p < 0.05 ? "load-bearing" : c.lost > c.gained ? "hurts, not significant" : c.lost === c.gained ? "inert here" : "removal helps";
+    return '<tr><td class="mono">' + esc(id) + '</td><td>' + cells + '</td><td class="mono">' + c.lost + ' / ' + c.gained + '</td><td class="mono">' + c.signTest.p + '</td><td>' + pill(cls, label) + '</td></tr>';
+  }).join("");
+  return '<div class="table-scroll"><table class="wide"><thead><tr><th>condition</th><th>full → ablated, per workload</th><th>lost / gained</th><th>sign-test p</th><th>reading</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<p class="muted">Recorded ' + esc(ablation.generatedAt.slice(0, 16).replace("T", " ")) + ' UTC over ' + ablation.items + ' graded items; each condition is scored only on the workloads that need the component it removes.</p>';
+}
+
+// ---- fiction voice: does it write prose, or encyclopedia? ---------------------------------------------------
+function fictionVoiceBlock() {
+  if (!fictionVoice) return '<p class="muted">Fiction-voice measurement: not recorded.</p>';
+  const rows = fictionVoice.rows.map(row =>
+    '<tr><td class="q">' + esc(row.prompt) + '</td><td>' + pill(row.register === 'prose' ? 'good' : row.register === 'unscored' ? 'neutral' : 'bad', row.register)
+    + '</td><td class="mono">' + (row.margin ?? '—') + '</td><td class="mono">' + row.echo + '</td><td class="mono">' + row.copiedRun + '</td><td class="ans-cell">' + esc(String(row.passage).replace(/s+/g, ' ').slice(0, 200)) + '</td></tr>').join('');
+  return '<div class="table-scroll"><table class="wide"><thead><tr><th>request</th><th>reads as</th><th>margin (nats/token)</th><th>echo</th><th>copied run</th><th>passage (verbatim, truncated)</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<p class="muted">' + fictionVoice.proseRegister + ' of ' + fictionVoice.passages + ' passages are more likely under the public-domain prose models than under the encyclopedic ones. Margin is the per-token log-likelihood difference; echo is the share of the passage taken from the request; copied run is the longest span of consecutive words shared with any source. Recorded ' + esc(String(fictionVoice.generatedAt).slice(0, 16).replace('T', ' ')) + ' UTC.</p>';
+}
+
+// ---- why the models are trained at the order they are --------------------------------------------------------
+function proseOrderBlock() {
+  if (!proseOrder) return '';
+  const rows = proseOrder.rows.map(row =>
+    '<tr><td class="mono">' + row.order + '</td><td class="mono">' + row.logPerplexity + '</td><td class="mono">' + (row.order === proseOrder.best.order ? 'minimum' : '') + '</td></tr>').join('');
+  return '<h3>Why the prose models are trained at the order they are</h3>'
+    + '<p class="intro">The order was an inherited default until it was swept. Orders 2 to 9 were measured against held-out passages of four novels, the other ' + proseOrder.corpusBooks + ' as corpus (' + proseOrder.corpusSymbols.toLocaleString() + ' symbols): lower is less surprised by real prose.</p>'
+    + '<div class="table-scroll"><table><thead><tr><th>order</th><th>log-perplexity (nats/token)</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<p class="muted">Orders 6 through 9 are identical: no 6-gram context recurs anywhere in the corpus, so each backs off to the same estimate while costing several times the training. The minimum also moves with corpus size, so it is re-measured as the corpus grows.</p>';
+}
+
+// ---- compute cost: a proxy, named as one ------------------------------------------------------------------
+function efficiencyBlock() {
+  if (!headToHead?.scce || !headToHead?.reference) return '<p class="muted">Compute-cost comparison: not recorded.</p>';
+  const rows = [
+    ["CPU seconds per task", headToHead.scce.cpuSecondsPerItem, headToHead.reference.cpuSecondsPerItem],
+    ["Wall seconds per task", headToHead.scce.wallSecondsPerItem, headToHead.reference.wallSecondsPerItem],
+    ["Peak resident MB", headToHead.scce.peakRssMb, headToHead.reference.peakRssMb],
+    ["GPU seconds per task", headToHead.scce.gpuSecondsPerItem, headToHead.reference.gpuSecondsPerItem],
+    ["API tokens per task", headToHead.scce.apiTokensPerItem, headToHead.reference.apiTokensPerItem]
+  ].map(([label, a, b]) => '<tr><td>' + esc(label) + '</td><td class="mono">' + (a ?? "—") + '</td><td class="mono">' + (b ?? "—") + '</td><td class="mono">' + (typeof a === "number" && typeof b === "number" && a > 0 ? (b / a).toFixed(1) + "x" : "—") + '</td></tr>').join("");
+  return '<div class="table-scroll"><table><thead><tr><th>measure</th><th>SCCE</th><th>' + esc(modelName) + '</th><th>ratio</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<p class="muted">CPU seconds are attributable per process and are the measure used here; they are a compute-cost proxy, not joules. This machine&rsquo;s power meter reports zero and its battery delta is only valid while discharging, so no energy figure is claimed.</p>';
+}
+
+// ---- latency: cold and warm distributions, never one mean -------------------------------------------------
+function latencyBlock() {
+  if (!latency) return '<p class="muted">Cold/warm latency profile: not recorded.</p>';
+  const row = (label, pass) => '<tr><td>' + esc(label) + '</td><td class="mono">' + seconds(pass.p50) + '</td><td class="mono">' + seconds(pass.p95) + '</td><td class="mono">' + seconds(pass.max) + '</td><td class="mono">' + pass.items + '</td></tr>';
+  const per = Object.entries(latency.warm.byWorkload ?? {}).map(([w, b]) => esc(w) + ' p95 ' + seconds(b.p95)).join(', ');
+  return '<div class="table-scroll"><table><thead><tr><th>pass</th><th>p50</th><th>p95</th><th>max</th><th>turns</th></tr></thead><tbody>' + row('cold (first pass after restart)', latency.cold) + row('warm (second pass)', latency.warm) + '</tbody></table></div>'
+    + '<p class="muted">Requirement warm p95 under 10 s: ' + (latency.requirement?.met ? '<span class="ok">met</span>' : '<span class="warn">not met</span>') + '. Warm by workload: ' + per + '. Cold regressions named: ' + (latency.regressions?.length ?? 0) + '. Recorded ' + esc(latency.generatedAt.slice(0, 16).replace('T', ' ')) + ' UTC.</p>';
 }
 
 // ---- chat: reference comparison ------------------------------------------------------------------------------
@@ -96,7 +187,7 @@ function comparisonRows(report) {
 
 function probeBlock(report, title) {
   if (!report) return `<p class="muted">${esc(title)}: not recorded.</p>`;
-  const rows = report.rows.map(row => `<tr><td class="q">${esc(row.text)}</td><td class="ans-cell">${esc(String(row.answer).slice(0, 220))}</td><td class="mono">${row.evidence}</td><td class="mono">${seconds(row.elapsedMs)}</td></tr>`).join("");
+  const rows = report.rows.map(row => `<tr><td class="q">${esc(row.text)}</td><td class="ans-cell">${esc(depath(row.answer).slice(0, 220))}</td><td class="mono">${row.evidence}</td><td class="mono">${seconds(row.elapsedMs)}</td></tr>`).join("");
   return `<h3>${esc(title)}</h3>
   <p class="muted">${report.questions} questions · ${report.answeredWithEvidence} answered with cited evidence · mean ${seconds(report.meanMs)} · max ${seconds(report.maxMs)}${report.session ? " · one session, follow-ups bind to the turn they continue" : ""}</p>
   <div class="table-scroll"><table class="wide"><thead><tr><th>ask</th><th>answer (verbatim, truncated)</th><th>evidence</th><th>time</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -156,6 +247,12 @@ function acceptanceBlock() {
 const headline = [];
 if (live) headline.push({ num: `${live.scce.declined}<small>/${live.unanswerable}</small>`, label: `Unanswerable questions declined (${modelName}: ${live.model.declined}/${live.unanswerable}). A refusal is a result here; every question is checked against the article before it is asked.` });
 if (live) headline.push({ num: `${live.scce.correct}<small>/${live.answerable}</small>`, label: `Answerable questions correct, cited from the corpus, retrieved from 80k spans (${modelName} was handed the article: ${live.model.correct}/${live.answerable}).` });
+if (headToHead?.scce?.byWorkload && headToHead?.reference?.byWorkload) {
+  const workloads = Object.keys(headToHead.scce.byWorkload);
+  const won = workloads.filter(w => (headToHead.scce.byWorkload[w]?.correct ?? 0) >= (headToHead.reference.byWorkload[w]?.correct ?? 0)).length;
+  headline.push({ num: `${won}<small>/${workloads.length}</small>`, label: `Workloads where SCCE matches or beats ${modelName} closed-book on the ${headToHead.scce.items}-item graded suite (Wikipedia, Gutenberg, source code, abstention): ${headToHead.scce.correct} correct to ${headToHead.reference.correct}.` });
+}
+if (codingSpine) headline.push({ num: `${[codingSpine.a, codingSpine.b].filter(run => run.verdict.passed).length}<small>/2</small>`, label: "Coding chains passed end to end, read from the event ledger: a clean implementation built and tested, and a declared first-attempt defect replanned, repaired and re-tested." });
 if (probeChat) headline.push({ num: `${(probeChat.meanMs / 1000).toFixed(1)}<small>s</small>`, label: `Mean turn over ${probeChat.questions} chat questions on the live brain, down from 81 s before the readiness fix.` });
 if (selfRepair) { const worse = selfRepair.results.filter(r => (r.system ?? "scce") === "scce" && r.worse).length; headline.push({ num: `${worse}<small>&nbsp;/&nbsp;${selfRepair.results.filter(r => (r.system ?? "scce") === "scce").length}</small>`, label: "Source files SCCE made worse across the self-repair benchmark, the compiler deciding." }); }
 
@@ -250,6 +347,13 @@ const html = `<title>SCCE Evaluation</title>
     <p class="intro">The open gap named above, measured on the running server rather than described. Every verdict is read from the answer text, never by substring: the two rows that changed on 2026-09-12 had both previously produced an answer containing the right city name for the wrong reason.</p>
     ${capitalsBlock()}
     ${capitals ? `<p class="muted">Recorded ${esc(capitals.generatedAt.slice(0, 16).replace("T", " "))} UTC, ${capitals.questions} questions, mean ${seconds(capitals.meanMs)}, max ${seconds(capitals.maxMs)}.</p>` : ""}
+    <h3>Writing fiction, not encyclopedia</h3>
+    <p class="intro">The public-domain books are in the corpus so the engine learns what fiction sounds like and can write it. <code>tools/fiction-voice.mjs</code> scores each generated passage under the corpus&rsquo;s own two model families &mdash; the encyclopedic models and the prose models &mdash; and reports which finds it more likely. No judge, no opinion.</p>
+    ${fictionVoiceBlock()}
+    ${proseOrderBlock()}
+    <h3>Books and source files, asked the same way</h3>
+    <p class="intro">Every corpus is knowledge, not only the encyclopedia. Twelve questions answerable only from a Gutenberg text and six only from the ingested source tree sit in the same suite as the Wikipedia items and are graded by the same rule (<code>tools/head-to-head/build-suite.mjs</code>, <code>run.mjs</code>). A retrieval path that only names Wikipedia articles scores zero on the book and code rows.</p>
+    ${heterogeneousBlock()}
     <h3>Every question, both answers</h3>
     ${comparisonRows(live)}
     ${probeBlock(probeChat, "Twelve chat questions on the live brain")}
@@ -276,6 +380,12 @@ const html = `<title>SCCE Evaluation</title>
       <li>Per-cluster language indexes are memoized instead of rebuilt for every cluster on every turn.</li>
       <li>Result: ${probeChat ? `a ${(probeChat.meanMs / 1000).toFixed(1)} s mean over ${probeChat.questions} questions` : "single-digit seconds per turn"}, from 81 s, on the same brain and hardware.</li>
     </ul>
+    <h3>What a task costs to compute</h3>
+    <p class="intro">Both systems answered the same graded suite on this machine, sequentially, each timed in the process that ran it.</p>
+    ${efficiencyBlock()}
+    <h3>Cold and warm, as distributions</h3>
+    <p class="intro"><code>tools/head-to-head/latency-profile.mjs</code> sends the relation, book, code and conversational items twice against a freshly restarted server. The runtime hydrates language and graph state durably, so the first pass and the second are different measurements and are reported apart; a single mean would hide both.</p>
+    ${latencyBlock()}
     <h3>Answer selection, the same day</h3>
     <ul class="plain">
       <li>"Who is X?" is answered from X's own article: the subject's opening block is fetched whenever admission kept only mid-article chunks.</li>
@@ -284,6 +394,9 @@ const html = `<title>SCCE Evaluation</title>
       <li>A follow-up that names its subject only by pronoun binds to the turn it continues instead of searching the corpus for its verb.</li>
       <li>A question the corpus cannot ground is declined as a notice, never echoed back as an answer.</li>
     </ul>
+    <h3>Coding spine, observed per attempt</h3>
+    <p class="intro"><code>tools/coding-spine-acceptance.mjs</code> sends one implementation request twice: once clean, once with a declared first-attempt defect the repairer must fix. The verdict is read from the turn's event ledger -- ProgramGraphBuilt, BuildExecuted per attempt, TestExecuted per attempt, TaskReplanned, ProgramRepaired, TaskNodeCompleted -- never from the prose.</p>
+    ${codingSpineBlock()}
     <h3>Answer selection, 2026-09-12</h3>
     <p class="intro">Two defects in how the answering fact is built, both found by tracing the live server rather than by reading the code. Each was measured before and after, and the release gate ran on each.</p>
     <ul class="plain">
@@ -298,6 +411,9 @@ const html = `<title>SCCE Evaluation</title>
   <section class="tab" id="panel-acceptance" role="tabpanel" hidden>
     <h2>Acceptance suite</h2>
     <p class="intro"><code>docs/ACCEPTANCE_SUITE.md</code> names twenty behaviours a cognitive architecture must show, most of them beyond what a retrieval benchmark can exercise. The two harnesses recorded here are the ones that run the whole system end to end.</p>
+    <h3>Does the math earn its place?</h3>
+    <p class="intro"><code>tools/head-to-head/ablate.mjs</code> runs the full runtime and one ablated runtime per sealed evaluation condition over the graded suite, in-process, and scores each condition on the workloads that need the component it removes. "Lost" is an item the full system answered and the ablated one did not; the p-value is an exact sign test over the flipped items.</p>
+    ${ablationBlock()}
     ${acceptanceBlock()}
   </section>
 
@@ -313,6 +429,15 @@ node tools/self-repair-benchmark.mjs                 # SCCE's own modules
 node tools/release-gate.mjs --json > artifacts/release-gate.json   # live release gate, served path
 node tools/full-system-one-shot.mjs --trace          # acceptance gate 20
 node tools/long-horizon-gate.mjs --turns=20          # acceptance gate 16
+node --max-old-space-size=7168 tools/train-gutenberg.mjs        # public-domain prose, through its own lane
+node --max-old-space-size=7168 tools/prose-order-calibration/calibrate.mjs   # the order sweep above
+node --max-old-space-size=7168 tools/fiction-voice.mjs               # does it write prose or encyclopedia
+node tools/capitals-probe.mjs                        # the relation table below, recorded verbatim
+node tools/head-to-head/build-suite.mjs              # 311-item suite: Wikipedia, Gutenberg, source code, abstention, relation
+node tools/head-to-head/latency-profile.mjs          # cold then warm pass, p50/p95/max, straight after a restart
+node tools/head-to-head/run.mjs                      # SCCE and the reference model, closed book, same machine; per workload
+node tools/coding-spine-acceptance.mjs               # chains A and B, judged from the event ledger
+node --max-old-space-size=7168 tools/head-to-head/ablate.mjs   # one runtime per sealed condition; sign test per workload
 node tools/build-parity-site.mjs                     # this page, from the artifacts above</pre>
     <p class="muted">The reference model runs locally through Ollama on the same machine; SCCE runs with no model. Both are timed by wall clock in the same process that asks the question.</p>
   </section>

@@ -144,9 +144,18 @@ function computeFeatureSet(text: string, limit: number): string[] {
   return [...features].sort().slice(0, limit);
 }
 
-export function anchorFeatureSet(text: string, limit = 256): string[] {
-  const symbols = symbolizeData(text.replace(/\u0000/g, " ").normalize("NFC"))
+/**
+ * The units an anchor feature is built from: letter/number runs of the symbolised surface. Exported because
+ * admission must split a request subject exactly the way the index split the source -- "Moby-Dick" indexes as
+ * anchor:bi:moby|dick, and an admission test that kept the hyphen matched none of its 192 retrieved spans.
+ */
+export function anchorSymbolUnits(text: string): string[] {
+  return symbolizeData(text.replace(/\u0000/g, " ").normalize("NFC"))
     .flatMap(symbol => symbol.match(/[\p{Letter}\p{Number}\p{Mark}]+/gu) ?? []);
+}
+
+export function anchorFeatureSet(text: string, limit = 256): string[] {
+  const symbols = anchorSymbolUnits(text);
   const features = new Set<string>();
   for (const symbol of symbols) {
     features.add(`anchor:sym:${symbol}`);

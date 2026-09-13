@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { traceEvent } from "./debug/trace.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
@@ -66,9 +67,9 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // the same emptiness a bare-pronoun request does -- the resolved cast
   // fallback applies here too, not just to the whole-request entity set.
   const resolvedCast = (input.resolvedCastSubjectIds ?? []).slice(0, 3);
-  const goalUnits = properNounEntityAnchors(input.sectionGoal).length
-    ? properNounEntityAnchors(input.sectionGoal).slice(0, 3)
-    : resolvedCast;
+  const goalUnits = resolvedCast.length
+    ? resolvedCast
+    : properNounEntityAnchors(input.sectionGoal).slice(0, 3);
   // One rotated unit per section owns the hard required-coverage
   // obligation (its opener varies instead of chanting every unit every
   // time) -- but the whole document's core entities (protagonist,
@@ -76,11 +77,15 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // was the reason "Einstein" was absent from sections whose rotated
   // unit happened to land on a different word -- a multi-section
   // document has exactly one cast, present throughout.
-  const rotation = goalUnits.length ? stableRotation(input.sectionGoal) % goalUnits.length : 0;
+  const rotation = goalUnits.length ? (stableRotation(input.sectionGoal) + Math.max(0, Math.floor(input.attempt ?? 1) - 1)) % goalUnits.length : 0;
   const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
-  const persistentEntities = properNounEntityAnchors(input.requestText).length
-    ? properNounEntityAnchors(input.requestText).slice(0, 3)
-    : resolvedCast;
+  // One source of truth for the cast: the turn resolves it once, with the corpus own closed class available to cut
+  // a relative clause down to its head, and re-deriving it here from the goal text reintroduced the clause
+  // ("blacksmith who forgets his own" required in every section). The goal-derived anchors remain the fallback for
+  // a caller that resolves no cast at all.
+  const persistentEntities = resolvedCast.length
+    ? resolvedCast
+    : properNounEntityAnchors(input.sectionGoal).slice(0, 3);
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
   // Evidence text is a casing source too, not just the request: a
   // pronoun follow-up ("...a story about her") contains none of the
@@ -93,14 +98,33 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     ...conditioning,
     ...(input.casingSourceTexts ?? [])
   ]);
+  // What actually steers a section, recorded: three separate channels (context, required terms, topic vocabulary)
+  // can each put request words into prose, and reasoning about them from the outside cost several wrong fixes.
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "creative.section.inputs",
+    label: "kernel.creative",
+    counts: { castTerms: castTerms.length, topicVocabulary: (input.topicVocabulary ?? []).length, conditioning: conditioning.length },
+    support: {
+      sectionGoal: input.sectionGoal,
+      goalUnits,
+      castTerms,
+      resolvedCastIn: input.resolvedCastSubjectIds ?? [],
+      requestTextIn: input.requestText,
+      topicVocabularySample: (input.topicVocabulary ?? []).slice(0, 16),
+      conditioningHeads: conditioning.map(line => line.slice(0, 60))
+    }
+  });
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
     // Unit symbols, not whole sentences: KN context matching is n-gram-sized.
-    // The raw goal leads only to make each section's sampling seed distinct.
+    //
+    // The raw goal used to lead this list, to make each attempt distinct. But contextSymbols IS the n-gram
+    // history the generator continues from, so the instruction was the thing being continued: every section
+    // opened by realizing the request back ("Sailor leaving harbour to me; for I was now", live 2026-09-12).
+    // A sampling seed must perturb sampling, not prepend text to the history, so distinctness now comes from
+    // the entity rotation above, and the context is the subject and what previous sections established.
     contextSymbols: [
-      `${collapseSurfaceWhitespace(input.sectionGoal)}attempt:${Math.max(1, Math.floor(input.attempt ?? 1))}`,
-      ...contentUnits(input.requestText).slice(0, 8),
       ...conditioning.flatMap(line => contentUnits(line).slice(0, 4)),
       ...goalUnits
     ],

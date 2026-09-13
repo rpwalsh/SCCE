@@ -145,7 +145,21 @@ const DEFAULT_HYDRATION_LIMITS: CorpusHydrationLimits = {
   semanticFrames: 768
 };
 
-const DEFAULT_NGRAM_SETTINGS: CorpusNgramSettings = {
+/**
+ * Prose order, measured rather than inherited (tools/prose-order-calibration, report-full.json).
+ *
+ * Sweeping orders 2..9 against held-out passages of four novels, with the other eleven as corpus (1,301,148
+ * symbols, 24k vocabulary), puts the prediction minimum at order 3 (5.2828 nats/token). Order 4 costs 0.0811
+ * nats against it (1.08x the perplexity) and is kept because prediction is not the generation objective: the
+ * extra context is what a written sentence carries, and the generation measurement (tools/fiction-voice.mjs)
+ * is the one that moves this number.
+ *
+ * Orders 6 through 9 are bit-identical to each other (5.4124) and worse than 3: no 6-gram context recurs in the
+ * whole prose corpus, so every one of them backs off to the same estimate while costing ~3x the training time.
+ * The minimum also moves with data -- it was order 2 at 200k symbols -- so this is a corpus-sized quantity, not
+ * a constant, and it is re-measured when the corpus grows.
+ */
+export const DEFAULT_NGRAM_SETTINGS: CorpusNgramSettings = {
   maxOrder: 4,
   maxCountersPerOrder: 128,
   vocabularyLimit: 8192
