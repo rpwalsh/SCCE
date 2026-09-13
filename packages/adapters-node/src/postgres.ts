@@ -1451,21 +1451,19 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const normalized = String(input.text ?? "").normalize("NFC").toLocaleLowerCase().replace(IDENTITY_UNIT_SEPARATOR, " ").trim();
       const surface = " " + normalized + " ";
       const unspaced = normalized.length > 0 && !normalized.includes(" ");
-      const identityRows = normalized
-        ? await storage.query<{ title: string }>(
-            `SELECT title FROM (
-               SELECT DISTINCT evidence.source_title AS title
-               FROM ${storage.table("evidence_spans")} evidence
-               WHERE evidence.source_title <> '' AND ${access.sql}
-             ) titles
-             WHERE $1 LIKE '%' || ' ' || title || ' ' || '%'
-                OR ($2::boolean AND $1 LIKE '%' || title || '%')
-             ORDER BY length(title) DESC
-             LIMIT ${IDENTITY_MATCH_LIMIT}`,
-            [surface, unspaced, ...access.params]
-          )
-        : [];
-      const named = new Set(identityRows.map(row => row.title));
+      // The title list is loaded ONCE and matched in memory. Asking the database per request was a 19.5 second
+      // unindexed DISTINCT over every span, and because the result was cached per request TEXT, every new question
+      // paid it in full -- the single largest cost in a turn, larger than retrieval and realization together.
+      // Matching is a substring test over ~22k short strings, which is microseconds, and the corpus only changes
+      // when something is ingested.
+      // Its own predicate: the title query carries no leading parameters, so the access placeholders start at $1.
+      const titles = normalized ? await sourceTitlesCached(storage, storage.informationAccessPredicate("evidence", 1)) : [];
+      const named = new Set(
+        titles
+          .filter(title => surface.includes(" " + title + " ") || (unspaced && surface.includes(title)))
+          .sort((left, right) => right.length - left.length)
+          .slice(0, IDENTITY_MATCH_LIMIT)
+      );
       // Spread for the runs the corpus is not titled with, one round trip via a lateral join.
       const candidates = [...new Set(input.runs.map(run => run.trim().toLocaleLowerCase()).filter(Boolean))]
         .filter(run => !named.has(run));
@@ -2251,6 +2249,53 @@ const SPREAD_SCAN_CAP = 1500;
 const IDENTITY_UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’-]+/gu;
 /** Cost bound on the reversed identity scan; titles come back longest first, so the specific ones survive it. */
 const IDENTITY_MATCH_LIMIT = 24;
+/**
+ * Every source title the corpus holds, loaded once per process.
+ *
+ * There is no index on the generated title column, so the DISTINCT that used to run per request was a full scan
+ * of every span: measured at 19.5 seconds against 81,005 spans. It was cached by request text, which hid it on
+ * repeats and charged it in full for every question the process had not seen before. The corpus changes only when
+ * something is ingested, so this is refreshed on an interval rather than asked per turn, and a refresh that fails
+ * keeps serving the titles it already has rather than making a turn wait on it.
+ */
+const SOURCE_TITLE_REFRESH_MS = 10 * 60 * 1000;
+let sourceTitleCache: { titles: string[]; loadedAt: number } | undefined;
+let sourceTitleInFlight: Promise<string[]> | undefined;
+
+async function sourceTitlesCached(
+  storage: { query: <T>(sql: string, params?: unknown[]) => Promise<T[]>; table: (name: string) => string },
+  access: { sql: string; params: unknown[] }
+): Promise<string[]> {
+  const now = Date.now();
+  if (sourceTitleCache && now - sourceTitleCache.loadedAt < SOURCE_TITLE_REFRESH_MS) return sourceTitleCache.titles;
+  // A stale list still answers; only the first caller of a cold process waits.
+  if (sourceTitleCache) {
+    if (!sourceTitleInFlight) {
+      sourceTitleInFlight = loadSourceTitles(storage, access)
+        .then(titles => { sourceTitleCache = { titles, loadedAt: Date.now() }; return titles; })
+        .catch(() => sourceTitleCache?.titles ?? [])
+        .finally(() => { sourceTitleInFlight = undefined; });
+    }
+    return sourceTitleCache.titles;
+  }
+  sourceTitleInFlight ??= loadSourceTitles(storage, access)
+    .then(titles => { sourceTitleCache = { titles, loadedAt: Date.now() }; return titles; })
+    .finally(() => { sourceTitleInFlight = undefined; });
+  return await sourceTitleInFlight;
+}
+
+async function loadSourceTitles(
+  storage: { query: <T>(sql: string, params?: unknown[]) => Promise<T[]>; table: (name: string) => string },
+  access: { sql: string; params: unknown[] }
+): Promise<string[]> {
+  const rows = await storage.query<{ title: string }>(
+    `SELECT DISTINCT evidence.source_title AS title
+     FROM ${storage.table("evidence_spans")} evidence
+     WHERE evidence.source_title <> '' AND ${access.sql}`,
+    access.params
+  );
+  return rows.map(row => row.title).filter(Boolean);
+}
 const EVIDENCE_LOOKUP_GROUP = 32;
 
 async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuery): Promise<GraphNode[]> {
