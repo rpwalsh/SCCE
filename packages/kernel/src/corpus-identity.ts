@@ -129,15 +129,22 @@ export function corpusNamedIdentities(text: string): string[] {
   if (!state) return [];
   // The identities are titles the corpus found inside this request, so they need not line up with a content run:
   // "the lord of the rings" is one title and its scaffolding words sit in the middle of it.
-  const surface = " " + corpusIdentityUnits(text).join(" ") + " ";
-  const unspaced = !surface.trim().includes(" ");
+  const units = corpusIdentityUnits(text);
+  const surface = " " + units.join(" ") + " ";
   const present = [...state.identities].filter(identity => {
     if (!identity) return false;
     // A title the language uses as scaffolding names nothing in a request. The corpus holds a document titled "a",
     // so every request containing that word reported it as its subject.
     if (identity.split(" ").every(unit => state.closedClass.has(unit))) return false;
-    // Unit boundaries where the writing system supplies them; plain containment where it supplies none.
-    return surface.includes(" " + identity + " ") || (unspaced && surface.includes(identity));
+    if (surface.includes(" " + identity + " ")) return true;
+    // Where a language binds its grammar onto the word rather than beside it, the name is inside the unit:
+    // Korean spaces between eojeol but agglutinates its particles, so "서울의" carries the name "서울" and a
+    // whole-request space test found nothing. Anchored to a unit edge, because that is where a bound morpheme
+    // attaches in any writing system; an identity buried inside a unit with material on both sides is a
+    // coincidence, which is what keeps "explain" from being named by "unexplained".
+    if (identity.includes(" ")) return false;
+    return units.some(unit => unit !== identity && unit.length > identity.length
+      && (unit.startsWith(identity) || unit.endsWith(identity)));
   });
   return withoutContainedRuns(present);
 }
