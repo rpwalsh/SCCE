@@ -1,5 +1,22 @@
 # Finish the platform
 
+**The platform is finished only when the production runtime reliably beats frozen qwen2.5:3b on a held-out
+benchmark, while staying CPU-native, evidence-grounded and auditable with a lower unsupported-claim rate.**
+
+A defect report without an attempted repair is incomplete work. "This is broken", "this is unreachable", "this
+mechanism cannot work" are intermediate findings. The required next question is always: what must change to make
+the system succeed?
+
+Every defect gets one of four outcomes: FIXED, REPLACED, MADE IRRELEVANT, or BLOCKED BY A CONCRETE EXTERNAL
+DEPENDENCY the swarm cannot itself produce. A theoretical difficulty, missing prior art, or a failed first approach
+is not a blocker. Recorded-as-failure is not a terminal state.
+
+When a mechanism is proven structurally incapable: preserve the measurement, state why it cannot succeed, name the
+next plausible mechanism, build its harness, and implement it if the harness succeeds. The task is complete when
+the behaviour works, not when the old idea has been falsified.
+
+Once the causal defect is known, stop investigating and BUILD.
+
 SCCE works end to end. This is not a rewrite. Preserve demonstrated behaviour and make the architecture honest,
 selective, measurable and complete.
 
