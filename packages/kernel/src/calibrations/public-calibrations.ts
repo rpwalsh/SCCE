@@ -282,7 +282,82 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Object centrality at or above which a short object reads as a classifier in a list, not an answer. graph-edge-quality.ts listShapeScore. */
   "graph_edge_quality.object_classifier_centrality_floor": 0.54,
   /** Alphabetic vowel ratio below which a short surface reads as an abbreviation, not a word. graph-edge-quality.ts fragmentScore. */
-  "graph_edge_quality.vowel_thinness_ratio_ceiling": 0.18
+  "graph_edge_quality.vowel_thinness_ratio_ceiling": 0.18,
+
+  // --- learned-graph-prior-runtime.ts: which graph facts answer the question, and how complete the answer is
+  // Explanation completeness, planned route: a normalized set, must continue to sum to 1.
+  /** Weight of filled required roles in planned explanation completeness. learned-graph-prior-runtime.ts explanatory contract. */
+  "graph_prior.plan_completeness_required_role_weight": 0.34,
+  /** Weight of bridge coverage in planned explanation completeness. learned-graph-prior-runtime.ts explanatory contract. */
+  "graph_prior.plan_completeness_bridge_weight": 0.24,
+  /** Weight of supporting mass in planned explanation completeness. learned-graph-prior-runtime.ts explanatory contract. */
+  "graph_prior.plan_completeness_support_weight": 0.24,
+  /** Weight of path activation in planned explanation completeness. learned-graph-prior-runtime.ts explanatory contract. */
+  "graph_prior.plan_completeness_activation_weight": 0.18,
+
+  // Explanation completeness, realized route: a normalized set, must continue to sum to 1. Deliberately not the
+  // same numbers as the planned route above, though the expression is otherwise identical.
+  /** Weight of filled required roles in realized explanation completeness. learned-graph-prior-runtime.ts realized contract. */
+  "graph_prior.realized_completeness_required_role_weight": 0.36,
+  /** Weight of bridge coverage in realized explanation completeness. learned-graph-prior-runtime.ts realized contract. */
+  "graph_prior.realized_completeness_bridge_weight": 0.22,
+  /** Weight of supporting mass in realized explanation completeness. learned-graph-prior-runtime.ts realized contract. */
+  "graph_prior.realized_completeness_support_weight": 0.22,
+  /** Weight of path activation in realized explanation completeness. learned-graph-prior-runtime.ts realized contract. */
+  "graph_prior.realized_completeness_activation_weight": 0.2,
+
+  // Path activation of an answering fact: a normalized set, must continue to sum to 1.
+  /** Weight of the fact's own activation in its path activation. learned-graph-prior-runtime.ts path activation. */
+  "graph_prior.path_activation_fact_weight": 0.38,
+  /** Weight of propagated prior-field mass in a fact's path activation. learned-graph-prior-runtime.ts path activation. */
+  "graph_prior.path_activation_ppf_mass_weight": 0.34,
+  /** Weight of the strongest endpoint activation in a fact's path activation. learned-graph-prior-runtime.ts path activation. */
+  "graph_prior.path_activation_endpoint_weight": 0.28,
+
+  /** Path score a zero-arc slot assignment must reach to stay a candidate. learned-graph-prior-runtime.ts slot assignment. */
+  "graph_prior.assignment_path_score_floor": 0.18,
+  /** Completeness a fact must exceed to enter the answering pool at all. learned-graph-prior-runtime.ts fact admission. */
+  "graph_prior.fact_completeness_floor": 0.08,
+  /** Question fit an unoverlapping, unactivated fact must reach to survive. learned-graph-prior-runtime.ts cognitive fabric. */
+  "graph_prior.inactive_fact_question_fit_floor": 0.18,
+  /** Question fit a fact must reach to count as direct evidence for the question. learned-graph-prior-runtime.ts question edge fit. */
+  "graph_prior.direct_evidence_question_fit_floor": 0.44,
+  /** Score below which an unanchored candidate is dropped. learned-graph-prior-runtime.ts candidate scoring. */
+  "graph_prior.unanchored_candidate_score_floor": 0.018,
+  /** Subject affinity below which graph priors are judged to be about something else. learned-graph-prior-runtime.ts unrelated-prior penalty. */
+  "graph_prior.unrelated_prior_subject_affinity_ceiling": 0.08,
+  /** Question overlap below which graph priors are judged to be about something else. learned-graph-prior-runtime.ts unrelated-prior penalty. */
+  "graph_prior.unrelated_prior_question_overlap_ceiling": 0.03,
+  /** Penalty applied when the graph priors are about something else. learned-graph-prior-runtime.ts unrelated-prior penalty. */
+  "graph_prior.unrelated_prior_penalty": 0.6,
+  /** Relevance a direct-evidence answer must reach. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.relevance_direct_evidence_floor": 0.22,
+  /** Relevance a requested-support answer must reach. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.relevance_requested_support_floor": 0.22,
+  /** Cognitive support mass a requested-support answer must reach. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.requested_support_mass_floor": 0.2,
+  /** Relevance a partial-support answer must reach. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.relevance_partial_support_floor": 0.18,
+  /** Cognitive support mass a partial-support answer must reach. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.partial_support_mass_floor": 0.14,
+  /** Affinity gap between the top two subject matches below which the subject is ambiguous and clarification is costed. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.clarification_affinity_gap_ceiling": 0.025,
+  /** Relevance a clarification-costed turn must still reach. learned-graph-prior-runtime.ts relevance gate. */
+  "graph_prior.relevance_clarification_floor": 0.18,
+  /** Overlap a fact must exceed to satisfy the request slot of the explanatory contract. learned-graph-prior-runtime.ts contract slots. */
+  "graph_prior.request_slot_overlap_floor": 0.03,
+  /** Punctuation mass above which a surface is debris, not a usable fact label. learned-graph-prior-runtime.ts surface admission. */
+  "graph_prior.punctuation_mass_ceiling": 0.12,
+  /** Fit below which a date-or-quantity catalog object is rejected as a stray list entry. learned-graph-prior-runtime.ts fact rejection. */
+  "graph_prior.catalog_surface_fit_floor": 0.62,
+  /** Fit below which a weak-fragment-classed fact is rejected. learned-graph-prior-runtime.ts fact rejection. */
+  "graph_prior.weak_fragment_fit_floor": 0.5,
+  /** Overlap below which that weak-fragment fact is rejected. learned-graph-prior-runtime.ts fact rejection. */
+  "graph_prior.weak_fragment_overlap_ceiling": 0.08,
+  /** Fragment score at or above which a fact needs an unusually high fit to survive. learned-graph-prior-runtime.ts fact rejection. */
+  "graph_prior.fragment_rejection_floor": 0.62,
+  /** The fit such a fragmentary fact must reach. learned-graph-prior-runtime.ts fact rejection. */
+  "graph_prior.fragment_rejection_fit_floor": 0.64
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

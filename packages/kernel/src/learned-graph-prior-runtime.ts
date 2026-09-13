@@ -23,6 +23,7 @@ import {
 import { featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { graphEdgePriorClass, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import { graphTemporalScope } from "./typed-incidence-graph.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import {
   buildQuestionCognitiveFabric,
   normalizeRawGraphEdgeToCognitiveEdges,
@@ -638,7 +639,7 @@ export function attachLearnedGraphPriorConstruct(input: {
   const assignmentCandidates = subjectFacts
     .map(fact => alphaRhetoricalAssignment({ fact, subject, anchors, bridgeAnchors, contradictionPressure, hasher: input.hasher }))
     .sort((left, right) => right.arc - left.arc || right.pathScore - left.pathScore || left.factKey.localeCompare(right.factKey));
-  const assignments = assignmentCandidates.filter(assignment => assignment.arc > 0.0001 || assignment.pathScore > 0.18);
+  const assignments = assignmentCandidates.filter(assignment => assignment.arc > 0.0001 || assignment.pathScore > calibrated("graph_prior.assignment_path_score_floor"));
   const recoverableAssignments = assignments.length ? assignments : assignmentCandidates.slice(0, 12);
   if (!recoverableAssignments.length) return undefined;
   const selected = selectAlphaRhetoricalAssignments(recoverableAssignments);
@@ -667,7 +668,7 @@ export function attachLearnedGraphPriorConstruct(input: {
     selectedFactKeys: selected.map(assignment => assignment.factKey),
     backgroundFactKeys: selected.filter(assignment => isBackgroundAnswerRoleId(assignment.roleId)).map(assignment => assignment.factKey),
     planEnergy: kernelClamp01(missingRequired * 0.18 + Math.max(0, 0.42 - supportMass) - bridgeCoverage * 0.08),
-    explanationCompleteness: kernelClamp01(0.34 * (1 - missingRequired / requiredRoleIds.length) + 0.24 * bridgeCoverage + 0.24 * supportMass + 0.18 * Math.min(1, selected.length / 4)),
+    explanationCompleteness: kernelClamp01(calibrated("graph_prior.plan_completeness_required_role_weight") * (1 - missingRequired / requiredRoleIds.length) + calibrated("graph_prior.plan_completeness_bridge_weight") * bridgeCoverage + calibrated("graph_prior.plan_completeness_support_weight") * supportMass + calibrated("graph_prior.plan_completeness_activation_weight") * Math.min(1, selected.length / 4)),
     targetSentenceCount,
     proofBoundaryId: "output.force.import_bound",
     audit: toJsonValue({
@@ -768,7 +769,7 @@ export function attachLearnedGraphPriorConstruct(input: {
       requestText
     })
   ])
-    .filter(fact => factCompletenessScore(fact, anchors) > 0.08 || topicCompoundMembershipAnswerFact(fact))
+    .filter(fact => factCompletenessScore(fact, anchors) > calibrated("graph_prior.fact_completeness_floor") || topicCompoundMembershipAnswerFact(fact))
     .sort((left, right) =>
       Number(topicCompoundMembershipAnswerFact(right)) - Number(topicCompoundMembershipAnswerFact(left)) ||
       factCompletenessScore(right, anchors) - factCompletenessScore(left, anchors) ||
@@ -903,7 +904,7 @@ export function attachLearnedGraphPriorConstruct(input: {
         graphQuality.semanticQuality * 0.12 +
         cognitive.fit.finalQuestionFit * 0.3
       ) * qualityMass;
-      if (overlap <= 0 && activation <= 0.00001 && cognitive.fit.finalQuestionFit < 0.18) continue;
+      if (overlap <= 0 && activation <= 0.00001 && cognitive.fit.finalQuestionFit < calibrated("graph_prior.inactive_fact_question_fit_floor")) continue;
       facts.push({
         subject: cognitive.cognitiveEdge.subjectRef,
         predicate: cognitive.cognitiveEdge.sourceDerivedLabels.predicate.toLocaleLowerCase(),
@@ -970,7 +971,7 @@ export function attachLearnedGraphPriorConstruct(input: {
  function factQuestionFitAllowsSurface(fact: LearnedGraphPriorFact): boolean {
   return fact.questionEdgeFit.decision === QUESTION_EDGE_DECISION_IDS.requestedSupport ||
     fact.questionEdgeFit.decision === QUESTION_EDGE_DECISION_IDS.partialSupport ||
-    fact.questionEdgeFit.finalQuestionFit >= 0.44;
+    fact.questionEdgeFit.finalQuestionFit >= calibrated("graph_prior.direct_evidence_question_fit_floor");
 }
 
 
@@ -1179,7 +1180,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
       ppfMass * 0.08 +
       alpha * 0.06
     );
-    if (score < 0.018 && anchorScore <= 0) continue;
+    if (score < calibrated("graph_prior.unanchored_candidate_score_floor") && anchorScore <= 0) continue;
     rows.push({
       nodeId: String(node.id),
       surface,
@@ -1365,7 +1366,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
   const learnedLanguagePriorCount = kernelNumber(input.brainMarker.importedLanguagePriorCount);
   const languageOnlySupportMass = learnedGraphPriorCount > 0 ? 0 : kernelClamp01(Math.log1p(learnedLanguagePriorCount) / Math.log(100000));
   const contradictionPressure = kernelClamp01(input.field.alphaTrace.surfaces.contradiction * 0.5 + input.field.alphaTrace.contradictionMass * 0.5);
-  const unrelatedPriorPenalty = learnedGraphPriorCount > 0 && maxSubjectAffinity < 0.08 && maxQuestionOverlap < 0.03 ? 0.6 : 0;
+  const unrelatedPriorPenalty = learnedGraphPriorCount > 0 && maxSubjectAffinity < calibrated("graph_prior.unrelated_prior_subject_affinity_ceiling") && maxQuestionOverlap < calibrated("graph_prior.unrelated_prior_question_overlap_ceiling") ? calibrated("graph_prior.unrelated_prior_penalty") : 0;
   const graphPriorSupport = learnedGraphPriorCount > 0 ? kernelClamp01(Math.log1p(learnedGraphPriorCount) / Math.log(64)) : 0;
   const relevanceScore = kernelClamp01(
     0.16 * maxSubjectAffinity +
@@ -1395,15 +1396,15 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
   if (unrelatedPriorPenalty > 0) reasonIds.push("relevance.reason.unrelated_prior_penalty");
   if (contradictionPressure > 0.1) reasonIds.push("relevance.reason.contradiction_pressure");
   let decision: RelevanceGateDecision = QUESTION_EDGE_DECISION_IDS.insufficientSupport;
-  if (directEvidenceCount > 0 && relevanceScore >= 0.22) decision = QUESTION_EDGE_DECISION_IDS.directEvidence;
+  if (directEvidenceCount > 0 && relevanceScore >= calibrated("graph_prior.relevance_direct_evidence_floor")) decision = QUESTION_EDGE_DECISION_IDS.directEvidence;
   else if (learnedGraphPriorCount <= 0 && learnedLanguagePriorCount > 0) decision = QUESTION_EDGE_DECISION_IDS.languageOnlyRejected;
   else if (!slotPlanAllowsAnswer && learnedGraphPriorCount > 0) decision = QUESTION_EDGE_DECISION_IDS.requestedSlotMissing;
-  else if (input.cognitiveFabric.decision === QUESTION_EDGE_DECISION_IDS.requestedSupport && slotPlanAllowsAnswer && relevanceScore >= 0.22 && requestedCognitiveSupportMass >= 0.2) decision = QUESTION_EDGE_DECISION_IDS.requestedSupport;
-  else if (input.cognitiveFabric.decision === QUESTION_EDGE_DECISION_IDS.partialSupport && slotPlanAllowsAnswer && relevanceScore >= 0.18 && requestedCognitiveSupportMass >= 0.14) decision = QUESTION_EDGE_DECISION_IDS.partialSupport;
+  else if (input.cognitiveFabric.decision === QUESTION_EDGE_DECISION_IDS.requestedSupport && slotPlanAllowsAnswer && relevanceScore >= calibrated("graph_prior.relevance_requested_support_floor") && requestedCognitiveSupportMass >= calibrated("graph_prior.requested_support_mass_floor")) decision = QUESTION_EDGE_DECISION_IDS.requestedSupport;
+  else if (input.cognitiveFabric.decision === QUESTION_EDGE_DECISION_IDS.partialSupport && slotPlanAllowsAnswer && relevanceScore >= calibrated("graph_prior.relevance_partial_support_floor") && requestedCognitiveSupportMass >= calibrated("graph_prior.partial_support_mass_floor")) decision = QUESTION_EDGE_DECISION_IDS.partialSupport;
   else if (input.cognitiveFabric.decision === QUESTION_EDGE_DECISION_IDS.requestedSlotMissing) decision = QUESTION_EDGE_DECISION_IDS.requestedSlotMissing;
   else if (input.cognitiveFabric.decision === QUESTION_EDGE_DECISION_IDS.ambiguousSense) decision = QUESTION_EDGE_DECISION_IDS.ambiguousSense;
   else if (learnedGraphPriorCount > 0 && weakGraphSupportMass > 0) decision = QUESTION_EDGE_DECISION_IDS.weakGraphOnly;
-  else if (candidateSubjectMatches.length > 1 && Math.abs((candidateSubjectMatches[0]?.affinity ?? 0) - (candidateSubjectMatches[1]?.affinity ?? 0)) < 0.025 && relevanceScore >= 0.18) decision = QUESTION_EDGE_DECISION_IDS.clarificationCosted;
+  else if (candidateSubjectMatches.length > 1 && Math.abs((candidateSubjectMatches[0]?.affinity ?? 0) - (candidateSubjectMatches[1]?.affinity ?? 0)) < calibrated("graph_prior.clarification_affinity_gap_ceiling") && relevanceScore >= calibrated("graph_prior.relevance_clarification_floor")) decision = QUESTION_EDGE_DECISION_IDS.clarificationCosted;
   if (decision === QUESTION_EDGE_DECISION_IDS.insufficientSupport) reasonIds.push("relevance.reason.below_floor");
   if (decision === QUESTION_EDGE_DECISION_IDS.languageOnlyRejected) reasonIds.push("relevance.reason.language_priors_do_not_supply_facts");
   return {
@@ -1536,7 +1537,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
   const bridgeCoverage = selectedRoleIds.some(isBridgeAnswerRoleId) ? 1 : 0;
   const backgroundDominance = selected.filter(assignment => isBackgroundAnswerRoleId(assignment.roleId)).reduce((sum, assignment) => sum + (assignment.shouldSurface ? assignment.arc : assignment.arc * 0.15), 0);
   const fragmentation = kernelClamp01(Math.max(0, selected.length - uniqueKernelStrings(selected.map(assignment => assignment.roleId)).length) / Math.max(1, selected.length));
-  const explanationCompleteness = kernelClamp01(0.36 * (1 - missingRequired / requiredRoleIds.length) + 0.22 * bridgeCoverage + 0.22 * supportMass + 0.2 * Math.min(1, surfaced.length / 4));
+  const explanationCompleteness = kernelClamp01(calibrated("graph_prior.realized_completeness_required_role_weight") * (1 - missingRequired / requiredRoleIds.length) + calibrated("graph_prior.realized_completeness_bridge_weight") * bridgeCoverage + calibrated("graph_prior.realized_completeness_support_weight") * supportMass + calibrated("graph_prior.realized_completeness_activation_weight") * Math.min(1, surfaced.length / 4));
   const targetSentenceCount = alphaRhetoricalTargetSentenceCount({ selected, bridgeCoverage, supportMass, missingRequired });
   const planEnergy = kernelClamp01(
     missingRequired * 0.18 +
@@ -1650,7 +1651,7 @@ function splitPriorSurfaceRunsForTopic(text: string): string[] {
   const subjectCentrality = samePriorEntity(input.fact.subject, input.subject) || samePriorEntity(input.fact.object, input.subject) ? 1 : factSharesSpecificPriorAnchor(input.fact, input.bridgeAnchors) ? 0.58 : 0.22;
   const requestFit = kernelClamp01(factRequestAnchorScore(input.fact, input.anchors) / Math.max(1, input.anchors.size + 1));
   const questionFit = input.fact.questionEdgeFit.finalQuestionFit;
-  const pathActivation = kernelClamp01(0.38 * input.fact.activation + 0.34 * input.fact.ppfMass + 0.28 * Math.max(input.fact.sourceActivation, input.fact.targetActivation));
+  const pathActivation = kernelClamp01(calibrated("graph_prior.path_activation_fact_weight") * input.fact.activation + calibrated("graph_prior.path_activation_ppf_mass_weight") * input.fact.ppfMass + calibrated("graph_prior.path_activation_endpoint_weight") * Math.max(input.fact.sourceActivation, input.fact.targetActivation));
   const relationSupport = kernelClamp01(input.fact.support);
   const bridgeValue = alphaRhetoricalBridgeValue(input.fact, input.subject, input.bridgeAnchors, input.anchors, roleId);
   const semanticQuality = input.fact.graphQuality.semanticQuality;
@@ -1876,7 +1877,7 @@ export function relevanceRequestFocuses(text: string): string[] {
   if (slot === EXPLANATORY_CONTRACT_SLOT_IDS.memberSet) return facts.length >= 3 && uniqueKernelStrings(facts.map(fact => fact.object)).length >= 3;
   if (slot === EXPLANATORY_CONTRACT_SLOT_IDS.source || slot === EXPLANATORY_CONTRACT_SLOT_IDS.target) return facts.length > 0;
   if (slot === EXPLANATORY_CONTRACT_SLOT_IDS.effect) return selectedRoles.has(ANSWER_ROLE_IDS.significance) || selectedRoles.has(ANSWER_ROLE_IDS.field);
-  if (slot === EXPLANATORY_CONTRACT_SLOT_IDS.request) return facts.some(fact => fact.overlap > 0.03);
+  if (slot === EXPLANATORY_CONTRACT_SLOT_IDS.request) return facts.some(fact => fact.overlap > calibrated("graph_prior.request_slot_overlap_floor"));
   return false;
 }
 
@@ -1913,7 +1914,7 @@ export function relevanceRequestFocuses(text: string): string[] {
   if ([...predicate].length > 80) return false;
   if ([...object].length > 96) return false;
   const punctuationMass = [...object].filter(isDensePriorPunctuation).length / Math.max(1, [...object].length);
-  if (punctuationMass > 0.12) return false;
+  if (punctuationMass > calibrated("graph_prior.punctuation_mass_ceiling")) return false;
   if (!requestAllowsDiagnosticModality(requestAnchors) && priorFactHasDiagnosticModality([...predicateUnits, ...objectUnits])) return false;
   return true;
 }
@@ -2161,10 +2162,10 @@ export function relevanceRequestFocuses(text: string): string[] {
   if (role === RELATION_ROLE_IDS.graphNavigation) return true;
   if (quality.classId === GRAPH_QUALITY_CLASS_IDS.noisyMarkup || quality.classId === GRAPH_QUALITY_CLASS_IDS.redirectAlias || quality.classId === GRAPH_QUALITY_CLASS_IDS.titleHint) return true;
   if (temporalOrQuantityCatalogSurface(fact.subject) && fit < 0.7) return true;
-  if (temporalOrQuantityCatalogSurface(fact.object) && fit < 0.62 && role !== RELATION_ROLE_IDS.graphRequestRelation) return true;
+  if (temporalOrQuantityCatalogSurface(fact.object) && fit < calibrated("graph_prior.catalog_surface_fit_floor") && role !== RELATION_ROLE_IDS.graphRequestRelation) return true;
   if (quality.classId === GRAPH_QUALITY_CLASS_IDS.catalogNavigation) return !(role === RELATION_ROLE_IDS.graphRequestMembership && fit >= 0.5 && semanticPriorSurfaceMass(fact.object) > 1);
-  if (quality.classId === GRAPH_QUALITY_CLASS_IDS.weakFragment && fit < 0.5 && fact.overlap < 0.08) return true;
-  if (quality.fragmentScore >= 0.62 && fit < 0.64) return true;
+  if (quality.classId === GRAPH_QUALITY_CLASS_IDS.weakFragment && fit < calibrated("graph_prior.weak_fragment_fit_floor") && fact.overlap < calibrated("graph_prior.weak_fragment_overlap_ceiling")) return true;
+  if (quality.fragmentScore >= calibrated("graph_prior.fragment_rejection_floor") && fit < calibrated("graph_prior.fragment_rejection_fit_floor")) return true;
   return false;
 }
 
