@@ -345,7 +345,53 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Share of an atom's own alpha when field mass reweights it; pairs with the field-mass share and the two must continue to sum to 1. semantic-proof-system.ts fieldWeightedAtoms. */
   "proof.atom_alpha_own_weight": 0.65,
   /** Share of field mass when it reweights an atom's alpha. semantic-proof-system.ts fieldWeightedAtoms. */
-  "proof.atom_alpha_field_mass_weight": 0.35
+  "proof.atom_alpha_field_mass_weight": 0.35,
+  // --- proof calculus (proof-calculus.ts). Witness scoring, operator boundary reporting and the epistemic
+  // force ladder.
+  /** Support a witness must exceed before it counts as supporting the claim at all. proof-calculus.ts evaluate. */
+  "calculus.witness_support_floor": 0.08,
+  /** Contradiction a witness must exceed before it counts as contradicting the claim. proof-calculus.ts evaluate. */
+  "calculus.witness_contradiction_floor": 0.12,
+  /** Unmet flow ratio above which the proof reports an operator flow shortfall. proof-calculus.ts operatorBoundaryReasons. */
+  "calculus.flow_shortfall_floor": 0.62,
+  /** Kirchhoff imbalance above which the proof reports conservation pressure. proof-calculus.ts operatorBoundaryReasons. */
+  "calculus.conservation_pressure_floor": 0.72,
+  /** Potts contradiction pressure above which the proof reports consistency pressure. proof-calculus.ts operatorBoundaryReasons. */
+  "calculus.consistency_pressure_floor": 0.32,
+  // The six positive witness weights are one normalized set and must continue to sum to 1; the contradiction
+  // penalty is subtracted from that sum and is not part of it.
+  /** Share of directional claim coverage in a witness's support. proof-calculus.ts witness. */
+  "calculus.witness_coverage_weight": 0.22,
+  /** Share of feature-vector agreement in a witness's support. proof-calculus.ts witness. */
+  "calculus.witness_vector_weight": 0.15,
+  /** Share of field mass on the witness's graph nodes in its support. proof-calculus.ts witness. */
+  "calculus.witness_field_mass_weight": 0.18,
+  /** Share of windowed faithfulness in a witness's support. proof-calculus.ts witness. */
+  "calculus.witness_faithfulness_weight": 0.2,
+  /** Share of provenance strength in a witness's support. proof-calculus.ts witness. */
+  "calculus.witness_provenance_weight": 0.15,
+  /** Share of transformation confidence in a witness's support. proof-calculus.ts witness. */
+  "calculus.witness_transform_weight": 0.1,
+  /** How much a witness's own contradiction is subtracted from its support. proof-calculus.ts witness. */
+  "calculus.witness_contradiction_penalty": 0.4,
+  // The epistemic force ladder is safety-bearing: it decides whether a claim is reported as proved, observed,
+  // inferred, conjectured or invented, which is what a reader is told about how far to trust it.
+  /** Safety-bearing: contradiction above which the epistemic force is unknown, whatever the support. proof-calculus.ts forceFrom. */
+  "calculus.force_unknown_contradiction_floor": 0.45,
+  /** Safety-bearing: source leakage above which the epistemic force is unknown. proof-calculus.ts forceFrom. */
+  "calculus.force_unknown_leakage_floor": 0.72,
+  /** Safety-bearing: support a claim needs to be called proved. proof-calculus.ts forceFrom. */
+  "calculus.force_proved_support_floor": 0.82,
+  /** Safety-bearing: lower confidence bound a claim needs to be called proved. proof-calculus.ts forceFrom. */
+  "calculus.force_proved_lcb_floor": 0.62,
+  /** Safety-bearing: support a claim needs to be called observed. proof-calculus.ts forceFrom. */
+  "calculus.force_observed_support_floor": 0.62,
+  /** Safety-bearing: lower confidence bound a claim needs to be called observed. proof-calculus.ts forceFrom. */
+  "calculus.force_observed_lcb_floor": 0.36,
+  /** Safety-bearing: support a claim needs to be called inferred rather than conjectured. proof-calculus.ts forceFrom. */
+  "calculus.force_inferred_support_floor": 0.34,
+  /** Safety-bearing: support a claim needs to be called conjectured rather than invented. proof-calculus.ts forceFrom. */
+  "calculus.force_conjectured_support_floor": 0.12
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

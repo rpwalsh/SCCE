@@ -197,7 +197,28 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "proof.verdict_partial_support_floor": threshold(0.05, 0.9, [0.25, 0.42, 0.6]),
   "proof.verdict_partial_coverage_floor": threshold(0.05, 0.9, [0.2, 0.35, 0.55]),
   "proof.atom_alpha_own_weight": weight(0, 1, [0.45, 0.65, 0.85]),
-  "proof.atom_alpha_field_mass_weight": weight(0, 1, [0.15, 0.35, 0.55])
+  "proof.atom_alpha_field_mass_weight": weight(0, 1, [0.15, 0.35, 0.55]),
+  // --- proof calculus (proof-calculus.ts). Witness scoring, operator boundary reporting and the epistemic
+  "calculus.witness_support_floor": threshold(0.01, 0.5, [0.04, 0.08, 0.18, 0.35]),
+  "calculus.witness_contradiction_floor": threshold(0.01, 0.6, [0.06, 0.12, 0.25, 0.45]),
+  "calculus.flow_shortfall_floor": threshold(0.1, 0.98, [0.4, 0.62, 0.8]),
+  "calculus.conservation_pressure_floor": threshold(0.1, 0.98, [0.5, 0.72, 0.9]),
+  "calculus.consistency_pressure_floor": threshold(0.05, 0.95, [0.18, 0.32, 0.55]),
+  "calculus.witness_coverage_weight": weight(0, 1, [0.12, 0.22, 0.4]),
+  "calculus.witness_vector_weight": weight(0, 1, [0.08, 0.15, 0.3]),
+  "calculus.witness_field_mass_weight": weight(0, 1, [0.09, 0.18, 0.35]),
+  "calculus.witness_faithfulness_weight": weight(0, 1, [0.1, 0.2, 0.38]),
+  "calculus.witness_provenance_weight": weight(0, 1, [0.08, 0.15, 0.3]),
+  "calculus.witness_transform_weight": weight(0, 1, [0.05, 0.1, 0.25]),
+  "calculus.witness_contradiction_penalty": weight(0, 1, [0.2, 0.4, 0.7]),
+  "calculus.force_unknown_contradiction_floor": threshold(0.05, 0.95, [0.25, 0.45, 0.7]),
+  "calculus.force_unknown_leakage_floor": threshold(0.1, 0.99, [0.5, 0.72, 0.9]),
+  "calculus.force_proved_support_floor": threshold(0.3, 0.99, [0.6, 0.82, 0.94]),
+  "calculus.force_proved_lcb_floor": threshold(0.2, 0.99, [0.4, 0.62, 0.85]),
+  "calculus.force_observed_support_floor": threshold(0.1, 0.95, [0.4, 0.62, 0.82]),
+  "calculus.force_observed_lcb_floor": threshold(0.05, 0.9, [0.2, 0.36, 0.6]),
+  "calculus.force_inferred_support_floor": threshold(0.05, 0.9, [0.18, 0.34, 0.55]),
+  "calculus.force_conjectured_support_floor": threshold(0.01, 0.7, [0.06, 0.12, 0.28])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */
