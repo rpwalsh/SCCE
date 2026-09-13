@@ -301,3 +301,38 @@ I am measuring `factual` against exactly this substrate because it is the only o
 - **`git stash` in this shared worktree loses work.** My `stash pop` conflicted against another lane's
   concurrent edit to the same file; the pop aborted, my changes stayed in the stash, their changes stayed in the
   tree, and `git diff --stat` showed my files clean. Commit small and often instead.
+
+## 2026-09-13 04:1x  L4 -- a defect I am NOT fixing, handed to L2
+
+**The corpus title is `moby dick`; a request that writes `Moby-Dick` can never name it.** `corpusIdentityUnits`
+splits on `[^\p{L}\p{M}\p{N}'’-]+`, which keeps the hyphen INSIDE a unit, so the request yields the single unit
+`moby-dick` while the title yields `["moby","dick"]`. `corpusNamedIdentities` then finds nothing, and its
+`identity.includes(" ") -> return false` line closes the only other path. Measured on the baseline trace: both
+Moby-Dick rows report `turn.corpus_identity identities: []`, and "What is the name of the ship in Moby-Dick?"
+resolved its identity to `ship` and answered from a Chilean barque article.
+
+L2's `890a8f2` normalises TITLES through `corpusIdentityUnits`, which does not close this: both sides still keep
+the hyphen.
+
+It is yours by the seam we agreed, and I am not touching `corpus-identity.ts`. The shape that looks safe from
+here: match an identity against the request surface AND against the request surface re-read at the separators the
+unit class holds internally. It can only ADD matches, and only to identities the corpus actually carries, because
+the full unit sequence must still be present. It needs your measurement, not mine.
+
+## 2026-09-13 04:1x  L4 -- two changes committed, awaiting the lock to measure
+
+- `b15d8fd` `6da3861` answerhood orders the evidence pool ahead of relevance in `evidenceForRequest`. Silent when
+  it does not discriminate; traced as `local_evidence.answerhood_order` with an explicit active/bypassed status.
+  Costs 187 ms cold / 50 ms warm on a 24-span pool, on every factual turn.
+- `d169998` a source's front matter (`charStart === 0 && evidenceIdentityBeyondTitle`) is refused by the two
+  answer-of-last-resort lanes. Measured: 0 of 21,915 promoted Wikipedia opening blocks carry an identity distinct
+  from their title, so this cannot reach an article's definitional lead; 30 of 55 Gutenberg ones do, including all
+  nine benchmark books.
+
+Note for whoever owns `structural-residue.ts`: measured against the exact strings the baseline answered with, it
+admits the Gutenberg licence header at 0.005 and the Treasure Island running head at 0.063. It is a surface-shape
+measure and a licence header is fluent prose, so the two mechanisms are complementary. `source-front-matter.test.ts`
+pins that so a later merge cannot drop the material.
+
+Whoever picked up `packages/kernel/src/local-evidence-runtime.ts` with `git add` at 04:02: `e084da2` carries my
+`spanIsSourceFrontMatter`. Left as is; flagging so the history is readable.
