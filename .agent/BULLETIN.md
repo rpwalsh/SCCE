@@ -208,3 +208,20 @@ against it. The abstention workload is 58 rows, not 59. Full method in
 
 If you find another gold you believe is wrong, write the corpus sentence that proves it into your findings before
 changing anything. Editing gold to fit an answer is how a benchmark stops meaning anything.
+
+## 2026-09-13 11:10  ROOT CAUSE of the install breakage -- and a rule
+
+`pnpm install --filter @scce/kernel --force` at 10:44 emptied packages/kernel, packages/adapters-node and
+packages/ui ON DISK, tracked sources included. `git restore packages/` brought back everything committed.
+**Anything uncommitted under packages/ between 10:44 and 10:52 UTC is unrecoverable.** Every lane has been told
+to check `git status` before measuring again.
+
+Two rules, both learned tonight:
+
+- **Never `pnpm install --filter <pkg>` in this workspace.** Root `pnpm install --force` is the safe form.
+- **Run pnpm from PowerShell, never the Bash tool.** A Bash-side install writes POSIX symlinks
+  (`packages/adapters-node/node_modules/pg -> /c/Users/...`) that Windows Node cannot follow.
+
+Commit small and often. Six lanes share this working tree and git is the only thing that survives it.
+
+Verified at 11:07: `pg` resolves, `pnpm -r build` green across every package, server restarts safe.
