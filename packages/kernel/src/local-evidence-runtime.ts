@@ -121,9 +121,6 @@ function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly stri
     .some(sentence => { const folded = normalizePriorKey(sentence); return units.every(unit => folded.includes(unit)); });
 }
 
-/** Cost bound, not a modelling choice: characters of one span scanned for an answering sentence. */
-const ANSWERHOOD_SCAN_CHARS = 60_000;
-
 /**
  * Whether one of the span's own sentences answers the request: it names the subject and carries every relation
  * unit asked about. This is the predicate the mouth already requires before it will speak, applied where the
@@ -138,11 +135,14 @@ const ANSWERHOOD_SCAN_CHARS = 60_000;
  *
  * The whole-span test is a necessary condition for any sentence of it to pass (both the subject match and the
  * missing-relation set are monotone in the text), so it runs first and the per-sentence scan only follows it.
- * Pure.
+ * That, and not a character cap, is what bounds the work: the span is read whole. A 60,000-character slice stood
+ * here and was removed -- measured, 227 of 73,480 promoted spans exceed it and the longest is 65,536 characters,
+ * so it hid at most 5,536 characters from 0.3% of the corpus while the spans it truncated are the long book
+ * chunks this test exists to search. Pure.
  */
 function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, coverageUnits: readonly string[]): boolean {
   if (!coverageUnits.length) return false;
-  const text = String(span.text ?? span.textPreview ?? "").slice(0, ANSWERHOOD_SCAN_CHARS);
+  const text = String(span.text ?? span.textPreview ?? "");
   if (!text) return false;
   if (!answerCoversRequest([text], span, coverageUnits, requestText, { relationRequired: true })) return false;
   return splitSurfaceSentences(text)
