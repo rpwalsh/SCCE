@@ -68,10 +68,14 @@ describe("ProgramGraph source synthesis", () => {
       }
     });
     expect(construct.program?.language).toBe("media-type:text/plain");
-    expect(construct.program?.entrypoint).toBe("src/main.source");
-    expect(construct.program?.files.map(f => f.path)).toContain("src/main.source");
+    expect(construct.program?.entrypoint).toBe("src/program.mjs");
+    expect(construct.program?.files.map(f => f.path)).toContain("src/program.mjs");
+    expect(construct.program?.files.map(f => f.path)).toContain("test/program.test.mjs");
     expect(construct.program?.files.map(f => f.path)).toContain("source.program.json");
     expect(construct.program?.files.map(f => f.path)).toContain("program.graph.json");
+    // The entrypoint is a module the emitted runtime can load, not a contract dump under a name borrowed from the corpus.
+    expect(construct.program?.files.find(f => f.path === construct.program?.entrypoint)?.content).toContain("export function checkDeclaredCall");
+    expect(construct.program?.files.find(f => f.path === "test/program.test.mjs")?.content).toContain("../src/program.mjs");
     const shape = construct.program?.nodes.find(node => node.id === "program-shape")?.metadata as {
       requiredInputs?: Array<{ mediaType: string }>;
       requiredOutputs?: Array<{ mediaType: string }>;

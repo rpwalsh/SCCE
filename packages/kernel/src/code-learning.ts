@@ -676,15 +676,29 @@ export function taskDecompositionForBlueprintOperations(rootId: string, operatio
   return graph;
 }
 
+/**
+ * The runtime a plan can name when the corpus named no toolchain: the one SCCE is itself executing under, whose
+ * module syntax the emitted artifacts are written in. Not a menu of supported languages -- the single interpreter
+ * certain to exist wherever the engine runs, so an emitted artifact is always something that can be spawned.
+ */
+export const EMITTED_PROGRAM_RUNTIME = {
+  commandName: "node",
+  syntaxCheckFlag: "--check",
+  moduleExtension: ".mjs",
+  mediaType: "text/javascript",
+  sourcePath: "src/program.mjs",
+  testPath: "test/program.test.mjs"
+} as const;
+
 function runtimeForBlueprint(language: CodeLanguage, target: string): CodeImplementationBlueprint["runtime"] {
-  const targetRuntime = target.startsWith("target:") ? target.slice("target:".length) : target;
-  const base = {
-    packageManager: "source-derived",
-    entrypoint: "program.graph.json",
-    build: { command: "source-derived", args: ["build", targetRuntime || language], cwd: "." },
-    test: { command: "source-derived", args: ["validate", targetRuntime || language], cwd: "." }
+  void language;
+  void target;
+  return {
+    packageManager: EMITTED_PROGRAM_RUNTIME.commandName,
+    entrypoint: EMITTED_PROGRAM_RUNTIME.sourcePath,
+    build: { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [EMITTED_PROGRAM_RUNTIME.syntaxCheckFlag, EMITTED_PROGRAM_RUNTIME.sourcePath], cwd: "." },
+    test: { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [EMITTED_PROGRAM_RUNTIME.testPath], cwd: "." }
   };
-  return base;
 }
 
 function couplingFromGraph(graph: CodeKnowledgeGraph): number {
