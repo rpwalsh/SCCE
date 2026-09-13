@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
 import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
@@ -664,7 +665,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         .map(candidate => {
           const score = scoreText(input.state, candidate.text, input.requestText);
           const requestFit = weightedJaccard(featureSet(input.requestText, 256), featureSet(candidate.text, 256));
-          const total = clamp01(0.46 * score.activation + 0.34 * requestFit + 0.2 * (candidate.fit ?? score.fit));
+          const total = clamp01(calibrated("language_memory.total_activation_weight") * score.activation + calibrated("language_memory.total_request_fit_weight") * requestFit + calibrated("language_memory.total_candidate_fit_weight") * (candidate.fit ?? score.fit));
           return { candidate, score, total };
         })
         .sort((a, b) => b.total - a.total || a.candidate.text.localeCompare(b.candidate.text));
@@ -1014,7 +1015,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     + importedSemanticFrameIdsUsed.length
     + importedNgramModelIdsUsed.length
     + importedJoinProgramIdsUsed.length;
-  const confidence = clamp01(0.42 * score.activation + 0.28 * input.state.competenceVector.generationReliability + 0.18 * Math.min(1, selected.length / 5) + 0.12 * Math.min(1, importedUseMass / 4));
+  const confidence = clamp01(calibrated("language_memory.confidence_activation_weight") * score.activation + calibrated("language_memory.confidence_generation_reliability_weight") * input.state.competenceVector.generationReliability + calibrated("language_memory.confidence_selected_count_weight") * Math.min(1, selected.length / 5) + calibrated("language_memory.confidence_imported_use_weight") * Math.min(1, importedUseMass / 4));
   return {
     text,
     symbols,
@@ -1239,7 +1240,7 @@ function generationPieces(
     if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
     const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
     const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
-    const score = clamp01(0.34 * clamp01(support) + 0.24 * fit + 0.22 * ngram.probability + 0.2 * sourcePreference(source));
+    const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * fit + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
     rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score });
   };
   for (const term of requiredTerms) add(term.text, "required_term", term.id, Math.max(0.1, term.weight ?? 0.5));
@@ -1568,7 +1569,7 @@ function clauseCandidatesForSentencePlan(input: {
     const lengthFit = clamp01(1 - Math.max(0, symbolCount - maxTokens) / Math.max(1, maxTokens));
     const support = clamp01(semanticMaterialSupport(planMaterials.length ? planMaterials : input.materials) + (sourcePieceIds.length ? 0.04 : 0));
     const continuity = clauseContinuity(clean, input.plan.subjectLabel);
-    const score = clamp01(0.3 * support + 0.28 * coverage + 0.18 * continuity + 0.16 * lengthFit + 0.08 * (1 - repetitionPenalty));
+    const score = clamp01(calibrated("language_memory.sentence_support_weight") * support + calibrated("language_memory.sentence_coverage_weight") * coverage + calibrated("language_memory.sentence_continuity_weight") * continuity + calibrated("language_memory.sentence_length_fit_weight") * lengthFit + calibrated("language_memory.sentence_non_repetition_weight") * (1 - repetitionPenalty));
     out.push({
       id: `clause:${hashText(`${input.sentencePlan.id}:${index}:${clean}`).slice(0, 18)}`,
       sentencePlanId: input.sentencePlan.id,
@@ -2053,7 +2054,7 @@ function clauseLatticeEdges(clausesByPlan: readonly { sentencePlanId: string; ca
           fromClauseId: left.id,
           toClauseId: right.id,
           continuity,
-          score: clamp01(0.55 * continuity + 0.25 * right.score + 0.2 * left.score)
+          score: clamp01(calibrated("language_memory.join_continuity_weight") * continuity + calibrated("language_memory.join_right_score_weight") * right.score + calibrated("language_memory.join_left_score_weight") * left.score)
         });
       }
     }
@@ -2130,7 +2131,7 @@ function proseCandidateFromClauses(
   const repetitionPenalty = discourseRepetitionPenalty(text);
   const lengthFit = clamp01(1 - Math.abs(symbolCount - target) / Math.max(1, target));
   const priorSupport = clauses.length ? mean(clauses.map(clause => clause.support)) : 0;
-  const score = clamp01(0.26 * claimCoverage + 0.22 * anchor + 0.18 * continuity + 0.16 * priorSupport + 0.12 * lengthFit + 0.06 * (1 - repetitionPenalty));
+  const score = clamp01(calibrated("language_memory.prose_claim_coverage_weight") * claimCoverage + calibrated("language_memory.prose_anchor_weight") * anchor + calibrated("language_memory.prose_continuity_weight") * continuity + calibrated("language_memory.prose_prior_support_weight") * priorSupport + calibrated("language_memory.prose_length_fit_weight") * lengthFit + calibrated("language_memory.prose_non_repetition_weight") * (1 - repetitionPenalty));
   return {
     id: `prose:${hashText(`${lattice.id}:${index}:${clauses.map(clause => clause.id).join("|")}`).slice(0, 18)}`,
     text,
@@ -2157,10 +2158,10 @@ function critiqueProseCandidate(candidate: ProseCandidate, lattice: SentenceLatt
   const issues: string[] = [];
   if (!candidate.text.trim()) issues.push("prose.empty");
   if (containsUserFacingMetaSpeech(candidate.text)) issues.push("prose.meta_speech");
-  if (candidate.claimCoverage < 0.55) issues.push("prose.claim_coverage.low");
-  if (candidate.anchorCoverage < 0.42) issues.push("prose.anchor_coverage.low");
+  if (candidate.claimCoverage < calibrated("language_memory.prose_claim_coverage_floor")) issues.push("prose.claim_coverage.low");
+  if (candidate.anchorCoverage < calibrated("language_memory.prose_anchor_coverage_floor")) issues.push("prose.anchor_coverage.low");
   if (candidate.repetitionPenalty > 0.42) issues.push("prose.repetition.high");
-  if (candidate.lengthFit < 0.16) issues.push("prose.length_fit.low");
+  if (candidate.lengthFit < calibrated("language_memory.prose_length_fit_floor")) issues.push("prose.length_fit.low");
   const score = clamp01(candidate.score - issues.length * 0.08);
   return {
     candidateId: candidate.id,
@@ -2268,7 +2269,7 @@ function materialsForRoles(plan: RhetoricalPlan, materialById: ReadonlyMap<strin
 function anchorCoverage(text: string, anchors: readonly string[]): number {
   const required = uniqueStrings(anchors.map(tidyInline).filter(Boolean));
   if (!required.length) return 1;
-  const covered = required.filter(anchor => containsLoose(text, anchor) || weightedJaccard(featureSet(text, 128), featureSet(anchor, 128)) > 0.18).length;
+  const covered = required.filter(anchor => containsLoose(text, anchor) || weightedJaccard(featureSet(text, 128), featureSet(anchor, 128)) > calibrated("language_memory.anchor_similarity_floor")).length;
   return covered / required.length;
 }
 
@@ -2323,7 +2324,7 @@ function weaveDiscourse(input: {
     symbolCount,
     repetitionPenalty
   };
-  const discourseScore = clamp01(0.3 * anchorCoverage + 0.24 * cohesion + 0.22 * fluency.selectedBeamScore + 0.14 * fluency.ngramMeanActivation + 0.1 * boundary.support - repetitionPenalty * 0.24);
+  const discourseScore = clamp01(calibrated("language_memory.discourse_anchor_coverage_weight") * anchorCoverage + calibrated("language_memory.discourse_cohesion_weight") * cohesion + calibrated("language_memory.discourse_beam_score_weight") * fluency.selectedBeamScore + calibrated("language_memory.discourse_ngram_activation_weight") * fluency.ngramMeanActivation + calibrated("language_memory.discourse_boundary_support_weight") * boundary.support - repetitionPenalty * calibrated("language_memory.discourse_repetition_penalty"));
   return {
     text,
     moves: finalMoves,
@@ -2463,7 +2464,7 @@ function advanceDiscourseBeam(input: {
   const atomIds = coveredAtomIds(text, input.frameAtoms);
   const termGain = newCoverageMass(input.state.coveredRequiredTermIds, requiredTermIds, requiredCoverageDenominator(input.requiredTerms));
   const atomGain = newCoverageMass(input.state.coveredAtomIds, atomIds, atomCoverageDenominator(input.frameAtoms));
-  const coverageGain = clamp01(0.62 * termGain + 0.38 * atomGain);
+  const coverageGain = clamp01(calibrated("language_memory.coverage_gain_term_weight") * termGain + calibrated("language_memory.coverage_gain_atom_weight") * atomGain);
   const lastMove = input.state.moves[input.state.moves.length - 1];
   const transitionScore = lastMove ? weightedJaccard(featureSet(lastMove.text, 128), featureSet(input.move.text, 128)) : 0.72;
   const ngramActivation = clamp01(1 / Math.max(1, input.move.information));
@@ -2473,7 +2474,7 @@ function advanceDiscourseBeam(input: {
   const boundaryBonus = input.state.moves.length ? clamp01(input.boundary.support) * 0.05 : 0;
   const priorAnchorBonus = isPriorAnchorMove(input.move) ? 0.42 : 0;
   const planOrderBonus = clamp01(1 - discoursePlanRank(input.move) / 8) * (input.state.moves.length ? 0.05 : 0.24);
-  const increment = 0.23 * coverageGain + 0.28 * priorSupport + 0.15 * transitionScore + 0.11 * ngramActivation + 0.07 * roleFit + boundaryBonus + priorAnchorBonus + planOrderBonus - projectedRepetition * 0.22;
+  const increment = calibrated("language_memory.move_increment_coverage_gain_weight") * coverageGain + calibrated("language_memory.move_increment_prior_support_weight") * priorSupport + calibrated("language_memory.move_increment_transition_weight") * transitionScore + calibrated("language_memory.move_increment_ngram_activation_weight") * ngramActivation + calibrated("language_memory.move_increment_role_fit_weight") * roleFit + boundaryBonus + priorAnchorBonus + planOrderBonus - projectedRepetition * calibrated("language_memory.move_increment_repetition_penalty");
   const boundaryUses = [...input.state.boundaryUses];
   if (lastMove) boundaryUses.push({ text: input.boundary.text, source: input.boundary.source, sourceId: input.boundary.sourceId, support: input.boundary.support, betweenMoveIds: [lastMove.id, input.move.id] });
   return {
@@ -2512,7 +2513,7 @@ function discourseCandidateScore(move: LanguageDiscourseMove): number {
   const compactness = clamp01(1 / Math.max(1, move.symbolCount / 8));
   const priorAnchor = isPriorAnchorMove(move) ? 0.42 : 0;
   const planOrder = clamp01(1 - discoursePlanRank(move) / 8);
-  return clamp01(0.4 * move.support + 0.16 * ngramActivation + 0.14 * roleFit + 0.08 * compactness + 0.06 * sourceMass + 0.12 * planOrder + priorAnchor);
+  return clamp01(calibrated("language_memory.move_support_weight") * move.support + calibrated("language_memory.move_ngram_activation_weight") * ngramActivation + calibrated("language_memory.move_role_fit_weight") * roleFit + calibrated("language_memory.move_compactness_weight") * compactness + calibrated("language_memory.move_source_mass_weight") * sourceMass + calibrated("language_memory.move_plan_order_weight") * planOrder + priorAnchor);
 }
 
 function discoursePlanRank(move: LanguageDiscourseMove): number {
@@ -2526,7 +2527,7 @@ function scoreDiscourseBeamState(state: DiscourseBeamState, requiredTerms: reado
   const transitionMean = state.transitionScores.length ? mean(state.transitionScores) : state.moves.length ? 0.72 : 0;
   const averageSupport = state.moves.length ? state.priorSupportSum / state.moves.length : 0;
   const priorAnchor = discourseBeamHasPriorAnchor(state) ? 0.62 : 0;
-  return state.score + 0.32 * clamp01(requiredCoverage) + 0.18 * clamp01(atomCoverage) + 0.12 * moveBalance + 0.1 * transitionMean + 0.12 * clamp01(averageSupport) + priorAnchor - state.repetitionPenalty * 0.32;
+  return state.score + calibrated("language_memory.state_required_coverage_weight") * clamp01(requiredCoverage) + calibrated("language_memory.state_atom_coverage_weight") * clamp01(atomCoverage) + calibrated("language_memory.state_move_balance_weight") * moveBalance + calibrated("language_memory.state_transition_mean_weight") * transitionMean + calibrated("language_memory.state_average_support_weight") * clamp01(averageSupport) + priorAnchor - state.repetitionPenalty * calibrated("language_memory.state_repetition_penalty");
 }
 
 function discourseBeamHasCoverage(state: DiscourseBeamState, requiredTerms: readonly LanguageGenerationTerm[], atoms: readonly LanguageGenerationAtom[]): boolean {
@@ -2585,7 +2586,7 @@ export function discourseTraceHasCoverage(
 }
 
 function requiredCoverageDenominator(requiredTerms: readonly LanguageGenerationTerm[]): number {
-  return requiredTerms.filter(term => (term.weight ?? 0) >= 0.45 && tidyInline(term.text)).length;
+  return requiredTerms.filter(term => (term.weight ?? 0) >= calibrated("language_memory.required_term_weight_floor") && tidyInline(term.text)).length;
 }
 
 function atomCoverageDenominator(atoms: readonly LanguageGenerationAtom[]): number {
@@ -2750,7 +2751,7 @@ function semanticFactMaterialsFromFrames(frames: readonly LanguageGenerationFram
   const seen = new Map<string, SemanticFactMaterial>();
   for (const row of out) {
     const key = semanticMaterialKey(row);
-    const near = [...seen.values()].find(existing => semanticMaterialOverlap(existing, row) > 0.92);
+    const near = [...seen.values()].find(existing => semanticMaterialOverlap(existing, row) > calibrated("language_memory.material_duplicate_overlap_floor"));
     if (near) {
       if (row.support > near.support) {
         near.id = row.id;
@@ -3013,14 +3014,14 @@ function topEntryMass(value: JsonValue | undefined): number {
 function answerRoleAssignmentsFromMaterials(materials: readonly SemanticFactMaterial[], subjectLabel: string, contextText: string): AnswerRoleAssignment[] {
   const primaryRows = materials.filter(material => sameSurface(material.subjectLabel, subjectLabel) || sameSurface(material.objectLabel, subjectLabel));
   const primaryObjectKeys = new Set(primaryRows.map(material => normalizeSurfaceKey(material.objectLabel)).filter(Boolean));
-  const hasContribution = primaryRows.some(material => semanticRelationSurfaceMass(material) > 1 || semanticQuestionFit(material, contextText) > 0.04);
+  const hasContribution = primaryRows.some(material => semanticRelationSurfaceMass(material) > 1 || semanticQuestionFit(material, contextText) > calibrated("language_memory.material_contribution_question_fit_floor"));
   return materials.map(material => {
     const subjectMatch = sameSurface(material.subjectLabel, subjectLabel);
     const objectMatch = sameSurface(material.objectLabel, subjectLabel);
     const subjectIsContext = primaryObjectKeys.has(normalizeSurfaceKey(material.subjectLabel));
     const objectIsContext = primaryObjectKeys.has(normalizeSurfaceKey(material.objectLabel));
     const questionShapeFit = material.finalQuestionFit ?? semanticQuestionFit(material, contextText);
-    const relationUsefulness = clamp01(0.32 * material.support + 0.24 * material.relevance + 0.44 * questionShapeFit);
+    const relationUsefulness = clamp01(calibrated("language_memory.relation_support_weight") * material.support + calibrated("language_memory.relation_relevance_weight") * material.relevance + calibrated("language_memory.relation_question_shape_fit_weight") * questionShapeFit);
     let roleId = rhetoricalRoleFromQuestionSlot(material.questionSlotId, material.questionSlotImportance) || material.upstreamRoleId || rhetoricalRoleFromRelationRole(material.relationRoleId) || ANSWER_ROLE_IDS.field;
     const slotLocked = Boolean(material.questionSlotId);
     if (!material.upstreamRoleId && !slotLocked) {
@@ -3035,7 +3036,7 @@ function answerRoleAssignmentsFromMaterials(materials: readonly SemanticFactMate
     const background = isBackgroundAnswerRoleId(roleId);
     const secondarySlot = material.questionSlotImportance === "secondary" || material.questionSlotImportance === "context";
     const rejectedSlot = materialRejectedByQuestionSlot(material);
-    const shouldSurface = !rejectedSlot && (!background || (!hasContribution && relationUsefulness > 0.64 && !material.upstreamRoleId && !secondarySlot));
+    const shouldSurface = !rejectedSlot && (!background || (!hasContribution && relationUsefulness > calibrated("language_memory.background_relation_usefulness_floor") && !material.upstreamRoleId && !secondarySlot));
     const centrality = material.alphaRhetoricalCentrality ?? relationUsefulness;
     const slotBoost = material.questionSlotImportance === "core" ? 0.18 : material.questionSlotImportance === "secondary" ? -0.05 : material.questionSlotImportance === "context" ? -0.08 : 0;
     const priority = rhetoricalRolePriority(roleId) + centrality * 0.28 + relationUsefulness * 0.14 + (subjectMatch ? 0.18 : 0) + slotBoost - (material.backgroundPenalty ?? 0) * 0.16;
@@ -3576,7 +3577,7 @@ function continuationCandidateScore(input: { text: string; support: number; scor
   const symbolCount = symbolizeData(input.text).length;
   const extentFit = clamp01(1 - Math.abs(symbolCount - 28) / 28);
   const probability = clamp01(Math.exp(Math.max(-24, input.continuationAverageLogProbability)));
-  return clamp01(0.42 * input.support + 0.28 * input.score.activation + 0.18 * extentFit + 0.12 * probability);
+  return clamp01(calibrated("language_memory.admission_support_weight") * input.support + calibrated("language_memory.admission_activation_weight") * input.score.activation + calibrated("language_memory.admission_extent_fit_weight") * extentFit + calibrated("language_memory.admission_probability_weight") * probability);
 }
 
 function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationExtent: number): boolean {
@@ -3592,7 +3593,7 @@ function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationE
     .length / Math.max(1, lexicalSymbols.length);
   const diversityFloor = multiPointLexicalMass >= 0.5 ? 0.42 : 0.22;
   return diversity >= diversityFloor
-    && discourse.repetitionPenalty < 0.72
+    && discourse.repetitionPenalty < calibrated("language_memory.discourse_repetition_ceiling")
     && !fragmentHeavyDiscourseSurface(discourse.text);
 }
 
@@ -3640,7 +3641,7 @@ function fragmentHeavyDiscourseSurface(text: string): boolean {
   const shortFragmentRatio = shortFragmentCount / fragments.length;
   const punctuationRuns = text.match(DISCOURSE_FRAGMENT_BOUNDARY)?.length ?? 0;
   const punctuationDensity = punctuationRuns / Math.max(1, lexicalTokenCount);
-  return shortFragmentRatio >= 0.5 && punctuationDensity >= 0.24;
+  return shortFragmentRatio >= calibrated("language_memory.fragment_ratio_floor") && punctuationDensity >= calibrated("language_memory.fragment_punctuation_density_floor");
 }
 
 function naturalJoin(values: readonly string[], finalJoiner = ";"): string {
@@ -4070,7 +4071,7 @@ function isDiscourseBearingPriorSurface(value: string): boolean {
   if (letterSymbols.length < 2) return false;
   const punctuation = [...value].filter(char => !isWhitespaceChar(char) && !isLetterLike(char) && !isDigitLike(char)).length;
   const glyphs = [...value].filter(char => !isWhitespaceChar(char)).length;
-  if (glyphs > 0 && punctuation / glyphs > 0.35) return false;
+  if (glyphs > 0 && punctuation / glyphs > calibrated("language_memory.punctuation_glyph_ratio_ceiling")) return false;
   return true;
 }
 
@@ -4303,7 +4304,7 @@ function scoreText(state: LanguageMemoryRuntimeState, text: string, contextText?
   const orderScores = state.models.map(model => {
     const information = surfaceInformation(text, model);
     const activation = Math.exp(-Math.min(24, information)) * Math.max(1, model.order) / 21;
-    const orderFit = clamp01(0.72 * fit + 0.28 * Math.min(1, model.observedSymbolCount / 10000));
+    const orderFit = clamp01(calibrated("language_memory.order_fit_weight") * fit + calibrated("language_memory.order_observed_mass_weight") * Math.min(1, model.observedSymbolCount / 10000));
     return { order: model.order, activation, information, fit: orderFit, observedSymbolCount: model.observedSymbolCount, vocabularySize: model.vocabularySize };
   });
   const priorInfluence = importedPriorInfluence(state, text, orderScores);
@@ -4734,15 +4735,15 @@ function competenceFromRuntime(input: {
   const lexicalCoverage = clamp01(Math.log2(1 + input.vocabularySize) / 17);
   const importedPhraseMass = (input.importedUnits ?? []).filter(unit => unit.unitKind === "phrase").reduce((sum, unit) => sum + unit.alpha, 0);
   const phraseFluency = clamp01(Math.log2(1 + input.observedSymbolCount + importedPhraseMass) / 18 * Math.min(1, Math.max(maxOrder, 2) / 6));
-  const generationReliability = clamp01(0.4 * lexicalCoverage + 0.36 * phraseFluency + 0.24 * modelCoverage);
+  const generationReliability = clamp01(calibrated("language_memory.generation_lexical_coverage_weight") * lexicalCoverage + calibrated("language_memory.generation_phrase_fluency_weight") * phraseFluency + calibrated("language_memory.generation_model_coverage_weight") * modelCoverage);
   const patternCoverage = clamp01(Math.log2(1 + (input.importedPatterns?.length ?? 0)) / 10);
   const discoursePatternCoverage = clamp01(Math.log2(1 + (input.importedPatterns ?? []).filter(pattern => pattern.patternKind === "discourse" || pattern.patternKind === "narrative").length) / 8);
   const constructionCoverage = clamp01(Math.log2(1 + (input.importedConstructionBundles?.length ?? 0)) / 10);
   const semanticFrameCoverage = clamp01(Math.log2(1 + (input.importedSemanticFrames?.length ?? 0)) / 10);
-  const discourseReliability = clamp01(0.64 * generationReliability + 0.36 * discoursePatternCoverage);
+  const discourseReliability = clamp01(calibrated("language_memory.discourse_reliability_generation_weight") * generationReliability + calibrated("language_memory.discourse_reliability_pattern_coverage_weight") * discoursePatternCoverage);
   return {
     scriptRecognition: clamp01(input.languageHints.length ? 0.45 + 0.1 * input.languageHints.length : modelCoverage * 0.3),
-    segmentationQuality: clamp01(0.35 * modelCoverage + 0.65 * lexicalCoverage),
+    segmentationQuality: clamp01(calibrated("language_memory.segmentation_model_coverage_weight") * modelCoverage + calibrated("language_memory.segmentation_lexical_coverage_weight") * lexicalCoverage),
     lexicalCoverage,
     phraseFluency,
     syntacticCoverage: clamp01((maxOrder >= 3 ? phraseFluency * 0.58 : phraseFluency * 0.28) + patternCoverage * 0.16 + constructionCoverage * 0.18 + discoursePatternCoverage * 0.08),
