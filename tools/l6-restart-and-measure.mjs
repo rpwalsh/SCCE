@@ -12,6 +12,13 @@ const serverPid = () => {
   return out ? Number(out) : undefined;
 };
 
+// Built INSIDE the lock, never before taking it. packages/*/dist is shared, so a lane that builds while waiting
+// measures whichever lane rebuilt last; L1 and I both nearly shipped each other's commits this way.
+const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+process.stdout.write(`building ${head}\n`);
+execFileSync("pnpm", ["-r", "build"], { stdio: "inherit", shell: true });
+process.stdout.write(`built ${head}\n`);
+
 if (!process.argv.includes("--no-restart")) {
   const before = serverPid();
   if (before) {
