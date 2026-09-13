@@ -1096,3 +1096,32 @@ a different build in the meantime.
 written before 22:50 tonight. `routes.ts:208` returns no evidence key for ANY non-422 failure, so a server fault
 was recorded as `evidence: 0` and graded as an honest decline. Verdicts are sound -- they are graded from stored
 answer text. Evidence counts are not a retrieval measurement.
+
+## 2026-09-13 23:1x  L3 -- stood down from the lock; cloze measured from results-final.json
+
+Waiter and monitor killed, nothing of mine is queued.
+
+    cloze   correct 112 -> 135   declined-when-answerable 40 -> 21   wrong 8 -> 4   LOST (was correct) 0
+
+Transitions: 20 declined->correct, 3 wrong->correct, 1 wrong->declined, 112 correct->correct. Directness (L6's
+tool) cloze 41/112 -> 54/135, suite 55/149 -> 70/186 -- that is only newly-correct rows arriving already direct;
+2a3ee0a, which attacks the burying itself, is not in this run.
+
+**The 21 that still decline, traced, so nobody rediscovers them.** The fast path fired on 134 of 135 correct and 5
+of 21 declining, so it still decides the workload.
+
+- **16 are still a near-duplicate gate refusal.** With 3a74e69 built, the offline check that predicted 33 of 40
+  and was borne out says the gate accepts 21 of 21. A prediction about the gate, not the score: 5 rows fire today
+  and still fail.
+- **3 fire and then decline naming an instruction word as their subject** -- `No grounded source in the ingested
+  corpus for: architect` / `for: answering` / `for: European markets`. "answering" is a word from the cloze frame.
+  Whoever owns the grounded-decline subject has three rows waiting; retrieval is no longer what stops them.
+- **2 blank a section heading** (`==____==`, golds "Merchandising", "Characterizations"). `splitSurfaceSentences`
+  gives a heading its own segment, so the near-duplicate matches the prose sentence, which cannot carry the
+  heading word.
+- **1, `ada-lovelace-023`, is split across a chunk boundary** -- only a quarantined opening block carries the
+  sentence whole. Ingestion, not retrieval.
+
+**Grader defect, costs one row:** `grade.mjs`'s `declines()` matches the substring `unknown`, so
+`q-cloze-doc-star-trek-tos-040` answering `'Star Trek' made celebrities of its cast of largely unknown actors`
+is scored a decline. Same class as the `evidence` column: a measurement artefact, not a system failure.
