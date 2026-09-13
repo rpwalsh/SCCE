@@ -113,3 +113,19 @@ skeptic clause buys.
 
 Baseline already recorded: the ten-worker run of 2026-09-13, 2.22M tokens, 14 novel findings, 2 false premises
 caught, 10 verified fixes, nothing reverted. Five to ten runs are needed before the ratios mean anything.
+
+## Diagnosis spawns repair. No pause.
+
+The moment an investigator returns a causal diagnosis, the foreman spawns the repair task. It does not wait, it
+does not report and stop, and it does not ask.
+
+"Relation potential has never had a model" is not a finding to file. It is a fit, validate, promote, persist, load,
+execute, measure task, and it should be running before the investigator's report has been read twice.
+
+Once the causal defect is known, stop investigating and BUILD. Launching another round of investigators on a defect
+you have already localized is the most expensive way to avoid doing the work.
+
+The four outcomes are FIXED, REPLACED, MADE IRRELEVANT, or BLOCKED BY A CONCRETE EXTERNAL DEPENDENCY the swarm
+cannot itself produce. A theoretical difficulty, a missing prior art, or a failed first approach is not a blocker.
+When a mechanism is proven structurally incapable, name the next plausible one, build its harness, and implement it
+if the harness succeeds. The task is complete when the behaviour works, not when the old idea has been falsified.
