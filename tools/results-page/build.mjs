@@ -29,6 +29,9 @@ const totS = rows.filter(r => right(r, "scce")).length;
 const totM = rows.filter(r => right(r, "model")).length;
 const fabS = rows.filter(r => r.scce.verdict === "fabricated").length;
 const fabM = rows.filter(r => r.model.verdict === "fabricated").length;
+// Every one of these carried an admitted evidence span, because there is nothing here that can write a
+// sentence. The reference has no evidence field at all.
+const fabEvidenceS = rows.filter(r => r.scce.verdict === "fabricated" && (r.scce.evidence || 0) > 0).length;
 const grounded = rows.filter(r => (r.scce.evidence || 0) > 0).length;
 const sumMs = rows.reduce((a, r) => a + (r.scce.ms || 0), 0) / rows.length;
 const mMs = rows.reduce((a, r) => a + (r.model.ms || 0), 0) / rows.length;
@@ -129,10 +132,12 @@ ${workloadRows}
 <tbody>
 <tr><td class="w">Mean wall clock</td><td>${(sumMs / 1000).toFixed(1)} s</td><td>${(mMs / 1000).toFixed(1)} s</td></tr>
 <tr><td class="w">Mean CPU seconds</td><td>${sCpu.toFixed(2)}</td><td>${mCpu.toFixed(2)}</td></tr>
-<tr><td class="w">Unsupported claims</td><td>${fabS}</td><td>${fabM}</td></tr>
+<tr><td class="w">Answered where the corpus holds no answer</td><td>${fabS}</td><td>${fabM}</td></tr>
+<tr><td class="w">&hellip; of those, carrying a cited source span</td><td>${fabEvidenceS} of ${fabS}</td><td>0 of ${fabM}</td></tr>
 ${directKnown ? `<tr><td class="w">Answers that lead with the answer</td><td>${leadS}</td><td>${leadM}</td></tr>` : ""}
 </tbody></table></div>
 ${directKnown ? `<p class="note">The grader scores by substring containment, the same way for both systems, so a correct answer is one that <em>contains</em> the expected fact. The last row counts the stricter thing: answers that lead with it within 60 characters rather than burying it in a paragraph. SCCE wins the loose count more comfortably than the strict one, and the gap between those two numbers is the honest measure of how much work is left.</p>` : ""}
+<p class="note">Those two rows are not the same failure. SCCE has no language model, so it cannot invent a sentence; every answer it gives is a span that already existed in the corpus, with provenance. When it answers a question the corpus does not settle, it has emitted real sourced text about the right subject and <em>failed to withhold</em> &mdash; a retrieval and gating error, not an invented claim. A model answering the same question is generating from its weights, and what comes out may correspond to nothing at all. Both are wrong; only one can be traced to a source and repaired.</p>
 <p class="note">SCCE is the slower system today and does not hide it. The claim it makes is about what the answer is made of, not how fast it arrives: a named span in a named source, or an explicit refusal.</p>
 
 <footer>Model <code>${esc(res.model || "reference")}</code> &middot; ${rows.length} graded items &middot; generated ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC</footer>
