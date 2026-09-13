@@ -168,7 +168,7 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { admissionTierDiagnostics, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { admissionTierDiagnostics, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeRequestCorroborated, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -1846,6 +1846,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
         closedClassWords: requestClosedClassWords(),
+        functionSymbols: corpusFunctionSymbols(),
         ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
           ? { responseSentenceBudget: responseFormSentences }
           : {})
@@ -1887,6 +1888,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           selectedEvidence: supportCandidates,
           semanticFrameBoundEvidenceIds,
           closedClassWords: requestClosedClassWords(),
+          functionSymbols: corpusFunctionSymbols(),
           ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
             ? { responseSentenceBudget: responseFormSentences }
             : {})
@@ -4302,8 +4304,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // subject-minus-content pattern local-evidence-runtime.ts's localAnswerRelationText already uses to
         // keep a relation hash from degenerating into a whole sentence. No overlap on what is left means the
         // span was never about the question, only about its subject.
+        //
+        // Subtracting the request's own named anchors empties that set whenever the corpus attests no identity for
+        // them, because the anchor is then the whole content run and swallows the attribute asked about
+        // ("Albert Einstein's shoe size" is one run). An empty relation is not a satisfied one, so the remainder is
+        // re-derived against what the corpus says the cited source is about, and the span must carry it.
         const subjectWords = new Set(namedSubjectAnchors(input.text).flatMap(anchor => anchor.toLocaleLowerCase().split(/\s+/u)).filter(Boolean));
-        const relationUnits = requestContentEvidenceUnits(input.text).filter(unit => !subjectWords.has(unit.toLocaleLowerCase()));
+        const subtractedRelationUnits = requestContentEvidenceUnits(input.text).filter(unit => !subjectWords.has(unit.toLocaleLowerCase()));
+        const relationUnits = subtractedRelationUnits.length || !contradictedSpan
+          ? subtractedRelationUnits
+          : requestRelationBeyondSourceIdentity(input.text, contradictedSpan, corpusFunctionSymbols());
         const boundedTextLower = boundedText.toLocaleLowerCase();
         const relatesBeyondSubject = relationUnits.length === 0 || relationUnits.some(unit => boundedTextLower.includes(unit.toLocaleLowerCase()));
         if (boundedText && isUnparsedMarkupText(boundedText)) {
@@ -4355,7 +4365,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             maxChars: DEFAULT_FACTUAL_SURFACE_EXTENT
           })
           : undefined;
-        if (excerpt) {
+        // A summary answers one question -- what is this source about -- and identity binding only establishes that
+        // the request names the source. When the request asks about an attribute the source's own subject does not
+        // account for, that summary supports every candidate value for the attribute equally: it discriminates
+        // nothing. Measured live: "What was Albert Einstein's shoe size?" declined at every narrower lane and then
+        // spoke four sentences of the Einstein biography from here. The summary speaks when the request asks about
+        // the source itself, or when the summary carries what is asked past it.
+        const discriminates = excerpt
+          ? identityBound.some(span => evidenceDiscriminatesAskedRelation(excerpt.text, span, input.text, corpusFunctionSymbols()))
+          : false;
+        if (excerpt && !discriminates) {
+          kernelTrace({
+            stage: "mouth.source_summary_fallback.withheld",
+            label: "kernel.turn",
+            counts: { identityBound: identityBound.length, answerChars: excerpt.text.length },
+            support: { selectedCandidateId: judged.selected.id, reason: "summary-carries-none-of-the-asked-relation" }
+          });
+        } else if (excerpt) {
           const cited = excerpt.spokenFrom.map(position => identityBound[position]!);
           kernelTrace({
             stage: "mouth.source_summary_fallback",

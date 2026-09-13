@@ -1496,7 +1496,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
         || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
         || enumerationAnswer(surface)
-        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) }));
+        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) }));
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
         && (terminalRuntimeMotionSelected
           || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
@@ -6989,6 +6989,11 @@ function mouthClosedClass(input: SpeakInput): Set<string> {
   });
 }
 
+/** The language's own scaffolding, which is what separates the asked relation from the request's frame. Pure. */
+function mouthLanguageClosedClass(input: SpeakInput): Set<string> {
+  return deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
+}
+
 /** Whether the relation asked about can be required of a surface: only a learned closed class can name it. Pure. */
 function mouthRelationRequired(input: SpeakInput): boolean {
   // The language's closed class, not the request-scoped one. The request-scoped set applies the corpus signal only
@@ -6997,7 +7002,7 @@ function mouthRelationRequired(input: SpeakInput): boolean {
   // quota, and declined an answer it had already retrieved and ranked first (live, turn 2 of six). Which units a
   // language uses as scaffolding is a property of the language, and reading it by word position assumes the
   // question word comes first, which is false in every verb-final language.
-  return deriveClosedClassWords({ models: input.languageMemory?.models ?? [] }).size > 0;
+  return mouthLanguageClosedClass(input).size > 0;
 }
 
 /** An owner assertion bound as session evidence is confirmed by restating it; it is not a question to cover or an echo to reject. Pure. */
@@ -7014,7 +7019,7 @@ function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: S
   const bound = input.evidence.filter(span => ids.has(String(span.id)));
   const spans = bound.length ? bound : input.evidence;
   if (!spans.length) return [];
-  return spans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input) })) ? [] : ["surface.reject.request_coverage"];
+  return spans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) })) ? [] : ["surface.reject.request_coverage"];
 }
 
 /** A surface repeats the request when it echoes it or when every content unit it carries is already in the request: it adds nothing. Pure. */
@@ -7963,7 +7968,7 @@ function requestWindowSurfaceFromEvidence(input: SpeakInput, plan: SurfacePlan):
   const window = preserveSurfaceExtent(tidySurface(cleaned), input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT, plan);
   if (!window) return "";
   const relationRequired = mouthRelationRequired(input);
-  if (!answerCoversRequest([window], best.span, units, input.requestText ?? "", { relationRequired })) return "";
+  if (!answerCoversRequest([window], best.span, units, input.requestText ?? "", { relationRequired, languageClosedClassWords: mouthLanguageClosedClass(input) })) return "";
   // The window is scored as a bag of units across up to eight sentences, so it can cover every unit while no
   // sentence inside it relates them to each other: two disjoint quotes that jointly mention the subject and the
   // relation word are not one fact. Measured live: "It almost seems to me that man was not born to be a
@@ -7974,7 +7979,7 @@ function requestWindowSurfaceFromEvidence(input: SpeakInput, plan: SurfacePlan):
   if (relationRequired) {
     const boundSpan = best.span;
     const windowSentences = window.split(/(?<=[.!?。．！？])\s+/u).map(sentence => sentence.trim()).filter(Boolean);
-    const coherent = windowSentences.some(sentence => answerCoversRequest([sentence], boundSpan, units, input.requestText ?? "", { relationRequired: true }));
+    const coherent = windowSentences.some(sentence => answerCoversRequest([sentence], boundSpan, units, input.requestText ?? "", { relationRequired: true, languageClosedClassWords: mouthLanguageClosedClass(input) }));
     if (!coherent) return "";
   }
   return window;

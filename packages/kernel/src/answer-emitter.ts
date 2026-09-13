@@ -11,7 +11,7 @@ import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { ensureSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { answerCoversRequest, requestContentEvidenceUnits, requestSentenceSequences, surfaceRequestOrderedAdjacentPairFraction } from "./local-evidence-runtime.js";
-import { requestClosedClassWords } from "./closed-class-words.js";
+import { deriveClosedClassWords, requestClosedClassWords } from "./closed-class-words.js";
 
 export interface EvidenceGroundedAnswer {
   answer: string;
@@ -88,9 +88,11 @@ export function composeEvidenceGroundedAnswer(input: {
     authority: undefined
   });
   const coverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
+  // The language own scaffolding, which is what the answerhood gate re-derives an empty relation obligation against.
+  const languageClosedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
   const relationRequired = closedClass.size > 0;
-  const realizedSurface = surfaceAnswersRequest(realizedSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired) ? realizedSurfaceRaw : "";
-  const evidenceSurface = surfaceAnswersRequest(evidenceSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired) ? evidenceSurfaceRaw : "";
+  const realizedSurface = surfaceAnswersRequest(realizedSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired, languageClosedClass) ? realizedSurfaceRaw : "";
+  const evidenceSurface = surfaceAnswersRequest(evidenceSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired, languageClosedClass) ? evidenceSurfaceRaw : "";
   // Real bug, confirmed live: for "when did X die?", the realizer's
   // sentence-scoring picked a genuinely unrelated sentence that merely
   // scored well lexically (shared the subject's name plus some date), not
@@ -264,12 +266,12 @@ function hashText(text: string): string {
  *  request, and once a relation can be told apart from scaffolding, at least one of the surface's own sentences
  *  must carry that relation bound to the subject on its own -- a multi-sentence surface that only covers the
  *  request as a bag of units across disjoint sentences is not one fact. Pure. */
-function surfaceAnswersRequest(surface: string, spans: readonly EvidenceSpan[], units: readonly string[], requestText: string, relationRequired: boolean): boolean {
+function surfaceAnswersRequest(surface: string, spans: readonly EvidenceSpan[], units: readonly string[], requestText: string, relationRequired: boolean, languageClosedClassWords?: ReadonlySet<string>): boolean {
   if (!surface || !units.length || !spans.length) return true;
-  if (!spans.some(span => answerCoversRequest([surface], span, units, requestText, { relationRequired }))) return false;
+  if (!spans.some(span => answerCoversRequest([surface], span, units, requestText, { relationRequired, languageClosedClassWords }))) return false;
   if (!relationRequired) return true;
   const sentences = splitSurfaceSentences(surface);
-  return spans.some(span => sentences.some(sentence => answerCoversRequest([sentence], span, units, requestText, { relationRequired: true })));
+  return spans.some(span => sentences.some(sentence => answerCoversRequest([sentence], span, units, requestText, { relationRequired: true, languageClosedClassWords })));
 }
 
 function usableAnswerSurface(text: string): string {
