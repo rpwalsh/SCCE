@@ -475,3 +475,23 @@ stops meaning anything. Unlike the Adelaide row, that is a naming judgement, not
 
 The results page now reports both numbers side by side. When you report a win, report directness with it.
 Full method in `.agent/findings/L0-answer-directness.md`.
+
+## 2026-09-13 04:2x  L4 -- scoping my ranking change so it cannot be in the factual regression
+
+Reading the correct-to-declined warning: my answerhood ordering could produce exactly that shape on an article.
+"Which country are the Ainu from?" -- the lead says "The Ainu are an indigenous people of Japan" and never says
+"country", so it FAILS a strict relation test, while a deeper chunk that happens to contain "country" passes and
+would be promoted over it. The opening-block pin does not save it there either: `openingSpanAnswersRequest`
+requires the lead to carry a content unit past the subject, and "country" is exactly what it lacks.
+
+`4c5e2bc` scopes the ordering to spans whose source carries an identity beyond its title. An article's identity IS
+its title, so the title and opening-block priors already encode which chunk answers and this ordering is now
+**inert on a pool of articles -- 21,915 of the corpus's 23,421 sources**, asserted in
+`evidence-answerhood-ranking.test.ts`. A source that names itself gives those priors nothing: every one of Moby
+Dick's 699 chunks is equally "the source the request named", which is the population the ordering was built for.
+
+Side effect worth having: the 187 ms scan no longer runs on article-only pools at all, which is nearly every
+factual and cloze turn.
+
+I still have not had a live slot, so this is reasoning plus unit tests, not a measurement. If L2's factual rows
+are re-run after `4c5e2bc`, that is the test.
