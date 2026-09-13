@@ -12,6 +12,7 @@
 //   artifacts/full-system-one-shot.json, artifacts/long-horizon-gate.json  acceptance harnesses
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { comparableWorkloadWins } from "./head-to-head/absence.mjs";
 
 const args = new Map(process.argv.slice(2).filter(a => a.startsWith("--")).map(a => { const [k, v] = a.slice(2).split("="); return [k, v ?? "1"]; }));
 const outPath = args.get("out") ?? "artifacts/parity-site/index.html";
@@ -248,9 +249,10 @@ const headline = [];
 if (live) headline.push({ num: `${live.scce.declined}<small>/${live.unanswerable}</small>`, label: `Unanswerable questions declined (${modelName}: ${live.model.declined}/${live.unanswerable}). A refusal is a result here; every question is checked against the article before it is asked.` });
 if (live) headline.push({ num: `${live.scce.correct}<small>/${live.answerable}</small>`, label: `Answerable questions correct, cited from the corpus, retrieved from 80k spans (${modelName} was handed the article: ${live.model.correct}/${live.answerable}).` });
 if (headToHead?.scce?.byWorkload && headToHead?.reference?.byWorkload) {
-  const workloads = Object.keys(headToHead.scce.byWorkload);
-  const won = workloads.filter(w => (headToHead.scce.byWorkload[w]?.correct ?? 0) >= (headToHead.reference.byWorkload[w]?.correct ?? 0)).length;
-  headline.push({ num: `${won}<small>/${workloads.length}</small>`, label: `Workloads where SCCE matches or beats ${modelName} closed-book on the ${headToHead.scce.items}-item graded suite (Wikipedia, Gutenberg, source code, abstention): ${headToHead.scce.correct} correct to ${headToHead.reference.correct}.` });
+  // Denominator is the workloads BOTH systems were graded on. A workload the reference never ran is not a tie.
+  const { won, comparable, incomparable } = comparableWorkloadWins(headToHead.scce.byWorkload, headToHead.reference.byWorkload);
+  const caveat = incomparable.length ? ` Not compared, ungraded for ${modelName}: ${incomparable.join(", ")}.` : "";
+  if (comparable) headline.push({ num: `${won}<small>/${comparable}</small>`, label: `Workloads where SCCE matches or beats ${modelName} closed-book on the ${headToHead.scce.items}-item graded suite (Wikipedia, Gutenberg, source code, abstention): ${headToHead.scce.correct} correct to ${headToHead.reference.correct}.${caveat}` });
 }
 if (codingSpine) headline.push({ num: `${[codingSpine.a, codingSpine.b].filter(run => run.verdict.passed).length}<small>/2</small>`, label: "Coding chains passed end to end, read from the event ledger: a clean implementation built and tested, and a declared first-attempt defect replanned, repaired and re-tested." });
 if (probeChat) headline.push({ num: `${(probeChat.meanMs / 1000).toFixed(1)}<small>s</small>`, label: `Mean turn over ${probeChat.questions} chat questions on the live brain, down from 81 s before the readiness fix.` });

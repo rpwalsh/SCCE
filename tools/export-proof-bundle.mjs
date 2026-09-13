@@ -69,7 +69,9 @@ for (const turn of turns) {
     outcome: error ? "declined" : (output?.output ?? "").trim() ? "answered" : "empty",
     answer: output?.output ?? "",
     error: error?.warnings?.[0] ?? null,
-    evidenceCount: output?.counts?.evidence ?? kernelOutput?.counts?.evidence ?? 0,
+    // null, not 0, when no trace event carried a count: "answered citing no evidence" is a claim about this
+    // system, and a bundle published as proof must not make it out of a count that was never recorded.
+    evidenceCount: output?.counts?.evidence ?? kernelOutput?.counts?.evidence ?? null,
     durationMs: output?.durationMs ?? kernelOutput?.durationMs ?? null,
     timing,
     admission: pool ? { pool: pool.counts?.pool, admitted: pool.counts?.admitted, anchors: pool.support?.anchors ?? [], spans: pool.support?.spans ?? [] } : null,
