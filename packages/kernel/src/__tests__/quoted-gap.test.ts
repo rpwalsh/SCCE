@@ -45,11 +45,12 @@ describe("the hole in a quoted sentence", () => {
     expect(quotedSentenceGap(sentence, `${FRAME}${sentence}`)).toBe("");
   });
 
-  it("says nothing when two runs of the same length leave the hole undecided", () => {
-    // Two words dropped, far apart and equally long: which one was asked for is not decidable from the pair.
-    const request = `${FRAME}The ____ crossed the river and the ____ followed it home.`;
-    const answered = "The dog crossed the river and the cat followed it home.";
-    expect(quotedSentenceGap(answered, request)).toBe("");
+  it("says nothing when the sentence has more than one hole in it, whatever their lengths", () => {
+    // Which run was asked for is not decidable from the pair, and it does not have to be: one hole or nothing.
+    const equalLength = "The dog crossed the river and the cat followed it home.";
+    expect(quotedSentenceGap(equalLength, `${FRAME}The ____ crossed the river and the ____ followed it home.`)).toBe("");
+    const unequalLength = "The dog crossed the river and the black cat followed it home.";
+    expect(quotedSentenceGap(unequalLength, `${FRAME}The ____ crossed the river and the ____ followed it home.`)).toBe("");
   });
 
   it("says nothing when the hole is not smaller than the quotation around it", () => {
