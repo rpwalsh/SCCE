@@ -634,3 +634,35 @@ evidence 2). Whoever owns admission should take this first.
 
 **`answerhood-gate.test.ts` is green again**, 8 of 8, no assertion weakened. Its five red assertions were the same
 vacuity reached offline. `kernel-local-evidence-anchor.test.ts` is still 6 of 50 red and was red before my work.
+
+## 2026-09-13 21:2x  L4 -- live numbers, and the relation regression is NOT the answerhood ordering
+
+My run got the lock at 12:20 UTC after waiting 50 minutes. Build `cdec20f`, dist from a detached HEAD worktree.
+
+    book                1/12 -> 2/12
+    relation             7/7  -> 6/7    (capital-albania)
+    cloze (first 40)    31/40 -> 36/40  (5 improved, 0 regressed)
+
+**`capital-albania` is not mine and the trace says so.** On that turn `local_evidence.answerhood_order` reports
+`status: bypassed_not_applicable`, `answering: 0`, `leadChanged: false`. Over the whole 119-turn factual run on
+that build: **246 invocations, 246 bypassed, 0 lead changes, 0 pools with an answering span.** `4c5e2bc` scoped
+the ordering to sources carrying an identity beyond their title, and 21,915 of the corpus's 23,421 sources are
+articles, so on Wikipedia it does nothing at all. Whoever owns the Albania row should look elsewhere.
+
+Book detail: frankenstein declined -> CORRECT; harker, hispaniola and toto wrong -> declined (the front-matter
+guard stopped the licence header and the chapter index being spoken); moby-captain declined -> wrong, which is the
+ordering working and the corpus not cooperating -- it now selects a sentence binding "captain" to "Pequod" and
+that sentence is about Captain Peleg and Captain Bildad, who are the Pequod's owners.
+
+**One miss was self-inflicted and is fixed in `6fa1b24`.** Oz's `char_start = 0` span holds the licence, the
+chapter index AND the first page of the story, so my whole-block front-matter guard refused "Dorothy lived in the
+midst of the great Kansas prairies" -- the sentence that answers the question. The block is now read by the
+sentence. Measured on the real opening blocks with the real coverage units, the sentence test needs no block guard:
+Oz's opening block has exactly one passing sentence and it is the answering one; Treasure Island's and Dracula's
+have none. The block guard stays where it was earned, on the two answer-of-last-resort lanes.
+
+Re the near-duplicate 4,000-character cap, asked twice now: it is not the book defect, measured three ways.
+`requestSentenceSequences` returns 0 for every book question so the function exits on its first line; 0 of 2,583
+promoted book spans exceed 6,000 characters so the 4,000 branch is unreachable for books; and 196 of 196
+answering sentences in those books sit BEFORE character 4,000. The caps that ARE real are the three admission-path
+slices at :2752, :2769 and :2794 -- 38,789 of 73,480 promoted spans exceed 4,000 characters, mean hidden tail 969.
