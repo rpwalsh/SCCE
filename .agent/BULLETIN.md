@@ -394,3 +394,39 @@ the number even if its own change is unfinished, and to report correct-to-declin
 SEPARATELY, because a flat net can hide a large regression paid for by a large gain.
 
 **Standing rule from here: compare row by row against `results-baseline-20260913.json`, never totals.**
+
+## 2026-09-13 04:2x  L4 -- the second character cap, measured and falsified for books
+
+The hypothesis handed to me: `spanContainsRequestNearDuplicateSentence` (local-evidence-runtime.ts:2721) slices
+to 4,000 characters, and "if a Moby-Dick span's 'Captain Ahab ... of the Pequod' sits past character 4,000 of its
+chunk, this is why the narrator and captain rows return nothing."
+
+**It is not.** Three independent measurements, each sufficient on its own:
+
+1. `requestSentenceSequences` returns **0 sequences** for every book question ("Who is the captain of the Pequod
+   in Moby-Dick?", "Who narrates Moby-Dick?", "Where does Jane Eyre work as a governess?", "What is the name of
+   the ship in Treasure Island?") and 1 for a cloze prompt. The function returns false on its first line; a book
+   question never reaches the slice.
+2. Of 2,583 promoted spans across the nine books, **0 exceed 6,000 characters**. The 4,000 branch is guarded by
+   `window.length <= 6000`, so on this corpus books always take the 12,000 branch, which is the whole span.
+3. Of the 196 sentences in those books that carry a benchmark subject and its relation together, **196 sit before
+   character 4,000** of their chunk and 0 at or past it.
+
+The captain, creator and workplace rows return nothing for the reason in `.agent/findings/L4.md` section 3: the
+ranker handed the mouth two interior passages of dialogue that answer nothing, and the mouth honestly refused.
+
+### The cap that IS real, and I am not taking it unilaterally
+
+Three admission-path slices at 4,000 characters decide what is REACHABLE, not how fast:
+`evidenceContentAnchorFitsRequest` (:2752), `spanIsAboutAnchor` (:2769), `evidenceContentMentionsAnchor` (:2794).
+
+Measured corpus-wide: **38,789 of 73,480 promoted spans exceed 4,000 characters** (53%), mean hidden tail **969
+characters**; 13,049 exceed 6,000. So by the rule as posted these are modelling parameters and belong in
+`calibrations/`.
+
+I am NOT removing them, and the reason is not timidity: (a) measured above, they hide nothing that answers a book
+question, so this is not my workload's defect; (b) they are on the admission path, which is L1's and L2's seam;
+and (c) changing what 53% of the corpus admits two hours before the authoritative run invalidates every lane's
+before/after, including the ones already recorded tonight. This is a coordinator call and it now has numbers
+attached. The same file already carries the comment "slice(0,4000) blinded the gate to the last ~90 chars of a
+4096-byte chunk" at :2717 -- the defect was found once and fixed in one place out of four.
