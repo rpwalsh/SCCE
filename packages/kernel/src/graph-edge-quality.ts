@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { clamp01 } from "./primitives.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import {
   GRAPH_QUALITY_CLASS_IDS,
   GRAPH_QUALITY_CLASS_REASON_IDS,
@@ -73,7 +74,7 @@ export function scoreGraphEdgeQuality(input: GraphEdgeQualityInput): GraphEdgeQu
     0.1 * Math.max(subject.boundaryDebrisScore, object.boundaryDebrisScore)
   );
   const sourceShardSupport = clamp01(input.sourceShardSupport ?? input.weight ?? input.alpha ?? 0.5);
-  const entityCentralitySupport = clamp01(0.55 * endpointCentrality(subject) + 0.45 * endpointCentrality(object));
+  const entityCentralitySupport = clamp01(calibrated("graph_edge_quality.centrality_subject_weight") * endpointCentrality(subject) + calibrated("graph_edge_quality.centrality_object_weight") * endpointCentrality(object));
   const noisyMarkup = Math.max(subject.markupScore, predicate.markupScore, object.markupScore);
   let semanticQuality = clamp01(
     0.24 * predicateQuality +
@@ -93,28 +94,28 @@ export function scoreGraphEdgeQuality(input: GraphEdgeQualityInput): GraphEdgeQu
   );
   const reasonIds: string[] = [];
   if (predicate.symbols.length <= 1 && predicate.charCount <= 4) reasonIds.push(GRAPH_QUALITY_REASON_IDS.lowMassPredicate);
-  if (subjectSpecificity < 0.42) reasonIds.push(GRAPH_QUALITY_REASON_IDS.lowInformationSubject);
-  if (objectSpecificity < 0.32) reasonIds.push(GRAPH_QUALITY_REASON_IDS.lowInformationObject);
-  if (functionLikePredicateScore(predicate) >= 0.72) reasonIds.push(GRAPH_QUALITY_REASON_IDS.functionPredicate);
-  if (subject.fragmentScore >= 0.48) reasonIds.push(GRAPH_QUALITY_REASON_IDS.subjectFragment);
-  if (object.fragmentScore >= 0.48) reasonIds.push(GRAPH_QUALITY_REASON_IDS.objectFragment);
+  if (subjectSpecificity < calibrated("graph_edge_quality.low_information_subject_ceiling")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.lowInformationSubject);
+  if (objectSpecificity < calibrated("graph_edge_quality.low_information_object_ceiling")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.lowInformationObject);
+  if (functionLikePredicateScore(predicate) >= calibrated("graph_edge_quality.function_predicate_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.functionPredicate);
+  if (subject.fragmentScore >= calibrated("graph_edge_quality.endpoint_fragment_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.subjectFragment);
+  if (object.fragmentScore >= calibrated("graph_edge_quality.endpoint_fragment_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.objectFragment);
   if (object.symbols.length > 10 || object.charCount > 120) reasonIds.push(GRAPH_QUALITY_REASON_IDS.longObject);
-  if (noisyMarkup >= 0.16) reasonIds.push(GRAPH_QUALITY_REASON_IDS.markupDense);
-  if (categoryNavigationScore >= 0.55) reasonIds.push(GRAPH_QUALITY_REASON_IDS.navigationShape);
-  if (aliasScore >= 0.55) reasonIds.push(GRAPH_QUALITY_REASON_IDS.aliasShape);
-  if (titleHintScore >= 0.55) reasonIds.push(GRAPH_QUALITY_REASON_IDS.profileHintShape);
-  if (relationUsefulness >= 0.62 && fragmentScore < 0.36) reasonIds.push(GRAPH_QUALITY_REASON_IDS.semanticShape);
+  if (noisyMarkup >= calibrated("graph_edge_quality.markup_dense_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.markupDense);
+  if (categoryNavigationScore >= calibrated("graph_edge_quality.navigation_shape_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.navigationShape);
+  if (aliasScore >= calibrated("graph_edge_quality.alias_shape_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.aliasShape);
+  if (titleHintScore >= calibrated("graph_edge_quality.title_hint_shape_floor")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.profileHintShape);
+  if (relationUsefulness >= calibrated("graph_edge_quality.semantic_shape_relation_usefulness_floor") && fragmentScore < calibrated("graph_edge_quality.semantic_shape_fragment_ceiling")) reasonIds.push(GRAPH_QUALITY_REASON_IDS.semanticShape);
   let classId: GraphEdgeQualityClassId = GRAPH_QUALITY_CLASS_IDS.unknown;
-  if (noisyMarkup >= 0.16 || labelCleanliness < 0.36 || (fragmentScore >= 0.72 && predicateQuality < 0.12)) classId = GRAPH_QUALITY_CLASS_IDS.noisyMarkup;
-  else if (aliasScore >= 0.55) classId = GRAPH_QUALITY_CLASS_IDS.redirectAlias;
-  else if (titleHintScore >= 0.55) classId = GRAPH_QUALITY_CLASS_IDS.titleHint;
-  else if (categoryNavigationScore >= 0.55) classId = GRAPH_QUALITY_CLASS_IDS.catalogNavigation;
+  if (noisyMarkup >= calibrated("graph_edge_quality.markup_dense_floor") || labelCleanliness < calibrated("graph_edge_quality.noisy_markup_cleanliness_ceiling") || (fragmentScore >= calibrated("graph_edge_quality.noisy_markup_fragment_floor") && predicateQuality < calibrated("graph_edge_quality.noisy_markup_predicate_quality_ceiling"))) classId = GRAPH_QUALITY_CLASS_IDS.noisyMarkup;
+  else if (aliasScore >= calibrated("graph_edge_quality.alias_shape_floor")) classId = GRAPH_QUALITY_CLASS_IDS.redirectAlias;
+  else if (titleHintScore >= calibrated("graph_edge_quality.title_hint_shape_floor")) classId = GRAPH_QUALITY_CLASS_IDS.titleHint;
+  else if (categoryNavigationScore >= calibrated("graph_edge_quality.navigation_shape_floor")) classId = GRAPH_QUALITY_CLASS_IDS.catalogNavigation;
   else if (answerGradeShape({ semanticQuality, predicateQuality, objectQuality, subjectSpecificity, objectSpecificity, fragmentScore })) classId = GRAPH_QUALITY_CLASS_IDS.answerGrade;
-  else if (fragmentScore >= 0.34 || predicateQuality < 0.42) classId = GRAPH_QUALITY_CLASS_IDS.weakFragment;
+  else if (fragmentScore >= calibrated("graph_edge_quality.weak_fragment_floor") || predicateQuality < calibrated("graph_edge_quality.weak_fragment_predicate_quality_ceiling")) classId = GRAPH_QUALITY_CLASS_IDS.weakFragment;
   if (classId === GRAPH_QUALITY_CLASS_IDS.catalogNavigation) semanticQuality = Math.min(semanticQuality, 0.42);
   if (classId === GRAPH_QUALITY_CLASS_IDS.weakFragment) semanticQuality = Math.min(semanticQuality, 0.48);
   if (classId === GRAPH_QUALITY_CLASS_IDS.noisyMarkup) semanticQuality = Math.min(semanticQuality, 0.18);
-  const answerGrade = classId === GRAPH_QUALITY_CLASS_IDS.answerGrade && semanticQuality >= 0.58;
+  const answerGrade = classId === GRAPH_QUALITY_CLASS_IDS.answerGrade && semanticQuality >= calibrated("graph_edge_quality.answer_grade_semantic_floor");
   if (!answerGrade && classId !== GRAPH_QUALITY_CLASS_IDS.unknown) reasonIds.push(GRAPH_QUALITY_CLASS_REASON_IDS[classId]);
   if (answerGrade) reasonIds.push(GRAPH_QUALITY_CLASS_REASON_IDS[GRAPH_QUALITY_CLASS_IDS.answerGrade]);
   return {
@@ -136,12 +137,12 @@ export function scoreGraphEdgeQuality(input: GraphEdgeQualityInput): GraphEdgeQu
 }
 
 function answerGradeShape(input: { semanticQuality: number; predicateQuality: number; objectQuality: number; subjectSpecificity: number; objectSpecificity: number; fragmentScore: number }): boolean {
-  return input.semanticQuality >= 0.58 &&
-    input.predicateQuality >= 0.33 &&
-    input.objectQuality >= 0.74 &&
-    input.subjectSpecificity >= 0.42 &&
-    input.objectSpecificity >= 0.32 &&
-    input.fragmentScore < 0.24;
+  return input.semanticQuality >= calibrated("graph_edge_quality.answer_grade_semantic_floor") &&
+    input.predicateQuality >= calibrated("graph_edge_quality.answer_grade_predicate_quality_floor") &&
+    input.objectQuality >= calibrated("graph_edge_quality.answer_grade_object_quality_floor") &&
+    input.subjectSpecificity >= calibrated("graph_edge_quality.answer_grade_subject_specificity_floor") &&
+    input.objectSpecificity >= calibrated("graph_edge_quality.answer_grade_object_specificity_floor") &&
+    input.fragmentScore < calibrated("graph_edge_quality.answer_grade_fragment_ceiling");
 }
 
 function predicateQualityScore(profile: SurfaceProfile, relationUsefulness: number, categoryNavigationScore: number, aliasScore: number, titleHintScore: number): number {
@@ -166,8 +167,8 @@ function endpointQualityScore(profile: SurfaceProfile, role: "subject" | "object
   const idealUpper = role === "subject" ? 7 : 9;
   const symbolMass = profile.symbols.length <= idealUpper ? 1 : Math.max(0.15, 1 - (profile.symbols.length - idealUpper) / 12);
   const charMass = profile.charCount <= (role === "subject" ? 96 : 132) ? 1 : Math.max(0.12, 1 - (profile.charCount - (role === "subject" ? 96 : 132)) / 180);
-  const compact = clamp01(0.58 * symbolMass + 0.42 * charMass);
-  return clamp01(0.5 * compact + 0.35 * profile.cleanliness + 0.15 * endpointCentrality(profile) - 0.42 * profile.fragmentScore);
+  const compact = clamp01(calibrated("graph_edge_quality.endpoint_compactness_symbol_weight") * symbolMass + calibrated("graph_edge_quality.endpoint_compactness_char_weight") * charMass);
+  return clamp01(calibrated("graph_edge_quality.endpoint_quality_compactness_weight") * compact + calibrated("graph_edge_quality.endpoint_quality_cleanliness_weight") * profile.cleanliness + calibrated("graph_edge_quality.endpoint_quality_centrality_weight") * endpointCentrality(profile) - calibrated("graph_edge_quality.endpoint_quality_fragment_penalty") * profile.fragmentScore);
 }
 
 function endpointSpecificity(profile: SurfaceProfile, role: "subject" | "object"): number {
@@ -184,7 +185,7 @@ function endpointSpecificity(profile: SurfaceProfile, role: "subject" | "object"
   else if (profile.symbols.length >= 2 && maxAlphabetic >= 3) score = 0.45;
   else if (role === "object" && maxNumeric >= 2) score = 0.52;
   if (profile.symbols.length >= 3 && maxAlphabetic >= 4) score += 0.08;
-  if (profile.fragmentScore >= 0.34) score -= 0.18;
+  if (profile.fragmentScore >= calibrated("graph_edge_quality.specificity_fragment_penalty_floor")) score -= 0.18;
   if (profile.markupScore >= 0.12) score -= 0.16;
   return clamp01(score);
 }
@@ -206,7 +207,7 @@ function categoryNavigation(predicate: SurfaceProfile, relationId: string, objec
   const denseStructuralSeparators = (joined.match(/[.:/#_|-]/gu)?.length ?? 0) / Math.max(1, joined.length);
   const predicateStructural = /[.:/#_|-]/u.test(predicate.text) ? 0.36 : 0;
   const relationStructured = relationSymbols.length >= 2 && /[.:/#_|-]/u.test(relationId) ? 0.14 : 0;
-  const objectClassifierShape = object.symbols.length >= 3 && object.symbols.length <= 9 && endpointCentrality(object) >= 0.54 ? 0.24 : 0;
+  const objectClassifierShape = object.symbols.length >= 3 && object.symbols.length <= 9 && endpointCentrality(object) >= calibrated("graph_edge_quality.object_classifier_centrality_floor") ? 0.24 : 0;
   const structuralMass = objectClassifierShape > 0 && predicateStructural > 0 ? Math.min(0.24, denseStructuralSeparators * 3.2) + relationStructured : 0;
   const listShape = predicateStructural > 0 && relationStructured > 0 && objectClassifierShape > 0 ? 0.18 : 0;
   return clamp01(namespaceLike + predicateStructural + structuralMass + objectClassifierShape + listShape);
@@ -234,7 +235,7 @@ function functionLikePredicateScore(profile: SurfaceProfile): number {
   const symbolCount = profile.symbols.length;
   const charCount = profile.charCount;
   const compact = symbolCount <= 1 ? (charCount <= 3 ? 1 : charCount <= 5 ? 0.38 : charCount <= 8 ? 0.24 : 0.14) : symbolCount === 2 && charCount <= 8 ? 0.24 : 0.08;
-  const vowelThinness = alphabeticVowelRatio(profile.normalized) < 0.18 && charCount <= 6 ? 0.18 : 0;
+  const vowelThinness = alphabeticVowelRatio(profile.normalized) < calibrated("graph_edge_quality.vowel_thinness_ratio_ceiling") && charCount <= 6 ? 0.18 : 0;
   return clamp01(compact + vowelThinness - profile.markupScore * 0.2);
 }
 
@@ -242,7 +243,7 @@ function endpointCentrality(profile: SurfaceProfile): number {
   if (!profile.symbols.length) return 0;
   const middle = profile.symbols.length >= 2 && profile.symbols.length <= 6 ? 0.82 : profile.symbols.length === 1 ? 0.56 : 0.4;
   const clean = profile.cleanliness;
-  return clamp01(0.6 * middle + 0.4 * clean);
+  return clamp01(calibrated("graph_edge_quality.endpoint_centrality_band_weight") * middle + calibrated("graph_edge_quality.endpoint_centrality_cleanliness_weight") * clean);
 }
 
 function surfaceProfile(value: string): SurfaceProfile {
