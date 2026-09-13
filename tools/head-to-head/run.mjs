@@ -148,7 +148,10 @@ for (const [index, item] of items.entries()) {
       ms: result.ms,
       cpuSeconds: cpuDelta(before, after, "scceCpu"),
       rssMb: after?.scceRssMb ?? null,
-      evidence: result.evidence ?? 0,
+      // null, never 0: an HTTP 422 decline returns no evidence key, and reporting that as zero admitted spans
+      // made a runtime refusal indistinguishable from a retrieval miss. Three lanes chased that difference.
+      evidence: result.evidence ?? null,
+      runtimeDeclined: result.declinedByRuntime === true,
       answer: result.answer.replace(/\s+/gu, " ")
     };
   }
