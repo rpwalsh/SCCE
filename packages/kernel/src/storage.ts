@@ -628,6 +628,12 @@ export interface GraphStore {
   upsertHyperedge(edge: Hyperedge): Promise<void>;
   upsertHyperedges?(edges: readonly Hyperedge[]): Promise<void>;
   getSlice(query: GraphSliceQuery): Promise<GraphSlice>;
+  /**
+   * A bounded page of edges over the whole relation population, ordered by endpoint pair so competing
+   * relations over the same pair land in the same page. `getSlice` seeds from nodes and returns one
+   * neighbourhood, which is not a training population.
+   */
+  listEdgePage?(query: { limit: number; offset?: number }): Promise<readonly GraphEdge[]>;
   getTemporalSlice(query: TemporalGraphQuery): Promise<TemporalGraph>;
   materializeAlphaGraph(query: GraphSliceQuery): Promise<AlphaTrace>;
 }
@@ -656,6 +662,11 @@ export interface EvidenceStore {
   promoteEvidence(ids: EvidenceId[], reason: string): Promise<number>;
   getEvidence(id: EvidenceId): Promise<EvidenceSpan | null>;
   getEvidenceBatch(ids: EvidenceId[]): Promise<EvidenceSpan[]>;
+  /**
+   * Source-version projection only. Hydrating whole spans to read one column exhausted a 7 GB heap on a
+   * 12,000-edge fit, so provenance-only consumers ask for provenance only.
+   */
+  getEvidenceSourceVersions?(ids: EvidenceId[]): Promise<ReadonlyArray<{ id: string; sourceVersionId: string }>>;
   searchEvidence(query: EvidenceQuery): Promise<EvidenceSearchResult[]>;
   /**
    * Which of these candidate runs the corpus carries as a source identity.
@@ -1081,6 +1092,8 @@ export interface ScceStorage extends StorageAdmin {
    * model.
    */
   sparseRanking?: import("./sparse-ranking-lifecycle.js").SparseRankingModelStore;
+  /** Durable relation-potential artifact lifecycle; present on the Postgres adapter. */
+  relationPotentialModels?: import("./relation-potential-lifecycle.js").RelationPotentialModelStore;
   /**
    * Optional: durable, replayable pairwise-comparison log backing the
    * FTRL held-out evaluation gate (Part A finding 9, stage 6). Separate
@@ -1277,7 +1290,9 @@ export const POSTGRES_REQUIRED_TABLES = [
   "task_resumption_snapshots",
   "document_generation_sessions",
   "translation_seeds",
-  "translation_constructions"
+  "translation_constructions",
+  "relation_potential_models",
+  "relation_potential_active_model"
 ] as const;
 
 export interface ScceKernelDeps {
@@ -1295,8 +1310,13 @@ export interface ScceKernelDeps {
   maxChunkBytes?: number;
   policy?: Partial<import("./types.js").PolicyProfile>;
   corpusRegistry?: readonly CorpusRegistryEntry[];
-  /** Optional offline-trained, frozen relation-potential inference model. */
-  relationPotentialModel?: RelationPotentialModel;
+  /**
+   * Optional offline-trained, frozen relation-potential inference model, or a provider that yields the promoted
+   * artifact once the adapter has hydrated it. Absent means the field engine runs its identity branch.
+   */
+  relationPotentialModel?: RelationPotentialModel | (() => RelationPotentialModel | undefined);
+  /** Durable fit/validate/promote store for the relation-potential artifact. */
+  relationPotentialModels?: import("./relation-potential-lifecycle.js").RelationPotentialModelStore;
   /**
    * Optional, sealed evaluation condition applied at production turn
    * component boundaries. It is intentionally injected rather than read from

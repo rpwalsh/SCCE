@@ -6,6 +6,7 @@ import { runModelCommand, runSensorCommand, runSettingsCommand } from "./setting
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { createClangCodeMouthPorts, createLearnedCodeProposer, createTreeSitterCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { codeLanguageForPath } from "@scce/kernel";
+import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -514,37 +515,79 @@ async function evaluationGate(args: string[]): Promise<void> {
   if (!report.gate.passed) process.exitCode = 1;
 }
 
-/** Fits the relation-potential model the field engine reads, from the live graph's own corroboration. The model is
- *  configuration, so `--apply` writes it into the runtime config the engine already loads. */
+/** Full artifact lifecycle for the relation-potential model: fit from the live graph's own corroboration, validate
+ *  on the held-out split against the identity it replaces, persist a durable row, and promote it into the single
+ *  active slot the runtime reads. A config paste is not promotion. */
 async function relationPotential(configPath: string, runtime: ReturnType<typeof createNodeRuntime>, args: string[]): Promise<void> {
-  if (args[0] !== "fit") return usage("scce relation-potential fit [--apply] [--max-edges=N]");
-  const apply = args.includes("--apply");
-  const maxEdges = Number(args.find(arg => arg.startsWith("--max-edges="))?.slice("--max-edges=".length));
-  const report = await fitRelationPotentialFromGraph({
-    storage: runtime.storage,
-    ...(Number.isFinite(maxEdges) && maxEdges > 0 ? { maxEdges } : {})
-  });
-  if (!report.model) {
-    printJson({ status: "not_fitted", ...report });
+  const store = runtime.storage.relationPotentialModels;
+  if (!store) throw new Error("this storage adapter has no relation-potential artifact store");
+  if (args[0] === "status") {
+    const promoted = await store.readPromoted();
+    const listed = await store.list(10);
+    const artifact = promoted ? "promoted" : listed.some(row => row.validation?.beatsIdentity) ? "validated" : listed.length ? "fitted" : "untrained";
+    printJson({
+      capability: describeRelationPotentialCapability({ artifact, record: promoted }),
+      artifacts: listed.map(row => ({ modelId: row.modelId, lifecycle: row.lifecycle, createdAt: row.createdAt, validation: row.validation ?? null }))
+    });
     return;
   }
-  if (apply) {
-    const absolute = path.resolve(configPath);
-    const stored = JSON.parse(await readFile(absolute, "utf8")) as { runtime?: Record<string, unknown> };
-    stored.runtime = { ...stored.runtime, relationPotentialModel: report.model };
-    await writeJsonReplacing(absolute, stored);
+  if (args[0] === "promote") {
+    const modelId = args.find(arg => arg.startsWith("--model-id="))?.slice("--model-id=".length);
+    if (!modelId) return usage("scce relation-potential promote --model-id=<id>");
+    await store.promote({ modelId });
+    printJson({ status: "promoted", modelId });
+    return;
+  }
+  if (args[0] !== "fit") return usage("scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>");
+  const maxEdges = Number(args.find(arg => arg.startsWith("--max-edges="))?.slice("--max-edges=".length));
+  const iterations = Number(args.find(arg => arg.startsWith("--iterations="))?.slice("--iterations=".length));
+  const report = await fitRelationPotentialFromGraph({
+    storage: runtime.storage,
+    ...(Number.isFinite(maxEdges) && maxEdges > 0 ? { maxEdges } : {}),
+    ...(Number.isFinite(iterations) && iterations > 0 ? { iterations } : {})
+  });
+  const model = report.model;
+  if (!model) {
+    printJson({ status: "not_fitted", edgeCount: report.edgeCount, labelledCount: report.labelledCount, positiveCount: report.positiveCount, datasetCounts: report.datasetCounts, skipped: report.skipped });
+    return;
+  }
+  const validation = validateRelationPotentialAgainstIdentity(model, report.holdout, model.datasetHash, report.fittedPriorEstimate);
+  const record = {
+    modelId: model.modelId,
+    model,
+    lifecycle: (validation.beatsIdentity ? "validated" : "rejected") as "validated" | "rejected",
+    validation,
+    trainingWindow: {
+      edgeCount: report.edgeCount,
+      labelledCount: report.labelledCount,
+      positiveCount: report.positiveCount,
+      coefficientTraining: report.datasetCounts.coefficientTraining,
+      calibrationFit: report.datasetCounts.calibrationFit,
+      evaluationHoldout: report.datasetCounts.evaluationHoldout,
+      splitRule: "source-version hash bucket mod 5: 0-2 coefficients, 3 calibration, 4 held out",
+      fittedPriorEstimate: report.fittedPriorEstimate
+    },
+    createdAt: Date.now()
+  };
+  await store.put(record);
+  let promoted = false;
+  if (args.includes("--promote")) {
+    if (!validation.beatsIdentity) throw new Error(`relation-potential model ${record.modelId} did not beat identity on held-out data; promotion refused`);
+    await store.promote({ modelId: record.modelId });
+    promoted = true;
   }
   printJson({
-    status: apply ? "applied" : "fitted",
-    configPath: apply ? path.resolve(configPath) : null,
-    modelId: report.model.modelId,
-    datasetHash: report.model.datasetHash,
-    sampleCounts: report.model.sampleCounts,
-    calibration: report.model.calibration,
-    edgeCount: report.edgeCount,
-    labelledCount: report.labelledCount,
-    positiveCount: report.positiveCount,
-    datasetCounts: report.datasetCounts,
+    status: promoted ? "promoted" : validation.beatsIdentity ? "validated" : "rejected",
+    configPath: path.resolve(configPath),
+    modelId: model.modelId,
+    datasetHash: model.datasetHash,
+    sampleCounts: model.sampleCounts,
+    coefficients: model.coefficients,
+    contradictionCoefficient: model.contradictionCoefficient,
+    intercept: model.intercept,
+    calibration: model.calibration,
+    validation,
+    trainingWindow: record.trainingWindow,
     skipped: report.skipped
   });
 }
@@ -1773,7 +1816,7 @@ function usage(error?: string): void {
     "  pnpm scce corpus ingest --dry-run <path>",
     "  pnpm scce corpus route --fixture <path>",
     "  pnpm scce corpus train gutenberg <path>",
-    "  pnpm scce relation-potential fit [--apply] [--max-edges=N]",
+    "  pnpm scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>",
     "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
     "  pnpm scce corpus train oss <path>",
     "  pnpm scce repo inspect <path>",

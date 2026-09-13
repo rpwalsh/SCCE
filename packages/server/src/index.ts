@@ -69,6 +69,8 @@ async function main(): Promise<void> {
   const config = await readScceRuntimeConfig(configPath);
   await installProdCalibrationProfile(trace);
   const runtime = createNodeRuntime(config);
+  // Resolve the promoted relation-potential artifact before serving, so no turn runs the identity branch silently.
+  await runtime.relationPotential.hydrated;
   const startupReadiness = createRuntimeStartupReadiness();
   const patchValidation = serverPatchValidationRuntime(config);
   const serverUrl = new URL(config.server.url);

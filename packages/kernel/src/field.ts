@@ -37,16 +37,23 @@ export interface AlphaFieldEngineOptions {
   alpha?: number;
   clock?: Clock;
   relationPolicies?: readonly RelationTransitionPolicy[];
-  /** A pre-trained, versioned model used for inference only. */
-  relationPotentialModel?: RelationPotentialModel;
+  /**
+   * A pre-trained, versioned model used for inference only. A provider lets the promoted artifact arrive after
+   * construction; it is read once per activation, so an unhydrated runtime reports inert rather than pretending.
+   */
+  relationPotentialModel?: RelationPotentialModel | (() => RelationPotentialModel | undefined);
 }
 
 export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
   const clock = options.clock ?? createClock();
   const causal = createCausalDiscoveryEngine(clock);
-  const relationPotentialModel = options.relationPotentialModel === undefined
-    ? undefined
-    : freezeRelationPotentialModel(options.relationPotentialModel);
+  let frozenRelationPotentialModel: RelationPotentialModel | undefined;
+  const resolveRelationPotentialModel = (): RelationPotentialModel | undefined => {
+    const supplied = typeof options.relationPotentialModel === "function" ? options.relationPotentialModel() : options.relationPotentialModel;
+    if (supplied === undefined) return undefined;
+    if (frozenRelationPotentialModel?.modelId !== supplied.modelId) frozenRelationPotentialModel = freezeRelationPotentialModel(supplied);
+    return frozenRelationPotentialModel;
+  };
   return {
     activate(input: { text: string; nodes: GraphNode[]; edges: GraphEdge[]; hyperedges?: Hyperedge[]; previous?: FieldState; seedPriors?: Array<{ nodeId: GraphNode["id"]; weight: number; feature?: string }>; evaluation?: FieldEvaluationContext; accessContext?: InformationAccessContext; fieldOperatorDiagnostics?: boolean }): FieldState {
       const incidenceProjection = projectTypedIncidencesForActivation({
@@ -77,7 +84,7 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
       const boundedEdges = edges.filter(edge => nodeIds.has(String(edge.source)) && nodeIds.has(String(edge.target)));
       const relationPotential = relationPotentialEdges({
         edges: boundedEdges,
-        model: relationPotentialModel,
+        model: resolveRelationPotentialModel(),
         evaluation: input.evaluation
       });
       const diffusionEdges = relationPotential.edges;
