@@ -167,3 +167,9 @@ tools/code-generation-calibration/report*.json
 # Contents are withheld; the README stays so the boundary is visible in the public repo.
 /private-runtime/*
 !/private-runtime/README.md
+
+# Scratch corpora and one-off repair/benchmark dumps written at the repo root
+.tmp-multilingual/
+/coderepair*.json
+/selfrepair*.json
+/headtohead.json
