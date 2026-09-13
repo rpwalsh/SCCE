@@ -120,21 +120,57 @@ function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly stri
     .some(sentence => { const folded = normalizePriorKey(sentence); return units.every(unit => folded.includes(unit)); });
 }
 
+/** Cost bound, not a modelling choice: characters of one span scanned for an answering sentence. */
+const ANSWERHOOD_SCAN_CHARS = 60_000;
+
+/**
+ * Whether one of the span's own sentences answers the request: it names the subject and carries every relation
+ * unit asked about. This is the predicate the mouth already requires before it will speak, applied where the
+ * candidates are still all present.
+ *
+ * A source whose identity is its title holds one subject per document, so ranking by how much of the request a
+ * chunk repeats finds the answer. A book holds the subject on a thousand chunks and the relation on ten of them,
+ * and lexical relevance has no way to tell those ten apart: 24 admitted Moby-Dick chunks were ranked to two
+ * interior passages of dialogue, the mouth found no sentence in them that answered, and the turn spoke nothing
+ * over a corpus holding "Captain Ahab ... of the Pequod" (live 2026-09-13). Structural residue loses here for the
+ * same reason -- a Gutenberg licence header and a chapter table of contents name no subject and carry no relation.
+ *
+ * The whole-span test is a necessary condition for any sentence of it to pass (both the subject match and the
+ * missing-relation set are monotone in the text), so it runs first and the per-sentence scan only follows it.
+ * Pure.
+ */
+function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, coverageUnits: readonly string[]): boolean {
+  if (!coverageUnits.length) return false;
+  const text = String(span.text ?? span.textPreview ?? "").slice(0, ANSWERHOOD_SCAN_CHARS);
+  if (!text) return false;
+  if (!answerCoversRequest([text], span, coverageUnits, requestText, { relationRequired: true })) return false;
+  return splitSurfaceSentences(text)
+    .some(sentence => answerCoversRequest([sentence], span, coverageUnits, requestText, { relationRequired: true }));
+}
+
 export function evidenceForRequest(
   text: string,
   evidence: readonly EvidenceSpan[],
   priorityIds: ReadonlySet<string> = new Set(),
   explicitContextEvidenceIds: ReadonlySet<string> = new Set(),
-  semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set()
+  semanticFrameBoundEvidenceIds: ReadonlySet<string> = new Set(),
+  closedClassWords: ReadonlySet<string> = new Set()
 ): EvidenceSpan[] {
   const requestFeatures = featureSet(text, 256);
   const anchors = sourceEvidenceAnchorsForRequest(text);
   const initialismTokens = requestInitialismCandidates(text, anchors);
   const orderedRequestUnits = requestUnitsFromText(text);
   const contentUnits = requestContentEvidenceUnits(text);
+  // The same units the mouth judges coverage with, so ranking and speaking ask one question. Only a learned closed
+  // class can tell the relation from the request's scaffolding; without one there is nothing to rank on and the
+  // order below is exactly what it was.
+  const leadingScaffolding = requestLeadingScaffoldingUnit(text);
+  const coverageUnits = closedClassWords.size
+    ? contentUnits.filter(unit => !closedClassWords.has(unit) && unit !== leadingScaffolding)
+    : [];
   const promoted = evidence.filter(span => span.status === "promoted");
   const pool = promoted.length ? promoted : evidence.filter(span => span.status !== "quarantined");
-  const rows = pool
+  const scoredRows = pool
     .map(span => {
       const surfaceFeatures = featureSet(evidenceRetrievalSurface(span), 256);
       const lexical = Math.max(weightedJaccard(requestFeatures, span.features), weightedJaccard(requestFeatures, surfaceFeatures));
@@ -190,8 +226,14 @@ export function evidenceForRequest(
       if (row.explicitContextAligned || row.semanticFrameBoundAligned || row.priorityAligned || row.anchorAligned || row.initialismAligned) return true;
       if (!contentUnits.length || row.contentOverlap <= 0) return false;
       return row.lexical >= (row.sessionSpan ? 0.045 : 0.025);
-    })
-    .sort((a, b) => b.score - a.score || b.span.alpha - a.span.alpha || String(a.span.id).localeCompare(String(b.span.id)));
+    });
+  // Answerhood orders the pool before relevance does, and it is silent unless it discriminates: when no span
+  // carries an answering sentence, or every one does, the term is equal for every pair and the order below is
+  // exactly the order that was there before. No weight is added to the score for the same reason -- a chunk that
+  // answers is not "more relevant", it is the only kind of chunk the mouth can speak from at all.
+  const rows = scoredRows
+    .map(row => ({ ...row, answering: spanCarriesAnsweringSentence(row.span, text, coverageUnits) }))
+    .sort((a, b) => Number(b.answering) - Number(a.answering) || b.score - a.score || b.span.alpha - a.span.alpha || String(a.span.id).localeCompare(String(b.span.id)));
   const pinned = rows.filter(row => row.explicitContextAligned || row.semanticFrameBoundAligned || (
     priorityIds.has(String(row.span.id)) &&
     (evidenceExactSourceAnchorMatches(row.span, anchors) || evidenceTitleDistinctAnchorMatches(row.span, anchors))

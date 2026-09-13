@@ -1814,7 +1814,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? admissibleEvidence.find(span => span.status === "promoted" && Number(span.charStart ?? -1) === 0
           && evidenceTitledForRequestSubject(input.text, [span]) && openingSpanAnswersRequest(span))
         : undefined;
-      const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
+      const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
       const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, (admittedTitledOpeningSpan
         ? uniqueRecordsById([admittedTitledOpeningSpan, ...rankedSupportEvidence], Math.max(2, rankedSupportEvidence.length))
         : rankedSupportEvidence).slice(0, turnProofEvidenceLimit));
@@ -2138,7 +2138,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // A subject-only request is answered by the subject's own opening block; relevance ranking prefers the chunks
       // that repeat the name most ("What is acupuncture?" selected the injection and licensing chunks over the
       // definition), so the titled opening block, when the pool holds one, leads the selection.
-      const rankedForRequest = evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds);
+      const rankedForRequest = evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
       const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => unit !== requestLeadingScaffoldingUnit(input.text)).every(unit =>
         namedSubjectAnchors(input.text).some(anchor => anchor.toLocaleLowerCase().split(/\s+/u).includes(unit)));
       // Any request that names a titled subject keeps that source's opening block in the selection, not only a
