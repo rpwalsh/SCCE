@@ -5,11 +5,12 @@ all 311 rows. Everything a lane measured was measured against its own build; thi
 
 ## Blockers -- must be resolved or consciously accepted
 
-- [ ] **`ANSWERHOOD_SCAN_CHARS = 60_000` (b15d8fd).** Undeclared in either calibration file, and it hides the
-      back half of 1,016 spans (longest 131,072 bytes) from the answerhood test. L4 measured the feature at
-      187 ms cold / 50 ms warm over a 24-span pool averaging 3,505 chars, against turns running 8-31 s -- so the
-      cap buys little and costs evidence in exactly the long book spans the feature exists to search. Raised with
-      L3. **If unresolved at the cutoff, remove the slice.**
+- [x] **`ANSWERHOOD_SCAN_CHARS = 60_000` (b15d8fd).** RESOLVED by L4 in `ba91c5e`: the slice is removed and the
+      span is read whole. Measured before removing it -- of 73,480 promoted spans, **227 exceed 60,000 characters
+      and the longest `text_content` is 65,536 characters**, so it hid at most 5,536 characters from 0.3% of the
+      corpus. (The "1,016 spans, longest 131,072 bytes" figure is bytes, not characters, and overstates the
+      truncation.) No constant remains; what bounds the work is the whole-span precondition, which is a necessary
+      condition for any sentence of the span to pass, so a pool where nothing answers never runs the inner scan.
 - [ ] Every lane's fix committed to main. Nothing uncommitted under `packages/` -- `final-run.sh` refuses to run
       otherwise, deliberately.
 - [ ] `pnpm -r build` green from PowerShell.
