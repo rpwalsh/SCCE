@@ -149,7 +149,7 @@ for (const [index, item] of items.entries()) {
       cpuSeconds: cpuDelta(before, after, "scceCpu"),
       rssMb: after?.scceRssMb ?? null,
       evidence: result.evidence ?? 0,
-      answer: result.answer.replace(/\s+/gu, " ").slice(0, 300)
+      answer: result.answer.replace(/\s+/gu, " ")
     };
   }
   if (only === "both" || only === "model") {
@@ -161,7 +161,7 @@ for (const [index, item] of items.entries()) {
       ms: result.ms,
       cpuSeconds: cpuDelta(before, after, "modelCpu"),
       rssMb: after?.modelRssMb ?? null,
-      answer: result.answer.replace(/\s+/gu, " ").slice(0, 300)
+      answer: result.answer.replace(/\s+/gu, " ")
     };
   }
   rows.push(row);
