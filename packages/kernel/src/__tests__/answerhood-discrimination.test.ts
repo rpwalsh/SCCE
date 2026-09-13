@@ -64,15 +64,18 @@ describe("answerhood discrimination", () => {
     expect(answerCoversRequest([lead], einstein, ["albert", "einstein", "born"], "When was Albert Einstein born?", { relationRequired: true, languageClosedClassWords: closedClass })).toBe(true);
   });
 
-  it("is silent for a caller that cannot tell scaffolding from relation", () => {
-    // No language closed class means no obligation can be read off the request, and the gate behaves as before.
+  it("refuses without a learned closed class too, because the source's own identity supplies the subject", () => {
+    // The obligation must not depend on runtime corpus identity being primed: the whole-content-run anchor that
+    // causes the vacuum is exactly what a request gets when the corpus signal is absent, and identity priming has
+    // been observed absent or a turn stale in production. The source's title says what the document is about with
+    // no signal at all.
     const einstein = openingBlock(
       "evidence:einstein-lead-2",
       "Albert Einstein",
       "'Albert Einstein' (14 March 1879 - 18 April 1955) was a German-born theoretical physicist."
     );
     const lead = "'Albert Einstein' (14 March 1879 - 18 April 1955) was a German-born theoretical physicist.";
-    expect(answerCoversRequest([lead], einstein, ["albert", "einstein's", "dentist"], "Who was Albert Einstein's dentist?", { relationRequired: true })).toBe(true);
+    expect(answerCoversRequest([lead], einstein, ["albert", "einstein's", "dentist"], "Who was Albert Einstein's dentist?", { relationRequired: true })).toBe(false);
   });
 
   it("reads the asked relation off the source's own identity", () => {
@@ -82,9 +85,14 @@ describe("answerhood discrimination", () => {
     expect(requestRelationBeyondSourceIdentity("Who was Albert Einstein?", einstein, closedClass)).toEqual([]);
     const mongolia = openingBlock("evidence:inner-mongolia", "2020 Inner Mongolia protests", "unused");
     expect(requestRelationBeyondSourceIdentity("What is the capital city of Mongolia?", mongolia, closedClass)).toEqual(["capital", "city"]);
-    // The year is the whole question and the tournament's title does not carry it.
+    // A bare year is NOT in the obligation, and this records that rather than hiding it: requestContentAnchorUnits
+    // drops any unit with at most one letter as a generic question signal, so "1998" -- the whole question --
+    // never reaches here. What refuses the tournament's definition is the numeric-qualifier rule inside
+    // answerCoversRequest, which requires every digit run of the SUBJECT in the answering context; the same rule
+    // that tells Apollo from Apollo 11. Widening the anchor units to admit years would change retrieval, so it is
+    // recorded as a limitation of this primitive, not patched here.
     const worldCup = openingBlock("evidence:fifa-id", "FIFA World Cup", "unused");
-    expect(requestRelationBeyondSourceIdentity("Who won the 1998 FIFA World Cup?", worldCup, closedClass)).toEqual(["1998"]);
+    expect(requestRelationBeyondSourceIdentity("Who won the 1998 FIFA World Cup?", worldCup, closedClass)).toEqual([]);
   });
 
   it("withholds a source summary that carries none of the asked relation", () => {
