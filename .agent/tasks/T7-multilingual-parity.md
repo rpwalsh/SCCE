@@ -1,7 +1,7 @@
 # T7-multilingual-parity
 
-status: open
-claimed_by:
+status: reported — close criterion NOT met; see .agent/findings/T7.md
+claimed_by: agent-a3a434c9d2131a596
 
 G9 — five learned language identities exist and the multilingual claim rests on them. Prove one non-English graded question per identity answers from a source in that language, or report exactly which identities cannot.
 
