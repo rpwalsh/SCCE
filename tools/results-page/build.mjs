@@ -35,6 +35,30 @@ const mMs = rows.reduce((a, r) => a + (r.model.ms || 0), 0) / rows.length;
 const sCpu = rows.reduce((a, r) => a + (r.scce.cpuSeconds || 0), 0) / rows.length;
 const mCpu = rows.reduce((a, r) => a + (r.model.cpuSeconds || 0), 0) / rows.length;
 
+// "Correct" means the grader found the gold token in the answer. An answer that leads with it responded; one
+// that buries it in a paragraph contained it. Both count the same on the scoreboard and they are not the same
+// thing, so the page reports both rather than only the count it flatters.
+const suitePath = arg("suite", "artifacts/head-to-head/suite.json");
+let leadS = 0, leadM = 0, directKnown = false;
+try {
+  const suiteDoc = JSON.parse(readFileSync(suitePath, "utf8"));
+  const items = new Map((Array.isArray(suiteDoc) ? suiteDoc : suiteDoc.items).map(i => [i.id, i]));
+  const norm = v => String(v).replace(/\s+/gu, " ").trim().toLowerCase();
+  const LEAD_CHARS = 60;
+  for (const r of rows) {
+    const it = items.get(r.id);
+    if (!it || !it.gold) continue;
+    const gold = [...(it.gold.acceptedAnswers || []), ...(it.gold.requiredStrings || [])].map(norm).filter(Boolean);
+    if (!gold.length) continue;
+    for (const [side, bump] of [["scce", () => leadS++], ["model", () => leadM++]]) {
+      if (r[side].verdict !== "correct") continue;
+      const a = norm(r[side].answer || "");
+      if (gold.some(g => { const i = a.indexOf(g); return i >= 0 && i <= LEAD_CHARS; })) bump();
+    }
+  }
+  directKnown = true;
+} catch { directKnown = false; }
+
 const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const pct = (a, b) => b ? (100 * a / b).toFixed(1) : "0.0";
 
@@ -106,7 +130,9 @@ ${workloadRows}
 <tr><td class="w">Mean wall clock</td><td>${(sumMs / 1000).toFixed(1)} s</td><td>${(mMs / 1000).toFixed(1)} s</td></tr>
 <tr><td class="w">Mean CPU seconds</td><td>${sCpu.toFixed(2)}</td><td>${mCpu.toFixed(2)}</td></tr>
 <tr><td class="w">Unsupported claims</td><td>${fabS}</td><td>${fabM}</td></tr>
+${directKnown ? `<tr><td class="w">Answers that lead with the answer</td><td>${leadS}</td><td>${leadM}</td></tr>` : ""}
 </tbody></table></div>
+${directKnown ? `<p class="note">The grader scores by substring containment, the same way for both systems, so a correct answer is one that <em>contains</em> the expected fact. The last row counts the stricter thing: answers that lead with it within 60 characters rather than burying it in a paragraph. SCCE wins the loose count more comfortably than the strict one, and the gap between those two numbers is the honest measure of how much work is left.</p>` : ""}
 <p class="note">SCCE is the slower system today and does not hide it. The claim it makes is about what the answer is made of, not how fast it arrives: a named span in a named source, or an explicit refusal.</p>
 
 <footer>Model <code>${esc(res.model || "reference")}</code> &middot; ${rows.length} graded items &middot; generated ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC</footer>
