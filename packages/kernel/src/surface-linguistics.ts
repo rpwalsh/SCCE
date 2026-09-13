@@ -17,7 +17,39 @@ export const SENTENCE_BOUNDARY_SYMBOLS = [
   "\u104b"
 ] as const;
 
+/**
+ * Symbols that end a clause without ending a sentence: a colon and its equivalents in other writing systems.
+ *
+ * A sentence boundary closes a statement; these introduce what follows it, which is a different structural fact
+ * and one no sentence splitter should act on. It matters only where a sequence is being compared against corpus
+ * text, because everything before the colon belongs to the frame and everything after it to the material.
+ */
+export const CLAUSE_BOUNDARY_SYMBOLS = [
+  "\u003a",
+  "\uff1a",
+  "\ufe55",
+  "\u05c3",
+  "\u2236",
+  "\ua789"
+] as const;
+
 const SENTENCE_BOUNDARIES = new Set<string>(SENTENCE_BOUNDARY_SYMBOLS);
+const CLAUSE_BOUNDARIES = new Set<string>(CLAUSE_BOUNDARY_SYMBOLS);
+
+/** The parts a clause boundary divides a surface into, or nothing when it divides it into one. Pure. */
+export function splitSurfaceClauses(text: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  // collapseSurfaceWhitespace below already strips NUL, so this only has to normalize before comparing symbols.
+  for (const char of text.normalize("NFC")) {
+    if (!CLAUSE_BOUNDARIES.has(char)) { current += char; continue; }
+    parts.push(current);
+    current = "";
+  }
+  parts.push(current);
+  const clean = parts.map(part => collapseSurfaceWhitespace(part)).filter(Boolean);
+  return clean.length > 1 ? clean : [];
+}
 
 export function isSentenceBoundarySymbol(value: string): boolean {
   return SENTENCE_BOUNDARIES.has(value);
