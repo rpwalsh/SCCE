@@ -789,7 +789,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             stage: "runtime.deadline.check",
             label: phase,
             durationMs: decision.observedAtMonotonicMs - deadlineMetadata.startedMonotonicMs,
-            support: { ...decision },
+            // remainingMs is unreadable without the window it counts down from.
+            support: { ...decision, budgetMs: deadlineMetadata.budgetMs },
             ...(decision.allowed ? {} : { warnings: [`deadline guard did not admit ${phase}`] })
           });
         }

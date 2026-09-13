@@ -1,5 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createClock,
@@ -124,6 +127,57 @@ describe("runtime deadline integration with a real turn", () => {
 
     expect(typeof result.answer).toBe("string");
     expect(result.answer.trim().length).toBeGreaterThan(0);
+  });
+
+  // T3: a traced remainingMs is unreadable without the window it counts down from, and a kernel window that
+  // silently differs from the server's contract reads as pre-kernel time that was never spent.
+  it("traces the window each remainingMs counts down from", async () => {
+    const clock = createClock({ fixedTime: 9200, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const fixture = storageFixture({ evidence: [], clockNow: () => clock.now() });
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused in this test */ } },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids,
+      clock,
+      deterministicReplay: true
+    });
+
+    const now = performance.now();
+    const budgetMs = 5_000;
+    const startedMonotonicMs = now;
+    const traceFile = join(mkdtempSync(join(tmpdir(), "scce-deadline-trace-")), "trace.jsonl");
+    const globals = globalThis as { __sccTrace?: unknown };
+    const previousTrace = globals.__sccTrace;
+    globals.__sccTrace = { traceId: "runtime-deadline-turn-test", file: traceFile };
+    try {
+      await kernel.turn({
+        text: "Zephyr valve pressure stabilizes after calibration.",
+        metadata: {
+          runtime: {
+            initialResponseDeadline: {
+              schema: PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA,
+              clock: "node.performance.v1",
+              budgetMs,
+              startedMonotonicMs,
+              deadlineMonotonicMs: startedMonotonicMs + budgetMs,
+              propagatedAtMonotonicMs: now,
+              remainingMs: budgetMs
+            }
+          }
+        }
+      });
+    } finally {
+      globals.__sccTrace = previousTrace;
+    }
+
+    const traced = readFileSync(traceFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, any>);
+    const turnStart = traced.find(event => event.stage === "runtime.deadline.check" && event.support?.phase === "kernel.turn.start");
+    expect(turnStart).toBeDefined();
+    expect(turnStart!.support.budgetMs).toBe(budgetMs);
+    expect(turnStart!.durationMs + turnStart!.support.remainingMs).toBeCloseTo(budgetMs, 3);
   });
 });
 
