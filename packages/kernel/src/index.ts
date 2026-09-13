@@ -233,6 +233,7 @@ export * from "./resource-usage-accounting.js";
 export * from "./usefulness-per-joule.js";
 export * from "./support-assessment.js";
 export * from "./relation-potential.js";
+export * from "./relation-potential-lifecycle.js";
 export * from "./relation-promotion.js";
 export * from "./opaque-role-induction.js";
 export * from "./role-surface-order.js";

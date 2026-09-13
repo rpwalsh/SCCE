@@ -10,8 +10,15 @@ import {
   type ScceStorage
 } from "@scce/kernel";
 
+export interface RelationPotentialHoldoutExample extends RelationPotentialExample {
+  /** What the field engine uses without a model: weight * alpha, identity's own ordering. */
+  readonly baseTransitionWeight: number;
+}
+
 export interface RelationPotentialTrainingReport {
   model: RelationPotentialModel | null;
+  /** The evaluation split, returned so validation happens on data the fit never saw. */
+  holdout: readonly RelationPotentialHoldoutExample[];
   edgeCount: number;
   labelledCount: number;
   positiveCount: number;
@@ -34,14 +41,35 @@ export async function fitRelationPotentialFromGraph(input: {
   const limit = Math.max(1, Math.min(200_000, Math.floor(input.maxEdges ?? 20_000)));
   const minimum = Math.max(2, Math.floor(input.minimumExamplesPerDataset ?? 8));
   // Fitting reads edges only; unbounded node representations are what exhausted the heap on a real brain.
-  const slice = await input.storage.graph.getSlice({ limitEdges: limit, limitNodes: 1, maxRepresentationBytes: 512, allowLatestFallback: true });
-  const edges = slice.edges.filter(edge => Number.isFinite(edge.alpha) && Number.isFinite(edge.weight));
+  // getSlice seeds from nodes and returns one neighbourhood; a population fit needs the edge table itself.
+  const population: GraphEdge[] = [];
+  if (input.storage.graph.listEdgePage) {
+    while (population.length < limit) {
+      const page = await input.storage.graph.listEdgePage({ limit: Math.min(20_000, limit - population.length), offset: population.length });
+      if (!page.length) break;
+      population.push(...page);
+    }
+  } else {
+    const slice = await input.storage.graph.getSlice({ limitEdges: limit, limitNodes: 1, maxRepresentationBytes: 512, allowLatestFallback: true });
+    population.push(...slice.edges);
+  }
+  const edges = population.filter(edge => Number.isFinite(edge.alpha) && Number.isFinite(edge.weight));
   const skipped: string[] = [];
-  if (!edges.length) return { model: null, edgeCount: 0, labelledCount: 0, positiveCount: 0, datasetCounts: { coefficientTraining: 0, calibrationFit: 0, evaluationHoldout: 0 }, skipped: ["no graph edges"] };
+  if (!edges.length) return { model: null, holdout: [], edgeCount: 0, labelledCount: 0, positiveCount: 0, datasetCounts: { coefficientTraining: 0, calibrationFit: 0, evaluationHoldout: 0 }, skipped: ["no graph edges"] };
 
   const evidenceIds = [...new Set(edges.flatMap(edge => edge.evidenceIds.map(String)))].slice(0, 100_000);
-  const spans = await input.storage.evidence.getEvidenceBatch(evidenceIds as GraphEdge["evidenceIds"]);
-  const versionByEvidence = new Map(spans.map(span => [String(span.id), String(span.sourceVersionId)]));
+  // Provenance only: full spans carry text and exhausted the heap at 12,000 edges.
+  const versionByEvidence = new Map<string, string>();
+  const provenanceReader = input.storage.evidence.getEvidenceSourceVersions;
+  // Cost bound: one round trip per 5,000 ids.
+  for (let offset = 0; offset < evidenceIds.length; offset += 5_000) {
+    const page = evidenceIds.slice(offset, offset + 5_000) as GraphEdge["evidenceIds"];
+    if (provenanceReader) {
+      for (const row of await provenanceReader.call(input.storage.evidence, page)) versionByEvidence.set(row.id, row.sourceVersionId);
+    } else {
+      for (const span of await input.storage.evidence.getEvidenceBatch(page)) versionByEvidence.set(String(span.id), String(span.sourceVersionId));
+    }
+  }
   const versionsOf = (edge: GraphEdge) => new Set(edge.evidenceIds.map(id => versionByEvidence.get(String(id))).filter((value): value is string => Boolean(value)));
 
   const corroborated = new Map<string, number>();
@@ -53,7 +81,7 @@ export async function fitRelationPotentialFromGraph(input: {
   }
 
   const snapshotTime = Math.max(0, ...edges.map(edge => Number(edge.updatedAt ?? edge.createdAt ?? 0)).filter(Number.isFinite));
-  const examples: Array<RelationPotentialExample & { versionKey: string }> = [];
+  const examples: Array<RelationPotentialExample & { versionKey: string; baseTransitionWeight: number }> = [];
   for (const edge of edges) {
     const versions = versionsOf(edge);
     const competitors = (byPair.get(`${String(edge.source)}${String(edge.target)}`) ?? [])
@@ -68,19 +96,22 @@ export async function fitRelationPotentialFromGraph(input: {
       skipped.push(`${String(edge.id)}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
-    examples.push({ id: String(edge.id), features, label, versionKey: [...versions].sort().join("") || String(edge.id) });
+    examples.push({ id: String(edge.id), features, label, versionKey: [...versions].sort().join("") || String(edge.id), baseTransitionWeight: edge.weight * edge.alpha });
   }
 
   // Split by source version so a version's edges never span two datasets.
   const buckets: Record<"coefficientTraining" | "calibrationFit" | "evaluationHoldout", RelationPotentialExample[]> = { coefficientTraining: [], calibrationFit: [], evaluationHoldout: [] };
+  const holdout: RelationPotentialHoldoutExample[] = [];
   for (const example of examples) {
     const bucket = Number.parseInt(hasher.digestHex(example.versionKey).slice(0, 2), 16) % 5;
     const target = bucket < 3 ? "coefficientTraining" : bucket === 3 ? "calibrationFit" : "evaluationHoldout";
     buckets[target].push({ id: example.id, features: example.features, label: example.label });
+    if (target === "evaluationHoldout") holdout.push({ id: example.id, features: example.features, label: example.label, baseTransitionWeight: example.baseTransitionWeight });
   }
   const datasetCounts = { coefficientTraining: buckets.coefficientTraining.length, calibrationFit: buckets.calibrationFit.length, evaluationHoldout: buckets.evaluationHoldout.length };
   const report: RelationPotentialTrainingReport = {
     model: null,
+    holdout,
     edgeCount: edges.length,
     labelledCount: examples.length,
     positiveCount: examples.filter(example => example.label === 1).length,

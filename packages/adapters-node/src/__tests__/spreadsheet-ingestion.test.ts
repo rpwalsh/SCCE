@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { describeRelationPotentialCapability } from "@scce/kernel";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -495,6 +496,7 @@ function recordingRuntime(workspace: WorkspaceStore, ingestCalls: IngestInput[])
     connectors: {} as NodeScceRuntime["connectors"],
     approvals: {} as NodeScceRuntime["approvals"],
     executive: {} as NodeScceRuntime["executive"],
+    relationPotential: { hydrated: Promise.resolve(), capability: () => describeRelationPotentialCapability({ artifact: "untrained" }), promotedModelId: () => undefined },
     close: async () => {}
   };
 }

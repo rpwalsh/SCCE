@@ -10,7 +10,10 @@ import {
   type EvaluationConditionConfig,
   type RelationPotentialModel,
   type ScceKernel,
-  type ScceStorage
+  type ScceStorage,
+  describeRelationPotentialCapability,
+  type RelationPotentialArtifactRecord,
+  type CognitiveCapability
 } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./postgres.js";
@@ -29,6 +32,12 @@ export interface NodeScceRuntime {
   approvals: ApprovalSession;
   /** Durable, crash-recoverable executive episode coordinator backed by Postgres. */
   executive: DurableExecutiveEpisode;
+  /** Promoted relation-potential artifact resolution: await `hydrated` before claiming the component is active. */
+  relationPotential: {
+    hydrated: Promise<void>;
+    capability(): CognitiveCapability;
+    promotedModelId(): string | undefined;
+  };
   close(): Promise<void>;
 }
 
@@ -68,9 +77,22 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     workspaceRoot: config.runtime.workspaceRoot,
     environment: options.governanceEnvironment
   });
-  const relationPotentialModel = options.relationPotentialModel === undefined
+  // Lifecycle, not a config paste: the promoted artifact is read from the durable store. The explicit option still
+  // wins (sealed evaluation), then the config model, and only a promoted artifact can make the component active.
+  let resolvedRelationPotentialModel = options.relationPotentialModel === undefined
     ? config.runtime.relationPotentialModel
     : options.relationPotentialModel ?? undefined;
+  let relationPotentialArtifact: RelationPotentialArtifactRecord | undefined;
+  const relationPotentialPinned = options.relationPotentialModel !== undefined;
+  const relationPotentialHydrated = relationPotentialPinned
+    ? Promise.resolve()
+    : storage.relationPotentialModels.readPromoted()
+      .then(record => {
+        if (!record) return;
+        relationPotentialArtifact = record;
+        resolvedRelationPotentialModel = record.model;
+      })
+      .catch(error => { console.error(`[scce] relation-potential artifact hydration failed: ${error instanceof Error ? error.message : String(error)}`); });
   const executive = createDurableExecutiveEpisode({
     machine: createExecutiveEpisodeMachine(createHasher()),
     journal: createExecutiveEventJournal(storage),
@@ -115,10 +137,23 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     clock: options.clock,
     runSeed: options.runSeed,
     deterministicReplay: options.deterministicReplay,
-    relationPotentialModel,
+    relationPotentialModel: () => resolvedRelationPotentialModel,
     executive,
     sparseRankingModels: storage.sparseRanking,
     sparseRankingComparisons: storage.sparseRankingComparisons
   });
-  return { storage, kernel, connectors, approvals, executive, close: () => storage.close() };
+  const relationPotential = {
+    hydrated: relationPotentialHydrated,
+    capability: () => describeRelationPotentialCapability({
+      artifact: relationPotentialArtifact ? "promoted" : "untrained",
+      record: relationPotentialArtifact,
+      note: relationPotentialArtifact
+        ? `promoted artifact ${relationPotentialArtifact.modelId} selected`
+        : relationPotentialPinned && resolvedRelationPotentialModel
+          ? `model pinned by caller (${resolvedRelationPotentialModel.modelId}); not a promoted artifact`
+          : "no promoted relation-potential artifact; field engine returns identity"
+    }),
+    promotedModelId: () => relationPotentialArtifact?.modelId
+  };
+  return { storage, kernel, connectors, approvals, executive, relationPotential, close: () => storage.close() };
 }
