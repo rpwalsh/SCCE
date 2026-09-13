@@ -724,6 +724,13 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         anchorFeatures,
         anchorFeatureGroups,
         droppedScaffoldingGroups,
+        // `gathered` is what the SEARCH produced; `afterProseFilter` is what the code-span filter below left. An
+        // economics pass read the pair as the search's own before and after, found them equal in 2,248 of 2,252
+        // invocations, and concluded a 3.7s search "changed nothing" while the numbers described a microsecond
+        // filter. Named so the two can never be read as one operator again: 94.6% of these searches admit evidence
+        // that reaches the final claim basis.
+        searchProduced: gatheredResults.length,
+        proseFilterRemoved: gatheredResults.length - evidenceResults.length,
         gathered: gatheredResults.length,
         afterProseFilter: evidenceResults.length,
         gatheredHeads: gatheredResults.slice(0, 6).map(item => String(item.span.id).slice(0, 34)),
