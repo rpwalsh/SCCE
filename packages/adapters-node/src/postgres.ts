@@ -77,6 +77,12 @@ import {
   type SparseRankingCheckpoint,
   type SparseRankingModelLifecycle,
   type SparseRankingModelStore,
+  type RelationPotentialModelStore,
+  type RelationPotentialArtifactRecord,
+  type RelationPotentialModel,
+  type RelationPotentialValidation,
+  assertPromotableRelationPotentialArtifact,
+  assertValidRelationPotentialModel,
   type SparseRankingComparisonExample,
   type SparseRankingComparisonLogStore,
   type PairwiseLabelSource,
@@ -179,6 +185,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly dialogueMemory: DialogueMemoryStore;
   readonly policyEvolution: PolicyEvolutionStore;
   readonly sparseRanking: SparseRankingModelStore;
+  readonly relationPotentialModels: RelationPotentialModelStore;
   readonly sparseRankingComparisons: SparseRankingComparisonLogStore;
   readonly segmentationAggregates: SegmentationAggregateStore;
   readonly inducedLanguageModels: InducedLanguageModelStore;
@@ -223,6 +230,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.dialogueMemory = createDialogueMemoryStore(this);
     this.policyEvolution = createPolicyEvolutionStore(this);
     this.sparseRanking = createSparseRankingModelStore(this);
+    this.relationPotentialModels = createRelationPotentialModelStore(this);
     this.sparseRankingComparisons = createSparseRankingComparisonLogStore(this);
     this.segmentationAggregates = createSegmentationAggregateStore(this);
     this.inducedLanguageModels = createInducedLanguageModelStore(this);
@@ -991,6 +999,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_models (model_id TEXT PRIMARY KEY, task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, lifecycle TEXT NOT NULL, state_json JSONB NOT NULL, training_window_json JSONB NOT NULL, examples_seen BIGINT NOT NULL, evaluation_json JSONB, previous_active_model_id TEXT, rollback_reason TEXT, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_active_model (task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, model_id TEXT NOT NULL REFERENCES ${q}.sparse_ranking_models(model_id), activated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (task_class, feature_schema_id))`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_models_task ON ${q}.sparse_ranking_models(task_class, feature_schema_id, lifecycle)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.relation_potential_models (model_id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL, model_json JSONB NOT NULL, validation_json JSONB, training_window_json JSONB NOT NULL, dataset_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.relation_potential_active_model (slot TEXT PRIMARY KEY, model_id TEXT NOT NULL REFERENCES ${q}.relation_potential_models(model_id), activated_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_relation_potential_models_created ON ${q}.relation_potential_models(lifecycle, created_at DESC)`,
     `CREATE TABLE IF NOT EXISTS ${q}.sparse_ranking_comparisons (id TEXT PRIMARY KEY, task_class TEXT NOT NULL, feature_schema_id TEXT NOT NULL, recorded_at TIMESTAMPTZ NOT NULL, candidates_json JSONB NOT NULL, preferred_index INT NOT NULL, weight DOUBLE PRECISION NOT NULL, source TEXT NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_sparse_ranking_comparisons_task ON ${q}.sparse_ranking_comparisons(task_class, feature_schema_id, recorded_at DESC)`,
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
@@ -1423,6 +1434,14 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const access = storage.informationAccessPredicate("evidence", 2);
       const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} evidence WHERE id=$1 AND ${access.sql}`, [id, ...access.params]);
       return rows[0] ? rowToEvidence(rows[0]) : null;
+    },
+    async getEvidenceSourceVersions(ids: readonly string[]) {
+      if (!ids.length) return [];
+      const rows = await storage.query<{ id: string; source_version_id: string }>(
+        `SELECT id, source_version_id FROM ${storage.table("evidence_spans")} WHERE id = ANY($1::text[])`,
+        [[...ids]]
+      );
+      return rows.map(row => ({ id: row.id, sourceVersionId: row.source_version_id }));
     },
     async getEvidenceBatch(ids) {
       if (ids.length === 0) return [];
@@ -1971,6 +1990,16 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
     },
     async upsertHyperedges(edges) {
       await upsertGraphHyperedgesBatch(storage, edges);
+    },
+    async listEdgePage(query: { limit: number; offset?: number }) {
+      // Cost bounds: one page per call, and endpoint-pair ordering so same-pair competitors share a page.
+      const limit = Math.max(1, Math.min(200_000, Math.floor(query.limit)));
+      const offset = Math.max(0, Math.floor(query.offset ?? 0));
+      const rows = await storage.query<GraphEdgeRow>(
+        `SELECT * FROM ${storage.table("graph_edges")} ORDER BY source_node_id, target_node_id, id LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      );
+      return rows.map(rowToGraphEdge);
     },
     async getSlice(query) {
       const nodes = await queryNodes(storage, query);
@@ -5773,3 +5802,93 @@ function rowToSelfRewriteEpisode(row: SelfRewriteEpisodeRow): SelfRewriteEpisode
 
 interface SelfRewritePatchRow { id: string; rewrite_episode_id: string; file_path: string; before_hash: string | null; after_hash: string; patch_json: JsonValue; score_json: JsonValue; created_at: Date }
 function rowToSelfRewritePatch(row: SelfRewritePatchRow): SelfRewritePatchRecord { return { id: row.id, rewriteEpisodeId: row.rewrite_episode_id, filePath: row.file_path, beforeHash: row.before_hash ?? undefined, afterHash: row.after_hash, patchJson: row.patch_json, scoreJson: row.score_json, createdAt: row.created_at.getTime() }; }
+
+
+interface RelationPotentialModelRow {
+  model_id: string;
+  lifecycle: RelationPotentialArtifactRecord["lifecycle"];
+  model_json: JsonValue;
+  validation_json: JsonValue | null;
+  training_window_json: JsonValue;
+  dataset_hash: string;
+  created_at: Date;
+}
+
+function rowToRelationPotentialArtifact(row: RelationPotentialModelRow): RelationPotentialArtifactRecord {
+  const model = row.model_json as unknown as RelationPotentialModel;
+  assertValidRelationPotentialModel(model);
+  return {
+    modelId: row.model_id,
+    model,
+    lifecycle: row.lifecycle,
+    validation: (row.validation_json ?? undefined) as unknown as RelationPotentialValidation | undefined,
+    trainingWindow: (row.training_window_json ?? {}) as unknown as Readonly<Record<string, number | string>>,
+    createdAt: row.created_at.getTime()
+  };
+}
+
+/**
+ * Durable relation-potential artifact lifecycle. `promote()` is the structural gate: it re-reads the stored row and
+ * refuses anything that is not already `validated` with a held-out result that beat identity, so a fitted model
+ * cannot reach production by being written into a config file.
+ */
+function createRelationPotentialModelStore(storage: PostgresStorageAdapter): RelationPotentialModelStore {
+  const select = async (sql: string, params: unknown[]) => storage.query<RelationPotentialModelRow>(sql, params);
+  return {
+    async readPromoted() {
+      const active = await storage.query<{ model_id: string }>(
+        `SELECT model_id FROM ${storage.table("relation_potential_active_model")} WHERE slot=$1`,
+        ["global"]
+      );
+      const modelId = active[0]?.model_id;
+      if (!modelId) return undefined;
+      const rows = await select(`SELECT * FROM ${storage.table("relation_potential_models")} WHERE model_id=$1 AND lifecycle=$2`, [modelId, "promoted"]);
+      return rows[0] ? rowToRelationPotentialArtifact(rows[0]) : undefined;
+    },
+    async read(modelId) {
+      const rows = await select(`SELECT * FROM ${storage.table("relation_potential_models")} WHERE model_id=$1`, [modelId]);
+      return rows[0] ? rowToRelationPotentialArtifact(rows[0]) : undefined;
+    },
+    async put(record) {
+      assertValidRelationPotentialModel(record.model);
+      if (record.modelId !== record.model.modelId) throw new Error("relation-potential artifact modelId must match the frozen model");
+      await storage.query(
+        `INSERT INTO ${storage.table("relation_potential_models")}(model_id,lifecycle,model_json,validation_json,training_window_json,dataset_hash,created_at)
+         VALUES($1,$2,$3::jsonb,$4::jsonb,$5::jsonb,$6,$7)
+         ON CONFLICT (model_id) DO UPDATE SET lifecycle=EXCLUDED.lifecycle, validation_json=EXCLUDED.validation_json, training_window_json=EXCLUDED.training_window_json`,
+        [record.modelId, record.lifecycle, JSON.stringify(record.model), record.validation ? JSON.stringify(record.validation) : null,
+          JSON.stringify(record.trainingWindow), record.model.datasetHash, new Date(record.createdAt)]
+      );
+    },
+    async promote(input) {
+      await storage.transaction(async () => {
+        const rows = await select(`SELECT * FROM ${storage.table("relation_potential_models")} WHERE model_id=$1 FOR UPDATE`, [input.modelId]);
+        const row = rows[0];
+        if (!row) throw new Error(`relation-potential artifact ${input.modelId} is not stored; promotion refused`);
+        assertPromotableRelationPotentialArtifact(rowToRelationPotentialArtifact(row));
+        const current = await storage.query<{ model_id: string }>(
+          `SELECT model_id FROM ${storage.table("relation_potential_active_model")} WHERE slot=$1 FOR UPDATE`,
+          ["global"]
+        );
+        const currentId = current[0]?.model_id;
+        if (input.expectedCurrentModelId !== undefined && (currentId ?? null) !== (input.expectedCurrentModelId ?? null)) {
+          throw new Error(`relation-potential active artifact is ${currentId ?? "none"}, expected ${input.expectedCurrentModelId}`);
+        }
+        if (currentId && currentId !== input.modelId) {
+          await storage.query(`UPDATE ${storage.table("relation_potential_models")} SET lifecycle=$2 WHERE model_id=$1 AND lifecycle=$3`, [currentId, "validated", "promoted"]);
+        }
+        await storage.query(`UPDATE ${storage.table("relation_potential_models")} SET lifecycle=$2 WHERE model_id=$1`, [input.modelId, "promoted"]);
+        await storage.query(
+          `INSERT INTO ${storage.table("relation_potential_active_model")}(slot,model_id,activated_at) VALUES($1,$2,$3)
+           ON CONFLICT (slot) DO UPDATE SET model_id=EXCLUDED.model_id, activated_at=EXCLUDED.activated_at`,
+          ["global", input.modelId, new Date()]
+        );
+      });
+    },
+    async list(limit) {
+      // Cost bound: listing is an operator aid, never a hot path.
+      const rows = await select(`SELECT * FROM ${storage.table("relation_potential_models")} ORDER BY created_at DESC, model_id LIMIT $1`, [Math.max(1, Math.min(200, Math.floor(limit ?? 20)))]);
+      return rows.map(rowToRelationPotentialArtifact);
+    }
+  };
+}
