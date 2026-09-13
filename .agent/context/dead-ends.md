@@ -81,3 +81,18 @@ whatever the mechanism. The full corpus is 2,028 models / 317,571 types.
 Result 6/11, and all five correct refusals are correct for the wrong reason: four absent surfaces and one T6
 boundness. `mind/mound` refuses only because `mound` is t=2 resident; at full corpus t=79 and the accident goes.
 Harness `tools/paradigm-induction-harness.mjs`, full write-up `.agent/findings/T10.md`.
+
+## T12 — operator ROI instrumentation
+
+| approach | verdict |
+| --- | --- |
+| keying operators on trace `stage` alone | **DEAD.** `graph.resolve` is five operators sharing one stage, separated only by `label`. Collapsed it reads as one 9,725 CPU-s monster; split it is a 3.4 s graph slice, a 47 ms semantic retrieval and a 5.4 ms PowerWalk, with opposite verdicts for each. Always key on `stage` + `label`. |
+| "PowerWalk / diffusion are absent from the traces" | **DEAD — the claim was false for PowerWalk.** It is traced as `graph.resolve` with `label: kernel.turn.powerwalk`, 2,759 invocations, 5.4 ms each. `diffusion` and `relation_potential` really are absent: OPEN, needs a call-path audit to say whether they are unwired or merely untraced. |
+| score entropy (`proof.support_assessment.weights`, `proof.path_semiring`) as the uncertainty measure | **NOT USEFUL HERE.** A truer posterior, but recorded at exactly one point in the turn, so it yields no before/after for any operator. Kept as a cross-check only. |
+| unresolved proof obligations as the uncertainty measure | **NOT USEFUL HERE.** `proof.semantic.counts.obligations` is recorded before and never after. |
+| `candidate.cognitive.plan` `proposals`→`activeOperators` as a before/after pair | **DEAD.** Different populations; produced -1.198 bits. Removed. A negative dH is the tell that a counter pair is wrong. |
+| per-operator ROI as the headline metric | **SUPERSEDED** by lane ROI. 20 of 40 operators emit no `durationMs`, and they are disproportionately the ones that remove uncertainty, so per-operator ROI is undefined for exactly the operators that matter. |
+| deriving per-turn bytes hydrated from traces | **DEAD.** `counts.bytes` exists only on `graph.resolve|kernel.hot_neighborhood`, which fires 38 times inside turn windows; most hydration happens during warmup, outside `turn.input`→`turn.output`. |
+| the existing ablation as evidence that PowerWalk is useless | **DEAD.** PowerWalk is 0.05% of a turn. The benchmark cannot resolve a 5 ms operator; removing it neither hurts nor helps. The ablation was measuring nothing. |
+
+Tool `tools/operator-roi.mjs`, full write-up `.agent/findings/T12.md`.
