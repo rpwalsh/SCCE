@@ -30,7 +30,9 @@ export interface ComponentEnteredEvent extends EvaluationTraceEventBase {
 
 export interface ComponentBypassedEvent extends EvaluationTraceEventBase {
   readonly event: "componentBypassed";
-  readonly reason: "condition-disabled" | "not-applicable";
+  // "inert-unconfigured" is NOT "not-applicable": the component applies, and its learned artifact is missing.
+  // Reported separately because a component that degrades to identity must never read as a successful run.
+  readonly reason: "condition-disabled" | "not-applicable" | "inert-unconfigured";
 }
 
 export interface CacheReadEvent extends EvaluationTraceEventBase {

@@ -173,7 +173,9 @@ function relationPotentialEdges(input: {
     return identity("identity_condition_disabled");
   }
   if (!input.model) {
-    input.evaluation?.trace.componentBypassed("relation-potential", boundary, "not-applicable");
+    // No model was ever fitted into config, so this has returned identity on every turn the system has served.
+    // It is not "not applicable"; it is unconfigured, and it must not be mistaken for a component that ran.
+    input.evaluation?.trace.componentBypassed("relation-potential", boundary, "inert-unconfigured");
     return identity("identity_unconfigured");
   }
   input.evaluation?.trace.componentEntered("relation-potential", boundary);
@@ -266,7 +268,16 @@ function seedOnlyDiffusion(seeds: readonly { nodeId: GraphNode["id"]; weight: nu
   };
 }
 
+/**
+ * Ten iterative operations run here on every activation, and until now none of them reported a cost.
+ *
+ * Their output landed in a diagnostics blob rather than a counted stage, so 290 trace files contained no operator
+ * row for query diffusion at all. That is worse than an expensive operator: an operator measured at zero value can
+ * be scheduled away, while an unmeasured one cannot be reasoned about in either direction. The step counts are
+ * reported beside the cost because nobody has justified them either.
+ */
 function fieldOperatorTrace(alphaTrace: FieldState["alphaTrace"], ppf: FieldState["ppf"], previous: FieldState | undefined) {
+  const startedMs = performance.now();
   const mass = new Map(ppf.map(item => [String(item.nodeId), item.mass]));
   const previousMass = new Map((previous?.ppf ?? []).map(item => [String(item.nodeId), item.mass]));
   const bounded = boundedFieldMatrices(alphaTrace, mass, previousMass);
@@ -278,6 +289,14 @@ function fieldOperatorTrace(alphaTrace: FieldState["alphaTrace"], ppf: FieldStat
   const spectral = spectralPartition({ nodes, laplacian: bounded.normalizedLaplacian, iterations: 6 });
   return {
     schema: "scce.field_operators.v2",
+    // Its own cost, so query diffusion can be scheduled on evidence rather than argued about.
+    cost: {
+      status: "active" as const,
+      traced: true,
+      durationMs: performance.now() - startedMs,
+      nodes: nodes.length,
+      iterations: { heat: 3, wave: 1, spectral: 6 }
+    },
     heat: { energy: heat.energy, residual: heat.residual, topNodes: topFieldNodes(nodes, heat.values) },
     wave: { energy: wave.energy, momentum: wave.momentum, topNodes: topFieldNodes(nodes, wave.values) },
     spectral: {
