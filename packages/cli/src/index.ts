@@ -6,7 +6,7 @@ import { runModelCommand, runSensorCommand, runSettingsCommand } from "./setting
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { createClangCodeMouthPorts, createLearnedCodeProposer, createTreeSitterCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { codeLanguageForPath } from "@scce/kernel";
-import { auroc, describeRelationPotentialCapability, scoreRelationPotential, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
+import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -540,21 +540,18 @@ async function relationPotential(configPath: string, runtime: ReturnType<typeof 
   }
   if (args[0] !== "fit") return usage("scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>");
   const maxEdges = Number(args.find(arg => arg.startsWith("--max-edges="))?.slice("--max-edges=".length));
+  const iterations = Number(args.find(arg => arg.startsWith("--iterations="))?.slice("--iterations=".length));
   const report = await fitRelationPotentialFromGraph({
     storage: runtime.storage,
-    ...(Number.isFinite(maxEdges) && maxEdges > 0 ? { maxEdges } : {})
+    ...(Number.isFinite(maxEdges) && maxEdges > 0 ? { maxEdges } : {}),
+    ...(Number.isFinite(iterations) && iterations > 0 ? { iterations } : {})
   });
   const model = report.model;
   if (!model) {
     printJson({ status: "not_fitted", edgeCount: report.edgeCount, labelledCount: report.labelledCount, positiveCount: report.positiveCount, datasetCounts: report.datasetCounts, skipped: report.skipped });
     return;
   }
-  const validation = validateRelationPotentialAgainstIdentity(model, report.holdout, model.datasetHash);
-  // The production effect the component actually has: identity orders edges by weight*alpha, a scored run multiplies
-  // that by the calibrated probability. Both orderings are graded against the same held-out corroboration labels.
-  const labels = report.holdout.map(row => row.label);
-  const identityOrdering = auroc(report.holdout.map(row => row.baseTransitionWeight), labels);
-  const scoredOrdering = auroc(report.holdout.map(row => row.baseTransitionWeight * scoreRelationPotential(model, row.features).calibrated), labels);
+  const validation = validateRelationPotentialAgainstIdentity(model, report.holdout, model.datasetHash, report.fittedPriorEstimate);
   const record = {
     modelId: model.modelId,
     model,
@@ -568,8 +565,7 @@ async function relationPotential(configPath: string, runtime: ReturnType<typeof 
       calibrationFit: report.datasetCounts.calibrationFit,
       evaluationHoldout: report.datasetCounts.evaluationHoldout,
       splitRule: "source-version hash bucket mod 5: 0-2 coefficients, 3 calibration, 4 held out",
-      identityTransitionOrderingAuroc: identityOrdering,
-      scoredTransitionOrderingAuroc: scoredOrdering
+      fittedPriorEstimate: report.fittedPriorEstimate
     },
     createdAt: Date.now()
   };
