@@ -883,7 +883,13 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Share of emission preservation in the reported semantic preservation score. translation.ts translationTurnReport. */
   "translation.semantic_score_preservation_weight": 0.55,
   /** Share of low objective energy in the reported semantic preservation score. translation.ts translationTurnReport. */
-  "translation.semantic_score_energy_weight": 0.45
+  "translation.semantic_score_energy_weight": 0.45,
+
+  // --- structural residue (structural-residue.ts). The one id here was DERIVED, not chosen: it is Otsu's split of
+  // the corpus's own distribution of the score over all 962,249 sentences of every promoted evidence span.
+  // `node tools/derive-structural-residue-cut.mjs` recomputes it against whatever corpus is in hand.
+  /** Score at or above which a surface is serialized apparatus rather than a statement. Otsu, 2026-09-13. */
+  "evidence.structural_residue_cut": 0.1289
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

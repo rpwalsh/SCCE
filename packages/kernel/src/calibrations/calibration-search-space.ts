@@ -430,7 +430,10 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "translation.aggregate_gloss_preservation_floor": threshold(0.02, 0.8, [0.06, 0.12, 0.3]),
   "translation.uncertain_term_preservation_floor": threshold(0.05, 0.95, [0.28, 0.48, 0.68]),
   "translation.semantic_score_preservation_weight": weight(0, 1, [0.35, 0.55, 0.75]),
-  "translation.semantic_score_energy_weight": weight(0, 1, [0.25, 0.45, 0.65])
+  "translation.semantic_score_energy_weight": weight(0, 1, [0.25, 0.45, 0.65]),
+
+  // --- structural residue
+  "evidence.structural_residue_cut": threshold(0.02, 0.6, [0.06, 0.1289, 0.25, 0.4])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */
