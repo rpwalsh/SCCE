@@ -75,6 +75,12 @@ export interface EvidenceQuery {
    * ranked 219 Einstein-mentioning spans by brevity and never returned the Albert Einstein article at all.
    */
   titleUnits?: string[];
+  /**
+   * Whether a document's opening block is evidence about this request. Default true. A request that asks ABOUT a
+   * subject is usually answered by the document's lead; a request that QUOTES one of the corpus's own sentences is
+   * answered wherever that sentence sits, and ranking every opening ahead of the score hides it.
+   */
+  openingBlockPrior?: boolean;
   limit?: number;
 }
 

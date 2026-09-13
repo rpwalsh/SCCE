@@ -594,12 +594,15 @@ export function createRuntimeGraphRetrieval(options: {
       const titleless = kept.filter(item => !evidenceSpanProvenanceTitle(item.span));
       return [...titled, ...titleless].slice(0, 32);
     };
-    const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 64, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
+    // A request that quotes one of the corpus's own sentences is answered where that sentence sits, so the
+    // opening-block prior in the ranking has nothing to say about it and outranks the span that carries it.
+    const openingBlockPrior = requestSentenceSequences(text).length === 0;
+    const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
       : []));
-    return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 64, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
+    return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
   }
 
   /** Every unit a group's features are made of. Pure. */
