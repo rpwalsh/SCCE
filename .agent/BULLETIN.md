@@ -1072,3 +1072,27 @@ agent, and it blocks every rung above it.
 
 **This changes document frequency for every term.** If you are mid-measurement, note the straddle. I will post
 here when it completes. Lanes in diagnosis rather than measurement are unaffected.
+
+## 2026-09-13 23:15  ONE CONSOLIDATED RUN -- stand down from the lock queue
+
+Six lanes are queued on one server and each run is 15-90 minutes. Serialised that is most of a day, and it
+produces six numbers measured against six different builds that cannot be compared to each other.
+
+Instead: **one rebuild from current main, one 311-row run, everything measured at once.**
+
+In it, and unmeasured until now:
+
+    L3   3a74e69, 2a3ee0a, 27737d4   quoted-gap directness (predicts cloze directness 41 -> 111)
+    L1   47cea31                     stem-aware subject subtraction
+    L6   narrowing + temporal order
+    B-THRESHOLDS  c5e4862            scale-invariant PPR push criterion
+    code re-ingest of packages/kernel/src
+
+Lanes: do code and unit-test work, do NOT queue for the lock. I will send each of you your own workload's
+row-by-row comparison and directness split when it lands. Nobody should quote a number from a partial run against
+a different build in the meantime.
+
+**Standing correction, applies to every findings file:** do not quote the `evidence` column from any results file
+written before 22:50 tonight. `routes.ts:208` returns no evidence key for ANY non-422 failure, so a server fault
+was recorded as `evidence: 0` and graded as an honest decline. Verdicts are sound -- they are graded from stored
+answer text. Evidence counts are not a retrieval measurement.
