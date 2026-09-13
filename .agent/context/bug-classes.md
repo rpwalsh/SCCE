@@ -1,4 +1,4 @@
-﻿# Bug classes, not bug instances
+# Bug classes, not bug instances
 
 Owner doctrine, 2026-09-13: "if you see code that matches a bug you've already fixed, you should fix the entire
 class of bugs across the board." The target is not BM25 and not a 3B model. Every fix below is scoped by that.
@@ -25,14 +25,32 @@ because a bound that changes which evidence is REACHABLE is a modelling paramete
 
 ## Class B -- an absolute constant compared against a learned quantity
 
-`SUBJECT_COMMUNITY_EPSILON = 1e-4` is an absolute residual threshold for a local-push PPR. When relation
-potential rescaled edge weights 50-500x, the residual crossed it sooner and the subject community silently shrank.
-Nothing was declared, nothing errored, retrieval just got narrower.
+`SUBJECT_COMMUNITY_EPSILON = 1e-4` is an absolute residual threshold for a local-push PPR, and the push criterion
+compares `residual / weighted-out-degree` against it. `residual` is scale-free but the degree is a sum of learned
+edge weights, so the criterion moves when those weights are rescaled.
+
+**CORRECTED 2026-09-13 22:5x, twice, by the lane that measured it.** My original claim here was wrong in two ways
+and lanes acted on it: (1) I said relation potential reaches this walk. It does not --
+`scoreGraphEdgesWithRelationPotential` returns new frozen edges inside `fieldEngine.activate`, which runs ~150
+lines AFTER `evidenceInSubjectCommunity`, so the community walk has never seen a rescaled alpha. (2) I said
+shrinking weights narrows the community. It widens it: smaller weights mean smaller degrees, so `residual/degree`
+is LARGER and there are MORE pushes. Measured on one 400-node slice at fixed epsilon, x100 gives 19 pushes over
+15 nodes and x0.002 gives 10,414 over 400. A 500x shrink is a 4x CPU cost, not a narrowing.
+
+The CLASS is still real and the fix shipped: the push criterion now divides degree by the graph's own mean edge
+weight, which on a uniform-weight graph is exactly the unweighted degree count Andersen-Chung-Lang define the
+criterion on. Five assertions fail without it. But the instance I used to introduce the class was misdiagnosed,
+and a doctrine written from an unmeasured example sends every lane that reads it in the wrong direction.
 
 **362 instances of a bare decimal threshold exist.** In the answering path alone:
 
-    retrieval.ts:233      item.alpha > 0.4          decides graph seeding
-    retrieval.ts:428      graphScore > 0.2, alphaScore > 0.55, vectorScore > 0.45
+    field.ts:400          clean.length < 4          decides what the field treats as content -- MEASURED LIVE:
+                                                    keeps with/from/this/only/what/which, drops who/ada/how.
+                                                    A spelling-length coincidence standing in for a closed class.
+    launch-contract.ts:294-296  contradiction > 0.4, support >= 0.78, faithfulnessLcb >= 0.65  decide truthState
+    NOT retrieval.ts:233/:428   -- these decide NOTHING. `graphSeeds` has no consumer anywhere in the repo, and
+                                   the whole `hybridRecall` call in a production turn is trace-only. The retrieval
+                                   that decides is `semanticMemory.search`. I spent an hour on dead code.
     local-evidence:227    span.alpha * 0.18, lexical >= 0.025
     local-evidence:2141   candidate.quality >= 0.56
     local-evidence:3783   support >= 0.34 decides inferred vs conjectured
