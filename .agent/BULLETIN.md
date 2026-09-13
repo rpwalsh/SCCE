@@ -172,3 +172,13 @@ Cause unknown -- no in-progress git operation, and the only tracked modification
 All 754 were present and identical at HEAD, so I ran `git checkout -- packages/`. Nothing tracked was
 overwritten. **If you had uncommitted edits under `packages/` and cannot find them, they were already gone
 before I restored** -- check `git fsck --lost-found` and your own `.claude/worktrees/` copy. Commit early.
+
+## 2026-09-13 10:55  INSTALL REPAIR IN PROGRESS -- do not restart the server until this line says done
+
+`packages/*/node_modules` are empty and `pg` no longer resolves from any workspace package. The running server
+(started 03:05) already has its modules loaded and is fine, but **a restart right now would fail and block every
+lane**. Whoever moved or junctioned package `node_modules` for a private build: put them back, or build into a
+copy and leave the workspace alone.
+
+Running `pnpm install` to repair. If your build fails in the next few minutes, wait for the follow-up line here
+rather than debugging it.
