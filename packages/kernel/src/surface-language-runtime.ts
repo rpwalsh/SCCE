@@ -383,22 +383,22 @@ export function createSurfaceLanguageRuntime(options: {
       ? [{ profileIds, limits: exactProfileHydrationLimits }]
       : corpusQueries;
     hydrateHeapTrace("language.hydrate.start", { queries: hydrationQueries.length, boundedLimit, limit, obsLimit: hydrationQueries[0]?.limits.ngramObservations ?? -1, unitLimit: hydrationQueries[0]?.limits.languageUnits ?? -1, patternLimit: hydrationQueries[0]?.limits.languagePatterns ?? -1, profiles: hydrationQueries[0]?.profileIds?.length ?? -1, corpora: corpusRegistry.length });
-    const modelsBySource = await Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; });
-    // Observations are the uncompiled form of the same models. They are read only for a scope that has no persisted
-    // model at all: measured, 20,480 observation rows across a 1,960-profile scope took 260s and added nothing the
-    // parsed block models did not already carry.
-    const persistedModelsPresent = modelsBySource.flat().some(record => languageMemoryRuntime.hydrateFromImportedBrain({ importRunId: undefined, models: [record], observations: [], units: [], patterns: [], semanticFrames: [], constructionEvidence: [] }).models.length > 0);
+    // Models load WITH the rest, not before them.
+    //
+    // This query was awaited alone -- 17.3s, 58.7% of a hydration -- not for its own result but to compute
+    // persistedModelsPresent, whose only job is deciding whether to run the observations query below. That query
+    // returned 0 rows in 48 of 48 measured executions. A 17.3s serial phase existed to gate a no-op, making the
+    // load 17.3 + 7.0 instead of max(17.3, 7.0). The gate still runs, after the parallel block, where it costs
+    // the 7.6ms the observations query actually takes.
     const [
-      observationsBySource,
+      modelsBySource,
       unitsBySource,
       patternsBySource,
       semanticFramesBySource,
       persistedProfiles,
       segmentationPopulationModels
     ] = await Promise.all([
-      persistedModelsPresent
-        ? Promise.resolve(hydrationQueries.map(() => [] as Awaited<ReturnType<typeof deps.storage.languageMemory.listNgramObservations>>))
-        : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramObservations", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languageUnitJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguageUnits", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, languageId: item.profileIds ? undefined : languageId, limit: item.limits.languagePatterns, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listSemanticFrames", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
@@ -414,6 +414,13 @@ export function createSurfaceLanguageRuntime(options: {
         })
         : Promise.resolve([] as SegmentationPopulationModelRecord[])
     ]);
+    // The gate, now where it belongs: after the models it reads, and in front of the query it guards.
+    const persistedModelsPresent = modelsBySource.flat().some(record => languageMemoryRuntime.hydrateFromImportedBrain({ importRunId: undefined, models: [record], observations: [], units: [], patterns: [], semanticFrames: [], constructionEvidence: [] }).models.length > 0);
+    // Observations are the uncompiled form of the same models, read only for a scope with no persisted model at
+    // all: measured, 20,480 rows across a 1,960-profile scope took 260s and added nothing the parsed models carry.
+    const observationsBySource = persistedModelsPresent
+      ? hydrationQueries.map(() => [] as Awaited<ReturnType<typeof deps.storage.languageMemory.listNgramObservations>>)
+      : await Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramObservations", rows: rows.flat().length } as unknown as Record<string, number>); return rows; });
     const models = uniqueRecordsById(modelsBySource.flat(), Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
     const observations = uniqueRecordsById(observationsBySource.flat(), Math.max(1200, boundedLimit * 320));
     const units = uniqueRecordsById(unitsBySource.flat(), Math.max(512, boundedLimit * 128));
