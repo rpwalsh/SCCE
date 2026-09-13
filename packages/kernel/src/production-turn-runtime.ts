@@ -140,6 +140,7 @@ import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphB
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
+import { primeFreeFormLexicon } from "./free-form-lexicon.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -1037,6 +1038,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         predicted: { inferentialDepth: requirementField.inferentialDepth }
       });
       let requestedAuthority = authorityProjection.requestedAuthority;
+      // Which surfaces this corpus uses as free forms, so the unit matcher stops reading one extra letter as English.
+      primeFreeFormLexicon(authorityLanguage.state.models ?? []);
       // The learned closed class for this request: the language's function words plus the request scaffolding the
       // interaction corpus taught for this authority. What it leaves of the request is the subject and the relation.
       // The corpus's own function symbols, ranked by continuation count: "'" continues 1305 distinct contexts in

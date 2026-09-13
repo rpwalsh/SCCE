@@ -91,6 +91,7 @@ export * from "./language-training-batch.js";
 export * from "./creative-event-compatibility.js";
 export * from "./calibration-spine.js";
 export * from "./closed-class-words.js";
+export * from "./free-form-lexicon.js";
 export * from "./source-identity.js";
 export * from "./calibrations/public-calibrations.js";
 export * from "./calibrations/calibration-search-space.js";
