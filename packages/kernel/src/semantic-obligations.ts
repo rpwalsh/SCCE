@@ -346,7 +346,15 @@ export function extractTemporalAnswerFromEvidence(claimText: string, evidence: r
     // reaches the date, and "when did Apollo 11 land" was answered "20:17".
     const text = span.text || span.textPreview || "";
     if (!text) continue;
-    const all = extractSemanticItems(text, "evidence", span).filter(item => item.kind === "temporal");
+    // In the source's own order, not the order the extractors ran in. extractSemanticItems applies its clock-time
+    // pattern before its written-date pattern, so every clock time in a span sorted ahead of every date in it however
+    // far down the span it sat: "In what year was the first Academy Awards ceremony held?" was answered "11:00" from
+    // sentence 17 while sentence 11 states "held on May 16, 1929". Everything below reads this list positionally --
+    // the opening block first, the second item for the later of a lead's two dates -- so the position it reads has to
+    // be the source's.
+    const all = extractSemanticItems(text, "evidence", span)
+      .filter(item => item.kind === "temporal")
+      .sort((left, right) => (left.byteRange?.[0] ?? 0) - (right.byteRange?.[0] ?? 0));
     // A reference list carries dates that belong to the citation, not to the subject: this corpus answered
     // "when was Ada Lovelace born" with 8 March 2018, the publication date of a cited New York Times piece.
     // A date sitting beside a URL is the citation's; a date sitting beside the request's own words is the
