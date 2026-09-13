@@ -14,7 +14,10 @@ const serverPid = () => {
 // Built INSIDE the lock: packages/*/dist is shared, so a lane that builds while waiting ships whichever lane
 // rebuilt last.
 const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-process.stdout.write(`building ${head}\n`);
+// What is in the tree but not in HEAD is what a reader cannot reconstruct from the commit, so it is recorded with
+// the measurement rather than left for someone to discover in the delta.
+const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim();
+process.stdout.write(`building ${head}${dirty ? `\nuncommitted at build time:\n${dirty}` : " (tree clean)"}\n`);
 execFileSync("pnpm", ["-r", "build"], { stdio: "inherit", shell: true });
 process.stdout.write(`built ${head}\n`);
 

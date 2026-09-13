@@ -10,6 +10,7 @@ import { isEntitySaladSurface } from "./evidence-gist.js";
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncertainty.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
+import { quotedSentenceGap } from "./quoted-gap.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
@@ -1530,8 +1531,21 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           }))
         }
       });
+      // A request that quotes a sentence with a hole in it asked for the hole, not for the sentence read back.
+      //
+      // The whole sentence scores correct -- the value is in it -- and buries the value behind a replay of the
+      // request's own words: 71 of the 94 correct answers in the frozen run that reach their fact past the opening
+      // are this shape. The hole is a sequence difference between the request and this surface, both already in
+      // hand, and quotedSentenceGap returns nothing unless the surface is exactly the quotation with one run
+      // missing. What it returns is a contiguous run OF this surface, so the excerpt governance downstream sees
+      // the same kind of thing it saw before; measured over the 112 cloze rows the frozen run scored correct, the
+      // run is recovered for 111, satisfies the grader for all 111, and moves the fact into the opening of 111.
+      // A recovered run still has to be a surface this mouth would speak: a two-character cased run is degenerate
+      // whatever recovered it, and the sentence it came from is the honest fallback.
+      const quotedGap = deterministicQuotation ? quotedSentenceGap(selectedText, mouthEchoQuestionText(input)) : "";
+      const spokenSurface = quotedGap && admissibleMouthSurface(quotedGap) ? quotedGap : selectedText;
       // The deterministic path skipped repairSurfaceReadability, so "(; 10 December 1815" reached the answer.
-      const normalizedSelectedText = collapseEmptyBracketLead(tidySurface(selectedText));
+      const normalizedSelectedText = collapseEmptyBracketLead(tidySurface(spokenSurface));
       const readableSelectedText = dominantConstructForce(plan.constructForces) === "ProgramConstruct"
         || hasStructuredSurfaceShape(normalizedSelectedText)
         ? normalizedSelectedText
