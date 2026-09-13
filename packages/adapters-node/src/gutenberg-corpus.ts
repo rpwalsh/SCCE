@@ -135,6 +135,10 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
         languageAliases,
         creativeEventCompiler: input.creativeEventCompiler,
         corpusMetadata: {
+          // A text file's own name is the identity it declares. Without this the title was empty until a separate
+          // backfill ran, so a freshly ingested document could not be named by any request: what a request names is
+          // decided by asking which source titles appear in it, and an untitled source answers nothing.
+          title: documentTitleFromPath(file.relativePath),
           relativePath: normalizeRelative(file.relativePath),
           sourceHash: sha256(raw),
           boilerplateStripped: text.length !== raw.trim().length,
@@ -249,4 +253,11 @@ function sha256(text: string): string {
 
 function normalizeRelative(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+/** The file's own name, without directories or extension. Script-neutral: it copies the bytes the name carries. */
+function documentTitleFromPath(relativePath: string): string {
+  const base = normalizeRelative(relativePath).split("/").pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return (dot > 0 ? base.slice(0, dot) : base).trim();
 }
