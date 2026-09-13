@@ -57,11 +57,19 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /**
    * How many of a quoted sentence's adjacent pairs are searched, rarest first.
    *
-   * It bounds cost and it decides what is reachable, so it is declared rather than written inline. Measured over
-   * the 40 declining cloze rows: 6 pairs rank the answering span first for 9 of 11, 10 pairs for 10 of 11, and
-   * the whole sentence for 35 of 39 at p50 10.7s per query against 237ms for four pairs.
+   * It bounds cost and it decides what is reachable, so it is declared rather than written inline as a scan limit.
+   * Swept against the live index over the 39 declining cloze rows whose answering span exists:
+   *
+   *     pairs   found   ranked first   query p50   query max
+   *         6      37             27        17ms       317ms
+   *        10      38             33        73ms       785ms
+   *        14      39             33       405ms     12022ms
+   *        20      39             35      2419ms     17975ms
+   *
+   * 10 rather than 14: the extra row 14 finds costs a 12-second worst case, and a query that eats the turn's
+   * deadline makes the mouth refuse to speak at all, which is the failure this whole change exists to remove.
    */
-  "retrieval.quoted_sentence_query_features": 12,
+  "retrieval.quoted_sentence_query_features": 10,
 
   // --- ranker-specific: the two rankers claim to mirror each other and do not
   /** proposeSourceExactEvidenceAnswer: affinity multiplier when this is not the primary title. */
