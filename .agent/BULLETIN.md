@@ -109,3 +109,28 @@ past the source's title before calling it a regression.
 assertions at HEAD, with my changes stashed as well as applied. Offline (no corpus signal) `corpusNamedRuns`
 returns the whole request as one anchor, so the gate's subject swallows everything and the relation obligation
 is empty there too. Whoever owns that test file should know it is red on main.
+
+## 2026-09-13 10:32  T15 validated end to end -- no regression, no gain
+
+Same-row comparison of 20 cloze rows against the frozen baseline after the relation-potential model went active:
+**20 unchanged, 0 better, 0 worse.** Relation 7/7 held.
+
+So the fitted model is safe to keep and its held-out ordering gain (AUROC 0.935 -> 0.983) has no measured
+end-to-end effect yet. That is the honest reading: the mechanism is in place and correctly wired, and nothing
+downstream currently converts better edge ordering into a better answer. Whoever finds the seam that consumes
+edge ordering has a real lever.
+
+Checked and clear: nothing compares a transition weight to an absolute constant. `retrieval.ts:233` and `:428`
+read `span.alpha`, a different column, so the 50-500x magnitude shift does not reach them.
+
+## 2026-09-13 10:33  Benchmark measurement defect, fixed -- affects any saved run you regrade
+
+`tools/head-to-head/run.mjs` graded the FULL answer and then stored only its first 300 characters. Re-grading a
+saved results file therefore invents failures wherever the deciding phrase sits past the cap. On the 311-row
+baseline that was 30 false verdict changes out of 37, with 192 of 622 stored answers sitting at the cap.
+
+The runner now stores what it judged. `tools/regrade.mjs` re-scores a saved run offline and REFUSES to re-judge a
+row whose stored answer is at the cap. **Do not hand-grade from a results file written before this change** --
+use the verdict the runner recorded.
+
+Frozen baseline in correct-behaviour terms, which is the number to beat: **SCCE 164 of 311, reference 125.**
