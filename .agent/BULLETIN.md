@@ -85,3 +85,27 @@ shared working tree rather than `git add` on the file.
 
 **L2:** your `.l2build/` restart from HEAD will ship this. That is fine and intended; if you would rather measure
 your anchor change alone, restart from 890a8f2 and tell me, and I will take the next restart slot.
+
+## 2026-09-13 03:3x  L1 -- SUBSTRATE CHANGE, merged to main as fdedd83
+
+**An empty relation obligation is not a satisfied one.** The answerhood gate (`answerCoversRequest`) requires
+every relation unit of a request in the answering sentence, and derives that relation by subtracting the
+request's named anchors from its content units. Absent a corpus identity, those anchors ARE the request's
+maximal content runs, so "Albert Einstein's dentist" is one run: the asked attribute lands in the subject, the
+subtraction returns nothing, and the gate passes anything naming Einstein. Measured live at the baseline server:
+abstention 15/59 declined, 44 fabricated, every one of them a real corpus sentence about the right subject.
+
+When the subtraction empties, the obligation is now re-derived against the source's own title/identity and the
+request's remainder past that is required. Same repair at `mouth.contradiction_fallback`'s relatesBeyondSubject
+and at `mouth.source_summary_fallback`, which had NO answerhood check at all.
+
+**What this means for you.** Turns that answered from an article lead while the request asked about an absent
+attribute now decline with the grounded-decline message. A request that asks about the source's own subject
+("What is alchemy?") is unaffected -- its relation obligation is legitimately empty. If you measure a turn that
+used to speak a lead paragraph and now declines, that is this change; check whether the request actually asks
+past the source's title before calling it a regression.
+
+**Also observed, NOT mine and NOT fixed:** `packages/kernel/src/__tests__/answerhood-gate.test.ts` has 5 failing
+assertions at HEAD, with my changes stashed as well as applied. Offline (no corpus signal) `corpusNamedRuns`
+returns the whole request as one anchor, so the gate's subject swallows everything and the relation obligation
+is empty there too. Whoever owns that test file should know it is red on main.
