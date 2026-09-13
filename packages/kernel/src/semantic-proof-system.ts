@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { EvidenceId, EvidenceSpan, FieldState, GraphNode, Hasher, JsonValue, NodeId } from "./types.js";
 import type {
   SemanticAtom,
@@ -539,12 +540,12 @@ function certifyingUnification(unification: SemanticUnification): boolean {
     unification.factualProofEligible &&
     unification.polarity === 1 &&
     unification.predicate >= 0.5 &&
-    unification.roles >= 0.45 &&
-    unification.constraints >= 0.68 &&
+    unification.roles >= calibrated("proof.certifying_role_floor") &&
+    unification.constraints >= calibrated("proof.certifying_constraint_floor") &&
     unification.missingRoles.length === 0 &&
     unification.violatedConstraints.length === 0 &&
     unification.transformObligations.length === 0 &&
-    unification.contradiction <= 0.22;
+    unification.contradiction <= calibrated("proof.certifying_contradiction_ceiling");
 }
 
 function proofSearchAdmission(
@@ -581,7 +582,7 @@ function unifyAtoms(left: SemanticAtom, right: SemanticAtom): SemanticUnificatio
   const polarity = left.polarity === right.polarity ? 1 : 0;
   const transforms = evaluateSemanticTransforms({ claim: left, evidence: right, predicateScore: predicate, roleScore: roleMatch.score, constraintScore: constraintMatch.score, polarityScore: polarity });
   const alpha = clamp01(0.5 * right.alpha + 0.5 * cosineSimilarity(left.vector, right.vector));
-  const agreement = clamp01(0.34 * predicate + 0.32 * roleMatch.score + 0.16 * constraintMatch.score + 0.1 * polarity + 0.08 * transforms.supportBoost);
+  const agreement = clamp01(calibrated("proof.agreement_predicate_weight") * predicate + calibrated("proof.agreement_role_weight") * roleMatch.score + calibrated("proof.agreement_constraint_weight") * constraintMatch.score + calibrated("proof.agreement_polarity_weight") * polarity + calibrated("proof.agreement_transform_boost_weight") * transforms.supportBoost);
   const correspondence = correspondenceScore(predicate, roleMatch.score);
   // Disagreement, then aboutness, multiplied once. A refutation therefore never exceeds the correspondence it
   // rests on, so an atom about another proposition cannot become this claim's counterexample however strongly it
@@ -636,7 +637,7 @@ function predicateSimilarity(left: SemanticAtom, right: SemanticAtom): number {
   const posterior = relationPosteriorSimilarity(left, right);
   const feature = weightedJaccard(left.predicateFeatures, right.predicateFeatures);
   const vector = clamp01((cosineSimilarity(left.vector, right.vector) + 1) / 2);
-  return clamp01(0.35 * posterior + 0.25 * lexical + 0.25 * feature + 0.15 * vector);
+  return clamp01(calibrated("proof.predicate_similarity_posterior_weight") * posterior + calibrated("proof.predicate_similarity_lexical_weight") * lexical + calibrated("proof.predicate_similarity_feature_weight") * feature + calibrated("proof.predicate_similarity_vector_weight") * vector);
 }
 
 function relationPosteriorSimilarity(left: SemanticAtom, right: SemanticAtom): number {
@@ -676,18 +677,18 @@ function roleSimilarity(left: readonly SemanticRoleBinding[], right: readonly Se
     for (let i = 0; i < right.length; i++) {
       if (used.has(i)) continue;
       const r = right[i]!;
-      const typeBoost = l.type === r.type ? 0.12 : 0;
-      const nameBoost = l.name === r.name ? 0.1 : l.name.slice(0, 3) === r.name.slice(0, 3) ? 0.04 : 0;
+      const typeBoost = l.type === r.type ? calibrated("proof.role_match_type_bonus") : 0;
+      const nameBoost = l.name === r.name ? calibrated("proof.role_match_name_bonus") : l.name.slice(0, 3) === r.name.slice(0, 3) ? calibrated("proof.role_match_name_prefix_bonus") : 0;
       const lexical = l.normalized === r.normalized ? 1 : normalizedEditSimilarity(l.normalized, r.normalized);
       const features = weightedJaccard(l.features, r.features);
-      const score = clamp01(0.48 * lexical + 0.3 * features + typeBoost + nameBoost);
+      const score = clamp01(calibrated("proof.role_match_lexical_weight") * lexical + calibrated("proof.role_match_feature_weight") * features + typeBoost + nameBoost);
       if (score > bestScore) {
         bestScore = score;
         bestIndex = i;
       }
     }
     total += l.weight;
-    if (bestIndex >= 0 && bestScore >= 0.18) {
+    if (bestIndex >= 0 && bestScore >= calibrated("proof.role_match_accept_floor")) {
       used.add(bestIndex);
       const r = right[bestIndex]!;
       pairs.push({ left: `${l.name}:${l.normalized}`, right: `${r.name}:${r.normalized}`, score: bestScore });
@@ -753,7 +754,7 @@ function compareQuantityConstraint(left: SemanticConstraint, right: SemanticCons
   const overlap = Math.max(0, Math.min(lUpper, rUpper) - Math.max(lLower, rLower));
   const span = Math.max(Math.max(lUpper, rUpper) - Math.min(lLower, rLower), Math.abs(l.value), Math.abs(r.value), 1);
   const close = 1 - Math.min(1, Math.abs(l.value - r.value) / span);
-  return clamp01(0.55 * (overlap > 0 ? overlap / span : 0) + 0.45 * close);
+  return clamp01(calibrated("proof.quantity_overlap_weight") * (overlap > 0 ? overlap / span : 0) + calibrated("proof.quantity_closeness_weight") * close);
 }
 
 function compareTemporalConstraint(left: SemanticConstraint, right: SemanticConstraint): number {
@@ -1035,7 +1036,7 @@ function fromDifferentSources(
 }
 
 function contradictionReason(unification: SemanticUnification): string {
-  if (unification.polarity === 0 && unification.predicate > 0.45 && unification.roles > 0.35) return PROOF_COUNTEREXAMPLE_REASON.POLARITY;
+  if (unification.polarity === 0 && unification.predicate > calibrated("proof.polarity_counterexample_predicate_floor") && unification.roles > calibrated("proof.polarity_counterexample_role_floor")) return PROOF_COUNTEREXAMPLE_REASON.POLARITY;
   if (unification.violatedConstraints.length > 0) return `${PROOF_COUNTEREXAMPLE_REASON.CONSTRAINT}:${unification.violatedConstraints.slice(0, 3).join(",")}`;
   // An outstanding obligation is not a constraint conflict, and reporting it as one sent a reader looking for a
   // disagreement between values that does not exist.
@@ -1055,9 +1056,9 @@ function contradictionReason(unification: SemanticUnification): string {
  */
 function verdictFrom(support: number, contradiction: number, coverage: number, faithfulnessLcb: number, admission: ProofSearchIntermediate["admission"], mutualSourceContradiction = false): SemanticProofVerdict {
   if (mutualSourceContradiction) return SEMANTIC_VERDICT.CONTRADICTED;
-  if (contradiction >= 0.55 && contradiction > support * 0.9) return SEMANTIC_VERDICT.CONTRADICTED;
-  if (admission.admitted && support >= 0.76 && coverage >= 0.72 && faithfulnessLcb >= 0.45) return SEMANTIC_VERDICT.ENTAILED;
-  if (support >= 0.42 && coverage >= 0.35) return SEMANTIC_VERDICT.PARTIAL;
+  if (contradiction >= calibrated("proof.verdict_contradiction_floor") && contradiction > support * calibrated("proof.verdict_contradiction_dominance_ratio")) return SEMANTIC_VERDICT.CONTRADICTED;
+  if (admission.admitted && support >= calibrated("proof.verdict_entailed_support_floor") && coverage >= calibrated("proof.verdict_entailed_coverage_floor") && faithfulnessLcb >= calibrated("proof.verdict_entailed_faithfulness_floor")) return SEMANTIC_VERDICT.ENTAILED;
+  if (support >= calibrated("proof.verdict_partial_support_floor") && coverage >= calibrated("proof.verdict_partial_coverage_floor")) return SEMANTIC_VERDICT.PARTIAL;
   return SEMANTIC_VERDICT.UNDERDETERMINED;
 }
 
@@ -1069,7 +1070,7 @@ function applyFieldMass(atoms: SemanticAtom[], field: FieldState | undefined): S
   if (massByNode.size === 0) return atoms;
   return atoms.map(atom => {
     const nodeMass = atom.nodeIds.reduce((max, id) => Math.max(max, massByNode.get(String(id)) ?? 0), 0);
-    return nodeMass > 0 ? { ...atom, alpha: clamp01(0.65 * atom.alpha + 0.35 * nodeMass) } : atom;
+    return nodeMass > 0 ? { ...atom, alpha: clamp01(calibrated("proof.atom_alpha_own_weight") * atom.alpha + calibrated("proof.atom_alpha_field_mass_weight") * nodeMass) } : atom;
   });
 }
 

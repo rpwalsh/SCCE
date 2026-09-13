@@ -275,7 +275,77 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Share of the field's contradiction surface in overall contradiction pressure. semantic-obligations.ts contradictionPressure. */
   "obligations.contradiction_pressure_surface_weight": 0.32,
   /** Share of the field's contradiction mass in overall contradiction pressure. semantic-obligations.ts contradictionPressure. */
-  "obligations.contradiction_pressure_mass_weight": 0.2
+  "obligations.contradiction_pressure_mass_weight": 0.2,
+  // --- semantic proof system (semantic-proof-system.ts). Atom unification, role and quantity matching, and
+  // the proof verdict.
+  // Safety-bearing block: certifyingUnification decides whether a unification may back a certified fact.
+  /** Safety-bearing: role agreement a unification must reach to certify a fact. semantic-proof-system.ts certifyingUnification. */
+  "proof.certifying_role_floor": 0.45,
+  /** Safety-bearing: constraint agreement a unification must reach to certify a fact. semantic-proof-system.ts certifyingUnification. */
+  "proof.certifying_constraint_floor": 0.68,
+  /** Safety-bearing: contradiction above which a unification may not certify a fact. semantic-proof-system.ts certifyingUnification. */
+  "proof.certifying_contradiction_ceiling": 0.22,
+  // The five agreement weights are one normalized set and must continue to sum to 1.
+  /** Share of predicate similarity in how far two atoms agree. semantic-proof-system.ts unifyAtoms. */
+  "proof.agreement_predicate_weight": 0.34,
+  /** Share of role similarity in atom agreement. semantic-proof-system.ts unifyAtoms. */
+  "proof.agreement_role_weight": 0.32,
+  /** Share of constraint similarity in atom agreement. semantic-proof-system.ts unifyAtoms. */
+  "proof.agreement_constraint_weight": 0.16,
+  /** Share of matching polarity in atom agreement. semantic-proof-system.ts unifyAtoms. */
+  "proof.agreement_polarity_weight": 0.1,
+  /** Share of the transform support boost in atom agreement. semantic-proof-system.ts unifyAtoms. */
+  "proof.agreement_transform_boost_weight": 0.08,
+  // The four predicate-similarity weights are one normalized set and must continue to sum to 1.
+  /** Share of the learned relation posterior in predicate similarity. semantic-proof-system.ts predicateSimilarity. */
+  "proof.predicate_similarity_posterior_weight": 0.35,
+  /** Share of edit-level lexical similarity in predicate similarity. semantic-proof-system.ts predicateSimilarity. */
+  "proof.predicate_similarity_lexical_weight": 0.25,
+  /** Share of predicate feature overlap in predicate similarity. semantic-proof-system.ts predicateSimilarity. */
+  "proof.predicate_similarity_feature_weight": 0.25,
+  /** Share of atom vector cosine in predicate similarity. semantic-proof-system.ts predicateSimilarity. */
+  "proof.predicate_similarity_vector_weight": 0.15,
+  /** Share of lexical similarity in how well two role fillers match. semantic-proof-system.ts roleSimilarity. */
+  "proof.role_match_lexical_weight": 0.48,
+  /** Share of feature overlap in how well two role fillers match. semantic-proof-system.ts roleSimilarity. */
+  "proof.role_match_feature_weight": 0.3,
+  /** Bonus added when two role fillers share a role type. semantic-proof-system.ts roleSimilarity. */
+  "proof.role_match_type_bonus": 0.12,
+  /** Bonus added when two role fillers carry the same role name. semantic-proof-system.ts roleSimilarity. */
+  "proof.role_match_name_bonus": 0.1,
+  /** Bonus added when two role names share a leading fragment. semantic-proof-system.ts roleSimilarity. */
+  "proof.role_match_name_prefix_bonus": 0.04,
+  /** Score the best candidate must reach before a claim role counts as matched by an evidence role. semantic-proof-system.ts roleSimilarity. */
+  "proof.role_match_accept_floor": 0.18,
+  // Interval overlap and value closeness are one normalized pair and must continue to sum to 1.
+  /** Share of interval overlap in how far two quantities agree. semantic-proof-system.ts quantitySimilarity. */
+  "proof.quantity_overlap_weight": 0.55,
+  /** Share of point-value closeness in how far two quantities agree. semantic-proof-system.ts quantitySimilarity. */
+  "proof.quantity_closeness_weight": 0.45,
+  /** Predicate similarity above which opposed polarity is reported as a polarity counterexample rather than an unrelated atom. semantic-proof-system.ts contradictionReason. */
+  "proof.polarity_counterexample_predicate_floor": 0.45,
+  /** Role agreement above which opposed polarity is reported as a polarity counterexample. semantic-proof-system.ts contradictionReason. */
+  "proof.polarity_counterexample_role_floor": 0.35,
+  // The verdict thresholds are all safety-bearing: they decide entailed, partial, contradicted or
+  // underdetermined, and only an entailed or partial proof lets a claim be spoken as sourced.
+  /** Safety-bearing: contradiction at which a proof is refuted outright. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_contradiction_floor": 0.55,
+  /** Safety-bearing: how far contradiction must exceed support, as a multiple of support, before a proof is refuted. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_contradiction_dominance_ratio": 0.9,
+  /** Safety-bearing: support an admitted proof needs to be entailed. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_entailed_support_floor": 0.76,
+  /** Safety-bearing: claim coverage an admitted proof needs to be entailed. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_entailed_coverage_floor": 0.72,
+  /** Safety-bearing: faithfulness lower bound an admitted proof needs to be entailed. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_entailed_faithfulness_floor": 0.45,
+  /** Safety-bearing: support a proof needs to be partial rather than underdetermined. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_partial_support_floor": 0.42,
+  /** Safety-bearing: claim coverage a proof needs to be partial rather than underdetermined. semantic-proof-system.ts verdictFrom. */
+  "proof.verdict_partial_coverage_floor": 0.35,
+  /** Share of an atom's own alpha when field mass reweights it; pairs with the field-mass share and the two must continue to sum to 1. semantic-proof-system.ts fieldWeightedAtoms. */
+  "proof.atom_alpha_own_weight": 0.65,
+  /** Share of field mass when it reweights an atom's alpha. semantic-proof-system.ts fieldWeightedAtoms. */
+  "proof.atom_alpha_field_mass_weight": 0.35
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;
