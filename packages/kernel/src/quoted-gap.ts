@@ -100,25 +100,24 @@ export function quotedSentenceGap(sentence: string, requestText: string): string
   if (!requestTokens.length) return "";
   const matchedCount = matched.filter(Boolean).length;
   let best: { from: number; to: number } | undefined;
-  let tiedAtBest = 0;
   let runStart = -1;
   for (let index = 0; index <= sentenceTokens.length; index++) {
     const inRun = index < sentenceTokens.length && !matched[index];
     if (inRun && runStart < 0) runStart = index;
     if (!inRun && runStart >= 0) {
-      const length = index - runStart;
-      const bestLength = best ? best.to - best.from : 0;
-      if (!best || length > bestLength) { best = { from: runStart, to: index }; tiedAtBest = 1; }
-      else if (length === bestLength) tiedAtBest++;
+      if (!best || index - runStart > best.to - best.from) best = { from: runStart, to: index };
       runStart = -1;
     }
   }
-  // Several runs of the same length: which one is the hole is undecided, so say nothing rather than guess.
-  if (!best || tiedAtBest > 1) return "";
+  if (!best) return "";
   const gapLength = best.to - best.from;
   // The sentence is the quotation with exactly ONE hole in it, and nothing else: every token outside this run is
   // accounted for by the request. Anything less is a sentence that merely resembles the request, and the run taken
   // out of it is not what was asked for.
+  //
+  // This also settles ambiguity, and settles it more strictly than picking between competing runs would: two runs
+  // of any lengths fail it, so "which of them is the hole" is never a question this has to answer. A separate
+  // longest-run tie-break was written here first and was dead code behind this line.
   if (matchedCount + gapLength !== sentenceTokens.length) return "";
   // The hole is smaller than the quotation around it; when it is not, this is not a quotation with a hole.
   if (gapLength >= matchedCount) return "";
