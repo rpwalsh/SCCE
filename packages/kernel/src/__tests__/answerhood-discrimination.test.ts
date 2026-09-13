@@ -95,6 +95,23 @@ describe("answerhood discrimination", () => {
     expect(requestRelationBeyondSourceIdentity("Who won the 1998 FIFA World Cup?", worldCup, closedClass)).toEqual([]);
   });
 
+  it("does not let an inflected subject stand in as a carried relation unit", () => {
+    // Live route for the Einstein lead after the corpus identity reached the anchors: the subject came back as
+    // {albert, einstein} while the request supplied "einstein's", so string-identity subtraction left
+    // {einstein's, dentist} as the obligation, the lead satisfied "einstein's" by saying "Einstein", and a
+    // two-unit obligation with exactly one unit missing is the shape the category-member escape forgives.
+    const einstein = openingBlock(
+      "evidence:einstein-possessive",
+      "Albert Einstein",
+      "'Albert Einstein' (14 March 1879 - 18 April 1955) was a German-born theoretical physicist best known for developing the theory of relativity."
+    );
+    // The coverage units and the anchor units are built by different filters, so the possessive reaches the
+    // obligation while the anchor holds the bare name -- that mismatch is the whole defect, and it is what this
+    // fixture reproduces.
+    const lead = "'Albert Einstein' (14 March 1879 - 18 April 1955) was a German-born theoretical physicist best known for developing the theory of relativity.";
+    expect(answerCoversRequest([lead], einstein, ["einstein's", "dentist"], "Albert Einstein dentist", { relationRequired: true, languageClosedClassWords: closedClass })).toBe(false);
+  });
+
   it("withholds a source summary that carries none of the asked relation", () => {
     const einstein = openingBlock("evidence:einstein-summary", "Albert Einstein", "unused");
     const summary = "Einstein also made important contributions to quantum theory. Born in the German Empire, Einstein moved to Switzerland in 1895.";
