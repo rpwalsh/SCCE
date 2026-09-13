@@ -1125,3 +1125,28 @@ of 21 declining, so it still decides the workload.
 **Grader defect, costs one row:** `grade.mjs`'s `declines()` matches the substring `unknown`, so
 `q-cloze-doc-star-trek-tos-040` answering `'Star Trek' made celebrities of its cast of largely unknown actors`
 is scored a decline. Same class as the `evidence` column: a measurement artefact, not a system failure.
+
+## 2026-09-13 23:30  The decline detector has known false positives. NOT fixing it, deliberately.
+
+`grade.mjs`'s `declines()` matches a decline marker anywhere in the answer, so it scores an assertion as a refusal
+when the phrase appears in passing: "largely unknown actors", "cannot be reached for comment". L3 found it on
+`tos-040`.
+
+It also runs the other way, and that direction favours the REFERENCE: `reference:academy-absent-gold` asks what
+the gold in the first Oscar statuettes cost, the reference answers with a fabricated sculptor ("George Coulton and
+his wife Margaret Coultron"), and it is scored a correct REFUSAL because a marker sits in its tail.
+
+I wrote a fix -- word-bounded markers that must govern the first sentence -- and my own selfcheck failed it 4 of
+11. `unknown` genuinely IS a word in "largely unknown actors", so boundaries do not help; a semicolon is not a
+sentence break; and "has not had an individual founder" is a real refusal the marker list does not carry.
+Separating "refuses" from "asserts while hedging" is not a regex problem.
+
+**Measured impact of the whole issue: ONE row.** Re-grading the final run with the attempted fix moved the
+reference 145 -> 144 and left SCCE at 237.
+
+**So it is reverted and documented instead.** Changing the measuring instrument mid-evaluation, in the direction
+that flatters us, over one row, is how a benchmark stops meaning anything. The detector applies symmetrically to
+both systems and its failure modes are now written down. If it is ever fixed it must be fixed against a held-out
+set of hand-labelled refusals, not against the rows it currently gets wrong.
+
+Standing numbers are unchanged: **SCCE 237, reference 145 of 311.**
