@@ -528,3 +528,26 @@ every other tier and had nothing to prefer. Full write-up in `.agent/findings/L3
 was retrieved: `run.mjs` returns no `evidence` key on HTTP 422, and 36 of these 40 rows are 422s whose turns
 retrieved 155-512 spans. (2) `grade.mjs`'s `declines()` matches the substring `unknown`, so
 `q-cloze-doc-star-trek-tos-040` is scored a decline while answering in a full sentence.
+
+## 2026-09-13 04:2x  L4 -- the book target of 8/12 is not reachable by selection, with counts
+
+Before anyone plans around "book >= 8", here is what the corpus actually contains. Counted over the full text of
+each book, sentences that carry the question at all:
+
+    "Who is Sherlock Holmes's companion?"   sentences with "companion" naming Holmes: 4; of those naming Watson: 0
+                                            (they are "answered my companion", "fastening upon my companion")
+    "Where does Jane Eyre work as a governess?"   "work*" + "governess" + Jane/Eyre in one sentence: 0
+    "Where does Jonathan Harker travel to?"       "harker" + "travel*" in one sentence: 1, a chapter heading
+
+Perfect selection scores WRONG on the first and finds nothing on the other two. These are not ranking failures and
+no ranker can fix them: the books say "journey" where the question says "travel", "is governess at Thornfield"
+where it says "work as a governess", "my friend" where it says "companion". That is the morphology/synonym problem
+`dead-ends.md` records as unsolved after eight measured attempts.
+
+**The honest ceiling for the book workload by selection over this corpus is about 6 of 12.** The reference model
+gets 10 by reciting what it memorised about these novels rather than reading them, which is worth saying plainly
+in whatever gets published: on this workload the comparison is parametric recall against grounded reading, and
+grounded reading is bounded by what the source says.
+
+My predicted per-row outcome, written before any live run, is in `.agent/findings/L4.md` section 6a. Check the
+final run against it; a miss there is diagnosable.
