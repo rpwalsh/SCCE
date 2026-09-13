@@ -142,6 +142,15 @@ function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly stri
  */
 function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, coverageUnits: readonly string[]): boolean {
   if (!coverageUnits.length) return false;
+  // Only where relevance ranking has nothing to rank on.
+  //
+  // An article's identity IS its title, so the title and opening-block priors already carry which chunk answers,
+  // and the lead states the standing fact anaphorically -- a chunk deeper in the article that happens to repeat
+  // the request's relation word must not be promoted over it. A source that names itself gives those priors no
+  // information at all: every one of Moby Dick's 699 chunks is equally "the source the request named". This
+  // ordering is for that population, and it is inert on a pool of articles, which is 21,915 of the corpus's
+  // 23,421 sources -- so it also does not spend the scan on them.
+  if (!evidenceIdentityBeyondTitle(span)) return false;
   // A source's front matter states nothing about its subject, so no sentence of it answers. Treasure Island's
   // chapter index led this ordering because the titles it lists carry "treasure island" and "ship" between them:
   // it compresses the source's own vocabulary beautifully and explains none of its structure, which is exactly the

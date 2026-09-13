@@ -67,6 +67,18 @@ describe("evidence ranking by answerhood", () => {
     expect(String(ranked[0]?.id)).toBe("evidence:moby:binding");
   });
 
+  it("is inert on a pool of articles, whose identity is their title", () => {
+    // An article's lead states the standing fact anaphorically and the title and opening-block priors already
+    // carry which chunk answers. A deeper chunk that merely repeats the request's relation word must not be
+    // promoted over it. 21,915 of the corpus's 23,421 sources are articles, so this is the common pool.
+    const article = [
+      span({ id: "evidence:article:lead", alpha: 0.95, charStart: 0, identity: "", text: "The Ainu are an indigenous people of Japan. They live in Hokkaido." }),
+      span({ id: "evidence:article:deep", alpha: 0.5, identity: "", text: "A 2017 survey of the country recorded the captain of a fishing fleet in the Pequod district." })
+    ];
+    expect(evidenceForRequest(request, article, new Set(), new Set(), new Set(), closedClass).map(item => String(item.id)))
+      .toEqual(evidenceForRequest(request, article).map(item => String(item.id)));
+  });
+
   it("leaves the order alone when the answerhood test does not discriminate", () => {
     // Neither chunk answers: ordering falls through to relevance exactly as before, and nothing is dropped.
     const silent = [
@@ -78,8 +90,13 @@ describe("evidence ranking by answerhood", () => {
   });
 });
 
+// A book names itself in its content, which is what tells it from an article whose identity is its title. The
+// real corpus records that as `provenance.identity` on every span of all nine benchmark books.
+const BOOK_IDENTITY = "herman melville pequod ahab ishmael queequeg starbuck";
+
 function span(input: { id: string; alpha: number; text: string; charStart?: number; identity?: string }): EvidenceSpan {
   const charStart = input.charStart ?? 176542;
+  const identity = input.identity ?? BOOK_IDENTITY;
   return {
     id: input.id as EvidenceId,
     sourceVersionId: `${input.id}:v1` as SourceVersionId,
@@ -92,7 +109,7 @@ function span(input: { id: string; alpha: number; text: string; charStart?: numb
     provenance: {
       uri: `fixture://${input.id}`,
       title: "Moby Dick",
-      ...(input.identity ? { identity: input.identity } : {}),
+      identity,
       sourceVersionId: `${input.id}:v1`,
       byteRange: [0, input.text.length],
       charRange: [charStart, charStart + input.text.length],
