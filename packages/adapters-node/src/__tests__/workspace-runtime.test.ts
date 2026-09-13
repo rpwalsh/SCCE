@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { describeRelationPotentialCapability } from "@scce/kernel";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -242,6 +243,7 @@ function fakeRuntime(workspace: WorkspaceStore, dialogueMemory: DialogueMemorySt
     connectors: {} as NodeScceRuntime["connectors"],
     approvals: {} as NodeScceRuntime["approvals"],
     executive: {} as NodeScceRuntime["executive"],
+    relationPotential: { hydrated: Promise.resolve(), capability: () => describeRelationPotentialCapability({ artifact: "untrained" }), promotedModelId: () => undefined },
     close: async () => {}
   };
 }
