@@ -1,0 +1,19 @@
+{
+  "schema": "scce.collective_metrics.v1",
+  "runs": [
+    {
+      "run": "wide-20260913",
+      "process": "wide",
+      "task": "T1-T9",
+      "workers": 10,
+      "tokens": 2217000,
+      "wallMs": 20000000,
+      "findings": 14,
+      "falsePremises": 2,
+      "commits": 10,
+      "reverted": 0,
+      "verified": 10,
+      "at": "2026-09-13T06:20:31.780Z"
+    }
+  ]
+}

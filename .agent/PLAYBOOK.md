@@ -92,3 +92,24 @@ evidence; or its task left the critical path.
 One server, one database, and RAM is the binding constraint rather than the database: ~16 GB total, the server
 holds 3-4 GB, so two live servers is the ceiling. Workers are offline by construction — read-only SQL, no server,
 no writes. Only the integration gate runs live.
+
+## Measure the collective, do not assume it
+
+The lean shape is BELIEVED cheaper than ten independent workers. Believed is not measured, and a process with more
+commits per token whose commits get reverted is worse, not better.
+
+```sh
+node tools/collective-metrics.mjs record --run=lean-01 --process=lean --task=T10 \
+  --workers=6 --tokens=<sum> --wall-ms=<ms> --findings=<n> --false-premises=<n> \
+  --commits=<n> --reverted=<n> --verified=<n>
+node tools/collective-metrics.mjs report
+```
+
+Two ratios decide it: **verified fixes per million tokens** and **net accepted changes per million tokens**, with
+reverts charged against the process that produced them. Count a finding only when it is novel, evidenced, and not
+already in `.agent/context`; restating cached knowledge is not a finding. Count a false premise whenever a worker
+disproves something the coordinator or another worker believed, because that is the highest-value output the
+skeptic clause buys.
+
+Baseline already recorded: the ten-worker run of 2026-09-13, 2.22M tokens, 14 novel findings, 2 false premises
+caught, 10 verified fixes, nothing reverted. Five to ten runs are needed before the ratios mean anything.
