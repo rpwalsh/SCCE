@@ -37,7 +37,11 @@ export interface LocalPushInput {
   seedNodeId: NodeId;
   /** Teleport probability. Must be in (0, 1]. */
   alpha: number;
-  /** A node is pushed once its residual mass (per unit out-degree, or total for a dangling node) exceeds this. */
+  /**
+   * A node is pushed once its residual mass per *typical edge* of out-degree (or its total residual, for a
+   * dangling node) exceeds this. Degree is measured in units of this graph's own mean edge weight, so epsilon
+   * means the same thing whatever scale the caller's weights happen to carry.
+   */
   epsilon: number;
   maxPushes?: number;
 }
@@ -65,6 +69,9 @@ export function localPushPersonalizedPageRank(input: LocalPushInput): LocalPushR
   }
   const outDegree = new Map<string, number>();
   for (const [from, edges] of outEdges) outDegree.set(from, edges.reduce((sum, edge) => sum + edge.weight, 0));
+  // Degree is a SUM of weights, so its natural unit is the mean weight: dividing by it expresses out-degree as a
+  // number of typical edges, which is exactly ACL's unweighted degree when every edge carries the same weight.
+  const degreeUnit = meanEdgeWeight(input.graph.edges);
 
   const pi = new Map<string, number>();
   const residual = new Map<string, number>([[String(input.seedNodeId), 1]]);
@@ -73,7 +80,7 @@ export function localPushPersonalizedPageRank(input: LocalPushInput): LocalPushR
   let pushes = 0;
   let converged = false;
   while (pushes < maxPushes) {
-    const candidate = mostPushableNode(residual, outDegree, input.epsilon);
+    const candidate = mostPushableNode(residual, outDegree, input.epsilon, degreeUnit);
     if (!candidate) { converged = true; break; }
     push(candidate, String(input.seedNodeId), input.alpha, outEdges, outDegree, pi, residual);
     pushes += 1;
@@ -82,16 +89,18 @@ export function localPushPersonalizedPageRank(input: LocalPushInput): LocalPushR
   return { pi, residual, pushes, converged };
 }
 
+/** The unit out-degree is carried in, so the push criterion cannot move when every weight is rescaled together. */
 function mostPushableNode(
   residual: ReadonlyMap<string, number>,
   outDegree: ReadonlyMap<string, number>,
-  epsilon: number
+  epsilon: number,
+  degreeUnit: number
 ): string | undefined {
   let best: string | undefined;
   let bestScore = epsilon;
   for (const [nodeId, mass] of residual) {
     if (mass <= 0) continue;
-    const degree = outDegree.get(nodeId) ?? 0;
+    const degree = (outDegree.get(nodeId) ?? 0) / degreeUnit;
     // A dangling node's whole residual is "pushable" mass (there is no
     // out-degree to normalize by); compare it directly against epsilon
     // rather than dividing by zero.
@@ -99,6 +108,15 @@ function mostPushableNode(
     if (score > bestScore) { best = nodeId; bestScore = score; }
   }
   return best;
+}
+
+/** Empty and degenerate graphs fall back to 1, which is the identity this normalization had before any weights existed. */
+function meanEdgeWeight(edges: readonly LocalPushEdge[]): number {
+  if (!edges.length) return 1;
+  let total = 0;
+  for (const edge of edges) total += edge.weight;
+  const mean = total / edges.length;
+  return Number.isFinite(mean) && mean > 0 ? mean : 1;
 }
 
 function push(

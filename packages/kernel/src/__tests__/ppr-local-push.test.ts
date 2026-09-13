@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { localPushPersonalizedPageRank, type LocalPushEdge, type LocalPushGraph } from "../ppr-local-push.js";
+import { expandAdmissibleCommunity } from "../admissible-community-expansion.js";
 import type { NodeId } from "../types.js";
 
 /**
@@ -155,5 +156,88 @@ describe("local push is a genuinely distinct algorithm/residual notion from ppf.
     // The local-push result type has no `residualL1` field at all -- there
     // is no shared vocabulary to accidentally conflate.
     expect(Object.keys(result)).toEqual(["pi", "residual", "pushes", "converged"]);
+  });
+});
+
+/**
+ * Class B: an absolute constant compared against a learned quantity. `epsilon` is compared against
+ * `residual / out-degree`, and out-degree is a sum of caller-supplied edge weights. Those weights are
+ * `graph_edges.alpha` at the production call site (production-turn-runtime's subject-community walk), a learned
+ * column -- so before the degree was expressed in units of the graph's own mean edge weight, multiplying every
+ * weight by a constant moved the stopping point of the walk with no error and no declaration.
+ *
+ * Measured at the time this was written: on a 400-node slice, the same graph rescaled from x100 to x0.002 went
+ * from 19 pushes reaching 15 nodes to 10,414 pushes reaching 400, at one fixed epsilon of 1e-4. Smaller weights
+ * grow the community and the cost; larger weights shrink it.
+ */
+describe("the push criterion is invariant to a uniform rescale of edge weight", () => {
+  const scaleGraph = (graph: LocalPushGraph, scale: number): LocalPushGraph => ({
+    nodes: graph.nodes,
+    edges: graph.edges.map(edge => ({ ...edge, weight: edge.weight * scale }))
+  });
+
+  // Weights drawn across the live `graph_edges.alpha` range (min 0.066, max 1.0, mean 0.509), so the mean edge
+  // weight is not 1 and the normalization is genuinely exercised rather than vacuously the identity. Both edge
+  // directions are added because the production call site mirrors every edge.
+  const learnedWeightGraph = (nodeCount: number, edgeCount: number): LocalPushGraph => {
+    let state = 20260913 >>> 0;
+    const random = () => ((state = (state * 1664525 + 1013904223) >>> 0) / 4294967296);
+    const nodes = Array.from({ length: nodeCount }, (_, i) => `n${i}`) as NodeId[];
+    const edges: LocalPushEdge[] = [];
+    for (let k = 0; k < edgeCount; k += 1) {
+      const from = Math.floor(random() * nodes.length);
+      const to = (from + 1 + Math.floor(random() * (nodes.length - 1))) % nodes.length;
+      const weight = 0.066 + random() * 0.934;
+      edges.push({ from: nodes[from]!, to: nodes[to]!, weight });
+      edges.push({ from: nodes[to]!, to: nodes[from]!, weight });
+    }
+    return { nodes, edges };
+  };
+
+  it.each([
+    ["a five-node cycle", CHAIN_GRAPH, "a" as NodeId],
+    ["a directed graph with unequal weights and a dangling node", DANGLING_GRAPH, "a" as NodeId],
+    ["a slice whose weights are drawn like the learned graph_edges.alpha column", learnedWeightGraph(16, 32), "n0" as NodeId]
+  ])("%s: the same walk, the same pushes and the same mass whatever scale the weights carry", (_label, graph, seed) => {
+    const alpha = 0.15;
+    const epsilon = 1e-4;
+    const base = localPushPersonalizedPageRank({ graph, seedNodeId: seed, alpha, epsilon });
+
+    for (const scale of [1e-3, 0.02, 0.5, 7, 500]) {
+      const rescaled = localPushPersonalizedPageRank({ graph: scaleGraph(graph, scale), seedNodeId: seed, alpha, epsilon });
+      expect(rescaled.pushes).toBe(base.pushes);
+      expect(rescaled.converged).toBe(base.converged);
+      expect([...rescaled.pi.keys()].sort()).toEqual([...base.pi.keys()].sort());
+      for (const [nodeId, mass] of base.pi) expect(rescaled.pi.get(nodeId)).toBeCloseTo(mass, 12);
+    }
+  });
+
+  it("a uniform-weight graph reduces exactly to the unweighted degree count the ACL criterion is defined on", () => {
+    const unweighted = localPushPersonalizedPageRank({ graph: CHAIN_GRAPH, seedNodeId: "a" as NodeId, alpha: 0.15, epsilon: 1e-4 });
+    const uniformlyWeighted = localPushPersonalizedPageRank({ graph: scaleGraph(CHAIN_GRAPH, 0.509), seedNodeId: "a" as NodeId, alpha: 0.15, epsilon: 1e-4 });
+    expect(uniformlyWeighted.pushes).toBe(unweighted.pushes);
+    expect([...uniformlyWeighted.pi.entries()]).toEqual([...unweighted.pi.entries()]);
+  });
+
+  /**
+   * The membership consequence, at the slice size where it bites. At the corpus's current live slice -- 16 nodes,
+   * 32 edges, measured over 290 turns -- the walk reaches every reachable node at every scale, so epsilon decides
+   * nothing there and this defect is latent. It stops being latent as the slice grows: unfixed, this same graph at
+   * 400 nodes admits 15 nodes at x100 and 64 at x1, from nothing but a rescale.
+   */
+  it("the subject community a rescaled slice admits is the same set of nodes", () => {
+    const graph = learnedWeightGraph(400, 600);
+    const expand = (scale: number) => expandAdmissibleCommunity({
+      graph: scaleGraph(graph, scale),
+      seedNodeId: "n0",
+      // The production subject-community walk's own parameters.
+      alpha: 0.15,
+      epsilon: 1e-4,
+      maxCommunitySize: 64
+    }).includedNodeIds.slice().sort();
+    const reference = expand(1);
+    expect(reference.length).toBeGreaterThan(1);
+    expect(expand(0.002)).toEqual(reference);
+    expect(expand(100)).toEqual(reference);
   });
 });
