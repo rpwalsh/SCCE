@@ -203,7 +203,86 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Weight of surface mass in the final creative candidate score. judge.ts scoreCreativeCandidate. */
   "judge.creative_total_mass_weight": 0.16,
   /** Weight of the validation-graph score in the final creative candidate score. judge.ts scoreCreativeCandidate. */
-  "judge.creative_total_validation_weight": 0.12
+  "judge.creative_total_validation_weight": 0.12,
+
+  // --- graph-edge-quality.ts: whether an extracted subject/predicate/object edge is fit to answer from
+  // Entity-centrality support: a normalized pair, must continue to sum to 1. scoreGraphEdgeQuality.
+  /** Share of entity-centrality support taken from the subject endpoint. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.centrality_subject_weight": 0.55,
+  /** Share of entity-centrality support taken from the object endpoint. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.centrality_object_weight": 0.45,
+
+  // Endpoint compactness: a normalized pair, must continue to sum to 1. endpointQuality.
+  /** Weight of symbol-count compactness in an endpoint's compactness. graph-edge-quality.ts endpointQuality. */
+  "graph_edge_quality.endpoint_compactness_symbol_weight": 0.58,
+  /** Weight of character-count compactness in an endpoint's compactness. graph-edge-quality.ts endpointQuality. */
+  "graph_edge_quality.endpoint_compactness_char_weight": 0.42,
+
+  // Endpoint quality: the three positive terms are a normalized set summing to 1; the fragment term is subtracted.
+  /** Weight of compactness in an endpoint's quality. graph-edge-quality.ts endpointQuality. */
+  "graph_edge_quality.endpoint_quality_compactness_weight": 0.5,
+  /** Weight of label cleanliness in an endpoint's quality. graph-edge-quality.ts endpointQuality. */
+  "graph_edge_quality.endpoint_quality_cleanliness_weight": 0.35,
+  /** Weight of centrality in an endpoint's quality. graph-edge-quality.ts endpointQuality. */
+  "graph_edge_quality.endpoint_quality_centrality_weight": 0.15,
+  /** How much a fragmentary endpoint is subtracted from its quality. graph-edge-quality.ts endpointQuality. */
+  "graph_edge_quality.endpoint_quality_fragment_penalty": 0.42,
+
+  // Endpoint centrality: a normalized pair, must continue to sum to 1. endpointCentrality.
+  /** Weight of the symbol-count band in endpoint centrality. graph-edge-quality.ts endpointCentrality. */
+  "graph_edge_quality.endpoint_centrality_band_weight": 0.6,
+  /** Weight of label cleanliness in endpoint centrality. graph-edge-quality.ts endpointCentrality. */
+  "graph_edge_quality.endpoint_centrality_cleanliness_weight": 0.4,
+
+  // Reason flags and class assignment. Each decides how an edge is labelled, and the label caps its quality.
+  /** Subject specificity below which the edge is flagged low-information. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.low_information_subject_ceiling": 0.42,
+  /** Object specificity below which the edge is flagged low-information. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.low_information_object_ceiling": 0.32,
+  /** Function-like predicate score at or above which the predicate is flagged as code, not relation. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.function_predicate_floor": 0.72,
+  /** Endpoint fragment score at or above which that endpoint is flagged fragmentary. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.endpoint_fragment_floor": 0.48,
+  /** Markup density at or above which the edge is flagged, and classed, markup-dense. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.markup_dense_floor": 0.16,
+  /** Category-navigation score at or above which the edge is catalog navigation, not fact. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.navigation_shape_floor": 0.55,
+  /** Alias score at or above which the edge is a redirect alias, not fact. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.alias_shape_floor": 0.55,
+  /** Title-hint score at or above which the edge restates its own source title. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.title_hint_shape_floor": 0.55,
+  /** Relation usefulness at or above which the edge is flagged as carrying real semantic shape. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.semantic_shape_relation_usefulness_floor": 0.62,
+  /** Fragment score below which that semantic-shape flag is still allowed. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.semantic_shape_fragment_ceiling": 0.36,
+  /** Label cleanliness below which the edge is classed markup-noise regardless of markup density. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.noisy_markup_cleanliness_ceiling": 0.36,
+  /** Fragment score at or above which, with a weak predicate, the edge is classed markup-noise. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.noisy_markup_fragment_floor": 0.72,
+  /** Predicate quality below which that fragmentary edge is classed markup-noise. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.noisy_markup_predicate_quality_ceiling": 0.12,
+  /** Fragment score at or above which an otherwise unclassed edge is a weak fragment. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.weak_fragment_floor": 0.34,
+  /** Predicate quality below which an otherwise unclassed edge is a weak fragment. graph-edge-quality.ts scoreGraphEdgeQuality. */
+  "graph_edge_quality.weak_fragment_predicate_quality_ceiling": 0.42,
+  /** Semantic quality an answer-grade edge must reach, both to qualify and to stay answer-grade. graph-edge-quality.ts answerGradeShape and scoreGraphEdgeQuality. */
+  "graph_edge_quality.answer_grade_semantic_floor": 0.58,
+  /** Predicate quality an answer-grade edge must reach. graph-edge-quality.ts answerGradeShape. */
+  "graph_edge_quality.answer_grade_predicate_quality_floor": 0.33,
+  /** Object quality an answer-grade edge must reach. graph-edge-quality.ts answerGradeShape. */
+  "graph_edge_quality.answer_grade_object_quality_floor": 0.74,
+  /** Subject specificity an answer-grade edge must reach. graph-edge-quality.ts answerGradeShape. */
+  "graph_edge_quality.answer_grade_subject_specificity_floor": 0.42,
+  /** Object specificity an answer-grade edge must reach. graph-edge-quality.ts answerGradeShape. */
+  "graph_edge_quality.answer_grade_object_specificity_floor": 0.32,
+  /** Fragment score an answer-grade edge must stay below. graph-edge-quality.ts answerGradeShape. */
+  "graph_edge_quality.answer_grade_fragment_ceiling": 0.24,
+  /** Fragment score at or above which an endpoint's specificity is docked. graph-edge-quality.ts endpointSpecificity. */
+  "graph_edge_quality.specificity_fragment_penalty_floor": 0.34,
+  /** Object centrality at or above which a short object reads as a classifier in a list, not an answer. graph-edge-quality.ts listShapeScore. */
+  "graph_edge_quality.object_classifier_centrality_floor": 0.54,
+  /** Alphabetic vowel ratio below which a short surface reads as an abbreviation, not a word. graph-edge-quality.ts fragmentScore. */
+  "graph_edge_quality.vowel_thinness_ratio_ceiling": 0.18
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;
