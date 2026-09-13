@@ -1,0 +1,456 @@
+{
+  "schema": "scce.dataset.nonwiki_qa.v1",
+  "description": "Graded questions over the non-Wikipedia corpora: fifteen Project Gutenberg novels and the ingested TypeScript source tree. Every item names the corpus document that answers it and quotes the supporting text, so a disputed verdict is checkable by a person without running anything. Gold never appears in the item's own prompt, so echoing the question cannot score correct.",
+  "corpora": {
+    "gutenberg": "Public-domain novels ingested as evidence spans. Verified present 2026-09-12 by read-only query over sources/source_versions/evidence_spans.",
+    "code": "SCCE's own TypeScript tree ingested as evidence spans: 1424 source files, 5231 spans."
+  },
+  "kinds": [
+    "identity: who or what a named participant is",
+    "event: what happens at a named point",
+    "narrative-relation: a relation that holds between participants inside the text",
+    "module-behavior: what a named function or module does",
+    "dependency: what depends on what"
+  ],
+  "questions": [
+    {
+      "id": "moby-narrator",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "Who narrates Moby-Dick?",
+      "requiredStrings": ["Ishmael"],
+      "acceptedAnswers": ["Ishmael"],
+      "support": {
+        "document": "corpus/gutenberg/moby-dick.txt",
+        "quote": "CHAPTER 1. Loomings. Call me Ishmael."
+      }
+    },
+    {
+      "id": "moby-captain",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "Who is the captain of the Pequod in Moby-Dick?",
+      "requiredStrings": ["Ahab"],
+      "acceptedAnswers": ["Ahab"],
+      "support": {
+        "document": "corpus/gutenberg/moby-dick.txt",
+        "quote": "“Who is Captain Ahab, sir?” “Aye, aye, I thought so. Captain Ahab is the Captain of this ship.”"
+      }
+    },
+    {
+      "id": "moby-ship",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "What is the name of the ship in Moby-Dick?",
+      "requiredStrings": ["Pequod"],
+      "acceptedAnswers": ["Pequod"],
+      "support": {
+        "document": "corpus/gutenberg/moby-dick.txt",
+        "quote": "“You mean the ship Pequod, I suppose,” said I ... “Aye, the Pequod—that ship there,” he said"
+      }
+    },
+    {
+      "id": "darcy",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "Who is the gentleman of Pemberley in Pride and Prejudice?",
+      "requiredStrings": ["Darcy"],
+      "acceptedAnswers": ["Darcy"],
+      "forbiddenStrings": ["band", "album", "rock"],
+      "support": {
+        "document": "corpus/gutenberg/pride-and-prejudice.txt",
+        "quote": "Not to appear to disgrace his family ... or lose the influence of the Pemberley House, is a powerful motive."
+      },
+      "note": "Prompt reworded from \"Who is Mr Darcy?\": the old prompt contained the gold, so an answer that echoed the question scored correct."
+    },
+    {
+      "id": "harker",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "Where does Jonathan Harker travel to in Dracula?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["Transylvania", "Castle Dracula", "Bistritz"],
+      "support": {
+        "document": "corpus/gutenberg/dracula.txt",
+        "quote": "JONATHAN HARKER’S JOURNAL ... 3 May. Bistritz.--Left Munich at 8:35 P. M., on 1st May"
+      }
+    },
+    {
+      "id": "frankenstein",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "Who created the creature in Frankenstein?",
+      "requiredStrings": ["Victor"],
+      "acceptedAnswers": ["Victor"],
+      "support": {
+        "document": "corpus/gutenberg/frankenstein.txt",
+        "quote": "my mother had said playfully, “I have a pretty present for my Victor—tomorrow he shall have it.”"
+      },
+      "note": "\"Frankenstein\" removed from the gold: it is in the prompt, so an echo of the question scored correct."
+    },
+    {
+      "id": "watson",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "Who is Sherlock Holmes's companion?",
+      "requiredStrings": ["Watson"],
+      "acceptedAnswers": ["Watson"],
+      "support": {
+        "document": "corpus/gutenberg/sherlock-holmes.txt",
+        "quote": "I ask you not merely because my friend Dr. Watson has not heard the opening part"
+      }
+    },
+    {
+      "id": "dorian-painter",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "Who painted the portrait of Dorian Gray?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["Hallward", "Basil"],
+      "support": {
+        "document": "corpus/gutenberg/the-picture-of-dorian-gray.txt",
+        "quote": "in front of it, some little distance away, was sitting the artist himself, Basil Hallward"
+      }
+    },
+    {
+      "id": "thornfield",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "Where does Jane Eyre work as a governess?",
+      "requiredStrings": ["Thornfield"],
+      "acceptedAnswers": ["Thornfield"],
+      "support": {
+        "document": "corpus/gutenberg/jane-eyre.txt",
+        "quote": "send references, name, address, and all particulars to the direction:— “Mrs. Fairfax, Thornfield, near Millcote, ——shire.”"
+      }
+    },
+    {
+      "id": "hispaniola",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "What is the name of the ship in Treasure Island?",
+      "requiredStrings": ["Hispaniola"],
+      "acceptedAnswers": ["Hispaniola"],
+      "support": {
+        "document": "corpus/gutenberg/treasure-island.txt",
+        "quote": "You never imagined a sweeter schooner--a child might sail her--two hundred tons; name, HISPANIOLA."
+      }
+    },
+    {
+      "id": "toto",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "What is the name of Dorothy's dog in The Wonderful Wizard of Oz?",
+      "requiredStrings": ["Toto"],
+      "acceptedAnswers": ["Toto"],
+      "support": {
+        "document": "corpus/gutenberg/the-wonderful-wizard-of-oz.txt",
+        "quote": "Toto was not gray; he was a little black dog, with long silky hair and small black eyes"
+      }
+    },
+    {
+      "id": "kansas",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "Where does Dorothy live in The Wonderful Wizard of Oz?",
+      "requiredStrings": ["Kansas"],
+      "acceptedAnswers": ["Kansas"],
+      "support": {
+        "document": "corpus/gutenberg/the-wonderful-wizard-of-oz.txt",
+        "quote": "Dorothy lived in the midst of the great Kansas prairies, with Uncle Henry, who was a farmer, and Aunt Em"
+      }
+    },
+
+    {
+      "id": "holmes-the-woman",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "In A Scandal in Bohemia, whom does Sherlock Holmes always call \"the woman\"?",
+      "requiredStrings": ["Irene Adler"],
+      "acceptedAnswers": ["Irene Adler", "Irene"],
+      "support": {
+        "document": "corpus/gutenberg/sherlock-holmes.txt",
+        "quote": "I. A SCANDAL IN BOHEMIA I. To Sherlock Holmes she is always _the_ woman. ... It was not that he felt any emotion akin to love for Irene Adler."
+      }
+    },
+    {
+      "id": "heart-kurtz",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "Whom does Marlow travel up the river to find in Heart of Darkness?",
+      "requiredStrings": ["Kurtz"],
+      "acceptedAnswers": ["Kurtz"],
+      "support": {
+        "document": "corpus/gutenberg/heart-of-darkness.txt",
+        "quote": "‘In the interior you will no doubt meet Mr. Kurtz.’ On my asking who Mr. Kurtz was, he said he was a first-class agent"
+      }
+    },
+    {
+      "id": "treasure-cook",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "Who is the one-legged ship's cook in Treasure Island?",
+      "requiredStrings": ["Silver"],
+      "acceptedAnswers": ["Long John Silver", "Silver"],
+      "support": {
+        "document": "corpus/gutenberg/treasure-island.txt",
+        "quote": "out of pure pity, I engaged him on the spot to be ship’s cook. Long John Silver, he is called, and has lost a leg"
+      }
+    },
+    {
+      "id": "jane-master",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "Who is the master of Thornfield Hall in Jane Eyre?",
+      "requiredStrings": ["Rochester"],
+      "acceptedAnswers": ["Rochester"],
+      "support": {
+        "document": "corpus/gutenberg/jane-eyre.txt",
+        "quote": "it is a pretty place; but I fear it will be getting out of order, unless Mr. Rochester should take it into his head to come and reside here permanently"
+      }
+    },
+    {
+      "id": "wotw-martians-die",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "What kills the Martian invaders in The War of the Worlds?",
+      "requiredStrings": ["bacteria"],
+      "acceptedAnswers": ["bacteria", "disease bacteria", "germs"],
+      "support": {
+        "document": "corpus/gutenberg/the-war-of-the-worlds.txt",
+        "quote": "a dozen of them stark and silent and laid in a row, were the Martians—_dead!_—slain by the putrefactive and disease bacteria against which their systems were unprepared"
+      }
+    },
+    {
+      "id": "littlewomen-beth",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "Which of the March sisters dies in Little Women?",
+      "requiredStrings": ["Beth"],
+      "acceptedAnswers": ["Beth"],
+      "support": {
+        "document": "corpus/gutenberg/little-women.txt",
+        "quote": "As Beth had hoped, the ‘tide went out easily’, and in the dark hour before dawn, on the bosom where she had drawn her first breath, she quietly drew her last"
+      }
+    },
+    {
+      "id": "alice-rabbit",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "What does Alice follow at the start of Alice's Adventures in Wonderland?",
+      "requiredStrings": ["Rabbit"],
+      "acceptedAnswers": ["White Rabbit", "Rabbit"],
+      "support": {
+        "document": "corpus/gutenberg/alice-in-wonderland.txt",
+        "quote": "when suddenly a White Rabbit with pink eyes ran close by her."
+      }
+    },
+    {
+      "id": "frankenstein-november",
+      "corpus": "gutenberg",
+      "kind": "event",
+      "prompt": "In Frankenstein, in what month does the creature first come to life?",
+      "requiredStrings": ["November"],
+      "acceptedAnswers": ["November"],
+      "support": {
+        "document": "corpus/gutenberg/frankenstein.txt",
+        "quote": "Chapter 5 It was on a dreary night of November that I beheld the accomplishment of my toils. ... I collected the instruments of life around me"
+      }
+    },
+    {
+      "id": "pp-elizabeth-marries",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "Whom does Elizabeth Bennet marry in Pride and Prejudice?",
+      "requiredStrings": ["Darcy"],
+      "acceptedAnswers": ["Darcy"],
+      "support": {
+        "document": "corpus/gutenberg/pride-and-prejudice.txt",
+        "quote": "the day on which Mrs. Bennet got rid of her two most deserving daughters. With what delighted pride she afterwards visited Mrs. Bingley, and talked of Mrs. Darcy"
+      }
+    },
+    {
+      "id": "dracula-vanhelsing",
+      "corpus": "gutenberg",
+      "kind": "identity",
+      "prompt": "Which doctor does Dr. Seward call in to help with Lucy's illness in Dracula?",
+      "requiredStrings": ["Van Helsing"],
+      "acceptedAnswers": ["Van Helsing", "Abraham Van Helsing"],
+      "support": {
+        "document": "corpus/gutenberg/dracula.txt",
+        "quote": "_Letter, Abraham Van Helsing, M. D., D. Ph., D. Lit., etc., etc., to Dr. Seward._ “_2 September._ “My good Friend,-- “When I have received your letter I am already coming to you.”"
+      }
+    },
+    {
+      "id": "timemachine-races",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "What are the two peoples the Time Traveller finds in the future?",
+      "requiredStrings": ["Eloi", "Morlocks"],
+      "acceptedAnswers": ["Eloi and Morlocks"],
+      "support": {
+        "document": "corpus/gutenberg/the-time-machine.txt",
+        "quote": "I could imagine that the modification of the human type was even far more profound than among the ‘Eloi,’ the beautiful race that I already knew. ... Why had the Morlocks taken my Time Machine?"
+      },
+      "note": "Both names are required, so naming one of the two races does not score correct."
+    },
+    {
+      "id": "tale-carton-resemblance",
+      "corpus": "gutenberg",
+      "kind": "narrative-relation",
+      "prompt": "Whom does Sydney Carton closely resemble in A Tale of Two Cities?",
+      "requiredStrings": ["Darnay"],
+      "acceptedAnswers": ["Charles Darnay", "Darnay"],
+      "support": {
+        "document": "corpus/gutenberg/a-tale-of-two-cities.txt",
+        "quote": "Jerry heard no more: but left them--so like each other in feature, so unlike each other in manner--standing side by side, both reflected in the glass above them."
+      }
+    },
+
+    {
+      "id": "best-evidence-sentences",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which file defines bestEvidenceSentences?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["local evidence runtime", "local-evidence-runtime"],
+      "support": {
+        "document": "packages/kernel/src/local-evidence-runtime.ts",
+        "quote": "function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, closedClassWords?: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>): string[]"
+      }
+    },
+    {
+      "id": "code-request-signal",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which file defines codeRequestSignal?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["code request", "code-request"],
+      "support": {
+        "document": "packages/kernel/src/code-request.ts",
+        "quote": "export function codeRequestSignal(requestText: string): CodeRequestSignal"
+      }
+    },
+    {
+      "id": "closed-class",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which file defines deriveClosedClassWords?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["closed class words", "closed-class-words"],
+      "support": {
+        "document": "packages/kernel/src/closed-class-words.ts",
+        "quote": "export function deriveClosedClassWords(input: { models?: readonly KneserNeyModel[]; ... })"
+      }
+    },
+    {
+      "id": "replan",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which file defines the replan function?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["task replanning", "task-replanning"],
+      "support": {
+        "document": "packages/kernel/src/task-replanning.ts",
+        "quote": "export function replan(graph: TaskDecompositionGraph, observation: ReplanObservation): ReplanResult"
+      }
+    },
+    {
+      "id": "task-snapshot",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which file defines syncTaskResumptionSnapshotForTurn?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["task resumption turn request", "task-resumption-turn-request"],
+      "support": {
+        "document": "packages/kernel/src/task-resumption-turn-request.ts",
+        "quote": "export async function syncTaskResumptionSnapshotForTurn("
+      }
+    },
+    {
+      "id": "program-planner",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which file defines createProgramPlanner?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["program planner", "program-planner"],
+      "support": {
+        "document": "packages/kernel/src/program-planner.ts",
+        "quote": "export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Hasher })"
+      }
+    },
+
+    {
+      "id": "replan-builds-on",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which module does task-replanning.ts build its replanning on?",
+      "requiredStrings": ["hierarchical-task-decomposition"],
+      "acceptedAnswers": ["hierarchical-task-decomposition"],
+      "support": {
+        "document": "packages/kernel/src/task-replanning.ts",
+        "quote": "Replanning after a meaningful observation, built directly on `hierarchical-task-decomposition.ts`'s real typed DAG (items 158-159) rather than a separate plan representation"
+      }
+    },
+    {
+      "id": "program-planner-code-learning",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which module does program-planner.ts import createCodeLearningEngine from?",
+      "requiredStrings": ["code-learning"],
+      "acceptedAnswers": ["code-learning"],
+      "support": {
+        "document": "packages/kernel/src/program-planner.ts",
+        "quote": "import { createCodeLearningEngine, type CodeImplementationBlueprint, type CodeKnowledgeGraph } from \"./code-learning.js\";"
+      }
+    },
+    {
+      "id": "resumption-snapshot-dependency",
+      "corpus": "code",
+      "kind": "dependency",
+      "prompt": "Which module does task-resumption-turn-request.ts import captureTaskResumptionSnapshot from?",
+      "requiredStrings": ["task-resumption-snapshot"],
+      "acceptedAnswers": ["task-resumption-snapshot"],
+      "support": {
+        "document": "packages/kernel/src/task-resumption-turn-request.ts",
+        "quote": "import { captureTaskResumptionSnapshot, snapshotContentHashMatchesId, TASK_RESUMPTION_SNAPSHOT_SCHEMA } from \"./task-resumption-snapshot.js\";"
+      }
+    },
+    {
+      "id": "closed-class-derived-from",
+      "corpus": "code",
+      "kind": "module-behavior",
+      "prompt": "What does deriveClosedClassWords derive its word set from?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["Kneser", "unigram", "hardcoded list", "active language"],
+      "support": {
+        "document": "packages/kernel/src/closed-class-words.ts",
+        "quote": "Closed-class words (function words, connectives) derived from the active language's evidence, never from a hardcoded list: the most frequent unigrams of the resident Kneser-Ney models plus single-token literal slots of learned constructions."
+      }
+    },
+    {
+      "id": "code-request-short-aliases",
+      "corpus": "code",
+      "kind": "module-behavior",
+      "prompt": "In code-request.ts, why are short language aliases like \"go\" and \"js\" not counted on sight?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["ordinary words in prose", "ordinary words", "corroborate"],
+      "support": {
+        "document": "packages/kernel/src/code-request.ts",
+        "quote": "Distinctive names identify a language on sight; short aliases (\"go\", \"c\", \"js\") are ordinary words in prose and only count once other code structure corroborates them."
+      }
+    },
+    {
+      "id": "replan-reuses",
+      "corpus": "code",
+      "kind": "module-behavior",
+      "prompt": "What does replan reuse instead of redoing it?",
+      "requiredStrings": [],
+      "acceptedAnswers": ["completed node", "completed work"],
+      "support": {
+        "document": "packages/kernel/src/task-replanning.ts",
+        "quote": "Reuses every completed node whose own preconditions and claimed postconditions are *not* touched by the observation -- real completed work is never redone just because something unrelated changed."
+      }
+    }
+  ]
+}
