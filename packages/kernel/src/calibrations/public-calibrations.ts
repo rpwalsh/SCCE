@@ -391,7 +391,53 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Safety-bearing: support a claim needs to be called inferred rather than conjectured. proof-calculus.ts forceFrom. */
   "calculus.force_inferred_support_floor": 0.34,
   /** Safety-bearing: support a claim needs to be called conjectured rather than invented. proof-calculus.ts forceFrom. */
-  "calculus.force_conjectured_support_floor": 0.12
+  "calculus.force_conjectured_support_floor": 0.12,
+  // --- translation (translation.ts). Frame alignment preservation, target selection and translation force.
+  // The seven preservation weights are one normalized set and must continue to sum to 1.
+  /** Share of semantic agreement in how much meaning a frame alignment preserves. translation.ts alignFrames. */
+  "translation.preservation_semantic_weight": 0.26,
+  /** Share of role-topology agreement in alignment preservation. translation.ts alignFrames. */
+  "translation.preservation_topology_weight": 0.22,
+  /** Share of script fit to the target language profile in alignment preservation. translation.ts alignFrames. */
+  "translation.preservation_script_fit_weight": 0.19,
+  /** Share of target evidence mass in alignment preservation. translation.ts alignFrames. */
+  "translation.preservation_evidence_mass_weight": 0.11,
+  /** Share of the learned alignment prior in alignment preservation. translation.ts alignFrames. */
+  "translation.preservation_prior_boost_weight": 0.06,
+  /** Share of confident seed overlap in alignment preservation. translation.ts alignFrames. */
+  "translation.preservation_seed_overlap_weight": 0.1,
+  /** Share of multi-symbol construction overlap in alignment preservation. translation.ts alignFrames. */
+  "translation.preservation_construction_overlap_weight": 0.06,
+  // Script mass and profile feature overlap are one normalized pair and must continue to sum to 1.
+  /** Share of script mass in how well a frame fits a language profile. translation.ts scriptFitScore. */
+  "translation.script_fit_mass_weight": 0.45,
+  /** Share of profile n-gram and shape overlap in frame-to-profile fit. translation.ts scriptFitScore. */
+  "translation.script_fit_profile_overlap_weight": 0.55,
+  /** Margin the leading target cluster must hold over the runner-up before a translation target is chosen at all; below it the frame is left unaligned. translation.ts selectTargetCluster. */
+  "translation.cluster_margin_floor": 0.12,
+  // The force ladders below are safety-bearing: a translation reported as direct is presented as carrying the
+  // source meaning, while gloss and unknown mark a rendering the turn must not assert.
+  /** Safety-bearing: preservation a single alignment needs, with evidence behind it, to be called direct. translation.ts forceFromPreservation. */
+  "translation.direct_preservation_floor": 0.74,
+  /** Safety-bearing: preservation an alignment needs to be called approximate rather than a gloss. translation.ts forceFromPreservation. */
+  "translation.approximate_preservation_floor": 0.48,
+  /** Preservation below which an alignment's force is unknown rather than a gloss. translation.ts forceFromPreservation. */
+  "translation.gloss_preservation_floor": 0.16,
+  /** Safety-bearing: fraction of alignments that must themselves be direct for the whole translation to be called direct. translation.ts aggregateForce. */
+  "translation.aggregate_direct_share_floor": 0.7,
+  /** Safety-bearing: mean preservation the whole translation needs to be called direct. translation.ts aggregateForce. */
+  "translation.aggregate_direct_preservation_floor": 0.72,
+  /** Safety-bearing: mean preservation the whole translation needs to be called approximate. translation.ts aggregateForce. */
+  "translation.aggregate_approximate_preservation_floor": 0.46,
+  /** Mean preservation below which the whole translation's force is unknown rather than a gloss. translation.ts aggregateForce. */
+  "translation.aggregate_gloss_preservation_floor": 0.12,
+  /** Preservation below which an alignment's source symbols are reported as uncertain terms. translation.ts translationTurnReport. */
+  "translation.uncertain_term_preservation_floor": 0.48,
+  // Emission preservation and low objective energy are one normalized pair and must continue to sum to 1.
+  /** Share of emission preservation in the reported semantic preservation score. translation.ts translationTurnReport. */
+  "translation.semantic_score_preservation_weight": 0.55,
+  /** Share of low objective energy in the reported semantic preservation score. translation.ts translationTurnReport. */
+  "translation.semantic_score_energy_weight": 0.45
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;
