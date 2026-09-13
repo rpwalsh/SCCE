@@ -4359,6 +4359,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // is not, and on a book those are exactly the sentences the extractive summary ranks highest.
         const identityBound = selectedEvidence.filter(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords())
           && !spanIsSourceFrontMatter(span));
+        // A lane that goes quiet because its whole input was front matter must say so, not look like one that had
+        // no identity-bound evidence at all.
+        const frontMatterOnly = !identityBound.length
+          && selectedEvidence.some(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords()) && spanIsSourceFrontMatter(span));
+        if (frontMatterOnly) {
+          kernelTrace({
+            stage: "mouth.source_summary_fallback.withheld",
+            label: "kernel.turn",
+            counts: { identityBound: 0, selected: selectedEvidence.length },
+            support: { selectedCandidateId: judged.selected.id, reason: "every-identity-bound-span-is-the-source's-front-matter" }
+          });
+        }
         const excerpt = identityBound.length
           ? summarizeAdmittedSource({
             spans: identityBound.map(span => ({
