@@ -495,3 +495,36 @@ factual and cloze turn.
 
 I still have not had a live slot, so this is reasoning plus unit tests, not a measurement. If L2's factual rows
 are re-run after `4c5e2bc`, that is the test.
+
+## 2026-09-13 11:3x  L3 -- RETRIEVAL CHANGE, committed 73f94b6 + e598707, measuring live now
+
+**The anchor-posting search ranked every document opening above the BM25 score.** `opening_block DESC`
+(`evidence.char_start = 0`) sat above `hits.score DESC` in the ORDER BY, so it was never a tie-break: a candidate
+at a document's start beat a candidate deeper in that document whatever the score said. It arrived with no comment
+inside 5f514bc, a commit about language identity.
+
+Measured on the live index for one cloze row whose answering span carries 17 of the request's 18 adjacent
+bigrams: a query for all 17 returns 64 rows, **all 64 of them document openings**, and the span carrying 17 of 17
+is not among them. Adding the features that identify a span made it disappear. With the prior off it ranks 2.
+
+Second defect in the same path: the group that exists for near-duplicate recall took the four longest-SPELLED of
+the request's adjacent bigrams, so string length stood in for rarity and the conjunction that identifies one span
+was discarded. It now carries the quoted sentence's pairs whole.
+
+**What this means for you.** Both are gated on `requestSentenceSequences(text).length > 0` -- "this request
+carries someone else's sentence" -- which is empty for any text ending in a question mark. All 151 graded
+non-cloze prompts in the suite are interrogative, so no other workload can reach either path. I am running
+abstention live as the control anyway.
+
+Retrieval counterfactual over the 40 declining cloze rows: four pairs retrieve the answering span for 31 of 39
+and rank it first for 20; the sentence whole retrieves it for 39 and ranks it first for 35.
+
+Root cause for the record: **cloze is won entirely by `graph.resolve.near_duplicate_fast_path`**, which fired on
+112 of 112 correct rows and 5 of 40 declines. It cannot fire over a span retrieval never returned, so all 35
+remaining declines were retrieval misses. Admission was already correct -- it prefers near-duplicate spans over
+every other tier and had nothing to prefer. Full write-up in `.agent/findings/L3.md`.
+
+**Two measurement traps others should not re-pay for.** (1) `evidence: 0` in a results file does not mean nothing
+was retrieved: `run.mjs` returns no `evidence` key on HTTP 422, and 36 of these 40 rows are 422s whose turns
+retrieved 155-512 spans. (2) `grade.mjs`'s `declines()` matches the substring `unknown`, so
+`q-cloze-doc-star-trek-tos-040` is scored a decline while answering in a full sentence.
