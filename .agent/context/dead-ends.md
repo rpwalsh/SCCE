@@ -46,3 +46,29 @@ grind/ground scores BELOW false mind/mound — so no bar separates them. Do not 
   `calibration_observations` will ever fit them.
 - `candidate.mass` has 3,321 observations and still loses to a constant on 4/5 splits. Its negatives are all
   `outcome.unknown`, so the learning loop has no real negative signal. Fix the labelling before refitting.
+
+## Morphology part 2: are two surfaces members of one lexical family (T10)
+Required: find/found, bind/bound, grind/ground, wind/wound, discover/discovery, capital/capitals MATCH;
+mind/mound, kind/kound, capita/capital, born/borna, majorian/bajoran REFUSE.
+
+**The decisive measurement. Orthography is exhausted, provably.** The canonical both-ends edit script puts these
+in ONE transformation `* i nd -> * ou nd`, 11 realized members of 120 eligible stems on the full corpus:
+find/found, bind/bound, grind/ground, wind/wound, rewind/rewound, unwind/unwound (true) and
+mind/mound, hind/hound, sind/sound, rind/round, pind/pound (false). Any family-level criterion accepts or rejects
+all eleven together. Do not look for a string-level mechanism that splits them; there isn't one.
+
+**The corpus, not the model, is the first blocker.** At the 48MB hydration budget a turn holds 20,598 types and
+`grind`, `wound`, `kound`, `borna`, `majorian`, `bajoran` are ABSENT. Four diagnostic pairs are undecidable there
+whatever the mechanism. The full corpus is 2,028 models / 317,571 types.
+
+| approach | numbers |
+| --- | --- |
+| family population vs an order-3 character-model null (log Bayes factor, BIC-penalised) | accepts 1,771 of 33,926 induced transformations; `i>ou@nd` gets logBF **-1.60** at 3/12 members resident. Never separates inside a family. |
+| MDL over the eligible population (transformation + membership bitmap at H2(p-hat) + rate) | `0>s@` +42,078 bits, `0>y@` +1,794 bits, `i>ou@nd` +7.3 bits. Family-level by construction, so it cannot decide a member. |
+| pair-only MDL, the "NO FAMILY" ablation | every pair -11 to -23 bits. A one-member transformation never pays for itself. Correct, but no discrimination. |
+| role-conditioned pooled context correspondence (per-lexeme-normalised, leave-one-out, background-Dirichlet) | **fails the shuffled-family ablation**: on the held-out `s>ed@` family the SHUFFLED pool scores higher than the true pool on 6 of 12 members (acts/acted 4.341 vs 5.583, films/filmed 7.085 vs 8.062). It is a pairwise classifier wearing a family wrapper. It also kills discover/discovery, role -0.325. |
+| composing T6's free-form verdict as a hard precondition | kills bind/bound: `bind` is t=5 resident so its verdict is *unknown*. T6 belongs in the product as a likelihood factor, not as a gate. |
+
+Result 6/11, and all five correct refusals are correct for the wrong reason: four absent surfaces and one T6
+boundness. `mind/mound` refuses only because `mound` is t=2 resident; at full corpus t=79 and the accident goes.
+Harness `tools/paradigm-induction-harness.mjs`, full write-up `.agent/findings/T10.md`.
