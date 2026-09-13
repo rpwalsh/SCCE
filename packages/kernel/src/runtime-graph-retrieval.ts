@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import { codeRequestRecognized, codeRequestSignal } from "./code-request.js";
 import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
@@ -1074,14 +1075,28 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // and rank it first for 35. Deliberately not deduplicated against the other groups -- a pair another group
     // already searched alone is still part of what makes this query identify one span.
     if (!requestSentenceSequences(text).length) return { groups, quotedSentence: undefined };
-    // Cost bound, not a modelling choice: how many features one posting query carries.
     const requestBigrams = anchorFeatureSet(text, 256)
       .filter(feature => feature.startsWith("anchor:bi:"))
       .filter(feature => {
         const units = feature.slice("anchor:bi:".length).split("|");
         return units.every(unit => unit.length >= 3 && !genericQuestionSignal(unit));
       });
-    const quoted = contentBearingFeatures(uniqueKernelStrings(requestBigrams), functionUnits);
+    // Rarest pairs first, by the corpus's own unigram counts: a pair occurs only where both its units do, so the
+    // rarer unit bounds how many postings it carries. Searching the whole sentence costs what its commonest pairs
+    // cost -- measured p50 10.7s against 237ms for four pairs, because every selective feature seeds and a common
+    // pair seeds thousands of candidates the score then has to rank. The rare pairs are what identifies the span;
+    // the common ones only pay.
+    const pairRarity = (feature: string) => {
+      const units = feature.slice("anchor:bi:".length).split("|").map(unit => normalizePriorKey(unit));
+      const counts = units.map(unit => corpusCount(unit)).filter(count => count > 0);
+      return counts.length ? Math.min(...counts) : 0;
+    };
+    const quoted = contentBearingFeatures(uniqueKernelStrings(requestBigrams), functionUnits)
+      .map(feature => ({ feature, rarity: pairRarity(feature) }))
+      .sort((left, right) => left.rarity - right.rarity)
+      .map(entry => entry.feature)
+      // Cost bound, not a modelling choice: how many features one posting query seeds on.
+      .slice(0, calibrated("retrieval.quoted_sentence_query_features"));
     if (quoted.length < 2) return { groups, quotedSentence: undefined };
     groups.push(quoted);
     return { groups, quotedSentence: quoted };
