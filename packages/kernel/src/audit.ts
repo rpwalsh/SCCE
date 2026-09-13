@@ -78,9 +78,11 @@ export interface ConstructAuditSummary {
   nodeCount: number;
   edgeCount: number;
   artifactCount: number;
-  programFiles: number;
+  /** Null when this construct emitted no program at all, which is a different record from a program of no files. */
+  programFiles: number | null;
   validationPassed?: boolean;
-  validationWarnings: number;
+  /** Null when validation never ran. Zero would read as "validated, nothing wrong" on an unvalidated construct. */
+  validationWarnings: number | null;
   emissionForce?: string;
 }
 
@@ -194,9 +196,9 @@ export function createAuditEngine() {
         nodeCount: construct.nodes.length,
         edgeCount: construct.edges.length,
         artifactCount: construct.artifacts.length,
-        programFiles: construct.program?.files.length ?? 0,
+        programFiles: construct.program ? construct.program.files.length : null,
         validationPassed: input.validation?.passed,
-        validationWarnings: input.validation?.checks.filter(check => check.status === "warning").length ?? 0,
+        validationWarnings: input.validation ? input.validation.checks.filter(check => check.status === "warning").length : null,
         emissionForce: input.emission?.epistemicForce
       };
     },
