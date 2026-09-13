@@ -1,7 +1,8 @@
 # T9-compute-efficiency
 
-status: open
-claimed_by:
+status: done
+claimed_by: worktree-agent-a1e9e457e198611ca
+findings: .agent/findings/T9.md
 
 G9 — the compute-efficiency proxy was promised as a table and never produced. Every turn trace already records cpuUserMs, cpuSystemMs, peakResidentSetBytes and wallClockMs. Build the table from traces already on disk.
 

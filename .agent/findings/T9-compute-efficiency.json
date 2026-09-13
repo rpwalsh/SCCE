@@ -1,0 +1,5671 @@
+{
+  "schema": "scce.compute_efficiency_proxy.v1",
+  "generatedAt": "2026-09-13T05:06:02.560Z",
+  "framing": "A compute-efficiency proxy. CPU-seconds are not joules; this host exposes no package-energy counter, so there is no joules column rather than an estimated one.",
+  "traceDir": ".scce/traces",
+  "traceWindow": {
+    "from": "2026-09-09T20:49:11.293Z",
+    "to": "2026-09-13T04:25:17.731Z"
+  },
+  "population": {
+    "measuredTurns": 2652,
+    "serverHosted": 2472,
+    "toolHosted": 180,
+    "warmSolo": 2078,
+    "coldSolo": 210,
+    "concurrentExcluded": 184,
+    "warmSoloWithRequestText": 2078,
+    "distinctRequests": 220
+  },
+  "classification": {
+    "cold": "the first turn a process served, or any turn with a language-hydration event inside its own window",
+    "warm": "every other turn",
+    "solo": "no other measured turn of the same process was in flight during this turn's window; turns that fail this are excluded from the CPU column because another turn's work is inside the same process-wide delta",
+    "scope": "server-hosted processes only (the trace file carries a server.start); turns from short-lived tool processes are counted separately and excluded from the headline"
+  },
+  "meaning": {
+    "wallSeconds": "elapsed time of the kernel turn, from a monotonic clock differenced around it. Attributable to the turn.",
+    "cpuSeconds": "every CPU-second the server process burned while the turn ran, user plus system. Process-wide, so it is an UPPER BOUND on the turn's own CPU, not the turn's CPU.",
+    "peakResidentSetBytes": "the larger of the process's resident-set size at turn start and at turn end. A process-level high-water of two samples: not the turn's allocation, not a sampled peak, and dominated by state the server holds between turns.",
+    "gpuSeconds": "0 by construction: SCCE's product code loads no GPU or model runtime. A structural fact from the dependency gate, not a reading from a GPU counter.",
+    "apiTokens": "0 by construction: SCCE calls no model API. Same basis.",
+    "quantization": "this host's process CPU accounting advances in ~15.6 ms steps, so each of user and system carries that much quantization error per turn."
+  },
+  "zeroColumnBasis": "artifacts/no-hidden-model-check.json -- 1029 files scanned for model packages, model endpoints and generation call patterns; violations: none.",
+  "overall": {
+    "warm": {
+      "samples": 2078,
+      "cpuSeconds": {
+        "p50": 6.172,
+        "p95": 20.501,
+        "max": 80.312
+      },
+      "wallSeconds": {
+        "p50": 6.696,
+        "p95": 17.966,
+        "max": 134.324
+      },
+      "peakResidentSetBytes": {
+        "p50": 3259043840,
+        "p95": 4769071104,
+        "max": 5343391744
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.984,
+        "p95": 1.684
+      }
+    },
+    "cold": {
+      "samples": 210,
+      "cpuSeconds": {
+        "p50": 14.563,
+        "p95": 49.812,
+        "max": 77.797
+      },
+      "wallSeconds": {
+        "p50": 16.811,
+        "p95": 42.555,
+        "max": 71.91
+      },
+      "peakResidentSetBytes": {
+        "p50": 3115835392,
+        "p95": 4804825088,
+        "max": 5151600640
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.9,
+        "p95": 1.49
+      }
+    },
+    "concurrentExcluded": {
+      "samples": 184,
+      "cpuSeconds": {
+        "p50": 15.531,
+        "p95": 42.484,
+        "max": 54.312
+      },
+      "wallSeconds": {
+        "p50": 13.413,
+        "p95": 34.309,
+        "max": 54.867
+      },
+      "peakResidentSetBytes": {
+        "p50": 5340790784,
+        "p95": 5437538304,
+        "max": 5461450752
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.173,
+        "p95": 1.439
+      }
+    }
+  },
+  "toolHosted": {
+    "samples": 180,
+    "cpuSeconds": {
+      "p50": 2.969,
+      "p95": 19.5,
+      "max": 42.875
+    },
+    "wallSeconds": {
+      "p50": 3.108,
+      "p95": 20.999,
+      "max": 54.623
+    },
+    "peakResidentSetBytes": {
+      "p50": 2508992512,
+      "p95": 3177742336,
+      "max": 4144717824
+    },
+    "gpuSeconds": 0,
+    "apiTokens": 0,
+    "cpuPerWall": {
+      "p50": 0.846,
+      "p95": 1.266
+    }
+  },
+  "byRequest": [
+    {
+      "request": "What is the capital of Alabama?",
+      "samples": 55,
+      "cpuSeconds": {
+        "p50": 5.015,
+        "p95": 15.343,
+        "max": 17.703
+      },
+      "wallSeconds": {
+        "p50": 4.607,
+        "p95": 11.013,
+        "max": 12.884
+      },
+      "peakResidentSetBytes": {
+        "p50": 3228213248,
+        "p95": 4855832576,
+        "max": 5269024768
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.986,
+        "p95": 1.777
+      }
+    },
+    {
+      "request": "What is the capital of Azerbaijan?",
+      "samples": 51,
+      "cpuSeconds": {
+        "p50": 5.329,
+        "p95": 16.469,
+        "max": 19.922
+      },
+      "wallSeconds": {
+        "p50": 5.445,
+        "p95": 9.724,
+        "max": 15.165
+      },
+      "peakResidentSetBytes": {
+        "p50": 3438473216,
+        "p95": 4876079104,
+        "max": 5252005888
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.987,
+        "p95": 1.938
+      }
+    },
+    {
+      "request": "What is the capital of Japan?",
+      "samples": 46,
+      "cpuSeconds": {
+        "p50": 4.048,
+        "p95": 33.031,
+        "max": 42.282
+      },
+      "wallSeconds": {
+        "p50": 3.805,
+        "p95": 16.507,
+        "max": 23.312
+      },
+      "peakResidentSetBytes": {
+        "p50": 3049758720,
+        "p95": 5252562944,
+        "max": 5286805504
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.004,
+        "p95": 2.025
+      }
+    },
+    {
+      "request": "who were the characters in gene rodenberry's Andromeda?",
+      "samples": 45,
+      "cpuSeconds": {
+        "p50": 6.062,
+        "p95": 9.75,
+        "max": 14.922
+      },
+      "wallSeconds": {
+        "p50": 6.128,
+        "p95": 9.329,
+        "max": 11.476
+      },
+      "peakResidentSetBytes": {
+        "p50": 2991845376,
+        "p95": 4627296256,
+        "max": 5090373632
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.963,
+        "p95": 1.243
+      }
+    },
+    {
+      "request": "what is anarchism?",
+      "samples": 44,
+      "cpuSeconds": {
+        "p50": 3.999,
+        "p95": 9.157,
+        "max": 12.875
+      },
+      "wallSeconds": {
+        "p50": 3.779,
+        "p95": 6.785,
+        "max": 11.609
+      },
+      "peakResidentSetBytes": {
+        "p50": 2989383680,
+        "p95": 4635295744,
+        "max": 5087956992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.937,
+        "p95": 1.494
+      }
+    },
+    {
+      "request": "did martha washington invent the concept of using flags to represent nations?",
+      "samples": 42,
+      "cpuSeconds": {
+        "p50": 6.079,
+        "p95": 13.485,
+        "max": 33.719
+      },
+      "wallSeconds": {
+        "p50": 8.432,
+        "p95": 14.177,
+        "max": 20.939
+      },
+      "peakResidentSetBytes": {
+        "p50": 2998935552,
+        "p95": 4653154304,
+        "max": 5110562816
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.92,
+        "p95": 1.648
+      }
+    },
+    {
+      "request": "what was she known for?",
+      "samples": 42,
+      "cpuSeconds": {
+        "p50": 3.531,
+        "p95": 5.298,
+        "max": 7.719
+      },
+      "wallSeconds": {
+        "p50": 3.263,
+        "p95": 5.387,
+        "max": 6.407
+      },
+      "peakResidentSetBytes": {
+        "p50": 2946695168,
+        "p95": 4656332800,
+        "max": 5116203008
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.985,
+        "p95": 1.568
+      }
+    },
+    {
+      "request": "who was captain kirk?",
+      "samples": 42,
+      "cpuSeconds": {
+        "p50": 4.204,
+        "p95": 8.844,
+        "max": 14.907
+      },
+      "wallSeconds": {
+        "p50": 3.623,
+        "p95": 7.499,
+        "max": 12.015
+      },
+      "peakResidentSetBytes": {
+        "p50": 2986811392,
+        "p95": 4662288384,
+        "max": 5114884096
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.982,
+        "p95": 1.566
+      }
+    },
+    {
+      "request": "Ada Lovelace는 누구였나요?",
+      "samples": 41,
+      "cpuSeconds": {
+        "p50": 7.469,
+        "p95": 12.172,
+        "max": 13.672
+      },
+      "wallSeconds": {
+        "p50": 5.613,
+        "p95": 9.4,
+        "max": 14.646
+      },
+      "peakResidentSetBytes": {
+        "p50": 3031601152,
+        "p95": 4656844800,
+        "max": 5113896960
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.151,
+        "p95": 2.094
+      }
+    },
+    {
+      "request": "When did Apollo 11 land on the Moon?",
+      "samples": 40,
+      "cpuSeconds": {
+        "p50": 6.812,
+        "p95": 15.797,
+        "max": 16.171
+      },
+      "wallSeconds": {
+        "p50": 8.42,
+        "p95": 14.227,
+        "max": 15.058
+      },
+      "peakResidentSetBytes": {
+        "p50": 2975342592,
+        "p95": 3845246976,
+        "max": 4769972224
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.894,
+        "p95": 1.389
+      }
+    },
+    {
+      "request": "who was ada lovelace?",
+      "samples": 38,
+      "cpuSeconds": {
+        "p50": 6.922,
+        "p95": 11.296,
+        "max": 13.016
+      },
+      "wallSeconds": {
+        "p50": 5.943,
+        "p95": 9.545,
+        "max": 13.09
+      },
+      "peakResidentSetBytes": {
+        "p50": 3012583424,
+        "p95": 4950048768,
+        "max": 5107101696
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.131,
+        "p95": 1.433
+      }
+    },
+    {
+      "request": "What is the capital of Albania?",
+      "samples": 36,
+      "cpuSeconds": {
+        "p50": 5.97,
+        "p95": 16.125,
+        "max": 19.734
+      },
+      "wallSeconds": {
+        "p50": 6.422,
+        "p95": 15.687,
+        "max": 20.65
+      },
+      "peakResidentSetBytes": {
+        "p50": 3177754624,
+        "p95": 4490522624,
+        "max": 5188804608
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.885,
+        "p95": 1.286
+      }
+    },
+    {
+      "request": "What is the capital of Kenya?",
+      "samples": 33,
+      "cpuSeconds": {
+        "p50": 3.515,
+        "p95": 12.125,
+        "max": 21.656
+      },
+      "wallSeconds": {
+        "p50": 4.479,
+        "p95": 15.035,
+        "max": 32
+      },
+      "peakResidentSetBytes": {
+        "p50": 3119194112,
+        "p95": 5175631872,
+        "max": 5268328448
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.81,
+        "p95": 1.866
+      }
+    },
+    {
+      "request": "What was Albert Einstein's shoe size?",
+      "samples": 33,
+      "cpuSeconds": {
+        "p50": 4.687,
+        "p95": 20.531,
+        "max": 22.953
+      },
+      "wallSeconds": {
+        "p50": 5.096,
+        "p95": 19.418,
+        "max": 22.97
+      },
+      "peakResidentSetBytes": {
+        "p50": 3873755136,
+        "p95": 5064540160,
+        "max": 5254475776
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.033,
+        "p95": 1.778
+      }
+    },
+    {
+      "request": "When was Albert Einstein born?",
+      "samples": 30,
+      "cpuSeconds": {
+        "p50": 7.234,
+        "p95": 22.578,
+        "max": 24.14
+      },
+      "wallSeconds": {
+        "p50": 6.22,
+        "p95": 15.513,
+        "max": 22.335
+      },
+      "peakResidentSetBytes": {
+        "p50": 4028985344,
+        "p95": 5053050880,
+        "max": 5290610688
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.007,
+        "p95": 1.531
+      }
+    },
+    {
+      "request": "Did Apollo 11 land on Mars?",
+      "samples": 27,
+      "cpuSeconds": {
+        "p50": 6.876,
+        "p95": 10.484,
+        "max": 11.688
+      },
+      "wallSeconds": {
+        "p50": 7.104,
+        "p95": 11.812,
+        "max": 13.101
+      },
+      "peakResidentSetBytes": {
+        "p50": 2859843584,
+        "p95": 4769071104,
+        "max": 4775038976
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.952,
+        "p95": 1.313
+      }
+    },
+    {
+      "request": "What is acupuncture?",
+      "samples": 27,
+      "cpuSeconds": {
+        "p50": 6.109,
+        "p95": 9.078,
+        "max": 14.437
+      },
+      "wallSeconds": {
+        "p50": 5.595,
+        "p95": 8.367,
+        "max": 13.729
+      },
+      "peakResidentSetBytes": {
+        "p50": 2827792384,
+        "p95": 4763381760,
+        "max": 4777181184
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.036,
+        "p95": 1.37
+      }
+    },
+    {
+      "request": "The Ainu people are indigenous to which country?",
+      "samples": 26,
+      "cpuSeconds": {
+        "p50": 3.578,
+        "p95": 23.781,
+        "max": 26.282
+      },
+      "wallSeconds": {
+        "p50": 3.606,
+        "p95": 23.348,
+        "max": 39.907
+      },
+      "peakResidentSetBytes": {
+        "p50": 4067221504,
+        "p95": 5032157184,
+        "max": 5061197824
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.985,
+        "p95": 1.225
+      }
+    },
+    {
+      "request": "Who is Albert Einstein?",
+      "samples": 26,
+      "cpuSeconds": {
+        "p50": 3.985,
+        "p95": 15.14,
+        "max": 16.359
+      },
+      "wallSeconds": {
+        "p50": 4.268,
+        "p95": 17.294,
+        "max": 25.515
+      },
+      "peakResidentSetBytes": {
+        "p50": 3041673216,
+        "p95": 5073444864,
+        "max": 5127548928
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.944,
+        "p95": 1.181
+      }
+    },
+    {
+      "request": "In what year was the first Academy Awards ceremony held?",
+      "samples": 25,
+      "cpuSeconds": {
+        "p50": 3.828,
+        "p95": 12.954,
+        "max": 15.609
+      },
+      "wallSeconds": {
+        "p50": 3.945,
+        "p95": 12.895,
+        "max": 15.304
+      },
+      "peakResidentSetBytes": {
+        "p50": 4062179328,
+        "p95": 5075238912,
+        "max": 5260431360
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.995,
+        "p95": 1.357
+      }
+    },
+    {
+      "request": "What is the capital of Peru?",
+      "samples": 25,
+      "cpuSeconds": {
+        "p50": 4.328,
+        "p95": 17.938,
+        "max": 19.171
+      },
+      "wallSeconds": {
+        "p50": 5.65,
+        "p95": 9.841,
+        "max": 11.901
+      },
+      "peakResidentSetBytes": {
+        "p50": 3671183360,
+        "p95": 5087260672,
+        "max": 5190787072
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.875,
+        "p95": 2.44
+      }
+    },
+    {
+      "request": "Apollo is the twin sibling of which Greek goddess?",
+      "samples": 24,
+      "cpuSeconds": {
+        "p50": 4.156,
+        "p95": 15.922,
+        "max": 18.094
+      },
+      "wallSeconds": {
+        "p50": 4.225,
+        "p95": 15.384,
+        "max": 16.036
+      },
+      "peakResidentSetBytes": {
+        "p50": 4050464768,
+        "p95": 5033172992,
+        "max": 5056266240
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.989,
+        "p95": 1.471
+      }
+    },
+    {
+      "request": "The Alps mountain range is located on which continent?",
+      "samples": 24,
+      "cpuSeconds": {
+        "p50": 5.796,
+        "p95": 14,
+        "max": 16.797
+      },
+      "wallSeconds": {
+        "p50": 4.243,
+        "p95": 16.433,
+        "max": 20.796
+      },
+      "peakResidentSetBytes": {
+        "p50": 4053385216,
+        "p95": 5053595648,
+        "max": 5059198976
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.983,
+        "p95": 1.366
+      }
+    },
+    {
+      "request": "What is alchemy?",
+      "samples": 24,
+      "cpuSeconds": {
+        "p50": 5.781,
+        "p95": 8.938,
+        "max": 8.953
+      },
+      "wallSeconds": {
+        "p50": 6.002,
+        "p95": 7.689,
+        "max": 9.137
+      },
+      "peakResidentSetBytes": {
+        "p50": 2865389568,
+        "p95": 4783755264,
+        "max": 4793749504
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.978,
+        "p95": 1.435
+      }
+    },
+    {
+      "request": "who is ada lovelace",
+      "samples": 24,
+      "cpuSeconds": {
+        "p50": 7.515,
+        "p95": 13.438,
+        "max": 20.766
+      },
+      "wallSeconds": {
+        "p50": 6.56,
+        "p95": 11.863,
+        "max": 14.195
+      },
+      "peakResidentSetBytes": {
+        "p50": 2842697728,
+        "p95": 5067661312,
+        "max": 5134098432
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.063,
+        "p95": 1.608
+      }
+    },
+    {
+      "request": "Who is Aphrodite?",
+      "samples": 24,
+      "cpuSeconds": {
+        "p50": 4.546,
+        "p95": 8.625,
+        "max": 9.016
+      },
+      "wallSeconds": {
+        "p50": 5.023,
+        "p95": 7.975,
+        "max": 9.645
+      },
+      "peakResidentSetBytes": {
+        "p50": 2817900544,
+        "p95": 4715261952,
+        "max": 4831870976
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.956,
+        "p95": 1.159
+      }
+    },
+    {
+      "request": "What is the capital of Greece?",
+      "samples": 23,
+      "cpuSeconds": {
+        "p50": 3.844,
+        "p95": 5.516,
+        "max": 7
+      },
+      "wallSeconds": {
+        "p50": 5.5,
+        "p95": 7.818,
+        "max": 7.894
+      },
+      "peakResidentSetBytes": {
+        "p50": 2843353088,
+        "p95": 4751691776,
+        "max": 4755062784
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.682,
+        "p95": 1.01
+      }
+    },
+    {
+      "request": "In what year was Apollo 8 launched?",
+      "samples": 22,
+      "cpuSeconds": {
+        "p50": 3.985,
+        "p95": 13.061,
+        "max": 13.422
+      },
+      "wallSeconds": {
+        "p50": 3.893,
+        "p95": 12.139,
+        "max": 14.256
+      },
+      "peakResidentSetBytes": {
+        "p50": 4056326144,
+        "p95": 5104672768,
+        "max": 5251784704
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.984,
+        "p95": 1.512
+      }
+    },
+    {
+      "request": "What was the exact number of buttons on a standard Union soldier's coat?",
+      "samples": 22,
+      "cpuSeconds": {
+        "p50": 2.329,
+        "p95": 15.219,
+        "max": 20.625
+      },
+      "wallSeconds": {
+        "p50": 2.379,
+        "p95": 14.407,
+        "max": 18.993
+      },
+      "peakResidentSetBytes": {
+        "p50": 4045320192,
+        "p95": 5100417024,
+        "max": 5294325760
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.976,
+        "p95": 1.674
+      }
+    },
+    {
+      "request": "Who was Alfred the Great?",
+      "samples": 22,
+      "cpuSeconds": {
+        "p50": 5.422,
+        "p95": 8.703,
+        "max": 12.047
+      },
+      "wallSeconds": {
+        "p50": 9.801,
+        "p95": 11.494,
+        "max": 13.104
+      },
+      "peakResidentSetBytes": {
+        "p50": 2812604416,
+        "p95": 4701057024,
+        "max": 4786970624
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.555,
+        "p95": 1.07
+      }
+    },
+    {
+      "request": "Who was Andrew Jackson?",
+      "samples": 22,
+      "cpuSeconds": {
+        "p50": 4.687,
+        "p95": 7.422,
+        "max": 9.062
+      },
+      "wallSeconds": {
+        "p50": 4.471,
+        "p95": 6.071,
+        "max": 7.544
+      },
+      "peakResidentSetBytes": {
+        "p50": 2853359616,
+        "p95": 4758773760,
+        "max": 4762673152
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.942,
+        "p95": 1.526
+      }
+    },
+    {
+      "request": "Alfred Hitchcock is known by what nickname?",
+      "samples": 21,
+      "cpuSeconds": {
+        "p50": 6.047,
+        "p95": 16.485,
+        "max": 17.282
+      },
+      "wallSeconds": {
+        "p50": 4.282,
+        "p95": 14.916,
+        "max": 16.65
+      },
+      "peakResidentSetBytes": {
+        "p50": 4039081984,
+        "p95": 4165881856,
+        "max": 5088108544
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.123,
+        "p95": 1.795
+      }
+    },
+    {
+      "request": "What did Ada Lovelace invent?",
+      "samples": 21,
+      "cpuSeconds": {
+        "p50": 6.704,
+        "p95": 9.235,
+        "max": 10.062
+      },
+      "wallSeconds": {
+        "p50": 8.72,
+        "p95": 11.758,
+        "max": 16.117
+      },
+      "peakResidentSetBytes": {
+        "p50": 2798862336,
+        "p95": 4685910016,
+        "max": 4779253760
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.785,
+        "p95": 1.461
+      }
+    },
+    {
+      "request": "Who is Leonard Nimoy?",
+      "samples": 21,
+      "cpuSeconds": {
+        "p50": 5.171,
+        "p95": 6.391,
+        "max": 7.859
+      },
+      "wallSeconds": {
+        "p50": 4.882,
+        "p95": 7.217,
+        "max": 16.226
+      },
+      "peakResidentSetBytes": {
+        "p50": 2808594432,
+        "p95": 4706938880,
+        "max": 4788191232
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.943,
+        "p95": 1.468
+      }
+    },
+    {
+      "request": "Who is the commanding officer of the space station in Star Trek: Deep Space Nine?",
+      "samples": 21,
+      "cpuSeconds": {
+        "p50": 6.579,
+        "p95": 19.468,
+        "max": 20.343
+      },
+      "wallSeconds": {
+        "p50": 4.602,
+        "p95": 15.314,
+        "max": 28.585
+      },
+      "peakResidentSetBytes": {
+        "p50": 4072632320,
+        "p95": 5116874752,
+        "max": 5328031744
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1,
+        "p95": 1.578
+      }
+    },
+    {
+      "request": "What is Albania's most popular esports team?",
+      "samples": 20,
+      "cpuSeconds": {
+        "p50": 3,
+        "p95": 13.391,
+        "max": 13.922
+      },
+      "wallSeconds": {
+        "p50": 3.063,
+        "p95": 12.854,
+        "max": 17.978
+      },
+      "peakResidentSetBytes": {
+        "p50": 4041142272,
+        "p95": 4180246528,
+        "max": 5087408128
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.965,
+        "p95": 1.497
+      }
+    },
+    {
+      "request": "What is the capital of Armenia?",
+      "samples": 20,
+      "cpuSeconds": {
+        "p50": 4.469,
+        "p95": 15.594,
+        "max": 17.719
+      },
+      "wallSeconds": {
+        "p50": 4.829,
+        "p95": 8.326,
+        "max": 9.942
+      },
+      "peakResidentSetBytes": {
+        "p50": 3446587392,
+        "p95": 4087070720,
+        "max": 4880015360
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.864,
+        "p95": 2.143
+      }
+    },
+    {
+      "request": "What is the FIFA world ranking of the Afghanistan national football team?",
+      "samples": 20,
+      "cpuSeconds": {
+        "p50": 3.844,
+        "p95": 13.75,
+        "max": 15.11
+      },
+      "wallSeconds": {
+        "p50": 3.976,
+        "p95": 10.327,
+        "max": 11.497
+      },
+      "peakResidentSetBytes": {
+        "p50": 4070813696,
+        "p95": 4156354560,
+        "max": 5054787584
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.972,
+        "p95": 1.424
+      }
+    },
+    {
+      "request": "Who was the individual founder of the city of Aarhus?",
+      "samples": 20,
+      "cpuSeconds": {
+        "p50": 3.688,
+        "p95": 12.203,
+        "max": 22.391
+      },
+      "wallSeconds": {
+        "p50": 3.676,
+        "p95": 12.176,
+        "max": 16.49
+      },
+      "peakResidentSetBytes": {
+        "p50": 4072787968,
+        "p95": 5051047936,
+        "max": 5316235264
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.977,
+        "p95": 1.358
+      }
+    },
+    {
+      "request": "What is El Salvador's national board game?",
+      "samples": 19,
+      "cpuSeconds": {
+        "p50": 3.578,
+        "p95": 18.985,
+        "max": 18.985
+      },
+      "wallSeconds": {
+        "p50": 3.669,
+        "p95": 16.297,
+        "max": 16.297
+      },
+      "peakResidentSetBytes": {
+        "p50": 4052054016,
+        "p95": 5102870528,
+        "max": 5102870528
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.979,
+        "p95": 1.634
+      }
+    },
+    {
+      "request": "What is the capital of Afghanistan?",
+      "samples": 19,
+      "cpuSeconds": {
+        "p50": 6.047,
+        "p95": 23.531,
+        "max": 23.531
+      },
+      "wallSeconds": {
+        "p50": 6.87,
+        "p95": 22.986,
+        "max": 22.986
+      },
+      "peakResidentSetBytes": {
+        "p50": 2996252672,
+        "p95": 4656439296,
+        "max": 4656439296
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.997,
+        "p95": 1.486
+      }
+    },
+    {
+      "request": "What was Aleister Crowley's shoe size?",
+      "samples": 19,
+      "cpuSeconds": {
+        "p50": 4.953,
+        "p95": 26.452,
+        "max": 26.452
+      },
+      "wallSeconds": {
+        "p50": 4.057,
+        "p95": 17.374,
+        "max": 17.374
+      },
+      "peakResidentSetBytes": {
+        "p50": 4065439744,
+        "p95": 5053259776,
+        "max": 5053259776
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.032,
+        "p95": 1.88
+      }
+    },
+    {
+      "request": "What was Arthur Schopenhauer's favorite drink?",
+      "samples": 19,
+      "cpuSeconds": {
+        "p50": 4.984,
+        "p95": 18.781,
+        "max": 18.781
+      },
+      "wallSeconds": {
+        "p50": 4.493,
+        "p95": 10.671,
+        "max": 10.671
+      },
+      "peakResidentSetBytes": {
+        "p50": 4041805824,
+        "p95": 5092876288,
+        "max": 5092876288
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.031,
+        "p95": 1.76
+      }
+    },
+    {
+      "request": "What was Athena's shoe size?",
+      "samples": 19,
+      "cpuSeconds": {
+        "p50": 3.594,
+        "p95": 19.828,
+        "max": 19.828
+      },
+      "wallSeconds": {
+        "p50": 3.706,
+        "p95": 14.139,
+        "max": 14.139
+      },
+      "peakResidentSetBytes": {
+        "p50": 4080070656,
+        "p95": 5057290240,
+        "max": 5057290240
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.995,
+        "p95": 2.093
+      }
+    },
+    {
+      "request": "What was Andrew Johnson's favorite tea blend?",
+      "samples": 18,
+      "cpuSeconds": {
+        "p50": 2.844,
+        "p95": 21.875,
+        "max": 21.875
+      },
+      "wallSeconds": {
+        "p50": 2.88,
+        "p95": 16.706,
+        "max": 16.706
+      },
+      "peakResidentSetBytes": {
+        "p50": 4069662720,
+        "p95": 5102870528,
+        "max": 5102870528
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.971,
+        "p95": 1.727
+      }
+    },
+    {
+      "request": "Who commanded Apollo 11?",
+      "samples": 16,
+      "cpuSeconds": {
+        "p50": 5.907,
+        "p95": 26.562,
+        "max": 26.562
+      },
+      "wallSeconds": {
+        "p50": 10.519,
+        "p95": 30.084,
+        "max": 30.084
+      },
+      "peakResidentSetBytes": {
+        "p50": 2923323392,
+        "p95": 3873484800,
+        "max": 3873484800
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.59,
+        "p95": 1.448
+      }
+    },
+    {
+      "request": "Explain relativity.",
+      "samples": 15,
+      "cpuSeconds": {
+        "p50": 4.89,
+        "p95": 11.282,
+        "max": 11.282
+      },
+      "wallSeconds": {
+        "p50": 6.008,
+        "p95": 14.426,
+        "max": 14.426
+      },
+      "peakResidentSetBytes": {
+        "p50": 3634327552,
+        "p95": 4961370112,
+        "max": 4961370112
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.853,
+        "p95": 1.249
+      }
+    },
+    {
+      "request": "In what year did the American Revolutionary War end?",
+      "samples": 15,
+      "cpuSeconds": {
+        "p50": 11.734,
+        "p95": 19.093,
+        "max": 19.093
+      },
+      "wallSeconds": {
+        "p50": 11.36,
+        "p95": 19.702,
+        "max": 19.702
+      },
+      "peakResidentSetBytes": {
+        "p50": 3202871296,
+        "p95": 4688625664,
+        "max": 4688625664
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.096,
+        "p95": 1.435
+      }
+    },
+    {
+      "request": "Who was Aristotle's teacher?",
+      "samples": 15,
+      "cpuSeconds": {
+        "p50": 6.953,
+        "p95": 22.235,
+        "max": 22.235
+      },
+      "wallSeconds": {
+        "p50": 5.682,
+        "p95": 17.045,
+        "max": 17.045
+      },
+      "peakResidentSetBytes": {
+        "p50": 3175133184,
+        "p95": 4682858496,
+        "max": 4682858496
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.186,
+        "p95": 1.564
+      }
+    },
+    {
+      "request": "What is the capital of Algeria?",
+      "samples": 14,
+      "cpuSeconds": {
+        "p50": 7.578,
+        "p95": 25.437,
+        "max": 25.437
+      },
+      "wallSeconds": {
+        "p50": 7.696,
+        "p95": 26.675,
+        "max": 26.675
+      },
+      "peakResidentSetBytes": {
+        "p50": 3022422016,
+        "p95": 3885236224,
+        "max": 3885236224
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.043,
+        "p95": 1.368
+      }
+    },
+    {
+      "request": "Which fictional detective did Agatha Christie create?",
+      "samples": 14,
+      "cpuSeconds": {
+        "p50": 7.22,
+        "p95": 13.266,
+        "max": 13.266
+      },
+      "wallSeconds": {
+        "p50": 7.049,
+        "p95": 10.776,
+        "max": 10.776
+      },
+      "peakResidentSetBytes": {
+        "p50": 3169431552,
+        "p95": 4649779200,
+        "max": 4649779200
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.105,
+        "p95": 1.3
+      }
+    },
+    {
+      "request": "Who wrote Animal Farm?",
+      "samples": 14,
+      "cpuSeconds": {
+        "p50": 7.641,
+        "p95": 20.016,
+        "max": 20.016
+      },
+      "wallSeconds": {
+        "p50": 8.902,
+        "p95": 13.856,
+        "max": 13.856
+      },
+      "peakResidentSetBytes": {
+        "p50": 3114123264,
+        "p95": 4688736256,
+        "max": 4688736256
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.961,
+        "p95": 1.52
+      }
+    },
+    {
+      "request": "What did he discover?",
+      "samples": 13,
+      "cpuSeconds": {
+        "p50": 4.14,
+        "p95": 14.234,
+        "max": 14.234
+      },
+      "wallSeconds": {
+        "p50": 4.036,
+        "p95": 17.909,
+        "max": 17.909
+      },
+      "peakResidentSetBytes": {
+        "p50": 3642724352,
+        "p95": 4958171136,
+        "max": 4958171136
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.918,
+        "p95": 2.891
+      }
+    },
+    {
+      "request": "What was the blood type of the Apollo 11 crew?",
+      "samples": 13,
+      "cpuSeconds": {
+        "p50": 10.124,
+        "p95": 20.515,
+        "max": 20.515
+      },
+      "wallSeconds": {
+        "p50": 11.563,
+        "p95": 17.777,
+        "max": 17.777
+      },
+      "peakResidentSetBytes": {
+        "p50": 3245178880,
+        "p95": 3856596992,
+        "max": 3856596992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.846,
+        "p95": 1.534
+      }
+    },
+    {
+      "request": "Ashoka was an emperor of which ancient Indian dynasty?",
+      "samples": 12,
+      "cpuSeconds": {
+        "p50": 10.594,
+        "p95": 21.109,
+        "max": 21.109
+      },
+      "wallSeconds": {
+        "p50": 10.738,
+        "p95": 18.664,
+        "max": 18.664
+      },
+      "peakResidentSetBytes": {
+        "p50": 3011502080,
+        "p95": 4100005888,
+        "max": 4100005888
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.023,
+        "p95": 1.221
+      }
+    },
+    {
+      "request": "Athens is the capital of which country?",
+      "samples": 12,
+      "cpuSeconds": {
+        "p50": 7.859,
+        "p95": 17.406,
+        "max": 17.406
+      },
+      "wallSeconds": {
+        "p50": 14.444,
+        "p95": 25.698,
+        "max": 25.698
+      },
+      "peakResidentSetBytes": {
+        "p50": 3373408256,
+        "p95": 4639461376,
+        "max": 4639461376
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.875,
+        "p95": 1.518
+      }
+    },
+    {
+      "request": "Adelaide is the capital city of which Australian state?",
+      "samples": 11,
+      "cpuSeconds": {
+        "p50": 9.048,
+        "p95": 17.39,
+        "max": 17.39
+      },
+      "wallSeconds": {
+        "p50": 9.01,
+        "p95": 17.85,
+        "max": 17.85
+      },
+      "peakResidentSetBytes": {
+        "p50": 3304615936,
+        "p95": 4642340864,
+        "max": 4642340864
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.096,
+        "p95": 1.917
+      }
+    },
+    {
+      "request": "What is Alaska's official state dinosaur?",
+      "samples": 11,
+      "cpuSeconds": {
+        "p50": 7.922,
+        "p95": 12.751,
+        "max": 12.751
+      },
+      "wallSeconds": {
+        "p50": 6.847,
+        "p95": 10.72,
+        "max": 10.72
+      },
+      "peakResidentSetBytes": {
+        "p50": 3066220544,
+        "p95": 3869130752,
+        "max": 3869130752
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.999,
+        "p95": 1.3
+      }
+    },
+    {
+      "request": "Which president of the United States was Abraham Lincoln?",
+      "samples": 11,
+      "cpuSeconds": {
+        "p50": 8.203,
+        "p95": 16.656,
+        "max": 16.656
+      },
+      "wallSeconds": {
+        "p50": 10.225,
+        "p95": 16.391,
+        "max": 16.391
+      },
+      "peakResidentSetBytes": {
+        "p50": 2975752192,
+        "p95": 3867676672,
+        "max": 3867676672
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.855,
+        "p95": 1.324
+      }
+    },
+    {
+      "request": "How many cups of coffee did the Apollo 11 crew drink?",
+      "samples": 10,
+      "cpuSeconds": {
+        "p50": 9.641,
+        "p95": 23.438,
+        "max": 23.438
+      },
+      "wallSeconds": {
+        "p50": 10.282,
+        "p95": 27.456,
+        "max": 27.456
+      },
+      "peakResidentSetBytes": {
+        "p50": 3212443648,
+        "p95": 3869749248,
+        "max": 3869749248
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.925,
+        "p95": 1.257
+      }
+    },
+    {
+      "request": "now tell me the plot of moby dick",
+      "samples": 10,
+      "cpuSeconds": {
+        "p50": 6.281,
+        "p95": 11.546,
+        "max": 11.546
+      },
+      "wallSeconds": {
+        "p50": 6.663,
+        "p95": 12.289,
+        "max": 12.289
+      },
+      "peakResidentSetBytes": {
+        "p50": 3496341504,
+        "p95": 4646895616,
+        "max": 4646895616
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.94,
+        "p95": 1.285
+      }
+    },
+    {
+      "request": "What theory did Albert Einstein develop?",
+      "samples": 10,
+      "cpuSeconds": {
+        "p50": 6.781,
+        "p95": 19.141,
+        "max": 19.141
+      },
+      "wallSeconds": {
+        "p50": 5.575,
+        "p95": 14.551,
+        "max": 14.551
+      },
+      "peakResidentSetBytes": {
+        "p50": 2790633472,
+        "p95": 3815694336,
+        "max": 3815694336
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.853,
+        "p95": 1.315
+      }
+    },
+    {
+      "request": "Who is Ada Lovelace?",
+      "samples": 10,
+      "cpuSeconds": {
+        "p50": 5.047,
+        "p95": 10.704,
+        "max": 10.704
+      },
+      "wallSeconds": {
+        "p50": 4.143,
+        "p95": 7.81,
+        "max": 7.81
+      },
+      "peakResidentSetBytes": {
+        "p50": 3109888000,
+        "p95": 5343391744,
+        "max": 5343391744
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.02,
+        "p95": 1.798
+      }
+    },
+    {
+      "request": "Who is Mr Darcy?",
+      "samples": 10,
+      "cpuSeconds": {
+        "p50": 3.014,
+        "p95": 7.484,
+        "max": 7.484
+      },
+      "wallSeconds": {
+        "p50": 3.182,
+        "p95": 7.523,
+        "max": 7.523
+      },
+      "peakResidentSetBytes": {
+        "p50": 3398811648,
+        "p95": 4518612992,
+        "max": 4518612992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.992,
+        "p95": 1.656
+      }
+    },
+    {
+      "request": "who was the crew of the enterprise d",
+      "samples": 10,
+      "cpuSeconds": {
+        "p50": 4.344,
+        "p95": 7.312,
+        "max": 7.312
+      },
+      "wallSeconds": {
+        "p50": 5.142,
+        "p95": 9.881,
+        "max": 9.881
+      },
+      "peakResidentSetBytes": {
+        "p50": 3517845504,
+        "p95": 4943622144,
+        "max": 4943622144
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.797,
+        "p95": 0.94
+      }
+    },
+    {
+      "request": "Acupuncture originated in which country?",
+      "samples": 9,
+      "cpuSeconds": {
+        "p50": 11.422,
+        "p95": 34.047,
+        "max": 34.047
+      },
+      "wallSeconds": {
+        "p50": 12.357,
+        "p95": 23.295,
+        "max": 23.295
+      },
+      "peakResidentSetBytes": {
+        "p50": 3258888192,
+        "p95": 4539404288,
+        "max": 4539404288
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.173,
+        "p95": 1.628
+      }
+    },
+    {
+      "request": "Athena is the Greek goddess of what?",
+      "samples": 9,
+      "cpuSeconds": {
+        "p50": 5.985,
+        "p95": 12.048,
+        "max": 12.048
+      },
+      "wallSeconds": {
+        "p50": 6.406,
+        "p95": 13.043,
+        "max": 13.043
+      },
+      "peakResidentSetBytes": {
+        "p50": 3403382784,
+        "p95": 4421967872,
+        "max": 4421967872
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.926,
+        "p95": 1.338
+      }
+    },
+    {
+      "request": "What does the abbreviation NBC stand for?",
+      "samples": 9,
+      "cpuSeconds": {
+        "p50": 10.531,
+        "p95": 31.89,
+        "max": 31.89
+      },
+      "wallSeconds": {
+        "p50": 11.126,
+        "p95": 42.825,
+        "max": 42.825
+      },
+      "peakResidentSetBytes": {
+        "p50": 3282051072,
+        "p95": 4688797696,
+        "max": 4688797696
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.745,
+        "p95": 1.892
+      }
+    },
+    {
+      "request": "What was Alexander Graham Bell's blood type?",
+      "samples": 9,
+      "cpuSeconds": {
+        "p50": 13.327,
+        "p95": 21.218,
+        "max": 21.218
+      },
+      "wallSeconds": {
+        "p50": 13.882,
+        "p95": 19.119,
+        "max": 19.119
+      },
+      "peakResidentSetBytes": {
+        "p50": 3474276352,
+        "p95": 3903660032,
+        "max": 3903660032
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.026,
+        "p95": 1.418
+      }
+    },
+    {
+      "request": "What was the serial number of Abraham Lincoln's pocket watch?",
+      "samples": 9,
+      "cpuSeconds": {
+        "p50": 10.734,
+        "p95": 20.343,
+        "max": 20.343
+      },
+      "wallSeconds": {
+        "p50": 10.06,
+        "p95": 16.206,
+        "max": 16.206
+      },
+      "peakResidentSetBytes": {
+        "p50": 3182632960,
+        "p95": 3879124992,
+        "max": 3879124992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.255,
+        "p95": 1.564
+      }
+    },
+    {
+      "request": "Who was Albert Einstein's dentist?",
+      "samples": 9,
+      "cpuSeconds": {
+        "p50": 6.453,
+        "p95": 16.845,
+        "max": 16.845
+      },
+      "wallSeconds": {
+        "p50": 4.747,
+        "p95": 19.64,
+        "max": 19.64
+      },
+      "peakResidentSetBytes": {
+        "p50": 3106463744,
+        "p95": 3863429120,
+        "max": 3863429120
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1,
+        "p95": 1.365
+      }
+    },
+    {
+      "request": "Aarhus is a city in which country?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 6.891,
+        "p95": 38.641,
+        "max": 38.641
+      },
+      "wallSeconds": {
+        "p50": 17.188,
+        "p95": 25.405,
+        "max": 25.405
+      },
+      "peakResidentSetBytes": {
+        "p50": 3262054400,
+        "p95": 4537290752,
+        "max": 4537290752
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.556,
+        "p95": 1.622
+      }
+    },
+    {
+      "request": "Ahmad Shah Durrani is considered the founder of the modern state of which country?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 12.094,
+        "p95": 21.875,
+        "max": 21.875
+      },
+      "wallSeconds": {
+        "p50": 8.67,
+        "p95": 21.934,
+        "max": 21.934
+      },
+      "peakResidentSetBytes": {
+        "p50": 3207376896,
+        "p95": 3837018112,
+        "max": 3837018112
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.932,
+        "p95": 1.449
+      }
+    },
+    {
+      "request": "Andrew Jackson was which numbered president of the United States?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 9.015,
+        "p95": 23.64,
+        "max": 23.64
+      },
+      "wallSeconds": {
+        "p50": 11.695,
+        "p95": 19.53,
+        "max": 19.53
+      },
+      "peakResidentSetBytes": {
+        "p50": 3299524608,
+        "p95": 4663156736,
+        "max": 4663156736
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.792,
+        "p95": 1.361
+      }
+    },
+    {
+      "request": "How much did the gold used in the first Oscar statuettes cost?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 8.407,
+        "p95": 17.812,
+        "max": 17.812
+      },
+      "wallSeconds": {
+        "p50": 11.104,
+        "p95": 13.367,
+        "max": 13.367
+      },
+      "peakResidentSetBytes": {
+        "p50": 3140878336,
+        "p95": 3857092608,
+        "max": 3857092608
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.782,
+        "p95": 1.55
+      }
+    },
+    {
+      "request": "what did he win the Nobel Prize for?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 5.61,
+        "p95": 7.219,
+        "max": 7.219
+      },
+      "wallSeconds": {
+        "p50": 8.971,
+        "p95": 14.594,
+        "max": 14.594
+      },
+      "peakResidentSetBytes": {
+        "p50": 2910838784,
+        "p95": 4786421760,
+        "max": 4786421760
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.495,
+        "p95": 0.69
+      }
+    },
+    {
+      "request": "what did she write about the analytical engine?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 8.375,
+        "p95": 12.016,
+        "max": 12.016
+      },
+      "wallSeconds": {
+        "p50": 8.118,
+        "p95": 13.878,
+        "max": 13.878
+      },
+      "peakResidentSetBytes": {
+        "p50": 3173552128,
+        "p95": 5339463680,
+        "max": 5339463680
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.069,
+        "p95": 1.641
+      }
+    },
+    {
+      "request": "where and when was he born?",
+      "samples": 8,
+      "cpuSeconds": {
+        "p50": 5.906,
+        "p95": 7.938,
+        "max": 7.938
+      },
+      "wallSeconds": {
+        "p50": 4.172,
+        "p95": 10.397,
+        "max": 10.397
+      },
+      "peakResidentSetBytes": {
+        "p50": 2889031680,
+        "p95": 4792709120,
+        "max": 4792709120
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.249,
+        "p95": 1.423
+      }
+    },
+    {
+      "request": "Aberdeen is a city in which country?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 18.266,
+        "p95": 32.984,
+        "max": 32.984
+      },
+      "wallSeconds": {
+        "p50": 17.166,
+        "p95": 22.612,
+        "max": 22.612
+      },
+      "peakResidentSetBytes": {
+        "p50": 3268935680,
+        "p95": 4520505344,
+        "max": 4520505344
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.133,
+        "p95": 1.459
+      }
+    },
+    {
+      "request": "Arthur Schopenhauer was a philosopher of which nationality?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 9.765,
+        "p95": 14.687,
+        "max": 14.687
+      },
+      "wallSeconds": {
+        "p50": 7.903,
+        "p95": 14.011,
+        "max": 14.011
+      },
+      "peakResidentSetBytes": {
+        "p50": 3614494720,
+        "p95": 4104499200,
+        "max": 4104499200
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.097,
+        "p95": 1.749
+      }
+    },
+    {
+      "request": "Elvis Presley is often referred to by what nickname?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 10.876,
+        "p95": 14.016,
+        "max": 14.016
+      },
+      "wallSeconds": {
+        "p50": 9.414,
+        "p95": 17.698,
+        "max": 17.698
+      },
+      "peakResidentSetBytes": {
+        "p50": 3231580160,
+        "p95": 4119703552,
+        "max": 4119703552
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.89,
+        "p95": 1.501
+      }
+    },
+    {
+      "request": "How many calories are in Algeria's national dish?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 13.578,
+        "p95": 29.844,
+        "max": 29.844
+      },
+      "wallSeconds": {
+        "p50": 10.046,
+        "p95": 33.235,
+        "max": 33.235
+      },
+      "peakResidentSetBytes": {
+        "p50": 3611250688,
+        "p95": 3877978112,
+        "max": 3877978112
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.898,
+        "p95": 1.756
+      }
+    },
+    {
+      "request": "How many copies of Animal Farm were sold in its first week?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 13.703,
+        "p95": 21.108,
+        "max": 21.108
+      },
+      "wallSeconds": {
+        "p50": 11.291,
+        "p95": 13.79,
+        "max": 13.79
+      },
+      "peakResidentSetBytes": {
+        "p50": 3619074048,
+        "p95": 4127756288,
+        "max": 4127756288
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.244,
+        "p95": 1.606
+      }
+    },
+    {
+      "request": "How many enemy flags were captured by the Continental Army in total?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 7.64,
+        "p95": 13.829,
+        "max": 13.829
+      },
+      "wallSeconds": {
+        "p50": 6.302,
+        "p95": 8.822,
+        "max": 8.822
+      },
+      "peakResidentSetBytes": {
+        "p50": 3617562624,
+        "p95": 3907567616,
+        "max": 3907567616
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.219,
+        "p95": 1.756
+      }
+    },
+    {
+      "request": "How many Waffle House restaurants are headquartered in Alabama?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 13.188,
+        "p95": 30.781,
+        "max": 30.781
+      },
+      "wallSeconds": {
+        "p50": 10.653,
+        "p95": 33.172,
+        "max": 33.172
+      },
+      "peakResidentSetBytes": {
+        "p50": 3230007296,
+        "p95": 3897491456,
+        "max": 3897491456
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.949,
+        "p95": 1.559
+      }
+    },
+    {
+      "request": "In what year did the American Civil War begin?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 11.968,
+        "p95": 23.969,
+        "max": 23.969
+      },
+      "wallSeconds": {
+        "p50": 14.005,
+        "p95": 26.074,
+        "max": 26.074
+      },
+      "peakResidentSetBytes": {
+        "p50": 3652132864,
+        "p95": 3903389696,
+        "max": 3903389696
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.763,
+        "p95": 1.834
+      }
+    },
+    {
+      "request": "The Australian Labor Party is a political party in which country?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 19.593,
+        "p95": 29.86,
+        "max": 29.86
+      },
+      "wallSeconds": {
+        "p50": 15.251,
+        "p95": 35.946,
+        "max": 35.946
+      },
+      "peakResidentSetBytes": {
+        "p50": 3259043840,
+        "p95": 4107386880,
+        "max": 4107386880
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.175,
+        "p95": 1.374
+      }
+    },
+    {
+      "request": "What brand of personal camera did each Apollo 8 astronaut own before the mission?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 5.219,
+        "p95": 8.468,
+        "max": 8.468
+      },
+      "wallSeconds": {
+        "p50": 4.351,
+        "p95": 7.712,
+        "max": 7.712
+      },
+      "peakResidentSetBytes": {
+        "p50": 3686707200,
+        "p95": 4110336000,
+        "max": 4110336000
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.098,
+        "p95": 1.493
+      }
+    },
+    {
+      "request": "What invention is Alexander Graham Bell credited with?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 15.984,
+        "p95": 18.453,
+        "max": 18.453
+      },
+      "wallSeconds": {
+        "p50": 10.942,
+        "p95": 19.886,
+        "max": 19.886
+      },
+      "peakResidentSetBytes": {
+        "p50": 3347021824,
+        "p95": 3856044032,
+        "max": 3856044032
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.842,
+        "p95": 1.686
+      }
+    },
+    {
+      "request": "What is the capital of Alaska?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 7.937,
+        "p95": 14.453,
+        "max": 14.453
+      },
+      "wallSeconds": {
+        "p50": 5.977,
+        "p95": 13.547,
+        "max": 13.547
+      },
+      "peakResidentSetBytes": {
+        "p50": 3184435200,
+        "p95": 3893080064,
+        "max": 3893080064
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.976,
+        "p95": 1.64
+      }
+    },
+    {
+      "request": "What is the official city mascot of Aberdeen?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 8.109,
+        "p95": 15.547,
+        "max": 15.547
+      },
+      "wallSeconds": {
+        "p50": 8.213,
+        "p95": 16.338,
+        "max": 16.338
+      },
+      "peakResidentSetBytes": {
+        "p50": 3306856448,
+        "p95": 4558491648,
+        "max": 4558491648
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.956,
+        "p95": 1.349
+      }
+    },
+    {
+      "request": "What was Agatha Christie's favorite tea blend?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 15.609,
+        "p95": 24.453,
+        "max": 24.453
+      },
+      "wallSeconds": {
+        "p50": 10.067,
+        "p95": 26.198,
+        "max": 26.198
+      },
+      "peakResidentSetBytes": {
+        "p50": 3167961088,
+        "p95": 3849662464,
+        "max": 3849662464
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.892,
+        "p95": 1.689
+      }
+    },
+    {
+      "request": "What was Ahmad Shah Durrani's shoe size?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 10.032,
+        "p95": 16.047,
+        "max": 16.047
+      },
+      "wallSeconds": {
+        "p50": 6.989,
+        "p95": 21.102,
+        "max": 21.102
+      },
+      "peakResidentSetBytes": {
+        "p50": 3288158208,
+        "p95": 3891474432,
+        "max": 3891474432
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.262,
+        "p95": 1.662
+      }
+    },
+    {
+      "request": "What was Alexander the Great's favorite color?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 12.938,
+        "p95": 25.236,
+        "max": 25.236
+      },
+      "wallSeconds": {
+        "p50": 11.994,
+        "p95": 27.937,
+        "max": 27.937
+      },
+      "peakResidentSetBytes": {
+        "p50": 3594272768,
+        "p95": 3894345728,
+        "max": 3894345728
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.903,
+        "p95": 1.356
+      }
+    },
+    {
+      "request": "What was Alfred Hitchcock's shoe size?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 10.328,
+        "p95": 17.609,
+        "max": 17.609
+      },
+      "wallSeconds": {
+        "p50": 8.73,
+        "p95": 18.254,
+        "max": 18.254
+      },
+      "peakResidentSetBytes": {
+        "p50": 3610603520,
+        "p95": 3905265664,
+        "max": 3905265664
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.379,
+        "p95": 2.017
+      }
+    },
+    {
+      "request": "What was Aristotle's favorite food?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 13.734,
+        "p95": 30.359,
+        "max": 30.359
+      },
+      "wallSeconds": {
+        "p50": 10.647,
+        "p95": 21.907,
+        "max": 21.907
+      },
+      "peakResidentSetBytes": {
+        "p50": 3630882816,
+        "p95": 4104499200,
+        "max": 4104499200
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.808,
+        "p95": 1.571
+      }
+    },
+    {
+      "request": "Who tutored Alexander the Great?",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 19.577,
+        "p95": 24.562,
+        "max": 24.562
+      },
+      "wallSeconds": {
+        "p50": 14.537,
+        "p95": 17.321,
+        "max": 17.321
+      },
+      "peakResidentSetBytes": {
+        "p50": 3570757632,
+        "p95": 3903660032,
+        "max": 3903660032
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.13,
+        "p95": 1.722
+      }
+    },
+    {
+      "request": "write me a short story about him",
+      "samples": 7,
+      "cpuSeconds": {
+        "p50": 31.422,
+        "p95": 42.172,
+        "max": 42.172
+      },
+      "wallSeconds": {
+        "p50": 19.155,
+        "p95": 27.189,
+        "max": 27.189
+      },
+      "peakResidentSetBytes": {
+        "p50": 5015195648,
+        "p95": 5294510080,
+        "max": 5294510080
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.563,
+        "p95": 1.72
+      }
+    },
+    {
+      "request": "Alchemy is widely considered a precursor to which modern science?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 11,
+        "p95": 16.172,
+        "max": 16.172
+      },
+      "wallSeconds": {
+        "p50": 7.612,
+        "p95": 19.141,
+        "max": 19.141
+      },
+      "peakResidentSetBytes": {
+        "p50": 3257835520,
+        "p95": 4520169472,
+        "max": 4520169472
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.939,
+        "p95": 1.589
+      }
+    },
+    {
+      "request": "Alfred Russel Wallace independently developed a theory of evolution alongside whom?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 7.75,
+        "p95": 11.001,
+        "max": 11.001
+      },
+      "wallSeconds": {
+        "p50": 6.454,
+        "p95": 14.597,
+        "max": 14.597
+      },
+      "peakResidentSetBytes": {
+        "p50": 3316461568,
+        "p95": 4564348928,
+        "max": 4564348928
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.988,
+        "p95": 1.559
+      }
+    },
+    {
+      "request": "Alfred the Great was king of which Anglo-Saxon kingdom?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 18.812,
+        "p95": 27.609,
+        "max": 27.609
+      },
+      "wallSeconds": {
+        "p50": 13.909,
+        "p95": 35.421,
+        "max": 35.421
+      },
+      "peakResidentSetBytes": {
+        "p50": 3311624192,
+        "p95": 4547391488,
+        "max": 4547391488
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.727,
+        "p95": 1.545
+      }
+    },
+    {
+      "request": "Andrew Johnson was which numbered president of the United States?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 12.843,
+        "p95": 19.905,
+        "max": 19.905
+      },
+      "wallSeconds": {
+        "p50": 10.523,
+        "p95": 19.692,
+        "max": 19.692
+      },
+      "peakResidentSetBytes": {
+        "p50": 3324100608,
+        "p95": 4539424768,
+        "max": 4539424768
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.829,
+        "p95": 1.581
+      }
+    },
+    {
+      "request": "In which city is Sony headquartered?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 9.11,
+        "p95": 37.312,
+        "max": 37.312
+      },
+      "wallSeconds": {
+        "p50": 10.116,
+        "p95": 25.075,
+        "max": 25.075
+      },
+      "peakResidentSetBytes": {
+        "p50": 3265298432,
+        "p95": 4141891584,
+        "max": 4141891584
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.963,
+        "p95": 1.82
+      }
+    },
+    {
+      "request": "The Apollo program was run by which US space agency?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 14.859,
+        "p95": 19.75,
+        "max": 19.75
+      },
+      "wallSeconds": {
+        "p50": 11.384,
+        "p95": 21.289,
+        "max": 21.289
+      },
+      "peakResidentSetBytes": {
+        "p50": 3321921536,
+        "p95": 4415676416,
+        "max": 4415676416
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.968,
+        "p95": 1.321
+      }
+    },
+    {
+      "request": "What is Azerbaijan's national board game?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 11.218,
+        "p95": 37.344,
+        "max": 37.344
+      },
+      "wallSeconds": {
+        "p50": 13.281,
+        "p95": 26.276,
+        "max": 26.276
+      },
+      "peakResidentSetBytes": {
+        "p50": 3419521024,
+        "p95": 4155895808,
+        "max": 4155895808
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.722,
+        "p95": 1.567
+      }
+    },
+    {
+      "request": "What is Sony's internal nickname for its employee cafeteria menu?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 6.266,
+        "p95": 27.844,
+        "max": 27.844
+      },
+      "wallSeconds": {
+        "p50": 10.322,
+        "p95": 19.211,
+        "max": 19.211
+      },
+      "peakResidentSetBytes": {
+        "p50": 3312611328,
+        "p95": 4118638592,
+        "max": 4118638592
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.686,
+        "p95": 1.591
+      }
+    },
+    {
+      "request": "What is the annual budget of Indonesia's national video game council?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 7.031,
+        "p95": 26,
+        "max": 26
+      },
+      "wallSeconds": {
+        "p50": 7.582,
+        "p95": 17.581,
+        "max": 17.581
+      },
+      "peakResidentSetBytes": {
+        "p50": 3440177152,
+        "p95": 4128296960,
+        "max": 4128296960
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.798,
+        "p95": 1.777
+      }
+    },
+    {
+      "request": "What is the Australian Labor Party's official mascot?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 6.453,
+        "p95": 10.296,
+        "max": 10.296
+      },
+      "wallSeconds": {
+        "p50": 6.554,
+        "p95": 8.3,
+        "max": 8.3
+      },
+      "peakResidentSetBytes": {
+        "p50": 3242176512,
+        "p95": 4138528768,
+        "max": 4138528768
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.855,
+        "p95": 1.418
+      }
+    },
+    {
+      "request": "What is the capital of El Salvador?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 5.125,
+        "p95": 14.626,
+        "max": 14.626
+      },
+      "wallSeconds": {
+        "p50": 5.849,
+        "p95": 9.123,
+        "max": 9.123
+      },
+      "peakResidentSetBytes": {
+        "p50": 3286876160,
+        "p95": 4121255936,
+        "max": 4121255936
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.889,
+        "p95": 1.603
+      }
+    },
+    {
+      "request": "What is the capital of Indonesia?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 4.968,
+        "p95": 7.624,
+        "max": 7.624
+      },
+      "wallSeconds": {
+        "p50": 5.786,
+        "p95": 8.301,
+        "max": 8.301
+      },
+      "peakResidentSetBytes": {
+        "p50": 3424448512,
+        "p95": 4147953664,
+        "max": 4147953664
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.761,
+        "p95": 1.041
+      }
+    },
+    {
+      "request": "What is the officially projected Apollo program budget for the year 2099?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 21.187,
+        "p95": 32.141,
+        "max": 32.141
+      },
+      "wallSeconds": {
+        "p50": 15.926,
+        "p95": 38.544,
+        "max": 38.544
+      },
+      "peakResidentSetBytes": {
+        "p50": 3357110272,
+        "p95": 4421660672,
+        "max": 4421660672
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.829,
+        "p95": 1.482
+      }
+    },
+    {
+      "request": "What is the opening line of Moby-Dick?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 28.172,
+        "p95": 80.312,
+        "max": 80.312
+      },
+      "wallSeconds": {
+        "p50": 10.238,
+        "p95": 48.159,
+        "max": 48.159
+      },
+      "peakResidentSetBytes": {
+        "p50": 3394916352,
+        "p95": 3644170240,
+        "max": 3644170240
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.668,
+        "p95": 3.31
+      }
+    },
+    {
+      "request": "What was Ashoka's shoe size?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 16.328,
+        "p95": 21.625,
+        "max": 21.625
+      },
+      "wallSeconds": {
+        "p50": 8.324,
+        "p95": 11.046,
+        "max": 11.046
+      },
+      "peakResidentSetBytes": {
+        "p50": 3266277376,
+        "p95": 4131889152,
+        "max": 4131889152
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.875,
+        "p95": 2.302
+      }
+    },
+    {
+      "request": "What was Elvis Presley's favorite breakfast cereal?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 11.032,
+        "p95": 26.422,
+        "max": 26.422
+      },
+      "wallSeconds": {
+        "p50": 9.739,
+        "p95": 17.847,
+        "max": 17.847
+      },
+      "peakResidentSetBytes": {
+        "p50": 3266228224,
+        "p95": 4148191232,
+        "max": 4148191232
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.014,
+        "p95": 1.789
+      }
+    },
+    {
+      "request": "Which file defines bestEvidenceSentences?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 9.375,
+        "p95": 10.515,
+        "max": 10.515
+      },
+      "wallSeconds": {
+        "p50": 15.65,
+        "p95": 19.045,
+        "max": 19.045
+      },
+      "peakResidentSetBytes": {
+        "p50": 3072733184,
+        "p95": 3520299008,
+        "max": 3520299008
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.552,
+        "p95": 0.87
+      }
+    },
+    {
+      "request": "Who is the single named inventor of acupuncture?",
+      "samples": 6,
+      "cpuSeconds": {
+        "p50": 7.14,
+        "p95": 12.406,
+        "max": 12.406
+      },
+      "wallSeconds": {
+        "p50": 5.803,
+        "p95": 11.81,
+        "max": 11.81
+      },
+      "peakResidentSetBytes": {
+        "p50": 3263279104,
+        "p95": 4498587648,
+        "max": 4498587648
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.045,
+        "p95": 1.25
+      }
+    },
+    {
+      "request": "Aleister Crowley was an occultist of which nationality?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 10.11,
+        "p95": 11.579,
+        "max": 11.579
+      },
+      "wallSeconds": {
+        "p50": 7.293,
+        "p95": 9.792,
+        "max": 9.792
+      },
+      "peakResidentSetBytes": {
+        "p50": 3874582528,
+        "p95": 4526264320,
+        "max": 4526264320
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.248,
+        "p95": 1.721
+      }
+    },
+    {
+      "request": "Anglicanism traces its roots to the church of which country?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 9.564,
+        "p95": 37.984,
+        "max": 37.984
+      },
+      "wallSeconds": {
+        "p50": 20.723,
+        "p95": 25.106,
+        "max": 25.106
+      },
+      "peakResidentSetBytes": {
+        "p50": 3899559936,
+        "p95": 4457025536,
+        "max": 4457025536
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.671,
+        "p95": 1.513
+      }
+    },
+    {
+      "request": "Aphrodite is the Greek goddess of what?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 9.546,
+        "p95": 16,
+        "max": 16
+      },
+      "wallSeconds": {
+        "p50": 8.756,
+        "p95": 12.087,
+        "max": 12.087
+      },
+      "peakResidentSetBytes": {
+        "p50": 3861364736,
+        "p95": 4456472576,
+        "max": 4456472576
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.284,
+        "p95": 1.827
+      }
+    },
+    {
+      "request": "What is NBC's internal name for its Tuesday night programming slate?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 14.562,
+        "p95": 28.594,
+        "max": 28.594
+      },
+      "wallSeconds": {
+        "p50": 10.479,
+        "p95": 16.615,
+        "max": 16.615
+      },
+      "peakResidentSetBytes": {
+        "p50": 3875688448,
+        "p95": 4555911168,
+        "max": 4555911168
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.397,
+        "p95": 2.04
+      }
+    },
+    {
+      "request": "What is the official state dinosaur of the Alps?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 10.516,
+        "p95": 15.906,
+        "max": 15.906
+      },
+      "wallSeconds": {
+        "p50": 6.462,
+        "p95": 9.861,
+        "max": 9.861
+      },
+      "peakResidentSetBytes": {
+        "p50": 3837718528,
+        "p95": 4574760960,
+        "max": 4574760960
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.627,
+        "p95": 1.763
+      }
+    },
+    {
+      "request": "What is the projected Ainu population in the year 2099?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 17.015,
+        "p95": 21.25,
+        "max": 21.25
+      },
+      "wallSeconds": {
+        "p50": 11.7,
+        "p95": 15.089,
+        "max": 15.089
+      },
+      "peakResidentSetBytes": {
+        "p50": 3894616064,
+        "p95": 4493012992,
+        "max": 4493012992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.408,
+        "p95": 1.864
+      }
+    },
+    {
+      "request": "What was Alfred Russel Wallace's favorite tea blend?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 14.469,
+        "p95": 17.422,
+        "max": 17.422
+      },
+      "wallSeconds": {
+        "p50": 9.335,
+        "p95": 10.796,
+        "max": 10.796
+      },
+      "peakResidentSetBytes": {
+        "p50": 3896381440,
+        "p95": 4543541248,
+        "max": 4543541248
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.403,
+        "p95": 1.903
+      }
+    },
+    {
+      "request": "What was Alfred the Great's shoe size?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 15.125,
+        "p95": 32.72,
+        "max": 32.72
+      },
+      "wallSeconds": {
+        "p50": 10.327,
+        "p95": 19.754,
+        "max": 19.754
+      },
+      "peakResidentSetBytes": {
+        "p50": 3852013568,
+        "p95": 4534009856,
+        "max": 4534009856
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.484,
+        "p95": 2.155
+      }
+    },
+    {
+      "request": "What was Andrew Jackson's shoe size?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 13.234,
+        "p95": 13.562,
+        "max": 13.562
+      },
+      "wallSeconds": {
+        "p50": 7.682,
+        "p95": 11.263,
+        "max": 11.263
+      },
+      "peakResidentSetBytes": {
+        "p50": 3870806016,
+        "p95": 4512964608,
+        "max": 4512964608
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.567,
+        "p95": 1.763
+      }
+    },
+    {
+      "request": "What was Aphrodite's shoe size?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 17.219,
+        "p95": 26.594,
+        "max": 26.594
+      },
+      "wallSeconds": {
+        "p50": 8.869,
+        "p95": 16.121,
+        "max": 16.121
+      },
+      "peakResidentSetBytes": {
+        "p50": 3888128000,
+        "p95": 4502462464,
+        "max": 4502462464
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.65,
+        "p95": 2.28
+      }
+    },
+    {
+      "request": "What was Apollo's shoe size?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 17.329,
+        "p95": 23.001,
+        "max": 23.001
+      },
+      "wallSeconds": {
+        "p50": 8.88,
+        "p95": 13.01,
+        "max": 13.01
+      },
+      "peakResidentSetBytes": {
+        "p50": 3873165312,
+        "p95": 4403167232,
+        "max": 4403167232
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.904,
+        "p95": 2.354
+      }
+    },
+    {
+      "request": "What was the crafting budget for Deep Space Nine's costume department?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 13.938,
+        "p95": 31.781,
+        "max": 31.781
+      },
+      "wallSeconds": {
+        "p50": 17.289,
+        "p95": 20.739,
+        "max": 20.739
+      },
+      "peakResidentSetBytes": {
+        "p50": 3838070784,
+        "p95": 4485726208,
+        "max": 4485726208
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.189,
+        "p95": 1.532
+      }
+    },
+    {
+      "request": "Who is officially credited as the single founder of alchemy?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 12.063,
+        "p95": 21.327,
+        "max": 21.327
+      },
+      "wallSeconds": {
+        "p50": 8.971,
+        "p95": 18.448,
+        "max": 18.448
+      },
+      "peakResidentSetBytes": {
+        "p50": 3870810112,
+        "p95": 4529967104,
+        "max": 4529967104
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.156,
+        "p95": 1.478
+      }
+    },
+    {
+      "request": "Who will be the officially appointed leader of Anglicanism in the year 2099?",
+      "samples": 5,
+      "cpuSeconds": {
+        "p50": 6.625,
+        "p95": 8.219,
+        "max": 8.219
+      },
+      "wallSeconds": {
+        "p50": 6.709,
+        "p95": 8.577,
+        "max": 8.577
+      },
+      "peakResidentSetBytes": {
+        "p50": 3899559936,
+        "p95": 4445863936,
+        "max": 4445863936
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.138,
+        "p95": 1.19
+      }
+    },
+    {
+      "request": "Augustus was the first emperor of which empire?",
+      "samples": 4,
+      "cpuSeconds": {
+        "p50": 10.501,
+        "p95": 15.469,
+        "max": 15.469
+      },
+      "wallSeconds": {
+        "p50": 8.68,
+        "p95": 11.723,
+        "max": 11.723
+      },
+      "peakResidentSetBytes": {
+        "p50": 3892396032,
+        "p95": 4444778496,
+        "max": 4444778496
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.269,
+        "p95": 1.501
+      }
+    },
+    {
+      "request": "What is the official city mascot of Athens?",
+      "samples": 4,
+      "cpuSeconds": {
+        "p50": 6.704,
+        "p95": 11.719,
+        "max": 11.719
+      },
+      "wallSeconds": {
+        "p50": 5.061,
+        "p95": 7.491,
+        "max": 7.491
+      },
+      "peakResidentSetBytes": {
+        "p50": 3900080128,
+        "p95": 4434534400,
+        "max": 4434534400
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.341,
+        "p95": 1.662
+      }
+    },
+    {
+      "request": "What was Augustus's shoe size?",
+      "samples": 4,
+      "cpuSeconds": {
+        "p50": 15.703,
+        "p95": 27.281,
+        "max": 27.281
+      },
+      "wallSeconds": {
+        "p50": 8.388,
+        "p95": 18.429,
+        "max": 18.429
+      },
+      "peakResidentSetBytes": {
+        "p50": 3926786048,
+        "p95": 4446937088,
+        "max": 4446937088
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.48,
+        "p95": 2.233
+      }
+    },
+    {
+      "request": "Who is Sherlock Holmes?",
+      "samples": 4,
+      "cpuSeconds": {
+        "p50": 3.593,
+        "p95": 5.906,
+        "max": 5.906
+      },
+      "wallSeconds": {
+        "p50": 3.652,
+        "p95": 7.754,
+        "max": 7.754
+      },
+      "peakResidentSetBytes": {
+        "p50": 2894249984,
+        "p95": 3356483584,
+        "max": 3356483584
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.984,
+        "p95": 1.018
+      }
+    },
+    {
+      "request": "Who narrates Moby-Dick?",
+      "samples": 4,
+      "cpuSeconds": {
+        "p50": 14.031,
+        "p95": 20.813,
+        "max": 20.813
+      },
+      "wallSeconds": {
+        "p50": 7.541,
+        "p95": 9.769,
+        "max": 9.769
+      },
+      "peakResidentSetBytes": {
+        "p50": 3043229696,
+        "p95": 3086630912,
+        "max": 3086630912
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.827,
+        "p95": 2.13
+      }
+    },
+    {
+      "request": "Write a short story about a sailor leaving harbour at dawn.",
+      "samples": 4,
+      "cpuSeconds": {
+        "p50": 9.813,
+        "p95": 15.204,
+        "max": 15.204
+      },
+      "wallSeconds": {
+        "p50": 9.989,
+        "p95": 15.529,
+        "max": 15.529
+      },
+      "peakResidentSetBytes": {
+        "p50": 2904842240,
+        "p95": 4504182784,
+        "max": 4504182784
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.982,
+        "p95": 1.009
+      }
+    },
+    {
+      "request": "Where does Jane Eyre work as a governess?",
+      "samples": 3,
+      "cpuSeconds": {
+        "p50": 32.141,
+        "p95": 36.328,
+        "max": 36.328
+      },
+      "wallSeconds": {
+        "p50": 17.966,
+        "p95": 18.616,
+        "max": 18.616
+      },
+      "peakResidentSetBytes": {
+        "p50": 3043737600,
+        "p95": 3102896128,
+        "max": 3102896128
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.951,
+        "p95": 2.08
+      }
+    },
+    {
+      "request": "Who was Ada Lovelace?",
+      "samples": 3,
+      "cpuSeconds": {
+        "p50": 6.515,
+        "p95": 7.391,
+        "max": 7.391
+      },
+      "wallSeconds": {
+        "p50": 5.346,
+        "p95": 5.853,
+        "max": 5.853
+      },
+      "peakResidentSetBytes": {
+        "p50": 2659139584,
+        "p95": 2730913792,
+        "max": 2730913792
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.256,
+        "p95": 1.263
+      }
+    },
+    {
+      "request": "Who was Albert Einstein and what did he invent?",
+      "samples": 3,
+      "cpuSeconds": {
+        "p50": 10.734,
+        "p95": 12.109,
+        "max": 12.109
+      },
+      "wallSeconds": {
+        "p50": 9.095,
+        "p95": 15.981,
+        "max": 15.981
+      },
+      "peakResidentSetBytes": {
+        "p50": 4774133760,
+        "p95": 4781993984,
+        "max": 4781993984
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.18,
+        "p95": 1.306
+      }
+    },
+    {
+      "request": "Write a short passage of fiction about a sailor leaving harbour at dawn.",
+      "samples": 3,
+      "cpuSeconds": {
+        "p50": 19.546,
+        "p95": 23.859,
+        "max": 23.859
+      },
+      "wallSeconds": {
+        "p50": 27.556,
+        "p95": 30.93,
+        "max": 30.93
+      },
+      "peakResidentSetBytes": {
+        "p50": 3066576896,
+        "p95": 3078381568,
+        "max": 3078381568
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.771,
+        "p95": 0.819
+      }
+    },
+    {
+      "request": "Anglicanism originated in which country?",
+      "samples": 2,
+      "cpuSeconds": {
+        "p50": 6.531,
+        "p95": 6.906,
+        "max": 6.906
+      },
+      "wallSeconds": {
+        "p50": 6.557,
+        "p95": 6.696,
+        "max": 6.696
+      },
+      "peakResidentSetBytes": {
+        "p50": 3098755072,
+        "p95": 3155329024,
+        "max": 3155329024
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.996,
+        "p95": 1.031
+      }
+    },
+    {
+      "request": "cool, now tell me the plot of moby dick",
+      "samples": 2,
+      "cpuSeconds": {
+        "p50": 5.905,
+        "p95": 7.406,
+        "max": 7.406
+      },
+      "wallSeconds": {
+        "p50": 7.115,
+        "p95": 12.158,
+        "max": 12.158
+      },
+      "peakResidentSetBytes": {
+        "p50": 2695761920,
+        "p95": 4922400768,
+        "max": 4922400768
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.609,
+        "p95": 0.83
+      }
+    },
+    {
+      "request": "Implement a TypeScript function uniqueStrings(values: string[]): string[] that returns the unique strings from an array in first-seen order, add tests, and validate it.",
+      "samples": 2,
+      "cpuSeconds": {
+        "p50": 14,
+        "p95": 39.47,
+        "max": 39.47
+      },
+      "wallSeconds": {
+        "p50": 12.896,
+        "p95": 36.829,
+        "max": 36.829
+      },
+      "peakResidentSetBytes": {
+        "p50": 3586514944,
+        "p95": 4822335488,
+        "max": 4822335488
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.072,
+        "p95": 1.086
+      }
+    },
+    {
+      "request": "What did Jonathan Harker find at Castle Dracula?",
+      "samples": 2,
+      "cpuSeconds": {
+        "p50": 23.968,
+        "p95": 30,
+        "max": 30
+      },
+      "wallSeconds": {
+        "p50": 10.877,
+        "p95": 20.789,
+        "max": 20.789
+      },
+      "peakResidentSetBytes": {
+        "p50": 3367112704,
+        "p95": 3388698624,
+        "max": 3388698624
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.443,
+        "p95": 2.203
+      }
+    },
+    {
+      "request": "Who is Ishmael?",
+      "samples": 2,
+      "cpuSeconds": {
+        "p50": 4.563,
+        "p95": 10,
+        "max": 10
+      },
+      "wallSeconds": {
+        "p50": 3.859,
+        "p95": 9.138,
+        "max": 9.138
+      },
+      "peakResidentSetBytes": {
+        "p50": 2871091200,
+        "p95": 3387719680,
+        "max": 3387719680
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.094,
+        "p95": 1.182
+      }
+    },
+    {
+      "request": "Write the opening paragraph of a novel about a lighthouse keeper.",
+      "samples": 2,
+      "cpuSeconds": {
+        "p50": 5.812,
+        "p95": 14.328,
+        "max": 14.328
+      },
+      "wallSeconds": {
+        "p50": 9.177,
+        "p95": 16.799,
+        "max": 16.799
+      },
+      "peakResidentSetBytes": {
+        "p50": 2981740544,
+        "p95": 3068207104,
+        "max": 3068207104
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.633,
+        "p95": 0.853
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: , the British Computer Society (BCS) has awarded the ____, and in 2008 initiated an annual competition for women students.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.687,
+        "p95": 9.687,
+        "max": 9.687
+      },
+      "wallSeconds": {
+        "p50": 13.133,
+        "p95": 13.133,
+        "max": 13.133
+      },
+      "peakResidentSetBytes": {
+        "p50": 3320410112,
+        "p95": 3320410112,
+        "max": 3320410112
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.738,
+        "p95": 0.738
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: 'Star Trek' also brought teleportation to popular attention with its depiction of \"matter-energy transport\", with the famously misquoted phrase \"Beam me up, ____\" entering the vernacular.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 3.14,
+        "p95": 3.14,
+        "max": 3.14
+      },
+      "wallSeconds": {
+        "p50": 12.606,
+        "p95": 12.606,
+        "max": 12.606
+      },
+      "peakResidentSetBytes": {
+        "p50": 3337052160,
+        "p95": 3337052160,
+        "max": 3337052160
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.249,
+        "p95": 0.249
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: 'Star Trek' merchandise generated $4&nbsp;billion for Paramount by ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.062,
+        "p95": 9.062,
+        "max": 9.062
+      },
+      "wallSeconds": {
+        "p50": 13.611,
+        "p95": 13.611,
+        "max": 13.611
+      },
+      "peakResidentSetBytes": {
+        "p50": 3288498176,
+        "p95": 3288498176,
+        "max": 3288498176
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.666,
+        "p95": 0.666
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: 'Star Trek' production reached a peak in the mid-1990s with 'Deep Space Nine' and 'Voyager' airing concurrently and three of the four '____ feature films released in 1994, 1996, and 1998.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 10.796,
+        "p95": 10.796,
+        "max": 10.796
+      },
+      "wallSeconds": {
+        "p50": 15.049,
+        "p95": 15.049,
+        "max": 15.049
+      },
+      "peakResidentSetBytes": {
+        "p50": 3230298112,
+        "p95": 3230298112,
+        "max": 3230298112
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.717,
+        "p95": 0.717
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: 'The Orville' is a comedy-drama science fiction television series created by ____ that premiered on September 10, 2017, on Fox.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 14.25,
+        "p95": 14.25,
+        "max": 14.25
+      },
+      "wallSeconds": {
+        "p50": 19.014,
+        "p95": 19.014,
+        "max": 19.014
+      },
+      "peakResidentSetBytes": {
+        "p50": 3235500032,
+        "p95": 3235500032,
+        "max": 3235500032
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.749,
+        "p95": 0.749
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: [https://www.nytimes.com/interactive/2018/obituaries/overlooked-ada-lovelace.html \"Ada Lovelace, 1815–1852,\"] '____,' 8 March 2018.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 16.734,
+        "p95": 16.734,
+        "max": 16.734
+      },
+      "wallSeconds": {
+        "p50": 18.887,
+        "p95": 18.887,
+        "max": 18.887
+      },
+      "peakResidentSetBytes": {
+        "p50": 3032276992,
+        "p95": 3032276992,
+        "max": 3032276992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.886,
+        "p95": 0.886
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: == Awards and honors == Of the various science fiction awards for drama, only the Hugo Award for ____ dates back as far as the original series.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 10.86,
+        "p95": 10.86,
+        "max": 10.86
+      },
+      "wallSeconds": {
+        "p50": 15.49,
+        "p95": 15.49,
+        "max": 15.49
+      },
+      "peakResidentSetBytes": {
+        "p50": 3285622784,
+        "p95": 3285622784,
+        "max": 3285622784
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.701,
+        "p95": 0.701
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: ==____== ===Childhood=== Lord Byron expected his child to be a \"glorious boy\" and was disappointed when Lady Byron gave birth to a girl.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 26.984,
+        "p95": 26.984,
+        "max": 26.984
+      },
+      "wallSeconds": {
+        "p50": 18.777,
+        "p95": 18.777,
+        "max": 18.777
+      },
+      "peakResidentSetBytes": {
+        "p50": 3322728448,
+        "p95": 3322728448,
+        "max": 3322728448
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.437,
+        "p95": 1.437
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: === Parodies === Early parodies of 'Star Trek' included a famous sketch on 'Saturday Night Live' titled \"The Last Voyage of the Starship 'Enterprise'\", with John Belushi as Kirk, Chevy Chase as Spock and Dan Aykroyd as ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 17.89,
+        "p95": 17.89,
+        "max": 17.89
+      },
+      "wallSeconds": {
+        "p50": 16.515,
+        "p95": 16.515,
+        "max": 16.515
+      },
+      "peakResidentSetBytes": {
+        "p50": 3285938176,
+        "p95": 3285938176,
+        "max": 3285938176
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.083,
+        "p95": 1.083
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: ===Distinction between mechanism and logical structure=== Lovelace recognized the difference between the details of the computing mechanism, as covered in an 1834 article on the ____, and the logical structure of the Analytical Engine, on which the article she was reviewing dwelt.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.875,
+        "p95": 8.875,
+        "max": 8.875
+      },
+      "wallSeconds": {
+        "p50": 13.328,
+        "p95": 13.328,
+        "max": 13.328
+      },
+      "peakResidentSetBytes": {
+        "p50": 3327156224,
+        "p95": 3327156224,
+        "max": 3327156224
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.666,
+        "p95": 0.666
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: ==Work== ____ her life, Lovelace was strongly interested in scientific developments and fads of the day, including phrenology and mesmerism.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 5.453,
+        "p95": 5.453,
+        "max": 5.453
+      },
+      "wallSeconds": {
+        "p50": 13.025,
+        "p95": 13.025,
+        "max": 13.025
+      },
+      "peakResidentSetBytes": {
+        "p50": 3058085888,
+        "p95": 3058085888,
+        "max": 3058085888
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.419,
+        "p95": 0.419
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: According to the historian of computing and Babbage specialist ____: Ada saw something that Babbage in some sense failed to see.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 25.219,
+        "p95": 25.219,
+        "max": 25.219
+      },
+      "wallSeconds": {
+        "p50": 15.07,
+        "p95": 15.07,
+        "max": 15.07
+      },
+      "peakResidentSetBytes": {
+        "p50": 3190915072,
+        "p95": 3190915072,
+        "max": 3190915072
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.673,
+        "p95": 1.673
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Ada Lovelace House is a council-owned building in ____, Nottinghamshire, near where Lovelace spent her infancy.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 10.985,
+        "p95": 10.985,
+        "max": 10.985
+      },
+      "wallSeconds": {
+        "p50": 17.666,
+        "p95": 17.666,
+        "max": 17.666
+      },
+      "peakResidentSetBytes": {
+        "p50": 3241029632,
+        "p95": 3241029632,
+        "max": 3241029632
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.622,
+        "p95": 0.622
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Ada was a descendant of the extinct ____ and in 1838, her husband was made Earl of Lovelace and Viscount Ockham, meaning Ada became the Countess of Lovelace.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.515,
+        "p95": 8.515,
+        "max": 8.515
+      },
+      "wallSeconds": {
+        "p50": 13.929,
+        "p95": 13.929,
+        "max": 13.929
+      },
+      "peakResidentSetBytes": {
+        "p50": 2943516672,
+        "p95": 2943516672,
+        "max": 2943516672
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.611,
+        "p95": 0.611
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Ada, the ____ for Digital Skills, is a specialist college of further education and higher education in England, focused on digital skills.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.094,
+        "p95": 8.094,
+        "max": 8.094
+      },
+      "wallSeconds": {
+        "p50": 13.888,
+        "p95": 13.888,
+        "max": 13.888
+      },
+      "peakResidentSetBytes": {
+        "p50": 3271684096,
+        "p95": 3271684096,
+        "max": 3271684096
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.583,
+        "p95": 0.583
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: After the conclusion of 'The Original Series', the adventures of its characters continued in '____, and six feature films.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 14.297,
+        "p95": 14.297,
+        "max": 14.297
+      },
+      "wallSeconds": {
+        "p50": 18.809,
+        "p95": 18.809,
+        "max": 18.809
+      },
+      "peakResidentSetBytes": {
+        "p50": 3222020096,
+        "p95": 3222020096,
+        "max": 3222020096
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.76,
+        "p95": 0.76
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: BCSWomen sponsors the ____, an annual conference for women undergraduates.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.344,
+        "p95": 8.344,
+        "max": 8.344
+      },
+      "wallSeconds": {
+        "p50": 12.547,
+        "p95": 12.547,
+        "max": 12.547
+      },
+      "peakResidentSetBytes": {
+        "p50": 2866561024,
+        "p95": 2866561024,
+        "max": 2866561024
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.665,
+        "p95": 0.665
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Desilu studio head ____ was instrumental in approving production of the series.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.547,
+        "p95": 8.547,
+        "max": 8.547
+      },
+      "wallSeconds": {
+        "p50": 13.52,
+        "p95": 13.52,
+        "max": 13.52
+      },
+      "peakResidentSetBytes": {
+        "p50": 3289751552,
+        "p95": 3289751552,
+        "max": 3289751552
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.632,
+        "p95": 0.632
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Emerald Fennell portrays Lovelace in the episode, \"____.\" Lovelace features as a character in \"Spyfall, Part 2\", the second episode of 'Doctor Who', series 12, which first aired on BBC One on 5&nbsp;January 2020.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 14.094,
+        "p95": 14.094,
+        "max": 14.094
+      },
+      "wallSeconds": {
+        "p50": 15.26,
+        "p95": 15.26,
+        "max": 15.26
+      },
+      "peakResidentSetBytes": {
+        "p50": 3169558528,
+        "p95": 3169558528,
+        "max": 3169558528
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.924,
+        "p95": 0.924
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: From 1845, the family's main house was ____, built in the Tudorbethan fashion by the architect of the Houses of Parliament, Charles Barry, and later greatly enlarged to Lovelace's own designs.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 6.282,
+        "p95": 6.282,
+        "max": 6.282
+      },
+      "wallSeconds": {
+        "p50": 12.792,
+        "p95": 12.792,
+        "max": 12.792
+      },
+      "peakResidentSetBytes": {
+        "p50": 3271692288,
+        "p95": 3271692288,
+        "max": 3271692288
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.491,
+        "p95": 0.491
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Immediately after the birth of Annabella, ____ experienced \"a tedious and suffering illness, which took months to cure\".",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.031,
+        "p95": 9.031,
+        "max": 9.031
+      },
+      "wallSeconds": {
+        "p50": 13.75,
+        "p95": 13.75,
+        "max": 13.75
+      },
+      "peakResidentSetBytes": {
+        "p50": 3329720320,
+        "p95": 3329720320,
+        "max": 3329720320
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.657,
+        "p95": 0.657
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In 1968, all five nominees for a ____ were individual episodes of 'Star Trek', as were three of the five nominees in 1967, one of which won.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 13.125,
+        "p95": 13.125,
+        "max": 13.125
+      },
+      "wallSeconds": {
+        "p50": 14.075,
+        "p95": 14.075,
+        "max": 14.075
+      },
+      "peakResidentSetBytes": {
+        "p50": 3235823616,
+        "p95": 3235823616,
+        "max": 3235823616
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.933,
+        "p95": 0.933
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In 1981, the Association for Women in Computing inaugurated its ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 10.47,
+        "p95": 10.47,
+        "max": 10.47
+      },
+      "wallSeconds": {
+        "p50": 14.315,
+        "p95": 14.315,
+        "max": 14.315
+      },
+      "peakResidentSetBytes": {
+        "p50": 3364651008,
+        "p95": 3364651008,
+        "max": 3364651008
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.731,
+        "p95": 0.731
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In 2012, IDW published the first volume of 'Star Trek – The Newspaper Strip', featuring the work of ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 13.328,
+        "p95": 13.328,
+        "max": 13.328
+      },
+      "wallSeconds": {
+        "p50": 15.016,
+        "p95": 15.016,
+        "max": 15.016
+      },
+      "peakResidentSetBytes": {
+        "p50": 3219296256,
+        "p95": 3219296256,
+        "max": 3219296256
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.888,
+        "p95": 0.888
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In 2020, the US effort to develop a vaccine to protect against COVID-19 was named Operation Warp Speed, which was suggested by a 'Star Trek' fan, ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.907,
+        "p95": 11.907,
+        "max": 11.907
+      },
+      "wallSeconds": {
+        "p50": 14.547,
+        "p95": 14.547,
+        "max": 14.547
+      },
+      "peakResidentSetBytes": {
+        "p50": 3337445376,
+        "p95": 3337445376,
+        "max": 3337445376
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.819,
+        "p95": 0.819
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In March 2018, '____ published a belated obituary for Ada Lovelace.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 12.61,
+        "p95": 12.61,
+        "max": 12.61
+      },
+      "wallSeconds": {
+        "p50": 13.673,
+        "p95": 13.673,
+        "max": 13.673
+      },
+      "peakResidentSetBytes": {
+        "p50": 3288535040,
+        "p95": 3288535040,
+        "max": 3288535040
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.922,
+        "p95": 0.922
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In November 2020 it was announced that ____, whose library had previously held forty busts, all of them of men, was commissioning four new busts of women, one of whom was to be Lovelace.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 10.031,
+        "p95": 10.031,
+        "max": 10.031
+      },
+      "wallSeconds": {
+        "p50": 14.162,
+        "p95": 14.162,
+        "max": 14.162
+      },
+      "peakResidentSetBytes": {
+        "p50": 3161821184,
+        "p95": 3161821184,
+        "max": 3161821184
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.708,
+        "p95": 0.708
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In September 2022, ____ announced the Ada Lovelace graphics processing unit microarchitecture.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.469,
+        "p95": 9.469,
+        "max": 9.469
+      },
+      "wallSeconds": {
+        "p50": 13.927,
+        "p95": 13.927,
+        "max": 13.927
+      },
+      "peakResidentSetBytes": {
+        "p50": 3369725952,
+        "p95": 3369725952,
+        "max": 3369725952
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.68,
+        "p95": 0.68
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: In the documentary '____: The Countess of Computing' (2015), Dr Hannah Fry covers the life of Ada Lovelace.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.703,
+        "p95": 11.703,
+        "max": 11.703
+      },
+      "wallSeconds": {
+        "p50": 14.154,
+        "p95": 14.154,
+        "max": 14.154
+      },
+      "peakResidentSetBytes": {
+        "p50": 3288043520,
+        "p95": 3288043520,
+        "max": 3288043520
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.827,
+        "p95": 0.827
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: It can follow analysis; but it has no power of anticipating any analytical relations or truths.\" This objection has been the subject of much debate and rebuttal, for example by Alan Turing in his paper \"____ and Intelligence\".",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 5.375,
+        "p95": 5.375,
+        "max": 5.375
+      },
+      "wallSeconds": {
+        "p50": 11.908,
+        "p95": 11.908,
+        "max": 11.908
+      },
+      "peakResidentSetBytes": {
+        "p50": 2884444160,
+        "p95": 2884444160,
+        "max": 2884444160
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.451,
+        "p95": 0.451
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: King was a ____, and was created Viscount Ockham and 1st Earl of Lovelace in 1838.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.077,
+        "p95": 9.077,
+        "max": 9.077
+      },
+      "wallSeconds": {
+        "p50": 13.611,
+        "p95": 13.611,
+        "max": 13.611
+      },
+      "peakResidentSetBytes": {
+        "p50": 3260588032,
+        "p95": 3260588032,
+        "max": 3260588032
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.667,
+        "p95": 0.667
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Lovelace described her approach as \"poetical science\" and herself as an \"Analyst (& ____)\".",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.64,
+        "p95": 8.64,
+        "max": 8.64
+      },
+      "wallSeconds": {
+        "p50": 13.097,
+        "p95": 13.097,
+        "max": 13.097
+      },
+      "peakResidentSetBytes": {
+        "p50": 3302694912,
+        "p95": 3302694912,
+        "max": 3302694912
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.66,
+        "p95": 0.66
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Lovelace translated an article by the military engineer ____ about the Analytical Engine, supplementing it with seven long explanatory notes.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.72,
+        "p95": 11.72,
+        "max": 11.72
+      },
+      "wallSeconds": {
+        "p50": 12.781,
+        "p95": 12.781,
+        "max": 12.781
+      },
+      "peakResidentSetBytes": {
+        "p50": 3259195392,
+        "p95": 3259195392,
+        "max": 3259195392
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.917,
+        "p95": 0.917
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Lovelace was the only legitimate child of poet Lord Byron and reformer ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 16.047,
+        "p95": 16.047,
+        "max": 16.047
+      },
+      "wallSeconds": {
+        "p50": 14.098,
+        "p95": 14.098,
+        "max": 14.098
+      },
+      "peakResidentSetBytes": {
+        "p50": 3083784192,
+        "p95": 3083784192,
+        "max": 3083784192
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.138,
+        "p95": 1.138
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: On 12 ____ 1851, when she was dying of cancer, Lovelace wrote to him asking him to be her executor, though this letter did not give him the necessary legal authority.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.876,
+        "p95": 9.876,
+        "max": 9.876
+      },
+      "wallSeconds": {
+        "p50": 13.969,
+        "p95": 13.969,
+        "max": 13.969
+      },
+      "peakResidentSetBytes": {
+        "p50": 3347038208,
+        "p95": 3347038208,
+        "max": 3347038208
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.707,
+        "p95": 0.707
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: On 16 January 1816, at Lord Byron's command, Lady Byron left for her parents' home at ____, taking their five-week-old daughter with her.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 7.765,
+        "p95": 7.765,
+        "max": 7.765
+      },
+      "wallSeconds": {
+        "p50": 12.917,
+        "p95": 12.917,
+        "max": 12.917
+      },
+      "peakResidentSetBytes": {
+        "p50": 3370418176,
+        "p95": 3370418176,
+        "max": 3370418176
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.601,
+        "p95": 0.601
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: On 27 July 2018, Senator Ron Wyden submitted, in the United States Senate, the designation of 9 October 2018 as ____: \"To honor the life and contributions of Ada Lovelace as a leading woman in science and mathematics\".",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 6.937,
+        "p95": 6.937,
+        "max": 6.937
+      },
+      "wallSeconds": {
+        "p50": 14.105,
+        "p95": 14.105,
+        "max": 14.105
+      },
+      "peakResidentSetBytes": {
+        "p50": 3369861120,
+        "p95": 3369861120,
+        "max": 3369861120
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.492,
+        "p95": 0.492
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Other acquaintances included the scientists Andrew Crosse, ____, Charles Wheatstone, Michael Faraday and the author Charles Dickens.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 6.344,
+        "p95": 6.344,
+        "max": 6.344
+      },
+      "wallSeconds": {
+        "p50": 15.061,
+        "p95": 15.061,
+        "max": 15.061
+      },
+      "peakResidentSetBytes": {
+        "p50": 3169558528,
+        "p95": 3169558528,
+        "max": 3169558528
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.421,
+        "p95": 0.421
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Popular productions include: 'New Voyages' (2004–2016) and '____ (2013–2017).",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.844,
+        "p95": 9.844,
+        "max": 9.844
+      },
+      "wallSeconds": {
+        "p50": 13.747,
+        "p95": 13.747,
+        "max": 13.747
+      },
+      "peakResidentSetBytes": {
+        "p50": 3288641536,
+        "p95": 3288641536,
+        "max": 3288641536
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.716,
+        "p95": 0.716
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Prolific 'Star Trek' novelists include Peter David, Diane Carey, ____, J.M.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 14.673,
+        "p95": 14.673,
+        "max": 14.673
+      },
+      "wallSeconds": {
+        "p50": 16.186,
+        "p95": 16.186,
+        "max": 16.186
+      },
+      "peakResidentSetBytes": {
+        "p50": 3252854784,
+        "p95": 3252854784,
+        "max": 3252854784
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.907,
+        "p95": 0.907
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: She became fascinated with the machine and used her relationship with ____ to visit Babbage as often as she could.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 13.343,
+        "p95": 13.343,
+        "max": 13.343
+      },
+      "wallSeconds": {
+        "p50": 13.784,
+        "p95": 13.784,
+        "max": 13.784
+      },
+      "peakResidentSetBytes": {
+        "p50": 2909483008,
+        "p95": 2909483008,
+        "max": 2909483008
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.968,
+        "p95": 0.968
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: She danced often and was able to charm many people, and was described by most people as being dainty, although ____, Byron's friend, described her as \"a large, coarse-skinned young woman but with something of my friend's features, particularly the mouth\".",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.968,
+        "p95": 8.968,
+        "max": 8.968
+      },
+      "wallSeconds": {
+        "p50": 13.121,
+        "p95": 13.121,
+        "max": 13.121
+      },
+      "peakResidentSetBytes": {
+        "p50": 2851463168,
+        "p95": 2851463168,
+        "max": 2851463168
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.684,
+        "p95": 0.684
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: She was privately educated in mathematics and science by ____, William King, and Mary Somerville, the noted 19th-century researcher and scientific author.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.874,
+        "p95": 9.874,
+        "max": 9.874
+      },
+      "wallSeconds": {
+        "p50": 13.817,
+        "p95": 13.817,
+        "max": 13.817
+      },
+      "peakResidentSetBytes": {
+        "p50": 3257806848,
+        "p95": 3257806848,
+        "max": 3257806848
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.715,
+        "p95": 0.715
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Somewhat tactless and arrogant initially, he develops friendships with several of the station's residents, particularly Miles O'Brien and the mysterious Cardassian tailor and ex-spy ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 27.891,
+        "p95": 27.891,
+        "max": 27.891
+      },
+      "wallSeconds": {
+        "p50": 26.933,
+        "p95": 26.933,
+        "max": 26.933
+      },
+      "peakResidentSetBytes": {
+        "p50": 2671996928,
+        "p95": 2671996928,
+        "max": 2671996928
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.036,
+        "p95": 1.036
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The building of the department of ____ at the University of Bristol is called the Ada Lovelace Building.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 12.313,
+        "p95": 12.313,
+        "max": 12.313
+      },
+      "wallSeconds": {
+        "p50": 17.11,
+        "p95": 17.11,
+        "max": 17.11
+      },
+      "peakResidentSetBytes": {
+        "p50": 3297411072,
+        "p95": 3297411072,
+        "max": 3297411072
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.72,
+        "p95": 0.72
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The CGI 'Defiant' was featured heavily in the fourth-season episode \"____\", where it battled a CGI Jem'Hadar ship in a CGI gas giant's atmosphere.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 18.718,
+        "p95": 18.718,
+        "max": 18.718
+      },
+      "wallSeconds": {
+        "p50": 13.761,
+        "p95": 13.761,
+        "max": 13.761
+      },
+      "peakResidentSetBytes": {
+        "p50": 2762178560,
+        "p95": 2762178560,
+        "max": 2762178560
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.36,
+        "p95": 1.36
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The character was portrayed by Sylvie Briggs, alongside characterisations of Charles Babbage and ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 7.704,
+        "p95": 7.704,
+        "max": 7.704
+      },
+      "wallSeconds": {
+        "p50": 12.262,
+        "p95": 12.262,
+        "max": 12.262
+      },
+      "peakResidentSetBytes": {
+        "p50": 3326455808,
+        "p95": 3326455808,
+        "max": 3326455808
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.628,
+        "p95": 0.628
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The computer centre in the village of ____, near where Lovelace lived, is named after her.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 10.687,
+        "p95": 10.687,
+        "max": 10.687
+      },
+      "wallSeconds": {
+        "p50": 12.88,
+        "p95": 12.88,
+        "max": 12.88
+      },
+      "peakResidentSetBytes": {
+        "p50": 3261251584,
+        "p95": 3261251584,
+        "max": 3261251584
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.83,
+        "p95": 0.83
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The Engineering in Computer Science and ____ building in Zaragoza University is called the Ada Byron Building.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.735,
+        "p95": 9.735,
+        "max": 9.735
+      },
+      "wallSeconds": {
+        "p50": 14.03,
+        "p95": 14.03,
+        "max": 14.03
+      },
+      "peakResidentSetBytes": {
+        "p50": 3327139840,
+        "p95": 3327139840,
+        "max": 3327139840
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.694,
+        "p95": 0.694
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The first of these movies, 'Section 31', stars Michelle Yeoh, reprising her role as ____ from 'Discovery', and was given a release date of January 24, 2025.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 16.344,
+        "p95": 16.344,
+        "max": 16.344
+      },
+      "wallSeconds": {
+        "p50": 20.781,
+        "p95": 20.781,
+        "max": 20.781
+      },
+      "peakResidentSetBytes": {
+        "p50": 3316035584,
+        "p95": 3316035584,
+        "max": 3316035584
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.786,
+        "p95": 0.786
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The first six films continue the adventures of the cast of the 'Original Series'; the seventh film, '____, was intended as a transition from original cast to the cast of the 'Next Generation'; the next three films focused completely on the 'Next Generation' cast.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.046,
+        "p95": 8.046,
+        "max": 8.046
+      },
+      "wallSeconds": {
+        "p50": 12.928,
+        "p95": 12.928,
+        "max": 12.928
+      },
+      "peakResidentSetBytes": {
+        "p50": 3272519680,
+        "p95": 3272519680,
+        "max": 3272519680
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.622,
+        "p95": 0.622
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The first two episodes were released on ____ on September 8 and 9, 2025, while the full 20-episode season is expected in 2026.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 7.938,
+        "p95": 7.938,
+        "max": 7.938
+      },
+      "wallSeconds": {
+        "p50": 11.461,
+        "p95": 11.461,
+        "max": 11.461
+      },
+      "peakResidentSetBytes": {
+        "p50": 3272499200,
+        "p95": 3272499200,
+        "max": 3272499200
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.693,
+        "p95": 0.693
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The four new busts (Ada Lovelace, ____, Augusta Gregory and Rosalind Franklin) were unveiled on February 1, 2023 In March 2022, a statue of Ada Lovelace was installed at the site of the former Ergon House in the City of Westminster, London, honouring its scientific history.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.766,
+        "p95": 9.766,
+        "max": 9.766
+      },
+      "wallSeconds": {
+        "p50": 12.994,
+        "p95": 12.994,
+        "max": 12.994
+      },
+      "peakResidentSetBytes": {
+        "p50": 3307208704,
+        "p95": 3307208704,
+        "max": 3307208704
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.752,
+        "p95": 0.752
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: The success of the sequel, '____: The Wrath of Khan', reversed the fortunes of the franchise.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 7.937,
+        "p95": 7.937,
+        "max": 7.937
+      },
+      "wallSeconds": {
+        "p50": 12.348,
+        "p95": 12.348,
+        "max": 12.348
+      },
+      "peakResidentSetBytes": {
+        "p50": 3327660032,
+        "p95": 3327660032,
+        "max": 3327660032
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.643,
+        "p95": 0.643
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: They spent their honeymoon at ____ near Porlock Weir, Somerset, which had been built as a hunting lodge in 1799 and was improved by King in preparation for their honeymoon.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.156,
+        "p95": 8.156,
+        "max": 8.156
+      },
+      "wallSeconds": {
+        "p50": 12.498,
+        "p95": 12.498,
+        "max": 12.498
+      },
+      "peakResidentSetBytes": {
+        "p50": 3326226432,
+        "p95": 3326226432,
+        "max": 3326226432
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.653,
+        "p95": 0.653
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: This description followed their meeting on 24 February 1834 in which Ada made it clear to ____ that she did not like him, probably due to her mother's influence, which led her to dislike all of her father's friends.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.157,
+        "p95": 11.157,
+        "max": 11.157
+      },
+      "wallSeconds": {
+        "p50": 13.227,
+        "p95": 13.227,
+        "max": 13.227
+      },
+      "peakResidentSetBytes": {
+        "p50": 3309391872,
+        "p95": 3309391872,
+        "max": 3309391872
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.844,
+        "p95": 0.844
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: This gave the film and sequels freedom from the need to conform to the franchise's canonical timeline and minimized the impact these films would have on ____ portion of the franchise.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.391,
+        "p95": 11.391,
+        "max": 11.391
+      },
+      "wallSeconds": {
+        "p50": 12.608,
+        "p95": 12.608,
+        "max": 12.608
+      },
+      "peakResidentSetBytes": {
+        "p50": 3328032768,
+        "p95": 3328032768,
+        "max": 3328032768
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.903,
+        "p95": 0.903
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: This Netflix distribution and production deal ended right before the fourth season premiere of 'Discovery' in ____ 2021.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.766,
+        "p95": 9.766,
+        "max": 9.766
+      },
+      "wallSeconds": {
+        "p50": 14.992,
+        "p95": 14.992,
+        "max": 14.992
+      },
+      "peakResidentSetBytes": {
+        "p50": 3348180992,
+        "p95": 3348180992,
+        "max": 3348180992
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.651,
+        "p95": 0.651
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Three are held at Harvard University, one at the University of Oklahoma, and one at the ____.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.281,
+        "p95": 8.281,
+        "max": 8.281
+      },
+      "wallSeconds": {
+        "p50": 16.397,
+        "p95": 16.397,
+        "max": 16.397
+      },
+      "peakResidentSetBytes": {
+        "p50": 2983022592,
+        "p95": 2983022592,
+        "max": 2983022592
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.505,
+        "p95": 0.505
+      }
+    },
+    {
+      "request": "Complete this sentence from the source documents, answering with the missing text only: Watercolour portrait circa 1840]] Lovelace became close friends with her tutor ____, who introduced her to Charles Babbage in 1833.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.032,
+        "p95": 11.032,
+        "max": 11.032
+      },
+      "wallSeconds": {
+        "p50": 13.609,
+        "p95": 13.609,
+        "max": 13.609
+      },
+      "peakResidentSetBytes": {
+        "p50": 3030339584,
+        "p95": 3030339584,
+        "max": 3030339584
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.811,
+        "p95": 0.811
+      }
+    },
+    {
+      "request": "what did he invent?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 8.891,
+        "p95": 8.891,
+        "max": 8.891
+      },
+      "wallSeconds": {
+        "p50": 134.324,
+        "p95": 134.324,
+        "max": 134.324
+      },
+      "peakResidentSetBytes": {
+        "p50": 370987008,
+        "p95": 370987008,
+        "max": 370987008
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.066,
+        "p95": 0.066
+      }
+    },
+    {
+      "request": "What did she invent?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 5.907,
+        "p95": 5.907,
+        "max": 5.907
+      },
+      "wallSeconds": {
+        "p50": 11.414,
+        "p95": 11.414,
+        "max": 11.414
+      },
+      "peakResidentSetBytes": {
+        "p50": 1833521152,
+        "p95": 1833521152,
+        "max": 1833521152
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.518,
+        "p95": 0.518
+      }
+    },
+    {
+      "request": "What does requestUnitMatchesSurface do?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 54.407,
+        "p95": 54.407,
+        "max": 54.407
+      },
+      "wallSeconds": {
+        "p50": 40.912,
+        "p95": 40.912,
+        "max": 40.912
+      },
+      "peakResidentSetBytes": {
+        "p50": 3087998976,
+        "p95": 3087998976,
+        "max": 3087998976
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.33,
+        "p95": 1.33
+      }
+    },
+    {
+      "request": "what does the dalai lama believe in?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 18.828,
+        "p95": 18.828,
+        "max": 18.828
+      },
+      "wallSeconds": {
+        "p50": 37.558,
+        "p95": 37.558,
+        "max": 37.558
+      },
+      "peakResidentSetBytes": {
+        "p50": 3655540736,
+        "p95": 3655540736,
+        "max": 3655540736
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.501,
+        "p95": 0.501
+      }
+    },
+    {
+      "request": "What is the capital city of Kenya?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 2.75,
+        "p95": 2.75,
+        "max": 2.75
+      },
+      "wallSeconds": {
+        "p50": 3.492,
+        "p95": 3.492,
+        "max": 3.492
+      },
+      "peakResidentSetBytes": {
+        "p50": 2788241408,
+        "p95": 2788241408,
+        "max": 2788241408
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.788,
+        "p95": 0.788
+      }
+    },
+    {
+      "request": "What is the name of the ship in Treasure Island?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.516,
+        "p95": 11.516,
+        "max": 11.516
+      },
+      "wallSeconds": {
+        "p50": 11.175,
+        "p95": 11.175,
+        "max": 11.175
+      },
+      "peakResidentSetBytes": {
+        "p50": 3033845760,
+        "p95": 3033845760,
+        "max": 3033845760
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.031,
+        "p95": 1.031
+      }
+    },
+    {
+      "request": "who is ada lovelace?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 6.797,
+        "p95": 6.797,
+        "max": 6.797
+      },
+      "wallSeconds": {
+        "p50": 9.456,
+        "p95": 9.456,
+        "max": 9.456
+      },
+      "peakResidentSetBytes": {
+        "p50": 1567031296,
+        "p95": 1567031296,
+        "max": 1567031296
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.719,
+        "p95": 0.719
+      }
+    },
+    {
+      "request": "who is Ada Lovelace?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 11.5,
+        "p95": 11.5,
+        "max": 11.5
+      },
+      "wallSeconds": {
+        "p50": 16.464,
+        "p95": 16.464,
+        "max": 16.464
+      },
+      "peakResidentSetBytes": {
+        "p50": 1973227520,
+        "p95": 1973227520,
+        "max": 1973227520
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.698,
+        "p95": 0.698
+      }
+    },
+    {
+      "request": "who is albert einstein",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 5.281,
+        "p95": 5.281,
+        "max": 5.281
+      },
+      "wallSeconds": {
+        "p50": 6.823,
+        "p95": 6.823,
+        "max": 6.823
+      },
+      "peakResidentSetBytes": {
+        "p50": 1976745984,
+        "p95": 1976745984,
+        "max": 1976745984
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.774,
+        "p95": 0.774
+      }
+    },
+    {
+      "request": "Who is Captain Ahab?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 9.124,
+        "p95": 9.124,
+        "max": 9.124
+      },
+      "wallSeconds": {
+        "p50": 5.846,
+        "p95": 5.846,
+        "max": 5.846
+      },
+      "peakResidentSetBytes": {
+        "p50": 2876702720,
+        "p95": 2876702720,
+        "max": 2876702720
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.561,
+        "p95": 1.561
+      }
+    },
+    {
+      "request": "Who is the captain of the Pequod in Moby-Dick?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 12.312,
+        "p95": 12.312,
+        "max": 12.312
+      },
+      "wallSeconds": {
+        "p50": 8.482,
+        "p95": 8.482,
+        "max": 8.482
+      },
+      "peakResidentSetBytes": {
+        "p50": 3125993472,
+        "p95": 3125993472,
+        "max": 3125993472
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 1.451,
+        "p95": 1.451
+      }
+    },
+    {
+      "request": "Who is the current Lord Mayor of Adelaide?",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 3.141,
+        "p95": 3.141,
+        "max": 3.141
+      },
+      "wallSeconds": {
+        "p50": 4.143,
+        "p95": 4.143,
+        "max": 4.143
+      },
+      "peakResidentSetBytes": {
+        "p50": 3216805888,
+        "p95": 3216805888,
+        "max": 3216805888
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.758,
+        "p95": 0.758
+      }
+    },
+    {
+      "request": "Write a JavaScript function that computes time dilation for a given velocity, and test it.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 20.64,
+        "p95": 20.64,
+        "max": 20.64
+      },
+      "wallSeconds": {
+        "p50": 26.537,
+        "p95": 26.537,
+        "max": 26.537
+      },
+      "peakResidentSetBytes": {
+        "p50": 2709839872,
+        "p95": 2709839872,
+        "max": 2709839872
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.778,
+        "p95": 0.778
+      }
+    },
+    {
+      "request": "Write a short story about a blacksmith who forgets his own name.",
+      "samples": 1,
+      "cpuSeconds": {
+        "p50": 14.719,
+        "p95": 14.719,
+        "max": 14.719
+      },
+      "wallSeconds": {
+        "p50": 16.82,
+        "p95": 16.82,
+        "max": 16.82
+      },
+      "peakResidentSetBytes": {
+        "p50": 3270987776,
+        "p95": 3270987776,
+        "max": 3270987776
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0,
+      "cpuPerWall": {
+        "p50": 0.875,
+        "p95": 0.875
+      }
+    }
+  ],
+  "referenceComparison": {
+    "available": true,
+    "source": "artifacts/parity-dataset/reference-comparison-live.json",
+    "generatedAt": "2026-09-11T09:48:52.079Z",
+    "compareModel": "qwen2.5:3b",
+    "modelAdvantage": "the model is given the article in its prompt; scce retrieves from the whole corpus",
+    "measurement": "client-observed wall clock per question, both systems measured the same way in the same run",
+    "reference": {
+      "samples": 99,
+      "wallSeconds": {
+        "p50": 42.67,
+        "p95": 52.428,
+        "max": 73.054
+      },
+      "cpuSeconds": null,
+      "peakResidentSetBytes": null,
+      "gpuSeconds": null,
+      "apiTokens": null,
+      "unmeasured": {
+        "cpuSeconds": "the harness that produced this file sampled no per-process CPU for the reference",
+        "peakResidentSetBytes": "no resident-set sample was taken for the reference process",
+        "gpuSeconds": "no GPU counter was sampled; whether the local runner used the iGPU is unrecorded",
+        "apiTokens": "prompt_eval_count/eval_count were not recorded; tools/head-to-head/run.mjs can record them but no results file from it exists"
+      }
+    },
+    "scceSameRun": {
+      "samples": 99,
+      "wallSeconds": {
+        "p50": 13.399,
+        "p95": 24.37,
+        "max": 27.762
+      },
+      "gpuSeconds": 0,
+      "apiTokens": 0
+    }
+  }
+}
