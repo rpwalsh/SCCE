@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { corpusNamedIdentities } from "./corpus-identity.js";
+import { corpusIdentityGeneration, corpusIdentitySurface, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
 import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -2432,7 +2432,18 @@ export function sourceAnchoredEvidenceForRequest(
   identityBoundEvidenceIds?: ReadonlySet<string>
 ): EvidenceSpan[] {
   if (evidence.length < 2 || !anchors.length) return [...evidence];
-  const exactTitled = evidence.filter(span => anchors.some(anchor => evidenceTitleExactlyMatchesAnchor(span, anchor)));
+  // Among the anchors some source is exactly titled with, only the maximal ones identify. A source titled with a
+  // run CONTAINED in a longer titled anchor is a broader, different subject, and the request named the longer one
+  // -- the same rule corpus-identity.ts applies to a request's own runs, where "moby dick" answers for "moby".
+  // Without it "Star Trek" exactly titles an anchor of "Who created Star Trek: Deep Space Nine?" and the franchise
+  // article competes with the series the request names.
+  const titledAnchors = anchors.filter(anchor => evidence.some(span => evidenceTitleExactlyMatchesAnchor(span, anchor)));
+  const identifyingAnchors = titledAnchors.filter(anchor => !titledAnchors.some(other =>
+    other !== anchor
+    && sourceAnchorPhraseContains(splitPriorUnits(normalizePriorKey(other)).filter(Boolean), splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean))
+    && !sourceAnchorPhraseContains(splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean), splitPriorUnits(normalizePriorKey(other)).filter(Boolean))));
+  const exactTitled = evidence.filter(span => (identifyingAnchors.length ? identifyingAnchors : anchors)
+    .some(anchor => evidenceTitleExactlyMatchesAnchor(span, anchor)));
   if (!exactTitled.length || exactTitled.length === evidence.length) return [...evidence];
   const frameBound = semanticFrameBoundEvidenceIds?.size
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
@@ -2755,8 +2766,17 @@ export function graphFilteredToEvidence(graph: GraphSlice, evidence: readonly Ev
 
 
 const sourceEvidenceAnchorsByRequest = new Map<string, string[]>();
+let sourceEvidenceAnchorsGeneration = -1;
 
 export function sourceEvidenceAnchorsForRequest(requestText: string): string[] {
+  // The anchors are derived from the corpus signal, so they survive only as long as it does. A turn's first caller
+  // runs before the corpus has been primed for that request, and a process-lifetime memo froze the identity-free
+  // answer for every later caller: "When did Apollo 11 land on the Moon?" anchored on "did apollo 11 land" while
+  // the corpus was titled "apollo 11", and the Apollo 11 spans lost admission to the Greek god's article (live).
+  if (sourceEvidenceAnchorsGeneration !== corpusIdentityGeneration()) {
+    sourceEvidenceAnchorsByRequest.clear();
+    sourceEvidenceAnchorsGeneration = corpusIdentityGeneration();
+  }
   const memoized = sourceEvidenceAnchorsByRequest.get(requestText);
   if (memoized) return memoized;
   const derived = deriveSourceEvidenceAnchorsForRequest(requestText);
@@ -2867,7 +2887,10 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
         supportMass += kernelClamp01(span.alpha);
       }
       if (!exactTitleMatches && !completeSourceMatches) return undefined;
-      const requestOrder = normalizePriorKey(requestText).indexOf(normalizePriorKey(anchor));
+      // Read the request the way the anchor was built, or an anchor spanning the source's own punctuation is
+      // never found in it: "star trek deep space nine" scored as absent from "Who created Star Trek: Deep Space
+      // Nine?" and lost the earlier-is-the-subject tie-break to "star trek", whose article then owned the turn.
+      const requestOrder = corpusIdentitySurface(requestText).indexOf(corpusIdentitySurface(anchor));
       return { anchor, exactTitleMatches, completeSourceMatches, supportMass, requestOrder: requestOrder < 0 ? Number.MAX_SAFE_INTEGER : requestOrder };
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row))
@@ -3011,7 +3034,11 @@ export function sourceAnchorPhraseContains(sourceUnits: readonly string[], ancho
   const exactSurfaces = title ? [title] : [];
   return exactSurfaces.some(surface => {
     const normalized = normalizePriorKey(surface);
-    return Boolean(normalized) && anchors.some(anchor => normalized === anchor);
+    if (!normalized) return false;
+    // Compared as the corpus names it: an anchor arrives reduced to its units, so a title's own punctuation must
+    // not decide whether the source that IS the subject is the exact one.
+    const identity = corpusIdentitySurface(surface);
+    return anchors.some(anchor => normalized === anchor || (Boolean(identity) && identity === corpusIdentitySurface(anchor)));
   });
 }
 
@@ -3072,7 +3099,14 @@ function anchorIsRequestSubjectUnit(anchor: string, anchors: readonly string[]):
   const title = normalizePriorKey(rawTitle);
   const coreTitle = normalizePriorKey(stripParentheticalTitleQualifiers(rawTitle));
   const normalizedAnchor = normalizePriorKey(anchor);
-  return Boolean(normalizedAnchor) && (title === normalizedAnchor || coreTitle === normalizedAnchor);
+  if (!normalizedAnchor) return false;
+  if (title === normalizedAnchor || coreTitle === normalizedAnchor) return true;
+  // Same comparison read as the corpus names it, so "Star Trek: Deep Space Nine" is the exact source for the
+  // anchor the request supplied and stops competing on equal footing with "Star Trek".
+  const identityAnchor = corpusIdentitySurface(anchor);
+  if (!identityAnchor) return false;
+  return corpusIdentitySurface(rawTitle) === identityAnchor
+    || corpusIdentitySurface(stripParentheticalTitleQualifiers(rawTitle)) === identityAnchor;
 }
 
 
