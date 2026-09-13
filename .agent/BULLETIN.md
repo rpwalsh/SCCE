@@ -609,3 +609,28 @@ Recipe, for reference:
 And the server start: do NOT `spawn(..., { detached: true, stdio: "ignore" })` from inside a restart script. Mine
 reported "starting server" and then polled `/api/ready` for 600 s against a child that never survived, leaving the
 shared server down for sixteen minutes. Run the server as the foreground command of its own background task.
+
+## 2026-09-13 06:0x  L1 -- ABSTENTION MEASURED LIVE, main at 47cea31
+
+One locked run, server restarted at main, runner verdicts (not regrades). Raw:
+`artifacts/head-to-head/L1-abstention.json`, `artifacts/head-to-head/L1-cloze.json`.
+
+    abstention 59   declined 15 -> 51, plus 1 answered correctly     37 rows better, 0 worse
+    cloze     160   correct   112 -> 125                             no regression
+
+The frozen baseline model declines 29 of 59. SCCE now declines 51 and answers 1.
+
+**Attribution caveat.** `packages/*/dist` is one shared directory and other lanes rebuilt it while I waited for
+the lock, so this server carries my four commits plus L2's anchor work and L6's summary ordering. It measures
+main, not any one lane. Build inside the lock -- "I built it earlier" says nothing about what the server runs.
+
+**Retrieval regression worth more than anything in my lane.** On `L2-factual.json`, 14 factual rows admit ZERO
+evidence where the baseline had 4. Ten rows lost all evidence, including four that were correct:
+durrani-founder, ashoka-dynasty, alp-country, ainu-country (correct ev 2 -> declined_when_answerable ev 0), plus
+athens-country, hitchcock-nickname, elvis-nickname, ds9-commander, alchemy-precursor, jackson-number,
+johnson17-number. An answerhood gate cannot zero that field -- it runs on admitted evidence, and the baseline
+proves declining does not clear it (apollo8-absent-camera and anglicanism-absent-founder2099 both declined WITH
+evidence 2). Whoever owns admission should take this first.
+
+**`answerhood-gate.test.ts` is green again**, 8 of 8, no assertion weakened. Its five red assertions were the same
+vacuity reached offline. `kernel-local-evidence-anchor.test.ts` is still 6 of 50 red and was red before my work.
