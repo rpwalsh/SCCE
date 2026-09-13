@@ -219,6 +219,7 @@ import { isRequestRequirementPattern } from "./request-requirement-learning.js";
 import type { LanguagePatternRecord, ScceKernelDeps } from "./storage.js";
 import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
+import { buildCognitiveCapabilityManifest, type CognitiveCapability } from "./cognitive-capability-manifest.js";
 import { primeCorpusIdentityForTurn } from "./corpus-identity-runtime.js";
 import { createTurnSignals } from "./turn-signals.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
@@ -4799,7 +4800,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           durationMs: Date.now() - turnStarted,
           output: previewTraceText(emission.answer),
           counts: { answerChars: emission.answer.length, evidence: selectedEvidence.length, events: events.length },
-          support: { timing, budgetExceeded: timing.budgetExceeded }
+          support: {
+            timing,
+            budgetExceeded: timing.budgetExceeded,
+            capabilities: turnCapabilityManifest({ field: runtimeState.lastField, hydratedModels: surfaceLanguageMemory.models?.length ?? 0 })
+          }
         });
         return {
           episodeId,
@@ -4946,7 +4951,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         durationMs: Date.now() - turnStarted,
         output: previewTraceText(emission.answer),
         counts: { answerChars: emission.answer.length, evidence: selectedEvidence.length, events: events.length },
-        support: { timing, budgetExceeded: timing.budgetExceeded }
+        support: {
+            timing,
+            budgetExceeded: timing.budgetExceeded,
+            capabilities: turnCapabilityManifest({ field: runtimeState.lastField, hydratedModels: surfaceLanguageMemory.models?.length ?? 0 })
+          }
       });
       return {
         episodeId,
@@ -5514,6 +5523,57 @@ function trimToSentenceBoundary(text: string, limit: number): string {
  * it is left to finish and populate the cache the next turn will hit, with its rejection absorbed so a late failure
  * cannot surface as an unhandled rejection long after the turn returned.
  */
+
+/**
+ * What cognition actually ran this turn, read from what the turn observed rather than from what exists.
+ *
+ * The module that defines these states had zero callers, so the remedy for a component silently reporting
+ * success while returning identity was itself unreachable. Reported beside the timing so an external program
+ * can answer what ran, what was inert, and what only produced diagnostics.
+ */
+function turnCapabilityManifest(input: {
+  field?: { ppfDiagnostics?: JsonValue } | undefined;
+  hydratedModels: number;
+}): JsonValue {
+  const diagnostics = jsonRecord(input.field?.ppfDiagnostics);
+  const relationPotential = jsonRecord(diagnostics.relationPotential);
+  const mode = kernelString(relationPotential.mode);
+  const fieldOperators = jsonRecord(diagnostics.fieldOperators);
+  const capabilities: CognitiveCapability[] = [
+    {
+      id: "relation-potential",
+      // A promoted artifact is the only thing that earns "active"; identity is inert, never a successful run.
+      status: mode === "frozen_model" ? "active"
+        : mode === "identity_condition_disabled" ? "disabled_explicitly"
+        : "inert_unconfigured",
+      traced: true,
+      artifact: mode === "frozen_model" ? "promoted" : "untrained",
+      artifactId: kernelString(relationPotential.modelId) || null,
+      ...(mode === "frozen_model" ? {} : { note: "no fitted model reaches production; returns identity" })
+    },
+    {
+      id: "query-diffusion",
+      // The personalized random walk: it produces the activation mass that selects the active slice.
+      status: kernelNumber(diagnostics.iterations) > 0 ? "active" : "bypassed_not_applicable",
+      traced: true
+    },
+    {
+      id: "field-operators",
+      // Heat, wave and spectral. Nothing in the turn reads their output, so they cannot change an answer.
+      status: Object.keys(fieldOperators).length ? "diagnostic_only" : "disabled_explicitly",
+      traced: Object.keys(fieldOperators).length > 0,
+      note: "writes only to diagnostics; opt-in"
+    },
+    {
+      id: "language-hydration",
+      status: input.hydratedModels > 0 ? "active" : "inert_unconfigured",
+      traced: true,
+      parameters: { models: input.hydratedModels },
+      ...(input.hydratedModels > 0 ? {} : { note: "hydration returned no models; the turn ran without language" })
+    }
+  ];
+  return toJsonValue(buildCognitiveCapabilityManifest(capabilities) as unknown as JsonValue);
+}
 
 function withStageBudget<T>(work: Promise<T>, budgetMs: number, fallback: () => Promise<T>, onOverrun?: (elapsedMs: number) => void): Promise<T> {
   const started = Date.now();

@@ -28,6 +28,8 @@ export type CognitiveCapabilityStatus =
   | "bypassed_not_applicable"
   /** Wired and reachable, but its learned artifact does not exist, so it degrades to identity. NOT "working". */
   | "inert_unconfigured"
+  /** Runs, but its output reaches only diagnostics and no decision, so it cannot change an answer. */
+  | "diagnostic_only"
   /** Switched off deliberately, by condition or configuration. */
   | "disabled_explicitly"
   /** Attempted and failed. */
@@ -61,6 +63,8 @@ export interface CognitiveCapabilityManifest {
   readonly capabilities: readonly CognitiveCapability[];
   /** Capabilities that are running but whose cost and contribution are unmeasured. */
   readonly observationalBlindSpots: readonly string[];
+  /** Capabilities that run but whose output no decision reads. Cost without possible contribution. */
+  readonly diagnosticOnly: readonly string[];
   /** Capabilities an architecture diagram would show as present that contribute nothing. */
   readonly inert: readonly string[];
 }
@@ -72,6 +76,7 @@ export function buildCognitiveCapabilityManifest(
     schema: "scce.cognitive_capability_manifest.v1",
     capabilities,
     observationalBlindSpots: capabilities.filter(row => row.status === "active" && !row.traced).map(row => row.id),
+    diagnosticOnly: capabilities.filter(row => row.status === "diagnostic_only").map(row => row.id),
     inert: capabilities.filter(row => row.status === "inert_unconfigured" || row.status === "unreachable").map(row => row.id)
   };
 }
