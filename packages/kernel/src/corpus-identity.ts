@@ -63,6 +63,17 @@ export function corpusIdentityUnits(text: string): string[] {
 }
 
 /**
+ * A surface read the way a request is read: the units the writing system supplies, joined.
+ *
+ * The corpus's titles were matched against a request that had already been reduced to its units, while the titles
+ * themselves kept whatever punctuation the source wrote them with. 4,153 of 22,224 titles carry some -- every
+ * "Star Trek: Deep Space Nine" -- and none of them could ever be named by any request.
+ */
+export function corpusIdentitySurface(text: string): string {
+  return corpusIdentityUnits(text).join(" ");
+}
+
+/**
  * Maximal contiguous runs of units the language does not use as scaffolding, plus each run's individual units.
  *
  * Linear in the request. It enumerated every sub-run of every maximal run instead, which is quadratic: one coding

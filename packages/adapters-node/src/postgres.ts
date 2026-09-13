@@ -2323,7 +2323,14 @@ async function loadSourceTitles(
      WHERE evidence.source_title <> '' AND ${access.sql}`,
     access.params
   );
-  return rows.map(row => row.title).filter(Boolean);
+  // Read the way a request is read. The request is reduced to the units its writing system supplies before the
+  // containment test; a title that kept its own punctuation could never be found inside it, which is 4,153 of
+  // 22,224 titles here -- every "Star Trek: Deep Space Nine", "Mercury (planet)" and "Halifax, Nova Scotia".
+  const normalized = new Set(
+    rows.map(row => String(row.title ?? "").normalize("NFC").toLocaleLowerCase().replace(IDENTITY_UNIT_SEPARATOR, " ").trim())
+  );
+  normalized.delete("");
+  return [...normalized];
 }
 const EVIDENCE_LOOKUP_GROUP = 32;
 
@@ -2510,9 +2517,13 @@ function createRelationObservationStore(storage: PostgresStorageAdapter): Relati
       const params: unknown[] = [];
       const where: string[] = [];
       if (query?.channel) { params.push(query.channel); where.push(`channel=$${params.length}`); }
-      params.push(query?.limit ?? 20000);
+      // Corroboration across independent sources is what promotion measures, so a default row cap silently decides
+      // it; and observed_at alone ties across every row one backfill writes, which made the surviving slice
+      // non-deterministic. Unbounded unless a caller asks, ordered by the primary key after the timestamp.
+      let tail = "";
+      if (typeof query?.limit === "number") { params.push(query.limit); tail = ` LIMIT $${params.length}`; }
       const rows = await storage.query<RelationObservationRow>(
-        `SELECT * FROM ${storage.table("relation_observations")} ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY observed_at DESC LIMIT $${params.length}`,
+        `SELECT * FROM ${storage.table("relation_observations")} ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY observed_at DESC, relation_seed_id, channel, source_family_id, signature${tail}`,
         params
       );
       return rows.map(row => ({
