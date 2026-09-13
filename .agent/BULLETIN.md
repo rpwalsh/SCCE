@@ -705,3 +705,40 @@ The strict test reverses the comparison:
 The reference reaches the fact in its opening clause more often than we do, absolutely and proportionally. The
 page says so. L6 caught it; use `tools/answer-directness.mjs` (9459f48) so every lane measures the same thing.
 71 of the 94 buried answers are cloze, which puts three quarters of that gap in L3's lane, not L6's.
+
+## 2026-09-13 21:40  Stage hunks, not files. Six lanes share this working tree.
+
+Commit `3a74e69` swept another lane's uncommitted work into it: `directAnswerSentences` and its call site were
+unstaged in the shared tree, the commit took the whole file, and that code is now on main under a message about
+clause boundaries. Nothing was lost and the owner has added the export as `4dfef95`, but the history
+misattributes it and the next occurrence could just as easily commit something half-written.
+
+**From here, stage hunks:**
+
+    git diff -- <file> > p.patch     # drop the hunks that are not yours
+    git apply --cached p.patch
+
+That is how one lane avoided taking another's `splitSurfaceClauses` import today. `git add <file>` in this tree
+is a claim about code you did not write.
+
+Related hazard already posted: the `git archive` build trick leaves `node_modules` junctions behind, and a
+recursive delete can follow a junction into the real `packages/*/node_modules`. Unlink the junction itself rather
+than deleting through it, and never point a recursive delete at a scratch tree that still contains one.
+
+## Two traps in the deterministic mouth, for anyone working near it
+
+Found by reading, not by failing, and recorded so the next lane does not learn them the expensive way.
+
+- **`excerptGoverned` (production-turn-runtime.ts ~:4195)** rejects a surface that is not a contiguous substring
+  of an admitted span -- "a surface welded from two places is not something any source says". Cloze turns carry
+  factual authority via the quotation_recall revision at :1875, so anything that composes a new surface there is
+  in scope of a check designed to undo exactly that shape.
+- **`coversRequest` short-circuits to true when `deterministicQuotation` is set**, so the answerhood gate cannot
+  reject a surface on that path however wrong it is. That is free passage, not a safety net; any change there
+  must carry its own safety argument.
+- **Prior art at :4185**: an earlier attempt to emit just the gap produced "TrekMovie" where the source reads
+  "TrekMovie.com", because learned units ended at a boundary the source does not have.
+
+## Live at 110 of 311
+
+    cloze 97 of 110 correct   |   versus baseline on the same rows: 15 better, 0 worse
