@@ -71,6 +71,19 @@ interface Evaluation {
   independentSourceCount: number;
 }
 
+// The scores of a relation refused for too few independent sources. Never read as evidence: the refusal is
+// unconditional, so these only fill the diagnostic record that says why it was not scored.
+const UNSCORED_EVALUATION: Evaluation = {
+  gainNats: 0,
+  baselineHeldoutNats: 0,
+  relationHeldoutNats: 0,
+  relationModelNats: 0,
+  baselineRecoveryProbability: 0,
+  relationRecoveryProbability: 0,
+  recoveryGain: 0,
+  independentSourceCount: 0
+};
+
 const DIRICHLET_ALPHA = 0.5;
 const MIN_INDEPENDENT_SOURCES = 4;
 const MIN_FIT_SOURCES = 2;
@@ -111,15 +124,30 @@ export function compileRelationPromotionModel(input: {
   // the one channel that produces thousands of relations. Same arithmetic, computed once per channel.
   const channelScope = channelScopes(observations, fit, holdout, hasher);
   const channelOf = new Map<string, SemanticCandidateChannel>();
-  for (const row of observations) if (!channelOf.has(row.relationSeedId)) channelOf.set(row.relationSeedId, row.channel);
+  // One pass for the per-seed observation count. It was `observations.filter(...)` inside the decision loop, which
+  // is a scan of every observation per relation: at 570,949 accumulated observations over 282,971 seeds that is
+  // 1.6e11 comparisons and the pass did not finish in 22 minutes of pegged CPU. Same number, computed once.
+  const observationCount = new Map<string, number>();
+  for (const row of observations) {
+    if (!channelOf.has(row.relationSeedId)) channelOf.set(row.relationSeedId, row.channel);
+    observationCount.set(row.relationSeedId, (observationCount.get(row.relationSeedId) ?? 0) + 1);
+  }
   const decisions = relationSeedIds.map(relationSeedId => {
     const channel = channelOf.get(relationSeedId)!;
     const scope = channelScope.get(channel)!;
-    const actual = evaluateRelation(relationSeedId, scope.actual, scope.holdoutBySeed);
     const sourceCount = scope.observationSourceFamilies.get(relationSeedId)?.size ?? 0;
     const fitSourceFamilyIds = scope.fitSourceFamilies.get(relationSeedId) ?? [];
     const holdoutSourceFamilyIds = scope.holdoutSourceFamilies.get(relationSeedId) ?? [];
-    const controls = controlResults(relationSeedId, scope);
+    // A relation short of independent sources is refused whatever the arithmetic says, because the reason below is
+    // unconditional and `promoted` is `reasons.length === 0`. Its description length and its three negative
+    // controls cannot change that verdict, and the duplicate control alone builds an array the size of the whole
+    // fit set per relation. Not computing a score whose verdict is already fixed lowers no bar; 270,737 of the
+    // corpus's 282,971 seeds are in this case, and the reasons they carry say exactly why they were not scored.
+    const scorable = sourceCount >= MIN_INDEPENDENT_SOURCES;
+    const actual = scorable
+      ? evaluateRelation(relationSeedId, scope.actual, scope.holdoutBySeed)
+      : UNSCORED_EVALUATION;
+    const controls = scorable ? controlResults(relationSeedId, scope) : [];
     const reasons: string[] = [];
     if (sourceCount < MIN_INDEPENDENT_SOURCES) reasons.push("insufficient_independent_sources");
     if (fitSourceFamilyIds.length < MIN_FIT_SOURCES) reasons.push("insufficient_fit_source_families");
