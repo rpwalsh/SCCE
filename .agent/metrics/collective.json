@@ -14,6 +14,34 @@
       "reverted": 0,
       "verified": 10,
       "at": "2026-09-13T06:20:31.780Z"
+    },
+    {
+      "run": "lean-20260913-T10",
+      "process": "lean",
+      "task": "T10",
+      "workers": 1,
+      "tokens": 123894,
+      "wallMs": 2598713,
+      "findings": 4,
+      "falsePremises": 1,
+      "commits": 1,
+      "reverted": 0,
+      "verified": 1,
+      "at": "2026-09-13T06:59:38.297Z"
+    },
+    {
+      "run": "lean-20260913-T11b",
+      "process": "lean",
+      "task": "T11b",
+      "workers": 1,
+      "tokens": 100550,
+      "wallMs": 380247,
+      "findings": 3,
+      "falsePremises": 1,
+      "commits": 1,
+      "reverted": 0,
+      "verified": 1,
+      "at": "2026-09-13T07:18:04.956Z"
     }
   ]
 }

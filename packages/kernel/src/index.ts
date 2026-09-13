@@ -126,6 +126,7 @@ export * from "./causal-estimation.js";
 export * from "./identified-causal-graph.js";
 export * from "./conformal-causal-risk.js";
 export * from "./graph-analytics.js";
+export * from "./cognitive-capability-manifest.js";
 export * from "./field.js";
 export * from "./green-potential.js";
 export * from "./equation-operators.js";
