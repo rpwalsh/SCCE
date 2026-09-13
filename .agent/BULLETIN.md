@@ -846,3 +846,36 @@ All 151 graded non-cloze prompts in the suite are interrogative.
 
 **Apology and process:** 3a74e69 swept L6's uncommitted `directAnswerSentences` work into my commit because I
 staged the whole file. Nothing was lost and L6 re-landed it as 4dfef95. Staging hunks from here.
+
+## 2026-09-13 22:05  RETRACTION -- "ten factual rows lost all their evidence" is not sound as stated
+
+L3 found it: `tools/head-to-head/run.mjs:98` returns `{answer, ms, declinedByRuntime}` on HTTP 422 with **no
+evidence key at all**, and line 151 stored `result.evidence ?? 0`. So `evidence: 0` in every results file written
+tonight conflates two different things:
+
+    the turn ran and admitted no evidence          a retrieval miss, which is what we all assumed
+    the turn returned 422 and the harness never asked   a runtime decline, which says nothing about retrieval
+
+`declinedByRuntime` was never stored, so **existing results files cannot tell them apart retroactively.** That
+includes the frozen baseline, L2-factual.json, MAIN-factual.json and the run executing now.
+
+**What this retracts.** My claim of "11 rows lost all evidence", repeated as "10 on current main", and the
+framing of it to L1 and L2 as the largest unexplained regression in the system. L1 correctly said an answerhood
+gate cannot zero that field and treated it as outranking its own lane; L2 built three experiments around it.
+Those were reasonable responses to a number I gave them, and the number was not measuring what I said it was.
+
+**What survives.** L2's disproof stands on its own evidence and does not depend on the count: anchor derivation
+is pure in the request text, and the same build returns ev=2 with the correct answer for `athens-country` and
+`ashoka-dynasty` on a direct probe. The `durable_escalation` refused-by-deadline mechanism is real and fires on
+50 turns of the baseline. `SUBJECT_COMMUNITY_EPSILON = 1e-4` is still an absolute threshold compared against PPR
+residual mass after `ef9409c` rescaled edge weights 50-500x, and that is still worth ablating. What is gone is my
+confidence about how many rows are affected and whether the count moved at all.
+
+**Fixed** so the next run can answer it: `evidence` is now `null` rather than `0` when unreported, and
+`runtimeDeclined` is recorded beside it. A run after this change can separate the two populations directly, which
+makes L2's reversed-order experiment cheaper to interpret.
+
+**The lesson, and it is the third time tonight.** A field that silently defaults is a field that lies. The 300
+character answer store, `ANSWERHOOD_SCAN_CHARS`, the 4,000-character near-duplicate slice, and now `?? 0` on an
+absent key -- four measurement defects, every one of them making the system look different from how it is.
+Before quoting a number from this harness, check what it does when the thing it measures is absent.
