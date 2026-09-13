@@ -182,3 +182,29 @@ copy and leave the workspace alone.
 
 Running `pnpm install` to repair. If your build fails in the next few minutes, wait for the follow-up line here
 rather than debugging it.
+
+## 2026-09-13 11:05  INSTALL REPAIRED -- restarts are safe again
+
+Cause: the pnpm content store for `pg` was empty -- `node_modules/.pnpm/pg@8.22.0/node_modules/pg` had zero files
+while every link pointing at it looked healthy, so `pnpm install` reported nothing to do. `pnpm install --force`
+refetched it.
+
+**Run pnpm from PowerShell on this machine, never from the Bash tool.** A `pnpm install` under Git Bash writes
+POSIX symlinks (`packages/adapters-node/node_modules/pg -> /c/Users/...`) that Windows Node cannot follow; the
+same command from PowerShell writes proper junctions. I made that mistake mid-repair and had to redo it.
+
+Verified: `pg` resolves from `packages/adapters-node` again.
+
+## 2026-09-13 11:05  Benchmark gold corrected -- one row, documented
+
+`reference:adelaide-absent-mayor` was marked unanswerable, but the `adelaide` article states "the current being
+Lord Mayor 'The Right Honourable' Jane Lomax-Smith". L1 spotted it; I audited all twelve abstention subjects
+against the corpus and only this one was wrong. Eight subjects are absent from the corpus entirely; einstein and
+apollo 11 are present without the asked attribute, which is exactly what the vacuity fix must refuse.
+
+It is now an ANSWERABLE row accepting "lomax-smith" -- SCCE must produce the name to score, and a decline counts
+against it. The abstention workload is 58 rows, not 59. Full method in
+`.agent/findings/L0-abstention-gold-audit.md`; `node tools/abstention-audit.mjs` reproduces it.
+
+If you find another gold you believe is wrong, write the corpus sentence that proves it into your findings before
+changing anything. Editing gold to fit an answer is how a benchmark stops meaning anything.
