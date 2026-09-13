@@ -1,0 +1,11 @@
+import { createTrace } from "../packages/kernel/dist/debug/trace.js";
+import { createNodeRuntime, readScceRuntimeConfig } from "../packages/adapters-node/dist/index.js";
+process.env.SCCE_TRACE = "1";
+const config = await readScceRuntimeConfig("scce.config.json");
+const runtime = createNodeRuntime(config);
+await runtime.kernel.warmup({ languageLimit: 64 }).catch(() => undefined);
+const trace = createTrace("creative-probe2");
+globalThis.__sccTrace = trace;
+const result = await runtime.kernel.turn({ text: "Write a short story about an old sailor searching for a lost ship." });
+console.log(JSON.stringify({ answer: result.answer, force: result.epistemicForce, traceFile: trace?.file }, null, 1));
+await runtime.close();
