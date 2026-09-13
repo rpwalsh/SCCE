@@ -1,46 +1,37 @@
-# Undeclared constant candidates
+# Arbitrary modeling constants written inline
 
-Scanned 329 files under packages/kernel/src. 109 carry 3 or more.
+Weights and thresholds in the unit interval that decide behaviour and were chosen by hand.
+Slice bounds, limits, counts, indices and tolerances are excluded: 275 were skipped as cost bounds.
 
-A cost bound is legitimately inline. A modeling parameter is not. This ranks; a person decides.
-
-| file | inline | reads registry | example |
+| file | count | reads registry | example |
 | --- | ---: | :---: | --- |
-| packages/kernel/src/learned-graph-prior-runtime.ts | 138 | NO | `const contradictionPressure = kernelClamp01(input.field.alphaTrace.surfaces.contradiction * 0.58` |
-| packages/kernel/src/local-evidence-runtime.ts | 136 | yes | `const units = uniqueKernelStrings(anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(an` |
-| packages/kernel/src/mouth.ts | 110 | NO | `const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= 0.6` |
-| packages/kernel/src/language-memory-runtime.ts | 94 | NO | `const continuationModel = input.state.models.find(model => model.order >= 3) ?? input.state.mode` |
-| packages/kernel/src/question-slot-planner.ts | 88 | NO | `const collectionPartial = context.questionTypeId === QUESTION_TYPE_IDS.collectionMember && selec` |
-| packages/kernel/src/walsh-surface-energy.ts | 85 | NO | `return { raw: declared, reasonIds: [declared >= 0.6 ? "surface.general.meaning.preserved" : "sur` |
-| packages/kernel/src/graph-edge-quality.ts | 66 | NO | `if (predicate.symbols.length <= 1 && predicate.charCount <= 4) reasonIds.push(GRAPH_QUALITY_REAS` |
-| packages/kernel/src/program-planner.ts | 66 | NO | `{ source: sourceEmission.id, target: entrypointFor(shape), relation: "entrypoint", weight: 0.95 ` |
-| packages/kernel/src/typed-ingest.ts | 45 | NO | `.filter(cell => likelyNaturalLanguage(cell.value) > 0.58)` |
-| packages/kernel/src/question-cognitive-edge.ts | 41 | NO | `if (input.unitCount <= 3 && input.hasQuestionBoundary) return "compact";` |
-| packages/kernel/src/semantic-obligations.ts | 38 | NO | `const stability = clamp01(1 - input.field.alphaTrace.surfaces.drift * 0.55 - input.field.alphaTr` |
-| packages/kernel/src/dialogue-pragmatics.ts | 37 | NO | `add(DIALOGUE_ACTION_IDS.answer, 0.5 + (enoughInformation ? 0.28 : -0.18) + weight(profile, INTER` |
-| packages/kernel/src/candidate.ts | 34 | NO | `mass: clamp01(base * 0.68 + (operator?.boltzmannProbability ?? base) * 0.32),` |
-| packages/kernel/src/runtime-graph-retrieval.ts | 32 | NO | `const evidence = (await deps.storage.evidence.searchEvidence({ features, limit: 40 })).map(item ` |
-| packages/kernel/src/semantic-proof-system.ts | 32 | NO | `support: Math.max(0, best.constraints - openObligationCount(best) * 0.12),` |
-| packages/kernel/src/tool-cognition.ts | 32 | NO | `if (pressure <= 0.08) return;` |
+| packages/kernel/src/language-memory-runtime.ts | 99 | NO | `const total = clamp01(0.46 * score.activation + 0.34 * requestFit + 0.2 * (candidate.fit ?? score.fi` |
+| packages/kernel/src/learned-graph-prior-runtime.ts | 79 | NO | `const contradictionPressure = kernelClamp01(input.field.alphaTrace.surfaces.contradiction * 0.58 + i` |
+| packages/kernel/src/question-slot-planner.ts | 60 | NO | `contributionScore(fact) > 0.54 &&` |
+| packages/kernel/src/mouth.ts | 55 | NO | `const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= 0.6` |
+| packages/kernel/src/walsh-surface-energy.ts | 54 | NO | `repetition: -0.24,` |
+| packages/kernel/src/tool-cognition.ts | 47 | NO | `const riskSurface = surfaces ? clamp01(0.35 * surfaces.risk + 0.25 * surfaces.contradiction + 0.2 * ` |
+| packages/kernel/src/graph-edge-quality.ts | 44 | NO | `const entityCentralitySupport = clamp01(0.55 * endpointCentrality(subject) + 0.45 * endpointCentrali` |
+| packages/kernel/src/semantic-obligations.ts | 42 | NO | `const stability = clamp01(1 - input.field.alphaTrace.surfaces.drift * 0.55 - input.field.alphaTrace.` |
+| packages/kernel/src/judge.ts | 37 | NO | `repetition: clamp01(0.16 + 0.18 * requirement.noveltyDemand),` |
+| packages/kernel/src/semantic-proof-system.ts | 35 | NO | `const faithfulnessLcb = clamp01(support - Math.sqrt(supportVariance + 0.02) - contradiction * 0.35 -` |
+| packages/kernel/src/benchmarks.ts | 33 | NO | `const residualRisk = clamp01(1 - score + contradictionRisk(turn.entailment) * 0.3 + validationRisk(t` |
+| packages/kernel/src/dialogue-pragmatics.ts | 31 | NO | `add(DIALOGUE_ACTION_IDS.answer, 0.5 + (enoughInformation ? 0.28 : -0.18) + weight(profile, INTERACTI` |
+| packages/kernel/src/invention-planner.ts | 31 | NO | `"authority.feature.request.creative": -0.72,` |
+| packages/kernel/src/candidate.ts | 30 | NO | `mass: clamp01(base * 0.68 + (operator?.boltzmannProbability ?? base) * 0.32),` |
 | packages/kernel/src/proof-calculus.ts | 30 | NO | `const supportCandidates = witnesses.filter(item => item.support > 0.08);` |
-| packages/kernel/src/invention-planner.ts | 28 | NO | `return events.length >= 4` |
-| packages/kernel/src/code-learning.ts | 27 | NO | `{ diagnostic: "syntax", recognizer: "parser location and nearest file operation", operation: "re` |
-| packages/kernel/src/ingestion-lanes.ts | 25 | NO | `if (observation.textPreview && likelyNaturalLanguage(observation.textPreview) > 0.35) stores.add` |
-| packages/kernel/src/engineering-corpus.ts | 24 | NO | `generatedFileCount: files.filter(file => file.generatedScore >= 0.7).length,` |
-| packages/kernel/src/answer-emitter.ts | 21 | NO | `const redundant = selected.some(item => weightedJaccard(item.features, candidate.features) > 0.8` |
-| packages/kernel/src/production-turn-runtime.ts | 21 | NO | `.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })` |
-| packages/kernel/src/learning-loop.ts | 20 | NO | `coverageGap: clamp01(1 - need.priority * 0.5),` |
-| packages/kernel/src/runtime-coherence.ts | 20 | NO | `if (evidenceCluster.pressure > 0.34) {` |
-| packages/kernel/src/functional-cognition.ts | 19 | NO | `const fc = cmpsAvailable && dci.available && fcsPrime >= 0.65 && fsi >= 0.6 && dci.dci >= 0.6 &&` |
-| packages/kernel/src/discourse-state.ts | 16 | NO | `(namesOwnSubject ? sparseMass : Math.max(sparseMass, 0.78)) * 0.58 + recencyMass * 0.18 + eviden` |
-| packages/kernel/src/engineering-corpus-runtime.ts | 16 | NO | `const languageScore = input.language && entry.language === input.language ? 0.32 : input.languag` |
-| packages/kernel/src/semantic-graph.ts | 16 | NO | `? proofPaths.filter(path => path.support >= 0.2 && path.contradiction <= 0.35).length / claimGra` |
-| packages/kernel/src/program.ts | 15 | NO | `{ id: "family:translation", kind: "construct:translation", label: validationMessageKey("construc` |
+| packages/kernel/src/functional-cognition.ts | 29 | NO | `const fc = cmpsAvailable && dci.available && fcsPrime >= 0.65 && fsi >= 0.6 && dci.dci >= 0.6 && gov` |
+| packages/kernel/src/learning-loop.ts | 24 | NO | `coverageGap: clamp01(1 - need.priority * 0.5),` |
+| packages/kernel/src/local-evidence-runtime.ts | 22 | yes | `const alphaBoost = lexical >= 0.025 // semanticFrameBoundAligned // priorityAligned // anchorAligned` |
+| packages/kernel/src/semantic-memory-index.ts | 22 | NO | `residentSafetyBoundBytes: Math.floor(input.residentSafetyBoundBytes * 0.28),` |
+| packages/kernel/src/answer-emitter.ts | 19 | NO | `score: clamp01(0.45 * sentence.lcb + 0.35 * weightedJaccard(claimFeatures, features) + 0.2 * (senten` |
+| packages/kernel/src/translation.ts | 18 | NO | `const preservation = clamp01(0.26 * semantic + 0.22 * topology + 0.19 * scriptFit + 0.11 * evidenceM` |
+| packages/kernel/src/code-learning.ts | 17 | NO | `const risk = clamp01(0.72 - 0.42 * input.graph.confidence + 0.22 * input.entailment.contradiction + ` |
+| packages/kernel/src/program-planner.ts | 17 | NO | `const support = clamp01(0.6 * entailment.support + 0.25 * entailment.faithfulnessLcb + 0.15 * (1 - e` |
+| packages/kernel/src/question-cognitive-edge.ts | 17 | NO | `if (item.fit.finalQuestionFit < 0.76) continue;` |
+| packages/kernel/src/runtime-coherence.ts | 16 | NO | `if (evidenceCluster.pressure > 0.34) {` |
 
-**107 files carry deciding constants and never read the registry at all.**
-Total inline candidates: 1929. Declared calibrations: 35.
+**83 files never read the registry.**
+Arbitrary constants inline: 1341. Declared calibrations: 35.
 
-DECLARED_COVERAGE 1.8%
-
-A number written inline cannot be audited, searched or fitted. Reading code to find them is the smell
-this replaces: run this, and declare whatever turns out to be a modeling parameter rather than a cost bound.
+DECLARED_COVERAGE 2.5%

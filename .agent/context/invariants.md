@@ -62,7 +62,15 @@ say how it would be searched. Use that: it is the only thing that made the field
 quietly.
 
 `node tools/undeclared-constants.mjs` reports the rest, and the integration gate prints the coverage every run.
-Measured 2026-09-13: **35 declared, 1,929 inline candidates across 107 files that never read the registry, 1.8%
-coverage.** A cost bound is legitimately inline and must say so in a comment; a modeling parameter is not.
+
+Count OBJECTS, not literals. Measured 2026-09-13: **165 hand-tuned weight vectors (125 of them summing to 1.0,
+holding 538 individual weights) plus 626 standalone thresholds = 791 decision objects. 35 declared. One fitted
+against held-out data.** A normalized weight vector is ONE calibration with one fit over a simplex, not four
+independent constants, and those 125 are the highest-value target because the machinery to fit exactly that shape
+already exists for the judge requirement weights.
+
+A cost bound is legitimately inline and must say so in a comment; a modeling parameter is not. The first version of
+this audit counted every literal and reported 1,929, which is the kind of number that gets a report ignored:
+275 were cost bounds, and slice bounds, limits, indices and tolerances are not calibration candidates at all.
 
 Finding constants by reading code is the smell this replaces.
