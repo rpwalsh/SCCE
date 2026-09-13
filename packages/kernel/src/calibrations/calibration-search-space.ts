@@ -433,7 +433,7 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "translation.semantic_score_energy_weight": weight(0, 1, [0.25, 0.45, 0.65]),
 
   // --- structural residue
-  "evidence.structural_residue_cut": threshold(0.02, 0.6, [0.06, 0.1289, 0.25, 0.4])
+  "evidence.structural_residue_cut": threshold(0.02, 0.6, [0.06, 0.1296, 0.25, 0.4])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */
