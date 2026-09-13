@@ -7,6 +7,7 @@ import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { selectClarificationQuestion } from "./clarification-question.js";
 import { isEntitySaladSurface } from "./evidence-gist.js";
+import { isStructuralResidueSurface } from "./structural-residue.js";
 import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncertainty.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
@@ -1497,7 +1498,12 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
         || enumerationAnswer(surface)
         || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) }));
+      // Apparatus is refused rather than deprioritized. Sorting it last only helps while something else survives,
+      // and a source whose only admitted span is its citation table then speaks the table: "the boiling point of
+      // tungsten" was answered with `["CITEREFMasten2003"] = 1,` repeated. A turn holding nothing but apparatus
+      // has nothing to say, and declining is the answer.
       const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
+        && !isStructuralResidueSurface(surface)
         && (terminalRuntimeMotionSelected
           || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
       // Which surface was chosen and why the others were not. The deterministic realizer had no trace at all,
@@ -1518,6 +1524,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           rows: clippedDeterministicSurfaces.slice(0, 5).map(surface => ({
             head: surface.slice(0, 60),
             admissible: admissibleMouthSurface(surface),
+            structuralResidue: isStructuralResidueSurface(surface),
             repeatsPrompt: surfaceRepeatsPrompt(surface, input.requestText ?? ""),
             covers: coversRequest(surface)
           }))

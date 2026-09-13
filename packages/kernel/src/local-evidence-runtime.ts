@@ -7,6 +7,7 @@ import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { isProseSentence } from "./evidence-gist.js";
+import { isStructuralResidueSurface } from "./structural-residue.js";
 import { traceEvent } from "./debug/trace.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import { anchorSymbolUnits, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -760,7 +761,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
     });
   })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence) && !cliticOpeningFragment(row.sentence))
+    // Serialized apparatus is never a candidate answer. Measured at sentence granularity, never at span
+    // granularity: an article whose span also holds a results table keeps its prose lead.
+    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence)
+      && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
@@ -4059,7 +4063,10 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       });
     })
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence) && !cliticOpeningFragment(row.sentence))
+    // Serialized apparatus is never a candidate answer. Measured at sentence granularity, never at span
+    // granularity: an article whose span also holds a results table keeps its prose lead.
+    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence)
+      && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
