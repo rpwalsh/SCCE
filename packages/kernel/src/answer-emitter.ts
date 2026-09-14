@@ -84,12 +84,13 @@ export function composeEvidenceGroundedAnswer(input: {
   const closedClass = requestClosedClassWords({
     requestText: input.requestText,
     models: input.languageMemory?.models ?? [],
+    continuationPopulation: input.languageMemory?.continuationPopulation,
     patterns: input.languageMemory?.importedPatterns ?? [],
     authority: undefined
   });
   const coverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit));
   // The language own scaffolding, which is what the answerhood gate re-derives an empty relation obligation against.
-  const languageClosedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
+  const languageClosedClass = deriveClosedClassWords({ models: input.languageMemory?.models ?? [], continuationPopulation: input.languageMemory?.continuationPopulation });
   const relationRequired = closedClass.size > 0;
   const realizedSurface = surfaceAnswersRequest(realizedSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired, languageClosedClass) ? realizedSurfaceRaw : "";
   const evidenceSurface = surfaceAnswersRequest(evidenceSurfaceRaw, gateSpans, coverageUnits, input.requestText, relationRequired, languageClosedClass) ? evidenceSurfaceRaw : "";

@@ -3854,6 +3854,44 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         );
       });
     },
+    async continuationPopulation(query) {
+      if (!query.languageId.trim()) return undefined;
+      const params: unknown[] = [query.languageId];
+      const profileWhere = ["lp.language_id=$1"];
+      appendInformationAccess(storage, "lp", params, profileWhere);
+      const modelWhere = [
+        `model.model_json->>'profileId'=ANY(ARRAY(
+           SELECT lp.id FROM ${storage.table("language_profiles")} lp WHERE ${profileWhere.join(" AND ")}
+         ))`
+      ];
+      appendInformationAccess(storage, "model", params, modelWhere);
+      const rows = await storage.query<{ symbol: string | null; contexts: string | null; model_count: number }>(
+        `WITH population AS MATERIALIZED (
+           SELECT model.id, model.model_json->'model'->'continuationCounts' AS counts
+           FROM ${storage.table("ngram_models")} model
+           WHERE ${modelWhere.join(" AND ")}
+         ), totals AS (
+           SELECT item.key AS symbol, SUM(item.value::numeric) AS contexts
+           FROM population
+           CROSS JOIN LATERAL jsonb_each_text(COALESCE(population.counts, '{}'::jsonb)) item
+           GROUP BY item.key
+         )
+         SELECT totals.symbol, totals.contexts::text, measured.model_count
+         FROM (SELECT COUNT(*)::int AS model_count FROM population) measured
+         LEFT JOIN totals ON true
+         ORDER BY totals.symbol`,
+        params
+      );
+      const modelCount = rows[0]?.model_count;
+      if (modelCount === undefined || modelCount === 0) return undefined;
+      const continuationCounts = Object.fromEntries(rows.flatMap(row => {
+        if (row.symbol === null || row.contexts === null) return [];
+        const count = Number(row.contexts);
+        if (!Number.isFinite(count) || count < 0) throw new Error("invalid corpus continuation count");
+        return [[row.symbol, count] as const];
+      }));
+      return { languageId: query.languageId, modelCount, continuationCounts };
+    },
     async listNgramModels(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];

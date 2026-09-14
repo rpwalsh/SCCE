@@ -26,7 +26,7 @@ import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./pri
 import {
   isRequestRequirementPattern
 } from "./request-requirement-learning.js";
-import type { LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
   EvidenceSpan,
@@ -148,13 +148,15 @@ function approximateHydrationEstimatedBytes(value: {
   patterns?: readonly unknown[];
   semanticFrames?: readonly unknown[];
   constructionEvidence?: readonly unknown[];
+  state?: { continuationPopulation?: { continuationCounts: Readonly<Record<string, number>> } };
 }): number {
   const jsonBytes = approximateRecordBytes(value.models ?? [])
     + approximateRecordBytes(value.units ?? [])
     + approximateRecordBytes(value.observations ?? [])
     + approximateRecordBytes(value.patterns ?? [])
     + approximateRecordBytes(value.semanticFrames ?? [])
-    + approximateRecordBytes(value.constructionEvidence ?? []);
+    + approximateRecordBytes(value.constructionEvidence ?? [])
+    + approximateRecordBytes(value.state?.continuationPopulation ? [value.state.continuationPopulation.continuationCounts] : []);
   return jsonBytes;
 }
 
@@ -225,6 +227,46 @@ export function createSurfaceLanguageRuntime(options: {
    * pay once and every later turn hit.
    */
   const surfaceLanguageMemoryInFlight = new Map<string, Promise<Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>>>();
+  const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
+  const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
+  let continuationPopulationGeneration = 0;
+
+  async function continuationPopulationCached(languageId: string): Promise<LanguageContinuationPopulation | undefined> {
+    if (!deps.storage.languageMemory.continuationPopulation) return undefined;
+    const cached = continuationPopulationCache.get(languageId);
+    const value = cached?.value.deref();
+    if (value && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return value;
+    const existing = continuationPopulationInFlight.get(languageId);
+    if (existing) return existing;
+    const generation = continuationPopulationGeneration;
+    const started = Date.now();
+    let result = "unmeasured";
+    const pending = (async () => {
+      try {
+        const population = await deps.storage.languageMemory.continuationPopulation!({ languageId });
+        if (generation !== continuationPopulationGeneration) return undefined;
+        if (population && population.languageId === languageId && population.modelCount > 0) {
+          // Hydrated states own the memory; this shared prior cache must not keep evicted populations alive.
+          boundedCacheSet(continuationPopulationCache, languageId, { loadedAt: clock.now(), value: new WeakRef(population) }, surfaceLanguageMemoryCacheMaxEntries);
+          result = "measured";
+          return population;
+        }
+        return undefined;
+      } catch {
+        result = "failed";
+        return undefined;
+      } finally {
+        traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+          stage: "language.hydrate.continuation_population", label: "kernel.language.hydrate",
+          durationMs: Date.now() - started, support: { languageId, result }
+        });
+      }
+    })();
+    continuationPopulationInFlight.set(languageId, pending);
+    try { return await pending; } finally {
+      if (continuationPopulationInFlight.get(languageId) === pending) continuationPopulationInFlight.delete(languageId);
+    }
+  }
 
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
 
@@ -326,14 +368,15 @@ export function createSurfaceLanguageRuntime(options: {
       semanticFrames: Math.min(Math.max(128, exactProfileOwnerCount * 128), hydrationLimits.semanticFrames)
     };
     const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, hydrationLimits);
-    const [active, requestControlPatterns] = await Promise.all([
+    const [active, requestControlPatterns, continuationPopulation] = await Promise.all([
       deps.storage.brainImports.active(),
-      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 }),
+      languageId ? continuationPopulationCached(languageId) : undefined
     ]);
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     const requestControlCompatibilityPatterns = requestControlPatterns
       .filter(isCreativeEventCompatibilityPattern);
-    if (!cluster && !preferredCorpusRoleId) {
+    if (!cluster && !preferredCorpusRoleId && !languageId) {
       const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
         importRunId: active.activeImportRunIds[0],
         models: [],
@@ -437,7 +480,7 @@ export function createSurfaceLanguageRuntime(options: {
       ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds)
       : [];
     hydrateHeapTrace("language.hydrate.loaded", { elapsedMs: Date.now() - hydrateStartedAt, modelsJsonMb: approxJsonMb(models), observationsJsonMb: approxJsonMb(observations), unitsJsonMb: approxJsonMb(units), patternsJsonMb: approxJsonMb(patterns), framesJsonMb: approxJsonMb(semanticFrames), constructionEvidenceJsonMb: approxJsonMb(constructionEvidence), models: models.length, observations: observations.length, units: units.length, patterns: patterns.length, semanticFrames: semanticFrames.length, constructionEvidence: constructionEvidence.length, queries: hydrationQueries.length });
-    const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
+    const hydratedBase = languageMemoryRuntime.hydrateFromImportedBrain({
       importRunId: active.activeImportRunIds[0],
       models,
       observations,
@@ -449,6 +492,7 @@ export function createSurfaceLanguageRuntime(options: {
       semanticFrames,
       constructionEvidence
     });
+    const hydrated = continuationPopulation ? { ...hydratedBase, continuationPopulation } : hydratedBase;
     hydrateHeapTrace("language.hydrate.built", { elapsedMs: Date.now() - hydrateStartedAt, importedUnits: hydrated.importedUnits?.length ?? 0, importedPatterns: hydrated.importedPatterns?.length ?? 0, constructionBundles: hydrated.importedConstructionBundles?.length ?? 0, rejectedBundles: hydrated.rejectedConstructionPatterns?.length ?? 0 });
     const roleProfileIds = new Set<string>([
       ...units.map(unit => unit.profileId),
@@ -645,8 +689,8 @@ export function createSurfaceLanguageRuntime(options: {
    * hydrations that actually carry language keeps the cache answer-transparent: a hit and a miss differ in time,
    * never in what the turn can say.
    */
-  function hydrationWorthCaching(value: { state?: { models?: readonly unknown[] } } | undefined): boolean {
-    return (value?.state?.models?.length ?? 0) > 0;
+  function hydrationWorthCaching(value: { state?: { models?: readonly unknown[]; continuationPopulation?: { modelCount: number } } } | undefined): boolean {
+    return (value?.state?.models?.length ?? 0) > 0 || (value?.state?.continuationPopulation?.modelCount ?? 0) > 0;
   }
 
   async function hydrateSurfaceLanguageMemoryCached(
@@ -1175,6 +1219,9 @@ export function createSurfaceLanguageRuntime(options: {
     },
     invalidate() {
       surfaceLanguageMemoryCache.clear();
+      continuationPopulationGeneration += 1;
+      continuationPopulationCache.clear();
+      continuationPopulationInFlight.clear();
       sourceOwnedAliasProfileCache.clear();
       surfaceCandidateProfileCache.clear();
       evidenceOwnedProfileCache.clear();

@@ -53,7 +53,7 @@ import {
   type Bm25SparseIndexState
 } from "./sparse-ranking.js";
 import { computeFtrlShadowRanking, type FtrlShadowCandidate, type FtrlShadowRanking } from "./sparse-ranking-shadow.js";
-import type { ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
 import type {
   EvidenceSpan,
   GraphEdge,
@@ -113,6 +113,7 @@ interface HotNeighborhoodClosureCandidate {
 // but a turn cannot enlarge this query frontier.
 /** Learned function material per hydrated model set: the derivation walks every unit the corpus knows. */
 const functionUnitsByModels = new WeakMap<object, ReadonlySet<string>>();
+const functionUnitsByPopulationAndModels = new WeakMap<object, WeakMap<object, ReadonlySet<string>>>();
 const HOT_QUERY_RADIUS = 2;
 const HOT_QUERY_SEED_LIMIT = 24;
 const HOT_QUERY_NODE_LIMIT = 96;
@@ -299,6 +300,7 @@ export function createRuntimeGraphRetrieval(options: {
     /** The role language's trained models, so anchor search can widen a relation word to its morphological
      *  siblings actually observed in the corpus's own vocabulary (see learnedMorphologicalSiblings). */
     languageModels?: readonly KneserNeyModel[];
+    continuationPopulation?: LanguageContinuationPopulation;
     /** This turn's evaluation trace, so a slice served from cache records which condition owns the entry. */
     evaluation?: { trace: EvaluationTraceRecorder };
   } = {}) {
@@ -307,7 +309,8 @@ export function createRuntimeGraphRetrieval(options: {
     const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
     const residentOnly = options.residentOnly === true;
     const languageModels = options.languageModels ?? [];
-    const sourceAnchorFeatures = sourceAnchoringRequired ? sourceAnchorRetrievalFeatures(text, languageModels) : [];
+    const continuationPopulation = options.continuationPopulation;
+    const sourceAnchorFeatures = sourceAnchoringRequired ? sourceAnchorRetrievalFeatures(text, languageModels, continuationPopulation) : [];
     const features = sourceAnchoringRequired
       ? sourceAnchorFeatures.map(feature => feature.slice("anchor:".length))
       : graphRetrievalFeatures(text);
@@ -401,7 +404,7 @@ export function createRuntimeGraphRetrieval(options: {
       // above (residentOnly: true) before falling through here; retrying
       // it non-resident would both double the lookup and break the bounded
       // turn's residency contract, so only attempt it once per turn.
-      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels);
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels, continuationPopulation);
       kernelTrace({
         stage: "graph.resolve.anchor_evidence",
         label: "kernel.graphForText",
@@ -671,10 +674,10 @@ function spanIsSourceCode(span: EvidenceSpan): boolean {
   return isCodeEvidenceSpan(span);
 }
 
-async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = []): Promise<SourceAnchoredEvidenceSelection> {
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
-    const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels);
+    const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels, continuationPopulation);
     const scaffoldingOnly = (group: readonly string[]) => Boolean(requestScaffolding?.size) && anchorGroupUnits(group).every(unit => requestScaffolding!.has(unit));
     const anchorFeatureGroups = allGroups.filter(group => !scaffoldingOnly(group));
     const droppedScaffoldingGroups = allGroups.length - anchorFeatureGroups.length;
@@ -914,13 +917,22 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   /** The corpus's own function material, by Kneser-Ney continuation count: the same derivation admission and
    *  ranking use. A unigram feature over it identifies no source; a bigram of two of them identifies no source
    *  either. A bigram with one content unit stays: "the|capital" has 1,156 postings against "the"'s 70,228. */
-  function retrievalFunctionUnits(languageModels: readonly KneserNeyModel[]): ReadonlySet<string> {
-    if (!languageModels.length) return new Set<string>();
+  function retrievalFunctionUnits(languageModels: readonly KneserNeyModel[], continuationPopulation?: LanguageContinuationPopulation): ReadonlySet<string> {
+    if (!languageModels.length && !continuationPopulation) return new Set<string>();
     // Derived once per hydrated model set: the walk is over every unit the corpus knows (322,259 here).
-    const cached = functionUnitsByModels.get(languageModels);
+    const populationCache = continuationPopulation
+      ? functionUnitsByPopulationAndModels.get(continuationPopulation) ?? new WeakMap<object, ReadonlySet<string>>()
+      : undefined;
+    if (continuationPopulation && !functionUnitsByPopulationAndModels.has(continuationPopulation)) {
+      functionUnitsByPopulationAndModels.set(continuationPopulation, populationCache!);
+    }
+    const cached = populationCache
+      ? populationCache.get(languageModels)
+      : functionUnitsByModels.get(languageModels);
     if (cached) return cached;
-    const derived = deriveClosedClassWords({ models: languageModels, limit: 160 });
-    functionUnitsByModels.set(languageModels, derived);
+    const derived = deriveClosedClassWords({ models: languageModels, continuationPopulation, limit: 160 });
+    if (populationCache) populationCache.set(languageModels, derived);
+    else functionUnitsByModels.set(languageModels, derived);
     return derived;
   }
 
@@ -940,8 +952,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   }
 
   /** The per-subject anchor groups, plus the one group that carries a quoted sentence rather than a subject. */
-  function sourceAnchorRetrievalFeatureGroups(text: string, languageModels: readonly KneserNeyModel[] = []): { groups: string[][]; quotedSentence?: readonly string[] } {
-    const functionUnits = retrievalFunctionUnits(languageModels);
+  function sourceAnchorRetrievalFeatureGroups(text: string, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation): { groups: string[][]; quotedSentence?: readonly string[] } {
+    const functionUnits = retrievalFunctionUnits(languageModels, continuationPopulation);
     const anchors = sourceEvidenceAnchorsForRequest(text);
     if (!anchors.length) return { groups: [], quotedSentence: undefined };
     const specificAnchors = anchors.filter(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean).length >= 2);
@@ -1120,8 +1132,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     }
   }
 
-  function sourceAnchorRetrievalFeatures(text: string, languageModels: readonly KneserNeyModel[] = []): string[] {
-    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text, languageModels).groups.flat()).slice(0, 16);
+  function sourceAnchorRetrievalFeatures(text: string, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation): string[] {
+    return uniqueKernelStrings(sourceAnchorRetrievalFeatureGroups(text, languageModels, continuationPopulation).groups.flat()).slice(0, 16);
   }
 
 
