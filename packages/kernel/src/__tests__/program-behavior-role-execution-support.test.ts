@@ -82,16 +82,11 @@ describe("program behavior role execution support", () => {
       .toThrow();
   });
 
-  it("retains server test execution when the graph has no source-observed tests command", () => {
-    const result = projectProgramBehaviorRoleExecutionSupport({
+  it("rejects server test execution when the graph has no tests command binding", () => {
+    expect(() => projectProgramBehaviorRoleExecutionSupport({
       graph: { ...graph(), validationCommandBindings: [{ commandId: "command.build", checkId: "compiler" }] },
       receipt: receipt([outcome("tests", 0)])
-    });
-    expect(result[0]?.testExecution).toEqual({
-      commandIndex: 0,
-      commandEvidenceHash: hash("3"),
-      graphCommandIds: []
-    });
+    })).toThrow(/graph-bound tests/u);
   });
 });
 

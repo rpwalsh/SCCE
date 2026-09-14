@@ -179,6 +179,9 @@ function validateReceipt(receipt: BehaviorRoleExecutionReceiptInput, graph: Beha
   if (!receipt.commandOutcomes.some(outcome => outcome.checkId === "tests")) {
     throw new Error("behavior execution support requires a passing tests validation command");
   }
+  if (!graph.validationCommandBindings.some(binding => binding.checkId === "tests")) {
+    throw new Error("behavior execution support requires a graph-bound tests validation command");
+  }
 }
 
 /** Extracts only content-addressed behavior and command identities from the exact task graph. */

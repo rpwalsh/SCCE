@@ -17,9 +17,12 @@ describe("program behavior validation ledger", () => {
     await first.bindPlan(binding());
     const restarted = ledger(events);
 
-    expect(await restarted.loadPlan(hash("a"))).toEqual(binding());
+    expect(await restarted.loadPlan({ workspaceId: "workspace.1", planHash: hash("a") })).toEqual(binding());
     const supports = await restarted.recordExecution({
+      workspaceId: "workspace.1",
       planHash: hash("a"),
+      validationPolicyId: "validation.policy.1",
+      validationBindingHash: hash("1"),
       receipt: {
         planHash: hash("a"),
         transactionReceiptHash: hash("b"),
@@ -40,7 +43,10 @@ describe("program behavior validation ledger", () => {
       memberObservationIds: ["observation.1"]
     }]);
     expect(await restarted.recordExecution({
+      workspaceId: "workspace.1",
       planHash: hash("a"),
+      validationPolicyId: "validation.policy.1",
+      validationBindingHash: hash("1"),
       receipt: {
         planHash: hash("a"),
         transactionReceiptHash: hash("b"),
@@ -56,18 +62,56 @@ describe("program behavior validation ledger", () => {
     await subject.bindPlan(binding());
     await expect(subject.bindPlan({ ...binding(), graph: { ...binding().graph, id: "graph.changed" } })).rejects.toThrow(/immutable/u);
   });
+
+  it("isolates identical plan bytes by workspace and validation policy", async () => {
+    const events = memoryLedger();
+    const subject = ledger(events);
+    await subject.bindPlan(binding("workspace.1", "validation.policy.1"));
+    await subject.bindPlan(binding("workspace.2", "validation.policy.2"));
+
+    expect(await subject.loadPlan({ workspaceId: "workspace.1", planHash: hash("a") }))
+      .toEqual(binding("workspace.1", "validation.policy.1"));
+    expect(await subject.loadPlan({ workspaceId: "workspace.2", planHash: hash("a") }))
+      .toEqual(binding("workspace.2", "validation.policy.2"));
+    await expect(subject.recordExecution({
+      workspaceId: "workspace.1",
+      planHash: hash("a"),
+      validationPolicyId: "validation.policy.2",
+      validationBindingHash: hash("2"),
+      receipt: {
+        planHash: hash("a"),
+        transactionReceiptHash: hash("b"),
+        validationEvidenceHash: hash("c"),
+        commandOutcomes: [{ checkId: "tests", commandIndex: 1, commandEvidenceHash: hash("d"), executed: true, passed: true }]
+      }
+    })).rejects.toThrow(/validation policy/u);
+    await expect(subject.recordExecution({
+      workspaceId: "workspace.1",
+      planHash: hash("a"),
+      validationPolicyId: "validation.policy.1",
+      validationBindingHash: hash("2"),
+      receipt: {
+        planHash: hash("a"),
+        transactionReceiptHash: hash("b"),
+        validationEvidenceHash: hash("c"),
+        commandOutcomes: [{ checkId: "tests", commandIndex: 1, commandEvidenceHash: hash("d"), executed: true, passed: true }]
+      }
+    })).rejects.toThrow(/validation binding/u);
+  });
 });
 
-function binding() {
+function binding(workspaceId = "workspace.1", validationPolicyId = "validation.policy.1") {
   return {
     schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
     planHash: hash("a"),
+    validationPolicyId,
+    validationBindingHash: validationPolicyId === "validation.policy.1" ? hash("1") : hash("2"),
     graph: {
       schema: "scce.workspace.task_constraint_graph.v1" as const,
       id: "graph.1",
-      workspaceRevision: { workspaceId: "workspace.1", revisionId: "revision.1", revisionHash: hash("e") },
+      workspaceRevision: { workspaceId, revisionId: "revision.1", revisionHash: hash("e") },
       analyzerRevision: { analyzerId: "analyzer.1", analyzerVersion: "1", semanticRevisionHash: hash("f") },
-      validationCommandBindings: [],
+      validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" as const }],
       constructions: [{
         id: "construction.1",
         kindId: "scce.program.behavior_role_construction.v1" as const,
@@ -91,8 +135,14 @@ function ledger(events: EventLedger) {
 function memoryLedger(): EventLedger {
   const rows: ScceEvent[] = [];
   return {
-    async append(event) { rows.push(event); },
-    async appendBatch(events) { rows.push(...events); },
+    async append(event) {
+      if (!rows.some(row => row.id === event.id)) rows.push(event);
+    },
+    async appendBatch(events) {
+      for (const event of events) {
+        if (!rows.some(row => row.id === event.id)) rows.push(event);
+      }
+    },
     async readEpisode(episodeId) { return rows.filter(event => event.episodeId === episodeId); },
     async readRange(query) { return rows.filter(event => !query.episodeId || event.episodeId === query.episodeId).slice(0, query.limit); },
     async latestLedgerHash() { return rows.at(-1)?.hash ?? ""; }

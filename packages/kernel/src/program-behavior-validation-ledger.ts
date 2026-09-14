@@ -14,20 +14,26 @@ import type { Clock, EpisodeId, EventId, EventTypeId, Hasher, JsonValue, ScceEve
 
 export const PROGRAM_BEHAVIOR_VALIDATION_PLAN_BOUND_EVENT = "ProgramBehaviorValidationPlanBound" as const;
 export const PROGRAM_BEHAVIOR_EXECUTION_SUPPORTED_EVENT = "ProgramBehaviorRoleExecutionSupported" as const;
-export const PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA = "scce.program.behavior_validation_plan_binding.v1" as const;
+export const PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA = "scce.program.behavior_validation_plan_binding.v2" as const;
 export const PROGRAM_BEHAVIOR_EXECUTION_EVENT_SCHEMA = "scce.program.behavior_execution_event.v1" as const;
 
 export interface ProgramBehaviorValidationPlanBinding {
   readonly schema: typeof PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA;
   readonly planHash: string;
+  readonly validationPolicyId: string;
+  /** Content identity of the complete server-owned policy and execution provider. */
+  readonly validationBindingHash: string;
   readonly graph: BehaviorRoleExecutionGraphInput;
 }
 
 export interface ProgramBehaviorValidationLedger {
   bindPlan(binding: ProgramBehaviorValidationPlanBinding): Promise<void>;
-  loadPlan(planHash: string): Promise<ProgramBehaviorValidationPlanBinding | null>;
+  loadPlan(input: { readonly workspaceId: string; readonly planHash: string }): Promise<ProgramBehaviorValidationPlanBinding | null>;
   recordExecution(input: {
+    readonly workspaceId: string;
     readonly planHash: string;
+    readonly validationPolicyId: string;
+    readonly validationBindingHash: string;
     readonly receipt: BehaviorRoleExecutionReceiptInput;
   }): Promise<readonly ProgramBehaviorRoleExecutionSupport[]>;
 }
@@ -38,11 +44,11 @@ export function createProgramBehaviorValidationLedger(deps: {
   readonly clock: Clock;
   readonly hasher: Hasher;
 }): ProgramBehaviorValidationLedger {
-  const episodeFor = (planHash: string) => programBehaviorValidationEpisodeId(planHash, deps.hasher);
+  const episodeFor = (workspaceId: string, planHash: string) => programBehaviorValidationEpisodeId(workspaceId, planHash, deps.hasher);
   return {
     async bindPlan(input) {
       const binding = verifyPlanBinding(input);
-      const episodeId = episodeFor(binding.planHash);
+      const episodeId = episodeFor(binding.graph.workspaceRevision.workspaceId, binding.planHash);
       const events = await deps.events.readEpisode(episodeId);
       const existing = boundEvent(events);
       if (existing) {
@@ -56,7 +62,10 @@ export function createProgramBehaviorValidationLedger(deps: {
         episodeId,
         typeId: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BOUND_EVENT,
         payload: binding,
-        identity: binding.planHash,
+        identity: canonicalStringify({
+          workspaceId: binding.graph.workspaceRevision.workspaceId,
+          planHash: binding.planHash
+        }),
         clock: deps.clock,
         hasher: deps.hasher
       }));
@@ -65,19 +74,26 @@ export function createProgramBehaviorValidationLedger(deps: {
         throw new Error(`program behavior validation plan binding is immutable: ${binding.planHash}`);
       }
     },
-    async loadPlan(planHash) {
-      verifyHash(planHash, "planHash");
-      const event = boundEvent(await deps.events.readEpisode(episodeFor(planHash)));
+    async loadPlan(input) {
+      verifyId(input.workspaceId, "workspaceId");
+      verifyHash(input.planHash, "planHash");
+      const event = boundEvent(await deps.events.readEpisode(episodeFor(input.workspaceId, input.planHash)));
       return event ? bindingFromEvent(event) : null;
     },
     async recordExecution(input) {
+      verifyId(input.workspaceId, "workspaceId");
       verifyHash(input.planHash, "planHash");
+      verifyId(input.validationPolicyId, "validationPolicyId");
+      verifyHash(input.validationBindingHash, "validationBindingHash");
       if (input.receipt.planHash !== input.planHash) throw new Error("program behavior execution receipt belongs to another plan");
-      const episodeId = episodeFor(input.planHash);
+      const episodeId = episodeFor(input.workspaceId, input.planHash);
       const events = await deps.events.readEpisode(episodeId);
       const bindingEvent = boundEvent(events);
       if (!bindingEvent) throw new Error(`program behavior validation plan binding is absent: ${input.planHash}`);
       const binding = bindingFromEvent(bindingEvent);
+      if (binding.graph.workspaceRevision.workspaceId !== input.workspaceId) throw new Error("program behavior execution workspace does not match the plan binding");
+      if (binding.validationPolicyId !== input.validationPolicyId) throw new Error("program behavior execution validation policy does not match the plan binding");
+      if (binding.validationBindingHash !== input.validationBindingHash) throw new Error("program behavior execution validation binding does not match the plan binding");
       const supports = projectProgramBehaviorRoleExecutionSupport({ graph: binding.graph, receipt: input.receipt }, deps.hasher);
       if (supports.length === 0) return [];
       const existing = events.find(event => String(event.typeId) === PROGRAM_BEHAVIOR_EXECUTION_SUPPORTED_EVENT);
@@ -98,7 +114,7 @@ export function createProgramBehaviorValidationLedger(deps: {
           supports
         },
         parents: [bindingEvent],
-        identity: input.planHash,
+        identity: canonicalStringify({ workspaceId: input.workspaceId, planHash: input.planHash }),
         clock: deps.clock,
         hasher: deps.hasher
       }));
@@ -135,14 +151,17 @@ function ledgerEvent(input: {
   return { ...eventWithoutHash, hash: hashEvent(eventWithoutHash, parents.map(parent => parent.hash), input.hasher) };
 }
 
-export function programBehaviorValidationEpisodeId(planHash: string, hasher: Hasher): EpisodeId {
+export function programBehaviorValidationEpisodeId(workspaceId: string, planHash: string, hasher: Hasher): EpisodeId {
+  verifyId(workspaceId, "workspaceId");
   verifyHash(planHash, "planHash");
-  return `episode_program_behavior_${hasher.digestHex(planHash).slice(0, 40)}` as EpisodeId;
+  return `episode_program_behavior_${hasher.digestHex(canonicalStringify({ workspaceId, planHash })).slice(0, 40)}` as EpisodeId;
 }
 
 function verifyPlanBinding(input: ProgramBehaviorValidationPlanBinding): ProgramBehaviorValidationPlanBinding {
   if (input.schema !== PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA) throw new Error("unsupported program behavior validation binding schema");
   verifyHash(input.planHash, "planHash");
+  verifyId(input.validationPolicyId, "validationPolicyId");
+  verifyHash(input.validationBindingHash, "validationBindingHash");
   verifyBehaviorRoleExecutionGraphInput(input.graph);
   return deepFreeze({ ...input, graph: input.graph });
 }
@@ -158,6 +177,8 @@ function bindingFromEvent(event: ScceEvent): ProgramBehaviorValidationPlanBindin
   return verifyPlanBinding({
     schema: value.schema as typeof PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
     planHash: stringValue(value.planHash, "binding planHash"),
+    validationPolicyId: stringValue(value.validationPolicyId, "binding validationPolicyId"),
+    validationBindingHash: stringValue(value.validationBindingHash, "binding validationBindingHash"),
     graph: value.graph as unknown as BehaviorRoleExecutionGraphInput
   });
 }
@@ -188,6 +209,10 @@ function stringValue(value: JsonValue | undefined, label: string): string {
 
 function verifyHash(value: string, label: string): void {
   if (!/^sha256:[0-9a-f]{64}$/u.test(value)) throw new Error(`${label} must be a SHA-256 content hash`);
+}
+
+function verifyId(value: string, label: string): void {
+  if (!value || value.trim() !== value) throw new Error(`${label} must be a non-empty identifier`);
 }
 
 function deepFreeze<T>(value: T): T {
