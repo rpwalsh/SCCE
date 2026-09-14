@@ -1344,6 +1344,13 @@ describe("kernel local evidence source anchoring", () => {
     });
     expect(proposal).toBeDefined();
     expect(proposal?.plan?.proofExcerpts?.[0]?.text).toContain("Avery Brooks");
+    const fastPath = localEvidenceAnswerSurface({
+      requestText: "Who played Benjamin Sisko in Star Trek: Deep Space Nine?",
+      selectedEvidence: [source],
+      entailment: { contradiction: 0, evidenceIds: [source.id], force: "inferred" }
+    });
+    expect(fastPath).toBeDefined();
+    expect(localEvidenceAnswerClaimSurface(fastPath!)).toContain("Avery Brooks");
 
     // Control: a definitional request whose content term ("created") the
     // opener itself covers must keep the lead boost -- exactly the case the
@@ -1354,6 +1361,13 @@ describe("kernel local evidence source anchoring", () => {
     });
     expect(definitional).toBeDefined();
     expect(definitional?.plan?.proofExcerpts?.[0]?.text).toContain("Rick Berman and Michael Piller");
+    const definitionalFastPath = localEvidenceAnswerSurface({
+      requestText: "Who created Star Trek: Deep Space Nine?",
+      selectedEvidence: [source],
+      entailment: { contradiction: 0, evidenceIds: [source.id], force: "inferred" }
+    });
+    expect(definitionalFastPath).toBeDefined();
+    expect(localEvidenceAnswerClaimSurface(definitionalFastPath!)).toContain("Rick Berman and Michael Piller");
   });
 
   it("returns a lead-anchored multi-sentence window that is a verbatim tidy-space substring when the learned response form declares a sentence budget", () => {
