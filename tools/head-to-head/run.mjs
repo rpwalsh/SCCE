@@ -18,6 +18,7 @@
 //   sampled at the start and end of the run. On AC that delta is meaningless and is reported as null rather
 //   than as a number that looks like a measurement.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { score, summarizeVerdicts, formatPerCorpus } from "./grade.mjs";
@@ -46,6 +47,7 @@ const checkpointEvery = Math.max(1, Number(flag("checkpoint-every", "1")));
 const modelSeed = Number(flag("model-seed", "20260914"));
 const modelTemperature = Number(flag("model-temperature", "0"));
 const modelDigest = flag("model-digest", "unrecorded");
+const scceRevision = flag("scce-revision", gitRevision());
 const workloadFilter = flag("workload", "");
 const only = flag("only", "both");
 
@@ -133,6 +135,7 @@ if (!existsSync(suitePath)) {
   process.exit(2);
 }
 const suite = JSON.parse(readFileSync(suitePath, "utf8"));
+const suiteSha256 = `sha256:${createHash("sha256").update(readFileSync(suitePath)).digest("hex")}`;
 let items = suite.items;
 if (workloadFilter) items = items.filter(item => item.workload === workloadFilter);
 if (limit > 0) items = items.slice(0, limit);
@@ -211,6 +214,8 @@ const summary = {
   modelDigest,
   modelSeed,
   modelTemperature,
+  scceRevision,
+  suite: { path: suitePath, sha256: suiteSha256 },
   requestTimeoutMs,
   checkpointEvery,
   items: rows.length,
@@ -239,3 +244,8 @@ for (const [label, side] of [["SCCE", summary.scce], [model, summary.reference]]
   for (const line of formatPerCorpus(side.byCorpus)) console.log(line);
 }
 console.log(`\nwrote ${outPath}`);
+
+function gitRevision() {
+  try { return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", windowsHide: true }).trim(); }
+  catch { return "unrecorded"; }
+}
