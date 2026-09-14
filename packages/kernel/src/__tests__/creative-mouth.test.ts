@@ -79,6 +79,23 @@ describe("creative Mouth production boundary", () => {
     ]);
   });
 
+  it("binds reordered generated sentences through learned move frame ids", () => {
+    const plan = {
+      units: [
+        { id: "disc:instruction", role: "instruction", frameIds: ["frame:instruction"] },
+        { id: "disc:conclusion", role: "conclusion", frameIds: ["frame:conclusion"] }
+      ]
+    } as DiscoursePlan;
+    const moves = [
+      { id: "move:conclusion", role: "opaque", text: "Second.", sourcePieceIds: [], frameIds: ["frame:conclusion"], atomIds: [], support: 1, information: 1, symbolCount: 1 },
+      { id: "move:instruction", role: "opaque", text: "First.", sourcePieceIds: [], frameIds: ["frame:instruction"], atomIds: [], support: 1, information: 1, symbolCount: 1 }
+    ];
+    expect(creativeSurfaceSentenceUnits("Second. First.", plan, moves)).toEqual([
+      { text: "Second.", role: "conclusion" },
+      { text: "First.", role: "instruction" }
+    ]);
+  });
+
   it("implements the exact creative surface equation without treating invented content as a fake fact", () => {
     const plan = creativeSurfacePlan("Constraint-safe graph index with bounded updates");
     const construct = creativeConstruct("evidence:premise" as EvidenceId);
