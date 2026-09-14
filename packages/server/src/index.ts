@@ -176,8 +176,12 @@ function closeServer(server: http.Server): Promise<void> {
 }
 
 function startupWarmupLanguageLimit(): number {
-  const parsed = Number(process.env.SCCE_STARTUP_LANGUAGE_LIMIT ?? 64);
-  if (!Number.isFinite(parsed)) return 64;
+  // The former default of 64 compounded across several resident language
+  // scopes during startup, consuming gigabytes before the server could answer
+  // one turn. Sixteen preserves a useful warmed working set; evidence-owned
+  // language remains demand-loaded when a selected source requires it.
+  const parsed = Number(process.env.SCCE_STARTUP_LANGUAGE_LIMIT ?? 16);
+  if (!Number.isFinite(parsed)) return 16;
   return Math.max(1, Math.min(64, Math.floor(parsed)));
 }
 
