@@ -44,7 +44,7 @@ describe("workspace patch planning API contract", () => {
       method: "POST",
       path: "/api/workspace/patch/plan/request",
       label: "workspace coding request plan",
-      mutates: false,
+      mutates: true,
       requiresDb: true
     });
     expect(parseWorkspaceCodingPatchPlanRequest(validCodingRequest()).input).toMatchObject({

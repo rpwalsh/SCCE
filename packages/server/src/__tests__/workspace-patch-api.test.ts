@@ -4,7 +4,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPatchTransactionPlan, hashPatchContent } from "@scce/kernel";
+import {
+  createClock,
+  createHasher,
+  createPatchTransactionPlan,
+  createProgramBehaviorValidationLedger,
+  hashPatchContent,
+  PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
+  programBehaviorValidationEpisodeId,
+  type EventLedger,
+  type ScceEvent
+} from "@scce/kernel";
 import {
   DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
   DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
@@ -125,6 +135,121 @@ describe("workspace patch API contract", () => {
     });
   });
 
+  it("joins a server-bound behavior construction to an actually executed tests receipt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-behavior-outcome-"));
+    roots.push(root);
+    await writeFile(join(root, "value.txt"), "before", "utf8");
+    const replacePlan = createPatchTransactionPlan({
+      operations: [{ kind: "replace", path: "value.txt", baseContentHash: hashPatchContent("before"), content: "after" }]
+    });
+    const events = memoryEventLedger();
+    const clock = createClock();
+    const hasher = createHasher();
+    const ledger = createProgramBehaviorValidationLedger({
+      events,
+      clock,
+      hasher
+    });
+    await ledger.bindPlan({
+      schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
+      planHash: replacePlan.planHash,
+      graph: {
+        schema: "scce.workspace.task_constraint_graph.v1",
+        id: "graph.behavior",
+        workspaceRevision: { workspaceId: "workspace-1", revisionId: "revision-1", revisionHash: hash("a") },
+        analyzerRevision: { analyzerId: "analyzer.typescript", analyzerVersion: "1", semanticRevisionHash: hash("b") },
+        validationCommandBindings: [],
+        constructions: [{
+          id: "construction.behavior",
+          kindId: "scce.program.behavior_role_construction.v1",
+          memberObservationIds: ["observation.behavior"],
+          evidenceSpanIds: ["span.behavior"]
+        }]
+      }
+    });
+
+    const response = await executeWorkspacePatchApiRequest({
+      request: parseWorkspacePatchRequest({
+        schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
+        workspaceId: "workspace-1",
+        plan: replacePlan,
+        validationPolicyId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID
+      }),
+      workspace: { id: "workspace-1", rootPath: root },
+      allowedRoots: [root],
+      events,
+      policy: {
+        schemaVersion: "scce.patch-validation-policy.v1",
+        id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        commands: [{ executable: process.execPath, argv: ["-e", "process.exit(0)"], checkIds: ["tests"] }],
+        timeoutMs: 5_000,
+        maxOutputBytes: 16 * 1024,
+        maxWorkspaceFiles: 100,
+        maxWorkspaceBytes: 1024 * 1024
+      }
+    });
+
+    expect(response.receipt.validation?.executedChecks?.map(check => check.checkId)).toEqual(["tests"]);
+    expect(response.behaviorLearning).toMatchObject({
+      state: "recorded",
+      supportIds: [expect.stringMatching(/^program\.behavior_execution_support\./u)]
+    });
+    const episode = await events.readEpisode(programBehaviorValidationEpisodeId(replacePlan.planHash, hasher));
+    expect(episode.map(event => String(event.typeId))).toContain("ProgramBehaviorRoleExecutionSupported");
+  });
+
+  it("reports post-commit learning failure without misreporting the applied patch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scce-patch-behavior-ledger-failure-"));
+    roots.push(root);
+    await writeFile(join(root, "value.txt"), "before", "utf8");
+    const replacePlan = createPatchTransactionPlan({
+      operations: [{ kind: "replace", path: "value.txt", baseContentHash: hashPatchContent("before"), content: "after" }]
+    });
+    const events = memoryEventLedger("ProgramBehaviorRoleExecutionSupported");
+    const clock = createClock();
+    const hasher = createHasher();
+    await createProgramBehaviorValidationLedger({ events, clock, hasher }).bindPlan({
+      schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
+      planHash: replacePlan.planHash,
+      graph: {
+        schema: "scce.workspace.task_constraint_graph.v1",
+        id: "graph.behavior.failure",
+        workspaceRevision: { workspaceId: "workspace-1", revisionId: "revision-1", revisionHash: hash("a") },
+        analyzerRevision: { analyzerId: "analyzer.typescript", analyzerVersion: "1", semanticRevisionHash: hash("b") },
+        validationCommandBindings: [],
+        constructions: [{
+          id: "construction.behavior",
+          kindId: "scce.program.behavior_role_construction.v1",
+          memberObservationIds: ["observation.behavior"],
+          evidenceSpanIds: ["span.behavior"]
+        }]
+      }
+    });
+    const response = await executeWorkspacePatchApiRequest({
+      request: parseWorkspacePatchRequest({
+        schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
+        workspaceId: "workspace-1",
+        plan: replacePlan,
+        validationPolicyId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID
+      }),
+      workspace: { id: "workspace-1", rootPath: root },
+      allowedRoots: [root],
+      events,
+      policy: {
+        schemaVersion: "scce.patch-validation-policy.v1",
+        id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        commands: [{ executable: process.execPath, argv: ["-e", "process.exit(0)"], checkIds: ["tests"] }],
+        timeoutMs: 5_000,
+        maxOutputBytes: 16 * 1024,
+        maxWorkspaceFiles: 100,
+        maxWorkspaceBytes: 1024 * 1024
+      }
+    });
+
+    expect(await readFile(join(root, "value.txt"), "utf8")).toBe("after");
+    expect(response.behaviorLearning).toMatchObject({ state: "persistence_failed" });
+  });
+
   it("selects Docker only from validated server configuration and keeps the request policy shell-free", () => {
     const trusted = { runtime: { tools: {}, patchValidation: { provider: "trusted-host" } } } as Parameters<typeof serverPatchValidationRuntime>[0];
     expect(serverPatchValidationRuntime(trusted)).toBeUndefined();
@@ -233,3 +358,21 @@ describe("workspace patch API contract", () => {
     expect(await readFile(join(root, "src", "new.ts"), "utf8")).toBe("export const value = 1;\n");
   });
 });
+
+function memoryEventLedger(failTypeId?: string): EventLedger {
+  const rows: ScceEvent[] = [];
+  return {
+    async append(event) {
+      if (String(event.typeId) === failTypeId) throw new Error("fixture ledger unavailable");
+      rows.push(event);
+    },
+    async appendBatch(events) { rows.push(...events); },
+    async readEpisode(episodeId) { return rows.filter(event => event.episodeId === episodeId); },
+    async readRange(query) { return rows.filter(event => !query.episodeId || event.episodeId === query.episodeId).slice(0, query.limit); },
+    async latestLedgerHash() { return rows.at(-1)?.hash ?? ""; }
+  };
+}
+
+function hash(character: string): `sha256:${string}` {
+  return `sha256:${character.repeat(64)}`;
+}
