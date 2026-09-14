@@ -79,7 +79,12 @@ describe("workspace patch API contract", () => {
       expect(platformDefault.commands[1]?.argv.at(-1)).toBe("validate");
       expect(platformDefault.commands[0]?.argv[0]).toMatch(/corepack[\\/]dist[\\/]pnpm\.js$/u);
     } else {
-      expect(platformDefault.commands[1]).toEqual({ executable: "pnpm", argv: ["validate"], cwd: "." });
+      expect(platformDefault.commands[1]).toEqual({
+        executable: "pnpm",
+        argv: ["validate"],
+        cwd: ".",
+        checkIds: ["compiler", "typecheck", "tests"]
+      });
     }
   });
 
@@ -208,6 +213,7 @@ describe("workspace patch API contract", () => {
               executable: "fixture",
               argv: [],
               cwd: ".",
+              checkIds: [],
               code: 0,
               signal: null,
               timedOut: false,

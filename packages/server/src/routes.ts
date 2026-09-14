@@ -2081,7 +2081,8 @@ export function workspacePatchValidationApprovalBinding(
       commands: policy.commands.map(command => ({
         executable: command.executable,
         argv: [...command.argv],
-        cwd: command.cwd ?? "."
+        cwd: command.cwd ?? ".",
+        checkIds: [...(command.checkIds ?? [])]
       })),
       timeoutMs: policy.timeoutMs,
       maxOutputBytes: policy.maxOutputBytes,
@@ -3238,7 +3239,12 @@ export function serverPatchValidationPolicy(config: LoadedConfig, policyId: stri
     id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
     commands: [
       { executable: command.executable, argv: [...command.argvPrefix, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"], cwd: "." },
-      { executable: command.executable, argv: [...command.argvPrefix, "validate"], cwd: "." }
+      {
+        executable: command.executable,
+        argv: [...command.argvPrefix, "validate"],
+        cwd: ".",
+        checkIds: ["compiler", "typecheck", "tests"]
+      }
     ],
     timeoutMs: 15 * 60_000,
     maxOutputBytes: 16 * 1024 * 1024,
@@ -3285,7 +3291,12 @@ export function serverPatchValidationRuntime(config: LoadedConfig): ApiContext["
       return {
         schemaVersion: "scce.patch-validation-policy.v1",
         id: DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
-        commands: [{ executable: "corepack", argv: ["pnpm", "validate"], cwd: "." }],
+        commands: [{
+          executable: "corepack",
+          argv: ["pnpm", "validate"],
+          cwd: ".",
+          checkIds: ["compiler", "typecheck", "tests"]
+        }],
         timeoutMs: 15 * 60_000,
         maxOutputBytes: 16 * 1024 * 1024,
         maxWorkspaceFiles: 100_000,
