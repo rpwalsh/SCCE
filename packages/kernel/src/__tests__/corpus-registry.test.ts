@@ -61,7 +61,7 @@ describe("corpus registry", () => {
     expect(queried.some(query => query.sourceSystem === "corrections")).toBe(true);
   });
 
-  it("warms an explicitly source-owned language cluster once by exact profile", async () => {
+  it("defers source-owned language hydration until a source is selected", async () => {
     const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
     const kernel = createScceKernel({
       storage: corpusQueryStorage(queried, true),
@@ -73,9 +73,7 @@ describe("corpus registry", () => {
     await kernel.warmup({ language: true, graph: false, brain: false, profile: false, corrections: false });
 
     const exactProfileQueries = queried.filter(query => query.profileIds.length > 0);
-    expect(exactProfileQueries).toHaveLength(5);
-    expect(exactProfileQueries.every(query => query.sourceSystem === undefined)).toBe(true);
-    expect(exactProfileQueries.every(query => query.profileIds.includes("profile.corpus-registry"))).toBe(true);
+    expect(exactProfileQueries).toEqual([]);
   });
 });
 

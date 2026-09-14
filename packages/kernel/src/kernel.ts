@@ -363,7 +363,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
       if (input.language ?? true) {
         tasks.push(Promise.all([
-          Promise.all([sourceOwnedLanguageClustersForWarmup(), surfaceLanguageProfilesCached()])
+          surfaceLanguageProfilesCached()
             // The cluster an unmatched request surface falls back to is the one turns most often realize from, and it
             // was the one cluster warmup never touched: source-owned clusters are a narrow subset (profiles whose
             // discovered names reference their own source version), so the dominant learned cluster paid a cold
@@ -371,7 +371,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             // budget substituted empty language on every request, and the next turn started its own copy rather than
             // hitting a cache that had not finished filling. Hydrating it here is the same call under the same cache
             // key -- turns read it resident instead of racing it.
-            .then(async ([sourceOwnedClusters, { clusters }]) => {
+            .then(async ({ clusters }) => {
               const dominant = selectLearnedLanguageProfileCluster(clusters);
               const warmed = await Promise.all([
                 hydrateSurfaceLanguageMemoryCached(
@@ -379,12 +379,6 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
                   undefined,
                   "source-surface-ambiguous-or-no-signal"
                 ),
-                ...boundedSourceOwnedWarmupClusters(sourceOwnedClusters, dominant?.id)
-                  .map(cluster => hydrateSurfaceLanguageMemoryCached(
-                    languageLimit,
-                    cluster,
-                    "warmup-source-owned-language-cluster"
-                  ))
               ]);
               // Warmed after the others have settled, not merely last in an array. The cache budget holds about three
               // full cluster hydrations and evicts by insertion order, and concurrent hydrations insert in COMPLETION
@@ -501,23 +495,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             .slice(0, sourceAnchorEvidenceCacheMaxEntries)
             .map(id => id as EvidenceSpan["id"]);
           await sourceAnchorEvidenceBatchCached(sourceEvidenceIds);
-          const creativeClusters = boundedSourceOwnedWarmupClusters(await sourceOwnedLanguageClustersForWarmup());
-          const creativeLanguages = await Promise.all(creativeClusters.map(cluster =>
-            hydrateSurfaceLanguageMemoryCached(
-              languageLimit,
-              cluster,
-              "warmup-creative-language-cluster",
-              CORPUS_ROLE_IDS.publicDomainProse
-            )
-          ));
+          const creativeLanguages: Awaited<ReturnType<typeof hydrateSurfaceLanguageMemoryCached>>[] = [];
           // A creative turn hydrates the prose role keyed by language identity and role; the cluster hydrations
           // above sit under a different key, so the first creative request on a fresh server still paid a 13s
           // cold hydration inside a 36s turn (live 2026-09-10). Same call, same key the turn will look up.
           const spokenIdentity = languageIdentityRuntime.identities().slice().sort((a, b) => b.profileCount - a.profileCount)[0];
-          if (spokenIdentity) {
-            await hydrateSurfaceLanguageMemoryCached(languageLimit, creativeClusters[0], "warmup-creative-language", CORPUS_ROLE_IDS.publicDomainProse, "", { languageId: spokenIdentity.id })
-              .catch(error => { failures.push(`creative language warmup failed: ${error instanceof Error ? error.message : String(error)}`); });
-          }
           const creativeEvents = creativeLanguages.flatMap(language =>
             language.state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? [])
           );
