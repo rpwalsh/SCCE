@@ -51,6 +51,75 @@ it("binds a real failed diagnostic to the kernel plan, applies it and verifies t
   expect(await readFile(path.join(root, "src/target.ts"), "utf8")).toBe("export const count = 1;\nexport const value = count;\n");
 }, 30_000);
 
+it("routes compiler-owned fixes through typed selection before trying learned construction", async () => {
+  const { root } = await fixture();
+  let learnedCalls = 0;
+  const ports = createTypeScriptCodeMouthPorts({
+    workspaceRoot: root,
+    learnedProposer: {
+      async propose({ context }) {
+        learnedCalls += 1;
+        return {
+          operations: [{
+            id: "learned-bypass",
+            kind: "replace",
+            path: context.targetPath,
+            startLine: 2,
+            endLine: 2,
+            content: "export const value = count;",
+            reason: "test competing learned construction",
+            risk: 0.1
+          }],
+          surface: "export const value = count;"
+        };
+      },
+      lastCandidates: () => [],
+      availableModelCount: async () => 1
+    }
+  });
+
+  const result = await runCodeMouth({ ports, targetPath: "src/target.ts", request: "repair this file", maxAttempts: 3 });
+
+  expect(result.outcome).toBe("resolved");
+  expect(result.proposalSources).toEqual(["compiler_owned"]);
+  expect(result.planningSelections).toHaveLength(1);
+  expect(result.planningSelections?.[0]?.selection.selected?.diagnosticIdentity).toBeTruthy();
+  expect(result.planningSelections?.[0]?.selection.selected?.codeFixIdentity).toBeTruthy();
+  expect(learnedCalls).toBe(0);
+  expect(await readFile(path.join(root, "src/target.ts"), "utf8")).toBe("export const count = 1;\nexport const value = count;\n");
+}, 30_000);
+
+it("binds a source-observed unused type declaration through the selected compiler repair", async () => {
+  const { root, source, ports } = await fixture(
+    "import type { Kept, Unused } from \"./types.js\";\nexport const value = (input: Kept) => input.value;\n"
+  );
+  await writeFile(path.join(root, "src/types.ts"), "export interface Kept { value: number; }\nexport interface Unused { value: number; }\n");
+  await writeFile(path.join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: { strict: true, noEmit: true, target: "es2022", types: [], noUnusedLocals: true },
+    include: ["src/**/*.ts"]
+  }));
+
+  const failed = await ports.verify("src/target.ts");
+  expect(failed.diagnostics.map(row => row.patternId)).toContain("TS6196");
+  const proposal = await proposeCompilerOwnedRepair({
+    workspaceRoot: root,
+    targetPath: "src/target.ts",
+    targetText: source,
+    requestText: "repair this file",
+    attempt: 1,
+    diagnostics: failed.diagnostics
+  });
+
+  expect(isCompilerRepairProposal(proposal)).toBe(true);
+  if (!isCompilerRepairProposal(proposal)) return;
+  expect(proposal.selection?.selected?.diagnosticIdentity).toBeTruthy();
+  expect(proposal.selection?.selected?.codeFixIdentity).toBeTruthy();
+  const result = await runCodeMouth({ ports, targetPath: "src/target.ts", request: "repair this file", maxAttempts: 3 });
+  expect(result.outcome).toBe("resolved");
+  expect(result.planningSelections).toHaveLength(1);
+  expect(await readFile(path.join(root, "src/target.ts"), "utf8")).toBe("import type { Kept } from \"./types.js\";\nexport const value = (input: Kept) => input.value;\n");
+}, 30_000);
+
 it("keeps a singleton unselected without failed-goal evidence and rejects stale evidence", async () => {
   const { root, source, ports } = await fixture();
   const failed = await ports.verify("src/target.ts");
