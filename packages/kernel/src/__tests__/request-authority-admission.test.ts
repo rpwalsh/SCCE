@@ -6,13 +6,25 @@ import { createJudge } from "../judge.js";
 import {
   admitCandidatesForAuthority,
   candidateCompatibleWithAuthority,
-  explicitAuthorityRequirements
+  explicitAuthorityRequirements,
+  operationalAuthorityForProjection,
+  projectRequestAuthority
 } from "../request-authority.js";
 import { DEFAULT_POLICY } from "../safety.js";
-import { deriveTurnRequirementField } from "../turn-requirements.js";
+import { COGNITIVE_OPERATOR_IDS, deriveTurnRequirementField } from "../turn-requirements.js";
 import type { ValidationGraph } from "../types.js";
 
 describe("requested-authority candidate admission", () => {
+  it("does not route an unactivated physical authority into its private lane", () => {
+    const field = deriveTurnRequirementField({ requestText: "opaque fixture" });
+    const projection = projectRequestAuthority({ requirementField: field, explicitAuthority: "program" });
+    expect(operationalAuthorityForProjection({ projection, activeOperatorIds: [] })).not.toBe("program");
+    expect(operationalAuthorityForProjection({
+      projection,
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning]
+    })).toBe("program");
+  });
+
   it("keeps every candidate kind eligible for translation, recording compatibility only in the audit", () => {
     // There is no such thing as a "translation turn" that other candidate
     // kinds are barred from -- admitCandidatesForAuthority no longer drops
