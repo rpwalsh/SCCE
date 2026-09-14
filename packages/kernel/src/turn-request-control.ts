@@ -111,6 +111,24 @@ export function requirementContextFromMetadata(
   return out;
 }
 
+export interface EvidenceAccessPolicy {
+  /** Whether repository and construction evidence may participate in this turn's retrieval routes. */
+  readonly sourceCodeEvidenceAllowed: boolean;
+}
+
+/**
+ * Maps already-selected cognitive operators to physical evidence access. This
+ * is a serving policy, not a second interpretation of request text: every
+ * domain reaches it through the same typed operator state.
+ */
+export function evidenceAccessPolicyForOperators(operatorIds: readonly CognitiveOperatorId[]): EvidenceAccessPolicy {
+  const active = new Set(operatorIds);
+  return {
+    sourceCodeEvidenceAllowed: active.has(COGNITIVE_OPERATOR_IDS.programPlanning)
+      || active.has(COGNITIVE_OPERATOR_IDS.workspaceRepair)
+  };
+}
+
 export function operatorOutcomeSupport(
   metadata: JsonValue | undefined
 ): Partial<Record<CognitiveOperatorId, number>> {

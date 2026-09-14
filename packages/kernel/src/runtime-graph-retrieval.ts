@@ -323,6 +323,8 @@ export function createRuntimeGraphRetrieval(options: {
 
   async function graphForText(text: string, options: {
     allowSemanticFrameEvidence?: boolean;
+    /** Shared operator-derived access control. When absent, legacy direct callers retain structural fallback behavior. */
+    evidenceAccess?: { readonly sourceCodeEvidenceAllowed: boolean };
     sourceAnchoringRequired?: boolean;
     residentOnly?: boolean;
     /** The request's learned scaffolding (closed class); an anchor group made only of it is not a subject to search. */
@@ -337,6 +339,8 @@ export function createRuntimeGraphRetrieval(options: {
     const queryPreparationStarted = Date.now();
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
     const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
+    const sourceCodeEvidenceAllowed = options.evidenceAccess?.sourceCodeEvidenceAllowed
+      ?? codeRequestRecognized(codeRequestSignal(text));
     const residentOnly = options.residentOnly === true;
     const languageModels = options.languageModels ?? [];
     const continuationPopulation = options.continuationPopulation;
@@ -368,6 +372,7 @@ export function createRuntimeGraphRetrieval(options: {
       topicTerms,
       allowSemanticFrameEvidence,
       sourceAnchoringRequired,
+      sourceCodeEvidenceAllowed,
       residentOnly,
       quotedSequence: sourceAnchoringRequired && hasExplicitQuotationOrGapStructure(text) && requestSentenceSequences(text).length > 0,
       scaffolding: [...(options.requestScaffolding ?? [])].sort()
@@ -435,7 +440,7 @@ export function createRuntimeGraphRetrieval(options: {
       // above (residentOnly: true) before falling through here; retrying
       // it non-resident would both double the lookup and break the bounded
       // turn's residency contract, so only attempt it once per turn.
-      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels, continuationPopulation);
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels, continuationPopulation, sourceCodeEvidenceAllowed);
       kernelTrace({
         stage: "graph.resolve.anchor_evidence",
         label: "kernel.graphForText",
@@ -725,7 +730,7 @@ function spanIsSourceCode(span: EvidenceSpan): boolean {
   return isCodeEvidenceSpan(span);
 }
 
-async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation): Promise<SourceAnchoredEvidenceSelection> {
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation, sourceCodeEvidenceAllowed = codeRequestRecognized(codeRequestSignal(text))): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
     const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels, continuationPopulation);
@@ -753,7 +758,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // exact-title-match ranking see every candidate document at all.
     // A question that is not about code draws its candidates from prose lanes only; the exclusion is applied in the
     // search itself, before ranking, so the owner's repository cannot crowd the article out of the candidate set.
-    const proseSourceKinds = codeRequestRecognized(codeRequestSignal(text))
+    const proseSourceKinds = sourceCodeEvidenceAllowed
       ? {}
       : { excludeSourceKinds: ["developer_intelligence", "construction_training"], excludeForceClasses: ["profile_excerpt_evidence"] };
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
@@ -771,7 +776,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         const rows = await searchAnchorGroup(
           group,
           proseSourceKinds,
-          !codeRequestRecognized(codeRequestSignal(text)),
+          !sourceCodeEvidenceAllowed,
           text,
           group !== quotedSentence,
           group !== quotedSentence && ordinaryIndex < ordinaryFallbackBudget,
@@ -795,7 +800,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // 38,232 of the corpus's promoted spans are the owner's own source files, and four of them carry the
     // Lovelace birth date in a comment; for "When was Ada Lovelace born?" those outranked Wikipedia. A request
     // that is not about code is answered from prose while any prose remains; a code request keeps everything.
-    const evidenceResults = codeRequestRecognized(codeRequestSignal(text))
+    const evidenceResults = sourceCodeEvidenceAllowed
       ? gatheredResults
       : gatheredResults.filter(item => !spanIsSourceCode(item.span) || evidenceIdentityBindsRequest(item.span, text));
     kernelTrace({
@@ -829,7 +834,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // saw them: a semantic frame built over the repository re-admitted the code those two guards had just removed.
     // The rule is the request's, not the lane's, so it is applied once to the merged pool.
     const mergedCandidates = mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence]);
-    const proseCandidates = codeRequestRecognized(codeRequestSignal(text))
+    const proseCandidates = sourceCodeEvidenceAllowed
       ? mergedCandidates
       : (() => {
         return mergedCandidates.filter(span => !spanIsSourceCode(span));
