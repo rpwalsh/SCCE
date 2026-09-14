@@ -338,6 +338,10 @@ export interface GraphSliceQuery {
   allowLatestFallback?: boolean;
   /** Skip nodes whose stored representation exceeds this many bytes; for warm-up slices, not targeted lookups. */
   maxRepresentationBytes?: number;
+  /** Restrict the slice to graph objects carrying the requested evidence IDs.
+   *  This keeps source-anchored factual turns from expanding a corpus-wide
+   *  neighbourhood before proof has selected a route. */
+  evidenceBoundOnly?: boolean;
 }
 
 export interface TemporalGraphQuery extends GraphSliceQuery {

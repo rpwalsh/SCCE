@@ -358,6 +358,15 @@ describe("runtime hot graph retrieval", () => {
     expect(result.evidence.map(span => String(span.id))).toEqual([String(source.id)]);
     expect(result.graph.nodes.map(row => String(row.id))).toEqual([String(node.id)]);
     expect(fixture.getSlice).toHaveBeenCalledTimes(1);
+    expect(fixture.getSlice.mock.calls[0]?.[0]).toMatchObject({
+      evidenceIds: [source.id],
+      evidenceBoundOnly: true,
+      radius: 0,
+      limitNodes: expect.any(Number),
+      limitEdges: expect.any(Number)
+    });
+    expect(fixture.getSlice.mock.calls[0]?.[0].limitNodes).toBeLessThanOrEqual(64);
+    expect(fixture.getSlice.mock.calls[0]?.[0].limitEdges).toBeLessThanOrEqual(128);
   });
 
   it("does not reuse a warmed model-only function-unit cache when a continuation population is supplied", async () => {
