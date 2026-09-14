@@ -1,0 +1,39 @@
+{
+  "schema": "scce.swarm.active_work.v1",
+  "releaseTarget": "Qwen parity across every benchmark workload",
+  "integrationBranch": "main",
+  "reviewableSnapshot": "6b7007f",
+  "owners": [
+    {
+      "role": "foreman and integration",
+      "agent": "Codex root",
+      "branch": "codex/mvp-integration",
+      "scope": ["packages/adapters-node/src/typescript-code-actions.ts"],
+      "task": "Restore compiler candidate selection contract and classify full-suite failures",
+      "status": "in_progress"
+    },
+    {
+      "role": "active language lead and director",
+      "agent": "Astra",
+      "branch": "codex/mvp-language",
+      "task": "Repair corpus-population scaffolding derivation with Sol implementer and independent Luna skeptic",
+      "status": "in_progress"
+    }
+  ],
+  "rules": [
+    "Root owns priority and integration state",
+    "Source edits stay in owned worktrees until review",
+    "One shared server lock for live measurement and integration checks",
+    "Do not modify the existing Claude worktrees or processes",
+    "No runtime model calls; local model use is development assistance only",
+    "A passing local test is not a measured benchmark improvement"
+  ],
+  "localWorkerTrial": {
+    "model": "qwen2.5:3b",
+    "task": "Bounded compiler selection review",
+    "outputTokens": 450,
+    "elapsedSeconds": 50.4,
+    "accepted": false,
+    "reason": "Suggested removing valid selectors and produced truncated recursive output"
+  }
+}
