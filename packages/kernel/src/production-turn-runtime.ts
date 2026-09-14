@@ -2066,6 +2066,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         });
         requestedAuthority = "factual";
         refreshTurnSignals();
+        // Quotation recall changes the typed requirement field after graph activation. Rebuild the operator field at
+        // that boundary as well: otherwise candidate generation receives factual requirements paired with the
+        // operators selected for the superseded projected authority.
+        operatorActivations = activateCognitiveOperators({
+          requirementField,
+          graphSupport: requestOperatorGraphSupport({ graph, evidence: admissibleEvidence, field }),
+          dialogueSupport: requestOperatorDialogueSupport(requirementField),
+          outcomeSupport: {
+            ...durableOperatorOutcomeSupport,
+            ...operatorOutcomeSupport(input.metadata)
+          }
+        });
         // The proposal was compiled under the projected authority, and the projection was wrong: a translation
         // plan extracts a bound value ("the cgi defiant") where recall returns the source sentence the request
         // quotes. Recompiling under the corrected authority is the whole point of correcting it.
