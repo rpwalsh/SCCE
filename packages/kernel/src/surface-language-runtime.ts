@@ -273,6 +273,10 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
   let surfaceProfileCache: { loadedAt: number; value: LanguageProfile[]; clusters: LanguageProfileCluster[] } | undefined;
+  // Creative and conversational surface selection can ask for the global
+  // profile set from multiple stages before the first read is cached. Share
+  // that durable read so a cold turn does not duplicate both queries.
+  let surfaceProfileInFlight: Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> | undefined;
 
   const sourceOwnedAliasProfileCache = new Map<string, {
     loadedAt: number;
@@ -986,22 +990,31 @@ export function createSurfaceLanguageRuntime(options: {
       return { profiles: surfaceProfileCache.value, clusters: surfaceProfileCache.clusters };
     }
     if (residentOnly) return { profiles: [], clusters: [] };
-    const [persistedProfiles, requestControlPatterns] = await Promise.all([
-      deps.storage.model.listLanguageProfiles({
-        limit: surfaceLanguageProfileLimit,
-        referencedByLanguageMemory: true
-      }),
-      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
-    ]);
-    const requestControlProfileIds = new Set(
-      latestRequestRequirementPatterns(requestControlPatterns).map(pattern => pattern.profileId)
-    );
-    const profiles = persistedProfiles
-      .filter(profile => !requestControlProfileIds.has(profile.id))
-      .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-    const clusters = buildLanguageProfileClusters(profiles);
-    if (generation === languageMemoryGeneration) surfaceProfileCache = { loadedAt: now, value: profiles, clusters };
-    return { profiles, clusters };
+    const existing = surfaceProfileInFlight;
+    if (existing) return existing;
+    const pending = (async () => {
+      const [persistedProfiles, requestControlPatterns] = await Promise.all([
+        deps.storage.model.listLanguageProfiles({
+          limit: surfaceLanguageProfileLimit,
+          referencedByLanguageMemory: true
+        }),
+        deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+      ]);
+      const requestControlProfileIds = new Set(
+        latestRequestRequirementPatterns(requestControlPatterns).map(pattern => pattern.profileId)
+      );
+      const profiles = persistedProfiles
+        .filter(profile => !requestControlProfileIds.has(profile.id))
+        .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+      const clusters = buildLanguageProfileClusters(profiles);
+      if (generation === languageMemoryGeneration) surfaceProfileCache = { loadedAt: clock.now(), value: profiles, clusters };
+      return { profiles, clusters };
+    })();
+    surfaceProfileInFlight = pending;
+    try { return await pending; }
+    finally {
+      if (surfaceProfileInFlight === pending) surfaceProfileInFlight = undefined;
+    }
   }
 
 

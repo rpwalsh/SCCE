@@ -347,7 +347,7 @@ export interface RealizationTrace {
   discoursePlan: JsonValue;
   realizationFrames: JsonValue;
   candidates: Array<{ id: string; style: string; path: SurfaceCandidatePath; textHash: string; score: number; changedByCorrections: number; preservation: number; forbiddenHits: number; importedPieceIds: string[]; semanticCandidateId?: string; semanticPlanId?: string; surfaceRealizationId?: string; audit?: JsonValue }>;
-  selected: { id: string; path: SurfaceCandidatePath; textHash: string; languageActivation: number; semanticPreservation: number; semanticCandidateId?: string; semanticPlanId?: string; surfaceRealizationId?: string };
+  selected: { id: string; path: SurfaceCandidatePath; textHash: string; languageActivation: number; semanticPreservation: number; semanticCandidateId?: string; semanticPlanId?: string; surfaceRealizationId?: string; audit?: JsonValue };
   languageMemory: JsonValue;
   brainInfluence: JsonValue;
   corrections: JsonValue;
@@ -1292,6 +1292,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             semanticCandidateId: selectedStructuralBinding?.semanticCandidateId,
             semanticPlanId: selectedStructuralBinding?.semanticPlanId,
             surfaceRealizationId: selectedStructuralBinding?.surfaceRealizationId,
+            audit: selected?.audit,
             proofSurface
           },
           languageMemory: toJsonValue({
@@ -2325,6 +2326,16 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
     importedPieceIds: [],
     discoursePlan,
     boundaryDecisions: [],
+    // Preserve the typed decision provenance through realization. The judge
+    // may have changed this candidate's rank from persisted discourse
+    // feedback; dropping its audit here would make the spoken result appear
+    // causally unrelated even though the selected surface came from it.
+    audit: toJsonValue({
+      source: "mouth.kernel-selected",
+      selectedCandidateId: candidate.id,
+      selectionAdjustment: candidate.selectionAdjustment ?? null,
+      candidateAudit: candidate.audit
+    }),
     exactSurface: kernelCandidateCarriesExactBoundSourceSurface(candidate, input)
       || kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)
   };
