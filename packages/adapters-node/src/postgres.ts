@@ -1990,8 +1990,45 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
       const nodes = await queryNodes(storage, query);
       const ids = nodes.map(node => node.id);
       const edgeLimit = query.limitEdges ?? 2000;
+      if (query.evidenceBoundOnly && query.evidenceIds?.length) {
+        const evidenceIds = [...new Set(query.evidenceIds.map(String))];
+        const access = storage.informationAccessPredicate("ranked_candidates", 3);
+        const edgeRows = new Map<string, GraphEdgeRow>();
+        for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) {
+          const group = evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP);
+          const rows = await storage.query<GraphEdgeRow>(
+            `SELECT * FROM ${storage.table("graph_edges")}
+             WHERE evidence_ids && $1::text[] AND ${access.sql}
+             ORDER BY alpha DESC, updated_at DESC, id LIMIT $2`,
+            [group, edgeLimit, ...access.params]
+          );
+          for (const row of rows) if (!edgeRows.has(row.id)) edgeRows.set(row.id, row);
+          if (edgeRows.size >= edgeLimit) break;
+        }
+        const hyperedgeLimit = Math.max(1, Math.min(edgeLimit, Math.floor(edgeLimit / 2) || 1));
+        const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
+        const hyperedgeRows = new Map<string, HyperedgeRow>();
+        for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) {
+          const group = evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP);
+          const rows = await storage.query<HyperedgeRow>(
+            `SELECT * FROM ${storage.table("graph_hyperedges")}
+             WHERE evidence_ids && $1::text[] AND ${hyperedgeAccess.sql}
+             ORDER BY updated_at DESC LIMIT $2`,
+            [group, hyperedgeLimit, ...hyperedgeAccess.params]
+          );
+          for (const row of rows) if (!hyperedgeRows.has(row.id)) hyperedgeRows.set(row.id, row);
+          if (hyperedgeRows.size >= hyperedgeLimit) break;
+        }
+        return {
+          nodes,
+          edges: [...edgeRows.values()].slice(0, edgeLimit).map(rowToGraphEdge),
+          hyperedges: [...hyperedgeRows.values()].slice(0, hyperedgeLimit).map(rowToHyperedge),
+          bounded: true,
+          query
+        };
+      }
       const perSeedEdgeLimit = ids.length ? Math.max(4, Math.ceil(edgeLimit / ids.length)) : 0;
-      const edgeAccess = storage.informationAccessPredicate("ranked_candidates", 4);
+      const edgeAccess = storage.informationAccessPredicate("edge_row", 4);
       const edges = ids.length
         ? (await storage.query<GraphEdgeRow>(
           `WITH seeds(seed_id, seed_ord) AS (
@@ -1999,10 +2036,10 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
              FROM unnest($1::text[]) WITH ORDINALITY AS seed(seed_id, seed_ord)
            ),
            source_candidates AS (
-             SELECT edge_row.*, seeds.seed_ord
+             SELECT edge_row.id, edge_row.alpha, edge_row.updated_at, seeds.seed_ord
              FROM seeds
              CROSS JOIN LATERAL (
-               SELECT *
+               SELECT id, alpha, updated_at
                FROM ${storage.table("graph_edges")}
                WHERE source_node_id=seeds.seed_id
                ORDER BY alpha DESC, updated_at DESC, id
@@ -2010,10 +2047,10 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
              ) edge_row
            ),
            target_candidates AS (
-             SELECT edge_row.*, seeds.seed_ord
+             SELECT edge_row.id, edge_row.alpha, edge_row.updated_at, seeds.seed_ord
              FROM seeds
              CROSS JOIN LATERAL (
-               SELECT *
+               SELECT id, alpha, updated_at
                FROM ${storage.table("graph_edges")}
                WHERE target_node_id=seeds.seed_id
                ORDER BY alpha DESC, updated_at DESC, id
@@ -2028,11 +2065,12 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
                SELECT * FROM target_candidates
              ) candidates
            )
-           SELECT *
+           SELECT edge_row.*, ranked_candidates.seed_ord, ranked_candidates.edge_rank
            FROM ranked_candidates
+           JOIN ${storage.table("graph_edges")} edge_row ON edge_row.id=ranked_candidates.id
            WHERE edge_rank=1
              AND ${edgeAccess.sql}
-           ORDER BY seed_ord, alpha DESC, updated_at DESC, id
+           ORDER BY ranked_candidates.seed_ord, edge_row.alpha DESC, edge_row.updated_at DESC, edge_row.id
            LIMIT $2`,
           [ids, edgeLimit, perSeedEdgeLimit, ...edgeAccess.params]
         )).map(rowToGraphEdge)

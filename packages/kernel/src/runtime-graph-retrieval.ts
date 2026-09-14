@@ -483,11 +483,10 @@ export function createRuntimeGraphRetrieval(options: {
       const anchoredGraphStarted = Date.now();
       const graph = await deps.storage.graph.getSlice({
         evidenceIds: anchoredEvidence.map(span => span.id),
-        features: [...features],
-        topicTerms,
-        radius: 1,
-        limitNodes: sourceAnchorHotNodeLimit,
-        limitEdges: sourceAnchorHotEdgeLimit
+        evidenceBoundOnly: true,
+        radius: 0,
+        limitNodes: Math.min(sourceAnchorHotNodeLimit, 64),
+        limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128)
       });
       kernelTrace({
         stage: "graph.resolve.anchor_slice",
@@ -498,7 +497,7 @@ export function createRuntimeGraphRetrieval(options: {
       const value: RuntimeGraphSliceValue = {
         graph: {
           ...graph,
-          query: { evidenceIds: anchoredEvidence.map(span => span.id), features: [...features], topicTerms, radius: 1, limitNodes: sourceAnchorHotNodeLimit, limitEdges: sourceAnchorHotEdgeLimit }
+          query: { evidenceIds: anchoredEvidence.map(span => span.id), evidenceBoundOnly: true, radius: 0, limitNodes: Math.min(sourceAnchorHotNodeLimit, 64), limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128) }
         },
         evidence: mergeEvidenceSpans(anchoredEvidence),
         semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
