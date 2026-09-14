@@ -284,10 +284,13 @@ describe("ProgramGraph runtime and artifact emission", () => {
       const repairedProgram = required(buildProgram(request, [], retry.intent).program);
       const repairedSource = required(repairedProgram.files.find(file => file.path === "src/program.mjs"));
       const repairedTest = required(repairedProgram.files.find(file => file.path === "test/program.test.mjs"));
+      const repairedContract = required(repairedProgram.files.find(file => file.path === "source.program.json"));
       expect(repairedSource.content).toContain('"statefulContracts"');
       expect(repairedSource.content).toContain('"name": "bind"');
       expect(repairedSource.content).toContain('"name": "read"');
       expect(repairedTest.content).toContain("checkStatefulCall");
+      expect(repairedContract.content).toContain('"ownerStatefulBehaviorTransformationCandidates"');
+      expect(repairedContract.content).toContain('"selectedOwnerStatefulBehaviorTransformationIds"');
       writeFileSync(join(root, "src", "program.mjs"), repairedSource.content, "utf8");
       writeFileSync(join(root, "test", "program.test.mjs"), repairedTest.content, "utf8");
       const passed = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
